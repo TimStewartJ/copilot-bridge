@@ -107,10 +107,9 @@ export function TaskPanelRouteSkeleton() {
       isLoading
       label="Loading task cockpit"
       delayMs={160}
-      className="flex-1 min-h-0"
+      className="flex-1 min-w-0 min-h-0 relative"
     >
-      <div className="h-full w-full overflow-hidden bg-bg-secondary">
-        <div className="h-full overflow-x-hidden">
+      <div className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-bg-secondary">
           <div className="space-y-2.5 border-b border-border bg-bg-secondary p-3">
             <div className="flex items-center justify-between gap-2">
               <Skeleton width={56} height={10} shape="pill" />
@@ -150,7 +149,6 @@ export function TaskPanelRouteSkeleton() {
             </section>
           </div>
         </div>
-      </div>
     </LoadingSkeletonRegion>
   );
 }
@@ -422,10 +420,10 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="h-full w-full min-w-0 overflow-hidden bg-bg-secondary">
+    <div className="flex-1 min-w-0 min-h-0 relative bg-bg-secondary">
       <PullToRefresh
         onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }}
-        className="h-full overflow-x-hidden"
+        className="absolute inset-0 overflow-x-hidden"
         scrollRestoration={scrollRestoration}
       >
         <div className="space-y-3 border-b border-border/80 bg-bg-secondary/95 p-4 shadow-sm md:sticky md:top-0 md:z-20">

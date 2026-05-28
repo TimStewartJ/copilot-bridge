@@ -390,7 +390,7 @@ describe("TaskPanel", () => {
 
     const scrollContainerCall = pullToRefreshMock.mock.calls.find(([props]) => {
       const className = (props as { className?: string }).className;
-      return className?.includes("h-full overflow-x-hidden");
+      return className?.includes("absolute inset-0 overflow-x-hidden");
     });
     if (!scrollContainerCall) throw new Error("TaskPanel PullToRefresh was not rendered");
     expect((scrollContainerCall[0] as { scrollRestoration?: typeof scrollRestoration }).scrollRestoration).toBe(scrollRestoration);

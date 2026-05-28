@@ -247,119 +247,119 @@
   {
     "code": 2345,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 389,
+    "line": 387,
     "character": 39,
     "message": "Argument of type 'Task | null' is not assignable to parameter of type 'Pick<Task, \"status\" | \"kind\" | \"doneWhen\">'.\n  Type 'null' is not assignable to type 'Pick<Task, \"status\" | \"kind\" | \"doneWhen\">'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 393,
+    "line": 391,
     "character": 32,
     "message": "'currentTask' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 394,
+    "line": 392,
     "character": 16,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 394,
+    "line": 392,
     "character": 49,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 396,
+    "line": 394,
     "character": 33,
     "message": "'currentTask' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 398,
+    "line": 396,
     "character": 7,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 399,
+    "line": 397,
     "character": 33,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 400,
+    "line": 398,
     "character": 30,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 410,
+    "line": 408,
     "character": 9,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 411,
+    "line": 409,
     "character": 33,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 412,
+    "line": 410,
     "character": 23,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 444,
+    "line": 442,
     "character": 37,
     "message": "'currentTask' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 531,
+    "line": 529,
     "character": 18,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 532,
+    "line": 530,
     "character": 18,
     "message": "'completionState' is possibly 'null'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 542,
+    "line": 540,
     "character": 17,
     "message": "Type 'Task | null' is not assignable to type 'Task'.\n  Type 'null' is not assignable to type 'Task'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 597,
+    "line": 595,
     "character": 34,
     "message": "'currentTask' is possibly 'null'."
   },
   {
     "code": 18047,
     "file": "src/client/components/TaskPanel.tsx",
-    "line": 597,
+    "line": 595,
     "character": 68,
     "message": "'completionState' is possibly 'null'."
   },
