@@ -79,7 +79,7 @@ import {
   shouldCheckFollowUpRecovery,
   shouldClearRollbackCheckpointAfterHealthyState,
 } from "./launcher-recovery.js";
-import { isChildProcessActive } from "./launcher-process.js";
+import { isChildProcessActive, resolveServerLaunchDistributionMode } from "./launcher-process.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -870,7 +870,7 @@ function describeLaunchTarget(target: ServerLaunchTarget): string {
 function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()): ChildProcess {
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
-    BRIDGE_DISTRIBUTION_MODE: DISTRIBUTION.mode,
+    BRIDGE_DISTRIBUTION_MODE: resolveServerLaunchDistributionMode(DISTRIBUTION.mode, target.release !== undefined),
     [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
     ...(target.release ? {
       BRIDGE_ACTIVE_RELEASE_ROOT: target.root,
