@@ -13,7 +13,7 @@ export interface LiveRunPhaseInput {
   creating: boolean;
   isStreaming: boolean;
   streamStatus: "idle" | "sending" | "thinking" | "streaming";
-  pendingOrigin: "message" | "fleet" | "reconnect" | null;
+  pendingOrigin: "message" | "reconnect" | null;
   runMode?: SendMode;
   streamingContent: string;
   activeTrackCount: number;
@@ -49,15 +49,6 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
         label: "Reconnecting",
         title: "Reopening the live response stream",
         detail: "The session is already busy; reconnecting so live updates and parallel tracks stay in sync.",
-        tone: "sending",
-      };
-    }
-    if (input.pendingOrigin === "fleet") {
-      return {
-        phase: "submitting",
-        label: "Sending",
-        title: "Launching Fleet run",
-        detail: "The session is starting a parallel plan run and opening the response stream.",
         tone: "sending",
       };
     }

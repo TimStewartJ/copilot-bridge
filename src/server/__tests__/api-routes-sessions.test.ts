@@ -645,28 +645,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("POST /api/sessions/:id/fleet accepts new fleet work when restart is active in persisted state", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.hasPlan = vi.fn().mockReturnValue(true);
-    sessionManager.startFleet = vi.fn();
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-fleet-gating",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: null,
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app)
-      .post("/api/sessions/test-session/fleet")
-      .send({});
-
-    expect(res.status).toBe(202);
-    expect(res.body).toEqual({ status: "accepted" });
-    expect(sessionManager.startFleet).toHaveBeenCalledWith("test-session", undefined);
-  });
 
   it("GET /api/busy returns activity summary", async () => {
     const res = await request(app).get("/api/busy");

@@ -28,7 +28,7 @@ export function resolveExternalSessionWorkAction({
   if (!sessionId || nextBusySignal === previousBusySignal) return "ignore";
   if (isLoadingHistory || isRefreshingHistory || isLoadingOlderMessages || isCreatingSession) return "defer";
   if (isStreaming) return "ignore";
-  if (pendingOrigin === "message" || pendingOrigin === "fleet" || pendingOrigin === "reconnect") {
+  if (pendingOrigin === "message" || pendingOrigin === "reconnect") {
     return "ignore";
   }
   return "reconnect";

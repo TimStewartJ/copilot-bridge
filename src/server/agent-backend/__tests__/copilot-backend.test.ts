@@ -258,17 +258,6 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped2.listSlashCommands!()).resolves.toBeUndefined();
   });
 
-  it("startFleet delegates to rpc.fleet.start and throws when unavailable", async () => {
-    const start = vi.fn(async () => undefined);
-    const session = createFakeSession({ fleet: { start } });
-    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
-
-    await wrapped.startFleet!({ prompt: "go" });
-    expect(start).toHaveBeenCalledWith({ prompt: "go" });
-
-    const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
-    await expect(wrapped2.startFleet!({ prompt: "go" })).rejects.toThrow(/Fleet mode is not available/);
-  });
 
   it("getCurrentModel returns undefined when rpc.model.getCurrent is missing", async () => {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);

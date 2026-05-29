@@ -213,9 +213,6 @@ export interface AgentSession {
   /** List session-scoped slash commands. Optional for agent backends that do not expose commands. */
   listSlashCommands?(): Promise<AgentSlashCommandList | undefined>;
 
-  /** Start a Fleet run. Optional — only present on Copilot SDK builds that ship Fleet. */
-  startFleet?(opts: { prompt: string }): Promise<unknown>;
-
   /** Fetch the session's currently-selected model id. */
   getCurrentModel?(): Promise<{ modelId?: string } | undefined>;
 

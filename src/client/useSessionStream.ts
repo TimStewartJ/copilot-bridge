@@ -9,7 +9,7 @@ import type {
   ToolCall,
   VisualArtifact,
 } from "./api";
-import { API_BASE, sendChatMessage, startFleetRun } from "./api";
+import { API_BASE, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import type { SendMode } from "../shared/send-mode.js";
 
@@ -39,7 +39,7 @@ export interface PendingToolPrelude {
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
-export type PendingOrigin = "message" | "fleet" | "reconnect" | null;
+export type PendingOrigin = "message" | "reconnect" | null;
 
 export interface StreamState {
   streamingContent: string;
@@ -504,7 +504,7 @@ export function useSessionStream(
       mcpServers: s.mcpServers,
       contextSummary: s.contextSummary,
       pendingOrigin,
-      runMode: pendingOrigin === "fleet" ? undefined : (runMode ?? s.runMode),
+      runMode: runMode ?? s.runMode,
       pendingUserInputs: pendingOrigin === "reconnect" ? s.pendingUserInputs : [],
     }));
 
@@ -1010,19 +1010,6 @@ export function useSessionStream(
     }
   }, [sessionId, connectStream]);
 
-  const startFleet = useCallback(async (prompt?: string) => {
-    if (!sessionId) return;
-    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin: "fleet" }));
-    try {
-      await startFleetRun(sessionId, prompt);
-      retryCountRef.current = 0;
-      connectStream(sessionId, "fleet");
-    } catch (err) {
-      setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
-      throw err;
-    }
-  }, [sessionId, connectStream]);
-
   const abortSession = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -1036,5 +1023,5 @@ export function useSessionStream(
     connectStream(sid, "reconnect");
   }, [connectStream]);
 
-  return { ...streamState, sendMessage, startFleet, abortSession, reconnect };
+  return { ...streamState, sendMessage, abortSession, reconnect };
 }

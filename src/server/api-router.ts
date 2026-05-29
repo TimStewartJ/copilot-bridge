@@ -2289,43 +2289,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  router.post("/sessions/:id/fleet", async (req, res) => {
-    const sessionId = req.params.id;
-    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
-
-    if (req.body?.prompt !== undefined && typeof req.body.prompt !== "string") {
-      return res.status(400).json({ error: "prompt must be a string when provided" });
-    }
-    if (!ctx.sessionManager.hasPlan(sessionId)) {
-      return res.status(409).json({ error: "Session has no plan to run with Fleet" });
-    }
-    if (isRestartCutoverInProgress(await refreshRestartState())) {
-      res.set("Retry-After", "5");
-      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-    }
-    if (ctx.sessionManager.isSessionBusy(sessionId)) {
-      return res.status(429).json({ error: "Session is busy, please wait" });
-    }
-
-    const meta = ctx.sessionMetaStore.getMeta(sessionId);
-    if (meta?.archived) {
-      setSessionArchived(sessionId, false);
-      console.log(`[web] [${sessionId.slice(0, 8)}] auto-unarchived (fleet run)`);
-    }
-
-    console.log(`[web] [${sessionId.slice(0, 8)}] starting Fleet${prompt?.trim() ? `: "${prompt.trim().slice(0, 80)}"` : ""}`);
-
-    try {
-      ctx.sessionManager.startFleet(sessionId, prompt);
-      res.status(202).json({ status: "accepted" });
-    } catch (err) {
-      if (isRestartPendingError(err)) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
 
   router.post("/sessions/:sessionId/user-input/:requestId/respond", async (req, res) => {
     try {

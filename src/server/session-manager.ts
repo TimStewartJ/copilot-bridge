@@ -1640,10 +1640,6 @@ export class SessionManager {
     await this.sessionRunner.steerSession(sessionId, prompt, attachments);
   }
 
-  startFleet(sessionId: string, prompt?: string): void {
-    this.sessionRunner.startFleet(sessionId, prompt);
-  }
-
   /** @internal Test seam — delegates to the SessionRunner. */
   _doWork(
     sessionId: string,

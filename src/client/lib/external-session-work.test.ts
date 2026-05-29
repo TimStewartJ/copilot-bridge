@@ -30,17 +30,11 @@ describe("shouldReconnectForExternalSessionWork", () => {
     })).toBe("ignore");
   });
 
-  it("ignores local send and fleet work that already own the stream", () => {
+  it("ignores local send work that already owns the stream", () => {
     expect(resolveExternalSessionWorkAction({
       ...baseContext,
       isStreaming: true,
       pendingOrigin: "message",
-    })).toBe("ignore");
-
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      isStreaming: true,
-      pendingOrigin: "fleet",
     })).toBe("ignore");
   });
 

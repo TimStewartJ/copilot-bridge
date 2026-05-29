@@ -281,7 +281,6 @@ async function renderChatView(
   const harness = await createReactDomHarness();
   const { dom, act } = harness;
   const sendMessageMock = vi.fn();
-  const startFleetMock = vi.fn();
   const abortSessionMock = vi.fn();
   const reconnectMock = vi.fn();
   const queryClient = new QueryClient({
@@ -327,7 +326,6 @@ async function renderChatView(
     mcpServers: [],
     contextSummary: null,
     sendMessage: sendMessageMock,
-    startFleet: startFleetMock,
     abortSession: abortSessionMock,
     reconnect: reconnectMock,
     ...nextOptions.streamOverrides,

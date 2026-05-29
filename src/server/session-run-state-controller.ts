@@ -3,7 +3,6 @@ import type { GlobalBus } from "./global-bus.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
 
 export type SessionRunState = "busy" | "stalled" | "idle";
-export type SessionRunKind = "message" | "fleet";
 
 export type PromptDeliveryResult =
   | { status: "accepted" }
@@ -14,7 +13,6 @@ export interface SessionRunRecord {
   startedAt: number;
   lastEventAt: number;
   stalledAt?: number;
-  runKind?: SessionRunKind;
   pendingPrompt?: string;
   promptAccepted?: boolean;
 }
@@ -231,7 +229,6 @@ export class SessionRunStateController {
       startedAt: current?.startedAt ?? now,
       lastEventAt: opts.lastEventAt ?? current?.lastEventAt ?? now,
       stalledAt: state === "stalled" ? current?.stalledAt ?? now : undefined,
-      runKind: current?.runKind,
       pendingPrompt: current?.pendingPrompt,
       promptAccepted: current?.promptAccepted,
     };
@@ -248,7 +245,7 @@ export class SessionRunStateController {
   setSessionRunMetadata(
     sessionId: string,
     metadata: Partial<Pick<SessionRunRecord,
-      "runKind" | "pendingPrompt" | "promptAccepted"
+      "pendingPrompt" | "promptAccepted"
     >>,
   ): void {
     const current = this.sessionRuns.get(sessionId);
