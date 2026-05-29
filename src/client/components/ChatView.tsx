@@ -620,7 +620,6 @@ export default function ChatView({
     mcpServers: streamMcpServers,
     contextSummary: streamContextSummary,
     sendMessage,
-    startFleet,
     abortSession,
     reconnect,
   } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
@@ -1454,16 +1453,6 @@ export default function ChatView({
     void handleSend(queuedSend.prompt, queuedSend.attachments, queuedSend.mode);
   }, [composerKey, creating, handleSend, isStreaming, loading, sessionId]);
 
-  const handleRunFleet = useCallback(async () => {
-    if (!sessionId) throw new Error("Session not available");
-    if (isStreaming) throw new Error("Session is busy, please wait");
-    if (creating) throw new Error("Session is still being created");
-    if (warming) throw new Error("Session is reconnecting, please wait");
-    invalidateHistoryRefresh();
-    stickToBottomRef.current = true;
-    await startFleet();
-  }, [sessionId, isStreaming, creating, warming, invalidateHistoryRefresh, startFleet]);
-
   const pendingUserInputRequests = useMemo(
     () => sortPendingUserInputRequests(pendingUserInputs),
     [pendingUserInputs],
@@ -1656,20 +1645,6 @@ export default function ChatView({
   }, [activeRootNodes.length, handleSubmitUserInput, hasStreamingText, pendingUserInputRequests, runHeaderState]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
-  const runFleetDisabledReason = !hasPlan
-    ? "This session does not have a plan yet."
-    : newWorkDisabled
-      ? (newWorkDisabledHint ?? "Wait for Bridge to reconnect before launching Fleet.")
-    : loading
-      ? "Wait for the current session history to finish loading."
-      : creating
-        ? "Finish creating the session before launching Fleet."
-        : warming
-          ? "Wait for the session to reconnect before launching Fleet."
-          : isStreaming
-            ? "Wait for the current run to finish before launching Fleet."
-            : null;
-  const isLaunchingFleet = isStreaming && pendingOrigin === "fleet";
   const composerDisabled = newWorkDisabled || warming || loading;
   const composerDisabledHint = newWorkDisabled
     ? newWorkDisabledHint
@@ -1998,9 +1973,6 @@ export default function ChatView({
         <PlanSheet
           sessionId={sessionId}
           onClose={planOverlay.close}
-          onRunFleet={handleRunFleet}
-          runFleetDisabledReason={runFleetDisabledReason}
-          isRunningFleet={isLaunchingFleet}
         />
       )}
     </div>

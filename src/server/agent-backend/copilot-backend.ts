@@ -209,14 +209,6 @@ class CopilotAgentSession implements AgentSession {
     return normalizeCopilotSlashCommandList(result);
   }
 
-  async startFleet(opts: { prompt: string }): Promise<unknown> {
-    const start = this.session?.rpc?.fleet?.start;
-    if (typeof start !== "function") {
-      throw new Error("Fleet mode is not available in this Copilot SDK build");
-    }
-    return start.call(this.session.rpc.fleet, opts);
-  }
-
   async getCurrentModel(): Promise<{ modelId?: string } | undefined> {
     const get = this.session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;

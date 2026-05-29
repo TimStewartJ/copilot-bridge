@@ -25,7 +25,6 @@ import {
   refreshRestartStateSync,
 } from "./restart-controller.js";
 import {
-  type SessionRunKind,
   type SessionRunController,
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
@@ -49,7 +48,6 @@ import {
 } from "./session-context-normalizer.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
 
-const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
 const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
@@ -345,7 +343,6 @@ export class SessionRunner {
       bus,
       (runController) => this.doWork(sessionId, prompt, bus, runController, attachments, options),
       {
-        runKind: "message",
         pendingPrompt: prompt,
         promptAccepted: false,
       },
@@ -438,39 +435,11 @@ export class SessionRunner {
     }
   }
 
-  startFleet(sessionId: string, prompt?: string): void {
-    if (!this.client) throw new Error("SessionManager not initialized");
-    if (!this.deps.hasPlan(sessionId)) {
-      throw new Error("Session has no plan to run with Fleet");
-    }
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
-    }
-    if (this.deps.isSessionBusy(sessionId)) {
-      throw new Error("Session is busy processing another request");
-    }
-
-    const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
-    bus.reset();
-    const fleetPrompt = prompt?.trim() || DEFAULT_FLEET_PROMPT;
-    this.startBackgroundRun(
-      sessionId,
-      bus,
-      (runController) => this.doFleet(sessionId, fleetPrompt, bus, runController),
-      {
-        runKind: "fleet",
-        pendingPrompt: fleetPrompt,
-        promptAccepted: false,
-      },
-    );
-  }
-
   private startBackgroundRun(
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
     runner: (runController: SessionRunController) => Promise<void>,
     metadata?: {
-      runKind?: SessionRunKind;
       pendingPrompt?: string;
       promptAccepted?: boolean;
     },
@@ -551,27 +520,6 @@ export class SessionRunner {
           ...(displayPrompt ? { displayPrompt } : {}),
           ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
         });
-      },
-    });
-  }
-
-  private async doFleet(
-    sessionId: string,
-    prompt: string,
-    bus: ReturnType<typeof getOrCreateBus>,
-    runController?: SessionRunController,
-  ): Promise<void> {
-    const sid = sessionId.slice(0, 8);
-    const activeRunController = runController ?? this.createRunController(sessionId, bus);
-    await this.runSessionOperation(sessionId, bus, activeRunController, {
-      resumeContext: "fleet",
-      idleSpanName: "session.fleetToIdle",
-      startLog: `[sdk] [${sid}] Starting Fleet (${prompt.length} chars)...`,
-      execute: async (session) => {
-        if (typeof session.startFleet !== "function") {
-          throw new Error("Fleet mode is not available in this Copilot SDK build");
-        }
-        await session.startFleet({ prompt });
       },
     });
   }
