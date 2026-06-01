@@ -186,7 +186,6 @@ export class SessionNameAutogenerator {
         model,
         tools: [],
         availableTools: [],
-        excludedTools: ["*"],
         mcpServers: {},
         enableConfigDiscovery: false,
         skillDirectories: [],

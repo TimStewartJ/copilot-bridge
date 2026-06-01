@@ -37,13 +37,16 @@ function workspaceYamlPath(
 }
 
 export function buildSessionNameResumeConfig(permissionPolicy?: AgentPermissionPolicy): any {
+  // availableTools: [] is the SDK's explicit empty allowlist — only tools in
+  // this list are available, so an empty array disables everything. The SDK
+  // forbids the bare "*" wildcard in excludedTools (beta.10+), and an explicit
+  // empty allowlist makes any excludedTools entry redundant.
   return {
     ...(permissionPolicy ? { onPermissionRequest: permissionPolicy } : {}),
     suppressResumeEvent: true,
     continuePendingWork: false,
     tools: [],
     availableTools: [],
-    excludedTools: ["*"],
     mcpServers: {},
     enableConfigDiscovery: false,
     skillDirectories: [],
