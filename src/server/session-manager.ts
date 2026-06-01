@@ -14,7 +14,6 @@ import {
   type AgentModelInfo,
   type AgentSession,
   type AgentSlashCommandInfo,
-  type CopilotClientFactory,
 } from "./agent-backend/index.js";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -301,15 +300,8 @@ export interface SessionManagerDeps {
   /** Custom env for the agent backend — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
   /**
-   * Test seam: build the underlying Copilot SDK client. Step 1 keeps this
-   * Copilot-specific because the only backend wired here is Copilot.
-   * Replaced by a backend-neutral factory in Step 3 when a second backend
-   * lands.
-   */
-  createCopilotClient?: CopilotClientFactory;
-  /**
-   * Test seam: build an arbitrary AgentBackend. Overrides
-   * `createCopilotClient` when both are provided.
+   * Test seam: build an arbitrary AgentBackend. When unset, SessionManager
+   * constructs a real Copilot-backed AgentBackend via `createAgentBackend`.
    */
   createBackend?: AgentBackendFactory;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
@@ -322,7 +314,6 @@ export interface CreateSessionManagerOpts {
   config: SessionManagerDeps["config"];
   builtInMcpServers?: SessionManagerDeps["builtInMcpServers"];
   clientEnv?: SessionManagerDeps["clientEnv"];
-  createCopilotClient?: CopilotClientFactory;
   createBackend?: AgentBackendFactory;
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
@@ -372,7 +363,6 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     builtInMcpServers: opts.builtInMcpServers,
     bridgeToolsMcpServer: ctx.bridgeToolsMcpServer,
     clientEnv,
-    createCopilotClient: opts.createCopilotClient,
     createBackend: opts.createBackend,
     copilotHome,
     runtimePaths,
@@ -829,7 +819,7 @@ export class SessionManager {
 
   private createBackend(): AgentBackend {
 
-    return this.deps.createBackend?.(undefined) ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv, createCopilotClient: this.deps.createCopilotClient });
+    return this.deps.createBackend?.(undefined) ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
   }
 
   private forceStopTimedOutBackend(backend: AgentBackend, context: string): void {

@@ -11,7 +11,7 @@ import {
   type BridgeCopilotClientOptions,
 } from "../copilot-client-options.js";
 import { CopilotBackend } from "./copilot-backend.js";
-import type { AgentBackend, AgentClientOptions } from "./types.js";
+import type { AgentBackend } from "./types.js";
 
 export type {
   AgentBackend,
@@ -38,15 +38,6 @@ export type {
 
 export { CopilotBackend };
 
-/**
- * Pluggable factory passed to `createAgentBackend` so tests can inject a
- * fake `CopilotClient` without monkey-patching the SDK module. Mirrors the
- * old `createCopilotClient` deps shape from `SessionManagerDeps`.
- */
-export type CopilotClientFactory = (
-  options: AgentClientOptions | undefined,
-) => CopilotClient;
-
 export interface CreateAgentBackendOptions {
   /**
    * Which backend implementation to construct. Step 1 ships only
@@ -59,11 +50,6 @@ export interface CreateAgentBackendOptions {
    * disposable sessions).
    */
   clientEnv?: Record<string, string | undefined>;
-  /**
-   * Test seam: build the underlying SDK client. When unset, a real
-   * `new CopilotClient(options)` is constructed.
-   */
-  createCopilotClient?: CopilotClientFactory;
 }
 
 /**
@@ -74,10 +60,7 @@ export function createAgentBackend(opts: CreateAgentBackendOptions): AgentBacken
   switch (opts.kind) {
     case "copilot": {
       const options: BridgeCopilotClientOptions = buildCopilotClientOptions(opts.clientEnv);
-      const client = opts.createCopilotClient
-        ? opts.createCopilotClient(options)
-        : new CopilotClient(options);
-      return new CopilotBackend(client);
+      return new CopilotBackend(new CopilotClient(options));
     }
     default: {
       const _exhaustive: never = opts.kind;

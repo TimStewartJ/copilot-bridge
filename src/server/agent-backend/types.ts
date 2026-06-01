@@ -320,8 +320,7 @@ export interface AgentBackend {
 
 /**
  * Factory signature for tests and the staging backend manager: produce an
- * AgentBackend given the resolved env. Replaces the previous
- * `CopilotClientFactory` type while preserving callsite ergonomics.
+ * AgentBackend given the resolved env.
  */
 export type AgentBackendFactory = (
   options: AgentClientOptions | undefined,

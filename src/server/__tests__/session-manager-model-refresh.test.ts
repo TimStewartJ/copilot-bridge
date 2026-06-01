@@ -11,12 +11,29 @@ import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
 import { createTestBus, makeTestDir, setupTestDb } from "./helpers.js";
 
-function createClient(models: Array<{ id: string; name: string }>) {
+function createBackend(models: Array<{ id: string; name: string }>) {
   return {
+    id: "copilot" as const,
+    capabilities: {
+      resumeSession: true,
+      streamingToolInput: true,
+      costUsage: true,
+      subAgents: true,
+      images: true,
+      bidirectionalStdin: false,
+      externalToolEvents: true,
+      forkBoundaries: true,
+    },
+    permissionPolicy: undefined,
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     forceStop: vi.fn(async () => {}),
     listModels: vi.fn(async () => models),
+    listSessions: vi.fn(async () => []),
+    createSession: vi.fn(async () => { throw new Error("not implemented in test"); }),
+    resumeSession: vi.fn(async () => { throw new Error("not implemented in test"); }),
+    deleteSession: vi.fn(async () => {}),
+    getSessionMetadata: vi.fn(async () => ({})),
   };
 }
 
@@ -45,7 +62,7 @@ async function expectRotationTimeout(promise: Promise<unknown>, operation: strin
   );
 }
 
-function createManager(clients: unknown[]) {
+function createManager(backends: unknown[]) {
   const db = setupTestDb();
   const copilotHome = makeTestDir("model-refresh");
   const globalBus = createTestBus();
@@ -56,10 +73,10 @@ function createManager(clients: unknown[]) {
     taskStore: createTaskStore(db, globalBus),
     config: { sessionMcpServers: {} },
     copilotHome,
-    createCopilotClient: vi.fn(() => {
-      const client = clients.shift();
-      if (!client) throw new Error("No fake Copilot client queued");
-      return client as any;
+    createBackend: vi.fn(() => {
+      const backend = backends.shift();
+      if (!backend) throw new Error("No fake agent backend queued");
+      return backend as any;
     }),
   };
   return new SessionManager(deps);
@@ -71,23 +88,23 @@ describe("SessionManager model refresh", () => {
   });
 
   it("rotates the SDK client and returns models from the fresh client", async () => {
-    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
-    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
-    const manager = createManager([oldClient, freshClient]);
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    const manager = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     const result = await manager.refreshModels();
 
-    expect(oldClient.stop).toHaveBeenCalledOnce();
-    expect(freshClient.start).toHaveBeenCalledOnce();
-    expect(freshClient.listModels).toHaveBeenCalledOnce();
+    expect(oldBackend.stop).toHaveBeenCalledOnce();
+    expect(freshBackend.start).toHaveBeenCalledOnce();
+    expect(freshBackend.listModels).toHaveBeenCalledOnce();
     expect(result.models).toEqual([{ id: "fresh-model", name: "Fresh Model" }]);
   });
 
   it("disconnects idle cached sessions before rotating the client", async () => {
-    const oldClient = createClient([]);
-    const freshClient = createClient([]);
-    const manager = createManager([oldClient, freshClient]);
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    const manager = createManager([oldBackend, freshBackend]);
     const disconnect = vi.fn();
 
     await manager.initialize();
@@ -100,37 +117,37 @@ describe("SessionManager model refresh", () => {
   });
 
   it("blocks refresh while sessions are active", async () => {
-    const oldClient = createClient([]);
-    const freshClient = createClient([]);
-    const manager = createManager([oldClient, freshClient]);
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    const manager = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     (manager as any).modelSwitchingSessions.add("active-session");
 
     await expect(manager.refreshModels()).rejects.toBeInstanceOf(ModelRefreshBlockedError);
-    expect(oldClient.stop).not.toHaveBeenCalled();
-    expect(freshClient.start).not.toHaveBeenCalled();
+    expect(oldBackend.stop).not.toHaveBeenCalled();
+    expect(freshBackend.start).not.toHaveBeenCalled();
   });
 
   it("restores the previous client when the fresh client fails to start", async () => {
-    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
-    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
-    freshClient.start.mockRejectedValueOnce(new Error("start failed"));
-    const manager = createManager([oldClient, freshClient]);
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    freshBackend.start.mockRejectedValueOnce(new Error("start failed"));
+    const manager = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
 
     await expect(manager.refreshModels()).rejects.toThrow("start failed");
-    expect(oldClient.stop).toHaveBeenCalledOnce();
-    expect(oldClient.start).toHaveBeenCalledTimes(2);
+    expect(oldBackend.stop).toHaveBeenCalledOnce();
+    expect(oldBackend.start).toHaveBeenCalledTimes(2);
     await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
   });
 
   it("times out a stalled previous client stop and clears the rotation", async () => {
-    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
-    oldClient.stop.mockImplementationOnce(neverResolves);
-    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
-    const manager = createManager([oldClient, freshClient]);
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    oldBackend.stop.mockImplementationOnce(neverResolves);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    const manager = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     vi.useFakeTimers();
@@ -145,16 +162,16 @@ describe("SessionManager model refresh", () => {
     await refreshExpectation;
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
-    expect(oldClient.forceStop).toHaveBeenCalledOnce();
-    expect(freshClient.start).not.toHaveBeenCalled();
+    expect(oldBackend.forceStop).toHaveBeenCalledOnce();
+    expect(freshBackend.start).not.toHaveBeenCalled();
     await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
   });
 
   it("times out a stalled fresh client start and restores the previous client", async () => {
-    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
-    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
-    freshClient.start.mockImplementationOnce(neverResolves);
-    const manager = createManager([oldClient, freshClient]);
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    freshBackend.start.mockImplementationOnce(neverResolves);
+    const manager = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     vi.useFakeTimers();
@@ -169,19 +186,19 @@ describe("SessionManager model refresh", () => {
     await refreshExpectation;
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
-    expect(freshClient.forceStop).toHaveBeenCalledOnce();
-    expect(oldClient.start).toHaveBeenCalledTimes(2);
+    expect(freshBackend.forceStop).toHaveBeenCalledOnce();
+    expect(oldBackend.start).toHaveBeenCalledTimes(2);
     await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
   });
 
   it("times out a stalled previous client restore and leaves later SDK calls unblocked", async () => {
-    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
-    oldClient.start
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    oldBackend.start
       .mockImplementationOnce(async () => {})
       .mockImplementationOnce(neverResolves);
-    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
-    freshClient.start.mockRejectedValueOnce(new Error("start failed"));
-    const manager = createManager([oldClient, freshClient]);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    freshBackend.start.mockRejectedValueOnce(new Error("start failed"));
+    const manager = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     vi.useFakeTimers();
@@ -196,7 +213,7 @@ describe("SessionManager model refresh", () => {
     await refreshExpectation;
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
-    expect(oldClient.forceStop).toHaveBeenCalledOnce();
+    expect(oldBackend.forceStop).toHaveBeenCalledOnce();
     await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
   });
 });
