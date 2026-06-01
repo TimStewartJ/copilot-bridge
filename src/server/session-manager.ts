@@ -697,11 +697,12 @@ export class SessionManager {
       ...(this.deps.builtInMcpServers ?? {}),
       ...sessionBuiltInMcpServers,
     };
+    const modelMetadata = opts.modelMetadata ?? this.modelMetadataForContextTiers;
     const cfg = buildSessionConfigWithDeps({
       deps: { ...this.deps, builtInMcpServers, permissionPolicy: this.backend?.permissionPolicy },
       options: {
         ...opts,
-        modelMetadata: opts.modelMetadata ?? this.modelMetadataForContextTiers,
+        modelMetadata,
       },
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
@@ -711,8 +712,9 @@ export class SessionManager {
     });
     if (opts.forResume && opts.sessionId) {
       const persistedState = this.readPersistedSessionModelState(opts.sessionId);
-      if (persistedState.modelCapabilities) {
-        cfg.modelCapabilities = persistedState.modelCapabilities;
+      const modelCapabilities = this.resolvePersistedModelCapabilities(persistedState, modelMetadata);
+      if (modelCapabilities) {
+        cfg.modelCapabilities = modelCapabilities;
       }
     }
     return cfg;
@@ -755,6 +757,15 @@ export class SessionManager {
         ? { modelCapabilities: getModelCapabilitiesOverrideForContextTier(model, contextTier) as Record<string, unknown> | undefined }
         : {}),
     };
+  }
+
+  private resolvePersistedModelCapabilities(
+    state: PersistedSessionModelState,
+    modelMetadata = this.modelMetadataForContextTiers,
+  ): Record<string, unknown> | undefined {
+    if (state.modelCapabilities) return state.modelCapabilities;
+    if (!state.model || !state.contextTier) return undefined;
+    return this.resolveModelContextTier(state.model, state.contextTier, modelMetadata).modelCapabilities;
   }
 
   private persistSessionModelState(
@@ -1995,6 +2006,7 @@ export class SessionManager {
     this.syncRestartWaitingIfPending();
 
     try {
+      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
       let session = this.sessionObjects.get(sessionId);
       if (!session) {
         const linkedTask = this.findLinkedTask(sessionId);
@@ -2003,6 +2015,7 @@ export class SessionManager {
           task: linkedTask,
           groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
+          ...(modelMetadata ? { modelMetadata } : {}),
         });
         this.beginSessionResume(sessionId);
         try {
@@ -2038,7 +2051,6 @@ export class SessionManager {
       const effectiveReasoningEffort = reasoningEffort
         ?? knownLiveReasoningEffort
         ?? eventsState.reasoningEffort;
-      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
       const effectiveRequestedContextTier = contextTier
         ?? (liveState?.model === model ? liveState.contextTier : undefined)
         ?? (eventsState.model === model ? eventsState.contextTier : undefined)

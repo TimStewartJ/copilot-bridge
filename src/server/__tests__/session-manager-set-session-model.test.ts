@@ -56,9 +56,23 @@ const GPT_55_TIERED_MODEL = {
         inputPrice: 1000,
         outputPrice: 4500,
         cachePrice: 100,
-        contextMax: 1_050_000,
+        contextMax: 922_000,
       },
     },
+  },
+};
+
+const DEFAULT_CONTEXT_CAPABILITIES = {
+  limits: {
+    max_context_window_tokens: 272_000,
+    max_prompt_tokens: 144_000,
+  },
+};
+
+const LONG_CONTEXT_CAPABILITIES = {
+  limits: {
+    max_context_window_tokens: 1_050_000,
+    max_prompt_tokens: 922_000,
   },
 };
 
@@ -102,12 +116,7 @@ describe("SessionManager.setSessionModel", () => {
     const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "default");
 
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
-      modelCapabilities: {
-        limits: {
-          max_context_window_tokens: 272_000,
-          max_prompt_tokens: 144_000,
-        },
-      },
+      modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES,
     });
     expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "default" });
     await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
@@ -116,7 +125,7 @@ describe("SessionManager.setSessionModel", () => {
     });
   });
 
-  it("leaves tiered model limits uncapped when selecting long context", async () => {
+  it("passes explicit model limits when selecting long context", async () => {
     const manager = createManager(makeTestDir("model-context-long"));
     const session = createMockSession("gpt-5.5");
     manager.backend = {};
@@ -125,7 +134,9 @@ describe("SessionManager.setSessionModel", () => {
 
     const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "long_context");
 
-    expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", undefined);
+    expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
+      modelCapabilities: LONG_CONTEXT_CAPABILITIES,
+    });
     expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "long_context" });
   });
 
@@ -156,22 +167,37 @@ describe("SessionManager.setSessionModel", () => {
     const resumeSession = vi.fn().mockResolvedValue(session);
     manager.backend = { resumeSession };
     mkdirSync(join(copilotHome, "session-state", "cold-session"), { recursive: true });
-    const modelCapabilities = {
-      limits: {
-        max_context_window_tokens: 272_000,
-        max_prompt_tokens: 144_000,
-      },
-    };
     writeFileSync(
       join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),
-      JSON.stringify({ model: "gpt-5.5", contextTier: "default", modelCapabilities }),
+      JSON.stringify({ model: "gpt-5.5", contextTier: "default", modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES }),
     );
 
     await manager.setSessionModel("cold-session", "claude-opus-4.7");
 
     expect(resumeSession).toHaveBeenCalledWith(
       "cold-session",
-      expect.objectContaining({ modelCapabilities }),
+      expect.objectContaining({ modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES }),
+    );
+  });
+
+  it("backfills model capability overrides for persisted long-context sessions", async () => {
+    const copilotHome = makeTestDir("model-context-resume-long-backfill");
+    const manager = createManager(copilotHome);
+    const session = createMockSession("previous-model");
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.backend = { resumeSession };
+    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    mkdirSync(join(copilotHome, "session-state", "cold-session"), { recursive: true });
+    writeFileSync(
+      join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),
+      JSON.stringify({ model: "gpt-5.5", contextTier: "long_context" }),
+    );
+
+    await manager.setSessionModel("cold-session", "claude-opus-4.7");
+
+    expect(resumeSession).toHaveBeenCalledWith(
+      "cold-session",
+      expect.objectContaining({ modelCapabilities: LONG_CONTEXT_CAPABILITIES }),
     );
   });
 
@@ -186,6 +212,7 @@ describe("SessionManager.setSessionModel", () => {
     manager.backend = { resumeSession };
 
     const switching = manager.setSessionModel("cold-session", "gpt-5.5");
+    await vi.waitFor(() => expect(resumeSession).toHaveBeenCalledTimes(1));
     manager.sessionObjects.set("cold-session", newerSession);
 
     resolveResume(resumedSession);
@@ -257,6 +284,7 @@ describe("SessionManager.setSessionModel", () => {
     manager.backend = { resumeSession };
 
     const switching = manager.setSessionModel("cold-session", "gpt-5.5");
+    await vi.waitFor(() => expect(resumeSession).toHaveBeenCalledTimes(1));
     manager.evictAllCachedSessions();
 
     expect(manager.sessionObjects.has("cold-session")).toBe(false);

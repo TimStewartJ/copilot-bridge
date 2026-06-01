@@ -168,11 +168,11 @@ describe("session model menu labels", () => {
         billing: {
           tokenPrices: {
             contextMax: 272_000,
-            longContext: { contextMax: 1_050_000 },
+            longContext: { contextMax: 922_000 },
           },
         },
       }],
-    )).toBe("GPT-5.5 · Extra High · Long context (1.1M)");
+    )).toBe("GPT-5.5 · Extra High · Long context (922K)");
   });
 
   it("keeps unknown reasoning effort values visible", () => {
