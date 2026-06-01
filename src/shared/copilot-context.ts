@@ -99,10 +99,19 @@ export function getModelCapabilitiesOverrideForContextTier(
   model: CopilotModelContextMetadata | null | undefined,
   tier: CopilotContextTier | undefined,
 ): CopilotModelCapabilitiesOverride | undefined {
-  if (!modelSupportsLongContext(model) || tier !== "default") return undefined;
+  if (!modelSupportsLongContext(model) || !tier) return undefined;
+
+  const fullContextMax = finitePositiveNumber(model?.capabilities?.limits?.max_context_window_tokens);
+  const fullPromptMax = finitePositiveNumber(model?.capabilities?.limits?.max_prompt_tokens);
+  if (tier === "long_context") {
+    const longPromptMax = finitePositiveNumber(model?.billing?.tokenPrices?.longContext?.contextMax) ?? fullPromptMax;
+    const limits: NonNullable<CopilotModelCapabilitiesOverride["limits"]> = {};
+    if (fullContextMax) limits.max_context_window_tokens = fullContextMax;
+    if (longPromptMax) limits.max_prompt_tokens = longPromptMax;
+    return Object.keys(limits).length > 0 ? { limits } : undefined;
+  }
 
   const defaultContextMax = finitePositiveNumber(model?.billing?.tokenPrices?.contextMax);
-  const fullContextMax = finitePositiveNumber(model?.capabilities?.limits?.max_context_window_tokens);
   if (!defaultContextMax || (fullContextMax && defaultContextMax >= fullContextMax)) return undefined;
 
   const limits: NonNullable<CopilotModelCapabilitiesOverride["limits"]> = {

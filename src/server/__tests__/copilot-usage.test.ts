@@ -371,7 +371,7 @@ describe("readCopilotUsageSummary", () => {
               inputPrice: 1000,
               outputPrice: 4500,
               cachePrice: 100,
-              contextMax: 1_050_000,
+              contextMax: 922_000,
             },
           },
         },

@@ -60,6 +60,32 @@ function createMcpRegistryDeps() {
 
 const TEST_REPO_ROOT = resolveBridgeControlRoot(join(import.meta.dirname, "..", "..", ".."));
 
+const GPT_55_TIERED_MODEL = {
+  id: "gpt-5.5",
+  capabilities: {
+    limits: {
+      max_context_window_tokens: 1_050_000,
+      max_prompt_tokens: 922_000,
+      max_output_tokens: 128_000,
+    },
+  },
+  billing: {
+    tokenPrices: {
+      contextMax: 272_000,
+      longContext: {
+        contextMax: 922_000,
+      },
+    },
+  },
+};
+
+const LONG_CONTEXT_CAPABILITIES = {
+  limits: {
+    max_context_window_tokens: 1_050_000,
+    max_prompt_tokens: 922_000,
+  },
+};
+
 function createGitHubCopilotMcpToolOptions() {
   return {
     additionalTools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
@@ -586,6 +612,22 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBe("gpt-new");
     expect(cfg.reasoningEffort).toBe("medium");
+  });
+
+  it("includes explicit long-context capabilities for new-session paths", () => {
+    const settingsStore = {
+      getSettings: () => ({ model: "gpt-5.5", contextTier: "long_context" }),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      options: { modelMetadata: [GPT_55_TIERED_MODEL] },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("gpt-5.5");
+    expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
   });
 
   it("falls back to config.model when settings.model is unset for new-session paths", () => {
