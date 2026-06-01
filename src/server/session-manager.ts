@@ -124,6 +124,7 @@ import {
   type SessionActivity,
 } from "./session-run-state-controller.js";
 import { SessionRunner, type McpServerStatus, type StartWorkOptions } from "./session-runner.js";
+import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
   deriveModelStateFromEventsFile,
@@ -1112,12 +1113,10 @@ export class SessionManager {
     this.beginSessionResume(sessionId);
     let session: any | undefined;
     try {
-      session = await Promise.race([
+      session = await resumeSessionWithTimeout(
         client.resumeSession(sessionId, buildSessionNameResumeConfig(this.backend?.permissionPolicy)),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("name resume timed out after 60s")), 60_000),
-        ),
-      ]);
+        "name resume timed out after 60s",
+      );
       return await operation(session);
     } finally {
       try { await session?.disconnect?.(); } catch { /* best-effort */ }
@@ -1271,12 +1270,10 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
         const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
         if (endpointReady) await endpointReady;
-        session = await Promise.race([
+        session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, resumeConfig),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("MCP auth resume timed out after 60s")), 60_000),
-          ),
-        ]);
+          "MCP auth resume timed out after 60s",
+        );
         session = this.cacheResumedSession(sessionId, session);
       }
 
@@ -1685,12 +1682,10 @@ export class SessionManager {
           const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
           if (endpointReady) await endpointReady;
           this.sessionObjects.delete(sessionId);
-          session = await Promise.race([
+          session = await resumeSessionWithTimeout(
             client.resumeSession(sessionId, msgResumeConfig),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-            ),
-          ]);
+            "resumeSession timed out after 60s",
+          );
           resumeMs = Date.now() - tResume;
           session = this.cacheResumedSession(sessionId, session);
           const tGm = Date.now();
@@ -1710,12 +1705,10 @@ export class SessionManager {
       try {
         const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
         if (endpointReady) await endpointReady;
-        session = await Promise.race([
+        session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, msgResumeConfig),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-          ),
-        ]);
+          "resumeSession timed out after 60s",
+        );
         resumeMs = Date.now() - tResume;
         session = this.cacheResumedSession(sessionId, session);
         const tGm = Date.now();
@@ -1819,12 +1812,10 @@ export class SessionManager {
       try {
         const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
         if (endpointReady) await endpointReady;
-        const session = await Promise.race([
+        const session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, resumeConfig),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
-          ),
-        ]);
+          "warmSession timed out after 60s",
+        );
         const cachedSession = this.cacheResumedSession(sessionId, session);
         this.probeMcpStatus(sessionId, cachedSession);
         this.invalidateSessionListCache("session:warm");
@@ -1922,12 +1913,10 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
       const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
       if (endpointReady) await endpointReady;
-      const session = await Promise.race([
+      const session = await resumeSessionWithTimeout(
         client.resumeSession(sessionId, resumeConfig),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("reloadSession timed out after 60s")), 60_000),
-        ),
-      ]);
+        "reloadSession timed out after 60s",
+      );
       this.cacheResumedSession(sessionId, session);
 
       return this.getMcpStatus(sessionId);
@@ -2025,16 +2014,14 @@ export class SessionManager {
           groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
         });
-          this.beginSessionResume(sessionId);
-          try {
-            const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-            if (endpointReady) await endpointReady;
-            session = await Promise.race([
-              client.resumeSession(sessionId, resumeConfig),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-              ),
-          ]);
+        this.beginSessionResume(sessionId);
+        try {
+          const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+          if (endpointReady) await endpointReady;
+          session = await resumeSessionWithTimeout(
+            client.resumeSession(sessionId, resumeConfig),
+            "resumeSession timed out after 60s",
+          );
           session = this.cacheResumedSession(sessionId, session);
           this.probeMcpStatus(sessionId, session);
         } finally {
