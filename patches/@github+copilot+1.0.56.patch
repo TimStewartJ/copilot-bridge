@@ -1,18 +1,17 @@
 diff --git a/node_modules/@github/copilot/definitions/code-review.agent.yaml b/node_modules/@github/copilot/definitions/code-review.agent.yaml
-index 864aaa3..cd30473 100644
+index a721b5e..cd30473 100644
 --- a/node_modules/@github/copilot/definitions/code-review.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/code-review.agent.yaml
-@@ -4,7 +4,7 @@ description: >
+@@ -4,6 +4,7 @@ description: >
    Reviews code changes with extremely high signal-to-noise ratio. Analyzes staged/unstaged
    changes and branch diffs. Only surfaces issues that genuinely matter - bugs, security
    issues, logic errors. Never comments on style, formatting, or trivial matters.
--model: claude-sonnet-4.5
 +model: claude-opus-4.7
  tools:
    - "*"
  promptParts:
 diff --git a/node_modules/@github/copilot/definitions/explore.agent.yaml b/node_modules/@github/copilot/definitions/explore.agent.yaml
-index ba59197..3f92b27 100644
+index 97bac23..07af484 100644
 --- a/node_modules/@github/copilot/definitions/explore.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/explore.agent.yaml
 @@ -4,7 +4,7 @@ description: >
