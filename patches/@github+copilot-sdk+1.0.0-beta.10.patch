@@ -1,40 +1,40 @@
 diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-index 42bc6cc..f07a357 100644
+index 1617270..dbb834d 100644
 --- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-@@ -783,6 +783,7 @@ class CopilotClient {
+@@ -816,6 +816,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-         defaultAgent: config.defaultAgent,
-@@ -915,6 +916,7 @@ class CopilotClient {
+@@ -987,6 +988,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-         defaultAgent: config.defaultAgent,
 diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
-index 4016bd9..5e16e30 100644
+index 9520769..e3f7f99 100644
 --- a/node_modules/@github/copilot-sdk/dist/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/client.js
-@@ -769,6 +769,7 @@ class CopilotClient {
+@@ -802,6 +802,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-         defaultAgent: config.defaultAgent,
-@@ -901,6 +902,7 @@ class CopilotClient {
+@@ -973,6 +974,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-         defaultAgent: config.defaultAgent,

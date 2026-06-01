@@ -1,13 +1,13 @@
-const GITHUB_MCP_CONFIG_METHOD_PATTERN = /async createBuiltInGitHubMcpConfig\((\w+)\)\{let (\w+);try\{\2=await (\w+)\(\1\)\}catch\{return\}if\(\2\)return (\w+)\(\2,\1,\{\},(\w+)\)\}/g;
+const GITHUB_MCP_CONFIG_METHOD_PATTERN = /async createBuiltInGitHubMcpConfig\((\w+)\)\{let (\w+);try\{\2=await (\w+)\(\1\)\}catch\{return\}if\(!\2\)return;let (\w+)=await (\w+)\(\);return (\w+)\(\2,\1,\{excludeGhReplaceableTools:\4\},(\w+)\)\}/g;
 const GITHUB_MCP_CONFIG_CALL_PATTERN = /if\(r\.enableConfigDiscovery&&o&&!r\.provider&&!r\.gitHubToken\)\{let (\w+)=await this\.createBuiltInGitHubMcpConfig\(o\);\1&&\((\w+)\.mcpServers=\{"github-mcp-server":\1,\.\.\.(\w+)\.mcpServers\}\)\}/g;
 
 function patchCopilotAppSource(source) {
   let methodMatches = 0;
   source = source.replace(
     GITHUB_MCP_CONFIG_METHOD_PATTERN,
-    (match, authParam, tokenVar, tokenResolver, configBuilder, logger) => {
+    (match, authParam, tokenVar, tokenResolver, replaceableToolsVar, replaceableToolsResolver, configBuilder, logger) => {
       methodMatches++;
-      return `async createBuiltInGitHubMcpConfig(${authParam},__bridgeGithubMcpOptions={}){let ${tokenVar};try{${tokenVar}=await ${tokenResolver}(${authParam})}catch{return}if(${tokenVar})return ${configBuilder}(${tokenVar},${authParam},__bridgeGithubMcpOptions,${logger})}`;
+      return `async createBuiltInGitHubMcpConfig(${authParam},__bridgeGithubMcpOptions={}){let ${tokenVar};try{${tokenVar}=await ${tokenResolver}(${authParam})}catch{return}if(!${tokenVar})return;let ${replaceableToolsVar}=await ${replaceableToolsResolver}();return ${configBuilder}(${tokenVar},${authParam},{excludeGhReplaceableTools:${replaceableToolsVar},...__bridgeGithubMcpOptions},${logger})}`;
     },
   );
   if (methodMatches !== 1) {
