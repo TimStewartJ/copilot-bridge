@@ -46,6 +46,7 @@ import {
   getProviderTurnIdFromEvent,
   normalizeLiveSessionContextEvent,
 } from "./session-context-normalizer.js";
+import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
 
 
@@ -570,12 +571,10 @@ export class SessionRunner {
         console.log(`[sdk] [${sid}] Resuming session...`);
         const endpointReady = this.deps.ensureSessionMcpEndpoint?.(sessionId);
         if (endpointReady) await endpointReady;
-        s = await Promise.race([
+        s = await resumeSessionWithTimeout(
           this.client!.resumeSession(sessionId, resumeConfig),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-          ),
-        ]);
+          "resumeSession timed out after 60s",
+        );
         s = this.deps.cacheResumedSession(sessionId, s);
         this.deps.probeMcpStatus(sessionId, s);
         const resumeDuration = Date.now() - resumeStart;
@@ -1495,12 +1494,10 @@ export class SessionRunner {
       console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
       const endpointReady = this.deps.ensureSessionMcpEndpoint?.(sessionId);
       if (endpointReady) await endpointReady;
-      const recoveredSession = await Promise.race([
+      const recoveredSession = await resumeSessionWithTimeout(
         this.client!.resumeSession(sessionId, resumeConfig),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-        ),
-      ]);
+        "resumeSession timed out after 60s",
+      );
       const resumeDuration = Date.now() - resumeStart;
       this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
       console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
