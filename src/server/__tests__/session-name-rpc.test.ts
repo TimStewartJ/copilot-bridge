@@ -1,5 +1,70 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSessionNameRpc } from "../session-name-rpc.js";
+import {
+  buildSessionNameHelperBaseConfig,
+  buildSessionNameResumeConfig,
+  createSessionNameRpc,
+} from "../session-name-rpc.js";
+
+function assertNoWildcardOrEmptyArrayToolFields(config: Record<string, unknown>): void {
+  expect(config).not.toHaveProperty("tools");
+  expect(config.availableTools).toEqual([]);
+  expect(config).not.toHaveProperty("excludedTools");
+  for (const [key, value] of Object.entries(config)) {
+    if (!/tool/i.test(key)) continue;
+    if (Array.isArray(value)) {
+      expect(value).not.toContain("*");
+    } else if (typeof value === "string") {
+      expect(value).not.toBe("*");
+    }
+  }
+}
+
+describe("session name helper base config", () => {
+  it("returns the shared no-tools/no-MCP/no-discovery base every call", () => {
+    const base = buildSessionNameHelperBaseConfig();
+    expect(base).toEqual({
+      availableTools: [],
+      mcpServers: {},
+      enableConfigDiscovery: false,
+      skillDirectories: [],
+      instructionDirectories: [],
+    });
+    assertNoWildcardOrEmptyArrayToolFields(base as unknown as Record<string, unknown>);
+
+    const other = buildSessionNameHelperBaseConfig();
+    expect(other).not.toBe(base);
+    expect(other.availableTools).not.toBe(base.availableTools);
+    expect(other.mcpServers).not.toBe(base.mcpServers);
+    expect(other.skillDirectories).not.toBe(base.skillDirectories);
+    expect(other.instructionDirectories).not.toBe(base.instructionDirectories);
+
+    other.availableTools.push("mutated");
+    expect(base.availableTools).toEqual([]);
+  });
+});
+
+describe("session name resume config", () => {
+  it("layers resume-only fields on top of the shared helper base", () => {
+    const config = buildSessionNameResumeConfig();
+    const base = buildSessionNameHelperBaseConfig();
+    for (const [key, value] of Object.entries(base)) {
+      expect(config[key]).toEqual(value);
+    }
+    expect(config.suppressResumeEvent).toBe(true);
+    expect(config.continuePendingWork).toBe(false);
+    expect(config).not.toHaveProperty("onPermissionRequest");
+    assertNoWildcardOrEmptyArrayToolFields(config);
+  });
+
+  it("includes onPermissionRequest only when a policy is provided", () => {
+    const policy = vi.fn();
+    const config = buildSessionNameResumeConfig(policy as any);
+    expect(config.onPermissionRequest).toBe(policy);
+    expect(config.suppressResumeEvent).toBe(true);
+    expect(config.continuePendingWork).toBe(false);
+    assertNoWildcardOrEmptyArrayToolFields(config);
+  });
+});
 
 describe("session name RPC persistence", () => {
   type WithSessionNameRpc = <T>(sessionId: string, operation: (session: any) => Promise<T>) => Promise<T>;

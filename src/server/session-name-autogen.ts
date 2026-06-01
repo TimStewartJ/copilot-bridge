@@ -18,7 +18,10 @@ import {
   isRestartCutoverInProgress,
   refreshRestartStateSync,
 } from "./restart-controller.js";
-import type { SetSessionNameOptions } from "./session-name-rpc.js";
+import {
+  buildSessionNameHelperBaseConfig,
+  type SetSessionNameOptions,
+} from "./session-name-rpc.js";
 import { readSdkSessionEvents } from "./sdk-session-events.js";
 
 const SESSION_NAME_GENERATION_RETRY_MS = 60 * 60 * 1000;
@@ -181,15 +184,10 @@ export class SessionNameAutogenerator {
     let helperSession: any | undefined;
     try {
       helperSession = await this.deps.createSession({
+        ...buildSessionNameHelperBaseConfig(),
         sessionId: helperSessionId,
         clientName: "Copilot Bridge Title Helper",
         model,
-        tools: [],
-        availableTools: [],
-        mcpServers: {},
-        enableConfigDiscovery: false,
-        skillDirectories: [],
-        instructionDirectories: [],
         systemMessage: { mode: "replace", content: buildSessionTitleSystemPrompt() },
         infiniteSessions: { enabled: false },
         enableSessionTelemetry: false,

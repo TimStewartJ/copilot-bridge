@@ -36,21 +36,39 @@ function workspaceYamlPath(
   return join(getSessionStateDir(sessionId), "workspace.yaml");
 }
 
-export function buildSessionNameResumeConfig(permissionPolicy?: AgentPermissionPolicy): any {
-  // availableTools: [] is the SDK's explicit empty allowlist — only tools in
-  // this list are available, so an empty array disables everything. The SDK
-  // forbids the bare "*" wildcard in excludedTools (beta.10+), and an explicit
-  // empty allowlist makes any excludedTools entry redundant.
+// Shared base for disposable helper sessions used by session-naming workflows
+// (the resume-only rename RPC and the autogen title helper). Both paths need
+// "no contributed tools, no MCP, no on-disk config/skill/instruction discovery"
+// before layering their path-specific fields on top.
+//
+// availableTools: [] is the SDK's explicit empty allowlist — only tools in
+// this list are available, so an empty array disables every built-in tool.
+// The SDK forbids the bare "*" wildcard in excludedTools (beta.10+), so we
+// rely on the empty allowlist instead. The SDK's `tools` field is for
+// session-contributed Tool implementations; omitting it leaves the default
+// (nothing contributed), which is what we want for both paths.
+export function buildSessionNameHelperBaseConfig(): {
+  availableTools: string[];
+  mcpServers: Record<string, never>;
+  enableConfigDiscovery: false;
+  skillDirectories: string[];
+  instructionDirectories: string[];
+} {
   return {
-    ...(permissionPolicy ? { onPermissionRequest: permissionPolicy } : {}),
-    suppressResumeEvent: true,
-    continuePendingWork: false,
-    tools: [],
     availableTools: [],
     mcpServers: {},
     enableConfigDiscovery: false,
     skillDirectories: [],
     instructionDirectories: [],
+  };
+}
+
+export function buildSessionNameResumeConfig(permissionPolicy?: AgentPermissionPolicy): any {
+  return {
+    ...buildSessionNameHelperBaseConfig(),
+    ...(permissionPolicy ? { onPermissionRequest: permissionPolicy } : {}),
+    suppressResumeEvent: true,
+    continuePendingWork: false,
   };
 }
 
