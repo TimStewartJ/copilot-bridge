@@ -3,7 +3,8 @@
 // As of Step 1 of the agent-agnostic roadmap, this file no longer imports
 // the SDK directly. All client/session lifecycle goes through the
 // `AgentBackend` / `AgentSession` interfaces in `./agent-backend`. Bridge
-// tools are exposed through the in-process Bridge MCP server.
+// tools are exposed through a backend-native tool surface when available,
+// with the in-process Bridge MCP server retained as a fallback/export.
 
 import { randomUUID } from "node:crypto";
 import {
@@ -41,6 +42,7 @@ export {
   RESEARCH_GUIDANCE,
   STAGING_INSTRUCTIONS,
 } from "./session-instructions.js";
+import { BRIDGE_EXCLUDED_TOOLS } from "./session-instructions.js";
 export type { ScheduleContext, SessionConfigOptions } from "./session-config-builder.js";
 export {
   formatTaskMomentumContext,
@@ -80,8 +82,13 @@ import type { BrowserSessionStore } from "./browser-session-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import { buildBridgeToolsSessionMcpServerConfig } from "./agent-tools-mcp/config.js";
-import { createBridgeToolsMcpEndpoint } from "./agent-tools-mcp/endpoint.js";
+import {
+  BRIDGE_TOOLS_MCP_SERVER_NAME,
+  BRIDGE_TOOLS_SESSION_MCP_SERVER_NAME,
+  createBridgeToolsMcpEndpoint,
+} from "./agent-tools-mcp/endpoint.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
+import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBridgeBrowserTarget, getBrowserLaunchConfig, shutdownBridgeBrowser } from "./agent-browser.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -692,14 +699,20 @@ export class SessionManager {
   }
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
+    const nativeBridgeTools = this.resolveNativeBridgeTools();
     const sessionBuiltInMcpServers = this.resolveSessionBuiltInMcpServers(opts.sessionId);
-    const builtInMcpServers = {
+    const builtInMcpServers = this.resolveBuiltInMcpServersForSession({
       ...(this.deps.builtInMcpServers ?? {}),
       ...sessionBuiltInMcpServers,
-    };
+    });
     const modelMetadata = opts.modelMetadata ?? this.modelMetadataForContextTiers;
     const cfg = buildSessionConfigWithDeps({
-      deps: { ...this.deps, builtInMcpServers, permissionPolicy: this.backend?.permissionPolicy },
+      deps: {
+        ...this.deps,
+        builtInMcpServers,
+        nativeBridgeTools,
+        permissionPolicy: this.backend?.permissionPolicy,
+      },
       options: {
         ...opts,
         modelMetadata,
@@ -718,6 +731,35 @@ export class SessionManager {
       }
     }
     return cfg;
+  }
+
+  private shouldUseNativeBridgeTools(): boolean {
+    return Boolean(
+      this.deps.bridgeToolsMcpServer
+        && this.backend?.capabilities.nativeBridgeTools
+        && this.backend.capabilities.eagerNativeTools,
+    );
+  }
+
+  private resolveNativeBridgeTools(): BridgeNativeTool[] | undefined {
+    if (!this.shouldUseNativeBridgeTools()) return undefined;
+    const definitions = this.deps.bridgeToolsMcpServer
+      ?.getToolDefinitions("all")
+      .filter((tool) => !BRIDGE_EXCLUDED_TOOLS.includes(tool.name)) ?? [];
+    if (definitions.length === 0) return undefined;
+    return createNativeBridgeTools(definitions, { loadPolicy: "eager", skipPermission: true });
+  }
+
+  private resolveBuiltInMcpServersForSession(
+    servers: Record<string, McpServerConfig>,
+  ): Record<string, McpServerConfig> {
+    if (!this.shouldUseNativeBridgeTools()) return servers;
+    const {
+      [BRIDGE_TOOLS_MCP_SERVER_NAME]: _globalBridgeTools,
+      [BRIDGE_TOOLS_SESSION_MCP_SERVER_NAME]: _sessionBridgeTools,
+      ...remaining
+    } = servers;
+    return remaining;
   }
 
   private async loadModelMetadataForContextTiers(
@@ -788,6 +830,7 @@ export class SessionManager {
   }
 
   private resolveSessionBuiltInMcpServers(sessionId: string | undefined): Record<string, McpServerConfig> {
+    if (this.shouldUseNativeBridgeTools()) return {};
     const bridgeToolsMcpServer = this.deps.bridgeToolsMcpServer;
     if (!sessionId || !bridgeToolsMcpServer) return {};
     const config = buildBridgeToolsSessionMcpServerConfig({
@@ -806,6 +849,7 @@ export class SessionManager {
   }
 
   private ensureSessionMcpEndpoint(sessionId: string): Promise<void> | undefined {
+    if (this.shouldUseNativeBridgeTools()) return;
     const bridgeToolsMcpServer = this.deps.bridgeToolsMcpServer;
     if (!bridgeToolsMcpServer || bridgeToolsMcpServer.getToolNames("session").length === 0) return;
     return bridgeToolsMcpServer.listenForSession(sessionId, this.resolveSessionMcpEndpoint(sessionId));
@@ -813,6 +857,44 @@ export class SessionManager {
 
   private async closeSessionMcpEndpoint(sessionId: string): Promise<void> {
     await this.deps.bridgeToolsMcpServer?.closeSessionEndpoint(sessionId);
+  }
+
+  private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
+    if (!this.shouldUseNativeBridgeTools() || !this.backend?.capabilities.toolMetadataWarmup) return;
+    if (typeof session.initializeTools !== "function") return;
+    const expectedTools = this.deps.bridgeToolsMcpServer
+      ?.getToolDefinitions("all")
+      .map((tool) => tool.name)
+      .filter((name) => !BRIDGE_EXCLUDED_TOOLS.includes(name)) ?? [];
+    try {
+      await session.initializeTools();
+      const metadata = typeof session.getCurrentToolMetadata === "function"
+        ? await session.getCurrentToolMetadata()
+        : undefined;
+      const tools = metadata?.tools ?? [];
+      if (tools.length === 0) return;
+      const toolNames = new Set(tools.map((tool) => tool.name));
+      const missing = expectedTools.filter((name) => !toolNames.has(name));
+      const deferred = tools
+        .filter((tool) => expectedTools.includes(tool.name) && tool.deferLoading === true)
+        .map((tool) => tool.name);
+      const sid = sessionId.slice(0, 8);
+      if (missing.length > 0 || deferred.length > 0) {
+        console.warn(
+          `[sdk] [${sid}] Native Bridge tool warmup incomplete: ${
+            missing.length > 0 ? `missing=${missing.join(", ")}` : "missing=none"
+          }; ${deferred.length > 0 ? `deferred=${deferred.join(", ")}` : "deferred=none"}`,
+        );
+      } else {
+        console.log(`[sdk] [${sid}] Native Bridge tools ready (${expectedTools.length} canonical tools)`);
+      }
+    } catch (error) {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Native Bridge tool warmup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private async rejectMismatchedCreatedSession(
@@ -1186,6 +1268,8 @@ export class SessionManager {
     }
     this.sessionObjects.set(sessionId, session);
     this.slashCommandListCache.delete(sessionId);
+    // Eager loading is carried by `defer: "never"`; resume warmup is diagnostic.
+    void this.warmNativeBridgeTools(sessionId, session);
     this.maybeAutoNameSession(sessionId, { session });
     return session;
   }
@@ -1198,6 +1282,8 @@ export class SessionManager {
     }
     this.sessionObjects.set(sessionId, nextSession);
     this.slashCommandListCache.delete(sessionId);
+    // Eager loading is carried by `defer: "never"`; resume warmup is diagnostic.
+    void this.warmNativeBridgeTools(sessionId, nextSession);
     return nextSession;
   }
 
@@ -1409,6 +1495,7 @@ export class SessionManager {
 
     this.sessionObjects.set(session.sessionId, session);
     this.slashCommandListCache.delete(session.sessionId);
+    await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
     if (typeof model === "string" && model.trim()) {
@@ -1449,7 +1536,7 @@ export class SessionManager {
     const duration = Date.now() - t0;
     const endpointReady = this.ensureSessionMcpEndpoint(result.sessionId);
     if (endpointReady) await endpointReady;
-    if (this.deps.bridgeToolsMcpServer && typeof (backend as any).resumeSession === "function") {
+    if (this.deps.bridgeToolsMcpServer && typeof backend.resumeSession === "function") {
       try {
         const forkResumeConfig = this.buildSessionConfig({
           sessionId: result.sessionId,
@@ -1540,6 +1627,7 @@ export class SessionManager {
 
     this.sessionObjects.set(session.sessionId, session);
     this.slashCommandListCache.delete(session.sessionId);
+    await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
     if (typeof model === "string" && model.trim()) {

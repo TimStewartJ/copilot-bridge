@@ -22,6 +22,7 @@ import type {
   AgentCapabilities,
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
+  AgentToolMetadata,
   AgentModelInfo,
   AgentPermissionPolicy,
   AgentSendArgs,
@@ -47,6 +48,9 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   bidirectionalStdin: false,
   externalToolEvents: true,
   forkBoundaries: true,
+  nativeBridgeTools: true,
+  eagerNativeTools: true,
+  toolMetadataWarmup: true,
 };
 
 function normalizeString(value: unknown): string | undefined {
@@ -225,6 +229,18 @@ class CopilotAgentSession implements AgentSession {
     const list = this.session?.rpc?.mcp?.list;
     if (typeof list !== "function") return undefined;
     return list.call(this.session.rpc.mcp);
+  }
+
+  async initializeTools(): Promise<unknown> {
+    const initialize = this.session?.rpc?.tools?.initializeAndValidate;
+    if (typeof initialize !== "function") return undefined;
+    return initialize.call(this.session.rpc.tools);
+  }
+
+  async getCurrentToolMetadata(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined> {
+    const getCurrent = this.session?.rpc?.tools?.getCurrentMetadata;
+    if (typeof getCurrent !== "function") return undefined;
+    return getCurrent.call(this.session.rpc.tools);
   }
 
   async startMcpOauthLogin(opts: AgentMcpOauthLoginOptions): Promise<unknown> {

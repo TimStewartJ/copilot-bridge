@@ -144,6 +144,34 @@ describe("session-config-builder", () => {
     expect(cfg.onPermissionRequest).toBe(permissionPolicy);
   });
 
+  it("passes native Bridge tools through create and resume session config", () => {
+    const nativeTools = [
+      {
+        name: "staging_preview",
+        description: "Preview staged Bridge changes",
+        parameters: { type: "object", properties: {} },
+        defer: "never",
+        skipPermission: true,
+        handler: vi.fn(),
+      },
+    ];
+
+    const createCfg = buildSessionConfig({
+      deps: createDeps({ nativeBridgeTools: nativeTools }),
+      callbacks: createCallbacks(),
+    });
+    const resumeCfg = buildSessionConfig({
+      deps: createDeps({ nativeBridgeTools: nativeTools }),
+      options: { forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(createCfg.tools).toBe(nativeTools);
+    expect(resumeCfg.tools).toBe(nativeTools);
+    expect(resumeCfg.model).toBeUndefined();
+    expect(resumeCfg.reasoningEffort).toBeUndefined();
+  });
+
   it("keeps staging instructions for source-managed release-slot sessions", () => {
     const runtimePaths = makeTestRuntimePaths(
       "source-release-slot-session-config",

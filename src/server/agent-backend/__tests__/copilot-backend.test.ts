@@ -290,6 +290,26 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped2.listMcpServers!()).resolves.toEqual({ servers: [{ name: "a", status: "connected" }] });
   });
 
+  it("tool metadata warmup delegates to rpc.tools when available", async () => {
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped.initializeTools!()).resolves.toBeUndefined();
+    await expect(wrapped.getCurrentToolMetadata!()).resolves.toBeUndefined();
+
+    const initializeAndValidate = vi.fn(async () => ({}));
+    const getCurrentMetadata = vi.fn(async () => ({
+      tools: [{ name: "staging_preview", description: "Preview", deferLoading: false }],
+    }));
+    const session2 = createFakeSession({ tools: { initializeAndValidate, getCurrentMetadata } });
+    const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
+
+    await expect(wrapped2.initializeTools!()).resolves.toEqual({});
+    await expect(wrapped2.getCurrentToolMetadata!()).resolves.toEqual({
+      tools: [{ name: "staging_preview", description: "Preview", deferLoading: false }],
+    });
+    expect(initializeAndValidate).toHaveBeenCalledOnce();
+    expect(getCurrentMetadata).toHaveBeenCalledOnce();
+  });
+
   it("startMcpOauthLogin throws when rpc.mcp.oauth.login is missing, delegates otherwise", async () => {
     const session = createFakeSession({ mcp: {} });
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
