@@ -65,6 +65,12 @@ export interface AgentCapabilities {
   externalToolEvents: boolean;
   /** Backend models conversation forks (assistant.turn_end carries fork-boundary event ids). */
   forkBoundaries: boolean;
+  /** Backend can expose Bridge tools through a native first-class tool declaration surface. */
+  nativeBridgeTools?: boolean;
+  /** Backend supports eager-loading native tools so they are not hidden behind tool search. */
+  eagerNativeTools?: boolean;
+  /** Backend exposes RPCs to initialize tools and inspect current tool metadata. */
+  toolMetadataWarmup?: boolean;
 }
 
 /**
@@ -222,6 +228,12 @@ export interface AgentSession {
   /** List MCP servers configured for the session. */
   listMcpServers?(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined>;
 
+  /** Initialize and validate the currently configured tool set. */
+  initializeTools?(): Promise<unknown>;
+
+  /** Return lightweight metadata for the currently initialized tool set. */
+  getCurrentToolMetadata?(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined>;
+
   /** Begin an OAuth login flow for the named MCP server. */
   startMcpOauthLogin?(opts: AgentMcpOauthLoginOptions): Promise<unknown>;
 
@@ -242,6 +254,16 @@ export type AgentMcpServerStatus = {
   status?: string;
   error?: string;
   source?: string;
+} & Record<string, unknown>;
+
+export type AgentToolMetadata = {
+  name: string;
+  namespacedName?: string;
+  mcpServerName?: string;
+  mcpToolName?: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+  deferLoading?: boolean;
 } & Record<string, unknown>;
 
 /** Arguments for `AgentSession.startMcpOauthLogin`. */

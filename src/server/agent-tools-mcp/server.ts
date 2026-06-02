@@ -64,7 +64,7 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function normalizeToolResult(result: BridgeToolHandlerResult): CallToolResult {
+export function normalizeToolResult(result: BridgeToolHandlerResult): CallToolResult {
   if (isRecord(result) && Array.isArray(result.content)) {
     return result as CallToolResult;
   }
@@ -132,9 +132,13 @@ export class BridgeToolsMcpServer {
     this.tools.set(definition.name, definition);
   }
 
-  getToolNames(scope: ListenerScope = "global"): string[] {
+  getToolDefinitions(scope: ListenerScope | "all" = "global"): BridgeToolDefinition[] {
     return [...this.tools.values()]
-      .filter((tool) => this.isToolVisible(tool, scope))
+      .filter((tool) => scope === "all" || this.isToolVisible(tool, scope));
+  }
+
+  getToolNames(scope: ListenerScope = "global"): string[] {
+    return this.getToolDefinitions(scope)
       .map((tool) => tool.name);
   }
 

@@ -6,7 +6,7 @@ export const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copil
 
 export const TOOL_NAMING_GUIDANCE = `
 <tool_naming>
-Bridge tools are provided through MCP. Tool names in these instructions are canonical labels, but some runtimes may expose them with a server-qualified prefix (for example, Copilot may surface staging_preview as bridge-tools-staging_preview). When a literal tool name is not available, use the exposed tool whose final name segment and description match the requested Bridge tool.
+Bridge-owned tools are canonical labels such as staging_preview, docs_read, and task_update. Prefer those exact first-class tool names when they are available. Some fallback runtimes may expose compatibility MCP tools with a server-qualified prefix (for example, bridge-tools-staging_preview); when a literal canonical name is not available, use the exposed tool whose final name segment and description match the requested Bridge tool.
 </tool_naming>
 `.trim();
 

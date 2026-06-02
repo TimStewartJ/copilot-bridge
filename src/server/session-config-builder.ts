@@ -79,6 +79,7 @@ export interface SessionConfigBuilderDeps {
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   builtInMcpServers?: Record<string, McpServerConfig>;
   resolveBuiltInMcpServers?: (opts: { sessionId?: string }) => Record<string, McpServerConfig>;
+  nativeBridgeTools?: readonly unknown[];
   permissionPolicy?: AgentPermissionPolicy;
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
@@ -199,6 +200,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     includeSubAgentStreamingEvents: false,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
     mcpServers: addBuiltInMcpServers(deps, resolvedMcpServers, sessionId),
+    ...(deps.nativeBridgeTools && deps.nativeBridgeTools.length > 0 ? { tools: deps.nativeBridgeTools } : {}),
     skillDirectories: [
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
