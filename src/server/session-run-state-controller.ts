@@ -1,6 +1,7 @@
 import type { getOrCreateBus } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
+import type { TerminalCompletion } from "../shared/terminal-completion.js";
 
 export type SessionRunState = "busy" | "stalled" | "idle";
 
@@ -22,7 +23,7 @@ export interface SessionRunController {
   promptDelivery: Promise<PromptDeliveryResult>;
   isCompleted(): boolean;
   markPromptAccepted(): void;
-  completeDone(content: string): void;
+  completeDone(content: string, options?: { terminalCompletion?: TerminalCompletion }): void;
   completeError(message: string): void;
   completeAborted(content: string): void;
   completeShutdown(content: string): void;
@@ -131,7 +132,7 @@ export class SessionRunStateController {
         if (current) this.sessionRuns.set(sessionId, { ...current, promptAccepted: true });
         settlePromptDelivery({ status: "accepted" });
       },
-      completeDone: (content) => {
+      completeDone: (content, options) => {
         const preview = normalizeAssistantPreview(content);
         if (preview) this.completedAssistantPreviews.set(sessionId, preview);
         settlePromptDelivery({ status: "accepted" });
@@ -141,7 +142,12 @@ export class SessionRunStateController {
             "session_ended",
             "Session operation completed before the user input request was answered",
           );
-          bus.emit({ type: "done", content, timestamp });
+          bus.emit({
+            type: "done",
+            content,
+            timestamp,
+            ...(options?.terminalCompletion ? { terminalCompletion: options.terminalCompletion } : {}),
+          });
         });
       },
       completeError: (message) => {

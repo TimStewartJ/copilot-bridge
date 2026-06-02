@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type {
   Attachment,
+  ChatCompletionEntry,
   ChatEntry,
   ChatVisualEntry,
   McpServerStatus,
@@ -12,6 +13,11 @@ import type {
 import { API_BASE, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import type { SendMode } from "../shared/send-mode.js";
+import {
+  isTerminalCompletionToolName,
+  type TerminalCompletion,
+  type TranscriptCompletionStatus,
+} from "../shared/terminal-completion.js";
 
 export interface PendingTool {
   toolCallId: string;
@@ -90,6 +96,36 @@ export function createVisualEntryFromPublishedEvent(event: Record<string, unknow
     type: "visual",
     visual,
     ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
+  };
+}
+
+function isCompletionStatus(value: unknown): value is TranscriptCompletionStatus {
+  return value === "success" || value === "error";
+}
+
+function normalizeTerminalCompletion(value: unknown): TerminalCompletion | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.content !== "string" || !value.content.trim()) return undefined;
+  if (typeof value.sourceEventType !== "string" || !value.sourceEventType.trim()) return undefined;
+  return {
+    content: value.content,
+    title: typeof value.title === "string" && value.title.trim() ? value.title : "Task complete",
+    status: isCompletionStatus(value.status) ? value.status : "success",
+    sourceEventType: value.sourceEventType,
+  };
+}
+
+function createCompletionEntry(
+  completion: TerminalCompletion,
+  timestamp?: string,
+  turnId?: string,
+): ChatCompletionEntry {
+  return {
+    type: "completion",
+    content: completion.content,
+    completion,
+    ...(timestamp ? { timestamp } : {}),
+    ...(turnId ? { turnId } : {}),
   };
 }
 
@@ -313,6 +349,7 @@ function getRenameTargetSessionId(args: ToolArgs | undefined): string | undefine
 }
 
 function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: string): boolean {
+  if (isTerminalCompletionToolName(name)) return true;
   if (name === "report_intent") return true;
   if (name !== "session_rename") return false;
   const targetSessionId = getRenameTargetSessionId(args);
@@ -573,7 +610,12 @@ export function useSessionStream(
                       event.terminalType ?? (event.errorMessage ? "error" : "done"),
                       event.terminalTimestamp ?? event.timestamp,
                     );
-                    if (event.errorMessage) {
+                    const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
+                    if (terminalCompletion) {
+                      onEntriesRef.current([
+                        createCompletionEntry(terminalCompletion, event.terminalTimestamp ?? event.timestamp, turnId),
+                      ]);
+                    } else if (event.errorMessage) {
                       onEntriesRef.current([{
                         role: "assistant",
                         content: `⚠️ Error: ${event.errorMessage}`,
@@ -879,13 +921,18 @@ export function useSessionStream(
                 case "done":
                   activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("done", event.timestamp);
-                  if (event.content) {
-                    onEntriesRef.current([{
-                      role: "assistant",
-                      content: event.content,
-                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
-                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
-                    }]);
+                  {
+                    const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
+                    if (terminalCompletion) {
+                      onEntriesRef.current([createCompletionEntry(terminalCompletion, event.timestamp, activeTurnId)]);
+                    } else if (event.content) {
+                      onEntriesRef.current([{
+                        role: "assistant",
+                        content: event.content,
+                        ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                        ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                      }]);
+                    }
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   refreshTitle(true);

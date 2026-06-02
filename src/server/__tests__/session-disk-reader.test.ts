@@ -188,6 +188,105 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect(readSpan?.metadata?.tailEventCount as number).toBeLessThan(5_180);
   });
 
+  it("keeps terminal completion summaries in the bounded tail path and pagination totals", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-tail-completion");
+    const oldMessages = Array.from({ length: 20 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `old-${index}` },
+    }));
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, "completion-tail", {
+      events: [
+        ...oldMessages,
+        ...padding,
+        {
+          type: "session.task_complete",
+          timestamp: "2026-04-30T11:00:00.000Z",
+          data: { summary: "Finished from terminal summary." },
+        },
+      ],
+    });
+
+    const { deps, persistLastVisibleActivityAt } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "completion-tail", { limit: 1 });
+
+    expect(result.total).toBe(21);
+    expect(result.hasMore).toBe(true);
+    expect(result.messages).toMatchObject([
+      {
+        id: "entry-20",
+        type: "completion",
+        content: "Finished from terminal summary.",
+        completion: { sourceEventType: "session.task_complete" },
+      },
+    ]);
+    expect(persistLastVisibleActivityAt).toHaveBeenCalledWith(
+      "completion-tail",
+      "2026-04-30T11:00:00.000Z",
+    );
+  });
+
+  it("counts terminal completion tool fallback summaries in the bounded tail path", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-tail-completion-fallback");
+    const oldMessages = Array.from({ length: 20 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `old-${index}` },
+    }));
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, "completion-tail-fallback", {
+      events: [
+        ...oldMessages,
+        ...padding,
+        {
+          type: "tool.execution_start",
+          timestamp: "2026-04-30T10:59:58.000Z",
+          data: {
+            toolCallId: "tool-1",
+            toolName: "task_complete",
+            arguments: { summary: "Finished from terminal tool fallback." },
+          },
+        },
+        {
+          type: "tool.execution_complete",
+          timestamp: "2026-04-30T10:59:59.000Z",
+          data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
+        },
+        {
+          type: "session.idle",
+          timestamp: "2026-04-30T11:00:00.000Z",
+          data: {},
+        },
+      ],
+    });
+
+    const { deps, persistLastVisibleActivityAt } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "completion-tail-fallback", { limit: 1 });
+
+    expect(result.total).toBe(21);
+    expect(result.messages).toMatchObject([
+      {
+        id: "entry-20",
+        type: "completion",
+        content: "Finished from terminal tool fallback.",
+        completion: { sourceEventType: "tool.execution_complete" },
+      },
+    ]);
+    expect(persistLastVisibleActivityAt).toHaveBeenCalledWith(
+      "completion-tail-fallback",
+      "2026-04-30T11:00:00.000Z",
+    );
+  });
+
   it("reuses event-log stats while the event log size and mtime are unchanged", async () => {
     const copilotHome = makeTestDir("session-disk-reader-stats-cache");
     const sessionId = "stats-cache";

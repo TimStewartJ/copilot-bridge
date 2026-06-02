@@ -2363,7 +2363,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
             ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
             : event.terminalType === "shutdown"
               ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
-            : { type: "done", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
+            : {
+                type: "done",
+                content: event.finalContent,
+                timestamp: event.terminalTimestamp,
+                turnId: event.turnId,
+                ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}),
+              }
         : event;
       if (!firstEventSent) {
         firstEventSent = true;

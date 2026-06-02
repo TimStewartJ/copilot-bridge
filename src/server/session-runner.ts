@@ -42,6 +42,11 @@ import {
 } from "./session-history-truncation.js";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
 import {
+  extractTerminalCompletion,
+  extractTerminalCompletionFromToolCall,
+  type TerminalCompletion,
+} from "../shared/terminal-completion.js";
+import {
   createSessionContextTruncationMarker,
   getProviderTurnIdFromEvent,
   normalizeLiveSessionContextEvent,
@@ -644,6 +649,7 @@ export class SessionRunner {
     const contextTelemetryProvider = this.client?.id ?? "copilot";
     const contextTelemetryProviderSessionId = sessionId;
     let currentBridgeTurnId: string | undefined;
+    let pendingTerminalCompletion: TerminalCompletion | undefined;
     let lastExternalToolWaitSpanAt = 0;
     const rememberToolName = (toolCallId: unknown, toolName: unknown): string | undefined => {
       if (typeof toolName !== "string") return undefined;
@@ -730,6 +736,7 @@ export class SessionRunner {
       lastEventTime = sendStart;
       handledCurrentTurnEventKeys.clear();
       lastAssistantContent = undefined;
+      pendingTerminalCompletion = undefined;
       activeExternalTools.clear();
       lastExternalToolWaitSpanAt = 0;
       resetRunTelemetryState();
@@ -1048,6 +1055,10 @@ export class SessionRunner {
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);
             toolStartTimes.set(data.toolCallId, Date.now());
+            pendingTerminalCompletion = extractTerminalCompletionFromToolCall(
+              toolName,
+              data?.arguments,
+            ) ?? pendingTerminalCompletion;
             const toolStartAt = getEventTimestampMs(event) ?? eventAt;
             const syncShellWaitUntil = getSyncShellInitialWaitUntil(toolName, data?.arguments, toolStartAt);
             if (syncShellWaitUntil) syncShellWaits.set(data.toolCallId, syncShellWaitUntil);
@@ -1222,7 +1233,9 @@ export class SessionRunner {
         case "session.idle":
         case "session.task_complete": {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
-          const content = lastAssistantContent ?? "(no response)";
+          const terminalCompletion = extractTerminalCompletion(event);
+          const resolvedTerminalCompletion = terminalCompletion ?? pendingTerminalCompletion;
+          const content = resolvedTerminalCompletion?.content ?? lastAssistantContent ?? "(no response)";
           if (
             (context.origin === "live" || context.origin === "live_recovered")
             && hasActiveFollowupAfterTurnEnd()
@@ -1246,7 +1259,11 @@ export class SessionRunner {
             assistantContentKnown: lastAssistantContent !== undefined,
           });
           recordCompletionAttention("done", event);
-          runController.completeDone(content);
+          runController.completeDone(
+            content,
+            resolvedTerminalCompletion ? { terminalCompletion: resolvedTerminalCompletion } : undefined,
+          );
+          pendingTerminalCompletion = undefined;
           break;
         }
         case "session.mcp_servers_loaded": {

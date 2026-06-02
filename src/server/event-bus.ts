@@ -10,6 +10,7 @@ import type {
   UserInputRequestId,
 } from "./user-input-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
+import type { TerminalCompletion } from "../shared/terminal-completion.js";
 
 export type {
   NativeUserInputRequest,
@@ -64,6 +65,7 @@ export interface BusSnapshot {
   terminalType?: "done" | "error" | "aborted" | "shutdown";
   terminalTimestamp?: string;
   finalContent?: string;
+  terminalCompletion?: TerminalCompletion;
   errorMessage?: string;
   turnId?: string;
   contextSummary: SessionContextSummary | null;
@@ -173,6 +175,7 @@ export class SessionEventBus {
   private currentTurnTools: CurrentTurnTool[] = [];
   private intentText = "";
   private finalContent?: string;
+  private terminalCompletion?: TerminalCompletion;
   private errorMessage?: string;
   private terminalType?: "done" | "error" | "aborted" | "shutdown";
   private terminalTimestamp?: string;
@@ -361,6 +364,7 @@ export class SessionEventBus {
         this.terminalType = "done";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
+        this.terminalCompletion = event.terminalCompletion as TerminalCompletion | undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -375,6 +379,7 @@ export class SessionEventBus {
         this.terminalType = "aborted";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
+        this.terminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -389,6 +394,7 @@ export class SessionEventBus {
         this.terminalType = "shutdown";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
+        this.terminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -403,6 +409,7 @@ export class SessionEventBus {
         this.terminalType = "error";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.errorMessage = event.message;
+        this.terminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -440,6 +447,7 @@ export class SessionEventBus {
       terminalType: this.terminalType,
       terminalTimestamp: this.terminalTimestamp,
       finalContent: this.finalContent,
+      terminalCompletion: this.terminalCompletion,
       errorMessage: this.errorMessage,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
@@ -490,6 +498,7 @@ export class SessionEventBus {
     this.terminalType = undefined;
     this.terminalTimestamp = undefined;
     this.finalContent = undefined;
+    this.terminalCompletion = undefined;
     this.errorMessage = undefined;
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;

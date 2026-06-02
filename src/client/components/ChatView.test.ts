@@ -152,7 +152,7 @@ function createEmptyContext(): SessionContextResponse {
 }
 
 function getMessageContent(entry: ChatEntry | undefined): string | undefined {
-  if (!entry || entry.type === "tool" || entry.type === "visual") return undefined;
+  if (!entry || entry.type === "tool" || entry.type === "visual" || entry.type === "completion") return undefined;
   return entry.content;
 }
 
