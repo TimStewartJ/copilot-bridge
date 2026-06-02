@@ -9,6 +9,10 @@ import {
   transformEventsToMessages,
   type TransformedEntry,
 } from "./event-transform.js";
+import {
+  extractTerminalCompletion,
+  extractTerminalCompletionFromToolCall,
+} from "../shared/terminal-completion.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
@@ -35,6 +39,7 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [
   "session.shutdown",
   "session.idle",
   "session.error",
+  "session.task_complete",
   "abort",
 ];
 
@@ -44,6 +49,7 @@ const TURN_TERMINAL_EVENT_TYPES = new Set([
   "abort",
   "session.idle",
   "session.error",
+  "session.task_complete",
 ]);
 
 export interface SessionDiskReaderDeps {
@@ -332,6 +338,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
   let totalEntries = 0;
   let initialTurnIndex = 0;
   let initialActiveTurnId: string | undefined;
+  let pendingTerminalCompletionEntry = false;
 
   const processLine = (lineBuffer: Buffer, lineStartOffset: number): void => {
     const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
@@ -353,6 +360,12 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
     }
 
     visibleActivityTracker.observe(event);
+    if (
+      event.type === "tool.execution_start"
+      && extractTerminalCompletionFromToolCall(getToolName(event), event?.data?.arguments)
+    ) {
+      pendingTerminalCompletionEntry = true;
+    }
 
     if (lineStartsBeforeTail) {
       if (event.type === "assistant.turn_start") {
@@ -365,6 +378,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
 
     if (isVisibleTransformedEntryEvent(event, sessionId)) {
       totalEntries += 1;
+      if (extractTerminalCompletion(event)) pendingTerminalCompletionEntry = false;
       if (event.type === "tool.execution_start") {
         const toolCallId = getToolCallId(event);
         if (toolCallId) {
@@ -391,6 +405,11 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
         visiblePublishVisualToolCallIds.delete(toolCallId);
       }
       return;
+    }
+
+    if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && pendingTerminalCompletionEntry) {
+      totalEntries += 1;
+      pendingTerminalCompletionEntry = false;
     }
 
     if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && openVisibleToolCallIds.size > 0) {

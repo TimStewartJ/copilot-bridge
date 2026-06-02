@@ -32,6 +32,7 @@ import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import MessageBubble from "./MessageBubble";
+import CompletionCard from "./CompletionCard";
 import {
   MessageActionsMenu,
   MessageActionToolbar,
@@ -264,6 +265,7 @@ function maxActivityTimestamp(left?: string | null, right?: string | null): stri
 function getEntryActivityTimestamp(entry: ChatEntry): string | undefined {
   if (entry.type === "tool") return entry.toolCall.completedAt ?? entry.toolCall.startedAt;
   if (entry.type === "visual") return entry.timestamp;
+  if (entry.type === "completion") return entry.timestamp;
   if ("role" in entry && ((entry.content ?? "").trim() || entry.attachments?.length)) {
     return entry.timestamp;
   }
@@ -1743,6 +1745,16 @@ export default function ChatView({
         result.push(
           <div key={entry.id ?? `visual-${index}`} className={`${CHAT_RAIL_CLASS} pt-3`}>
             <VisualArtifactCard visual={entry.visual} />
+          </div>,
+        );
+        return;
+      }
+
+      if (segment.type === "completion-segment") {
+        const { entry } = segment;
+        result.push(
+          <div key={entry.id ?? `completion-${index}`} className={`${CHAT_RAIL_CLASS} pt-3`}>
+            <CompletionCard entry={entry} />
           </div>,
         );
         return;

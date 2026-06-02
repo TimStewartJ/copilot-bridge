@@ -90,7 +90,7 @@ function trimPreview(content: string): string {
 }
 
 function isTextEntry(entry: ChatEntry): entry is Extract<ChatEntry, { role: "user" | "assistant" }> {
-  return entry.type !== "tool" && entry.type !== "visual";
+  return entry.type !== "tool" && entry.type !== "visual" && entry.type !== "completion";
 }
 
 export function buildChatTurnPreviews(entries: ChatEntry[] | undefined): ChatTurnPreviews {

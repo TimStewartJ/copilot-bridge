@@ -213,6 +213,33 @@ describe("event-transform visible activity", () => {
 
     expect(lastVisibleActivityAt).toBe("2026-04-10T10:03:05.000Z");
   });
+
+  it("treats terminal completion summaries as visible transcript activity", () => {
+    const events = [
+      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Finish this" } },
+      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:01.000Z", data: {} },
+      {
+        type: "session.task_complete",
+        timestamp: "2026-04-10T10:00:05.000Z",
+        data: { summary: "Implemented and verified the fix." },
+      },
+    ];
+
+    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:00:05.000Z");
+    expect(transformEventsToMessages(events, "session-1")).toMatchObject([
+      { type: "message", role: "user", content: "Finish this" },
+      {
+        type: "completion",
+        content: "Implemented and verified the fix.",
+        completion: {
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "session.task_complete",
+        },
+        turnId: "turn-1",
+      },
+    ]);
+  });
 });
 
 describe("event-transform fork boundaries", () => {
@@ -297,6 +324,65 @@ describe("event-transform fork boundaries", () => {
 });
 
 describe("event-transform tool results", () => {
+  it("hides terminal completion tool rows and uses the terminal summary entry instead", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { toolCallId: "tool-1", toolName: "task_complete", arguments: { summary: "Done" } },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "tool-1", success: true, result: { content: "Done" } },
+      },
+      {
+        type: "session.task_complete",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { summary: "Done" },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "completion",
+        content: "Done",
+        completion: { sourceEventType: "session.task_complete" },
+      },
+    ]);
+  });
+
+  it("falls back to terminal completion tool arguments when no completion event has content", () => {
+    const entries = transformEventsToMessages([
+      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:00.000Z", data: {} },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: {
+          toolCallId: "tool-1",
+          toolName: "task_complete",
+          arguments: { summary: "Fallback summary" },
+        },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { toolCallId: "tool-1", success: true, result: { content: "Fallback summary" } },
+      },
+      { type: "session.idle", timestamp: "2026-04-10T10:00:03.000Z", data: {} },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "completion",
+        content: "Fallback summary",
+        timestamp: "2026-04-10T10:00:03.000Z",
+        turnId: "turn-1",
+        completion: { sourceEventType: "tool.execution_complete" },
+      },
+    ]);
+  });
+
   it("prefers detailedContent for successful tools", () => {
     const entries = transformEventsToMessages([
       {

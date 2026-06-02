@@ -1,4 +1,11 @@
 import { getToolExecutionDisplayText } from "./tool-results.js";
+import {
+  extractTerminalCompletion,
+  extractTerminalCompletionFromToolCall,
+  isTerminalCompletionEventType,
+  isTerminalCompletionToolName,
+  type TerminalCompletion,
+} from "../shared/terminal-completion.js";
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
@@ -21,7 +28,7 @@ export interface TransformedVisual {
 
 export interface TransformedEntry {
   id: string;
-  type: "message" | "tool" | "visual";
+  type: "message" | "tool" | "visual" | "completion";
   turnId?: string;
   // Message fields (when type === "message")
   role?: string;
@@ -44,6 +51,8 @@ export interface TransformedEntry {
   };
   // Visual fields (when type === "visual")
   visual?: TransformedVisual;
+  // Completion fields (when type === "completion")
+  completion?: TerminalCompletion;
 }
 
 // Keep backward compat alias — server API consumers still reference this
@@ -54,7 +63,8 @@ function isTurnTerminalEvent(event: any): boolean {
     || event.type === "session.shutdown"
     || event.type === "abort"
     || event.type === "session.idle"
-    || event.type === "session.error";
+    || event.type === "session.error"
+    || isTerminalCompletionEventType(event.type);
 }
 
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
@@ -141,6 +151,7 @@ function getRenameTargetSessionId(args: unknown): string | undefined {
 }
 
 function isHiddenTool(toolName: string, args: unknown, sessionId?: string): boolean {
+  if (isTerminalCompletionToolName(toolName)) return true;
   if (toolName === "report_intent") return true;
   if (toolName !== "session_rename") return false;
   const targetSessionId = getRenameTargetSessionId(args);
@@ -161,6 +172,10 @@ function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   if (event.type === "tool.execution_start") {
     const toolName = data?.toolName ?? data?.name ?? "unknown";
     return Boolean(data?.toolCallId) && !isHiddenTool(toolName, data?.arguments, sessionId);
+  }
+
+  if (extractTerminalCompletion(event)) {
+    return true;
   }
 
   return false;
@@ -274,6 +289,7 @@ export function createVisibleActivityTracker(sessionId?: string) {
   const openVisibleToolCallIds = new Set<string>();
   let lastVisibleActivityAt: string | undefined;
   let quietTurn = false;
+  let pendingTerminalCompletionActivity = false;
 
   function observe(event: any): string | undefined {
     if (event.type === "user.message") {
@@ -290,9 +306,18 @@ export function createVisibleActivityTracker(sessionId?: string) {
       return lastVisibleActivityAt;
     }
 
+    if (
+      event.type === "tool.execution_start"
+      && extractTerminalCompletionFromToolCall(event?.data?.toolName ?? event?.data?.name, event?.data?.arguments)
+    ) {
+      pendingTerminalCompletionActivity = true;
+      return lastVisibleActivityAt;
+    }
+
     const timestamp = getVisibleEventTimestamp(event, sessionId);
     if (timestamp) {
       lastVisibleActivityAt = timestamp;
+      if (extractTerminalCompletion(event)) pendingTerminalCompletionActivity = false;
       if (event.type === "tool.execution_start" && event?.data?.toolCallId) {
         openVisibleToolCallIds.add(event.data.toolCallId);
       }
@@ -310,6 +335,11 @@ export function createVisibleActivityTracker(sessionId?: string) {
       const terminalAt = event?.timestamp;
       if (terminalAt) lastVisibleActivityAt = terminalAt;
       openVisibleToolCallIds.clear();
+    }
+    if (isTurnTerminalEvent(event) && pendingTerminalCompletionActivity) {
+      const terminalAt = event?.data?.timestamp ?? event?.timestamp;
+      if (terminalAt) lastVisibleActivityAt = terminalAt;
+      pendingTerminalCompletionActivity = false;
     }
     return lastVisibleActivityAt;
   }
@@ -346,6 +376,7 @@ export function transformEventsToMessages(
   let idx = 0;
   let turnIndex = options.initialTurnIndex ?? 0;
   let activeTurnId = options.initialActiveTurnId;
+  let pendingTerminalCompletion: TerminalCompletion | undefined;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string }>();
@@ -401,7 +432,30 @@ export function transformEventsToMessages(
 
     if (event.type === "assistant.turn_start") {
       activeTurnId = `turn-${++turnIndex}`;
+    } else if (extractTerminalCompletion(event)) {
+      const completion = extractTerminalCompletion(event)!;
+      entries.push({
+        id: `entry-${idx++}`,
+        type: "completion",
+        completion,
+        content: completion.content,
+        timestamp: (event as any).timestamp,
+        ...(activeTurnId ? { turnId: activeTurnId } : {}),
+      });
+      pendingTerminalCompletion = undefined;
+      activeTurnId = undefined;
     } else if (isTurnTerminalEvent(event)) {
+      if (pendingTerminalCompletion) {
+        entries.push({
+          id: `entry-${idx++}`,
+          type: "completion",
+          completion: pendingTerminalCompletion,
+          content: pendingTerminalCompletion.content,
+          timestamp: data?.timestamp ?? (event as any).timestamp,
+          ...(activeTurnId ? { turnId: activeTurnId } : {}),
+        });
+        pendingTerminalCompletion = undefined;
+      }
       activeTurnId = undefined;
     } else if (event.type === "user.message") {
       const content = data?.content ?? data?.prompt ?? "";
@@ -440,6 +494,11 @@ export function transformEventsToMessages(
     } else if (event.type === "tool.execution_start") {
       if (!data?.toolCallId) continue;
       const toolName = data.toolName ?? data.name ?? "unknown";
+      const terminalCompletion = extractTerminalCompletionFromToolCall(toolName, data.arguments);
+      if (terminalCompletion) {
+        pendingTerminalCompletion = terminalCompletion;
+        continue;
+      }
       if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
       const subAgent = subAgentStarts.get(data.toolCallId);
       const complete = toolCompletes.get(data.toolCallId);

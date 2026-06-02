@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Attachment, ChatEntry, ChatMessage, ToolCall } from "./api";
+import type { Attachment, ChatCompletionEntry, ChatEntry, ChatMessage, ToolCall } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
@@ -38,6 +38,13 @@ function cloneChatEntry(entry: ChatEntry): ChatEntry {
 
   if (entry.type === "visual") {
     return { ...entry };
+  }
+
+  if (entry.type === "completion") {
+    return {
+      ...entry,
+      completion: { ...entry.completion },
+    };
   }
 
   return {
@@ -110,6 +117,7 @@ function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
   if (!isClientGeneratedEntry(entry)) return false;
   if (entry.type === "tool") return false;
   if (entry.type === "visual") return false;
+  if (entry.type === "completion") return false;
   if (entry.role === "user") return false;
   if (typeof entry.content !== "string") return false;
   return entry.content.startsWith("⚠️ Error:")
@@ -132,8 +140,16 @@ export function normalizeCommittedClientEntries(
 function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry?.type === "visual" || entry?.type === "tool") continue;
+    if (entry?.type === "visual" || entry?.type === "tool" || entry?.type === "completion") continue;
     return entry;
+  }
+  return undefined;
+}
+
+function findLastCompletion(entries: ChatEntry[]): ChatCompletionEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type === "completion") return entry;
   }
   return undefined;
 }
@@ -181,9 +197,15 @@ function mergeLiveToolEntry(existingEntry: Extract<ChatEntry, { type: "tool" }>,
 }
 
 function isDuplicateLiveMessageEntry(previousEntries: ChatEntry[], incomingEntry: ChatEntry): boolean {
-  if (incomingEntry.type === "tool" || incomingEntry.type === "visual") return false;
+  if (incomingEntry.type === "tool" || incomingEntry.type === "visual" || incomingEntry.type === "completion") return false;
   const lastMessage = findLastMessage(previousEntries);
   return lastMessage?.role === incomingEntry.role && lastMessage?.content === incomingEntry.content;
+}
+
+function isDuplicateLiveCompletionEntry(previousEntries: ChatEntry[], incomingEntry: ChatCompletionEntry): boolean {
+  const lastCompletion = findLastCompletion(previousEntries);
+  return lastCompletion?.content === incomingEntry.content
+    && lastCompletion.completion.sourceEventType === incomingEntry.completion.sourceEventType;
 }
 
 export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries: ChatEntry[]): ChatEntry[] {
@@ -213,6 +235,7 @@ export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries:
         if (alreadyPresent) continue;
       }
     }
+    if (incomingEntry.type === "completion" && isDuplicateLiveCompletionEntry(nextEntries, incomingEntry)) continue;
     if (isDuplicateLiveMessageEntry(nextEntries, incomingEntry)) continue;
     if (nextEntries === previousEntries) nextEntries = [...previousEntries];
     nextEntries.push(incomingEntry);

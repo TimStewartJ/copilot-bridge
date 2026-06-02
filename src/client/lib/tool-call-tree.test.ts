@@ -77,6 +77,30 @@ describe("tool call tree helpers", () => {
     });
   });
 
+  it("keeps completion entries as their own render segment", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "Starting work" },
+      {
+        id: "completion-1",
+        type: "completion",
+        content: "All done",
+        completion: {
+          content: "All done",
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "session.task_complete",
+        },
+      },
+    ];
+
+    const segments = segmentChatEntries(entries);
+
+    expect(segments).toMatchObject([
+      { type: "message", entry: { content: "Starting work" } },
+      { type: "completion-segment", entry: { content: "All done" } },
+    ]);
+  });
+
   it("groups same-turn tools once even when assistant text is interleaved", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "Starting work", turnId: "turn-1" },

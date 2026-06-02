@@ -1,4 +1,4 @@
-import type { ChatEntry, ChatMessage, ChatToolEntry, ChatVisualEntry, ToolCall } from "../api";
+import type { ChatCompletionEntry, ChatEntry, ChatMessage, ChatToolEntry, ChatVisualEntry, ToolCall } from "../api";
 import { getToolCallStatus, type ToolCallStatus } from "./tool-call-status";
 
 export interface ToolCallTreeNode {
@@ -28,7 +28,8 @@ export interface ToolCallForest {
 export type ChatRenderSegment =
   | { type: "message"; entry: ChatMessage }
   | { type: "tool-segment"; entries: ChatToolEntry[]; turnId?: string }
-  | { type: "visual-segment"; entry: ChatVisualEntry };
+  | { type: "visual-segment"; entry: ChatVisualEntry }
+  | { type: "completion-segment"; entry: ChatCompletionEntry };
 
 export function buildToolCallForest(toolCalls: ToolCall[]): ToolCallForest {
   const mutableNodes = new Map<string, MutableToolCallNode>();
@@ -258,6 +259,11 @@ export function segmentChatEntries(entries: ChatEntry[]): ChatRenderSegment[] {
 
     if (entry.type === "visual" && entry.visual) {
       segments.push({ type: "visual-segment", entry: entry as ChatVisualEntry });
+      continue;
+    }
+
+    if (entry.type === "completion" && entry.completion) {
+      segments.push({ type: "completion-segment", entry });
       continue;
     }
 

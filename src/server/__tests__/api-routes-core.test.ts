@@ -84,6 +84,28 @@ describe("Session stream route", () => {
     expect(res.text).not.toContain('"type":"snapshot"');
   });
 
+  it("GET /api/sessions/:id/stream preserves terminal completion metadata on replay", async () => {
+    const bus = ctx.eventBusRegistry.getOrCreateBus("session-123");
+    bus.emit({
+      type: "done",
+      content: "Task summary",
+      terminalCompletion: {
+        content: "Task summary",
+        title: "Task complete",
+        status: "success",
+        sourceEventType: "session.task_complete",
+      },
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"type":"done"');
+    expect(res.text).toContain('"terminalCompletion"');
+    expect(res.text).toContain('"sourceEventType":"session.task_complete"');
+  });
+
   it("GET /api/sessions/:id/stream normalizes completed snapshots emitted during subscribe", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribe(listener: (event: unknown) => void) {

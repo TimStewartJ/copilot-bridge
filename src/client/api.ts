@@ -5,6 +5,7 @@ import type {
   CopilotContextTier,
   CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
+import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
@@ -252,8 +253,18 @@ export interface ChatVisualEntry {
   timestamp?: string;
 }
 
-/** Union type for chronological chat rendering — either a text message, a tool call, or a visual artifact */
-export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry | ChatVisualEntry;
+/** A terminal completion summary rendered as a first-class transcript entry */
+export interface ChatCompletionEntry {
+  id?: string;
+  type: "completion";
+  turnId?: string;
+  content: string;
+  timestamp?: string;
+  completion: TerminalCompletion;
+}
+
+/** Union type for chronological chat rendering */
+export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry | ChatVisualEntry | ChatCompletionEntry;
 
 export type ProviderName = "ado" | "github" | "linear";
 

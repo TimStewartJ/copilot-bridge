@@ -19,7 +19,7 @@ import {
   waitUntilAct,
   type Act,
 } from "./test-react-harness";
-import type { Attachment, PendingUserInputRequestView } from "./api";
+import type { Attachment, ChatEntry, PendingUserInputRequestView } from "./api";
 import type { PendingTool } from "./useSessionStream";
 import {
   buildSnapshotToolState,
@@ -73,6 +73,7 @@ function jsonResponse(body: unknown): Response {
 async function withSessionStreamHarness(
   run: (helpers: {
     getState: () => SessionStreamState;
+    entriesAppended: ReturnType<typeof vi.fn<(entries: ChatEntry[]) => void>>;
     act: Act;
   }) => Promise<void>,
 ): Promise<void> {
@@ -83,15 +84,17 @@ async function withSessionStreamHarness(
     return currentState;
   };
 
+  const entriesAppended = vi.fn<(entries: ChatEntry[]) => void>();
+
   function StreamHarness() {
-    currentState = useSessionStream("session-1", vi.fn(), vi.fn());
+    currentState = useSessionStream("session-1", entriesAppended, vi.fn());
     return null;
   }
 
   try {
     await harness.render(createElement(StreamHarness));
     await waitUntilAct(harness.act, () => currentState !== null);
-    await run({ getState, act: harness.act });
+    await run({ getState, entriesAppended, act: harness.act });
   } finally {
     await harness.cleanup();
   }
@@ -140,6 +143,58 @@ describe("useSessionStream send modes", () => {
       });
       expect(getState().pendingOrigin).toBe("message");
       expect(getState().runMode).toBe("autopilot");
+    });
+  });
+});
+
+describe("useSessionStream terminal completions", () => {
+  it("renders terminal completion metadata as a completion entry instead of an assistant bubble", async () => {
+    await withSessionStreamHarness(async ({ getState, entriesAppended, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      await emitAndWait(act, sse, {
+        type: "done",
+        content: "Task summary",
+        timestamp: "2026-04-30T12:00:00.000Z",
+        turnId: "turn-1",
+        terminalCompletion: {
+          content: "Task summary",
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "session.task_complete",
+        },
+      }, () => entriesAppended.mock.calls.some(([entries]) => entries.some((entry) => entry.type === "completion")));
+
+      const appendedEntries = entriesAppended.mock.calls.flatMap(([entries]) => entries);
+      expect(appendedEntries).toMatchObject([
+        {
+          type: "completion",
+          content: "Task summary",
+          turnId: "turn-1",
+          timestamp: "2026-04-30T12:00:00.000Z",
+          completion: {
+            title: "Task complete",
+            status: "success",
+            sourceEventType: "session.task_complete",
+          },
+        },
+      ]);
+      expect(appendedEntries.some((entry) =>
+        entry.type !== "completion"
+        && entry.type !== "tool"
+        && entry.type !== "visual"
+        && entry.content === "Task summary")).toBe(false);
+
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
     });
   });
 });
