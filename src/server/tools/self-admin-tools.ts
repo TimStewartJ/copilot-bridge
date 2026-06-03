@@ -5,13 +5,14 @@ import { clearRestartPending, isRestartPending, triggerRestartPending } from "..
 import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "../restart-signal.js";
 import { bridgeToolResult, toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
+import { queuedManagementJobResult } from "../management-job-tool-results.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
-import { ActiveManagementJobError, type ManagementJob } from "../management-job-store.js";
+import { ActiveManagementJobError } from "../management-job-store.js";
 
 function getDataDir(ctx: AppContext): string {
   return ctx.runtimePaths?.dataDir ?? join(BRIDGE_TOOLS_REPO_ROOT, "data");
@@ -30,20 +31,6 @@ function requireManagementJobStore(ctx: AppContext) {
     throw new Error("Management job store is not available.");
   }
   return ctx.managementJobStore;
-}
-
-function queuedManagementJobResult(job: ManagementJob, action: string) {
-  return bridgeToolResult({
-    success: true,
-    jobId: job.id,
-    status: job.status,
-    terminal: true,
-    toolNextAction: "respond",
-    retryable: false,
-    summary:
-      `${action} queued as management job ${job.id}. ` +
-      "The launcher-supervised runner will process it in the background; respond to the user with the job id and do not check status unless the user asks.",
-  });
 }
 
 function getActiveManagementJob(error: unknown) {

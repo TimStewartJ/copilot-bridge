@@ -180,10 +180,11 @@ describe("management job status tool", () => {
         success: true,
         terminal: false,
         toolNextAction: "wait",
-        pollAfterMs: 10_000,
       });
       expect(queued.content[0].text).toContain('"terminal":false');
       expect(queued.content[0].text).toContain('"nextAction":"wait"');
+      expect(queued.content[0].text).toContain("defer_create");
+      expect(queued.content[0].text).toContain("Do not call management_job_status synchronously just to poll.");
 
       store.succeed(job.id, { success: true, previewUrl: "https://bridge.example/staging/x/" });
       const succeeded = await tool.handler({ jobId: job.id }, {} as any);
@@ -215,9 +216,10 @@ describe("staging management tool enqueue", () => {
 
       const previewResult = await preview.handler({ stagingDir, validate: false }, {} as any) as any;
       expect(previewResult).toMatchObject({ success: true, status: "queued" });
-      expect(previewResult).toMatchObject({ terminal: true, toolNextAction: "respond" });
-      expect(previewResult.message).not.toContain("poll");
-      expect(previewResult.content[0].text).toContain('"nextAction":"respond"');
+      expect(previewResult).toMatchObject({ terminal: true, toolNextAction: "respond_or_defer" });
+      expect(previewResult.message).toContain("defer_create");
+      expect(previewResult.message).toContain("management_job_status");
+      expect(previewResult.content[0].text).toContain('"nextAction":"respond_or_defer"');
       expect(store.get(previewResult.jobId)).toMatchObject({
         type: "staging_preview",
         input: { stagingDir, validate: false, profile: "clone" },
@@ -225,8 +227,10 @@ describe("staging management tool enqueue", () => {
 
       const deployResult = await deploy.handler({ stagingDir, message: "Ship it" }, {} as any) as any;
       expect(deployResult).toMatchObject({ success: true, status: "queued" });
-      expect(deployResult).toMatchObject({ terminal: true, toolNextAction: "respond" });
-      expect(deployResult.message).not.toContain("poll");
+      expect(deployResult).toMatchObject({ terminal: true, toolNextAction: "respond_or_defer" });
+      expect(deployResult.message).toContain("defer_create");
+      expect(deployResult.message).toContain("Do not call management_job_status synchronously just to poll.");
+      expect(deployResult.message).toContain("restart cutover is not blocked");
       expect(store.get(deployResult.jobId)).toMatchObject({
         type: "staging_deploy",
         input: { stagingDir, message: "Ship it" },
