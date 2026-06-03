@@ -17,5 +17,12 @@ export default defineConfig({
       NODE_ENV: "test",
     },
     testTimeout: 10_000,
+    // Use threads pool instead of forks. Forks-on-Windows + node:sqlite +
+    // chatty stdout from large api-routes-* test files (each spamming
+    // "[scheduler] Shut down" per test) intermittently kills worker child
+    // processes via what looks like an IPC buffer/handle issue. Threads
+    // share the parent process so worker IPC is not involved, eliminating
+    // the "Worker exited unexpectedly" flake without changing test behavior.
+    pool: "threads",
   },
 });

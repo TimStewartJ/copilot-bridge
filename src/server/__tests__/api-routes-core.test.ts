@@ -53,16 +53,29 @@ describe("Shutdown route", () => {
     ctx.sessionManager.gracefulShutdown = vi.fn(async () => {
       order.push("graceful");
     });
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as any);
+    // The shutdown route sends its HTTP response BEFORE awaiting the
+    // graceful-shutdown chain and finally calling process.exit. If we restore
+    // exitSpy before that async chain finishes, the unmocked process.exit(0)
+    // can fire in this worker — or in the next worker that reuses this
+    // process — and silently kill it ("Worker exited unexpectedly"). Resolve
+    // exitFired only when the handler actually reaches process.exit so the
+    // spy stays in place for the entire async tail.
+    let resolveExitFired: () => void = () => undefined;
+    const exitFired = new Promise<void>((resolve) => { resolveExitFired = resolve; });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      order.push(`exit:${code ?? 0}`);
+      resolveExitFired();
+      return undefined as never;
+    }) as any);
     try {
       const res = await request(app)
         .post("/api/shutdown")
         .send({});
-      await Promise.resolve();
+      await exitFired;
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, message: "Shutting down..." });
-      expect(order).toEqual(["pause", "deferred", "graceful", "shutdown"]);
+      expect(order).toEqual(["pause", "deferred", "graceful", "shutdown", "exit:0"]);
     } finally {
       pauseSpy.mockRestore();
       shutdownSpy.mockRestore();

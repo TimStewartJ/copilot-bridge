@@ -1,28 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { join } from "node:path";
 import { clearRestartPending, refreshRestartState, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { makeTestRuntimePaths, setupTestDb, createTestBus, testPath } from "./helpers.js";
+import { setupTestDb, createTestBus, testPath } from "./helpers.js";
+import type { BrowserLifecycle, BrowserShutdownOutcome } from "../browser-lifecycle.js";
 
-const { shutdownBridgeBrowserMock } = vi.hoisted(() => ({
-  shutdownBridgeBrowserMock: vi.fn(),
-}));
-
-vi.mock("../agent-browser.js", async () => {
-  const actual = await vi.importActual<typeof import("../agent-browser.js")>("../agent-browser.js");
-  return {
-    ...actual,
-    shutdownBridgeBrowser: shutdownBridgeBrowserMock,
-  };
-});
+function createFakeBrowserLifecycle(overrides: Partial<{ result: BrowserShutdownOutcome; error: Error }> = {}) {
+  const shutdown = vi.fn(async (): Promise<BrowserShutdownOutcome> => {
+    if (overrides.error) throw overrides.error;
+    return overrides.result ?? { skipped: true, reason: "disabled" };
+  });
+  return { shutdown } satisfies BrowserLifecycle;
+}
 
 describe("SessionManager graceful shutdown", () => {
   beforeEach(async () => {
     clearRestartPending();
     await refreshRestartState();
-    shutdownBridgeBrowserMock.mockReset();
-    shutdownBridgeBrowserMock.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -82,8 +76,10 @@ describe("SessionManager graceful shutdown", () => {
     const closeAll = vi.fn().mockResolvedValue(undefined);
     const stop = vi.fn().mockResolvedValue(undefined);
     const copilotHome = testPath("bridge-shutdown-home");
+    const browserLifecycle = createFakeBrowserLifecycle();
     const manager = createManager({
       browserSessionStore: { closeAll },
+      browserLifecycle,
       copilotHome,
     }) as any;
     manager.backend = { stop };
@@ -91,30 +87,36 @@ describe("SessionManager graceful shutdown", () => {
     await manager.gracefulShutdown();
 
     expect(closeAll).toHaveBeenCalledTimes(1);
-    expect(shutdownBridgeBrowserMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        profileDir: join(copilotHome, "browser-profile"),
-      }),
-      undefined,
-    );
+    expect(browserLifecycle.shutdown).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
     expect(manager.backend).toBeNull();
   });
 
   it("continues shutdown when primary bridge browser cleanup fails", async () => {
-    shutdownBridgeBrowserMock.mockRejectedValue(new Error("close failed"));
-
     const closeAll = vi.fn().mockResolvedValue(undefined);
     const stop = vi.fn().mockResolvedValue(undefined);
+    const browserLifecycle = createFakeBrowserLifecycle({ error: new Error("close failed") });
     const manager = createManager({
       browserSessionStore: { closeAll },
+      browserLifecycle,
     }) as any;
     manager.backend = { stop };
 
     await manager.gracefulShutdown();
 
     expect(closeAll).toHaveBeenCalledTimes(1);
-    expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
+    expect(browserLifecycle.shutdown).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(manager.backend).toBeNull();
+  });
+
+  it("uses a no-op browser lifecycle by default so unit tests do not spawn the agent-browser CLI", async () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const manager = createManager() as any;
+    manager.backend = { stop };
+
+    await manager.gracefulShutdown();
+
     expect(stop).toHaveBeenCalledTimes(1);
     expect(manager.backend).toBeNull();
   });

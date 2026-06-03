@@ -90,7 +90,8 @@ import {
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
-import { getBridgeBrowserTarget, getBrowserLaunchConfig, shutdownBridgeBrowser } from "./agent-browser.js";
+import { getBrowserLaunchConfig } from "./agent-browser.js";
+import { createBridgeBrowserLifecycle, noopBrowserLifecycle, type BrowserLifecycle } from "./browser-lifecycle.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { UserInputBrokerError, type UserInputBroker } from "./user-input-broker.js";
 import type { NativeUserInputRequest, NativeUserInputResponse, UserInputCancelReason, UserInputRequestId } from "./user-input-types.js";
@@ -299,6 +300,13 @@ export interface SessionManagerDeps {
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   browserSessionStore?: BrowserSessionStore;
+  /**
+   * Browser lifecycle owned by SessionManager. Defaults to `noopBrowserLifecycle`
+   * when omitted so unit tests do not accidentally spawn the agent-browser CLI
+   * or scan OS processes. Production callers MUST inject a real lifecycle via
+   * `createSessionManager`, which wires `createBridgeBrowserLifecycle`.
+   */
+  browserLifecycle?: BrowserLifecycle;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   builtInMcpServers?: Record<string, McpServerConfig>;
   bridgeToolsMcpServer?: BridgeToolsMcpServer;
@@ -364,6 +372,11 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
       telemetryStore: ctx.telemetryStore,
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     }),
+    browserLifecycle: createBridgeBrowserLifecycle({
+      copilotHome,
+      settingsStore: ctx.settingsStore,
+      telemetryStore: ctx.telemetryStore,
+    }),
     telemetryStore: ctx.telemetryStore,
     sessionContextStore: ctx.sessionContextStore,
     config: opts.config,
@@ -409,7 +422,7 @@ export class SessionManager {
   private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
   constructor(deps: SessionManagerDeps) {
-    this.deps = deps;
+    this.deps = { ...deps, browserLifecycle: deps.browserLifecycle ?? noopBrowserLifecycle };
     this.workspaceController = new SessionWorkspaceController({
       sessionWorkspaceStore: deps.sessionWorkspaceStore,
       taskStore: deps.taskStore,
@@ -2295,13 +2308,12 @@ export class SessionManager {
     }
 
     try {
-      await shutdownBridgeBrowser(
-        getBridgeBrowserTarget(
-          this.deps.copilotHome,
-          getBrowserLaunchConfig(this.deps.settingsStore?.getSettings()),
-        ),
-        this.deps.telemetryStore,
-      );
+      const outcome = await this.deps.browserLifecycle?.shutdown();
+      if (outcome?.skipped) {
+        if (outcome.reason === "no_browser_activity") {
+          console.log("[browser] Primary browser shutdown skipped (no runtime activity detected)");
+        }
+      }
     } catch (err) {
       console.error("[browser] Primary browser shutdown failed:", err);
     }
