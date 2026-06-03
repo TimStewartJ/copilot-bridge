@@ -3,7 +3,7 @@
 import { exec, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
-import { readFileSync, readlinkSync, unlinkSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 import { promisify } from "node:util";
@@ -15,6 +15,25 @@ const execFileAsync = promisify(execFile);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
 const RUNTIME_FILES = [...LOCK_FILES, "DevToolsActivePort", "lockfile"];
 const RUNTIME_FILE_NAMES = new Set(RUNTIME_FILES.map((name) => name.toLowerCase()));
+
+export const BROWSER_RUNTIME_FILES: readonly string[] = RUNTIME_FILES;
+
+export function hasBrowserRuntimeActivity(profileDir: string): boolean {
+  try {
+    lstatSync(profileDir);
+  } catch {
+    return false;
+  }
+  for (const name of RUNTIME_FILES) {
+    try {
+      lstatSync(join(profileDir, name));
+      return true;
+    } catch {
+      // missing or unreadable; keep scanning
+    }
+  }
+  return false;
+}
 const LOCKED_COPY_ERROR_CODES = new Set(["EACCES", "EBUSY", "ENOENT", "EPERM"]);
 const RUNTIME_METRICS_FILE_RE = /^(?:CrashpadMetrics|BrowserMetrics).*\.pma$/i;
 const SQLITE_RUNTIME_FILE_RE = /(?:-journal|-shm|-wal)$/i;
