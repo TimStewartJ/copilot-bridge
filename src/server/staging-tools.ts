@@ -109,7 +109,8 @@ import { createValidationCommandEnv, prependNodePath } from "./validation-comman
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
-import { ActiveManagementJobError, type ManagementJob } from "./management-job-store.js";
+import { ActiveManagementJobError } from "./management-job-store.js";
+import { queuedManagementJobResult } from "./management-job-tool-results.js";
 
 
 type StagingRunOptions = { timeoutMs?: number; isolateRuntimeEnv?: boolean; env?: NodeJS.ProcessEnv; log?: (message: string) => void };
@@ -1335,20 +1336,6 @@ export async function runStagingDeployJob(
   });
 }
 
-function queuedStagingJobResult(job: ManagementJob, action: string) {
-  return bridgeToolResult({
-    success: true,
-    jobId: job.id,
-    status: job.status,
-    terminal: true,
-    toolNextAction: "respond",
-    retryable: false,
-    summary:
-      `${action} queued as management job ${job.id}. ` +
-      "The launcher-supervised runner will process it in the background; respond to the user with the job id and do not check status unless the user asks.",
-  });
-}
-
 function activeManagementJobFailure(error: ActiveManagementJobError) {
   return stagingFailure(
     "A deploy/update management job is already active.",
@@ -1582,7 +1569,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
       validate: args.validate !== false,
       profile: resolvePreviewProfile(args.profile),
     });
-    return queuedStagingJobResult(job, "Staging preview");
+    return queuedManagementJobResult(job, "Staging preview");
   } catch (error) {
     const activeJob = getActiveManagementJob(error);
     if (activeJob) return activeManagementJobFailure({ activeJob } as ActiveManagementJobError);
@@ -1611,7 +1598,7 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
   }
   try {
     const job = store.enqueue("staging_deploy", { stagingDir, message });
-    return queuedStagingJobResult(job, "Staging deploy");
+    return queuedManagementJobResult(job, "Staging deploy");
   } catch (error) {
     const activeJob = getActiveManagementJob(error);
     if (activeJob) return activeManagementJobFailure({ activeJob } as ActiveManagementJobError);

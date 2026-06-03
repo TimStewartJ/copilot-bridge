@@ -6,12 +6,12 @@ import {
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { bridgeToolResult, getToolResultDisplayText, toolFailure, type BridgeToolNextAction } from "../tool-results.js";
 import type { ManagementJob } from "../management-job-store.js";
+import { formatManagementJobDeferGuidance } from "../management-job-tool-results.js";
 
 export interface RegisterManagementJobToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
-const MANAGEMENT_JOB_POLL_AFTER_MS = 10_000;
 const MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
 const TERMINAL_MANAGEMENT_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -70,11 +70,12 @@ function getManagementJobContract(job: ManagementJob): {
     };
   }
   return {
-    summary: `Management job ${job.id} (${job.type}) is ${job.status}. Wait for the background runner; do not issue marker or no-op tools.`,
+    summary:
+      `Management job ${job.id} (${job.type}) is ${job.status}. ` +
+      `Wait for the background runner; do not issue marker or no-op tools. ${formatManagementJobDeferGuidance(job.id, "status")}`,
     terminal: false,
     toolNextAction: "wait",
     retryable: false,
-    pollAfterMs: MANAGEMENT_JOB_POLL_AFTER_MS,
   };
 }
 

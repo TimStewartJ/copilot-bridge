@@ -1,7 +1,7 @@
 import type { ToolResultObject } from "@github/copilot-sdk";
 
 export type ToolFailureResultType = Exclude<ToolResultObject["resultType"], "success">;
-export type BridgeToolNextAction = "respond" | "wait" | "retry" | "manual_recovery";
+export type BridgeToolNextAction = "respond" | "respond_or_defer" | "wait" | "retry" | "manual_recovery";
 
 export interface ToolFailureOptions {
   detail?: string;
@@ -60,9 +60,11 @@ function formatNextAction(nextAction: BridgeToolNextAction | undefined, pollAfte
   switch (nextAction) {
     case "respond":
       return "respond to the user; do not call another tool for this status";
+    case "respond_or_defer":
+      return "respond to the user, or first schedule one same-session defer with defer_create for follow-up and then respond; do not synchronously poll this status";
     case "wait":
       return pollAfterMs
-        ? `wait at least ${Math.ceil(pollAfterMs / 1000)}s before checking again`
+        ? `wait at least ${Math.ceil(pollAfterMs / 1000)}s before checking again, or use defer_create for unattended follow-up`
         : "wait; do not issue marker or no-op tools";
     case "retry":
       return "retry the intended operation directly";

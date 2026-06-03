@@ -53,4 +53,18 @@ describe("tool results", () => {
     expect(result.content[0].text).toContain('"nextAction":"respond"');
     expect(result.message).toBe("Job finished.");
   });
+
+  it("surfaces respond-or-defer Bridge tool guidance", () => {
+    const result = bridgeToolResult({
+      success: true,
+      summary: "Job queued.",
+      terminal: true,
+      toolNextAction: "respond_or_defer",
+      retryable: false,
+    });
+
+    expect(result.content[0].text).toContain("schedule one same-session defer with defer_create");
+    expect(result.content[0].text).toContain("do not synchronously poll");
+    expect(result.content[0].text).toContain('"nextAction":"respond_or_defer"');
+  });
 });

@@ -148,10 +148,12 @@ describe("self_update", () => {
     expect(result.status).toBe("queued");
     expect(result.jobId).toMatch(/^[0-9a-f-]{36}$/);
     expect(result.message).toContain("management job");
-    expect(result.message).not.toContain("poll");
+    expect(result.message).toContain("defer_create");
+    expect(result.message).toContain("Do not call management_job_status synchronously just to poll.");
+    expect(result.message).toContain("restart cutover is not blocked");
     expect(result.terminal).toBe(true);
-    expect(result.toolNextAction).toBe("respond");
-    expect(result.content[0].text).toContain('"nextAction":"respond"');
+    expect(result.toolNextAction).toBe("respond_or_defer");
+    expect(result.content[0].text).toContain('"nextAction":"respond_or_defer"');
     expect(execSyncMock).not.toHaveBeenCalled();
     expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
