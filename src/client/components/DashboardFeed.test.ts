@@ -125,6 +125,82 @@ function clickButton(button: any): unknown {
   return getReactProps(button)?.onClick?.({ currentTarget: button });
 }
 
+function findFeedCardElement(root: any, cardId: string): any {
+  if (!root) return null;
+  if (root.getAttribute?.("data-feed-card-id") === cardId) return root;
+  for (const child of root.childNodes ?? []) {
+    const result = findFeedCardElement(child, cardId);
+    if (result) return result;
+  }
+  return null;
+}
+
+function createRect(top: number, height = 100): DOMRect {
+  return {
+    x: 0,
+    y: top,
+    width: 100,
+    height,
+    top,
+    left: 0,
+    right: 100,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+function setElementTop(element: any, top: number) {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => createRect(top),
+  });
+}
+
+function setScrollContainerGeometry(
+  element: any,
+  geometry: { scrollTop: number; scrollHeight: number; clientHeight: number; top: number },
+) {
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    writable: true,
+    value: geometry.scrollTop,
+  });
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    value: geometry.scrollHeight,
+  });
+  Object.defineProperty(element, "clientHeight", {
+    configurable: true,
+    value: geometry.clientHeight,
+  });
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => createRect(geometry.top, geometry.clientHeight),
+  });
+  Object.defineProperty(element, "scrollTo", {
+    configurable: true,
+    value: vi.fn((options: ScrollToOptions) => {
+      element.scrollTop = options.top ?? element.scrollTop;
+    }),
+  });
+}
+
+function setPrefersReducedMotion(matches: boolean) {
+  Object.defineProperty(globalThis.window, "matchMedia", {
+    configurable: true,
+    value: vi.fn((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)" ? matches : false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
+
 describe("DashboardFeed feed mutations", () => {
   let harness: ReactDomHarness | null = null;
   let dom: ReactDomHarness["dom"] | null = null;
@@ -216,6 +292,116 @@ describe("DashboardFeed feed mutations", () => {
 
     expect(apiMocks.patchFeedCard).toHaveBeenCalledWith("card-1", { status: "active" });
     expect(onRefetchFeed).toHaveBeenCalledTimes(2);
+  });
+
+  it("scrolls the next feed card top into view when dismissing leaves it above the feed viewport", async () => {
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({ id: "card-1", title: "First card" }),
+        makeCard({ id: "card-2", title: "Second card" }),
+      ],
+    });
+    const container = dom!.container as any;
+    setScrollContainerGeometry(container, {
+      scrollTop: 300,
+      scrollHeight: 1_200,
+      clientHeight: 400,
+      top: 100,
+    });
+    const nextCard = findFeedCardElement(container, "card-2");
+    expect(nextCard).toBeTruthy();
+    setElementTop(nextCard, 40);
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Dismiss"));
+      await waitTick();
+    });
+
+    await waitUntilAct(() => container.scrollTop === 240);
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 240, behavior: "smooth" });
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      await waitTick();
+    });
+  });
+
+  it("does not scroll after dismissing when the next feed card is already below the viewport top", async () => {
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({ id: "card-1", title: "First card" }),
+        makeCard({ id: "card-2", title: "Second card" }),
+      ],
+    });
+    const container = dom!.container as any;
+    setScrollContainerGeometry(container, {
+      scrollTop: 300,
+      scrollHeight: 1_200,
+      clientHeight: 400,
+      top: 100,
+    });
+    const nextCard = findFeedCardElement(container, "card-2");
+    expect(nextCard).toBeTruthy();
+    setElementTop(nextCard, 150);
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Dismiss"));
+      await waitTick();
+    });
+    await waitUntilAct(() => container.textContent?.includes('Dismissed "First card".') ?? false);
+
+    expect(container.scrollTop).toBe(300);
+    expect(container.scrollTo).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      await waitTick();
+    });
+  });
+
+  it("uses instant dismiss scrolling when reduced motion is preferred", async () => {
+    setPrefersReducedMotion(true);
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({ id: "card-1", title: "First card" }),
+        makeCard({ id: "card-2", title: "Second card" }),
+      ],
+    });
+    const container = dom!.container as any;
+    setScrollContainerGeometry(container, {
+      scrollTop: 300,
+      scrollHeight: 1_200,
+      clientHeight: 400,
+      top: 100,
+    });
+    const nextCard = findFeedCardElement(container, "card-2");
+    expect(nextCard).toBeTruthy();
+    setElementTop(nextCard, 40);
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Dismiss"));
+      await waitTick();
+    });
+
+    await waitUntilAct(() => container.scrollTop === 240);
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 240, behavior: "auto" });
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      await waitTick();
+    });
   });
 
   it("defers delete so the snackbar can undo before the server request", async () => {
