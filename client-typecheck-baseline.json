@@ -226,21 +226,21 @@
   {
     "code": 2322,
     "file": "src/client/components/TaskList.tsx",
-    "line": 136,
+    "line": 161,
     "character": 15,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskList.tsx",
-    "line": 239,
+    "line": 265,
     "character": 25,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskList.tsx",
-    "line": 255,
+    "line": 281,
     "character": 26,
     "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
   },
@@ -366,42 +366,42 @@
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 266,
+    "line": 288,
     "character": 164,
     "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
   },
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 296,
+    "line": 318,
     "character": 158,
     "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
   },
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 329,
+    "line": 351,
     "character": 160,
     "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 535,
+    "line": 558,
     "character": 35,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 558,
+    "line": 581,
     "character": 23,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 565,
+    "line": 588,
     "character": 32,
     "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
   },

@@ -49,6 +49,7 @@ export default function SortableTaskItem({
     <div ref={setNodeRef} style={style} className="group">
       <button
         {...bindLongPress(task.id, () => onSelectTask(task.id))}
+        data-unread-task-id={indicator?.unread ? task.id : undefined}
         className={`relative w-full text-left px-3 ${isRail ? "py-2" : "py-2.5"} rounded-lg text-sm select-none no-callout transition-all duration-150 ${
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
