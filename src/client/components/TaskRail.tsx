@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
@@ -14,7 +14,7 @@ import useLongPressMenu from "../hooks/useLongPressMenu";
 import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
-import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu } from "./task-list";
+import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import TaskKindBadge from "./TaskKindBadge";
@@ -225,6 +225,28 @@ export default function TaskRail({
     onReorderTasks,
     onMoveTaskToGroup,
     onMoveAndReorder,
+  });
+  const unreadTaskEdgeRefreshKey = useMemo(() => {
+    const parts: string[] = [expanded ? "expanded" : "collapsed", railTab, showArchived ? "archived" : "open"];
+    const addTask = (task: Task) => {
+      parts.push(`${task.id}:${taskIndicators.get(task.id)?.unread ? "1" : "0"}`);
+    };
+    if (hasGroups && displaySections) {
+      for (const section of displaySections) {
+        if (section.group?.collapsed) continue;
+        for (const task of section.tasks) addTask(task);
+      }
+    } else {
+      for (const task of sortedTasks) addTask(task);
+    }
+    return parts.join("|");
+  }, [displaySections, expanded, hasGroups, railTab, showArchived, sortedTasks, taskIndicators]);
+  const expandedTaskListRef = useRef<HTMLDivElement>(null);
+  const unreadTaskEdges = useUnreadTaskEdges({
+    scopeRef: expandedTaskListRef,
+    scrollContainerRef: expandedTaskListRef,
+    disabled: !expanded || railTab !== "tasks" || !!activeDragTask,
+    refreshKey: unreadTaskEdgeRefreshKey,
   });
 
   // ── Collapsed (icon-only) mode ─────────────────────────────────
@@ -453,7 +475,7 @@ export default function TaskRail({
       </div>
 
       {/* ── Tab content (scrollable) ────────────────────────── */}
-      <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
+      <div ref={expandedTaskListRef} className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
         {railTab === "tasks" ? (
           <>
             {/* New Task button */}
@@ -463,6 +485,7 @@ export default function TaskRail({
             >
               + New Task
             </button>
+            <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
 
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
               {hasGroups && displaySections ? (
@@ -610,6 +633,7 @@ export default function TaskRail({
                 })}
               </>
             )}
+            <UnreadTaskEdgePill edge={unreadTaskEdges.below} direction="below" onJump={unreadTaskEdges.jumpToTask} />
           </>
         ) : (
           <SessionList

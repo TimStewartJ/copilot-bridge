@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
 import { GROUP_COLOR_BG } from "../group-colors";
 import { ChevronDown, ChevronRight, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
@@ -8,7 +8,7 @@ import useLongPressMenu from "../hooks/useLongPressMenu";
 import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections } from "../task-helpers";
-import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu } from "./task-list";
+import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
 import { UI } from "./shared/design-system";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -116,6 +116,31 @@ export default function TaskList({
     onMoveTaskToGroup,
     onMoveAndReorder,
   });
+  const unreadTaskEdgeRefreshKey = useMemo(() => {
+    const parts: string[] = [showArchived ? "archived" : "open"];
+    const addTask = (task: Task) => {
+      parts.push(`${task.id}:${taskIndicators.get(task.id)?.unread ? "1" : "0"}`);
+    };
+    if (hasGroups && displaySections) {
+      for (const section of displaySections) {
+        if (section.group?.collapsed) continue;
+        for (const task of section.tasks) addTask(task);
+      }
+    } else {
+      for (const task of grouped.active) addTask(task);
+      for (const task of grouped.done) addTask(task);
+    }
+    if (showArchived) {
+      for (const task of grouped.archived) addTask(task);
+    }
+    return parts.join("|");
+  }, [displaySections, grouped, hasGroups, showArchived, taskIndicators]);
+  const taskListScopeRef = useRef<HTMLDivElement>(null);
+  const unreadTaskEdges = useUnreadTaskEdges({
+    scopeRef: taskListScopeRef,
+    disabled: !!activeDragTask,
+    refreshKey: unreadTaskEdgeRefreshKey,
+  });
 
   const renderGroup = (label: string, items: Task[]) => {
     if (items.length === 0) return null;
@@ -143,13 +168,14 @@ export default function TaskList({
   };
 
   return (
-    <div className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
+    <div ref={taskListScopeRef} className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
       <button
         onClick={() => onNewTask()}
         className={`${UI.button.primary} w-full`}
       >
         + New Task
       </button>
+      <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
         {hasGroups && displaySections ? (
           displaySections.map((section) => {
@@ -271,6 +297,7 @@ export default function TaskList({
           sub="Create one to get started"
         />
       )}
+      <UnreadTaskEdgePill edge={unreadTaskEdges.below} direction="below" onJump={unreadTaskEdges.jumpToTask} />
 
       {/* Task context menu */}
       {ctxMenu && ctxTask && (
