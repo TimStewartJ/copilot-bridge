@@ -31,7 +31,6 @@
 // backend forces the shape question.
 
 import type {
-  CopilotClientOptions,
   ModelInfo,
   PermissionHandler,
   PermissionRequest,
@@ -74,11 +73,11 @@ export interface AgentCapabilities {
 }
 
 /**
- * Re-exports the SDK's option/info shapes so callers can rely on the
- * abstraction's module path. Step 3 may replace these with backend-neutral
- * shapes; for Step 1 they are aliases.
+ * Re-exports the SDK's info shapes so backend-neutral callers can rely on the
+ * abstraction's module path instead of importing `@github/copilot-sdk`
+ * directly. Step 3 may replace these with backend-neutral shapes; for Step 1
+ * they are aliases.
  */
-export type AgentClientOptions = CopilotClientOptions;
 export type AgentModelInfo = ModelInfo;
 export type AgentSectionOverride = SectionOverride;
 // Step 3: replace these Copilot-shaped aliases with backend-neutral permission types.
@@ -379,8 +378,8 @@ export interface AgentBackend {
 
 /**
  * Factory signature for tests and the staging backend manager: produce an
- * AgentBackend given the resolved env.
+ * AgentBackend. Backend-specific configuration (env, client options) is
+ * owned by the concrete factory implementation, not threaded through this
+ * seam.
  */
-export type AgentBackendFactory = (
-  options: AgentClientOptions | undefined,
-) => AgentBackend;
+export type AgentBackendFactory = () => AgentBackend;

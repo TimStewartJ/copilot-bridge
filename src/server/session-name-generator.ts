@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ModelInfo } from "@github/copilot-sdk";
+import type { AgentModelInfo } from "./agent-backend/index.js";
 
 export const DISPOSABLE_TITLE_SESSION_ID_PREFIX = "b17e1000";
 
@@ -28,15 +28,15 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function billingRecord(model: ModelInfo): Record<string, unknown> | undefined {
+function billingRecord(model: AgentModelInfo): Record<string, unknown> | undefined {
   return asRecord(model.billing);
 }
 
-function modelMultiplier(model: ModelInfo): number | undefined {
+function modelMultiplier(model: AgentModelInfo): number | undefined {
   return finiteNumber(billingRecord(model)?.multiplier);
 }
 
-function tokenPricesRecord(model: ModelInfo): Record<string, unknown> | undefined {
+function tokenPricesRecord(model: AgentModelInfo): Record<string, unknown> | undefined {
   return asRecord(billingRecord(model)?.tokenPrices);
 }
 
@@ -46,7 +46,7 @@ function normalizedTokenPrice(value: unknown, batchSize: number): number | undef
   return price / batchSize;
 }
 
-function modelTokenPrices(model: ModelInfo): {
+function modelTokenPrices(model: AgentModelInfo): {
   inputPrice?: number;
   outputPrice?: number;
   cachePrice?: number;
@@ -63,13 +63,13 @@ function modelTokenPrices(model: ModelInfo): {
   return { inputPrice, outputPrice, cachePrice };
 }
 
-function modelTokenPriceScore(model: ModelInfo): number | undefined {
+function modelTokenPriceScore(model: AgentModelInfo): number | undefined {
   const prices = modelTokenPrices(model);
   if (!prices) return undefined;
   return TOKEN_PRICE_FIELDS.reduce((sum, field) => sum + (prices[field] ?? 0), 0);
 }
 
-function isFreeModel(model: ModelInfo): boolean {
+function isFreeModel(model: AgentModelInfo): boolean {
   const multiplier = modelMultiplier(model);
   if (multiplier !== undefined) return multiplier === 0;
 
@@ -79,23 +79,23 @@ function isFreeModel(model: ModelInfo): boolean {
     && TOKEN_PRICE_FIELDS.every((field) => (prices[field] ?? 0) === 0);
 }
 
-function hasSelectablePolicy(model: ModelInfo): boolean {
+function hasSelectablePolicy(model: AgentModelInfo): boolean {
   const modelRecord = asRecord(model);
   const policy = asRecord(modelRecord?.policy);
   if (!policy) return true;
   return typeof policy.state === "string" && policy.state.toLowerCase() === "enabled";
 }
 
-function isSelectableTitleModel(model: ModelInfo): boolean {
+function isSelectableTitleModel(model: AgentModelInfo): boolean {
   return !!model.id && !DISALLOWED_TITLE_MODEL_IDS.has(model.id.toLowerCase()) && hasSelectablePolicy(model);
 }
 
-function isPreferredSmallModel(model: ModelInfo): boolean {
+function isPreferredSmallModel(model: AgentModelInfo): boolean {
   const id = model.id.toLowerCase();
   return id.includes("mini") || id.includes("haiku");
 }
 
-function isCheapPreferredModel(model: ModelInfo): boolean {
+function isCheapPreferredModel(model: AgentModelInfo): boolean {
   if (!isPreferredSmallModel(model)) return false;
 
   const multiplier = modelMultiplier(model);
@@ -105,13 +105,13 @@ function isCheapPreferredModel(model: ModelInfo): boolean {
   return prices?.outputPrice !== undefined && prices.outputPrice <= TOKEN_PRICE_CHEAP_MODEL_OUTPUT_MAX;
 }
 
-function modelSortScore(model: ModelInfo): number {
+function modelSortScore(model: AgentModelInfo): number {
   return modelMultiplier(model)
     ?? modelTokenPriceScore(model)
     ?? Number.POSITIVE_INFINITY;
 }
 
-function byCostThenId(a: ModelInfo, b: ModelInfo): number {
+function byCostThenId(a: AgentModelInfo, b: AgentModelInfo): number {
   return modelSortScore(a) - modelSortScore(b)
     || a.id.localeCompare(b.id);
 }
@@ -125,7 +125,7 @@ export function isDisposableTitleSessionId(sessionId: string): boolean {
   return sessionId.startsWith(`${DISPOSABLE_TITLE_SESSION_ID_PREFIX}-`);
 }
 
-export function selectSessionTitleModel(models: ModelInfo[]): string | undefined {
+export function selectSessionTitleModel(models: AgentModelInfo[]): string | undefined {
   const selectableModels = models.filter(isSelectableTitleModel);
   const freeModels = selectableModels.filter(isFreeModel);
   const preferredFreeModels = freeModels.filter(isPreferredSmallModel).sort(byCostThenId);
