@@ -66,6 +66,11 @@ function createManager(backends: unknown[]) {
   const db = setupTestDb();
   const copilotHome = makeTestDir("model-refresh");
   const globalBus = createTestBus();
+  const createBackendSpy = vi.fn(() => {
+    const backend = backends.shift();
+    if (!backend) throw new Error("No fake agent backend queued");
+    return backend as any;
+  });
   const deps: SessionManagerDeps = {
     globalBus,
     eventBusRegistry: createEventBusRegistry(),
@@ -73,13 +78,9 @@ function createManager(backends: unknown[]) {
     taskStore: createTaskStore(db, globalBus),
     config: { sessionMcpServers: {} },
     copilotHome,
-    createBackend: vi.fn(() => {
-      const backend = backends.shift();
-      if (!backend) throw new Error("No fake agent backend queued");
-      return backend as any;
-    }),
+    createBackend: createBackendSpy,
   };
-  return new SessionManager(deps);
+  return { manager: new SessionManager(deps), createBackendSpy };
 }
 
 describe("SessionManager model refresh", () => {
@@ -90,7 +91,7 @@ describe("SessionManager model refresh", () => {
   it("rotates the SDK client and returns models from the fresh client", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     const result = await manager.refreshModels();
@@ -101,10 +102,24 @@ describe("SessionManager model refresh", () => {
     expect(result.models).toEqual([{ id: "fresh-model", name: "Fresh Model" }]);
   });
 
+  it("constructs the agent backend through a zero-argument factory", async () => {
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    const { manager, createBackendSpy } = createManager([oldBackend, freshBackend]);
+
+    await manager.initialize();
+    await manager.refreshModels();
+
+    expect(createBackendSpy).toHaveBeenCalledTimes(2);
+    for (const call of createBackendSpy.mock.calls) {
+      expect(call).toHaveLength(0);
+    }
+  });
+
   it("disconnects idle cached sessions before rotating the client", async () => {
     const oldBackend = createBackend([]);
     const freshBackend = createBackend([]);
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
     const disconnect = vi.fn();
 
     await manager.initialize();
@@ -119,7 +134,7 @@ describe("SessionManager model refresh", () => {
   it("blocks refresh while sessions are active", async () => {
     const oldBackend = createBackend([]);
     const freshBackend = createBackend([]);
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     (manager as any).modelSwitchingSessions.add("active-session");
@@ -133,7 +148,7 @@ describe("SessionManager model refresh", () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
     freshBackend.start.mockRejectedValueOnce(new Error("start failed"));
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
 
@@ -147,7 +162,7 @@ describe("SessionManager model refresh", () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     oldBackend.stop.mockImplementationOnce(neverResolves);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     vi.useFakeTimers();
@@ -171,7 +186,7 @@ describe("SessionManager model refresh", () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
     freshBackend.start.mockImplementationOnce(neverResolves);
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     vi.useFakeTimers();
@@ -198,7 +213,7 @@ describe("SessionManager model refresh", () => {
       .mockImplementationOnce(neverResolves);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
     freshBackend.start.mockRejectedValueOnce(new Error("start failed"));
-    const manager = createManager([oldBackend, freshBackend]);
+    const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
     vi.useFakeTimers();

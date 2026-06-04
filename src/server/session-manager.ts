@@ -933,7 +933,7 @@ export class SessionManager {
 
   private createBackend(): AgentBackend {
 
-    return this.deps.createBackend?.(undefined) ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
+    return this.deps.createBackend?.() ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
   }
 
   private forceStopTimedOutBackend(backend: AgentBackend, context: string): void {

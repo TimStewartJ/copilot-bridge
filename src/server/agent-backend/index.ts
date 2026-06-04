@@ -18,7 +18,6 @@ export type {
   AgentBackendFactory,
   AgentBackgroundTask,
   AgentCapabilities,
-  AgentClientOptions,
   AgentModelInfo,
   AgentPermissionDecision,
   AgentPermissionPolicy,

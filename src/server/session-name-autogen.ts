@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@github/copilot-sdk";
+import type { AgentModelInfo } from "./agent-backend/index.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -28,7 +28,7 @@ const SESSION_NAME_GENERATION_RETRY_MS = 60 * 60 * 1000;
 const TITLE_HELPER_TIMEOUT_MS = 30_000;
 
 export interface SessionNameAutogeneratorDeps {
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<AgentModelInfo[]>;
   createSession(config: any): Promise<any>;
   deleteSession(sessionId: string): Promise<void>;
   getCopilotHome(): string;
