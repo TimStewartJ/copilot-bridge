@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Inbox, Undo2, X } from "lucide-react";
 import {
   deleteFeedCard,
@@ -71,6 +71,7 @@ type FeedFeedback =
     };
 
 const DELETE_UNDO_DELAY_MS = 5_000;
+const SCROLL_TOP_EPSILON = 1;
 
 function formatFeedMutationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -80,6 +81,48 @@ function removeRecordKey<T>(record: Record<string, T>, key: string): Record<stri
   const next = { ...record };
   delete next[key];
   return next;
+}
+
+function getParentElement(element: HTMLElement): HTMLElement | null {
+  const parent = element.parentElement ?? element.parentNode;
+  return parent?.nodeType === 1 ? parent as HTMLElement : null;
+}
+
+function isScrollableElement(element: HTMLElement): boolean {
+  return element.scrollTop > 0 || element.scrollHeight > element.clientHeight;
+}
+
+function findScrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let current = getParentElement(element);
+  while (current) {
+    if (isScrollableElement(current)) return current;
+    current = getParentElement(current);
+  }
+  return null;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function scrollFeedCardTopIntoViewIfAbove(cardElement: HTMLElement) {
+  const scrollContainer = findScrollableAncestor(cardElement);
+  if (!scrollContainer) return;
+
+  const cardRect = cardElement.getBoundingClientRect();
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const cardTopRelativeToContainer = cardRect.top - containerRect.top;
+  if (cardTopRelativeToContainer >= -SCROLL_TOP_EPSILON) return;
+
+  const top = Math.max(0, scrollContainer.scrollTop + cardTopRelativeToContainer);
+  const behavior = prefersReducedMotion() ? "auto" : "smooth";
+  if (typeof scrollContainer.scrollTo === "function") {
+    scrollContainer.scrollTo({ top, behavior });
+  } else {
+    scrollContainer.scrollTop = top;
+  }
 }
 
 function feedStatusActionLabel(status: FeedCardStatus): string {
@@ -165,6 +208,8 @@ export default function DashboardFeed({
   const pendingDeletesRef = useRef<Record<string, FeedCardData>>({});
   const startedDeleteIdsRef = useRef<Set<string>>(new Set());
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedCardElementsRef = useRef<Record<string, HTMLDivElement>>({});
+  const pendingDismissScrollRef = useRef<{ nextCardId: string } | null>(null);
   const actionSubmitting = actionSubmitMode !== null;
 
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
@@ -250,6 +295,16 @@ export default function DashboardFeed({
   const activeFeedCards = displayFeedCards.filter((card) => card.status === "active");
   const resolvedFeedCards = displayFeedCards.filter((card) => card.status !== "active");
   const showResolvedDivider = activeFeedCards.length > 0 && resolvedFeedCards.length > 0;
+  const renderedFeedCards = [...activeFeedCards, ...resolvedFeedCards];
+
+  useLayoutEffect(() => {
+    const pendingDismissScroll = pendingDismissScrollRef.current;
+    if (!pendingDismissScroll) return;
+    pendingDismissScrollRef.current = null;
+
+    const nextCardElement = feedCardElementsRef.current[pendingDismissScroll.nextCardId];
+    if (nextCardElement) scrollFeedCardTopIntoViewIfAbove(nextCardElement);
+  });
 
   const refetchAfterFeedMutationFailure = async () => {
     try {
@@ -376,6 +431,11 @@ export default function DashboardFeed({
   };
 
   const handleFeedStatusChange = async (card: FeedCardData, status: FeedCardStatus) => {
+    if (status === "dismissed") {
+      const cardIndex = renderedFeedCards.findIndex((candidate) => candidate.id === card.id);
+      const nextCardId = cardIndex >= 0 ? renderedFeedCards[cardIndex + 1]?.id ?? null : null;
+      pendingDismissScrollRef.current = nextCardId ? { nextCardId } : null;
+    }
     await commitFeedStatusChange({
       cardId: card.id,
       title: card.title,
@@ -658,17 +718,28 @@ export default function DashboardFeed({
     };
 
     return (
-      <FeedCard
+      <div
         key={card.id}
-        card={displayCard}
-        pending={Boolean(pendingStatuses[card.id])}
-        onSelectTask={onSelectTask}
-        onSelectSession={onSelectSession}
-        onAction={openFeedAction}
-        onChat={openFeedChat}
-        onStatusChange={handleFeedStatusChange}
-        onDelete={handleFeedDelete}
-      />
+        ref={(element) => {
+          if (element) {
+            feedCardElementsRef.current[card.id] = element;
+          } else {
+            delete feedCardElementsRef.current[card.id];
+          }
+        }}
+        data-feed-card-id={card.id}
+      >
+        <FeedCard
+          card={displayCard}
+          pending={Boolean(pendingStatuses[card.id])}
+          onSelectTask={onSelectTask}
+          onSelectSession={onSelectSession}
+          onAction={openFeedAction}
+          onChat={openFeedChat}
+          onStatusChange={handleFeedStatusChange}
+          onDelete={handleFeedDelete}
+        />
+      </div>
     );
   };
 
