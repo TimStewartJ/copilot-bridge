@@ -16,6 +16,7 @@ import type { AgentBackend } from "./types.js";
 export type {
   AgentBackend,
   AgentBackendFactory,
+  AgentBackgroundTask,
   AgentCapabilities,
   AgentClientOptions,
   AgentModelInfo,

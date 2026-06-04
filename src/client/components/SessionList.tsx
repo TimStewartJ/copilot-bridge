@@ -25,6 +25,7 @@ import {
   getContextTierLabel,
   modelSupportsLongContext,
 } from "../../shared/copilot-context.js";
+import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -591,6 +592,16 @@ export default function SessionList({
     const isSelected = selectedIds?.has(id);
     const needsUserInput = session.needsUserInput || (session.pendingUserInputCount ?? 0) > 0;
     const deferLabel = formatDeferSummaryLabel(session.deferSummary);
+    const backgroundAgents = session.backgroundAgents;
+    const showBackgroundAgents = hasSurfacedBackgroundAgents(backgroundAgents);
+    const backgroundAgentsRunning = (backgroundAgents?.running ?? 0) > 0;
+    const backgroundAgentsTitle = showBackgroundAgents
+      ? `${(backgroundAgents!.running + backgroundAgents!.idle)} background agent${
+          backgroundAgents!.running + backgroundAgents!.idle === 1 ? "" : "s"
+        }${backgroundAgents!.running ? ` · ${backgroundAgents!.running} running` : ""}${
+          backgroundAgents!.idle ? ` · ${backgroundAgents!.idle} idle` : ""
+        }`
+      : undefined;
     const dotColor = isArchiving
       ? ""
       : needsUserInput
@@ -685,6 +696,13 @@ export default function SessionList({
                 : <Square size={14} className="text-text-muted shrink-0 mr-1.5" />
             ) : isArchiving ? (
               <Loader2 size={10} className={`${s.dotSize} animate-spin text-text-muted shrink-0`} />
+            ) : showBackgroundAgents ? (
+              <span title={backgroundAgentsTitle} className="inline-flex shrink-0">
+                <Bot
+                  size={12}
+                  className={`text-agent shrink-0${backgroundAgentsRunning ? " animate-pulse" : ""}`}
+                />
+              </span>
             ) : (
               <span
                 className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}

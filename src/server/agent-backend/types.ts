@@ -242,7 +242,44 @@ export interface AgentSession {
 
   /** Persist a new session title/name. */
   setName?(opts: { name: string }): Promise<unknown>;
+
+  /**
+   * List background tasks (agents + shells) the SDK is tracking for this
+   * session. Optional — older SDK builds lack the experimental `tasks` RPC,
+   * in which case this resolves `undefined` and callers degrade gracefully.
+   */
+  listTasks?(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined>;
+
+  /** Request cancellation of a tracked background task. Optional. */
+  cancelTask?(id: string): Promise<{ cancelled: boolean } | undefined>;
 }
+
+/**
+ * Backend-neutral projection of one SDK background task. Mirrors the Copilot
+ * SDK `TaskInfo` (agent variant) but trimmed to the fields the Bridge consumes.
+ * `kind` distinguishes agent tasks from detached shells; the agent surface only
+ * renders `kind: "agent"`.
+ */
+export type AgentBackgroundTask = {
+  kind: "agent" | "shell";
+  id: string;
+  toolCallId?: string;
+  description?: string;
+  /** running | idle | completed | failed | cancelled */
+  status: string;
+  /** sync | background */
+  executionMode?: string;
+  agentType?: string;
+  startedAt?: string;
+  completedAt?: string;
+  activeTimeMs?: number;
+  idleSince?: string;
+  model?: string;
+  error?: string;
+  prompt?: string;
+  result?: string;
+  latestResponse?: string;
+} & Record<string, unknown>;
 
 /**
  * Loose MCP server status shape returned by `listMcpServers`. The Copilot

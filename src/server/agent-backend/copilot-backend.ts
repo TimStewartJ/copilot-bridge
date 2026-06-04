@@ -19,6 +19,7 @@ import {
 
 import type {
   AgentBackend,
+  AgentBackgroundTask,
   AgentCapabilities,
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
@@ -61,6 +62,34 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const values = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
   return values.length > 0 ? values : undefined;
+}
+
+/**
+ * Map a Copilot SDK `TaskInfo` (agent or shell variant) to the backend-neutral
+ * {@link AgentBackgroundTask}. Kept defensive because the `tasks` RPC is
+ * `@experimental` and field presence varies across SDK builds.
+ */
+function mapCopilotTaskInfo(raw: any): AgentBackgroundTask {
+  const kind = raw?.type === "shell" ? "shell" : "agent";
+  const numericActiveTime = typeof raw?.activeTimeMs === "number" ? raw.activeTimeMs : undefined;
+  return {
+    kind,
+    id: typeof raw?.id === "string" ? raw.id : "",
+    toolCallId: normalizeString(raw?.toolCallId),
+    description: normalizeString(raw?.description),
+    status: typeof raw?.status === "string" ? raw.status : "unknown",
+    executionMode: normalizeString(raw?.executionMode),
+    agentType: normalizeString(raw?.agentType),
+    startedAt: normalizeString(raw?.startedAt),
+    completedAt: normalizeString(raw?.completedAt),
+    activeTimeMs: numericActiveTime,
+    idleSince: normalizeString(raw?.idleSince),
+    model: normalizeString(raw?.model),
+    error: normalizeString(raw?.error),
+    prompt: normalizeString(raw?.prompt),
+    result: normalizeString(raw?.result),
+    latestResponse: normalizeString(raw?.latestResponse),
+  };
 }
 
 function normalizeCopilotSlashCommandInfo(command: any): AgentSlashCommandInfo | null {
@@ -263,6 +292,21 @@ class CopilotAgentSession implements AgentSession {
       throw new Error("Session name RPC is not available in this Copilot SDK build");
     }
     return set.call(this.session.rpc.name, opts);
+  }
+
+  async listTasks(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined> {
+    const list = this.session?.rpc?.tasks?.list;
+    if (typeof list !== "function") return undefined;
+    const result = await list.call(this.session.rpc.tasks);
+    const rawTasks = Array.isArray((result as any)?.tasks) ? (result as any).tasks : [];
+    return { tasks: rawTasks.map(mapCopilotTaskInfo) };
+  }
+
+  async cancelTask(id: string): Promise<{ cancelled: boolean } | undefined> {
+    const cancel = this.session?.rpc?.tasks?.cancel;
+    if (typeof cancel !== "function") return undefined;
+    const result = await cancel.call(this.session.rpc.tasks, { id });
+    return { cancelled: Boolean((result as any)?.cancelled) };
   }
 }
 

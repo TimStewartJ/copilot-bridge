@@ -53,6 +53,11 @@ import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-
 import { isCopilotModelPriceable, type CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { isCopilotContextTier } from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
+import {
+  type BackgroundAgentsSummary,
+  type SessionAgentTask,
+  emptyBackgroundAgentsSummary,
+} from "../shared/session-agents.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
@@ -443,7 +448,13 @@ function normalizeEndpointBody(body: unknown): string | undefined {
 function getSessionStatus(
   ctx: AppContext,
   sessionId: string,
-): { runState: SessionRunState; busy: boolean; pendingUserInputCount: number; needsUserInput: boolean } {
+): {
+  runState: SessionRunState;
+  busy: boolean;
+  pendingUserInputCount: number;
+  needsUserInput: boolean;
+  backgroundAgents: BackgroundAgentsSummary;
+} {
   const runState = ctx.sessionManager.getSessionRunState(sessionId);
   const pendingUserInputCount = ctx.sessionManager.getPendingUserInputCount(sessionId);
   return {
@@ -451,6 +462,26 @@ function getSessionStatus(
     busy: runState !== "idle",
     pendingUserInputCount,
     needsUserInput: pendingUserInputCount > 0,
+    backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(sessionId),
+  };
+}
+
+const AGENT_TEXT_MAX_LENGTH = 2_000;
+
+function truncateAgentText(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.length <= AGENT_TEXT_MAX_LENGTH) return value;
+  return `${value.slice(0, AGENT_TEXT_MAX_LENGTH)}… (truncated)`;
+}
+
+/** Truncate large free-text fields before returning a task over the wire. */
+function truncateAgentTaskText(task: SessionAgentTask): SessionAgentTask {
+  return {
+    ...task,
+    prompt: truncateAgentText(task.prompt),
+    result: truncateAgentText(task.result),
+    latestResponse: truncateAgentText(task.latestResponse),
+    error: truncateAgentText(task.error),
   };
 }
 
@@ -2553,6 +2584,42 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // GET /sessions/:id/agents — authoritative per-session background/child agent
+  // snapshot. Triggers a live refresh from the cached SDK session when present.
+  // Sensitive free-text fields are truncated; `source` conveys freshness so the
+  // client never presents stale data as live.
+  router.get("/sessions/:id/agents", async (req, res) => {
+    try {
+      const snapshot = await timeRequestOperation(
+        res,
+        "sessions.agents",
+        () => ctx.sessionManager.listSessionAgents(req.params.id),
+        { sessionId: req.params.id },
+      );
+      res.json({
+        tasks: snapshot.tasks.map(truncateAgentTaskText),
+        source: snapshot.source,
+        ...(snapshot.refreshedAt ? { refreshedAt: snapshot.refreshedAt } : {}),
+        backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(req.params.id),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // POST /sessions/:id/agents/:agentId/cancel — request cancellation of a
+  // background agent task.
+  router.post("/sessions/:id/agents/:agentId/cancel", async (req, res) => {
+    try {
+      const result = await ctx.sessionManager.cancelSessionAgent(req.params.id, req.params.agentId);
+      if (result === undefined) {
+        return res.status(409).json({ error: "Background task cancellation is not available for this session" });
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
   // PATCH /sessions/:id — update session metadata (archive/unarchive)
   router.patch("/sessions/:id", (req, res) => {
@@ -3932,7 +3999,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const linkedTaskIds = taskLookup.getLinkedTasks(run.sessionId).map((task) => task.id);
           const status = s
             ? getSessionStatus(ctx, run.sessionId)
-            : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false };
+            : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false, backgroundAgents: emptyBackgroundAgentsSummary("unknown") };
           const hasPlan = await statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false);
           let diskSize = 0;
           try { diskSize = getDirSize(join(sessionStateDir, run.sessionId)); } catch {}

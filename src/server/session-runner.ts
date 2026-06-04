@@ -12,8 +12,7 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { getVisibleEventTimestamp } from "./event-transform.js";
 import type { getOrCreateBus } from "./event-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
-import type { GlobalBus } from "./global-bus.js";
-import type { SessionMetaStore } from "./session-meta-store.js";
+import type { GlobalBus } from "./global-bus.js";import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
 import type { Task } from "./task-store.js";
@@ -28,6 +27,7 @@ import {
   type SessionRunController,
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
+import type { SessionAgentRegistry } from "./session-agent-registry.js";
 import type { SessionUserInputController } from "./session-user-input-controller.js";
 import { getToolExecutionDisplayText } from "./tool-results.js";
 import { createToolLoopGuard } from "./tool-loop-guard.js";
@@ -233,6 +233,7 @@ export interface SessionRunnerDeps {
   activeRunControllers: Map<string, SessionRunController>;
 
   runStateController: SessionRunStateController;
+  agentRegistry: SessionAgentRegistry;
   userInputController: SessionUserInputController;
   eventBusRegistry: EventBusRegistry;
   globalBus: GlobalBus;
@@ -309,6 +310,14 @@ export class SessionRunner {
 
   private touchSessionRun(sessionId: string, at = Date.now()): void {
     this.deps.runStateController.touchSessionRun(sessionId, at);
+  }
+
+  /**
+   * Fire-and-forget refresh of the session's background-agent registry. The
+   * registry coalesces concurrent calls and only emits when counts change.
+   */
+  private refreshSessionAgents(sessionId: string, reason: string): void {
+    void this.deps.agentRegistry.refresh(sessionId, reason);
   }
 
   private setSessionRunState(
@@ -1154,6 +1163,7 @@ export class SessionRunner {
             name: displayName,
             isSubAgent: true,
           });
+          this.refreshSessionAgents(sessionId, "subagent.started");
           break;
         }
         case "subagent.completed":
@@ -1174,6 +1184,18 @@ export class SessionRunner {
             subAgentMap.delete(subagentToolCallId);
             subAgentTurnIdMap.delete(subagentToolCallId);
             subAgentResponseMap.delete(subagentToolCallId);
+          }
+          this.refreshSessionAgents(sessionId, event.type);
+          break;
+        }
+        case "session.background_tasks_changed": {
+          this.refreshSessionAgents(sessionId, "background_tasks_changed");
+          break;
+        }
+        case "system.notification": {
+          const kind = (data?.kind ?? {}) as { type?: string };
+          if (typeof kind.type === "string" && kind.type.startsWith("agent_")) {
+            this.refreshSessionAgents(sessionId, `notification:${kind.type}`);
           }
           break;
         }

@@ -8,6 +8,13 @@ import type {
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
+import type {
+  AgentCountsSource,
+  AgentExecutionMode,
+  AgentTaskStatus,
+  BackgroundAgentsSummary,
+  SessionAgentTask,
+} from "../shared/session-agents.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
   NativeUserInputResponse as NativeUserInputResponseType,
@@ -15,6 +22,13 @@ import type {
   UserInputRequestId as UserInputRequestIdType,
 } from "../server/user-input-types.js";
 export type { McpServerConfig };
+export type {
+  AgentCountsSource,
+  AgentExecutionMode,
+  AgentTaskStatus,
+  BackgroundAgentsSummary,
+  SessionAgentTask,
+} from "../shared/session-agents.js";
 export type {
   SessionContextCapabilities,
   SessionContextEvent,
@@ -95,6 +109,7 @@ export interface Session {
   eventLogSizeBytes?: number;
   runState?: SessionRunState;
   busy?: boolean;
+  backgroundAgents?: BackgroundAgentsSummary;
   pendingUserInputCount?: number;
   needsUserInput?: boolean;
   hasPlan?: boolean;
@@ -1875,6 +1890,30 @@ export async function fetchGlobalMcpStatus(): Promise<McpServerStatus[]> {
   const result = await apiFetch<{ servers: McpServerStatus[] }>("/api/mcp-status");
   return result.servers;
 }
+
+// ── Session agents API ──────────────────────────────────────────
+
+export interface SessionAgentsResponse {
+  tasks: SessionAgentTask[];
+  source: AgentCountsSource;
+  refreshedAt?: string;
+  backgroundAgents: BackgroundAgentsSummary;
+}
+
+export async function fetchSessionAgents(sessionId: string): Promise<SessionAgentsResponse> {
+  return apiFetch<SessionAgentsResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/agents`);
+}
+
+export async function cancelSessionAgent(
+  sessionId: string,
+  agentId: string,
+): Promise<{ cancelled: boolean }> {
+  return apiFetch<{ cancelled: boolean }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/cancel`,
+    {},
+  );
+}
+
 
 // ── Models API ──────────────────────────────────────────────────
 

@@ -258,6 +258,89 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.invalidateSessionListCache).toHaveBeenCalledWith("bus:session:archived");
   });
 
+  it("GET /api/sessions includes a backgroundAgents summary on each row", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({
+      running: 1,
+      idle: 1,
+      failed: 0,
+      total: 2,
+      source: "live" as const,
+      refreshedAt: "2026-04-16T12:00:00.000Z",
+    }));
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "agents-session",
+        summary: "Agents session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/sessions");
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "agents-session",
+        backgroundAgents: expect.objectContaining({ running: 1, idle: 1, total: 2, source: "live" }),
+      }),
+    ]);
+  });
+
+  it("GET /api/sessions/:id/agents returns the snapshot and truncates large text", async () => {
+    const sessionManager = createMockSessionManager();
+    const bigResult = "x".repeat(5000);
+    sessionManager.listSessionAgents = vi.fn(async () => ({
+      tasks: [
+        {
+          id: "explore-docs",
+          status: "running" as const,
+          executionMode: "background" as const,
+          agentType: "explore",
+          description: "Explore the docs",
+          result: bigResult,
+        },
+      ],
+      source: "live" as const,
+      refreshedAt: "2026-04-16T12:00:00.000Z",
+    }));
+    sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({
+      running: 1, idle: 0, failed: 0, total: 1, source: "live" as const,
+    }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/sessions/explore-host/agents");
+    expect(res.status).toBe(200);
+    expect(sessionManager.listSessionAgents).toHaveBeenCalledWith("explore-host");
+    expect(res.body.source).toBe("live");
+    expect(res.body.tasks).toHaveLength(1);
+    expect(res.body.tasks[0].id).toBe("explore-docs");
+    expect(res.body.tasks[0].result.length).toBeLessThan(bigResult.length);
+    expect(res.body.tasks[0].result).toContain("(truncated)");
+    expect(res.body.backgroundAgents).toMatchObject({ running: 1, source: "live" });
+  });
+
+  it("POST /api/sessions/:id/agents/:agentId/cancel returns 409 when unavailable", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.cancelSessionAgent = vi.fn(async () => undefined);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/s1/agents/explore-docs/cancel").send({});
+    expect(res.status).toBe(409);
+  });
+
+  it("POST /api/sessions/:id/agents/:agentId/cancel delegates to the session manager", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.cancelSessionAgent = vi.fn(async () => ({ cancelled: true }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/s1/agents/explore-docs/cancel").send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ cancelled: true });
+    expect(sessionManager.cancelSessionAgent).toHaveBeenCalledWith("s1", "explore-docs");
+  });
+
   it("GET /api/sessions hides idle sessions linked only to archived tasks by default", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
