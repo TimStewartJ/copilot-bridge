@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
-import type { DeferSummary, RestartStatusPhase } from "./api";
+import type { BackgroundAgentsSummary, DeferSummary, RestartStatusPhase } from "./api";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
 
 export type StatusEvent =
@@ -8,6 +8,7 @@ export type StatusEvent =
   | { type: "session:title"; sessionId?: string; title?: string }
   | { type: "session:intent"; sessionId?: string; intent?: string }
   | { type: "session:archived"; sessionId?: string; archived?: boolean }
+  | { type: "session:agents"; sessionId?: string; backgroundAgents?: BackgroundAgentsSummary }
   | { type: "sessions:changed" }
   | {
       type: "session:user-input";

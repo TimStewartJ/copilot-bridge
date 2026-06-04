@@ -288,6 +288,63 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-loop-guard")).toBe("idle");
   });
 
+  it("refreshes the agent registry and emits session:agents on background task signals", async () => {
+    const { manager, globalBus } = createManager();
+    const agentEvents: any[] = [];
+    globalBus.subscribe((event: any) => {
+      if (event.type === "session:agents") agentEvents.push(event);
+    });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    (session as any).listTasks = vi.fn(async () => ({
+      tasks: [
+        {
+          kind: "agent",
+          id: "explore-docs",
+          toolCallId: "toolu_1",
+          status: "running",
+          executionMode: "background",
+          agentType: "explore",
+        },
+      ],
+    }));
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-agents", "spawn a background agent");
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    getHandler()?.({
+      type: "session.background_tasks_changed",
+      data: {},
+      timestamp: "2026-04-24T12:00:01.000Z",
+    });
+    await flushMicrotasks();
+
+    expect((session as any).listTasks).toHaveBeenCalled();
+    expect(manager.getBackgroundAgentsSummary("session-agents")).toMatchObject({
+      running: 1,
+      total: 1,
+      source: "live",
+    });
+    expect(agentEvents.length).toBeGreaterThanOrEqual(1);
+    expect(agentEvents.at(-1).backgroundAgents).toMatchObject({ running: 1, source: "live" });
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:02.000Z",
+    });
+    await flushMicrotasks();
+  });
+
   it("records usage after turn end as session overhead", async () => {
     const { manager, sessionContextStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();

@@ -11,6 +11,7 @@ import {
   reportTiming,
   submitUserInputResponse,
   type Attachment,
+  type BackgroundAgentsSummary,
   type ChatEntry,
   type ChatMessage,
   type McpServerStatus,
@@ -44,6 +45,7 @@ import ToolCallNodeGroup from "./ToolCallNodeGroup";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
+import SessionAgentsBar from "./SessionAgentsBar";
 import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
@@ -82,6 +84,7 @@ interface ChatViewProps {
   /** Incremented when server history was truncated and the loaded window must be replaced. */
   historySignal?: number;
   activeSessionActivityAt?: string;
+  backgroundAgents?: BackgroundAgentsSummary;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void; newWorkDisabled?: boolean; newWorkDisabledHint?: string;
 }
@@ -449,6 +452,7 @@ export default function ChatView({
   busySignal = 0,
   historySignal = 0,
   activeSessionActivityAt,
+  backgroundAgents,
   onForkSession,
   onRenderedReadThrough, newWorkDisabled = false, newWorkDisabledHint,
 }: ChatViewProps) {
@@ -1854,6 +1858,7 @@ export default function ChatView({
         onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
         onRefresh={sessionId ? refreshMcpStatus : undefined}
       />
+      <SessionAgentsBar sessionId={sessionId} backgroundAgents={backgroundAgents} />
       {loading && entries.length === 0 ? (
         <LoadingSkeletonRegion
           isLoading

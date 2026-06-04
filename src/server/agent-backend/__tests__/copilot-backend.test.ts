@@ -290,6 +290,62 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped2.listMcpServers!()).resolves.toEqual({ servers: [{ name: "a", status: "connected" }] });
   });
 
+  it("listTasks returns undefined when rpc.tasks.list is missing", async () => {
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped.listTasks!()).resolves.toBeUndefined();
+  });
+
+  it("listTasks maps SDK TaskInfo into backend-neutral tasks", async () => {
+    const list = vi.fn(async () => ({
+      tasks: [
+        {
+          type: "agent",
+          id: "explore-docs",
+          toolCallId: "toolu_1",
+          description: "Explore docs",
+          status: "running",
+          executionMode: "background",
+          agentType: "explore",
+          startedAt: "2026-01-01T00:00:00Z",
+          activeTimeMs: 5000,
+          prompt: "go",
+          result: "done",
+          latestResponse: "latest",
+        },
+        { type: "shell", id: "sh1", status: "running" },
+      ],
+    }));
+    const session = createFakeSession({ tasks: { list } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+    const result = await wrapped.listTasks!();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(result?.tasks).toHaveLength(2);
+    expect(result?.tasks?.[0]).toMatchObject({
+      kind: "agent",
+      id: "explore-docs",
+      toolCallId: "toolu_1",
+      status: "running",
+      executionMode: "background",
+      agentType: "explore",
+      activeTimeMs: 5000,
+      prompt: "go",
+      result: "done",
+      latestResponse: "latest",
+    });
+    expect(result?.tasks?.[1]).toMatchObject({ kind: "shell", id: "sh1", status: "running" });
+  });
+
+  it("cancelTask delegates to rpc.tasks.cancel and normalizes the result", async () => {
+    const missing = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(missing.cancelTask!("x")).resolves.toBeUndefined();
+
+    const cancel = vi.fn(async () => ({ cancelled: true }));
+    const session = createFakeSession({ tasks: { cancel } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+    await expect(wrapped.cancelTask!("explore-docs")).resolves.toEqual({ cancelled: true });
+    expect(cancel).toHaveBeenCalledWith({ id: "explore-docs" });
+  });
+
   it("tool metadata warmup delegates to rpc.tools when available", async () => {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.initializeTools!()).resolves.toBeUndefined();

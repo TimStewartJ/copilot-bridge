@@ -131,6 +131,8 @@ import {
   type SessionActivity,
 } from "./session-run-state-controller.js";
 import { SessionRunner, type McpServerStatus, type StartWorkOptions } from "./session-runner.js";
+import { SessionAgentRegistry } from "./session-agent-registry.js";
+import type { BackgroundAgentsSummary, SessionAgentTask, AgentCountsSource } from "../shared/session-agents.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
@@ -406,6 +408,7 @@ export class SessionManager {
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly runStateController: SessionRunStateController;
+  private readonly agentRegistry: SessionAgentRegistry;
   private readonly sessionNameRpc: SessionNameRpc;
   private readonly sessionNameAutogenerator: SessionNameAutogenerator;
   private readonly sessionRunner: SessionRunner;
@@ -457,6 +460,10 @@ export class SessionManager {
       logger: console,
     });
     this.sessionRuns = this.runStateController.getRunRecords();
+    this.agentRegistry = new SessionAgentRegistry({
+      globalBus: deps.globalBus,
+      getLiveSession: (sessionId) => this.sessionObjects.get(sessionId),
+    });
     this.sessionNameRpc = createSessionNameRpc({
       withSessionNameRpc: (sessionId, operation) => this.withSessionNameRpc(sessionId, operation),
       getSessionStateDir: (sessionId) => this.getSessionStateDir(sessionId),
@@ -485,6 +492,7 @@ export class SessionManager {
       mcpStatus: this.mcpStatus,
       activeRunControllers: this.activeRunControllers,
       runStateController: this.runStateController,
+      agentRegistry: this.agentRegistry,
       userInputController: this.userInputController,
       eventBusRegistry: deps.eventBusRegistry,
       globalBus: deps.globalBus,
@@ -1959,6 +1967,7 @@ export class SessionManager {
       "Session was deleted before the user input request was answered",
     );
     this.evictCachedSession(sessionId);
+    this.agentRegistry.forget(sessionId);
     clearEventLogStatsCache(sessionId);
     try {
       await client.deleteSession(sessionId);
@@ -2044,6 +2053,43 @@ export class SessionManager {
     return this.runStateController.isSessionStalled(sessionId);
   }
 
+  /**
+   * Pure synchronous counts projection for the session-list DTO. Carries a
+   * `source` so callers never present stale data as live truth.
+   */
+  getBackgroundAgentsSummary(sessionId: string): BackgroundAgentsSummary {
+    return this.agentRegistry.getSummary(sessionId);
+  }
+
+  /**
+   * Authoritative per-session agent snapshot for the detail endpoint. Triggers
+   * a live refresh from the cached SDK session when one exists, then returns the
+   * freshest cached projection (or `unknown` when nothing is available).
+   */
+  async listSessionAgents(sessionId: string): Promise<{
+    tasks: SessionAgentTask[];
+    source: AgentCountsSource;
+    refreshedAt?: string;
+  }> {
+    await this.agentRegistry.refresh(sessionId, "endpoint");
+    return this.agentRegistry.getSnapshot(sessionId);
+  }
+
+  /**
+   * Request cancellation of a background agent task. Returns `undefined` when no
+   * live session is cached or the backend lacks the cancellation RPC.
+   */
+  async cancelSessionAgent(
+    sessionId: string,
+    agentId: string,
+  ): Promise<{ cancelled: boolean } | undefined> {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session || typeof session.cancelTask !== "function") return undefined;
+    const result = await session.cancelTask(agentId);
+    await this.agentRegistry.refresh(sessionId, "cancel");
+    return result;
+  }
+
   getPendingUserInputCount(sessionId: string): number {
     return this.userInputController.getPendingCount(sessionId);
   }
@@ -2067,6 +2113,7 @@ export class SessionManager {
     this.sessionObjects.delete(sessionId);
     this.liveSessionModelState.delete(sessionId);
     this.slashCommandListCache.delete(sessionId);
+    this.agentRegistry.markSessionUnavailable(sessionId);
     return true;
   }
 

@@ -438,6 +438,11 @@ export default function App() {
         }
         invalidateAllSessionQueries();
         break;
+      case "session:agents":
+        if (event.sessionId && event.backgroundAgents) {
+          patchSessionInCache(event.sessionId, { backgroundAgents: event.backgroundAgents });
+        }
+        break;
       case "sessions:changed":
         invalidateAllSessionQueries();
         invalidateDashboard();
@@ -2242,6 +2247,7 @@ function SessionRoute({
       busySignal={busySignal}
       historySignal={historySignal}
       activeSessionActivityAt={activeSessionActivityAt}
+      backgroundAgents={activeSession?.backgroundAgents}
       onForkSession={onForkSession}
       newWorkDisabled={newWorkDisabled}
       newWorkDisabledHint={newWorkDisabledHint}
