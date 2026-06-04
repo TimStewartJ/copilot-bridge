@@ -1,25 +1,10 @@
-export type CopilotPricingProvider = "OpenAI" | "Anthropic" | "Google" | "xAI" | "GitHub fine-tuned";
 export type CopilotPricingRateUnit = "usd_per_1m_tokens";
-
-export interface CopilotPricingSourceMetadata {
-  readonly name: string;
-  readonly url: string;
-  readonly rateUnit: CopilotPricingRateUnit;
-  readonly creditUnitUsd: number;
-}
 
 export interface CopilotPricingRatesUsdPerMillionTokens {
   readonly input: number;
   readonly cachedInput: number;
   readonly cacheWrite?: number;
   readonly output: number;
-}
-
-export interface CopilotPricingCatalogEntry {
-  readonly sku: string;
-  readonly provider: CopilotPricingProvider;
-  readonly rates: CopilotPricingRatesUsdPerMillionTokens;
-  readonly source: CopilotPricingSourceMetadata;
 }
 
 export interface CopilotTokenUsageForPricing {
@@ -35,19 +20,15 @@ export interface ResolveCopilotPricingModelOptions {
   readonly sdkModels?: readonly CopilotModelMetadataForPricing[];
 }
 
-export type CopilotPricingModelResolutionStatus =
-  | "exact"
-  | "sdk-name"
-  | "normalized-variant"
-  | "unpriced";
+export type CopilotPricingModelResolutionStatus = "exact" | "sdk-name" | "unpriced";
 
 export interface PricedCopilotPricingModelResolution {
   readonly status: Exclude<CopilotPricingModelResolutionStatus, "unpriced">;
   readonly source: Exclude<CopilotPricingModelResolutionStatus, "unpriced">;
   readonly observedModel: string;
-  readonly normalizedModel: PublicCopilotPricingSku;
-  readonly sku: PublicCopilotPricingSku;
-  readonly entry: PublicCopilotPricingCatalogEntry;
+  readonly normalizedModel: string;
+  readonly sku: string;
+  readonly sdkModel: CopilotModelMetadataForPricing;
   readonly sdkModelId?: string;
   readonly sdkModelName?: string;
 }
@@ -58,7 +39,7 @@ export interface UnpricedCopilotPricingModelResolution {
   readonly observedModel: string;
   readonly normalizedModel: string | null;
   readonly sku: null;
-  readonly entry: null;
+  readonly sdkModel: null;
 }
 
 export type CopilotPricingModelResolution =
@@ -69,70 +50,6 @@ export const COPILOT_AI_CREDIT_USD = 0.01 as const;
 export const COPILOT_PRICING_RATE_UNIT = "usd_per_1m_tokens" as const;
 export const COPILOT_TOKEN_PRICING_UNIT = 1_000_000 as const;
 
-export const GITHUB_COPILOT_PRICING_SOURCE = {
-  name: "GitHub Docs: Copilot billing models and pricing",
-  url: "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing",
-  rateUnit: COPILOT_PRICING_RATE_UNIT,
-  creditUnitUsd: COPILOT_AI_CREDIT_USD,
-} as const satisfies CopilotPricingSourceMetadata;
-
-function defineCopilotPricingEntry<const Sku extends string, const Provider extends CopilotPricingProvider>(
-  sku: Sku,
-  provider: Provider,
-  rates: CopilotPricingRatesUsdPerMillionTokens,
-) {
-  return {
-    sku,
-    provider,
-    rates,
-    source: GITHUB_COPILOT_PRICING_SOURCE,
-  } as const satisfies CopilotPricingCatalogEntry;
-}
-
-export const COPILOT_PUBLIC_PRICING_CATALOG = [
-  defineCopilotPricingEntry("gpt-4.1", "OpenAI", { input: 2, cachedInput: 0.5, output: 8 }),
-  defineCopilotPricingEntry("gpt-5-mini", "OpenAI", { input: 0.25, cachedInput: 0.025, output: 2 }),
-  defineCopilotPricingEntry("gpt-5.2", "OpenAI", { input: 1.75, cachedInput: 0.175, output: 14 }),
-  defineCopilotPricingEntry("gpt-5.2-codex", "OpenAI", { input: 1.75, cachedInput: 0.175, output: 14 }),
-  defineCopilotPricingEntry("gpt-5.3-codex", "OpenAI", { input: 1.75, cachedInput: 0.175, output: 14 }),
-  defineCopilotPricingEntry("gpt-5.4", "OpenAI", { input: 2.5, cachedInput: 0.25, output: 15 }),
-  defineCopilotPricingEntry("gpt-5.4-mini", "OpenAI", { input: 0.75, cachedInput: 0.075, output: 4.5 }),
-  defineCopilotPricingEntry("gpt-5.4-nano", "OpenAI", { input: 0.2, cachedInput: 0.02, output: 1.25 }),
-  defineCopilotPricingEntry("gpt-5.5", "OpenAI", { input: 5, cachedInput: 0.5, output: 30 }),
-  defineCopilotPricingEntry("claude-haiku-4.5", "Anthropic", { input: 1, cachedInput: 0.1, cacheWrite: 1.25, output: 5 }),
-  defineCopilotPricingEntry("claude-sonnet-4", "Anthropic", { input: 3, cachedInput: 0.3, cacheWrite: 3.75, output: 15 }),
-  defineCopilotPricingEntry("claude-sonnet-4.5", "Anthropic", { input: 3, cachedInput: 0.3, cacheWrite: 3.75, output: 15 }),
-  defineCopilotPricingEntry("claude-sonnet-4.6", "Anthropic", { input: 3, cachedInput: 0.3, cacheWrite: 3.75, output: 15 }),
-  defineCopilotPricingEntry("claude-opus-4.5", "Anthropic", { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 25 }),
-  defineCopilotPricingEntry("claude-opus-4.6", "Anthropic", { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 25 }),
-  defineCopilotPricingEntry("claude-opus-4.7", "Anthropic", { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 25 }),
-  defineCopilotPricingEntry("gemini-2.5-pro", "Google", { input: 1.25, cachedInput: 0.125, output: 10 }),
-  defineCopilotPricingEntry("gemini-3-flash", "Google", { input: 0.5, cachedInput: 0.05, output: 3 }),
-  defineCopilotPricingEntry("gemini-3.1-pro", "Google", { input: 2, cachedInput: 0.2, output: 12 }),
-  defineCopilotPricingEntry("grok-code-fast-1", "xAI", { input: 0.2, cachedInput: 0.02, output: 1.5 }),
-  defineCopilotPricingEntry("raptor-mini", "GitHub fine-tuned", { input: 0.25, cachedInput: 0.025, output: 2 }),
-  defineCopilotPricingEntry("goldeneye", "GitHub fine-tuned", { input: 1.25, cachedInput: 0.125, output: 10 }),
-] as const satisfies readonly CopilotPricingCatalogEntry[];
-
-export type PublicCopilotPricingSku = (typeof COPILOT_PUBLIC_PRICING_CATALOG)[number]["sku"];
-export type PublicCopilotPricingCatalogEntry = (typeof COPILOT_PUBLIC_PRICING_CATALOG)[number];
-
-export const COPILOT_PUBLIC_PRICING_SKUS = COPILOT_PUBLIC_PRICING_CATALOG.map(
-  ({ sku }) => sku,
-) as readonly PublicCopilotPricingSku[];
-
-export const COPILOT_PUBLIC_PRICING_BY_SKU = Object.freeze(
-  Object.fromEntries(COPILOT_PUBLIC_PRICING_CATALOG.map((entry) => [entry.sku, entry])),
-) as Readonly<Record<PublicCopilotPricingSku, PublicCopilotPricingCatalogEntry>>;
-
-export function isPublicCopilotPricingSku(sku: string): sku is PublicCopilotPricingSku {
-  return Object.prototype.hasOwnProperty.call(COPILOT_PUBLIC_PRICING_BY_SKU, sku);
-}
-
-export function getCopilotPricingEntry(sku: string): PublicCopilotPricingCatalogEntry | undefined {
-  return isPublicCopilotPricingSku(sku) ? COPILOT_PUBLIC_PRICING_BY_SKU[sku] : undefined;
-}
-
 export function getCopilotPricingRatesFromModelMetadata(
   model: CopilotModelMetadataForPricing | undefined,
   contextTier: CopilotContextTier | undefined,
@@ -142,14 +59,18 @@ export function getCopilotPricingRatesFromModelMetadata(
   const tierPrices = contextTier === "long_context" && tokenPrices.longContext
     ? tokenPrices.longContext
     : tokenPrices;
-  const batchSize = typeof tokenPrices.batchSize === "number" && Number.isFinite(tokenPrices.batchSize) && tokenPrices.batchSize > 0
-    ? tokenPrices.batchSize
-    : 1_000_000;
+  const batchSize = firstPositiveBatchSize(tierPrices.batchSize, tokenPrices.batchSize);
   const input = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.inputPrice, batchSize);
   const output = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.outputPrice, batchSize);
   const cachedInput = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.cachePrice, batchSize);
   if (input === undefined || output === undefined || cachedInput === undefined) return undefined;
   return { input, output, cachedInput };
+}
+
+export function isCopilotModelPriceable(
+  model: CopilotModelMetadataForPricing | undefined,
+): model is CopilotModelMetadataForPricing {
+  return getCopilotPricingRatesFromModelMetadata(model, undefined) !== undefined;
 }
 
 export function resolveCopilotPricingModel(
@@ -161,43 +82,42 @@ export function resolveCopilotPricingModel(
     return createUnpricedCopilotPricingResolution(observed, null);
   }
 
-  const exactEntry = getCopilotPricingEntry(observed);
-  if (exactEntry) {
-    return createPricedCopilotPricingResolution("exact", observed, exactEntry.sku, exactEntry);
+  const sdkModels = options.sdkModels ?? [];
+  const priceableModels = sdkModels.filter(isCopilotModelPriceable);
+
+  const exactModel = priceableModels.find((model) => model.id === observed);
+  if (exactModel) {
+    return createPricedCopilotPricingResolution("exact", observed, exactModel);
   }
 
-  const sdkResolution = resolveCopilotPricingModelFromSdkName(observed, options.sdkModels);
-  if (sdkResolution) {
-    return sdkResolution;
+  const observedModelEntry = sdkModels.find((model) => model.id === observed);
+  const candidates: string[] = [];
+  if (typeof observedModelEntry?.name === "string" && observedModelEntry.name.trim()) {
+    candidates.push(observedModelEntry.name);
+  }
+  candidates.push(observed);
+
+  for (const candidate of candidates) {
+    const matched = matchPriceableModel(candidate, priceableModels);
+    if (matched) {
+      return createPricedCopilotPricingResolution(
+        "sdk-name",
+        observed,
+        matched,
+        observedModelEntry?.id,
+        typeof observedModelEntry?.name === "string" ? observedModelEntry.name : undefined,
+      );
+    }
   }
 
   const normalizedObserved = normalizeCopilotModelNameForPricing(observed);
-  const variantSku = resolveCopilotPublicSkuFromVariant(normalizedObserved);
-  if (variantSku) {
-    return createPricedCopilotPricingResolution(
-      "normalized-variant",
-      observed,
-      variantSku,
-      COPILOT_PUBLIC_PRICING_BY_SKU[variantSku],
-    );
-  }
-
-  return createUnpricedCopilotPricingResolution(observed, normalizedObserved);
-}
-
-export function getResolvedCopilotPricingEntry(
-  observedModel: string | null | undefined,
-  options: ResolveCopilotPricingModelOptions = {},
-): PublicCopilotPricingCatalogEntry | null {
-  return resolveCopilotPricingModel(observedModel, options).entry;
+  return createUnpricedCopilotPricingResolution(observed, normalizedObserved || null);
 }
 
 export function calculateCopilotTokenCostUsd(
-  entry: CopilotPricingCatalogEntry,
+  rates: CopilotPricingRatesUsdPerMillionTokens,
   usage: CopilotTokenUsageForPricing,
 ): number {
-  const rates = entry.rates;
-
   return (
     toMillionTokenUnits(usage.inputTokens) * rates.input
     + toMillionTokenUnits(usage.cachedInputTokens) * rates.cachedInput
@@ -207,10 +127,10 @@ export function calculateCopilotTokenCostUsd(
 }
 
 export function calculateCopilotTokenCostAiCredits(
-  entry: CopilotPricingCatalogEntry,
+  rates: CopilotPricingRatesUsdPerMillionTokens,
   usage: CopilotTokenUsageForPricing,
 ): number {
-  return usdToCopilotAiCredits(calculateCopilotTokenCostUsd(entry, usage));
+  return usdToCopilotAiCredits(calculateCopilotTokenCostUsd(rates, usage));
 }
 
 export function usdToCopilotAiCredits(amountUsd: number): number {
@@ -234,6 +154,15 @@ function assertNonNegativeFiniteNumber(value: number, name: string): void {
   }
 }
 
+function firstPositiveBatchSize(...values: Array<number | undefined>): number {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  return COPILOT_TOKEN_PRICING_UNIT;
+}
+
 function tokenPriceCentsPerBatchToUsdPerMillion(
   value: CopilotTokenPrices[keyof CopilotTokenPrices],
   batchSize: number,
@@ -242,58 +171,41 @@ function tokenPriceCentsPerBatchToUsdPerMillion(
   return (value / 100) * (COPILOT_TOKEN_PRICING_UNIT / batchSize);
 }
 
-function resolveCopilotPricingModelFromSdkName(
-  observedModel: string,
-  sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
-): CopilotPricingModelResolution | null {
-  const sdkModel = sdkModels?.find((model) => model.id === observedModel);
-  if (!sdkModel?.name) {
-    return null;
-  }
+function matchPriceableModel(
+  raw: string,
+  priceableModels: readonly CopilotModelMetadataForPricing[],
+): CopilotModelMetadataForPricing | null {
+  const normalized = normalizeCopilotModelNameForPricing(raw);
+  if (!normalized) return null;
 
-  const normalizedName = normalizeCopilotModelNameForPricing(sdkModel.name);
-  const entry = getCopilotPricingEntry(normalizedName);
-  if (entry) {
-    return createPricedCopilotPricingResolution(
-      "sdk-name",
-      observedModel,
-      entry.sku,
-      entry,
-      sdkModel.id,
-      sdkModel.name,
-    );
-  }
+  const direct = findModelByNormalizedIdentity(normalized, priceableModels);
+  if (direct) return direct;
 
-  const variantSku = resolveCopilotPublicSkuFromVariant(normalizedName);
-  if (!variantSku) {
-    return null;
-  }
-
-  return createPricedCopilotPricingResolution(
-    "sdk-name",
-    observedModel,
-    variantSku,
-    COPILOT_PUBLIC_PRICING_BY_SKU[variantSku],
-    sdkModel.id,
-    sdkModel.name,
-  );
-}
-
-function resolveCopilotPublicSkuFromVariant(normalizedModel: string): PublicCopilotPricingSku | null {
-  let candidate = normalizedModel;
+  let candidate = normalized;
   while (candidate) {
     const next = stripCopilotModelVariantSuffix(candidate);
     if (next === candidate) {
       return null;
     }
-
-    if (isPublicCopilotPricingSku(next)) {
-      return next;
-    }
+    const matched = findModelByNormalizedIdentity(next, priceableModels);
+    if (matched) return matched;
     candidate = next;
   }
 
   return null;
+}
+
+function findModelByNormalizedIdentity(
+  normalized: string,
+  priceableModels: readonly CopilotModelMetadataForPricing[],
+): CopilotModelMetadataForPricing | null {
+  return (
+    priceableModels.find((model) => {
+      if (normalizeCopilotModelNameForPricing(model.id) === normalized) return true;
+      return typeof model.name === "string"
+        && normalizeCopilotModelNameForPricing(model.name) === normalized;
+    }) ?? null
+  );
 }
 
 function stripCopilotModelVariantSuffix(normalizedModel: string): string {
@@ -316,8 +228,7 @@ function normalizeCopilotModelNameForPricing(modelName: string): string {
 function createPricedCopilotPricingResolution(
   status: Exclude<CopilotPricingModelResolutionStatus, "unpriced">,
   observedModel: string,
-  sku: PublicCopilotPricingSku,
-  entry: PublicCopilotPricingCatalogEntry,
+  sdkModel: CopilotModelMetadataForPricing,
   sdkModelId?: string,
   sdkModelName?: string,
 ): PricedCopilotPricingModelResolution {
@@ -325,9 +236,9 @@ function createPricedCopilotPricingResolution(
     status,
     source: status,
     observedModel,
-    normalizedModel: sku,
-    sku,
-    entry,
+    normalizedModel: sdkModel.id,
+    sku: sdkModel.id,
+    sdkModel,
     ...(sdkModelId ? { sdkModelId } : {}),
     ...(sdkModelName ? { sdkModelName } : {}),
   };
@@ -343,7 +254,7 @@ function createUnpricedCopilotPricingResolution(
     observedModel,
     normalizedModel,
     sku: null,
-    entry: null,
+    sdkModel: null,
   };
 }
 import type {

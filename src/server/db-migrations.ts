@@ -708,6 +708,19 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
   }
 }
 
+function ensureCopilotModelPricesTable(db: DatabaseSync): void {
+  // Last-known-good cache of SDK-provided model token prices. Populated via
+  // write-through whenever live model metadata is fetched; never hand-maintained.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS copilot_model_prices (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      metadataJson TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+  `);
+}
+
 function ensureSessionContextTelemetryTables(db: DatabaseSync): void {
   // Keep this DDL as a historical compatibility snapshot. Do not import the
   // current baseline from db.ts: future baseline columns must be added below
@@ -1065,6 +1078,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Create provider-neutral session context telemetry tables.",
     apply: ensureSessionContextTelemetryTables,
+  },
+  {
+    id: "copilot-model-prices-table",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Create copilot_model_prices cache for last-known-good SDK token prices.",
+    apply: ensureCopilotModelPricesTable,
   },
 ];
 

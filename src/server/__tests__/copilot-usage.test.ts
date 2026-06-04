@@ -36,6 +36,27 @@ function writeRawEvents(copilotHome: string, sessionId: string, lines: string[])
   writeFileSync(join(sessionDir, "events.jsonl"), `${lines.join("\n")}\n`);
 }
 
+// Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
+// convert to round USD-per-1M rates: 100 cents => $1/1M.
+function sdkPriceableModel(
+  id: string,
+  rates: { input: number; output: number; cache: number },
+  name?: string,
+) {
+  return {
+    id,
+    name: name ?? id,
+    billing: {
+      tokenPrices: {
+        inputPrice: rates.input * 100,
+        outputPrice: rates.output * 100,
+        cachePrice: rates.cache * 100,
+        batchSize: 1_000_000,
+      },
+    },
+  };
+}
+
 function zeroTotals(): CopilotUsageTotals {
   return {
     requests: 0,
@@ -276,7 +297,7 @@ describe("readCopilotUsageSummary", () => {
     });
   });
 
-  it("calculates estimated cost and AI credits for public SKUs", async () => {
+  it("calculates estimated cost and AI credits from SDK token prices", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
       {
@@ -298,12 +319,16 @@ describe("readCopilotUsageSummary", () => {
       },
     ]);
 
-    const summary = await readCopilotUsageSummary({ copilotHome });
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      sdkModels: [sdkPriceableModel("claude-sonnet-4.6", { input: 3, output: 15, cache: 0.3 }, "Claude Sonnet 4.6")],
+    });
     const model = summary.models[0];
     const session = summary.sessions[0];
 
-    expect(summary.totals.estimatedCostUsd).toBeCloseTo(22.05);
-    expect(summary.totals.estimatedAiCredits).toBeCloseTo(2_205);
+    // The SDK does not expose a cache-write rate, so cache-write tokens are billed at $0.
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(18.3);
+    expect(summary.totals.estimatedAiCredits).toBeCloseTo(1_830);
     expect(summary.totals.unpricedModelCount).toBe(0);
     expect(summary.unpricedModels).toEqual([]);
     expect(model).toMatchObject({
@@ -318,15 +343,15 @@ describe("readCopilotUsageSummary", () => {
     expect(model.costBreakdownUsd).toMatchObject({
       input: 3,
       cachedInput: 0.3,
-      cacheWrite: 3.75,
+      cacheWrite: 0,
       output: 15,
       reasoning: 0,
     });
-    expect(model.costBreakdownUsd.total).toBeCloseTo(22.05);
-    expect(model.estimatedCostUsd).toBeCloseTo(22.05);
-    expect(model.estimatedAiCredits).toBeCloseTo(2_205);
-    expect(session.estimatedCostUsd).toBeCloseTo(22.05);
-    expect(session.models[0].estimatedCostUsd).toBeCloseTo(22.05);
+    expect(model.costBreakdownUsd.total).toBeCloseTo(18.3);
+    expect(model.estimatedCostUsd).toBeCloseTo(18.3);
+    expect(model.estimatedAiCredits).toBeCloseTo(1_830);
+    expect(session.estimatedCostUsd).toBeCloseTo(18.3);
+    expect(session.models[0].estimatedCostUsd).toBeCloseTo(18.3);
   });
 
   it("uses SDK long-context pricing when Bridge recorded a long context tier", async () => {
@@ -410,13 +435,16 @@ describe("readCopilotUsageSummary", () => {
       },
     ]);
 
-    const summary = await readCopilotUsageSummary({ copilotHome });
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      sdkModels: [sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7")],
+    });
     const model = summary.models[0];
 
     expect(model).toMatchObject({
       model: "claude-opus-4.7-context-low",
-      pricingStatus: "normalized-variant",
-      pricingSource: "normalized-variant",
+      pricingStatus: "sdk-name",
+      pricingSource: "sdk-name",
       pricingKey: "claude-opus-4.7",
       pricedAs: "claude-opus-4.7",
       normalizedPricingModel: "claude-opus-4.7",
@@ -444,7 +472,10 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({
       copilotHome,
-      sdkModels: [{ id: "opaque-sdk-id", name: "Claude Opus 4.7" }],
+      sdkModels: [
+        { id: "opaque-sdk-id", name: "Claude Opus 4.7" },
+        sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
+      ],
     });
     const model = summary.models[0];
 
@@ -485,7 +516,10 @@ describe("readCopilotUsageSummary", () => {
       },
     ]);
 
-    const summary = await readCopilotUsageSummary({ copilotHome });
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      sdkModels: [sdkPriceableModel("gpt-5.5", { input: 5, output: 30, cache: 0.5 }, "GPT-5.5")],
+    });
     const known = summary.models.find((row) => row.model === "gpt-5.5");
     const unknown = summary.models.find((row) => row.model === "unknown-model");
 
@@ -547,7 +581,10 @@ describe("readCopilotUsageSummary", () => {
       },
     ]);
 
-    const summary = await readCopilotUsageSummary({ copilotHome });
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      sdkModels: [sdkPriceableModel("gpt-5.5", { input: 5, output: 30, cache: 0.5 }, "GPT-5.5")],
+    });
     const model = summary.models[0];
 
     expect(model).toMatchObject({

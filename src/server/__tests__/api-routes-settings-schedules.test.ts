@@ -79,7 +79,7 @@ describe("Settings routes", () => {
 
     const res = await request(local.app)
       .patch("/api/settings")
-      .send({ model: "claude-opus-example-1m" });
+      .send({ model: "claude-opus-4.7" });
 
     expect(res.status).toBe(200);
     // Model changes are future-only — no eviction, no setModel on cached sessions.

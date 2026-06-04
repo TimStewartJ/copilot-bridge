@@ -191,14 +191,14 @@
   {
     "code": 18048,
     "file": "src/client/components/settings/CopilotUsageSection.tsx",
-    "line": 85,
+    "line": 84,
     "character": 36,
     "message": "'data' is possibly 'undefined'."
   },
   {
     "code": 18048,
     "file": "src/client/components/settings/CopilotUsageSection.tsx",
-    "line": 85,
+    "line": 84,
     "character": 64,
     "message": "'data' is possibly 'undefined'."
   },

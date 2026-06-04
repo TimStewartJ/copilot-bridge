@@ -143,6 +143,7 @@ describe("database migration registry", () => {
       "tasks-kind-momentum-and-status-repair",
       "task-work-items-text-item-id",
       "session-context-telemetry-tables",
+      "copilot-model-prices-table",
     ]);
   });
 
@@ -167,6 +168,7 @@ describe("database migration registry", () => {
       "tasks-kind-momentum-and-status-repair": "self",
       "task-work-items-text-item-id": "auto",
       "session-context-telemetry-tables": "auto",
+      "copilot-model-prices-table": "auto",
     });
   });
 
