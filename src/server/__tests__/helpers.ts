@@ -23,6 +23,7 @@ import { createChecklistStore } from "../checklist-store.js";
 import { createFeedStore } from "../feed-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
+import { createCopilotModelPriceStore } from "../copilot-model-price-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
@@ -337,6 +338,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     }),
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
+    copilotModelPriceStore: createCopilotModelPriceStore(db),
     telemetryStore: createTelemetryStore(db),
     sessionContextStore: createSessionContextStore(db),
     docsStore,

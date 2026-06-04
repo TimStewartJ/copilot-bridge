@@ -50,7 +50,7 @@ import {
 import { createCopilotUsageReader } from "./copilot-usage.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
-import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
+import { isCopilotModelPriceable, type CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { isCopilotContextTier } from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
@@ -257,7 +257,78 @@ function sanitizeCopilotModelMetadataForPricing(value: unknown): readonly Copilo
 async function listCopilotModelMetadataForPricing(
   ctx: AppContext,
 ): Promise<readonly CopilotModelMetadataForPricing[]> {
-  return sanitizeCopilotModelMetadataForPricing(await ctx.sessionManager.listModels());
+  const priceStore = ctx.copilotModelPriceStore;
+
+  let liveModels: readonly CopilotModelMetadataForPricing[] | undefined;
+  try {
+    liveModels = sanitizeCopilotModelMetadataForPricing(await ctx.sessionManager.listModels());
+  } catch (error) {
+    console.warn("[copilot-usage] listModels() failed; falling back to cached model prices.", error);
+    liveModels = undefined;
+  }
+
+  if (!priceStore) {
+    return liveModels ?? [];
+  }
+
+  // When the live fetch succeeds it is authoritative. Cache writes/reads are
+  // best-effort and must never mask successfully fetched live metadata.
+  if (liveModels && liveModels.length > 0) {
+    let cachedModels: readonly CopilotModelMetadataForPricing[] = [];
+    try {
+      priceStore.upsertModelPrices(liveModels);
+    } catch (error) {
+      console.warn("[copilot-usage] Failed to persist live model prices to cache.", error);
+    }
+    try {
+      cachedModels = priceStore.listModelPrices();
+    } catch (error) {
+      console.warn("[copilot-usage] Failed to read cached model prices.", error);
+    }
+    return mergeLiveAndCachedModelPrices(liveModels, cachedModels);
+  }
+
+  // Live fetch failed or returned nothing: serve last-known-good cache.
+  try {
+    return priceStore.listModelPrices();
+  } catch (error) {
+    console.warn("[copilot-usage] Failed to read cached model prices during outage.", error);
+    return liveModels ?? [];
+  }
+}
+
+// Live-first merge that yields at most one entry per model id, with explicit
+// precedence:
+//   1. a priceable live entry (freshest, always wins);
+//   2. else a priceable cached entry (last-known-good — keeps a model priced when
+//      a transient live response drops its billing data, and keeps retired models
+//      priced after they leave the live list);
+//   3. else the live entry itself (unpriceable, retained only so the resolver can
+//      still map an opaque observed id to its display name).
+// Live priceable entries are emitted first so display-name/variant matching
+// prefers live over cache on name collisions.
+function mergeLiveAndCachedModelPrices(
+  liveModels: readonly CopilotModelMetadataForPricing[],
+  cachedModels: readonly CopilotModelMetadataForPricing[],
+): readonly CopilotModelMetadataForPricing[] {
+  const byId = new Map<string, CopilotModelMetadataForPricing>();
+  const order: string[] = [];
+  const remember = (model: CopilotModelMetadataForPricing): void => {
+    if (!byId.has(model.id)) order.push(model.id);
+    byId.set(model.id, model);
+  };
+
+  for (const model of liveModels) {
+    if (isCopilotModelPriceable(model)) remember(model);
+  }
+  for (const model of cachedModels) {
+    if (!byId.has(model.id) && isCopilotModelPriceable(model)) remember(model);
+  }
+  for (const model of liveModels) {
+    if (!byId.has(model.id)) remember(model);
+  }
+
+  return order.map((id) => byId.get(id)!);
 }
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";

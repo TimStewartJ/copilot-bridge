@@ -568,21 +568,24 @@ function applyCostEstimateToModelRow(
   sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
 ): void {
   const resolution = resolveCopilotPricingModel(row.model, { sdkModels });
-  const sdkModelId = "sdkModelId" in resolution ? resolution.sdkModelId : undefined;
-  const sdkModel = sdkModels?.find((model) => model.id === row.model || model.id === sdkModelId);
+  const rates = resolution.status === "unpriced"
+    ? undefined
+    : getCopilotPricingRatesFromModelMetadata(resolution.sdkModel, row.contextTier);
+  const priced = rates !== undefined && resolution.status !== "unpriced";
+  const pricingKey = priced ? usagePricingKey(resolution.sku, row.contextTier) : null;
   const contextTierLabel = formatUsageContextTierLabel(row.contextTier);
   Object.assign(row, {
-    pricingKey: resolution.sku ? usagePricingKey(resolution.sku, row.contextTier) : null,
-    pricedAs: resolution.sku ? usagePricingKey(resolution.sku, row.contextTier) : null,
-    pricingStatus: resolution.status,
-    pricingSource: resolution.source,
+    pricingKey,
+    pricedAs: pricingKey,
+    pricingStatus: priced ? resolution.status : "unpriced",
+    pricingSource: priced ? resolution.source : "unpriced",
     normalizedPricingModel: resolution.normalizedModel,
     ...(row.contextTier ? { contextTier: row.contextTier } : {}),
     ...(contextTierLabel ? { contextTierLabel } : {}),
   } satisfies CopilotUsageModelPricingMetadata);
 
   const billableOutputTokens = Math.max(0, row.outputTokens) + Math.max(0, row.reasoningTokens);
-  if (!resolution.entry) {
+  if (!priced || !rates) {
     assignCostEstimate(row, {
       ...createZeroCostEstimate(),
       billableOutputTokens,
@@ -590,8 +593,6 @@ function applyCostEstimateToModelRow(
     return;
   }
 
-  const rates = getCopilotPricingRatesFromModelMetadata(sdkModel, row.contextTier)
-    ?? resolution.entry.rates;
   const costBreakdownUsd = calculateCostBreakdownUsd(rates, row);
   assignCostEstimate(row, {
     estimatedCostUsd: costBreakdownUsd.total,

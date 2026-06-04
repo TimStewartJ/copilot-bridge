@@ -54,7 +54,6 @@ const SKIP_REASON_LABELS: Record<CopilotUsageSkipReason, string> = {
 const PRICING_STATUS_LABELS: Record<CopilotUsageModelRow["pricingStatus"], string> = {
   exact: "Exact public price",
   "sdk-name": "Matched SDK name",
-  "normalized-variant": "Variant priced",
   unpriced: "Unpriced",
 };
 

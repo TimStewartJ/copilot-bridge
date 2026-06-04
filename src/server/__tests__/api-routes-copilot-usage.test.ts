@@ -21,6 +21,27 @@ installApiRouteTestHooks((state) => {
 
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
 
+// Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
+// convert to round USD-per-1M rates.
+function sdkPriceableModel(
+  id: string,
+  rates: { input: number; output: number; cache: number },
+  name?: string,
+) {
+  return {
+    id,
+    name: name ?? id,
+    billing: {
+      tokenPrices: {
+        inputPrice: rates.input * 100,
+        outputPrice: rates.output * 100,
+        cachePrice: rates.cache * 100,
+        batchSize: 1_000_000,
+      },
+    },
+  };
+}
+
 function expectedUsageTotals(overrides: Partial<Record<
   "requests" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens",
   number
@@ -108,7 +129,13 @@ describe("Copilot usage routes", () => {
         details: { trace: "secret-event-details" },
       },
     ]);
-    ({ app } = createTestApp({ copilotHome }));
+    ({ app } = createTestApp({
+      copilotHome,
+      sessionManager: {
+        ...createMockSessionManager(),
+        listModels: vi.fn(async () => [sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4")]),
+      },
+    }));
 
     const res = await request(app).get("/api/copilot-usage");
     const pricedTotals = expectedUsageTotals({
@@ -257,11 +284,14 @@ describe("Copilot usage routes", () => {
         },
       },
     ]);
-    const listModels = vi.fn(async () => [{
-      id: "opaque-sdk-id",
-      name: "Claude Opus 4.7",
-      billing: { note: "secret-sdk-field" },
-    }]);
+    const listModels = vi.fn(async () => [
+      {
+        id: "opaque-sdk-id",
+        name: "Claude Opus 4.7",
+        billing: { note: "secret-sdk-field" },
+      },
+      sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
+    ]);
     ({ app } = createTestApp({
       copilotHome,
       sessionManager: { ...createMockSessionManager(), listModels },
@@ -308,6 +338,7 @@ describe("Copilot usage routes", () => {
           billing: { note: "secret-sdk-field" },
         }),
       },
+      sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
     ]);
     ({ app } = createTestApp({
       copilotHome,
@@ -363,7 +394,7 @@ describe("Copilot usage routes", () => {
       expect(res.status).toBe(200);
       expect(listModels).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(
-        "[copilot-usage] Failed to load Copilot model metadata; pricing may be incomplete.",
+        "[copilot-usage] listModels() failed; falling back to cached model prices.",
         expect.any(Error),
       );
       expect(res.body.models[0]).toMatchObject({
@@ -379,6 +410,93 @@ describe("Copilot usage routes", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("caches live model prices and serves them when listModels later fails", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T15:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    let calls = 0;
+    const listModels = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return [sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4")];
+      }
+      throw new Error("models unavailable");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      ({ app } = createTestApp({
+        copilotHome,
+        sessionManager: { ...createMockSessionManager(), listModels },
+      }));
+
+      const first = await request(app).get("/api/copilot-usage");
+      expect(first.status).toBe(200);
+      expect(first.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
+      const firstCost = first.body.models[0].estimatedCostUsd;
+      expect(firstCost).toBeCloseTo(17.5);
+
+      // Force a fresh read; live metadata now fails but the cached price persists.
+      const second = await request(app).get("/api/copilot-usage?refresh=1");
+      expect(second.status).toBe(200);
+      expect(listModels.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
+      expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(firstCost);
+      expect(second.body.totals.unpricedModelCount).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("prefers fresh live prices over a stale cached price for the same model id", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T16:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    let calls = 0;
+    const listModels = vi.fn(async () => {
+      calls += 1;
+      const output = calls === 1 ? 15 : 30;
+      return [sdkPriceableModel("gpt-5.4", { input: 2.5, output, cache: 0.25 }, "GPT-5.4")];
+    });
+
+    ({ app } = createTestApp({
+      copilotHome,
+      sessionManager: { ...createMockSessionManager(), listModels },
+    }));
+
+    const first = await request(app).get("/api/copilot-usage");
+    expect(first.body.models[0].estimatedCostUsd).toBeCloseTo(15);
+
+    const second = await request(app).get("/api/copilot-usage?refresh=1");
+    // The newer live price (30) must win over the previously cached price (15).
+    expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
+    expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(30);
   });
 
   it("GET /api/copilot-usage supports refresh=1 cache bypass", async () => {
