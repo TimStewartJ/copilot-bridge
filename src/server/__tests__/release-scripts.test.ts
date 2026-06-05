@@ -213,6 +213,25 @@ describe("release scripts", () => {
     expect(script).not.toMatch(/-RedirectStandardError\s+\(Join-Path\s+\$logsDir\s+"bridge-error\.log"\)/);
   });
 
+  it("surfaces and copies Bridge logs when the start smoke health check fails", () => {
+    const script = readScript("test-release-package.ps1");
+
+    expect(script).toContain("function Show-BridgeLogTail");
+    expect(script).toContain('$logsDir = Join-Path $StateRoot "logs"');
+    expect(script).toContain('Show-BridgeLogTail "launcher.log" (Join-Path $logsDir "launcher.log")');
+    expect(script).toContain('Show-BridgeLogTail "bridge.log" (Join-Path $logsDir "bridge.log")');
+    expect(script).toContain('Show-BridgeLogTail "bridge-error.log" (Join-Path $logsDir "bridge-error.log")');
+    expect(script).toContain('$smokeLogOutDir = Join-Path $smokeRepoRoot "release\\smoke-logs"');
+
+    // The log dump must be wired into the health-check failure path, not the success path.
+    const healthCall = script.indexOf('Wait-Health "http://localhost:$Port/api/health" $TimeoutSeconds');
+    const logDump = script.indexOf('Show-BridgeLogTail "launcher.log"');
+    const reThrow = script.indexOf("throw", logDump);
+    expect(healthCall).toBeGreaterThanOrEqual(0);
+    expect(logDump).toBeGreaterThan(healthCall);
+    expect(reThrow).toBeGreaterThan(logDump);
+  });
+
   it("rotates local stdout and stderr logs before redirecting to active log paths", () => {
     const script = readScript("start-bridge.ps1");
 

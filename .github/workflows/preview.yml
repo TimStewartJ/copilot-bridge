@@ -97,6 +97,14 @@ jobs:
             -Analyze `
             -SmokeTest
 
+      - name: Upload preview smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-smoke-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release/smoke-logs/**
+          if-no-files-found: ignore
+
       - name: Write preview notes
         shell: pwsh
         run: |
