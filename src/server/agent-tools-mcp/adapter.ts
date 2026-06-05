@@ -37,7 +37,6 @@ export function defineBridgeTool(
   return {
     name,
     description: options.description,
-    parameters: options.parameters ?? { type: "object", properties: {} },
     inputSchema: options.parameters ?? { type: "object", properties: {} },
     scope: options.scope,
     handler: (args, extra) => options.handler(args, bridgeInvocationFromMcp(name, args, extra)),

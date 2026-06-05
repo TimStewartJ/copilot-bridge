@@ -87,7 +87,7 @@ import {
   BRIDGE_TOOLS_SESSION_MCP_SERVER_NAME,
   createBridgeToolsMcpEndpoint,
 } from "./agent-tools-mcp/endpoint.js";
-import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBrowserLaunchConfig } from "./agent-browser.js";
@@ -762,13 +762,17 @@ export class SessionManager {
     );
   }
 
-  private resolveNativeBridgeTools(): BridgeNativeTool[] | undefined {
-    if (!this.shouldUseNativeBridgeTools()) return undefined;
-    const definitions = this.deps.bridgeToolsMcpServer
+  private eligibleNativeBridgeToolDefinitions(): BridgeToolDefinition[] {
+    return this.deps.bridgeToolsMcpServer
       ?.getToolDefinitions("all")
       .filter((tool) => !BRIDGE_EXCLUDED_TOOLS.includes(tool.name)) ?? [];
+  }
+
+  private resolveNativeBridgeTools(): BridgeNativeTool[] | undefined {
+    if (!this.shouldUseNativeBridgeTools()) return undefined;
+    const definitions = this.eligibleNativeBridgeToolDefinitions();
     if (definitions.length === 0) return undefined;
-    return createNativeBridgeTools(definitions, { loadPolicy: "eager", skipPermission: true });
+    return createNativeBridgeTools(definitions);
   }
 
   private resolveBuiltInMcpServersForSession(
@@ -883,10 +887,7 @@ export class SessionManager {
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
     if (!this.shouldUseNativeBridgeTools() || !this.backend?.capabilities.toolMetadataWarmup) return;
     if (typeof session.initializeTools !== "function") return;
-    const expectedTools = this.deps.bridgeToolsMcpServer
-      ?.getToolDefinitions("all")
-      .map((tool) => tool.name)
-      .filter((name) => !BRIDGE_EXCLUDED_TOOLS.includes(name)) ?? [];
+    const expectedTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
     try {
       await session.initializeTools();
       const metadata = typeof session.getCurrentToolMetadata === "function"

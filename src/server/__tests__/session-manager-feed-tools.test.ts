@@ -26,7 +26,7 @@ function createInvocation(toolName: string) {
 }
 
 function getParameterDescription(ctx: AppContext, toolName: string, parameterName: string): string {
-  const parameters = getTool(ctx, toolName).parameters;
+  const parameters = getTool(ctx, toolName).inputSchema;
   if (!parameters || typeof parameters !== "object" || !("properties" in parameters)) {
     throw new Error(`${toolName} has no JSON object parameters`);
   }

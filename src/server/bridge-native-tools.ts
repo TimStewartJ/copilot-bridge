@@ -9,13 +9,6 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { BridgeToolDefinition, BridgeToolHandlerResult } from "./agent-tools-mcp/server.js";
 import { normalizeToolResult } from "./agent-tools-mcp/server.js";
 
-export type BridgeToolLoadPolicy = "eager" | "default";
-
-export interface BridgeNativeToolOptions {
-  loadPolicy?: BridgeToolLoadPolicy;
-  skipPermission?: boolean;
-}
-
 export type BridgeNativeTool = Tool<Record<string, unknown>> & {
   /**
    * Copilot runtime external-tool loading policy. The runtime already honors
@@ -73,16 +66,13 @@ function createSdkInvocationExtra(invocation: ToolInvocation): Record<string, un
 
 export function createNativeBridgeTools(
   definitions: readonly BridgeToolDefinition[],
-  options: BridgeNativeToolOptions = {},
 ): BridgeNativeTool[] {
-  const loadPolicy = options.loadPolicy ?? "eager";
-  const skipPermission = options.skipPermission ?? true;
   return definitions.map((definition): BridgeNativeTool => ({
     name: definition.name,
     description: definition.description,
-    parameters: definition.inputSchema ?? definition.parameters ?? { type: "object", properties: {} },
-    ...(loadPolicy === "eager" ? { defer: "never" as const } : {}),
-    ...(skipPermission ? { skipPermission: true } : {}),
+    parameters: definition.inputSchema ?? { type: "object", properties: {} },
+    defer: "never",
+    skipPermission: true,
     handler: async (args, invocation) => convertBridgeToolResultToSdk(
       await definition.handler(normalizeArgs(args), createSdkInvocationExtra(invocation)),
     ),

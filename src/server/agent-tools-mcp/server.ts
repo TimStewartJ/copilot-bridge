@@ -26,8 +26,6 @@ export type BridgeToolScope = "global" | "session" | "both";
 export interface BridgeToolDefinition {
   name: string;
   description?: string;
-  /** Compatibility alias while tests and unmigrated helpers still inspect SDK-shaped definitions. */
-  parameters?: Tool["inputSchema"];
   inputSchema: Tool["inputSchema"];
   scope?: BridgeToolScope;
   handler: (
