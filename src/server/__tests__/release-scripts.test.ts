@@ -268,7 +268,14 @@ describe("release scripts", () => {
     expect(script).toContain("function Test-ReleaseUpdaterProcess");
     expect(script).toContain("function Add-ProcessTree($Process, [bool]$RequireReleaseInstallProcess = $true)");
     expect(script).toContain('$releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"');
-    expect(script).toContain("$anyReleaseSlotPattern");
+    // The machine-wide release-slots pattern was a cross-install kill hazard: it would
+    // match (and force-kill) an unrelated install's bridge running from its own slot.
+    // Matching must stay scoped to this install.
+    expect(script).not.toContain("$anyReleaseSlotPattern");
+    expect(script).not.toContain('"release-slots[\\\\/][^\\\\/]+[\\\\/]"');
+    expect(script).toContain("$releaseRootPatterns = @($installRootPattern, $releaseSlotsPattern)");
+    expect(script).toContain('$activeReleasePointerPath = Join-Path $effectiveDataDir "active-release.json"');
+    expect(script).toContain("Test-SameOrChildPath $activeReleaseRoot $releaseSlotsDir");
     expect(script).toContain("$releaseRootPatterns");
     expect(script).toContain("Add-ProcessTree $child $false");
     expect(script).toContain("if (Test-ReleaseUpdaterProcess $Process)");

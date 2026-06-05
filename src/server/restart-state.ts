@@ -139,8 +139,28 @@ function isTransientRestartStateFsError(error: unknown): boolean {
   return code !== undefined && TRANSIENT_RESTART_STATE_FS_ERROR_CODES.has(code);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+type RestartStateFsRetrySleep = (ms: number) => Promise<void>;
+
+// Capture the real timer at module load. Callers may install fake timers after
+// importing this module (e.g. test suites), but the transient-FS retry backoff
+// must still elapse in real time — freezing it under fake timers would hang any
+// real restart-state file I/O. Binding here keeps that backoff immune to a
+// later fake-timer installation while remaining identical in production.
+const realSetTimeout: typeof globalThis.setTimeout = globalThis.setTimeout;
+
+const defaultRestartStateFsRetrySleep: RestartStateFsRetrySleep = (ms) =>
+  new Promise((resolve) => realSetTimeout(resolve, ms));
+
+let restartStateFsRetrySleep: RestartStateFsRetrySleep = defaultRestartStateFsRetrySleep;
+
+/**
+ * Test seam for the transient-FS-retry backoff sleep. The default is already
+ * bound to the real timer (see above), so most suites need no override; this
+ * exists for tests that want to make the backoff instant or deterministic. Pass
+ * undefined to restore the default. Not for production use.
+ */
+export function __setRestartStateFsRetrySleepForTests(sleep?: RestartStateFsRetrySleep): void {
+  restartStateFsRetrySleep = sleep ?? defaultRestartStateFsRetrySleep;
 }
 
 async function retryTransientRestartStateFsOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -154,7 +174,7 @@ async function retryTransientRestartStateFsOperation<T>(operation: () => Promise
       ) {
         throw error;
       }
-      await sleep(RESTART_STATE_FS_RETRY_DELAYS_MS[attempt]);
+      await restartStateFsRetrySleep(RESTART_STATE_FS_RETRY_DELAYS_MS[attempt]);
     }
   }
 }
