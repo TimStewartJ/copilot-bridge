@@ -106,5 +106,6 @@ jobs:
             release/release-mode-e2e/**
             release/e2e-*.manifest.json
             release/*.analysis.json
+            release/smoke-logs/**
           if-no-files-found: warn
 

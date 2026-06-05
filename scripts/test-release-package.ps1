@@ -104,6 +104,21 @@ function Wait-Health($HealthUrl, $TimeoutSeconds) {
   throw "Copilot Bridge did not become healthy at $HealthUrl within $TimeoutSeconds seconds."
 }
 
+function Show-BridgeLogTail($Label, $Path, $MaxLines = 200) {
+  Write-Output "----- BEGIN smoke $Label ($Path) -----"
+  if (Test-Path $Path) {
+    try {
+      Get-Content -Path $Path -Tail $MaxLines -ErrorAction Stop | ForEach-Object { Write-Output $_ }
+    } catch {
+      Write-Output "(failed to read ${Path}: $($_.Exception.Message))"
+    }
+  } else {
+    Write-Output "(no log file at $Path)"
+  }
+  Write-Output "----- END smoke $Label -----"
+}
+
+$smokeRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "copilot-bridge-package-smoke-$([System.Guid]::NewGuid().ToString('N'))"
 $expandedDir = Join-Path $tempDir "expanded"
 $resolvedPackagePath = (Resolve-Path $PackagePath).Path
@@ -183,6 +198,7 @@ try {
   if ([string]::IsNullOrWhiteSpace($StateRoot)) {
     $StateRoot = Join-Path $tempDir "state"
   }
+  $logsDir = Join-Path $StateRoot "logs"
 
   foreach ($name in $envNames) {
     $previousEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
@@ -209,7 +225,25 @@ try {
   Push-Location $releaseRoot
   try {
     & .\start.ps1 | Write-Output
-    Wait-Health "http://localhost:$Port/api/health" $TimeoutSeconds
+    try {
+      Wait-Health "http://localhost:$Port/api/health" $TimeoutSeconds
+    } catch {
+      Write-Warning "Release package start smoke health check failed; dumping Bridge logs from $logsDir for diagnosis."
+      Show-BridgeLogTail "launcher.log" (Join-Path $logsDir "launcher.log")
+      Show-BridgeLogTail "bridge.log" (Join-Path $logsDir "bridge.log")
+      Show-BridgeLogTail "bridge-error.log" (Join-Path $logsDir "bridge-error.log")
+      $smokeLogOutDir = Join-Path $smokeRepoRoot "release\smoke-logs"
+      try {
+        New-Item -ItemType Directory -Path $smokeLogOutDir -Force | Out-Null
+        if (Test-Path $logsDir) {
+          Copy-Item -Path (Join-Path $logsDir "*") -Destination $smokeLogOutDir -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Output "Copied smoke-test Bridge logs to $smokeLogOutDir for artifact upload."
+        }
+      } catch {
+        Write-Warning "Failed to copy smoke-test Bridge logs to ${smokeLogOutDir}: $($_.Exception.Message)"
+      }
+      throw
+    }
     Write-Output "Release package start smoke passed at http://localhost:$Port/api/health"
   } finally {
     if (Test-Path (Join-Path $releaseRoot "stop.ps1")) {
