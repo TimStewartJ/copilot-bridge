@@ -32,21 +32,22 @@ describe("session manager task tools", () => {
     const listTool = getTool(ctx, "task_list") as any;
     const infoTool = getTool(ctx, "task_get_info") as any;
 
-    expect(createTool.parameters.properties.kind).toEqual({
+    expect(createTool.inputSchema.properties.kind).toEqual({
       type: "string",
       enum: ["task", "ongoing"],
       description: "Task kind. Defaults to task.",
     });
-    expect(updateTool.parameters.properties.kind).toEqual({
+    expect("parameters" in createTool).toBe(false);
+    expect(updateTool.inputSchema.properties.kind).toEqual({
       type: "string",
       enum: ["task", "ongoing"],
       description: "Task kind",
     });
-    expect(updateTool.parameters.properties.nextAction).toBeUndefined();
-    expect(updateTool.parameters.properties.waitingOn).toBeUndefined();
-    expect(updateTool.parameters.properties.nextTouchAt).toBeUndefined();
-    expect(momentumTool.parameters.required).toEqual(["taskId", "followUp"]);
-    expect(momentumTool.parameters.properties.followUp.properties.mode.enum).toEqual(["set", "keep", "clear"]);
+    expect(updateTool.inputSchema.properties.nextAction).toBeUndefined();
+    expect(updateTool.inputSchema.properties.waitingOn).toBeUndefined();
+    expect(updateTool.inputSchema.properties.nextTouchAt).toBeUndefined();
+    expect(momentumTool.inputSchema.required).toEqual(["taskId", "followUp"]);
+    expect(momentumTool.inputSchema.properties.followUp.properties.mode.enum).toEqual(["set", "keep", "clear"]);
     expect(listTool.description).toContain("kinds");
     expect(infoTool.description).toContain("kind");
   });
