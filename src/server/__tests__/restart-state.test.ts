@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { basename, dirname, join } from "node:path";
 
 const {
@@ -31,6 +31,7 @@ vi.mock("node:fs/promises", () => ({
 
 import {
   DEFAULT_RESTART_STATE,
+  __setRestartStateFsRetrySleepForTests,
   buildRestartStateWithReleaseFailure,
   clearRestartState,
   readRestartState,
@@ -279,5 +280,53 @@ describe("restart-state", () => {
     expect(result.phase).toBe("idle");
     expect(result.requestId).toBeNull();
     expect(result.waitingSessions).toBe(0);
+  });
+});
+
+describe("restart-state transient FS retry under fake timers", () => {
+  beforeEach(() => {
+    mkdirMock.mockReset();
+    readFileMock.mockReset();
+    renameMock.mockReset();
+    rmMock.mockReset();
+    writeFileMock.mockReset();
+    randomUUIDMock.mockClear();
+
+    mkdirMock.mockResolvedValue(undefined);
+    rmMock.mockResolvedValue(undefined);
+    writeFileMock.mockResolvedValue(undefined);
+
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    __setRestartStateFsRetrySleepForTests();
+    vi.useRealTimers();
+  });
+
+  it("retries and resolves under fake timers without manual timer advancement", async () => {
+    // Regression guard: the default retry backoff is bound to the real timer at
+    // module load (restart-state.ts), so a transient FS error still retries and
+    // resolves even though the suite installed fake timers — no manual
+    // advanceTimers needed. If the backoff is ever rebound to the faked timer,
+    // this hangs and fails, reproducing the original parallel-load flake.
+    renameMock
+      .mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EBUSY" }))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(writeRestartState(statePath, activeState)).resolves.toEqual(activeState);
+    expect(renameMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors an injected instant retry sleep via the test seam", async () => {
+    // The seam lets a suite make the backoff instant/deterministic when desired.
+    __setRestartStateFsRetrySleepForTests(() => Promise.resolve());
+
+    readFileMock
+      .mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EACCES" }))
+      .mockResolvedValueOnce(JSON.stringify(activeState));
+
+    await expect(readRestartState(statePath)).resolves.toEqual(activeState);
+    expect(readFileMock).toHaveBeenCalledTimes(2);
   });
 });

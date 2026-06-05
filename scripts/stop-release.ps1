@@ -34,8 +34,28 @@ $effectiveDataDir = if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_DATA_DIR))
 $releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"
 $installRootPattern = [regex]::Escape($installRoot) + "[\\/]"
 $releaseSlotsPattern = [regex]::Escape($releaseSlotsDir) + "[\\/]"
-$anyReleaseSlotPattern = "release-slots[\\/][^\\/]+[\\/]"
-$releaseRootPatterns = @($installRootPattern, $releaseSlotsPattern, $anyReleaseSlotPattern)
+# Scope process matching to THIS install only. The active release always runs from
+# a slot under $releaseSlotsDir (start-release validates active-release.json against
+# it), so $releaseSlotsPattern already covers it. We intentionally do NOT use a
+# machine-wide "release-slots" pattern, which would match — and force-kill — an
+# unrelated install's bridge running from its own release slot.
+$releaseRootPatterns = @($installRootPattern, $releaseSlotsPattern)
+# Also match the exact active release root this install recorded, so a stale server
+# whose slot path is spelled differently than the freshly computed $releaseSlotsDir
+# is still stopped. The pointer is validated to live under $releaseSlotsDir, so this
+# can never broaden matching beyond the current install.
+$activeReleasePointerPath = Join-Path $effectiveDataDir "active-release.json"
+if (Test-Path $activeReleasePointerPath) {
+  try {
+    $activeReleasePointer = Get-Content $activeReleasePointerPath -Raw | ConvertFrom-Json
+    $activeReleaseRoot = [string]$activeReleasePointer.root
+    if (-not [string]::IsNullOrWhiteSpace($activeReleaseRoot) -and (Test-SameOrChildPath $activeReleaseRoot $releaseSlotsDir)) {
+      $releaseRootPatterns += ([regex]::Escape($activeReleaseRoot) + "[\\/]")
+    }
+  } catch {
+    Write-Warning "Could not read active release pointer at ${activeReleasePointerPath}: $($_.Exception.Message)"
+  }
+}
 $releaseProcessPattern = "dist[\\/]+launcher\.js|dist[\\/]+server[\\/]+index\.js"
 $updaterProcessPattern = $installRootPattern + 'update\.ps1(?:"|''|\s|$)'
 
