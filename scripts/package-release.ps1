@@ -78,6 +78,7 @@ function Read-UpdateManifestPublicKeyPem {
 
 $runtimeDependencyNames = @(
   "@github/copilot-sdk",
+  "@modelcontextprotocol/sdk",
   "express",
   "gray-matter",
   "multer",
