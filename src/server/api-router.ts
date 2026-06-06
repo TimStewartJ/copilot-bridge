@@ -67,6 +67,7 @@ import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
+import { cancelHibernate, getHibernateStatus, scheduleHibernate } from "./device-hibernate.js";
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
@@ -111,6 +112,8 @@ import {
   ManagementJobEnqueueError,
   enqueueManagementJob,
 } from "./management-job-enqueue.js";
+
+const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 
 function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
   if (!isDocsFtsUnavailableError(error)) return null;
@@ -1864,26 +1867,63 @@ export function createApiRouter(ctx: AppContext): express.Router {
     process.exit(0);
   });
 
-  router.post("/device/hibernate", (_req, res) => {
+  router.post("/device/hibernate", (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
+
+    const rawDelay = (req.body as { delayMinutes?: unknown } | undefined)?.delayMinutes;
+    const delayMinutes = rawDelay === undefined || rawDelay === null ? 0 : Number(rawDelay);
+    if (!HIBERNATE_DELAY_MINUTES.includes(delayMinutes as (typeof HIBERNATE_DELAY_MINUTES)[number])) {
+      return res.status(400).json({
+        error: `delayMinutes must be one of: ${HIBERNATE_DELAY_MINUTES.join(", ")}.`,
+      });
+    }
+
     let hibernateCommand: DeviceHibernateCommand;
     try {
       hibernateCommand = getDeviceHibernateCommand();
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
-    console.log("[device] Hibernate requested via API");
-    res.on("finish", () => {
-      setTimeout(() => {
-        void requestDeviceHibernate(hibernateCommand).catch((error) => {
-          console.error("[device] Hibernate request failed:", error);
-        });
-      }, 250);
-    });
-    res.status(202).json({
+
+    if (delayMinutes <= 0) {
+      // Immediate: drop any pending scheduled hibernation, then fire shortly
+      // after the response flushes so the client still receives the ack.
+      cancelHibernate();
+      console.log("[device] Hibernate requested via API (immediate)");
+      res.on("finish", () => {
+        setTimeout(() => {
+          void requestDeviceHibernate(hibernateCommand).catch((error) => {
+            console.error("[device] Hibernate request failed:", error);
+          });
+        }, 250);
+      });
+      return res.status(202).json({
+        ok: true,
+        pending: false,
+        scheduledAt: null,
+        delayMs: null,
+        message: "Hibernate requested. This device may sleep shortly.",
+      });
+    }
+
+    const status = scheduleHibernate(hibernateCommand, delayMinutes * 60_000);
+    console.log(`[device] Hibernate scheduled via API in ${delayMinutes} minute(s)`);
+    return res.status(202).json({
       ok: true,
-      message: "Hibernate requested. This device may sleep shortly.",
+      ...status,
+      message: `Hibernate scheduled in ${delayMinutes} minute${delayMinutes === 1 ? "" : "s"}. The device will sleep then unless cancelled.`,
     });
+  });
+
+  router.get("/device/hibernate", (_req, res) => {
+    res.json(getHibernateStatus());
+  });
+
+  router.post("/device/hibernate/cancel", (_req, res) => {
+    if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
+    const cancelled = cancelHibernate();
+    console.log(`[device] Hibernate cancel requested via API (cancelled=${cancelled})`);
+    res.json({ ok: true, cancelled, ...getHibernateStatus() });
   });
 
   // POST /restart-clear — manual escape hatch to dismiss a stale restart banner

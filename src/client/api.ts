@@ -1684,13 +1684,35 @@ export async function closeHeadedDiagnosticsBrowser(): Promise<BrowserHeadedClos
   return apiFetch<BrowserHeadedCloseResponse>("/api/browser/diagnostics/close-headed", {});
 }
 
-export interface DeviceHibernateResponse {
+export interface DeviceHibernateStatus {
+  pending: boolean;
+  scheduledAt: number | null;
+  delayMs: number | null;
+}
+
+export interface DeviceHibernateResponse extends DeviceHibernateStatus {
   ok: true;
   message: string;
 }
 
-export async function hibernateDevice(): Promise<DeviceHibernateResponse> {
-  return apiFetch<DeviceHibernateResponse>("/api/device/hibernate", {});
+export interface DeviceHibernateCancelResponse extends DeviceHibernateStatus {
+  ok: true;
+  cancelled: boolean;
+}
+
+/** Valid hibernation delays (minutes). 0 means hibernate now. */
+export const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
+
+export async function hibernateDevice(delayMinutes = 0): Promise<DeviceHibernateResponse> {
+  return apiFetch<DeviceHibernateResponse>("/api/device/hibernate", { delayMinutes });
+}
+
+export async function fetchHibernateStatus(): Promise<DeviceHibernateStatus> {
+  return apiFetch<DeviceHibernateStatus>("/api/device/hibernate");
+}
+
+export async function cancelHibernate(): Promise<DeviceHibernateCancelResponse> {
+  return apiFetch<DeviceHibernateCancelResponse>("/api/device/hibernate/cancel", {});
 }
 
 // ── Push notification API ──────────────────────────────────────────
