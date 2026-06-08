@@ -202,4 +202,143 @@ describe("SessionAgentRegistry", () => {
     void before;
     registry.dispose();
   });
+
+  it("clears heavy free-text fields on eviction while preserving counts/status", async () => {
+    const { bus } = makeBus();
+    let session: AgentSession | undefined = fakeSession(async () => ({
+      tasks: [
+        agentTask({
+          id: "a",
+          status: "running",
+          prompt: "secret prompt",
+          result: "big result",
+          latestResponse: "latest response",
+          error: "boom",
+        }),
+        agentTask({ id: "b", status: "idle", prompt: "p2", result: "r2" }),
+      ],
+    }));
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    await registry.refresh("s1", "test");
+    const liveA = registry.getSnapshot("s1").tasks.find((t) => t.id === "a");
+    expect(liveA).toMatchObject({
+      prompt: "secret prompt",
+      result: "big result",
+      latestResponse: "latest response",
+      error: "boom",
+    });
+
+    session = undefined;
+    registry.markSessionUnavailable("s1");
+
+    const after = registry.getSnapshot("s1");
+    expect(after.tasks.map((t) => t.id).sort()).toEqual(["a", "b"]);
+    for (const task of after.tasks) {
+      expect(task.prompt).toBeUndefined();
+      expect(task.result).toBeUndefined();
+      expect(task.latestResponse).toBeUndefined();
+      expect(task.error).toBeUndefined();
+    }
+    // counts and per-task status are untouched
+    expect(registry.getSummary("s1")).toMatchObject({ running: 1, idle: 1, total: 2 });
+    expect(after.tasks.find((t) => t.id === "a")?.status).toBe("running");
+    registry.dispose();
+  });
+
+  it("preserves freshness (live -> lastSeen) after clearing text on eviction", async () => {
+    const { bus } = makeBus();
+    let session: AgentSession | undefined = fakeSession(async () => ({
+      tasks: [agentTask({ id: "a", status: "idle", prompt: "p" })],
+    }));
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    await registry.refresh("s1", "test");
+    session = undefined;
+    registry.markSessionUnavailable("s1");
+    expect(registry.getSummary("s1")).toMatchObject({ idle: 1, total: 1, source: "live" });
+    vi.setSystemTime(61_000);
+    expect(registry.getSummary("s1").source).toBe("lastSeen");
+    registry.dispose();
+  });
+
+  it("does not repopulate heavy text when the session is evicted mid-refresh", async () => {
+    const { bus, events } = makeBus();
+    let resolveList!: (value: { tasks: AgentBackgroundTask[] }) => void;
+    const pending = new Promise<{ tasks: AgentBackgroundTask[] }>((resolve) => { resolveList = resolve; });
+    let session: AgentSession | undefined = fakeSession(() => pending);
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    const inFlight = registry.refresh("s1", "test");
+    // Evict before listTasks resolves, then deliver heavy text.
+    session = undefined;
+    resolveList({ tasks: [agentTask({ id: "a", status: "running", prompt: "secret" })] });
+    await inFlight;
+
+    const snap = registry.getSnapshot("s1");
+    expect(snap.source).toBe("unknown");
+    expect(snap.tasks).toHaveLength(0);
+    // No `live` update is emitted for a session we can no longer vouch for.
+    expect(events.filter((e) => e.type === "session:agents")).toHaveLength(0);
+    registry.dispose();
+  });
+
+  it("keeps the entries map bounded across many evicted sessions", async () => {
+    const { bus } = makeBus();
+    const live = new Map<string, AgentSession>();
+    const maxEntries = 5;
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: (id) => live.get(id),
+      maxEntries,
+      pollIntervalMs: 1_000,
+    });
+
+    const total = 20;
+    for (let i = 0; i < total; i++) {
+      const id = `s${i}`;
+      vi.setSystemTime(i * 100); // distinct refreshedAt so LRU ordering is meaningful
+      const session = fakeSession(async () => ({
+        tasks: [agentTask({ id: "a", status: "running", prompt: "x" })],
+      }));
+      live.set(id, session);
+      await registry.refresh(id, "test");
+      // Simulate eviction: live object gone + registry notified.
+      live.delete(id);
+      registry.markSessionUnavailable(id);
+    }
+
+    // Dropped entries report "unknown"; retained entries report live/lastSeen.
+    let retained = 0;
+    for (let i = 0; i < total; i++) {
+      if (registry.getSummary(`s${i}`).source !== "unknown") retained += 1;
+    }
+    expect(retained).toBeLessThanOrEqual(maxEntries);
+    // The most recently refreshed sessions are the ones kept.
+    expect(registry.getSummary(`s${total - 1}`).source).not.toBe("unknown");
+    expect(registry.getSummary("s0").source).toBe("unknown");
+    registry.dispose();
+  });
+
+  it("never evicts entries with a live session to satisfy the bound", async () => {
+    const { bus } = makeBus();
+    const live = new Map<string, AgentSession>();
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: (id) => live.get(id),
+      maxEntries: 2,
+    });
+
+    // Three sessions that all stay live: the bound must not drop any of them.
+    for (let i = 0; i < 3; i++) {
+      const id = `live${i}`;
+      vi.setSystemTime(i * 100);
+      live.set(id, fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "running" })] })));
+      await registry.refresh(id, "test");
+    }
+    expect(registry.getSummary("live0").source).not.toBe("unknown");
+    expect(registry.getSummary("live1").source).not.toBe("unknown");
+    expect(registry.getSummary("live2").source).not.toBe("unknown");
+    registry.dispose();
+  });
 });
