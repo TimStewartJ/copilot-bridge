@@ -34,6 +34,12 @@ const FRESHNESS_WINDOW_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 /** Hard cap on a single session's poll lifetime, so a stuck task can't leak a timer. */
 const POLL_MAX_DURATION_MS = 10 * 60_000;
+/**
+ * Soft cap on retained `entries`. When exceeded, the least-recently-refreshed
+ * entries without a live session are dropped so the map cannot grow unbounded
+ * across long-lived servers. Entries with a live SDK object are always kept.
+ */
+const DEFAULT_MAX_ENTRIES = 500;
 
 const KNOWN_STATUSES: ReadonlySet<string> = new Set<AgentTaskStatus>([
   "running",
@@ -62,6 +68,8 @@ export interface SessionAgentRegistryDeps {
   getLiveSession(sessionId: string): AgentSession | undefined;
   now?(): number;
   pollIntervalMs?: number;
+  /** Soft cap on retained entries (see DEFAULT_MAX_ENTRIES). Normalized to a finite int >= 1. */
+  maxEntries?: number;
   logger?: Pick<Console, "warn">;
 }
 
@@ -69,11 +77,17 @@ export class SessionAgentRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
   private readonly now: () => number;
   private readonly pollIntervalMs: number;
+  private readonly maxEntries: number;
   private readonly logger: Pick<Console, "warn">;
 
   constructor(private readonly deps: SessionAgentRegistryDeps) {
     this.now = deps.now ?? (() => Date.now());
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const max = deps.maxEntries;
+    this.maxEntries =
+      typeof max === "number" && Number.isFinite(max) && max >= 1
+        ? Math.floor(max)
+        : DEFAULT_MAX_ENTRIES;
     this.logger = deps.logger ?? console;
   }
 
@@ -124,6 +138,12 @@ export class SessionAgentRegistry {
 
     try {
       const result = await session.listTasks();
+      if (this.deps.getLiveSession(sessionId) !== session) {
+        // Session was evicted while the refresh was in flight. Don't repopulate
+        // heavy task text or emit a `live` update for a session we can no longer
+        // vouch for; leave any prior (now text-cleared) snapshot to age out.
+        return;
+      }
       const rawTasks = Array.isArray(result?.tasks) ? result!.tasks! : [];
       entry.tasks = rawTasks
         .filter((task) => task.kind === "agent")
@@ -132,6 +152,7 @@ export class SessionAgentRegistry {
       entry.hadLiveRefresh = true;
       this.emitIfChanged(sessionId, entry);
       this.managePoll(sessionId, entry);
+      this.enforceEntryBound(sessionId);
     } catch (err) {
       this.logger.warn(
         `[agents] [${sessionId.slice(0, 8)}] tasks.list refresh failed (${reason}): ${
@@ -153,6 +174,14 @@ export class SessionAgentRegistry {
     if (!entry) return;
     this.stopPoll(entry);
     this.emitLastSeenIfSurfaced(sessionId, entry);
+    // Drop heavy untruncated free-text the evicted session no longer needs:
+    // counts/status/freshness are enough to age the snapshot out, and the
+    // live-gated UI bar won't reopen for an evicted session. A re-resumed
+    // session repopulates text via the detail endpoint's live refresh.
+    this.clearHeavyTaskFields(entry);
+    // Eviction can make older entries prunable; converge the bound now so the
+    // map shrinks even without a subsequent refresh.
+    this.enforceEntryBound(sessionId);
   }
 
   /** Drop all state for a deleted session. */
@@ -173,6 +202,42 @@ export class SessionAgentRegistry {
 
   private createEntry(): RegistryEntry {
     return { tasks: [], refreshedAt: 0, hadLiveRefresh: false, refreshing: false };
+  }
+
+  /** Strip heavy untruncated free-text from retained tasks (in place). */
+  private clearHeavyTaskFields(entry: RegistryEntry): void {
+    for (const task of entry.tasks) {
+      task.prompt = undefined;
+      task.result = undefined;
+      task.latestResponse = undefined;
+      task.error = undefined;
+    }
+  }
+
+  /**
+   * Enforce the soft cap on retained entries. Drops the least-recently-refreshed
+   * entries that have no live session and aren't mid-refresh, using the same
+   * teardown as `forget`. The just-touched session (`keepSessionId`) and any
+   * entry with a live SDK object are never evicted, so the per-session live
+   * snapshot stays fully intact (the cap may be exceeded while many sessions are
+   * live, which is bounded by the live session cache anyway).
+   */
+  private enforceEntryBound(keepSessionId: string): void {
+    if (this.entries.size <= this.maxEntries) return;
+    const evictable: Array<{ id: string; entry: RegistryEntry }> = [];
+    for (const [id, entry] of this.entries) {
+      if (id === keepSessionId || entry.refreshing) continue;
+      if (this.deps.getLiveSession(id)) continue;
+      evictable.push({ id, entry });
+    }
+    evictable.sort((a, b) => a.entry.refreshedAt - b.entry.refreshedAt);
+    let overflow = this.entries.size - this.maxEntries;
+    for (const { id, entry } of evictable) {
+      if (overflow <= 0) break;
+      this.stopPoll(entry);
+      this.entries.delete(id);
+      overflow -= 1;
+    }
   }
 
   private deriveSource(entry: RegistryEntry): AgentCountsSource {
