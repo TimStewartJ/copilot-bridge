@@ -102,6 +102,25 @@ describe("SessionManager model refresh", () => {
     expect(result.models).toEqual([{ id: "fresh-model", name: "Fresh Model" }]);
   });
 
+  it("tracks the backend creation timestamp and updates it after a successful rotation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    const { manager } = createManager([oldBackend, freshBackend]);
+
+    expect(manager.getBackendCreatedAt()).toBeNull();
+
+    await manager.initialize();
+    expect(manager.getBackendCreatedAt()).toBe("2026-01-01T00:00:00.000Z");
+
+    vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+    const result = await manager.refreshModels();
+
+    expect(manager.getBackendCreatedAt()).toBe("2026-01-01T00:05:00.000Z");
+    expect(result.clientCreatedAt).toBe("2026-01-01T00:05:00.000Z");
+  });
+
   it("constructs the agent backend through a zero-argument factory", async () => {
     const oldBackend = createBackend([]);
     const freshBackend = createBackend([]);
@@ -179,6 +198,7 @@ describe("SessionManager model refresh", () => {
     expect((manager as any).backendRotation).toBeNull();
     expect(oldBackend.forceStop).toHaveBeenCalledOnce();
     expect(freshBackend.start).not.toHaveBeenCalled();
+    expect(manager.getBackendCreatedAt()).toBeNull();
     await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
   });
 
@@ -203,6 +223,7 @@ describe("SessionManager model refresh", () => {
     expect((manager as any).backendRotation).toBeNull();
     expect(freshBackend.forceStop).toHaveBeenCalledOnce();
     expect(oldBackend.start).toHaveBeenCalledTimes(2);
+    expect(manager.getBackendCreatedAt()).not.toBeNull();
     await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
   });
 
@@ -229,6 +250,7 @@ describe("SessionManager model refresh", () => {
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
     expect(oldBackend.forceStop).toHaveBeenCalledOnce();
+    expect(manager.getBackendCreatedAt()).toBeNull();
     await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
   });
 });

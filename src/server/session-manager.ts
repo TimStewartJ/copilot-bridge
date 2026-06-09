@@ -233,6 +233,7 @@ export interface ModelRefreshResult {
   refreshed: true;
   activeSessions: number;
   refreshedAt: string;
+  clientCreatedAt: string | null;
 }
 
 function isMissingSessionError(error: unknown): boolean {
@@ -394,6 +395,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
 export class SessionManager {
   private static DISPOSABLE_TITLE_SWEEP_GRACE_MS = 60_000;
   private backend: AgentBackend | null = null;
+  private backendCreatedAtMs: number | null = null;
   private backendRotation: Promise<AgentBackend> | null = null;
   private deps: SessionManagerDeps;
   private readonly processStartedAtMs = Date.now();
@@ -989,6 +991,7 @@ export class SessionManager {
       } catch (error) {
         if (isModelRefreshClientRotationTimeoutError(error)) {
           this.backend = null;
+          this.backendCreatedAtMs = null;
           this.forceStopTimedOutBackend(previousBackend, "stopping the previous client");
         } else {
           this.backend = previousBackend;
@@ -1015,6 +1018,7 @@ export class SessionManager {
           console.warn("[sdk] Model refresh backend rotation failed; restored previous agent backend");
         } catch (restoreError) {
           this.backend = null;
+          this.backendCreatedAtMs = null;
           console.error("[sdk] Model refresh backend rotation failed and previous agent backend could not be restored:", restoreError);
           if (isModelRefreshClientRotationTimeoutError(restoreError)) {
             this.forceStopTimedOutBackend(previousBackend, "restoring the previous client");
@@ -1024,6 +1028,7 @@ export class SessionManager {
         throw error;
       }
       this.backend = nextClient;
+      this.backendCreatedAtMs = Date.now();
       console.log("[sdk] Agent backend rotated for model refresh");
       return nextClient;
     });
@@ -1043,6 +1048,7 @@ export class SessionManager {
     configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
     this.backend = this.createBackend();
     await this.backend.start();
+    this.backendCreatedAtMs = Date.now();
     console.log("[sdk] Agent backend ready");
     this.sweepLeakedDisposableTitleSessions();
     void this.migrateLegacySessionTitles().catch((error) => {
@@ -1099,6 +1105,17 @@ export class SessionManager {
     return models;
   }
 
+  /**
+   * ISO timestamp of when the current agent backend (SDK/CLI client) object was
+   * created — either at startup or the last successful model-refresh rotation.
+   * Returns null when no usable backend is currently active.
+   */
+  getBackendCreatedAt(): string | null {
+    return this.backendCreatedAtMs == null
+      ? null
+      : new Date(this.backendCreatedAtMs).toISOString();
+  }
+
   async refreshModels(): Promise<ModelRefreshResult> {
     const t0 = Date.now();
     const client = await this.rotateBackendForModelRefresh();
@@ -1112,6 +1129,7 @@ export class SessionManager {
       refreshed: true,
       activeSessions: 0,
       refreshedAt: new Date().toISOString(),
+      clientCreatedAt: this.getBackendCreatedAt(),
     };
   }
 
@@ -2371,6 +2389,7 @@ export class SessionManager {
       console.log("[sdk] Stopping Copilot SDK client...");
       await this.backend.stop();
       this.backend = null;
+      this.backendCreatedAtMs = null;
     }
     console.log("[sdk] Graceful shutdown complete");
   }
@@ -2384,6 +2403,7 @@ export class SessionManager {
       console.log("[sdk] Shutting down Copilot SDK client...");
       await this.backend.stop();
       this.backend = null;
+      this.backendCreatedAtMs = null;
     }
   }
 }
