@@ -48,6 +48,7 @@ import {
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
 import { createCopilotUsageReader } from "./copilot-usage.js";
+import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
 import { isCopilotModelPriceable, type CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
@@ -2935,6 +2936,40 @@ export function createApiRouter(ctx: AppContext): express.Router {
     console.log("[mcp] MCP server registry changed — evicting cached sessions");
     ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
+  });
+
+  // ── Skill registry routes (read + delete) ───────────────────────
+
+  router.get("/skills", (_req, res) => {
+    try {
+      res.json({ skills: listSkills({ copilotHome: getCopilotHome(ctx) }) });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/skills/:id", (req, res) => {
+    if (!isValidSkillId(req.params.id)) return res.status(400).json({ error: "invalid skill id" });
+    try {
+      const skill = readSkill({ copilotHome: getCopilotHome(ctx) }, req.params.id);
+      if (!skill) return res.status(404).json({ error: "skill not found" });
+      res.json({ skill });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/skills/:id", async (req, res) => {
+    try {
+      const result = await deleteHomeSkill({ copilotHome: getCopilotHome(ctx), id: req.params.id });
+      if (result === "invalid") return res.status(400).json({ error: "invalid skill id" });
+      if (result === "not-found") return res.status(404).json({ error: "skill not found" });
+      console.log("[skills] Home skill deleted — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── Tag routes ──────────────────────────────────────────────────

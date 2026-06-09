@@ -22,6 +22,7 @@ import {
   SettingsCategoryNav,
 } from "./settings";
 import { McpServersSection } from "./settings/McpServersSection";
+import { SkillsSection } from "./settings/SkillsSection";
 import {
   DEFAULT_CATEGORY,
   SETTINGS_CATEGORIES,
@@ -303,6 +304,7 @@ export default function SettingsView() {
               <McpServersSection
                 resetSignal={mcpSectionResetSignal}
               />
+              <SkillsSection />
             </CategoryPanel>
 
             <CategoryPanel category="diagnostics" activeCategory={activeCategory}>

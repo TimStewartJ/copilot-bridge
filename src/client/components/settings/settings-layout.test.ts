@@ -29,9 +29,9 @@ describe("SETTINGS_CATEGORIES", () => {
     }
   });
 
-  it("covers all 15 sections across categories", () => {
+  it("covers all 16 sections across categories", () => {
     const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
-    expect(allSections).toHaveLength(15);
+    expect(allSections).toHaveLength(16);
   });
 
   it("sections are non-overlapping across categories", () => {
@@ -51,6 +51,7 @@ describe("SETTINGS_CATEGORIES", () => {
       "providers",
       "tags",
       "mcp-servers",
+      "skills",
       "updates",
       "management-jobs",
       "browser-diagnostics",

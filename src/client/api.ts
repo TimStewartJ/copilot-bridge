@@ -1020,6 +1020,42 @@ export async function deleteMcpServer(id: string): Promise<void> {
   }
 }
 
+// ── Skill API (read + delete) ─────────────────────────────────────
+
+export type SkillSource = "home" | "bundled";
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  allowedTools: string[];
+  source: SkillSource;
+  lastModified: string | null;
+}
+
+export interface SkillDetail extends Skill {
+  body: string;
+  raw: string;
+}
+
+export async function fetchSkills(): Promise<Skill[]> {
+  const data = await apiFetch<{ skills: Skill[] }>("/api/skills");
+  return data.skills;
+}
+
+export async function fetchSkill(id: string): Promise<SkillDetail> {
+  const data = await apiFetch<{ skill: SkillDetail }>(`/api/skills/${encodeURIComponent(id)}`);
+  return data.skill;
+}
+
+export async function deleteSkill(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/skills/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
 // ── Tag API ───────────────────────────────────────────────────────
 
 export async function fetchTags(): Promise<Tag[]> {

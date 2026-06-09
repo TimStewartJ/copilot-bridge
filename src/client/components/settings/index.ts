@@ -12,6 +12,7 @@ export { ProvidersSection } from "./ProvidersSection";
 export { ServerCard } from "./ServerCard";
 export { ServerEditor } from "./ServerEditor";
 export { TagsSection } from "./TagsSection";
+export { SkillsSection } from "./SkillsSection";
 export { VoiceInputSection } from "./VoiceInputSection";
 export { UpdatesSection } from "./UpdatesSection";
 export { BridgeCommitsSection } from "./BridgeCommitsSection";
