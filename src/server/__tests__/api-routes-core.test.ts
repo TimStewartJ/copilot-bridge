@@ -606,3 +606,23 @@ describe("Dashboard route", () => {
     );
   });
 });
+
+describe("Models client-info route", () => {
+  it("GET /api/models/client-info returns the backend creation timestamp", async () => {
+    ctx.sessionManager.getBackendCreatedAt = () => "2026-05-01T12:00:00.000Z";
+
+    const res = await request(app).get("/api/models/client-info");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ createdAt: "2026-05-01T12:00:00.000Z" });
+  });
+
+  it("GET /api/models/client-info returns null when no backend is active", async () => {
+    ctx.sessionManager.getBackendCreatedAt = () => null;
+
+    const res = await request(app).get("/api/models/client-info");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ createdAt: null });
+  });
+});

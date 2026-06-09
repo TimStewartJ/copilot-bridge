@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { refreshModels, type AppSettings } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
+import { useModelClientInfoQuery } from "../../hooks/queries/useModelClientInfo";
 import { queryKeys } from "../../queryClient";
+import { timeAgo } from "../../time";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
@@ -31,6 +33,16 @@ export function shouldClearUnsupportedContextTier({
     && !selectedModelSupportsLongContext;
 }
 
+/**
+ * Validates the SDK/CLI client creation timestamp for display. Returns the
+ * usable ISO string, or null when it is missing or unparseable.
+ */
+export function describeClientAge(createdAt: string | null | undefined): { iso: string } | null {
+  if (!createdAt) return null;
+  if (!Number.isFinite(new Date(createdAt).getTime())) return null;
+  return { iso: createdAt };
+}
+
 export function ModelSection({
   draft,
   setDraft,
@@ -39,9 +51,11 @@ export function ModelSection({
   setDraft: (d: AppSettings) => void;
 }) {
   const { data: models, isLoading, error } = useModelsQuery();
+  const { data: clientInfo } = useModelClientInfoQuery();
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [, setAgeTick] = useState(0);
 
   const availableModels = (models ?? [])
     .filter((m) => !m.policy || m.policy.state !== "disabled")
@@ -66,8 +80,20 @@ export function ModelSection({
       setRefreshError(refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
     } finally {
       setRefreshing(false);
+      // The client may have rotated even if listing models afterward failed, so
+      // refetch the creation timestamp regardless of success.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.modelClientInfo });
     }
   };
+
+  const clientAge = describeClientAge(clientInfo?.createdAt);
+  const clientCreatedAtIso = clientAge?.iso ?? null;
+
+  useEffect(() => {
+    if (!clientCreatedAtIso) return;
+    const interval = setInterval(() => setAgeTick((tick) => tick + 1), 30_000);
+    return () => clearInterval(interval);
+  }, [clientCreatedAtIso]);
 
   useEffect(() => {
     if (!shouldClearUnsupportedContextTier({
@@ -174,6 +200,14 @@ export function ModelSection({
               </div>
             )}
           </div>
+        )}
+        {clientAge && (
+          <p
+            className="mt-3 border-t border-border pt-3 text-xs text-text-faint"
+            title={`SDK client created ${new Date(clientAge.iso).toLocaleString()}`}
+          >
+            Active SDK client started {timeAgo(clientAge.iso)}
+          </p>
         )}
       </div>
     </SettingsSection>

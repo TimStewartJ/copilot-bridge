@@ -4554,6 +4554,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // GET /models/client-info — when the current SDK/CLI client object was created
+  router.get("/models/client-info", (_req, res) => {
+    try {
+      res.json({ createdAt: ctx.sessionManager.getBackendCreatedAt() });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // POST /models/refresh — rotate the SDK client to refresh its cached model list
   router.post("/models/refresh", async (_req, res) => {
     try {

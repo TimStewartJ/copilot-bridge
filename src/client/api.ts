@@ -1988,6 +1988,14 @@ export async function fetchModels(): Promise<ModelInfo[]> {
   return result.models;
 }
 
+export interface ModelClientInfo {
+  createdAt: string | null;
+}
+
+export async function fetchModelClientInfo(): Promise<ModelClientInfo> {
+  return apiFetch<ModelClientInfo>("/api/models/client-info");
+}
+
 export async function refreshModels(): Promise<ModelInfo[]> {
   const result = await apiFetch<{ models: ModelInfo[] }>("/api/models/refresh", {});
   return result.models;

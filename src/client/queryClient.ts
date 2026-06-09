@@ -23,6 +23,7 @@ queryClient.setQueryDefaults(["chat"], {
 export const queryKeys = {
   settings: ["settings"] as const,
   models: ["models"] as const,
+  modelClientInfo: ["models", "client-info"] as const,
   tags: ["tags"] as const,
   tasks: ["tasks"] as const,
   taskGroups: ["task-groups"] as const,
