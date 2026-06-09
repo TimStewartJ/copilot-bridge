@@ -10,6 +10,7 @@ export type SectionId =
   | "providers"
   | "tags"
   | "mcp-servers"
+  | "skills"
   | "voice-input"
   | "management-jobs"
   | "browser-diagnostics"
@@ -32,7 +33,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "integrations",
     label: "Integrations",
-    sections: ["providers", "tags", "mcp-servers"],
+    sections: ["providers", "tags", "mcp-servers", "skills"],
   },
   {
     id: "diagnostics",
