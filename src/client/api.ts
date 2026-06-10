@@ -278,8 +278,18 @@ export interface ChatCompletionEntry {
   completion: TerminalCompletion;
 }
 
+/** An agent-injected skill context, rendered as a collapsed/labeled card */
+export interface ChatSkillEntry {
+  id?: string;
+  type: "skill";
+  turnId?: string;
+  skill: { id: string; label: string };
+  content: string;
+  timestamp?: string;
+}
+
 /** Union type for chronological chat rendering */
-export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry | ChatVisualEntry | ChatCompletionEntry;
+export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry | ChatVisualEntry | ChatCompletionEntry | ChatSkillEntry;
 
 export type ProviderName = "ado" | "github" | "linear";
 

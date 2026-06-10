@@ -41,6 +41,7 @@ import {
   type MessageActionMenuTarget,
 } from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
+import SkillLoadedCard from "./SkillLoadedCard";
 import ToolCallNodeGroup from "./ToolCallNodeGroup";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
@@ -269,6 +270,7 @@ function getEntryActivityTimestamp(entry: ChatEntry): string | undefined {
   if (entry.type === "tool") return entry.toolCall.completedAt ?? entry.toolCall.startedAt;
   if (entry.type === "visual") return entry.timestamp;
   if (entry.type === "completion") return entry.timestamp;
+  if (entry.type === "skill") return entry.timestamp;
   if ("role" in entry && ((entry.content ?? "").trim() || entry.attachments?.length)) {
     return entry.timestamp;
   }
@@ -1749,6 +1751,16 @@ export default function ChatView({
         result.push(
           <div key={entry.id ?? `visual-${index}`} className={`${CHAT_RAIL_CLASS} pt-3`}>
             <VisualArtifactCard visual={entry.visual} />
+          </div>,
+        );
+        return;
+      }
+
+      if (segment.type === "skill-segment") {
+        const { entry } = segment;
+        result.push(
+          <div key={entry.id ?? `skill-${index}`} className={`${CHAT_RAIL_CLASS} pt-3`}>
+            <SkillLoadedCard entry={entry} />
           </div>,
         );
         return;

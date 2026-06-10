@@ -242,6 +242,73 @@ describe("event-transform visible activity", () => {
   });
 });
 
+describe("event-transform skill injection", () => {
+  it("renders agent-injected skill context as a skill entry, not a user message", () => {
+    const events = [
+      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Use the browser" } },
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: {
+          content: "<skill-context name=\"browser\">\nBase directory...\n</skill-context>",
+          source: "skill-browser",
+        },
+      },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "On it." } },
+    ];
+
+    expect(transformEventsToMessages(events, "session-1")).toMatchObject([
+      { type: "message", role: "user", content: "Use the browser" },
+      {
+        type: "skill",
+        skill: { id: "skill-browser", label: "browser" },
+        content: expect.stringContaining("<skill-context name=\"browser\">"),
+        timestamp: "2026-04-10T10:00:01.000Z",
+      },
+      { type: "message", role: "assistant", content: "On it." },
+    ]);
+  });
+
+  it("derives the skill label from the source when the content has no skill-context tag", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: "preloaded skill body", source: "skill-pdf" },
+      },
+    ], "session-1");
+
+    expect(entries).toMatchObject([
+      { type: "skill", skill: { id: "skill-pdf", label: "pdf" } },
+    ]);
+    expect(entries[0]).not.toHaveProperty("role");
+  });
+
+  it("keeps the skill event counted as visible activity", () => {
+    const events = [
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: "<skill-context name=\"pdf\"></skill-context>", source: "skill-pdf" },
+      },
+    ];
+
+    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:00:00.000Z");
+  });
+
+  it("does not treat a non-skill source as a skill entry", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: "real prompt", source: "autopilot" },
+      },
+    ], "session-1");
+
+    expect(entries).toMatchObject([{ type: "message", role: "user", content: "real prompt" }]);
+  });
+});
+
 describe("event-transform fork boundaries", () => {
   it("adds the next raw event id after a completed assistant turn as a safe fork boundary", () => {
     const entries = transformEventsToMessages([

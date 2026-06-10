@@ -47,6 +47,10 @@ function cloneChatEntry(entry: ChatEntry): ChatEntry {
     };
   }
 
+  if (entry.type === "skill") {
+    return { ...entry, skill: { ...entry.skill } };
+  }
+
   return {
     ...entry,
     attachments: entry.attachments?.map((attachment) => cloneAttachment(attachment)),
@@ -118,6 +122,7 @@ function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
   if (entry.type === "tool") return false;
   if (entry.type === "visual") return false;
   if (entry.type === "completion") return false;
+  if (entry.type === "skill") return false;
   if (entry.role === "user") return false;
   if (typeof entry.content !== "string") return false;
   return entry.content.startsWith("⚠️ Error:")
@@ -140,7 +145,7 @@ export function normalizeCommittedClientEntries(
 function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry?.type === "visual" || entry?.type === "tool" || entry?.type === "completion") continue;
+    if (entry?.type === "visual" || entry?.type === "tool" || entry?.type === "completion" || entry?.type === "skill") continue;
     return entry;
   }
   return undefined;
@@ -167,7 +172,7 @@ function findLastToolEntryIndex(entries: ChatEntry[], toolCallId: string): numbe
 function hasMessageAfterIndex(entries: ChatEntry[], index: number): boolean {
   for (let currentIndex = index + 1; currentIndex < entries.length; currentIndex += 1) {
     const entry = entries[currentIndex];
-    if (entry?.type === "visual") continue;
+    if (entry?.type === "visual" || entry?.type === "skill") continue;
     if (entry?.type !== "tool") return true;
   }
   return false;
@@ -197,7 +202,7 @@ function mergeLiveToolEntry(existingEntry: Extract<ChatEntry, { type: "tool" }>,
 }
 
 function isDuplicateLiveMessageEntry(previousEntries: ChatEntry[], incomingEntry: ChatEntry): boolean {
-  if (incomingEntry.type === "tool" || incomingEntry.type === "visual" || incomingEntry.type === "completion") return false;
+  if (incomingEntry.type === "tool" || incomingEntry.type === "visual" || incomingEntry.type === "completion" || incomingEntry.type === "skill") return false;
   const lastMessage = findLastMessage(previousEntries);
   return lastMessage?.role === incomingEntry.role && lastMessage?.content === incomingEntry.content;
 }

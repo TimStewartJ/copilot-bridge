@@ -101,6 +101,29 @@ describe("tool call tree helpers", () => {
     ]);
   });
 
+  it("keeps skill entries as their own render segment between messages and tools", () => {
+    const entries: ChatEntry[] = [
+      { role: "user", content: "Use the browser" },
+      {
+        id: "skill-1",
+        type: "skill",
+        skill: { id: "skill-browser", label: "browser" },
+        content: "<skill-context name=\"browser\"></skill-context>",
+      },
+      { id: "tool-a", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-a") },
+      { role: "assistant", content: "Done", turnId: "turn-1" },
+    ];
+
+    const segments = segmentChatEntries(entries);
+
+    expect(segments).toMatchObject([
+      { type: "message", entry: { content: "Use the browser" } },
+      { type: "skill-segment", entry: { skill: { label: "browser" } } },
+      { type: "tool-segment", turnId: "turn-1" },
+      { type: "message", entry: { content: "Done" } },
+    ]);
+  });
+
   it("groups same-turn tools once even when assistant text is interleaved", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "Starting work", turnId: "turn-1" },
