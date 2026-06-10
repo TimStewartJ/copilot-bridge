@@ -26,6 +26,7 @@ import {
   modelSupportsLongContext,
 } from "../../shared/copilot-context.js";
 import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
+import { formatReasoningEffortLabel } from "../reasoning-effort";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -34,20 +35,8 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Extra High" },
-];
-
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-export function formatReasoningEffortLabel(effort?: string): string | undefined {
-  if (!effort) return undefined;
-  return REASONING_EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? effort;
 }
 
 function formatContextTierFallbackLabel(tier?: CopilotContextTier): string | undefined {
@@ -104,10 +93,6 @@ function formatModelMultiplier(multiplier: unknown, suffix: "x" | "×"): string 
     : "";
 }
 
-function isReasoningEffort(value: string): value is ReasoningEffort {
-  return REASONING_EFFORT_OPTIONS.some((option) => option.value === value);
-}
-
 function getPreferredReasoningEffort(model?: ModelInfo): ReasoningEffort | undefined {
   const supported = model?.supportedReasoningEfforts;
   if (!supported || supported.length === 0) return undefined;
@@ -132,8 +117,7 @@ export function canKeepCurrentReasoningEffortForModel({
     return !currentReasoningEffort;
   }
   if (!currentReasoningEffort) return true;
-  return isReasoningEffort(currentReasoningEffort)
-    && supportedReasoningEfforts.includes(currentReasoningEffort);
+  return supportedReasoningEfforts.includes(currentReasoningEffort);
 }
 
 interface SessionModelLookup {
@@ -378,9 +362,10 @@ export default function SessionList({
     && !modelDialogLookup.error
     && !!modelDialogLookup.data;
   const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
-  const reasoningOptions = supportedReasoningEfforts
-    ? REASONING_EFFORT_OPTIONS.filter((option) => supportedReasoningEfforts.includes(option.value))
-    : REASONING_EFFORT_OPTIONS;
+  const reasoningOptions = (supportedReasoningEfforts ?? []).map((value) => ({
+    value,
+    label: formatReasoningEffortLabel(value) ?? value,
+  }));
   const canKeepCurrentReasoningEffort = canKeepCurrentReasoningEffortForModel({
     supportedReasoningEfforts,
     currentReasoningEffort,
@@ -1133,8 +1118,7 @@ export default function SessionList({
                 id="session-reasoning-select"
                 value={reasoningDraft}
                 onChange={(event) => {
-                  const next = event.target.value;
-                  setReasoningDraft(next && isReasoningEffort(next) ? next : "");
+                  setReasoningDraft(event.target.value);
                 }}
                 className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none"
               >

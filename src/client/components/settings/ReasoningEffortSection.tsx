@@ -1,14 +1,7 @@
 import type { AppSettings } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
+import { formatReasoningEffortLabel, getModelReasoningEfforts } from "../../reasoning-effort";
 import { SettingsSection } from "./SettingsSection";
-
-const EFFORT_OPTIONS: { value: string; label: string }[] = [
-  { value: "", label: "Default" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Extra High" },
-];
 
 export function ReasoningEffortSection({
   draft,
@@ -20,10 +13,12 @@ export function ReasoningEffortSection({
   const { data: models } = useModelsQuery();
 
   const currentModel = draft.model ?? "";
-  const selectedModelInfo = (models ?? []).find((m) => m.id === currentModel);
-  const supportedEfforts = selectedModelInfo?.supportedReasoningEfforts;
-
   const currentEffort = draft.reasoningEffort ?? "";
+
+  const efforts = getModelReasoningEfforts(models, currentModel || undefined);
+  // Keep a previously-saved effort visible even if the current model no longer
+  // advertises it, so switching models never silently drops the user's choice.
+  if (currentEffort && !efforts.includes(currentEffort)) efforts.push(currentEffort);
 
   return (
     <SettingsSection
@@ -36,23 +31,23 @@ export function ReasoningEffortSection({
             value={currentEffort}
             onChange={(e) => {
               const next = structuredClone(draft);
-              next.reasoningEffort = (e.target.value || undefined) as AppSettings["reasoningEffort"];
+              next.reasoningEffort = e.target.value || undefined;
               setDraft(next);
             }}
             className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none cursor-pointer"
           >
-            {EFFORT_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
+            <option value="">Default</option>
+            {efforts.map((effort) => (
+              <option key={effort} value={effort}>
+                {formatReasoningEffortLabel(effort) ?? effort}
               </option>
             ))}
           </select>
-          {supportedEfforts && supportedEfforts.length > 0 && (
-            <p className="text-xs text-text-faint">
-              Supported by current model:{" "}
-              {supportedEfforts.map((e) => EFFORT_OPTIONS.find((o) => o.value === e)?.label ?? e).join(", ")}
-            </p>
-          )}
+          <p className="text-xs text-text-faint">
+            {efforts.length > 0
+              ? "Levels come straight from the SDK for the selected model."
+              : "The selected model does not expose configurable reasoning levels."}
+          </p>
         </div>
       </div>
     </SettingsSection>

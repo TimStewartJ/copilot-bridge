@@ -2,9 +2,9 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../api";
 import { createReactDomHarness } from "../test-react-harness";
+import { formatReasoningEffortLabel } from "../reasoning-effort";
 import {
   canKeepCurrentReasoningEffortForModel,
-  formatReasoningEffortLabel,
   formatSessionModelLabel,
 } from "./SessionList";
 
@@ -156,7 +156,7 @@ describe("session model menu labels", () => {
     expect(formatSessionModelLabel(
       { model: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context", source: "events" },
       null,
-    )).toBe("gpt-5.5 · Extra High · Long context");
+    )).toBe("gpt-5.5 · Xhigh · Long context");
   });
 
   it("uses detailed context labels when model metadata is available", () => {
@@ -172,11 +172,11 @@ describe("session model menu labels", () => {
           },
         },
       }],
-    )).toBe("GPT-5.5 · Extra High · Long context (922K)");
+    )).toBe("GPT-5.5 · Xhigh · Long context (922K)");
   });
 
-  it("keeps unknown reasoning effort values visible", () => {
-    expect(formatReasoningEffortLabel("experimental")).toBe("experimental");
+  it("humanizes unknown reasoning effort values generically", () => {
+    expect(formatReasoningEffortLabel("experimental")).toBe("Experimental");
   });
 
   it("does not keep current reasoning effort before lookup completes for constrained models", () => {

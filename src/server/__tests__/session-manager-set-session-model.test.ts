@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { clearRestartPending, SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, createTestApp, makeTestDir } from "./helpers.js";
+import { setupTestDb, createTestBus, createTestApp, createMockSessionManager, makeTestDir } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import supertest from "supertest";
@@ -424,13 +424,41 @@ describe("PATCH /api/sessions/:id/model route", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 when reasoningEffort is invalid", async () => {
-    const { app } = createTestApp();
+  it("returns 400 when reasoningEffort is not advertised by the SDK", async () => {
+    const { app } = createTestApp({
+      sessionManager: {
+        ...createMockSessionManager(),
+        listModels: async () => [
+          { id: "gpt-5.5", name: "GPT-5.5", supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] },
+        ],
+      } as any,
+    });
     const res = await supertest(app)
       .patch(`/api/sessions/${sessionId}/model`)
       .send({ model: "gpt-5.5", reasoningEffort: "extreme" });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/reasoningEffort/i);
+  });
+
+  it("accepts an SDK-advertised reasoningEffort the legacy allowlist would have rejected", async () => {
+    const setSessionModel = vi.fn(async (_id: string, model: string, reasoningEffort?: string) => ({
+      model,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    }));
+    const { app } = createTestApp({
+      sessionManager: {
+        ...createMockSessionManager(),
+        setSessionModel,
+        listModels: async () => [
+          { id: "claude-opus-4.7-1m", name: "Opus 1M", supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+        ],
+      } as any,
+    });
+    const res = await supertest(app)
+      .patch(`/api/sessions/${sessionId}/model`)
+      .send({ model: "claude-opus-4.7-1m", reasoningEffort: "max" });
+    expect(res.status).toBe(200);
+    expect(setSessionModel).toHaveBeenCalledWith(sessionId, "claude-opus-4.7-1m", "max", undefined);
   });
 
   it("returns 400 when contextTier is invalid", async () => {

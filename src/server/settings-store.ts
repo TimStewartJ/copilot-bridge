@@ -11,7 +11,9 @@ import {
 } from "../shared/copilot-context.js";
 
 export type ThemePreference = "light" | "dark" | "system";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+// Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
+// so this is an open string alias rather than a fixed enumeration.
+export type ReasoningEffort = string;
 
 export interface BrowserSettings {
   executablePath?: string;

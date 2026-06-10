@@ -2220,7 +2220,34 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+  // Reasoning efforts are SDK-driven. Validate a requested effort against the
+  // target model's advertised `supportedReasoningEfforts` (an explicit empty
+  // array means the model exposes none), falling back to the union across all
+  // models when that model isn't in the catalog, and skipping validation only
+  // when SDK metadata is unavailable — the SDK still enforces the final contract.
+  async function resolveAllowedReasoningEfforts(modelId: string): Promise<Set<string> | null> {
+    const listModels = ctx.sessionManager?.listModels;
+    if (typeof listModels !== "function") return null;
+    let models: Array<{ id?: string; supportedReasoningEfforts?: unknown }>;
+    try {
+      models = (await listModels.call(ctx.sessionManager)) ?? [];
+    } catch {
+      return null;
+    }
+    const collect = (efforts: unknown, into: Set<string>): void => {
+      if (!Array.isArray(efforts)) return;
+      for (const effort of efforts) if (typeof effort === "string") into.add(effort);
+    };
+    const target = models.find((model) => model?.id === modelId);
+    if (target && Array.isArray(target.supportedReasoningEfforts)) {
+      const own = new Set<string>();
+      collect(target.supportedReasoningEfforts, own);
+      return own;
+    }
+    const union = new Set<string>();
+    for (const model of models) collect(model?.supportedReasoningEfforts, union);
+    return union.size > 0 ? union : null;
+  }
 
   // GET /sessions/:id/model — derive current model/reasoning for a session on demand
   router.get("/sessions/:id/model", async (req, res) => {
@@ -2258,10 +2285,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!normalizedModel) {
       return res.status(400).json({ error: "model must be a non-empty string" });
     }
-    if (reasoningEffort !== undefined && !VALID_REASONING_EFFORTS.has(reasoningEffort)) {
-      return res.status(400).json({
-        error: `reasoningEffort must be one of: ${[...VALID_REASONING_EFFORTS].join(", ")}`,
-      });
+    if (reasoningEffort !== undefined) {
+      if (typeof reasoningEffort !== "string") {
+        return res.status(400).json({ error: "reasoningEffort must be a string" });
+      }
+      const allowed = await resolveAllowedReasoningEfforts(normalizedModel);
+      if (allowed && !allowed.has(reasoningEffort)) {
+        return res.status(400).json({
+          error: `reasoningEffort must be one of: ${[...allowed].join(", ")}`,
+        });
+      }
     }
     if (contextTier !== undefined && !isCopilotContextTier(contextTier)) {
       return res.status(400).json({ error: "contextTier must be default or long_context" });
