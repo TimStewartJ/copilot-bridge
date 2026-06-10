@@ -36,6 +36,7 @@ import {
   readRestartState,
   type ReleaseFailurePhase,
   type ReleaseFailureState,
+  sweepStaleRestartStateTempFiles,
   writeRestartState,
 } from "./server/restart-state.js";
 import { canUseDevtunnelCli, getDevtunnelCliStatus, resolveBridgeTunnelName } from "./server/tunnel.js";
@@ -1447,6 +1448,11 @@ async function main() {
   console.log();
 
   clearStaleInProgressSignal();
+
+  const sweptRestartTemps = sweepStaleRestartStateTempFiles(RESTART_STATE_FILE);
+  if (sweptRestartTemps > 0) {
+    log(`Swept ${sweptRestartTemps} stale restart-state temp file(s) from previous run`);
+  }
 
   const startupDecision = decideLauncherStartup({
     restartSignalPresent: existsSync(SIGNAL_FILE),

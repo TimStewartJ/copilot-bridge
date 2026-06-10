@@ -21,6 +21,7 @@ import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
+import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
 import {
   getEventLoopLagRequestTelemetryMetadata,
   startRequestTelemetryInflightReporter,
@@ -117,6 +118,12 @@ async function main(): Promise<void> {
   await startBridgeToolsMcpServer(defaultContext);
   await sessionManager.initialize();
   configureRestartStateStore(runtimePaths);
+  const sweptRestartTemps = sweepStaleRestartStateTempFiles(
+    join(runtimePaths.dataDir, RESTART_STATE_FILE_NAME),
+  );
+  if (sweptRestartTemps > 0) {
+    console.log(`[restart] Swept ${sweptRestartTemps} stale restart-state temp file(s) at startup`);
+  }
   await refreshRestartState();
   defaultContext.voiceJobManager.resumePendingJobs();
 

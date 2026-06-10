@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import { openDatabase, type DatabaseSync } from "./server/db.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
+  RESTART_STATE_FILE_NAME,
+  sweepStaleRestartStateTempFiles,
+} from "./server/restart-state.js";
+import {
   createManagementJobStore,
   DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS,
   getManagementJobStaleAfterMs,
@@ -119,6 +123,12 @@ function isMainModule(): boolean {
 async function main(): Promise<void> {
   const runtimePaths = resolveRuntimePaths(process.env);
   Object.assign(process.env, runtimePaths.env);
+  const sweptTemps = sweepStaleRestartStateTempFiles(
+    resolve(runtimePaths.dataDir, RESTART_STATE_FILE_NAME),
+  );
+  if (sweptTemps > 0) {
+    runnerLog(`Swept ${sweptTemps} stale restart-state temp file(s) at startup`);
+  }
   let stopping = false;
   let db: DatabaseSync | null = openDatabase(runtimePaths.dataDir);
   const store = createManagementJobStore(db, { dataDir: runtimePaths.dataDir });

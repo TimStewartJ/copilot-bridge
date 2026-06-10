@@ -207,11 +207,26 @@ describe("self_update", () => {
     );
   });
 
-  it("rejects when restart is already pending via restart state", async () => {
-    existsSyncOverrideMock.mockImplementation(() => undefined);
+  it("rejects when restart is already pending via on-disk restart state", async () => {
+    existsSyncOverrideMock.mockImplementation((path) => {
+      if (isDataFilePath(String(path), "restart.signal")) return false;
+      if (isDataFilePath(String(path), "restart-in-progress.json")) return false;
+      return undefined;
+    });
+    readFileSyncOverrideMock.mockImplementation((path) => {
+      if (isDataFilePath(String(path), "restart-state.json")) {
+        return JSON.stringify({
+          requestId: "req-1",
+          phase: "queued",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 0,
+          launcherHeartbeatAt: null,
+        });
+      }
+      return undefined;
+    });
 
     const mod = await loadTestModules();
-    mod.triggerRestartPending();
 
     const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
@@ -224,18 +239,19 @@ describe("self_update", () => {
     } as any)).resolves.toEqual(
       toolFailure("A restart is already pending. Wait for it to complete before updating."),
     );
-
-    mod.clearRestartPending();
   });
 
 });
 
 describe("self_restart", () => {
-  it("rejects when restart is already pending", async () => {
-    existsSyncOverrideMock.mockImplementation(() => undefined);
+  it("rejects when a restart is already in flight (in-progress marker present)", async () => {
+    existsSyncOverrideMock.mockImplementation((path) => {
+      if (isDataFilePath(String(path), "restart.signal")) return false;
+      if (isDataFilePath(String(path), "restart-in-progress.json")) return true;
+      return undefined;
+    });
 
     const mod = await loadTestModules();
-    mod.triggerRestartPending();
 
     const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
@@ -248,8 +264,6 @@ describe("self_restart", () => {
     } as any)).resolves.toEqual(
       toolFailure("A restart is already pending. Wait for it to complete before restarting."),
     );
-
-    mod.clearRestartPending();
   });
 
   it("queues restart state before writing the signal file", async () => {
@@ -258,6 +272,9 @@ describe("self_restart", () => {
     const callOrder: string[] = [];
 
     const mod = await loadTestModules();
+
+    const ctx = createToolContext();
+    mod.configureRestartStateStore(ctx.runtimePaths);
 
     const originalTrigger = mod.triggerRestartPending;
     vi.spyOn(mod, "triggerRestartPending").mockImplementation(() => {
@@ -272,7 +289,7 @@ describe("self_restart", () => {
       }
     });
 
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    const tool = mod.createSelfAdminToolDefinitions(ctx).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
 
     const result = await tool.handler({}, {
@@ -297,7 +314,9 @@ describe("self_restart", () => {
     });
 
     const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    const ctx = createToolContext();
+    mod.configureRestartStateStore(ctx.runtimePaths);
+    const tool = mod.createSelfAdminToolDefinitions(ctx).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
 
     const result = await tool.handler({}, {

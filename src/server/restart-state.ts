@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+
+export const RESTART_STATE_FILE_NAME = "restart-state.json";
+export const RESTART_SIGNAL_FILE_NAME = "restart.signal";
+export const RESTART_IN_PROGRESS_FILE_NAME = "restart-in-progress.json";
 
 export type RestartPhase = "idle" | "queued" | "waiting-for-sessions" | "restarting";
 
@@ -221,4 +225,67 @@ export async function writeRestartState(filePath: string, state: RestartState): 
 
 export async function clearRestartState(filePath: string): Promise<void> {
   await retryTransientRestartStateFsOperation(() => rm(filePath, RESTART_STATE_RM_OPTIONS));
+}
+
+const DEFAULT_STALE_TEMP_MAX_AGE_MS = 60_000;
+
+function isStaleRestartStateTempName(stateFileName: string, candidate: string): boolean {
+  // Matches the layout produced by getTempRestartStatePath:
+  // `.${basename(stateFile)}.${uuid}.tmp`
+  return candidate.startsWith(`.${stateFileName}.`) && candidate.endsWith(".tmp");
+}
+
+/**
+ * Best-effort sweep of orphaned restart-state temp files. The atomic
+ * write-then-rename in writeRestartState leaves a `.restart-state.json.<uuid>.tmp`
+ * behind if the process is force-killed between the write and the rename — which
+ * is exactly what the launcher does to children during a restart cutover. Those
+ * temps are never reclaimed otherwise and accumulate unbounded over time.
+ *
+ * Only temps older than maxAgeMs are removed so a concurrent writer's in-flight
+ * temp (which lives for milliseconds) is never deleted. Returns the count
+ * removed. All filesystem errors are swallowed — this is opportunistic cleanup.
+ */
+export function sweepStaleRestartStateTempFiles(
+  stateFilePath: string,
+  options: { maxAgeMs?: number } = {},
+): number {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_STALE_TEMP_MAX_AGE_MS;
+  const dir = dirname(stateFilePath);
+  const stateFileName = basename(stateFilePath);
+  const now = Date.now();
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!isStaleRestartStateTempName(stateFileName, entry)) continue;
+    const fullPath = join(dir, entry);
+    try {
+      if (now - statSync(fullPath).mtimeMs < maxAgeMs) continue;
+      rmSync(fullPath, RESTART_STATE_RM_OPTIONS);
+      removed++;
+    } catch {
+      // Another process may have renamed/removed it concurrently — ignore.
+    }
+  }
+  return removed;
+}
+
+/**
+ * Authoritative, cross-process check for whether a restart is already queued or
+ * in flight, derived entirely from on-disk state in dataDir rather than any
+ * process-local in-memory cache. The management-job-runner mutates its own
+ * in-memory restart state via triggerRestartPending() during a deploy but is not
+ * the process that gets restarted, so trusting its in-memory isRestartPending()
+ * leaves it permanently "pending" and deadlocks future deploys. Reading disk
+ * truth here keeps the deploy/update gate self-healing across cutovers.
+ */
+export function isRestartAlreadyInFlight(dataDir: string): boolean {
+  if (existsSync(join(dataDir, RESTART_SIGNAL_FILE_NAME))) return true;
+  if (existsSync(join(dataDir, RESTART_IN_PROGRESS_FILE_NAME))) return true;
+  return readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME)).phase !== "idle";
 }

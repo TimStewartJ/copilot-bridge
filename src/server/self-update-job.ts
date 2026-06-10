@@ -10,7 +10,8 @@ import {
   readActiveRelease,
   type ReleaseSlotManifest,
 } from "./release-slots.js";
-import { clearRestartPending, isRestartPending, triggerRestartPending } from "./restart-controller.js";
+import { clearRestartPending, triggerRestartPending } from "./restart-controller.js";
+import { isRestartAlreadyInFlight } from "./restart-state.js";
 import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "./restart-signal.js";
 import { toolFailure } from "./tool-results.js";
 import { resolveBridgeControlRoot } from "./control-root.js";
@@ -265,7 +266,7 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
   if (runtimePaths.distributionMode === "release" || isBridgeReleaseMode(process.env, controlRoot)) {
     return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
   }
-  if (isRestartPending() || existsSync(signalFile)) {
+  if (isRestartAlreadyInFlight(dataDir)) {
     return toolFailure("A restart is already pending. Wait for it to complete before updating.");
   }
 

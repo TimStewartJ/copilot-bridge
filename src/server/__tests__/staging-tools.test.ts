@@ -143,11 +143,12 @@ function isStagingValidationStampPath(path: string): boolean {
 }
 
 function mockDataFilePresence(
-  { restartSignal = false, preDeploySha = false }: { restartSignal?: boolean; preDeploySha?: boolean } = {},
+  { restartSignal = false, restartInProgress = false, preDeploySha = false }: { restartSignal?: boolean; restartInProgress?: boolean; preDeploySha?: boolean } = {},
 ) {
   existsSyncOverrideMock.mockImplementation((path) => {
     const normalized = String(path);
     if (isDataFilePath(normalized, "restart.signal")) return restartSignal;
+    if (isDataFilePath(normalized, "restart-in-progress.json")) return restartInProgress;
     if (isDataFilePath(normalized, "pre-deploy-sha")) return preDeploySha;
     return undefined;
   });
@@ -201,6 +202,12 @@ vi.mock("node:fs", async (importOriginal) => {
     readFileSync: (path: Parameters<typeof actual.readFileSync>[0], ...args: unknown[]) => {
       const override = readFileSyncOverrideMock(path);
       if (typeof override === "string") return override;
+      // Keep the SDK-driven restart gate deterministic: never read the real
+      // production restart-state.json from tests. Default to idle unless a test
+      // explicitly overrides it.
+      if (isDataFilePath(String(path), "restart-state.json")) {
+        return JSON.stringify({ phase: "idle" });
+      }
       return actual.readFileSync(path, ...(args as []));
     },
     unlinkSync: (path: Parameters<typeof actual.unlinkSync>[0], ...args: unknown[]) => {
@@ -1356,9 +1363,8 @@ describe("staging tools", () => {
     expect(commands).not.toContain(`git worktree remove "${stagingDir}" --force`);
   });
 
-  it("rejects staging_deploy when restart is already pending via restart state", async () => {
-    isRestartPendingMock.mockReturnValue(true);
-    mockDataFilePresence({ restartSignal: false });
+  it("rejects staging_deploy when a restart is already in flight (signal file present)", async () => {
+    mockDataFilePresence({ restartSignal: true });
 
     const mod = await loadStagingToolsModule();
     const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
