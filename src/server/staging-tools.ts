@@ -8,7 +8,7 @@ import type express from "express";
 import { randomBytes } from "node:crypto";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
-import { isRestartPending } from "./session-manager.js";
+import { isRestartAlreadyInFlight } from "./restart-state.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -940,7 +940,7 @@ export async function runStagingDeployJob(
     );
   }
 
-  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+  if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
     return stagingRestartPendingFailure(stagingDir, "deploying");
   }
 
@@ -1502,7 +1502,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
         );
       }
 
-      if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+      if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
         return stagingRestartPendingFailure(stagingDir, "deploying");
       }
       return await runStagingDeployJob({ stagingDir, message });
@@ -1556,7 +1556,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
       },
     );
   }
-  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+  if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
     return stagingRestartPendingFailure(stagingDir, "previewing");
   }
   const store = ctx.managementJobStore;
@@ -1589,7 +1589,7 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
       },
     );
   }
-  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+  if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
     return stagingRestartPendingFailure(stagingDir, "deploying");
   }
   const store = ctx.managementJobStore;
