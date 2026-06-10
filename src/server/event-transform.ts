@@ -28,7 +28,7 @@ export interface TransformedVisual {
 
 export interface TransformedEntry {
   id: string;
-  type: "message" | "tool" | "visual" | "completion";
+  type: "message" | "tool" | "visual" | "completion" | "skill";
   turnId?: string;
   // Message fields (when type === "message")
   role?: string;
@@ -36,6 +36,8 @@ export interface TransformedEntry {
   timestamp?: string;
   forkBoundaryEventId?: string;
   attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
+  // Skill fields (when type === "skill") — agent-injected skill context, shown as a collapsed card
+  skill?: { id: string; label: string };
   // Tool fields (when type === "tool")
   toolCall?: {
     toolCallId: string;
@@ -116,6 +118,26 @@ function getUserMessageContent(event: any): string {
   if (event?.type !== "user.message") return "";
   const content = event?.data?.content ?? event?.data?.prompt;
   return typeof content === "string" ? content : "";
+}
+
+// Agent-injected skill context arrives as a `user.message` whose `data.source`
+// is tagged like "skill-<id>" (e.g. "skill-browser"). The SDK marks these so
+// clients can keep them out of the normal user timeline.
+const SKILL_SOURCE_PATTERN = /^skill(?:[-:]|$)/i;
+
+function getSkillSource(event: any): string | undefined {
+  if (event?.type !== "user.message") return undefined;
+  const source = event?.data?.source;
+  if (typeof source !== "string") return undefined;
+  const trimmed = source.trim();
+  return SKILL_SOURCE_PATTERN.test(trimmed) ? trimmed : undefined;
+}
+
+function getSkillLabel(source: string, content: string): string {
+  const fromContext = content.match(/<skill-context\s+name="([^"]+)"/);
+  if (fromContext?.[1]?.trim()) return fromContext[1].trim();
+  const fromSource = source.replace(/^skill[-:]?/i, "").trim();
+  return fromSource || "skill";
 }
 
 export function parseDeferMetadata(content: string): Record<string, string> | undefined {
@@ -460,6 +482,17 @@ export function transformEventsToMessages(
     } else if (event.type === "user.message") {
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
+      const skillSource = getSkillSource(event);
+      if (skillSource) {
+        entries.push({
+          id: `entry-${idx++}`,
+          type: "skill",
+          skill: { id: skillSource, label: getSkillLabel(skillSource, content) },
+          content,
+          timestamp: data.timestamp ?? (event as any).timestamp,
+        });
+        continue;
+      }
       const blobAttachments = data.attachments
         ?.filter((a: any) => a.type === "blob" && a.mimeType)
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
