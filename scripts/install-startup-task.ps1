@@ -44,11 +44,11 @@ $powerShellPath = if (Get-Command powershell.exe -ErrorAction SilentlyContinue) 
 }
 
 if ([string]::IsNullOrWhiteSpace($StateRoot)) {
-  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$startScript`""
+  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$startScript`" -Wait"
 } else {
   $stateRootLiteral = ConvertTo-PowerShellSingleQuotedLiteral $StateRoot
   $startScriptLiteral = ConvertTo-PowerShellSingleQuotedLiteral $startScript
-  $arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"`$env:BRIDGE_STATE_ROOT = $stateRootLiteral; & $startScriptLiteral`""
+  $arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"`$env:BRIDGE_STATE_ROOT = $stateRootLiteral; & $startScriptLiteral -Wait`""
 }
 
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name

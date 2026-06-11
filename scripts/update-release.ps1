@@ -62,7 +62,7 @@ function Get-EnvPathOrDefault($Name, $DefaultPath) {
 }
 
 function Copy-ReleaseWrappers($SourceRoot, $DestinationRoot) {
-  foreach ($scriptName in @("release-common.ps1", "start.ps1", "stop.ps1", "update.ps1", "install-startup-task.ps1", "uninstall-startup-task.ps1")) {
+  foreach ($scriptName in @("release-common.ps1", "bridge-supervisor-common.ps1", "start.ps1", "stop.ps1", "update.ps1", "install-startup-task.ps1", "uninstall-startup-task.ps1")) {
     $source = Join-Path $SourceRoot $scriptName
     if (Test-Path $source) {
       Copy-Item -Path $source -Destination (Join-Path $DestinationRoot $scriptName) -Force

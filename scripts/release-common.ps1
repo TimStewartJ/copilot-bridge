@@ -1,5 +1,36 @@
 # Shared release wrapper helpers. Keep this file side-effect-free; wrappers dot-source it.
 
+$script:BridgeEmbeddedSupervisorHelperBase64 = "__BRIDGE_SUPERVISOR_HELPER_BASE64__"
+
+function Get-BridgeSupervisorHelperScriptBlock($ScriptRoot) {
+  $helperPath = Join-Path $ScriptRoot "bridge-supervisor-common.ps1"
+  if (Test-Path -LiteralPath $helperPath -PathType Leaf) {
+    try {
+      return [scriptblock]::Create((Get-Content -LiteralPath $helperPath -Raw))
+    } catch {
+      throw "Could not load supervisor helper at ${helperPath}: $($_.Exception.Message)"
+    }
+  }
+
+  $embedded = [string]$script:BridgeEmbeddedSupervisorHelperBase64
+  $unsubstitutedMarker = "__BRIDGE_SUPERVISOR_" + "HELPER_BASE64__"
+  if (
+    [string]::IsNullOrWhiteSpace($embedded) -or
+    $embedded -eq $unsubstitutedMarker
+  ) {
+    throw "Supervisor helper not found at $helperPath and no packaged bootstrap fallback is available. Reinstall Copilot Bridge."
+  }
+
+  try {
+    $helperSource = [System.Text.Encoding]::UTF8.GetString(
+      [System.Convert]::FromBase64String($embedded)
+    )
+    return [scriptblock]::Create($helperSource)
+  } catch {
+    throw "Could not load the packaged supervisor helper fallback: $($_.Exception.Message)"
+  }
+}
+
 function Test-AbsolutePath($Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   $root = [System.IO.Path]::GetPathRoot($Path)
@@ -46,12 +77,52 @@ function Get-ConfiguredStateRoot($InstallRoot) {
   if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_STATE_ROOT)) {
     return $env:BRIDGE_STATE_ROOT
   }
+
   $stateRootFile = Join-Path $InstallRoot ".bridge-state-root"
   $storedStateRoot = Get-StoredStateRoot $stateRootFile
   if (-not [string]::IsNullOrWhiteSpace($storedStateRoot)) {
     return $storedStateRoot
   }
   return Join-Path $env:LOCALAPPDATA "CopilotBridge"
+}
+
+function Get-BridgeReleaseTunnelName($StateRoot, $DataDir) {
+  $configured = [string]$env:BRIDGE_TUNNEL_NAME
+  if (-not [string]::IsNullOrWhiteSpace($configured)) {
+    $normalized = $configured.Trim().ToLowerInvariant()
+    if ($normalized -match '^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$') {
+      return $normalized
+    }
+  }
+
+  $identityRoot = if (-not [string]::IsNullOrWhiteSpace($StateRoot)) {
+    Normalize-FullPath $StateRoot
+  } elseif (-not [string]::IsNullOrWhiteSpace($DataDir)) {
+    $normalizedDataDir = Normalize-FullPath $DataDir
+    if ((Split-Path -Leaf $normalizedDataDir).ToLowerInvariant() -eq "data") {
+      Split-Path -Parent $normalizedDataDir
+    } else {
+      $normalizedDataDir
+    }
+  } else {
+    ""
+  }
+  $identity = @(
+    [string]$env:USERDOMAIN,
+    [string]$env:USERNAME,
+    [string]$env:COMPUTERNAME,
+    [string]$identityRoot
+  ) | ForEach-Object { $_.Trim().ToLowerInvariant() }
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = $sha256.ComputeHash(
+      [System.Text.Encoding]::UTF8.GetBytes(($identity -join "|"))
+    )
+  } finally {
+    $sha256.Dispose()
+  }
+  $suffix = ([System.BitConverter]::ToString($hash) -replace "-", "").Substring(0, 8).ToLowerInvariant()
+  return "copilot-bridge-$suffix"
 }
 
 function Assert-StateRootDoesNotSwitch($StoredStateRoot, $InputStateRoot, $StateRootFile) {

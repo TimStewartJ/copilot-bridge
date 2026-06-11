@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isChildProcessActive, resolveServerLaunchDistributionMode, waitForChildExit } from "./launcher-process.js";
+import {
+  isChildProcessActive,
+  resolveServerLaunchDistributionMode,
+  spawnLauncherChildIfRunning,
+  waitForChildExit,
+} from "./launcher-process.js";
 
 class FakeChildProcess extends EventEmitter {
   exitCode: number | null = null;
@@ -26,6 +31,20 @@ describe("isChildProcessActive", () => {
 describe("resolveServerLaunchDistributionMode", () => {
   it("preserves development mode for source launches", () => {
     expect(resolveServerLaunchDistributionMode("development", false)).toBe("development");
+  });
+
+  describe("spawnLauncherChildIfRunning", () => {
+    it.each(["startup", "recovery"])("blocks a child spawn when shutdown begins during %s", () => {
+      const spawn = vi.fn(() => ({ pid: 123 }));
+
+      expect(spawnLauncherChildIfRunning(() => true, spawn)).toBeNull();
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("spawns while the launcher remains active", () => {
+      const child = { pid: 123 };
+      expect(spawnLauncherChildIfRunning(() => false, () => child)).toBe(child);
+    });
   });
 
   it("forces release mode for release-slot launches from a development launcher", () => {

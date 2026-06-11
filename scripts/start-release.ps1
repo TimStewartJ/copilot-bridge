@@ -1,4 +1,9 @@
-param()
+param(
+  [switch]$Wait,
+  [switch]$ClearIntentionalStop,
+  [string]$SupervisorToken,
+  [long]$StartRequestOrder
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -7,6 +12,8 @@ if (-not (Test-Path $bridgeReleaseCommonScript)) {
   throw "Shared release helper not found at $bridgeReleaseCommonScript. The install package may be incomplete; reinstall Copilot Bridge."
 }
 . $bridgeReleaseCommonScript
+
+. (Get-BridgeSupervisorHelperScriptBlock $PSScriptRoot)
 
 function Import-BridgeEnvFile($Path) {
   if (-not (Test-Path $Path)) { return }
@@ -93,6 +100,23 @@ Assert-AbsolutePath "BRIDGE_DOCS_DIR" $env:BRIDGE_DOCS_DIR
 Assert-AbsolutePath "COPILOT_HOME" $env:COPILOT_HOME
 New-Item -ItemType Directory -Path $effectiveDataDir, $env:BRIDGE_DOCS_DIR, $env:COPILOT_HOME -Force | Out-Null
 
+$controlPaths = Get-BridgeSupervisorControlPaths $effectiveDataDir $installRoot
+if ([string]::IsNullOrWhiteSpace($SupervisorToken)) {
+  $explicitStart = $ClearIntentionalStop -or -not $Wait
+  $childArguments = if ($explicitStart) {
+    @("-ClearIntentionalStop")
+  } else {
+    @()
+  }
+  if ($Wait) {
+    $child = Start-BridgeSupervisorChild $controlPaths $PSCommandPath $childArguments -Wait -ExplicitStart:$explicitStart
+    exit $child.exitCode
+  }
+  $child = Start-BridgeSupervisorChild $controlPaths $PSCommandPath $childArguments -ExplicitStart:$explicitStart
+  Write-Output "Copilot Bridge release supervisor started (PID $($child.process.Id)). Logs: $logsDir"
+  return
+}
+
 $appRoot = Join-Path $installRoot "app"
 $activeReleaseRoot = Get-ActiveReleaseAppRoot $effectiveDataDir
 if ($activeReleaseRoot) {
@@ -100,12 +124,6 @@ if ($activeReleaseRoot) {
 }
 if (-not (Test-Path (Join-Path $appRoot "dist\launcher.js"))) {
   throw "Packaged launcher not found at $appRoot\dist\launcher.js. Rebuild or reinstall the release bundle."
-}
-
-$stopScript = Join-Path $installRoot "stop.ps1"
-if (Test-Path $stopScript) {
-  & $stopScript
-  Start-Sleep -Seconds 2
 }
 
 if ($env:BRIDGE_NODE_PATH) {
@@ -120,13 +138,42 @@ $launcherPath = Join-Path $appRoot "dist\launcher.js"
 $bridgeStdoutLog = Join-Path $logsDir "bridge.log"
 $bridgeStderrLog = Join-Path $logsDir "bridge-error.log"
 $bridgeLogArchiveRetention = 20
-Move-ExistingBridgeLog $bridgeStdoutLog $bridgeLogArchiveRetention
-Move-ExistingBridgeLog $bridgeStderrLog $bridgeLogArchiveRetention
-Start-Process -FilePath $nodePath `
-  -ArgumentList "`"$launcherPath`"" `
-  -WorkingDirectory $appRoot `
-  -WindowStyle Hidden `
-  -RedirectStandardOutput $bridgeStdoutLog `
-  -RedirectStandardError $bridgeStderrLog
+$stopScript = Join-Path $installRoot "stop.ps1"
 
-Write-Output "Copilot Bridge release started. Logs: $logsDir"
+$startLauncher = {
+  $launchAppRoot = Join-Path $installRoot "app"
+  $activeLaunchRoot = Get-ActiveReleaseAppRoot $effectiveDataDir
+  if ($activeLaunchRoot) {
+    $launchAppRoot = $activeLaunchRoot
+  }
+  $launchLauncherPath = Join-Path $launchAppRoot "dist\launcher.js"
+  Move-ExistingBridgeLog $bridgeStdoutLog $bridgeLogArchiveRetention
+  Move-ExistingBridgeLog $bridgeStderrLog $bridgeLogArchiveRetention
+  return Start-Process -FilePath $nodePath `
+    -ArgumentList "`"$launchLauncherPath`"" `
+    -WorkingDirectory $launchAppRoot `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $bridgeStdoutLog `
+    -RedirectStandardError $bridgeStderrLog `
+    -PassThru
+}
+
+$cleanupProcesses = {
+  & $stopScript -CleanupOnly
+}
+
+try {
+  Invoke-BridgeLauncherSupervisor `
+    $controlPaths `
+    $installRoot `
+    $SupervisorToken `
+    $StartRequestOrder `
+    $startLauncher `
+    $cleanupProcesses
+} catch {
+  if ($_.Exception.Data["BridgeExitCode"] -eq 70) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 70
+  }
+  throw
+}

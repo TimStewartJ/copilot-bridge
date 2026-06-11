@@ -25,6 +25,7 @@ WorkingDirectory=%h/copilot-teams-bridge
 EnvironmentFile=%h/copilot-teams-bridge/.env
 ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs src/launcher.ts
 Restart=on-failure
+RestartPreventExitStatus=64 70
 RestartSec=5
 # Keep user session alive for lingering services
 Environment=NODE_ENV=production
