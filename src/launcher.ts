@@ -75,6 +75,7 @@ import {
   evaluateUnexpectedExit,
   shouldIgnoreHealthPollResult,
 } from "./launcher-health.js";
+import { evaluateTunnelHealthPoll } from "./launcher-tunnel-health.js";
 import { runLauncherBuild, runLauncherRollbackWithCheckpointHandling, verifyLauncherStartup } from "./launcher-build.js";
 import type { LauncherCommandOptions } from "./launcher-build.js";
 import { DEPLOY_CHECK_COMMAND, DEPLOY_GATE, DEPLOY_GATE_VERSION } from "./server/validation-pipeline.js";
@@ -149,6 +150,10 @@ const MAX_TUNNEL_RESTARTS = 5;
 const TUNNEL_CRASH_WINDOW = 300_000; // reset crash counter after 5 min of stability
 const TUNNEL_BACKOFF_BASE = 5_000; // 5s initial backoff
 const TUNNEL_BACKOFF_CAP = 60_000; // 60s max backoff
+const TUNNEL_HEALTH_INTERVAL = 60_000;
+const TUNNEL_HEALTH_TIMEOUT = 10_000;
+const TUNNEL_HEALTH_FAILURE_THRESHOLD = 3;
+const DEPENDENCY_INSTALL_TIMEOUT = 600_000;
 
 let serverProcess: ChildProcess | null = null;
 let serverLaunchTarget: ServerLaunchTarget | null = null;
@@ -163,6 +168,9 @@ let crashRestarts = 0;
 let lastCrashTime = 0;
 let tunnelCrashRestarts = 0;
 let tunnelStartedAt = 0;
+let tunnelHealthFailures = 0;
+let tunnelHealthPollInFlight = false;
+let tunnelRecyclePending = false;
 let steadyHealthFailures = 0;
 let healthPollInFlight = false;
 let recoveringServer = false;
@@ -332,7 +340,9 @@ function ensureDeps(): boolean {
   }
 
   log("Dependencies changed — running npm install...");
-  const result = run("npm install --no-audit --no-fund --include=dev");
+  const result = run("npm install --no-audit --no-fund --include=dev", {
+    timeoutMs: DEPENDENCY_INSTALL_TIMEOUT,
+  });
   if (!result.ok) {
     prepared.restore();
     log(`npm install failed: ${result.output.slice(-500)}`);
@@ -1338,23 +1348,29 @@ function startTunnel(): Promise<string> {
   return new Promise((resolve, reject) => {
     const port = currentServerPort;
     log(`Starting dev tunnel for local port ${port}...`);
-    tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME], {
+    const child = spawn("devtunnel", ["host", TUNNEL_NAME], {
       stdio: ["ignore", "pipe", "pipe"],
       shell: process.platform === "win32",
     });
+    tunnelProcess = child;
+    tunnelStartedAt = Date.now();
+    tunnelRecyclePending = false;
 
     let stdout = "";
     let resolved = false;
     const timeout = setTimeout(() => {
+      if (resolved || tunnelProcess !== child) return;
       reject(new Error("Tunnel failed to start within 30s"));
+      log(`[tunnel] Startup timed out; terminating tunnel PID ${child.pid ?? "unknown"} so supervision can retry`);
+      killProcessTree(child);
     }, 30_000);
 
-    tunnelProcess.stderr?.on("data", (data: Buffer) => {
+    child.stderr?.on("data", (data: Buffer) => {
       const line = data.toString().trim();
       if (line) log(`[tunnel] ${line}`);
     });
 
-    tunnelProcess.stdout?.on("data", (data: Buffer) => {
+    child.stdout?.on("data", (data: Buffer) => {
       stdout += data.toString();
       const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/)
         ?? stdout.match(/Hosting port \d+ at\s+(https:\/\/\S+)/);
@@ -1363,19 +1379,23 @@ function startTunnel(): Promise<string> {
         clearTimeout(timeout);
         currentTunnelUrl = match[1];
         tunnelStartedAt = Date.now();
+        tunnelHealthFailures = 0;
         log(`Tunnel URL: ${currentTunnelUrl}`);
         resolve(currentTunnelUrl);
       }
     });
 
-    tunnelProcess.on("exit", (code) => {
+    child.on("exit", (code) => {
       log(`Tunnel exited with code ${code}`);
+      const wasActiveChild = tunnelProcess === child;
+      if (!wasActiveChild) return;
       tunnelProcess = null;
+      currentTunnelUrl = null;
+      tunnelRecyclePending = false;
 
       if (!resolved) {
         clearTimeout(timeout);
         reject(new Error(`Tunnel process exited with code ${code} before producing URL`));
-        return;
       }
 
       // Auto-respawn on unexpected exit
@@ -1410,11 +1430,73 @@ function startTunnel(): Promise<string> {
   });
 }
 
+async function pollTunnelHealth(): Promise<void> {
+  if (
+    tunnelHealthPollInFlight
+    || tunnelRecyclePending
+    || !tunnelProcess
+    || !currentTunnelUrl
+    || shuttingDown
+    || restarting
+  ) {
+    return;
+  }
+
+  const polledProcess = tunnelProcess;
+  const healthUrl = new URL("/api/busy", currentTunnelUrl).toString();
+  tunnelHealthPollInFlight = true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TUNNEL_HEALTH_TIMEOUT);
+  let healthy = false;
+  let failureDetail: string | undefined;
+  try {
+    const response = await fetch(healthUrl, { signal: controller.signal });
+    healthy = response.ok;
+    if (!healthy) failureDetail = `HTTP ${response.status}`;
+  } catch (error) {
+    failureDetail = error instanceof Error && error.name === "AbortError"
+      ? `timed out after ${TUNNEL_HEALTH_TIMEOUT}ms`
+      : error instanceof Error ? error.message : String(error);
+  } finally {
+    clearTimeout(timeout);
+    tunnelHealthPollInFlight = false;
+  }
+
+  if (
+    tunnelProcess !== polledProcess
+    || shuttingDown
+    || restarting
+  ) {
+    return;
+  }
+
+  const decision = evaluateTunnelHealthPoll({
+    healthy,
+    consecutiveFailures: tunnelHealthFailures,
+    failureThreshold: TUNNEL_HEALTH_FAILURE_THRESHOLD,
+    failureDetail,
+  });
+  tunnelHealthFailures = decision.nextFailures;
+  if (decision.logMessage) log(`[tunnel] ${decision.logMessage}`);
+  if (!decision.recycle) return;
+
+  tunnelRecyclePending = true;
+  tunnelHealthFailures = 0;
+  log(`[tunnel] Public endpoint remained unhealthy; terminating tunnel PID ${polledProcess.pid ?? "unknown"} for supervised restart`);
+  if (!killProcessTree(polledProcess)) {
+    tunnelRecyclePending = false;
+    log("[tunnel] Unable to recycle unhealthy tunnel because it has no PID");
+  }
+}
+
 function killTunnel() {
   if (tunnelProcess) {
     log("Stopping tunnel...");
     killProcessTree(tunnelProcess);
     tunnelProcess = null;
+    currentTunnelUrl = null;
+    tunnelHealthFailures = 0;
+    tunnelRecyclePending = false;
   }
 }
 
@@ -1521,6 +1603,10 @@ async function main() {
   setInterval(() => {
     void pollServerHealth();
   }, HEALTH_POLL_INTERVAL);
+
+  setInterval(() => {
+    void pollTunnelHealth();
+  }, TUNNEL_HEALTH_INTERVAL);
 
   log("Watching for restart signals...");
 }

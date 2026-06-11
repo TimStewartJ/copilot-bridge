@@ -1,4 +1,8 @@
 # Start Copilot Bridge as hidden background process (via launcher supervisor)
+param(
+  [switch]$Wait
+)
+
 $workDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 $bridgeReleaseCommonScript = Join-Path $PSScriptRoot "release-common.ps1"
@@ -47,11 +51,43 @@ if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | O
 $bridgeStdoutLog = Join-Path $dataDir "bridge.log"
 $bridgeStderrLog = Join-Path $dataDir "bridge-error.log"
 $bridgeLogArchiveRetention = 20
-Move-ExistingBridgeLog $bridgeStdoutLog $bridgeLogArchiveRetention
-Move-ExistingBridgeLog $bridgeStderrLog $bridgeLogArchiveRetention
-Start-Process -FilePath $nodePath `
-  -ArgumentList "node_modules\tsx\dist\cli.mjs","src\launcher.ts" `
-  -WorkingDirectory $workDir `
-  -WindowStyle Hidden `
-  -RedirectStandardOutput $bridgeStdoutLog `
-  -RedirectStandardError $bridgeStderrLog
+
+function Start-BridgeLauncher {
+  Move-ExistingBridgeLog $bridgeStdoutLog $bridgeLogArchiveRetention
+  Move-ExistingBridgeLog $bridgeStderrLog $bridgeLogArchiveRetention
+  return Start-Process -FilePath $nodePath `
+    -ArgumentList "node_modules\tsx\dist\cli.mjs","src\launcher.ts" `
+    -WorkingDirectory $workDir `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $bridgeStdoutLog `
+    -RedirectStandardError $bridgeStderrLog `
+    -PassThru
+}
+
+$launcherProcess = Start-BridgeLauncher
+
+# Scheduled Task uses -Wait to keep this durable outer supervisor running.
+# Interactive/manual starts remain detached.
+if ($Wait) {
+  $consecutiveFailures = 0
+  while ($true) {
+    $startedAt = Get-Date
+    $launcherProcess.WaitForExit()
+    if ($launcherProcess.ExitCode -eq 0) {
+      exit 0
+    }
+
+    if (((Get-Date) - $startedAt).TotalMinutes -ge 5) {
+      $consecutiveFailures = 0
+    }
+    $consecutiveFailures += 1
+    $restartDelaySeconds = [Math]::Min(5 * [Math]::Pow(2, [Math]::Min($consecutiveFailures - 1, 4)), 60)
+    Start-Sleep -Seconds $restartDelaySeconds
+
+    # A hard launcher failure can orphan descendants. The stop script targets
+    # each matching PID before the next supervised attempt.
+    & "$workDir\scripts\stop-bridge.ps1"
+    Start-Sleep 3
+    $launcherProcess = Start-BridgeLauncher
+  }
+}
