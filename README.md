@@ -175,6 +175,14 @@ npm run dev:server   # Server only
 npm run dev:client   # Vite dev server with HMR
 ```
 
+On Windows, `.\scripts\start-bridge.ps1` launches the durable outer supervisor
+in the background; `-Wait` keeps the caller attached for Scheduled Task setups.
+`.\scripts\stop-bridge.ps1`
+writes an intentional-stop sentinel before terminating this checkout's process
+tree, so the supervisor will not relaunch it. A normal
+`.\scripts\start-bridge.ps1` explicitly clears that sentinel; to resume in
+supervised mode, use `.\scripts\start-bridge.ps1 -Wait -ClearIntentionalStop`.
+
 The bridge server listens on port `3333` by default. To use a different local app port, set `BRIDGE_PORT` in your shell or `.env` file before starting the launcher/server:
 
 ```bash
@@ -259,6 +267,7 @@ Type=simple
 WorkingDirectory=/home/you/src/copilot-bridge
 ExecStart=/path/to/node /home/you/src/copilot-bridge/node_modules/tsx/dist/cli.mjs /home/you/src/copilot-bridge/src/launcher.ts
 Restart=on-failure
+RestartPreventExitStatus=64 70
 RestartSec=5
 
 [Install]
@@ -324,6 +333,7 @@ src/
 
 scripts/
 ├── start-bridge.ps1               # Start on Windows
+├── bridge-supervisor-common.ps1   # Durable Windows supervision helpers
 ├── release-common.ps1             # Shared release wrapper helpers
 └── stop-bridge.ps1                # Stop on Windows
 

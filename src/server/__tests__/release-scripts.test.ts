@@ -155,6 +155,7 @@ describe("release scripts", () => {
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "start.ps1")');
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "stop.ps1")');
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "update.ps1")');
+    expect(packageScript).toContain('(Join-Path $releaseRoot "bridge-supervisor-common.ps1")');
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "install-startup-task.ps1")');
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "uninstall-startup-task.ps1")');
 
@@ -260,6 +261,69 @@ describe("release scripts", () => {
     expect(script).not.toMatch(/-RedirectStandardError\s+"\$dataDir\\bridge-error\.log"/);
   });
 
+  it("coordinates Windows launcher supervision with durable terminal semantics", () => {
+    const startScript = readScript("start-bridge.ps1");
+    const stopScript = readScript("stop-bridge.ps1");
+    const releaseStartScript = readScript("start-release.ps1");
+    const releaseStopScript = readScript("stop-release.ps1");
+    const startupTaskScript = readScript("install-startup-task.ps1");
+    const updateScript = readScript("update-release.ps1");
+    const supervisorHelper = readScript("bridge-supervisor-common.ps1");
+    const launcher = readFileSync(join(process.cwd(), "src", "launcher.ts"), "utf-8");
+
+    expect(startScript).toContain(". $bridgeSupervisorCommonScript");
+    expect(releaseStartScript).toContain(". (Get-BridgeSupervisorHelperScriptBlock $PSScriptRoot)");
+    for (const script of [startScript, releaseStartScript]) {
+      expect(script).toContain("Start-BridgeSupervisorChild $controlPaths $PSCommandPath");
+      expect(script).toContain("Invoke-BridgeLauncherSupervisor");
+      expect(script).toContain("[switch]$ClearIntentionalStop");
+      expect(script).toContain("[string]$SupervisorToken");
+      expect(script).toContain("-CleanupOnly");
+    }
+    expect(startScript).toContain('-ArgumentList "`"$tsxCli`"","`"$launcherEntry`""');
+    expect(releaseStartScript).toContain('-ArgumentList "`"$launchLauncherPath`""');
+    expect(releaseStartScript).toContain("$activeLaunchRoot = Get-ActiveReleaseAppRoot $effectiveDataDir");
+
+    for (const script of [stopScript, releaseStopScript]) {
+      expect(script).toContain("Stop-BridgeLauncherSupervisor");
+      expect(script).toContain("[switch]$CleanupOnly");
+    }
+    expect(stopScript).toContain("$workDirPattern");
+    expect(stopScript).not.toMatch(/CommandLine\s+-match\s+["']launcher\\\.ts/);
+
+    expect(supervisorHelper).toContain("$script:BridgeLauncherTerminalExitCode = 64");
+    expect(supervisorHelper).toContain("$script:BridgeLauncherCleanupFailureExitCode = 70");
+    expect(supervisorHelper).toContain('"launcher-terminal-exit"');
+    expect(supervisorHelper).toContain('"clean-exit"');
+    expect(supervisorHelper).toContain("$script:BridgeSupervisorBackoffCapSeconds = 60");
+    expect(supervisorHelper).toContain("[System.IO.FileShare]::None");
+    expect(supervisorHelper).toContain("ControlLockPath");
+    expect(supervisorHelper).not.toContain('"Local\\');
+    expect(supervisorHelper).not.toContain("System.Threading.Mutex");
+    expect(supervisorHelper).toContain("[int]::TryParse");
+    expect(supervisorHelper).toContain("[long]::TryParse");
+    expect(supervisorHelper).toContain("-SupervisorToken");
+    expect(supervisorHelper).toContain("processStartTimeUtcTicks");
+    expect(supervisorHelper).toContain("& $CleanupProcesses");
+
+    const replaceWait = supervisorHelper.indexOf("Wait-BridgeSupervisorProcessExit $stateToReplace");
+    const lockRelease = supervisorHelper.lastIndexOf(
+      "Exit-BridgeSupervisorControlLock $controlLock",
+      replaceWait,
+    );
+    expect(lockRelease).toBeGreaterThanOrEqual(0);
+    expect(lockRelease).toBeLessThan(replaceWait);
+
+    expect(startupTaskScript).toContain('-File `"$startScript`" -Wait');
+    expect(startupTaskScript).toContain("& $startScriptLiteral -Wait");
+    expect(updateScript).toContain('"bridge-supervisor-common.ps1"');
+    expect(launcher).toContain(
+      'return await shutdownAndExit(LAUNCHER_TERMINAL_EXIT_CODE, "retry budget exhausted")',
+    );
+    expect(launcher).toContain("resolveLauncherShutdownExitCode");
+    expect(launcher).toContain("LAUNCHER_CLEANUP_FAILURE_EXIT_CODE");
+  });
+
   it("does not stop the active updater when stopping release processes", () => {
     const script = readScript("stop-release.ps1");
 
@@ -280,8 +344,28 @@ describe("release scripts", () => {
     expect(script).toContain("Add-ProcessTree $child $false");
     expect(script).toContain("if (Test-ReleaseUpdaterProcess $Process)");
     expect(script).toContain("-not (Test-ReleaseUpdaterProcess $_)");
-    expect(script).toContain("$stoppedProcessIds");
-    expect(script).toContain("Timed out waiting for stopped Bridge process IDs to exit");
+    expect(script).toContain("$orderedProcessIds");
+    expect(script).toContain("Stop-BridgeVerifiedProcessIdentities $processesToStop $orderedProcessIds");
+  });
+
+  it("revalidates process creation identity and scopes orphan tunnel cleanup to this release", () => {
+    const stopScript = readScript("stop-bridge.ps1");
+    const releaseStopScript = readScript("stop-release.ps1");
+    const supervisorHelper = readScript("bridge-supervisor-common.ps1");
+
+    for (const script of [stopScript, releaseStopScript]) {
+      expect(script).toContain("New-BridgeProcessIdentity");
+      expect(script).toContain("Stop-BridgeVerifiedProcessIdentities");
+    }
+    expect(supervisorHelper).toContain("CreationDate");
+    expect(supervisorHelper).toContain("processStartTimeUtcTicks");
+    expect(supervisorHelper).toContain("Test-BridgeProcessIdentity $ProcessesById[$processId]");
+    expect(supervisorHelper).toContain("Stop-Process -Id $processId -Force");
+    expect(supervisorHelper).toContain("Verified Bridge process IDs survived");
+    expect(releaseStopScript).toContain("Get-BridgeReleaseTunnelName $env:BRIDGE_STATE_ROOT $effectiveDataDir");
+    expect(releaseStopScript).toContain("[regex]::Escape($tunnelName)");
+    expect(releaseStopScript).toContain("Add-ProcessTree $_ $false");
+    expect(releaseStopScript).not.toContain("devtunnel user delete --all");
   });
 
   it("bootstraps preview installs from a signed manifest and verified package", () => {
@@ -298,6 +382,7 @@ describe("release scripts", () => {
     expect(script).toContain(". ([scriptblock]::Create($embeddedReleaseCommonScript))");
     expect(script).toContain("$embedded = $embeddedManifestPublicKeyPem.Trim()");
     expect(script).toContain("Downloaded package SHA256 mismatch");
+    expect(script).toContain('Join-Path $ReleaseRoot "bridge-supervisor-common.ps1"');
     expect(script).toContain('Resolve-CommandPath "tar.exe"');
     expect(script).toContain("Expand-Archive -Path $PackagePath");
     expect(script).toContain('Join-Path $env:LOCALAPPDATA "Programs\\CopilotBridge"');
@@ -308,16 +393,36 @@ describe("release scripts", () => {
     expect(script).toContain("& (Join-Path $InstallRoot \"start.ps1\")");
   });
 
-  it("packages and analyzes the shared release helper", () => {
+  it("packages and analyzes the shared release and supervisor helpers", () => {
     const packageScript = readScript("package-release.ps1");
+    const releaseCommon = readScript("release-common.ps1");
     const analyzeScript = readScript("analyze-release-package.ps1");
     const smokeScript = readScript("test-release-package.ps1");
 
-    expect(packageScript).toContain('Copy-Item -Path (Join-Path $repoRoot "scripts\\release-common.ps1")');
-    expect(packageScript).toContain("packageLayoutVersion = 3");
+    expect(packageScript).toContain('$releaseCommonSource = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\\release-common.ps1") -Raw');
+    expect(packageScript).toContain('$supervisorHelperSource = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\\bridge-supervisor-common.ps1") -Raw');
+    expect(packageScript).toContain("$placeholderCount -ne 1");
+    expect(packageScript).toContain(".Replace($supervisorHelperPlaceholder, $supervisorHelperBase64)");
+    expect(releaseCommon).toContain('$unsubstitutedMarker = "__BRIDGE_SUPERVISOR_" + "HELPER_BASE64__"');
+    expect(releaseCommon.match(/__BRIDGE_SUPERVISOR_HELPER_BASE64__/g)).toHaveLength(1);
+    expect(packageScript).toContain("packageLayoutVersion = 4");
     expect(analyzeScript).toContain('$commonScriptPath = Join-Path $releaseRoot "release-common.ps1"');
     expect(analyzeScript).toContain("commonScript = if ($requiresCommonScript) { Test-Path $commonScriptPath } else { $true }");
+    expect(analyzeScript).toContain('$supervisorScriptPath = Join-Path $releaseRoot "bridge-supervisor-common.ps1"');
+    expect(analyzeScript).toContain(
+      "supervisorScript = if ($requiresSupervisorScript) { Test-Path $supervisorScriptPath } else { $true }",
+    );
     expect(smokeScript).toContain('Assert-PathExists "release-common.ps1"');
+    expect(smokeScript).toContain('Assert-PathExists "bridge-supervisor-common.ps1"');
+  });
+
+  it("keeps terminal and cleanup-failure launcher exits terminal under systemd", () => {
+    const service = readScript("copilot-bridge.service");
+    const readme = readFileSync(join(process.cwd(), "README.md"), "utf-8");
+
+    expect(service).toContain("Restart=on-failure");
+    expect(service).toContain("RestartPreventExitStatus=64 70");
+    expect(readme).toContain("RestartPreventExitStatus=64 70");
   });
 
   it("publishes latest-preview installer and package alias assets", () => {

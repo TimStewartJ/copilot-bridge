@@ -161,6 +161,7 @@ function Expand-BridgePackage($PackagePath, $Destination) {
 function Test-BridgeReleaseRoot($ReleaseRoot) {
   return (Test-Path (Join-Path $ReleaseRoot "start.ps1")) -and
     (Test-Path (Join-Path $ReleaseRoot "stop.ps1")) -and
+    (Test-Path (Join-Path $ReleaseRoot "bridge-supervisor-common.ps1")) -and
     (Test-Path (Join-Path $ReleaseRoot "app\dist\launcher.js")) -and
     (Test-Path (Join-Path $ReleaseRoot "app\.bridge-release.json"))
 }

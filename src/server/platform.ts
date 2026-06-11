@@ -2,8 +2,8 @@
 // Windows uses taskkill/wmic/CIM; POSIX uses process signals and ps. Filesystem links use Node APIs.
 
 import { execFile, execFileSync } from "node:child_process";
-import { lstatSync, rmSync, symlinkSync } from "node:fs";
-import { resolve } from "node:path";
+import { lstatSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
@@ -14,11 +14,17 @@ export type ProcessTreeSnapshot = {
   rootPid: number;
   descendantPids: number[];
   trackedPids: number[];
+  trackedIdentities?: ProcessIdentity[];
   processGroupId?: number;
 };
 
 export type ProcessTreeKillResult = ProcessTreeSnapshot & {
   killRequested: boolean;
+};
+
+export type ProcessIdentity = {
+  pid: number;
+  startMarker: string;
 };
 
 export type DeviceHibernateCommand = {
@@ -29,6 +35,52 @@ export type DeviceHibernateCommand = {
 
 function isWindows(): boolean {
   return process.platform === "win32";
+}
+
+export function getProcessIdentity(pid: number): ProcessIdentity | null {
+  if (!isValidPid(pid)) return null;
+  try {
+    let startMarker: string;
+    if (isWindows()) {
+      startMarker = execFileSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CreationDate.ToUniversalTime().Ticks`,
+          ],
+          { encoding: "utf8", timeout: 5_000, windowsHide: true },
+        ).trim();
+    } else if (process.platform === "linux") {
+      try {
+        const stat = readFileSync(join("/proc", String(pid), "stat"), "utf8");
+        const fieldsAfterCommand = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
+        const kernelStartTicks = fieldsAfterCommand[19];
+        startMarker = kernelStartTicks ? `proc:${kernelStartTicks}` : "";
+      } catch {
+        startMarker = execFileSync(
+          "ps",
+          ["-o", "lstart=", "-p", String(pid)],
+          { encoding: "utf8", timeout: 5_000 },
+        ).trim();
+      }
+    } else {
+      startMarker = execFileSync(
+          "ps",
+          ["-o", "lstart=", "-p", String(pid)],
+          { encoding: "utf8", timeout: 5_000 },
+        ).trim();
+    }
+    return startMarker ? { pid, startMarker } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isProcessIdentityCurrent(identity: ProcessIdentity): boolean {
+  const current = getProcessIdentity(identity.pid);
+  return current !== null && current.startMarker === identity.startMarker;
 }
 
 export function getDeviceHibernateCommand(platform: NodeJS.Platform = process.platform): DeviceHibernateCommand {
@@ -179,10 +231,14 @@ export function listDescendantPids(pid: number): number[] {
 export function getProcessTreeSnapshot(pid: number): ProcessTreeSnapshot {
   const rootPid = assertValidPid(pid);
   const descendantPids = listDescendantPids(rootPid);
+  const trackedPids = uniquePids([rootPid, ...descendantPids]);
   return {
     rootPid,
     descendantPids,
-    trackedPids: uniquePids([rootPid, ...descendantPids]),
+    trackedPids,
+    trackedIdentities: trackedPids
+      .map(getProcessIdentity)
+      .filter((identity): identity is ProcessIdentity => identity !== null),
     processGroupId: shouldSpawnDetachedProcessGroup() ? rootPid : undefined,
   };
 }
@@ -219,6 +275,22 @@ function killSingleProcess(pid: number): boolean {
 
 function killTrackedPids(snapshot: ProcessTreeSnapshot): boolean {
   let killRequested = false;
+  if (snapshot.trackedIdentities) {
+    const identities = new Map(snapshot.trackedIdentities.map((identity) => [identity.pid, identity]));
+    for (const pid of [...snapshot.descendantPids].reverse()) {
+      const identity = identities.get(pid);
+      if (identity && isProcessIdentityCurrent(identity)) {
+        killRequested = killSingleProcess(pid) || killRequested;
+      }
+    }
+    const rootIdentity = identities.get(snapshot.rootPid);
+    return (
+      (rootIdentity && isProcessIdentityCurrent(rootIdentity)
+        ? killSingleProcess(snapshot.rootPid)
+        : false)
+      || killRequested
+    );
+  }
   for (const pid of [...snapshot.descendantPids].reverse()) {
     killRequested = killSingleProcess(pid) || killRequested;
   }
@@ -229,8 +301,25 @@ function killTrackedPids(snapshot: ProcessTreeSnapshot): boolean {
  * Kill a process and its entire process tree.
  * Falls back to proc.kill() if the OS command fails.
  */
-export function killProcessTree(pid: number): ProcessTreeKillResult {
+export function killProcessTree(pid: number): ProcessTreeKillResult;
+export function killProcessTree(pid: number, expectedIdentity: ProcessIdentity): ProcessTreeKillResult | null;
+export function killProcessTree(
+  pid: number,
+  expectedIdentity?: ProcessIdentity,
+): ProcessTreeKillResult | null {
+  if (expectedIdentity && !isProcessIdentityCurrent(expectedIdentity)) {
+    return null;
+  }
   const snapshot = getProcessTreeSnapshot(pid);
+  if (expectedIdentity) {
+    const capturedRoot = snapshot.trackedIdentities?.find(({ pid: trackedPid }) => trackedPid === pid);
+    if (
+      !capturedRoot
+      || capturedRoot.startMarker !== expectedIdentity.startMarker
+    ) {
+      return null;
+    }
+  }
   let killRequested = false;
   try {
     if (isWindows()) {
@@ -254,6 +343,9 @@ export function killProcessTree(pid: number): ProcessTreeKillResult {
 }
 
 export function isProcessTreeAlive(snapshot: ProcessTreeSnapshot): boolean {
+  if (snapshot.trackedIdentities) {
+    return snapshot.trackedIdentities.some(isProcessIdentityCurrent);
+  }
   if (isProcessGroupAlive(snapshot.processGroupId)) return true;
   return snapshot.trackedPids.some((pid) => isProcessAlive(pid));
 }

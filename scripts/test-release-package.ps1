@@ -149,6 +149,7 @@ try {
   Assert-PathExists "stop.ps1" (Join-Path $releaseRoot "stop.ps1")
   Assert-PathExists "update.ps1" (Join-Path $releaseRoot "update.ps1")
   Assert-PathExists "release-common.ps1" (Join-Path $releaseRoot "release-common.ps1")
+  Assert-PathExists "bridge-supervisor-common.ps1" (Join-Path $releaseRoot "bridge-supervisor-common.ps1")
   Assert-PathExists "install-startup-task.ps1" (Join-Path $releaseRoot "install-startup-task.ps1")
   Assert-PathExists "uninstall-startup-task.ps1" (Join-Path $releaseRoot "uninstall-startup-task.ps1")
   if (-not $appRoot) {

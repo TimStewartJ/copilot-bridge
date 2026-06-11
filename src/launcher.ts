@@ -11,8 +11,11 @@ import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log
 import { BRIDGE_CONTROL_ROOT_ENV } from "./server/control-root.js";
 import {
   killProcessTree as platformKillTree,
+  getProcessIdentity,
+  isProcessIdentityCurrent,
   shouldSpawnDetachedProcessGroup,
   waitForProcessTreeExit,
+  type ProcessIdentity,
   type ProcessTreeKillResult,
 } from "./server/platform.js";
 import { resolveBridgePort } from "./server/port-config.js";
@@ -76,6 +79,11 @@ import {
   shouldIgnoreHealthPollResult,
 } from "./launcher-health.js";
 import { evaluateTunnelHealthPoll } from "./launcher-tunnel-health.js";
+import {
+  LAUNCHER_CLEANUP_FAILURE_EXIT_CODE,
+  LAUNCHER_TERMINAL_EXIT_CODE,
+  resolveLauncherShutdownExitCode,
+} from "./launcher-exit.js";
 import { runLauncherBuild, runLauncherRollbackWithCheckpointHandling, verifyLauncherStartup } from "./launcher-build.js";
 import type { LauncherCommandOptions } from "./launcher-build.js";
 import { DEPLOY_CHECK_COMMAND, DEPLOY_GATE, DEPLOY_GATE_VERSION } from "./server/validation-pipeline.js";
@@ -85,7 +93,11 @@ import {
   shouldCheckFollowUpRecovery,
   shouldClearRollbackCheckpointAfterHealthyState,
 } from "./launcher-recovery.js";
-import { isChildProcessActive, resolveServerLaunchDistributionMode } from "./launcher-process.js";
+import {
+  isChildProcessActive,
+  resolveServerLaunchDistributionMode,
+  spawnLauncherChildIfRunning,
+} from "./launcher-process.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { openDatabase } from "./server/db.js";
 import { createManagementJobStore } from "./server/management-job-store.js";
@@ -130,6 +142,7 @@ const STALE_THRESHOLD = 300_000; // 5 minutes — session with no events is "stu
 const GRACEFUL_EXIT_WAIT = 15_000; // wait for clean exit after POST /api/shutdown
 const GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT = 5_000; // bound shutdown POST so force-kill fallback is reachable
 const FORCED_EXIT_WAIT = 5_000; // wait for SIGKILLed child to actually exit before restarting
+const TERMINAL_CLEANUP_ATTEMPTS = 3;
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
@@ -160,6 +173,7 @@ let serverLaunchTarget: ServerLaunchTarget | null = null;
 let managementJobRunnerProcess: ChildProcess | null = null;
 let cyclingManagementJobRunner = false;
 let tunnelProcess: ChildProcess | null = null;
+const childProcessIdentities = new WeakMap<ChildProcess, ProcessIdentity>();
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
@@ -187,6 +201,7 @@ let lastCommandFailure:
 let lastRollbackTarget: string | null = null;
 let pendingReleaseFailure: ReleaseFailureState | null = null;
 let releaseCandidateSha: string | null = null;
+let terminalShutdownPromise: Promise<number> | null = null;
 
 type ServerLaunchTarget = {
   root: string;
@@ -592,7 +607,7 @@ async function noteRetryBudgetExhausted(
   );
   await safePersistPendingReleaseFailure();
   await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, currentTunnelUrl ?? undefined);
-  process.exit(1);
+  return await shutdownAndExit(LAUNCHER_TERMINAL_EXIT_CODE, "retry budget exhausted");
 }
 
 async function recordFailureAndMaybeStop(
@@ -756,8 +771,10 @@ function recoverServer(reason: string, options: { killExisting?: boolean; delayM
         return;
       }
       const replacementServer = startServer();
+      if (!replacementServer) return;
       serverProcess = replacementServer;
       const healthy = await healthCheck(replacementServer);
+      if (shuttingDown) return;
       if (healthy) {
         steadyHealthFailures = 0;
         clearRollbackCheckpointAfterHealthyState();
@@ -888,7 +905,8 @@ function describeLaunchTarget(target: ServerLaunchTarget): string {
     : DISTRIBUTION.mode === "release" ? "packaged release" : "source checkout";
 }
 
-function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()): ChildProcess {
+function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()): ChildProcess | null {
+  if (shuttingDown) return null;
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
     BRIDGE_DISTRIBUTION_MODE: resolveServerLaunchDistributionMode(DISTRIBUTION.mode, target.release !== undefined),
@@ -905,12 +923,17 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const serverArgs = target.mode === "source" ? [TSX_CLI, target.entry] : [target.entry];
-  const child = spawn(NODE_PATH, serverArgs, {
-    cwd: target.root,
-    stdio: ["ignore", "inherit", "inherit"],
-    env,
-    detached: shouldSpawnDetachedProcessGroup(),
-  });
+  const child = spawnLauncherChildIfRunning(
+    () => shuttingDown,
+    () => spawn(NODE_PATH, serverArgs, {
+      cwd: target.root,
+      stdio: ["ignore", "inherit", "inherit"],
+      env,
+      detached: shouldSpawnDetachedProcessGroup(),
+    }),
+  );
+  if (!child) return null;
+  trackChildProcessIdentity(child);
   serverLaunchTarget = target;
   steadyHealthFailures = 0;
 
@@ -945,7 +968,8 @@ function managementJobRunnerArgs(): string[] {
   return [join(ROOT, COMPILED_MANAGEMENT_JOB_RUNNER_ENTRY)];
 }
 
-function startManagementJobRunner(): ChildProcess {
+function startManagementJobRunner(): ChildProcess | null {
+  if (shuttingDown) return null;
   if (managementJobRunnerProcess) return managementJobRunnerProcess;
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
@@ -956,12 +980,17 @@ function startManagementJobRunner(): ChildProcess {
   });
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   log("Starting management job runner...");
-  const child = spawn(NODE_PATH, managementJobRunnerArgs(), {
-    cwd: ROOT,
-    stdio: ["ignore", "inherit", "inherit"],
-    env,
-    detached: shouldSpawnDetachedProcessGroup(),
-  });
+  const child = spawnLauncherChildIfRunning(
+    () => shuttingDown,
+    () => spawn(NODE_PATH, managementJobRunnerArgs(), {
+      cwd: ROOT,
+      stdio: ["ignore", "inherit", "inherit"],
+      env,
+      detached: shouldSpawnDetachedProcessGroup(),
+    }),
+  );
+  if (!child) return null;
+  trackChildProcessIdentity(child);
   managementJobRunnerProcess = child;
   child.on("exit", (code, signal) => {
     log(`Management job runner exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
@@ -1016,9 +1045,66 @@ function hasRunningManagementJobs(): boolean {
   }
 }
 
-function killProcessTree(proc: ChildProcess | null): ProcessTreeKillResult | null {
+function trackChildProcessIdentity(proc: ChildProcess): void {
+  if (!proc.pid) return;
+  const identity = getProcessIdentity(proc.pid);
+  if (identity) childProcessIdentities.set(proc, identity);
+}
+
+function killProcessTree(
+  proc: ChildProcess | null,
+  expectedIdentity?: ProcessIdentity,
+): ProcessTreeKillResult | null {
   if (!proc || !proc.pid) return null;
-  return platformKillTree(proc.pid);
+  return expectedIdentity
+    ? platformKillTree(proc.pid, expectedIdentity)
+    : platformKillTree(proc.pid);
+}
+
+async function shutdownAndExit(exitCode: number, reason: string): Promise<never> {
+  if (!terminalShutdownPromise) {
+    shuttingDown = true;
+    log(`Shutting down launcher children (${reason})...`);
+    terminalShutdownPromise = resolveLauncherShutdownExitCode(
+      exitCode,
+      () => [
+        {
+          label: "server",
+          process: serverProcess,
+          identity: serverProcess ? childProcessIdentities.get(serverProcess) ?? null : null,
+        },
+        {
+          label: "management job runner",
+          process: managementJobRunnerProcess,
+          identity: managementJobRunnerProcess
+            ? childProcessIdentities.get(managementJobRunnerProcess) ?? null
+            : null,
+        },
+        {
+          label: "tunnel",
+          process: tunnelProcess,
+          identity: tunnelProcess ? childProcessIdentities.get(tunnelProcess) ?? null : null,
+        },
+      ],
+      {
+        killProcessTree,
+        waitForProcessTreeExit,
+        isProcessIdentityCurrent,
+        timeoutMs: FORCED_EXIT_WAIT,
+        maxAttempts: TERMINAL_CLEANUP_ATTEMPTS,
+        log,
+      },
+    ).then(({ exitCode: resolvedExitCode, outcome }) => {
+      if (!outcome.ok) {
+        log(
+          `❌ Terminal cleanup incomplete; exiting ${LAUNCHER_CLEANUP_FAILURE_EXIT_CODE} with descendants still active: ${outcome.remaining.join(", ")}`,
+        );
+      }
+      return resolvedExitCode;
+    });
+  }
+
+  process.exit(await terminalShutdownPromise);
 }
 
 function killServer() {
@@ -1156,8 +1242,10 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     let rolledBackServerHealthy = false;
     if (rollbackRecoveryRequiresServerStart({ hadRunningServerAtStart })) {
       const rolledBackServer = startServer();
+      if (!rolledBackServer) return "failed";
       serverProcess = rolledBackServer;
       rolledBackServerHealthy = await healthCheck(rolledBackServer);
+      if (shuttingDown) return "failed";
       if (!rolledBackServerHealthy) {
         log("❌ Rolled-back server failed health check");
         await forceKillServerAndWait("Stopping failed rolled-back server...");
@@ -1184,6 +1272,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     consecutiveFailures = 0;
     startManagementJobRunner();
     await ensureTunnelAfterRollback();
+    if (shuttingDown) return "failed";
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
   }
@@ -1192,9 +1281,11 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   await waitForIdleSessions(async (count) => {
     await safeWriteRestartState(buildRestartingWaitingState(pickupInfo, count, new Date().toISOString()));
   });
+  if (shuttingDown) return "failed";
 
   const replacementTarget = candidateRelease ? releaseLaunchTarget(candidateRelease) : resolveStartupLaunchTarget();
   const stopped = await gracefulStopServer();
+  if (shuttingDown) return "failed";
   if (!stopped) {
     log("❌ Existing server did not exit after force kill — aborting restart");
     if (candidateRelease) {
@@ -1209,9 +1300,11 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     return "failed";
   }
   const replacementServer = startServer(replacementTarget);
+  if (!replacementServer) return "failed";
   serverProcess = replacementServer;
 
   const healthy = await healthCheck(replacementServer);
+  if (shuttingDown) return "failed";
   if (healthy) {
     if (candidateRelease) {
       await writeActiveRelease(DATA_DIR, candidateRelease);
@@ -1235,6 +1328,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       try {
         tunnelCrashRestarts = 0; // reset since this is intentional
         const url = await startTunnel();
+        if (shuttingDown) return "failed";
         await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, url);
       } catch (err) {
         log(`Tunnel restart failed (non-fatal): ${err}`);
@@ -1268,8 +1362,10 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     if (candidateRelease && (previousLaunchTarget.release || DISTRIBUTION.mode === "release")) {
       log(`Restoring previous launch target after failed candidate ${candidateRelease.id}`);
       const fallbackServer = startServer(previousLaunchTarget);
+      if (!fallbackServer) return "failed";
       serverProcess = fallbackServer;
       const fallbackHealthy = await healthCheck(fallbackServer);
+      if (shuttingDown) return "failed";
       if (!fallbackHealthy) {
         log("❌ Previous server failed health check after candidate failure");
         await forceKillServerAndWait("Stopping failed previous server...");
@@ -1282,6 +1378,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       consecutiveFailures = 0;
       startManagementJobRunner();
       await ensureTunnelAfterRollback();
+      if (shuttingDown) return "failed";
       log("✅ Previous server restored after failed release candidate");
       return "recovered-via-rollback";
     }
@@ -1296,8 +1393,10 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       return "failed";
     }
     const rolledBackServer = startServer();
+    if (!rolledBackServer) return "failed";
     serverProcess = rolledBackServer;
     const rolledBackServerHealthy = await healthCheck(rolledBackServer);
+    if (shuttingDown) return "failed";
     const outcome = resolveRollbackRecoveryOutcome({
       rollbackSucceeded,
       hadRunningServerAtStart,
@@ -1316,6 +1415,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     consecutiveFailures = 0;
     startManagementJobRunner();
     await ensureTunnelAfterRollback();
+    if (shuttingDown) return "failed";
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
   }
@@ -1324,12 +1424,13 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
 // ── Dev Tunnel ────────────────────────────────────────────────────
 
 async function ensureTunnelAfterRollback(): Promise<void> {
-  if (!shouldUseDevtunnel()) return;
+  if (shuttingDown || !shouldUseDevtunnel()) return;
   // Start (or cycle) the tunnel so rollback-recovered servers stay reachable.
   // Mirrors the tunnel cycle in the successful-restart branch.
   try {
     tunnelCrashRestarts = 0;
     const url = await startTunnel();
+    if (shuttingDown) return;
     log(`Tunnel restored after rollback: ${url}`);
   } catch (err) {
     log(`Tunnel restart after rollback failed (non-fatal): ${err}`);
@@ -1337,6 +1438,9 @@ async function ensureTunnelAfterRollback(): Promise<void> {
 }
 
 function startTunnel(): Promise<string> {
+  if (shuttingDown) {
+    return Promise.reject(new Error("Launcher is shutting down"));
+  }
   if (!canUseDevtunnelCli()) {
     const status = getDevtunnelCliStatus();
     return Promise.reject(new Error(status.reason ?? "Dev tunnel unavailable"));
@@ -1348,10 +1452,18 @@ function startTunnel(): Promise<string> {
   return new Promise((resolve, reject) => {
     const port = currentServerPort;
     log(`Starting dev tunnel for local port ${port}...`);
-    const child = spawn("devtunnel", ["host", TUNNEL_NAME], {
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: process.platform === "win32",
-    });
+    const child = spawnLauncherChildIfRunning(
+      () => shuttingDown,
+      () => spawn("devtunnel", ["host", TUNNEL_NAME], {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: process.platform === "win32",
+      }),
+    );
+    if (!child) {
+      reject(new Error("Launcher is shutting down"));
+      return;
+    }
+    trackChildProcessIdentity(child);
     tunnelProcess = child;
     tunnelStartedAt = Date.now();
     tunnelRecyclePending = false;
@@ -1375,6 +1487,13 @@ function startTunnel(): Promise<string> {
       const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/)
         ?? stdout.match(/Hosting port \d+ at\s+(https:\/\/\S+)/);
       if (match && !resolved) {
+        if (shuttingDown) {
+          resolved = true;
+          clearTimeout(timeout);
+          reject(new Error("Launcher began shutting down while tunnel was starting"));
+          killProcessTree(child);
+          return;
+        }
         resolved = true;
         clearTimeout(timeout);
         currentTunnelUrl = match[1];
@@ -1420,6 +1539,7 @@ function startTunnel(): Promise<string> {
         if (tunnelProcess || shuttingDown) return; // something else already started it
         try {
           const url = await startTunnel();
+          if (shuttingDown) return;
           log(`✅ Tunnel auto-restarted successfully`);
           await notifyWebhook(`⚡ Tunnel auto-restarted (attempt ${tunnelCrashRestarts}/${MAX_TUNNEL_RESTARTS}, ${tag()})`, url);
         } catch (err) {
@@ -1576,12 +1696,15 @@ async function main() {
     }
 
     // Start server
-    serverProcess = startServer();
+    const startupServer = startServer();
+    if (!startupServer) return;
+    serverProcess = startupServer;
 
     // Start dev tunnel
     if (shouldUseDevtunnel()) {
       try {
         const url = await startTunnel();
+        if (shuttingDown) return;
         await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
       } catch (err) {
         log(`Tunnel/notification setup failed (non-fatal): ${err}`);
@@ -1589,9 +1712,11 @@ async function main() {
     }
   }
 
-  if (startupDecision.startServer) {
+  if (startupDecision.startServer && !shuttingDown) {
     startManagementJobRunner();
   }
+
+  if (shuttingDown) return;
 
   // Poll for restart signal
   setInterval(async () => {
@@ -1612,25 +1737,16 @@ async function main() {
 }
 
 process.on("SIGINT", () => {
-  log("Shutting down...");
-  shuttingDown = true;
-  killManagementJobRunner();
-  killServer();
-  killTunnel();
-  process.exit(0);
+  void shutdownAndExit(0, "SIGINT");
 });
 
 process.on("SIGTERM", () => {
-  shuttingDown = true;
-  killManagementJobRunner();
-  killServer();
-  killTunnel();
-  process.exit(0);
+  void shutdownAndExit(0, "SIGTERM");
 });
 
 main().catch((err) => {
   const fatalMessage = `[launcher] Fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`;
   appendLauncherLogLine(fatalMessage);
   console.error(fatalMessage);
-  process.exit(1);
+  void shutdownAndExit(1, "fatal launcher error");
 });

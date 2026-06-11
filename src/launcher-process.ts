@@ -10,6 +10,13 @@ export function isChildProcessActive(
   return proc !== null && proc === activeProc && proc.exitCode === null && proc.signalCode === null;
 }
 
+export function spawnLauncherChildIfRunning<T>(
+  isShuttingDown: () => boolean,
+  spawnChild: () => T,
+): T | null {
+  return isShuttingDown() ? null : spawnChild();
+}
+
 export function resolveServerLaunchDistributionMode(
   launcherMode: BridgeDistributionMode,
   isReleaseSlot: boolean,

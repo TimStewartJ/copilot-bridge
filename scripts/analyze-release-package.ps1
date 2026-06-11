@@ -156,6 +156,7 @@ try {
   $runtimeRoot = if ($appRoot) { Join-Path $appRoot "runtime" } else { $null }
   $manifestPath = if ($appRoot) { Join-Path $appRoot ".bridge-release.json" } else { $null }
   $commonScriptPath = Join-Path $releaseRoot "release-common.ps1"
+  $supervisorScriptPath = Join-Path $releaseRoot "bridge-supervisor-common.ps1"
 
   $manifest = $null
   $manifestWarnings = @()
@@ -184,6 +185,7 @@ try {
     $packageLayoutVersion = [int]$manifest.packageLayoutVersion
   }
   $requiresCommonScript = $packageLayoutVersion -ge 3
+  $requiresSupervisorScript = $packageLayoutVersion -ge 4
 
   $requiredChecks = [ordered]@{
     startScript = Test-Path (Join-Path $releaseRoot "start.ps1")
@@ -192,6 +194,7 @@ try {
     installStartupTaskScript = Test-Path (Join-Path $releaseRoot "install-startup-task.ps1")
     uninstallStartupTaskScript = Test-Path (Join-Path $releaseRoot "uninstall-startup-task.ps1")
     commonScript = if ($requiresCommonScript) { Test-Path $commonScriptPath } else { $true }
+    supervisorScript = if ($requiresSupervisorScript) { Test-Path $supervisorScriptPath } else { $true }
     appRoot = $null -ne $appRoot -and (Test-Path $appRoot)
     launcher = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\launcher.js"))
   }

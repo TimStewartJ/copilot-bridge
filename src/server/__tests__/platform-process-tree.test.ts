@@ -181,6 +181,25 @@ describe("process tree platform helpers", () => {
     });
   });
 
+  it("does not terminate a Windows process whose PID was reused", () => {
+    setPlatform("win32");
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") return "222222";
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => true) as typeof process.kill);
+
+    const result = killProcessTree(100, { pid: 100, startMarker: "111111" });
+
+    expect(result).toBeNull();
+    expect(execFileSyncMock).not.toHaveBeenCalledWith(
+      "taskkill",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
   it("waits until tracked PIDs are gone", async () => {
     const snapshot: ProcessTreeSnapshot = {
       rootPid: 100,
