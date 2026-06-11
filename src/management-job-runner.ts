@@ -6,6 +6,7 @@ import { openDatabase, type DatabaseSync } from "./server/db.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
   RESTART_STATE_FILE_NAME,
+  isRestartAlreadyInFlight,
   sweepStaleRestartStateTempFiles,
 } from "./server/restart-state.js";
 import {
@@ -28,6 +29,13 @@ export interface ManagementJobRunnerOptions {
   heartbeatIntervalMs?: number;
   staleAfterMs?: number;
   shouldStop?: () => boolean;
+  /**
+   * Checked after each job completes. When it returns true the loop exits so the
+   * launcher can respawn the runner on fresh code. Used to step aside once a
+   * deploy/update job has queued a restart, instead of relying on the launcher's
+   * cycleManagementJobRunner (which it skips when a job is still running).
+   */
+  shouldStopAfterJob?: (job: ManagementJob) => boolean;
   log?: (message: string) => void;
 }
 
@@ -111,6 +119,10 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
       continue;
     }
     await runClaimedManagementJob(options.store, job, options);
+    if (options.shouldStopAfterJob?.(job)) {
+      log(`Stopping after ${job.type} job so the launcher can respawn the runner on fresh code`);
+      break;
+    }
   }
   log("Runner stopping");
 }
@@ -144,6 +156,16 @@ async function main(): Promise<void> {
     await runManagementJobRunnerLoop({
       store,
       shouldStop: () => stopping,
+      // After a deploy/update job, step aside if a restart is now queued so the
+      // launcher respawns this runner on the freshly deployed code (it otherwise
+      // skips its own cycleManagementJobRunner while a job is running). The deploy
+      // job writes the restart signal before it returns, so isRestartAlreadyInFlight
+      // sees durable on-disk state here — not a race against the launcher.
+      shouldStopAfterJob: (job) => {
+        if (!isRestartAlreadyInFlight(runtimePaths.dataDir)) return false;
+        runnerLog(`Restart queued by ${job.type} job — exiting for a clean respawn on the new code`);
+        return true;
+      },
       pollIntervalMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_POLL_INTERVAL_MS) || DEFAULT_POLL_INTERVAL_MS,
       heartbeatIntervalMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_HEARTBEAT_INTERVAL_MS) || DEFAULT_HEARTBEAT_INTERVAL_MS,
       staleAfterMs: getManagementJobStaleAfterMs(process.env),

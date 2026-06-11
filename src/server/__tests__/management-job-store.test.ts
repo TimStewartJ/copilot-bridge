@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openMemoryDatabase } from "../db.js";
 import {
@@ -12,7 +12,9 @@ import {
 } from "../management-job-dispatch.js";
 import {
   runClaimedManagementJob,
+  runManagementJobRunnerLoop,
 } from "../../management-job-runner.js";
+import { isRestartAlreadyInFlight } from "../restart-state.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { createStagingToolDefinitions } from "../staging-tools.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
@@ -161,6 +163,96 @@ describe("management job runner", () => {
     } finally {
       failure.db.close();
       rmSync(failure.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits the loop after a job when shouldStopAfterJob returns true", async () => {
+    const { db, store, dataDir } = createStore("runner-stop-after-job");
+    try {
+      store.enqueue("staging_deploy", { stagingDir: "/x", message: "deploy" });
+      store.enqueue("staging_preview", {});
+
+      const stoppedAfter: string[] = [];
+      await runManagementJobRunnerLoop({
+        store,
+        heartbeatIntervalMs: 10,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch: async () => ({ success: true }),
+        shouldStopAfterJob: (job) => {
+          stoppedAfter.push(job.type);
+          return job.type === "staging_deploy";
+        },
+      });
+
+      // Loop stopped right after the deploy job; the queued preview was never claimed.
+      expect(stoppedAfter).toEqual(["staging_deploy"]);
+      const remaining = store.list().filter((j) => j.type === "staging_preview");
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.status).toBe("queued");
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps running when shouldStopAfterJob returns false", async () => {
+    const { db, store, dataDir } = createStore("runner-continue-after-job");
+    try {
+      store.enqueue("staging_preview", { index: 1 });
+      store.enqueue("staging_preview", { index: 2 });
+
+      let processed = 0;
+      let stopping = false;
+      await runManagementJobRunnerLoop({
+        store,
+        heartbeatIntervalMs: 10,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch: async () => {
+          processed += 1;
+          if (processed >= 2) stopping = true;
+          return { success: true };
+        },
+        shouldStopAfterJob: () => false,
+        shouldStop: () => stopping,
+      });
+
+      expect(processed).toBe(2);
+      expect(store.list().every((j) => j.status === "succeeded")).toBe(true);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits via the real isRestartAlreadyInFlight wiring when a deploy queues a restart", async () => {
+    const { db, store, dataDir } = createStore("runner-restart-wiring");
+    try {
+      store.enqueue("staging_deploy", { stagingDir: "/x", message: "deploy" });
+      store.enqueue("staging_preview", {});
+
+      await runManagementJobRunnerLoop({
+        store,
+        heartbeatIntervalMs: 10,
+        pollIntervalMs: 1,
+        log: () => {},
+        // Mirror the production closure: the deploy job "queues a restart" by
+        // writing the signal file, then the loop consults the real disk gate.
+        dispatch: async (job) => {
+          if (job.type === "staging_deploy") {
+            writeFileSync(join(dataDir, "restart.signal"), "{}", "utf8");
+          }
+          return { success: true };
+        },
+        shouldStopAfterJob: () => isRestartAlreadyInFlight(dataDir),
+      });
+
+      const preview = store.list().find((j) => j.type === "staging_preview");
+      expect(preview?.status).toBe("queued");
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 });
