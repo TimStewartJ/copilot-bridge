@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
@@ -17,7 +18,23 @@ import type { RuntimePaths } from "./runtime-paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
-const DEFAULT_RESTART_STATE_PATH = join(REPO_ROOT, "data", "restart-state.json");
+
+/**
+ * Base directory for the restart-state file when no runtime paths are
+ * configured. Production calls configureRestartStateStore() at startup, but a
+ * test that imports this module and calls triggerRestartPending() without
+ * configuring would otherwise write to the real REPO_ROOT/data and pollute the
+ * live server's restart state. Under the test runner we default to an isolated
+ * per-process temp dir so that can never happen, even across vi.resetModules().
+ */
+function defaultRestartStateDir(): string {
+  if (process.env.VITEST || process.env.NODE_ENV === "test") {
+    return join(tmpdir(), `bridge-test-restart-state-${process.pid}`);
+  }
+  return join(REPO_ROOT, "data");
+}
+
+const DEFAULT_RESTART_STATE_PATH = join(defaultRestartStateDir(), "restart-state.json");
 
 let _restartStatePath = DEFAULT_RESTART_STATE_PATH;
 let _restartStateStoreGeneration = 0;
@@ -31,7 +48,7 @@ export const PROMPT_DELIVERY_ABORTED_MESSAGE = "Session was aborted before the p
 export const PROMPT_DELIVERY_SHUTDOWN_MESSAGE = "Session shut down before the prompt was accepted";
 
 function resolveRestartStatePath(runtimePaths?: RuntimePaths): string {
-  return join(runtimePaths?.dataDir ?? join(REPO_ROOT, "data"), "restart-state.json");
+  return join(runtimePaths?.dataDir ?? defaultRestartStateDir(), "restart-state.json");
 }
 
 type RestartStateWriteTarget = {
