@@ -16,7 +16,6 @@ import {
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import {
   createDirectoryLink,
-  killProcessTree,
   removeDirectoryLink,
 } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
@@ -366,7 +365,6 @@ async function run(
       cwd,
       env,
       timeoutMs,
-      killProcessTree,
       failureOutputFormat: "plain",
     });
     if (result.output.trim()) options.log?.(result.output.trimEnd());

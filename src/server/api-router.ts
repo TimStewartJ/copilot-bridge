@@ -9,6 +9,10 @@ import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
+import {
+  createServerShutdownCoordinator,
+  type ServerShutdownCoordinator,
+} from "./shutdown-coordinator.js";
 import { validateSupportedCronExpression } from "./cron-next-run.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import {
@@ -1061,10 +1065,17 @@ function managementJobConflictBody(
   };
 }
 
-export function createApiRouter(ctx: AppContext): express.Router {
+export function createApiRouter(
+  ctx: AppContext,
+  options: { shutdownCoordinator?: ServerShutdownCoordinator } = {},
+): express.Router {
   configureRestartStateStore(ctx.runtimePaths);
   const router = express.Router();
   const schedulerModule = () => getSchedulerModule(ctx);
+  // Keep shutdown orchestration on the AppContext even for legacy/test
+  // contexts that rely on the production scheduler fallback.
+  if (!ctx.isStaging) ctx.scheduler ??= schedulerModule();
+  const shutdownCoordinator = options.shutdownCoordinator ?? createServerShutdownCoordinator(ctx);
   const transcriptionService =
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
@@ -1856,16 +1867,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
     console.log("[web] Graceful shutdown requested via API");
     res.json({ ok: true, message: "Shutting down..." });
-    try {
-      schedulerModule().setGlobalPause(true);
-      ctx.deferredPromptRunner?.shutdown();
-      ctx.deferLoopRunner?.shutdown();
-      await ctx.sessionManager.gracefulShutdown();
-      schedulerModule().shutdown();
-    } catch (err) {
-      console.error("[web] Error during graceful shutdown:", err);
-    }
-    process.exit(0);
+    const requestedDeadline = Number(
+      (req.body as { deadlineUnixMs?: unknown } | undefined)?.deadlineUnixMs,
+    );
+    void shutdownCoordinator.request(
+      "API shutdown requested",
+      Number.isFinite(requestedDeadline) && requestedDeadline > 0
+        ? requestedDeadline
+        : undefined,
+    );
   });
 
   router.post("/device/hibernate", (req, res) => {

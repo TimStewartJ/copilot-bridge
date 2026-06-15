@@ -160,4 +160,50 @@ describe("SessionManager graceful shutdown", () => {
       vi.useRealTimers();
     }
   });
+
+  it("bounds a hung session abort and finalizes the run locally", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = makeSession();
+      session.abort.mockImplementation(() => new Promise<void>(() => {}));
+      const stop = vi.fn().mockResolvedValue(undefined);
+      const manager = createManager() as any;
+      manager.backend = {
+        resumeSession: vi.fn().mockResolvedValue(session),
+        stop,
+      };
+
+      manager.startWork("session-hung-abort", "hello");
+      await flushMicrotasks();
+      const shutdownPromise = manager.gracefulShutdown();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await shutdownPromise;
+
+      expect(session.abort).toHaveBeenCalledTimes(1);
+      expect(manager.getActiveSessions()).toEqual([]);
+      expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a hung backend forceStop within the overall shutdown deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const stop = vi.fn(() => new Promise<void>(() => {}));
+      const forceStop = vi.fn(() => new Promise<void>(() => {}));
+      const manager = createManager() as any;
+      manager.backend = { stop, forceStop };
+
+      const shutdownPromise = manager.gracefulShutdown();
+      await vi.advanceTimersByTimeAsync(14_000);
+      await shutdownPromise;
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(forceStop).toHaveBeenCalledTimes(1);
+      expect(manager.backend).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

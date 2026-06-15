@@ -10,14 +10,18 @@ import { buildBridgeChildEnv, loadBridgeEnvManagedKeys } from "./server/env-load
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
 import { BRIDGE_CONTROL_ROOT_ENV } from "./server/control-root.js";
 import {
-  killProcessTree as platformKillTree,
-  getProcessIdentity,
-  isProcessIdentityCurrent,
+  captureProcessIdentity,
+  PROCESS_TREE_TERMINATION_BUDGET_MS,
   shouldSpawnDetachedProcessGroup,
-  waitForProcessTreeExit,
+  terminateProcessTree,
   type ProcessIdentity,
-  type ProcessTreeKillResult,
 } from "./server/platform.js";
+import {
+  createDeadline,
+  deadlineBefore,
+  remainingMs,
+  type Deadline,
+} from "./server/deadline.js";
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { gitHash } from "./server/git-revisions.js";
@@ -69,6 +73,7 @@ import {
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
+  startAfterVerifiedStop,
   shouldPersistReleaseFailureState,
   type RestartOutcome,
 } from "./launcher-restart.js";
@@ -83,6 +88,8 @@ import {
   LAUNCHER_CLEANUP_FAILURE_EXIT_CODE,
   LAUNCHER_TERMINAL_EXIT_CODE,
   resolveLauncherShutdownExitCode,
+  stopLauncherChild,
+  type LauncherChild,
 } from "./launcher-exit.js";
 import { runLauncherBuild, runLauncherRollbackWithCheckpointHandling, verifyLauncherStartup } from "./launcher-build.js";
 import type { LauncherCommandOptions } from "./launcher-build.js";
@@ -97,6 +104,7 @@ import {
   isChildProcessActive,
   resolveServerLaunchDistributionMode,
   spawnLauncherChildIfRunning,
+  waitForChildExit,
 } from "./launcher-process.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { openDatabase } from "./server/db.js";
@@ -141,8 +149,7 @@ const BUSY_WAIT_TIMEOUT = 3_600_000; // 60 minutes max wait
 const STALE_THRESHOLD = 300_000; // 5 minutes — session with no events is "stuck"
 const GRACEFUL_EXIT_WAIT = 15_000; // wait for clean exit after POST /api/shutdown
 const GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT = 5_000; // bound shutdown POST so force-kill fallback is reachable
-const FORCED_EXIT_WAIT = 5_000; // wait for SIGKILLed child to actually exit before restarting
-const TERMINAL_CLEANUP_ATTEMPTS = 3;
+const CHILD_IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
@@ -173,7 +180,8 @@ let serverLaunchTarget: ServerLaunchTarget | null = null;
 let managementJobRunnerProcess: ChildProcess | null = null;
 let cyclingManagementJobRunner = false;
 let tunnelProcess: ChildProcess | null = null;
-const childProcessIdentities = new WeakMap<ChildProcess, ProcessIdentity>();
+const childProcessIdentities = new WeakMap<ChildProcess, Promise<ProcessIdentity | null>>();
+const plannedTunnelStops = new WeakSet<ChildProcess>();
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
@@ -1006,14 +1014,22 @@ function startManagementJobRunner(): ChildProcess | null {
   return child;
 }
 
-function killManagementJobRunner(): void {
-  if (!managementJobRunnerProcess) return;
+async function killManagementJobRunner(): Promise<boolean> {
+  const existingRunner = managementJobRunnerProcess;
+  if (!existingRunner) return true;
   log("Stopping management job runner...");
-  killProcessTree(managementJobRunnerProcess);
-  managementJobRunnerProcess = null;
+  const outcome = await stopLauncherChild(
+    asLauncherChild("management job runner", existingRunner),
+    { terminateProcessTree, waitForChildExit, log },
+    { deadline: createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS) },
+  );
+  if (outcome.ok && managementJobRunnerProcess === existingRunner) {
+    managementJobRunnerProcess = null;
+  }
+  return outcome.ok;
 }
 
-function cycleManagementJobRunner(reason: string): void {
+async function cycleManagementJobRunner(reason: string): Promise<void> {
   if (!managementJobRunnerProcess) {
     startManagementJobRunner();
     return;
@@ -1024,7 +1040,12 @@ function cycleManagementJobRunner(reason: string): void {
   }
   log(`Cycling management job runner after ${reason}`);
   cyclingManagementJobRunner = true;
-  killManagementJobRunner();
+  const stopped = await killManagementJobRunner();
+  if (!stopped) {
+    cyclingManagementJobRunner = false;
+    log("❌ Management job runner stop could not be verified; refusing to start a replacement");
+    return;
+  }
   setTimeout(() => {
     cyclingManagementJobRunner = false;
     if (!shuttingDown) startManagementJobRunner();
@@ -1046,19 +1067,23 @@ function hasRunningManagementJobs(): boolean {
 }
 
 function trackChildProcessIdentity(proc: ChildProcess): void {
-  if (!proc.pid) return;
-  const identity = getProcessIdentity(proc.pid);
-  if (identity) childProcessIdentities.set(proc, identity);
+  const identity = proc.pid
+    ? captureProcessIdentity(proc.pid, createDeadline(CHILD_IDENTITY_CAPTURE_TIMEOUT_MS))
+    : Promise.resolve(null);
+  childProcessIdentities.set(proc, identity);
+  void identity.then((captured) => {
+    if (!captured && proc.exitCode === null && proc.signalCode === null) {
+      log(`❌ Unable to capture creation identity for child PID ${proc.pid ?? "unknown"}`);
+    }
+  });
 }
 
-function killProcessTree(
-  proc: ChildProcess | null,
-  expectedIdentity?: ProcessIdentity,
-): ProcessTreeKillResult | null {
-  if (!proc || !proc.pid) return null;
-  return expectedIdentity
-    ? platformKillTree(proc.pid, expectedIdentity)
-    : platformKillTree(proc.pid);
+function asLauncherChild(label: string, child: ChildProcess | null): LauncherChild {
+  return {
+    label,
+    process: child,
+    identity: child ? childProcessIdentities.get(child) ?? null : null,
+  };
 }
 
 async function shutdownAndExit(exitCode: number, reason: string): Promise<never> {
@@ -1068,32 +1093,16 @@ async function shutdownAndExit(exitCode: number, reason: string): Promise<never>
     terminalShutdownPromise = resolveLauncherShutdownExitCode(
       exitCode,
       () => [
-        {
-          label: "server",
-          process: serverProcess,
-          identity: serverProcess ? childProcessIdentities.get(serverProcess) ?? null : null,
-        },
-        {
-          label: "management job runner",
-          process: managementJobRunnerProcess,
-          identity: managementJobRunnerProcess
-            ? childProcessIdentities.get(managementJobRunnerProcess) ?? null
-            : null,
-        },
-        {
-          label: "tunnel",
-          process: tunnelProcess,
-          identity: tunnelProcess ? childProcessIdentities.get(tunnelProcess) ?? null : null,
-        },
+        asLauncherChild("server", serverProcess),
+        asLauncherChild("management job runner", managementJobRunnerProcess),
+        asLauncherChild("tunnel", tunnelProcess),
       ],
       {
-        killProcessTree,
-        waitForProcessTreeExit,
-        isProcessIdentityCurrent,
-        timeoutMs: FORCED_EXIT_WAIT,
-        maxAttempts: TERMINAL_CLEANUP_ATTEMPTS,
+        terminateProcessTree,
+        waitForChildExit,
         log,
       },
+      createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
     ).then(({ exitCode: resolvedExitCode, outcome }) => {
       if (!outcome.ok) {
         log(
@@ -1107,36 +1116,26 @@ async function shutdownAndExit(exitCode: number, reason: string): Promise<never>
   process.exit(await terminalShutdownPromise);
 }
 
-function killServer() {
-  if (serverProcess) {
-    log("Stopping server...");
-    killProcessTree(serverProcess);
-    serverProcess = null;
-    serverLaunchTarget = null;
-  }
-}
-
-async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WAIT): Promise<boolean> {
+async function forceKillServerAndWait(
+  reason: string,
+  deadline: Deadline = createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+): Promise<boolean> {
   const existingServer = serverProcess;
   if (!existingServer) {
     return true;
   }
 
   log(reason);
-  const killResult = killProcessTree(existingServer);
-  if (!killResult) {
-    log("❌ Server process did not have a PID for force kill");
-    return false;
-  }
-
-  const exited = await waitForProcessTreeExit(killResult, timeoutMs);
-  if (!exited) {
-    log(`❌ Server process tree did not exit within ${timeoutMs}ms after force kill`);
-  } else if (serverProcess === existingServer) {
+  const outcome = await stopLauncherChild(
+    asLauncherChild("server", existingServer),
+    { terminateProcessTree, waitForChildExit, log },
+    { deadline },
+  );
+  if (outcome.ok && serverProcess === existingServer) {
     serverProcess = null;
     serverLaunchTarget = null;
   }
-  return exited;
+  return outcome.ok;
 }
 
 async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
@@ -1154,33 +1153,50 @@ async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise
 }
 
 async function gracefulStopServer(): Promise<boolean> {
-  const shutdownUrl = bridgeLocalUrl("/api/shutdown");
-  try {
-    log("Requesting graceful shutdown...");
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT);
-    try {
-      await fetch(shutdownUrl, { method: "POST", signal: controller.signal });
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    log("Server not reachable or did not respond for graceful shutdown — falling back to force kill");
-    return await forceKillServerAndWait("Stopping unreachable server...");
-  }
+  const existingServer = serverProcess;
+  if (!existingServer) return true;
 
-  // Wait for process to exit on its own
-  const start = Date.now();
-  while (serverProcess && Date.now() - start < GRACEFUL_EXIT_WAIT) {
-    await new Promise((r) => setTimeout(r, 500));
+  const deadline = createDeadline(GRACEFUL_EXIT_WAIT + PROCESS_TREE_TERMINATION_BUDGET_MS);
+  const gracefulDeadline = deadlineBefore(deadline, PROCESS_TREE_TERMINATION_BUDGET_MS);
+  const outcome = await stopLauncherChild(
+    asLauncherChild("server", existingServer),
+    { terminateProcessTree, waitForChildExit, log },
+    {
+      deadline,
+      gracefulDeadline,
+      requestGraceful: async (shutdownDeadline) => {
+        log("Requesting graceful shutdown...");
+        const controller = new AbortController();
+        const requestTimeoutMs = Math.max(
+          1,
+          Math.min(
+            GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT,
+            remainingMs(shutdownDeadline),
+          ),
+        );
+        const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+        try {
+          const response = await fetch(bridgeLocalUrl("/api/shutdown"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ deadlineUnixMs: shutdownDeadline.expiresAtUnixMs }),
+            signal: controller.signal,
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    },
+  );
+  if (outcome.ok && serverProcess === existingServer) {
+    serverProcess = null;
+    serverLaunchTarget = null;
   }
-
-  if (serverProcess) {
-    return await forceKillServerAndWait("Server did not exit in time — force killing");
-  } else {
-    log("Server exited cleanly");
+  if (outcome.ok) {
+    log(outcome.mode === "graceful" ? "Server exited cleanly" : "Server stop verified");
   }
-  return true;
+  return outcome.ok;
 }
 
 async function restart(signal: RestartSignal): Promise<RestartOutcome> {
@@ -1284,9 +1300,12 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   if (shuttingDown) return "failed";
 
   const replacementTarget = candidateRelease ? releaseLaunchTarget(candidateRelease) : resolveStartupLaunchTarget();
-  const stopped = await gracefulStopServer();
+  const replacementTransition = await startAfterVerifiedStop(
+    () => gracefulStopServer(),
+    () => startServer(replacementTarget),
+  );
   if (shuttingDown) return "failed";
-  if (!stopped) {
+  if (!replacementTransition.stopped) {
     log("❌ Existing server did not exit after force kill — aborting restart");
     if (candidateRelease) {
       markReleaseUpdateActivationRejected(
@@ -1299,7 +1318,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     });
     return "failed";
   }
-  const replacementServer = startServer(replacementTarget);
+  const replacementServer = replacementTransition.replacement;
   if (!replacementServer) return "failed";
   serverProcess = replacementServer;
 
@@ -1316,7 +1335,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       if (pruned > 0) {
         log(`Pruned ${pruned} stale release slot artifact(s)`);
       }
-      cycleManagementJobRunner("successful release activation");
+      await cycleManagementJobRunner("successful release activation");
     } else {
       startManagementJobRunner();
     }
@@ -1437,19 +1456,21 @@ async function ensureTunnelAfterRollback(): Promise<void> {
   }
 }
 
-function startTunnel(): Promise<string> {
+async function startTunnel(): Promise<string> {
   if (shuttingDown) {
-    return Promise.reject(new Error("Launcher is shutting down"));
+    throw new Error("Launcher is shutting down");
   }
   if (!canUseDevtunnelCli()) {
     const status = getDevtunnelCliStatus();
-    return Promise.reject(new Error(status.reason ?? "Dev tunnel unavailable"));
+    throw new Error(status.reason ?? "Dev tunnel unavailable");
   }
 
-  // Kill any existing tunnel first (idempotent)
-  killTunnel();
+  // Stop and verify any existing tunnel before creating a replacement.
+  if (!(await killTunnel())) {
+    throw new Error("Existing tunnel stop could not be verified");
+  }
 
-  return new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     const port = currentServerPort;
     log(`Starting dev tunnel for local port ${port}...`);
     const child = spawnLauncherChildIfRunning(
@@ -1474,7 +1495,7 @@ function startTunnel(): Promise<string> {
       if (resolved || tunnelProcess !== child) return;
       reject(new Error("Tunnel failed to start within 30s"));
       log(`[tunnel] Startup timed out; terminating tunnel PID ${child.pid ?? "unknown"} so supervision can retry`);
-      killProcessTree(child);
+      void stopTunnelProcess(child, "tunnel startup timeout");
     }, 30_000);
 
     child.stderr?.on("data", (data: Buffer) => {
@@ -1491,7 +1512,7 @@ function startTunnel(): Promise<string> {
           resolved = true;
           clearTimeout(timeout);
           reject(new Error("Launcher began shutting down while tunnel was starting"));
-          killProcessTree(child);
+          void stopTunnelProcess(child, "launcher shutdown during tunnel startup");
           return;
         }
         resolved = true;
@@ -1508,6 +1529,7 @@ function startTunnel(): Promise<string> {
       log(`Tunnel exited with code ${code}`);
       const wasActiveChild = tunnelProcess === child;
       if (!wasActiveChild) return;
+      const plannedStop = plannedTunnelStops.has(child);
       tunnelProcess = null;
       currentTunnelUrl = null;
       tunnelRecyclePending = false;
@@ -1518,7 +1540,7 @@ function startTunnel(): Promise<string> {
       }
 
       // Auto-respawn on unexpected exit
-      if (shuttingDown || restarting) return;
+      if (shuttingDown || restarting || plannedStop) return;
 
       const now = Date.now();
       const uptime = now - tunnelStartedAt;
@@ -1603,21 +1625,42 @@ async function pollTunnelHealth(): Promise<void> {
   tunnelRecyclePending = true;
   tunnelHealthFailures = 0;
   log(`[tunnel] Public endpoint remained unhealthy; terminating tunnel PID ${polledProcess.pid ?? "unknown"} for supervised restart`);
-  if (!killProcessTree(polledProcess)) {
+  if (!(await stopTunnelProcess(polledProcess, "unhealthy tunnel recycle"))) {
     tunnelRecyclePending = false;
-    log("[tunnel] Unable to recycle unhealthy tunnel because it has no PID");
+    log("[tunnel] Unable to recycle unhealthy tunnel because its stop could not be verified");
+    return;
+  }
+  try {
+    await startTunnel();
+  } catch (error) {
+    log(`[tunnel] Recycle restart failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-function killTunnel() {
-  if (tunnelProcess) {
-    log("Stopping tunnel...");
-    killProcessTree(tunnelProcess);
+async function stopTunnelProcess(child: ChildProcess, reason: string): Promise<boolean> {
+  plannedTunnelStops.add(child);
+  const outcome = await stopLauncherChild(
+    asLauncherChild("tunnel", child),
+    { terminateProcessTree, waitForChildExit, log },
+    { deadline: createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS) },
+  );
+  if (!outcome.ok) {
+    log(`❌ Tunnel stop failed during ${reason}`);
+    return false;
+  }
+  if (tunnelProcess === child) {
     tunnelProcess = null;
     currentTunnelUrl = null;
     tunnelHealthFailures = 0;
     tunnelRecyclePending = false;
   }
+  return true;
+}
+
+async function killTunnel(): Promise<boolean> {
+  if (!tunnelProcess) return true;
+  log("Stopping tunnel...");
+  return await stopTunnelProcess(tunnelProcess, "intentional tunnel stop");
 }
 
 // ── Webhook Notification ──────────────────────────────────────────

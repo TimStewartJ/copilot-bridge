@@ -30,6 +30,11 @@ import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
 import { defaultGlobalBus } from "./global-bus.js";
 import type { AppContext } from "./app-context.js";
+import {
+  createDeadline,
+  settleByDeadline,
+  type Deadline,
+} from "./deadline.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -246,11 +251,47 @@ export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
   ctx.deferLoopRunner?.start();
 }
 
-export async function shutdownAppContextServices(ctx: AppContext): Promise<void> {
-  ctx.deferredPromptRunner?.shutdown();
-  ctx.deferLoopRunner?.shutdown();
-  ctx.scheduler?.shutdown();
-  await ctx.voiceJobManager.shutdown();
-  await ctx.sessionManager.gracefulShutdown();
-  await ctx.bridgeToolsMcpServer?.close();
+export const SERVER_SHUTDOWN_BUDGET_MS = 13_000;
+
+const appContextShutdownOperations = new WeakMap<AppContext, Promise<void>>();
+
+export function shutdownAppContextServices(
+  ctx: AppContext,
+  deadline: Deadline = createDeadline(SERVER_SHUTDOWN_BUDGET_MS),
+): Promise<void> {
+  const existing = appContextShutdownOperations.get(ctx);
+  if (existing) return existing;
+
+  const operation = (async () => {
+    ctx.scheduler?.setGlobalPause(true);
+    ctx.deferredPromptRunner?.shutdown();
+    ctx.deferLoopRunner?.shutdown();
+
+    try {
+      await ctx.sessionManager.gracefulShutdown(deadline);
+    } catch (error) {
+      console.error("[web] Session manager shutdown failed:", error);
+    }
+
+    const voiceOutcome = await settleByDeadline(
+      () => ctx.voiceJobManager.shutdown(),
+      deadline,
+    );
+    if (voiceOutcome.status !== "fulfilled") {
+      console.error(`[web] Voice job shutdown ${voiceOutcome.status}`);
+    }
+
+    if (ctx.bridgeToolsMcpServer) {
+      const mcpOutcome = await settleByDeadline(
+        () => ctx.bridgeToolsMcpServer!.close(),
+        deadline,
+      );
+      if (mcpOutcome.status !== "fulfilled") {
+        console.error(`[web] Bridge tools MCP shutdown ${mcpOutcome.status}`);
+      }
+    }
+    ctx.scheduler?.shutdown();
+  })();
+  appContextShutdownOperations.set(ctx, operation);
+  return operation;
 }
