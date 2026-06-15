@@ -139,4 +139,25 @@ describe("SessionManager graceful shutdown", () => {
     expect(manager.getActiveSessions()).toEqual([]);
     expect(stop).toHaveBeenCalledTimes(1);
   });
+
+  it("bounds a hung backend stop and forces stop without blocking shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const stop = vi.fn(() => new Promise<void>(() => {})); // never resolves
+      const forceStop = vi.fn().mockResolvedValue(undefined);
+      const manager = createManager() as any;
+      manager.backend = { stop, forceStop };
+
+      const shutdownPromise = manager.gracefulShutdown();
+      // Advance past the bounded backend-stop window (4s) within the overall budget.
+      await vi.advanceTimersByTimeAsync(5_000);
+      await shutdownPromise;
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(forceStop).toHaveBeenCalledTimes(1);
+      expect(manager.backend).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

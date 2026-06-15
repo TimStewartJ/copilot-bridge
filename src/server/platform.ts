@@ -10,6 +10,23 @@ import { promisify } from "node:util";
 type ProcessRow = { pid: number; ppid: number };
 const execFileAsync = promisify(execFile);
 
+// Bounds for the Windows batch process-table snapshot. A single PowerShell/CIM
+// call replaces the previous per-PID fan-out so force-kill stays bounded even
+// when hundreds of PIDs are tracked.
+const PROCESS_TABLE_READ_TIMEOUT_MS = 4_000;
+const PROCESS_TABLE_MAX_BUFFER = 16 * 1024 * 1024;
+const TASKKILL_TIMEOUT_MS = 5_000;
+const WINDOWS_PROCESS_TABLE_COMMAND = [
+  "Get-CimInstance Win32_Process |",
+  "ForEach-Object {",
+  "$t = '';",
+  "if ($_.CreationDate) { try { $t = $_.CreationDate.ToUniversalTime().Ticks } catch { $t = '' } }",
+  "\"$($_.ProcessId) $($_.ParentProcessId) $t\"",
+  "}",
+].join(" ");
+
+type ProcessTableEntry = { ppid: number; startMarker: string };
+
 export type ProcessTreeSnapshot = {
   rootPid: number;
   descendantPids: number[];
@@ -214,6 +231,146 @@ function readWindowsProcessRows(): ProcessRow[] {
   }
 }
 
+function parseWindowsProcessTable(output: string): Map<number, ProcessTableEntry> {
+  const table = new Map<number, ProcessTableEntry>();
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 2) continue;
+    const pid = Number(parts[0]);
+    const ppid = Number(parts[1]);
+    if (!isValidPid(pid) || !Number.isSafeInteger(ppid) || ppid < 0) continue;
+    // Windows CreationDate ticks are 18-digit values that exceed Number.MAX_SAFE_INTEGER,
+    // so the marker is kept as a string and only compared numerically via BigInt.
+    const startMarker = parts[2] && /^\d+$/.test(parts[2]) ? parts[2] : "";
+    table.set(pid, { ppid, startMarker });
+  }
+  return table;
+}
+
+// Capture every process's PID, PPID, and creation marker in ONE bounded batch
+// call. This replaces the per-PID PowerShell/CIM fan-out that previously blocked
+// force-kill for minutes when hundreds of PIDs were tracked.
+function readWindowsProcessTable(timeoutMs: number): Map<number, ProcessTableEntry> | null {
+  const bounded = Math.max(1, Math.min(timeoutMs, PROCESS_TABLE_READ_TIMEOUT_MS));
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_TABLE_COMMAND],
+      { encoding: "utf8", timeout: bounded, windowsHide: true, maxBuffer: PROCESS_TABLE_MAX_BUFFER },
+    );
+    return parseWindowsProcessTable(output);
+  } catch {
+    // Degraded fallback: PID/PPID only (no creation markers) so a kill can still
+    // proceed. Callers must treat the absence of markers as "identity unknown",
+    // never as "process exited".
+    try {
+      const output = execFileSync(
+        "wmic",
+        ["process", "get", "ParentProcessId,ProcessId"],
+        { encoding: "utf8", timeout: bounded, windowsHide: true, maxBuffer: PROCESS_TABLE_MAX_BUFFER },
+      );
+      const table = new Map<number, ProcessTableEntry>();
+      for (const row of parseProcessRows(output, "ppid-pid")) {
+        table.set(row.pid, { ppid: row.ppid, startMarker: "" });
+      }
+      return table;
+    } catch {
+      return null;
+    }
+  }
+}
+
+// Build the descendant set in memory from a single point-in-time snapshot. Edges
+// where the child was provably created before its parent are dropped, which
+// protects against PID/PPID reuse without any extra OS calls.
+function collectWindowsDescendantPids(
+  rootPid: number,
+  table: Map<number, ProcessTableEntry>,
+): number[] {
+  const childrenByParent = new Map<number, number[]>();
+  for (const [pid, entry] of table) {
+    if (pid === entry.ppid) continue;
+    const parent = table.get(entry.ppid);
+    if (parent && entry.startMarker && parent.startMarker) {
+      try {
+        if (BigInt(entry.startMarker) < BigInt(parent.startMarker)) continue;
+      } catch { /* non-numeric marker — keep the edge */ }
+    }
+    const children = childrenByParent.get(entry.ppid) ?? [];
+    children.push(pid);
+    childrenByParent.set(entry.ppid, children);
+  }
+
+  const descendants: number[] = [];
+  const seen = new Set<number>([rootPid]);
+  const queue = [...(childrenByParent.get(rootPid) ?? [])];
+  while (queue.length > 0) {
+    const pid = queue.shift();
+    if (pid === undefined || seen.has(pid)) continue;
+    seen.add(pid);
+    descendants.push(pid);
+    queue.push(...(childrenByParent.get(pid) ?? []));
+  }
+  return descendants;
+}
+
+function getWindowsProcessTreeSnapshot(rootPid: number): ProcessTreeSnapshot {
+  const table = readWindowsProcessTable(PROCESS_TABLE_READ_TIMEOUT_MS);
+  if (!table) {
+    const descendantPids = listDescendantPids(rootPid);
+    return {
+      rootPid,
+      descendantPids,
+      trackedPids: uniquePids([rootPid, ...descendantPids]),
+      processGroupId: undefined,
+    };
+  }
+  const descendantPids = collectWindowsDescendantPids(rootPid, table);
+  const trackedPids = uniquePids([rootPid, ...descendantPids]);
+  const identities: ProcessIdentity[] = [];
+  for (const pid of trackedPids) {
+    const entry = table.get(pid);
+    if (entry && entry.startMarker) identities.push({ pid, startMarker: entry.startMarker });
+  }
+  return {
+    rootPid,
+    descendantPids,
+    trackedPids,
+    // Keep the identities we captured (a partial set is fine): the root's identity
+    // stays available for killProcessTree's identity guard, and isWindowsProcessTreeAlive
+    // treats any tracked PID without a marker as alive-if-present, so a markerless
+    // descendant never suppresses the kill or reports a live tree as exited.
+    trackedIdentities: identities.length > 0 ? identities : undefined,
+    processGroupId: undefined,
+  };
+}
+
+// One batched liveness probe for Windows, reused by waitForProcessTreeExit's
+// polling loop so each poll is a single bounded call instead of one per PID.
+function isWindowsProcessTreeAlive(snapshot: ProcessTreeSnapshot, timeoutMs: number): boolean {
+  const table = readWindowsProcessTable(timeoutMs);
+  const markers = new Map<number, string>(
+    (snapshot.trackedIdentities ?? []).map((identity) => [identity.pid, identity.startMarker]),
+  );
+  for (const pid of snapshot.trackedPids) {
+    if (!table) {
+      // Batch read failed — fall back to a cheap per-PID existence probe.
+      if (isProcessAlive(pid)) return true;
+      continue;
+    }
+    const entry = table.get(pid);
+    if (!entry) continue; // PID no longer present — gone.
+    const marker = markers.get(pid);
+    if (marker === undefined) return true; // present, no identity baseline — assume alive.
+    // present with a matching (or unknown) creation marker — alive.
+    // A differing marker means the PID was reused, so treat it as gone.
+    if (entry.startMarker === "" || entry.startMarker === marker) return true;
+  }
+  return false;
+}
+
 export function shouldSpawnDetachedProcessGroup(): boolean {
   return !isWindows();
 }
@@ -230,6 +387,7 @@ export function listDescendantPids(pid: number): number[] {
 
 export function getProcessTreeSnapshot(pid: number): ProcessTreeSnapshot {
   const rootPid = assertValidPid(pid);
+  if (isWindows()) return getWindowsProcessTreeSnapshot(rootPid);
   const descendantPids = listDescendantPids(rootPid);
   const trackedPids = uniquePids([rootPid, ...descendantPids]);
   return {
@@ -326,6 +484,7 @@ export function killProcessTree(
       execFileSync("taskkill", ["/T", "/F", "/PID", String(snapshot.rootPid)], {
         stdio: "ignore",
         windowsHide: true,
+        timeout: TASKKILL_TIMEOUT_MS,
       });
       killRequested = true;
     } else {
@@ -342,7 +501,11 @@ export function killProcessTree(
   return { ...snapshot, killRequested };
 }
 
-export function isProcessTreeAlive(snapshot: ProcessTreeSnapshot): boolean {
+export function isProcessTreeAlive(
+  snapshot: ProcessTreeSnapshot,
+  timeoutMs: number = PROCESS_TABLE_READ_TIMEOUT_MS,
+): boolean {
+  if (isWindows()) return isWindowsProcessTreeAlive(snapshot, timeoutMs);
   if (snapshot.trackedIdentities) {
     return snapshot.trackedIdentities.some(isProcessIdentityCurrent);
   }
@@ -356,15 +519,21 @@ export async function waitForProcessTreeExit(
   pollIntervalMs = 100,
 ): Promise<boolean> {
   if (!snapshot) return true;
-  if (!isProcessTreeAlive(snapshot)) return true;
+  const clampBudget = (value: number): number =>
+    Math.max(1, Math.min(value, PROCESS_TABLE_READ_TIMEOUT_MS));
+  let alive = isProcessTreeAlive(snapshot, clampBudget(timeoutMs));
+  if (!alive) return true;
   if (timeoutMs <= 0) return false;
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
-    if (!isProcessTreeAlive(snapshot)) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    alive = isProcessTreeAlive(snapshot, clampBudget(remaining));
+    if (!alive) return true;
   }
-  return !isProcessTreeAlive(snapshot);
+  return !alive;
 }
 
 /**
