@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Inbox, Undo2, X } from "lucide-react";
+import { Filter, Inbox, Undo2, X } from "lucide-react";
 import {
   deleteFeedCard,
   patchFeedCard,
@@ -72,6 +72,25 @@ type FeedFeedback =
 
 const DELETE_UNDO_DELAY_MS = 5_000;
 const SCROLL_TOP_EPSILON = 1;
+const KEY_PREFIX_COMMIT_DELAY_MS = 250;
+const KEY_PREFIX_MAX_LENGTH = 200;
+const KEY_PREFIX_SUGGESTION_LIMIT = 50;
+
+export interface FeedFilterState {
+  kind: string;
+  keyPrefix: string;
+}
+
+const feedFilterControlInputClass = "min-h-9 rounded-md border border-border bg-bg-surface px-2.5 py-1.5 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent";
+
+function deriveKeyFamilyPrefixes(key: string | null): string[] {
+  if (!key) return [];
+  const prefixes: string[] = [];
+  for (let index = 0; index < key.length; index += 1) {
+    if (key[index] === ":") prefixes.push(key.slice(0, index + 1));
+  }
+  return prefixes;
+}
 
 function formatFeedMutationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -158,6 +177,8 @@ interface DashboardFeedProps {
   taskGroups?: TaskGroup[];
   feedLoading: boolean;
   showResolvedFeed: boolean;
+  feedFilter?: FeedFilterState;
+  onFeedFilterChange?: (patch: Partial<FeedFilterState>) => void;
   activeHasMore?: boolean;
   resolvedHasMore?: boolean;
   activeLoadingMore?: boolean;
@@ -182,6 +203,8 @@ export default function DashboardFeed({
   taskGroups = [],
   feedLoading,
   showResolvedFeed,
+  feedFilter = { kind: "", keyPrefix: "" },
+  onFeedFilterChange,
   activeHasMore = false,
   resolvedHasMore = false,
   activeLoadingMore = false,
@@ -203,6 +226,9 @@ export default function DashboardFeed({
   const [startedFeedChats, setStartedFeedChats] = useState<Record<string, StartedFeedChat>>({});
   const [pendingStatuses, setPendingStatuses] = useState<Record<string, PendingStatusMutation>>({});
   const [pendingDeletes, setPendingDeletes] = useState<Record<string, FeedCardData>>({});
+  const [knownKinds, setKnownKinds] = useState<string[]>([]);
+  const [knownKeyPrefixes, setKnownKeyPrefixes] = useState<string[]>([]);
+  const [keyPrefixDraft, setKeyPrefixDraft] = useState(feedFilter.keyPrefix);
   const mutationRequestIdRef = useRef(0);
   const deleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const pendingDeletesRef = useRef<Record<string, FeedCardData>>({});
@@ -210,6 +236,8 @@ export default function DashboardFeed({
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedCardElementsRef = useRef<Record<string, HTMLDivElement>>({});
   const pendingDismissScrollRef = useRef<{ nextCardId: string } | null>(null);
+  const keyPrefixCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCommittedKeyPrefixRef = useRef(feedFilter.keyPrefix);
   const actionSubmitting = actionSubmitMode !== null;
 
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
@@ -296,6 +324,97 @@ export default function DashboardFeed({
   const resolvedFeedCards = displayFeedCards.filter((card) => card.status !== "active");
   const showResolvedDivider = activeFeedCards.length > 0 && resolvedFeedCards.length > 0;
   const renderedFeedCards = [...activeFeedCards, ...resolvedFeedCards];
+
+  useEffect(() => {
+    setKnownKinds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const card of feedCards) {
+        if (card.kind && !next.has(card.kind)) {
+          next.add(card.kind);
+          changed = true;
+        }
+      }
+      return changed ? Array.from(next) : current;
+    });
+    setKnownKeyPrefixes((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const card of feedCards) {
+        for (const prefix of deriveKeyFamilyPrefixes(card.dedupeKey)) {
+          if (!next.has(prefix)) {
+            next.add(prefix);
+            changed = true;
+          }
+        }
+      }
+      return changed ? Array.from(next) : current;
+    });
+  }, [feedCards]);
+
+  useEffect(() => {
+    if (feedFilter.keyPrefix !== lastCommittedKeyPrefixRef.current) {
+      lastCommittedKeyPrefixRef.current = feedFilter.keyPrefix;
+      setKeyPrefixDraft(feedFilter.keyPrefix);
+    }
+  }, [feedFilter.keyPrefix]);
+
+  useEffect(() => () => {
+    if (keyPrefixCommitTimerRef.current) {
+      clearTimeout(keyPrefixCommitTimerRef.current);
+      keyPrefixCommitTimerRef.current = null;
+    }
+  }, []);
+
+  const kindFilterOptions = useMemo(() => {
+    const options = new Set(knownKinds);
+    if (feedFilter.kind) options.add(feedFilter.kind);
+    return Array.from(options).sort((a, b) => a.localeCompare(b));
+  }, [knownKinds, feedFilter.kind]);
+
+  const keyPrefixSuggestions = useMemo(
+    () => [...knownKeyPrefixes].sort((a, b) => a.localeCompare(b)).slice(0, KEY_PREFIX_SUGGESTION_LIMIT),
+    [knownKeyPrefixes],
+  );
+
+  const hasActiveFeedFilter = Boolean(feedFilter.kind || feedFilter.keyPrefix);
+  const showFeedFilterControl = displayFeedCards.length > 0 || hasActiveFeedFilter;
+
+  const commitKeyPrefix = (value: string) => {
+    if (keyPrefixCommitTimerRef.current) {
+      clearTimeout(keyPrefixCommitTimerRef.current);
+      keyPrefixCommitTimerRef.current = null;
+    }
+    const trimmed = value.trim();
+    if (trimmed === lastCommittedKeyPrefixRef.current) return;
+    lastCommittedKeyPrefixRef.current = trimmed;
+    onFeedFilterChange?.({ keyPrefix: trimmed });
+  };
+
+  const handleKeyPrefixInputChange = (value: string) => {
+    setKeyPrefixDraft(value);
+    if (keyPrefixCommitTimerRef.current) {
+      clearTimeout(keyPrefixCommitTimerRef.current);
+    }
+    keyPrefixCommitTimerRef.current = setTimeout(() => {
+      keyPrefixCommitTimerRef.current = null;
+      commitKeyPrefix(value);
+    }, KEY_PREFIX_COMMIT_DELAY_MS);
+  };
+
+  const handleKindFilterChange = (value: string) => {
+    onFeedFilterChange?.({ kind: value });
+  };
+
+  const clearFeedFilter = () => {
+    if (keyPrefixCommitTimerRef.current) {
+      clearTimeout(keyPrefixCommitTimerRef.current);
+      keyPrefixCommitTimerRef.current = null;
+    }
+    lastCommittedKeyPrefixRef.current = "";
+    setKeyPrefixDraft("");
+    onFeedFilterChange?.({ kind: "", keyPrefix: "" });
+  };
 
   useLayoutEffect(() => {
     const pendingDismissScroll = pendingDismissScrollRef.current;
@@ -768,6 +887,55 @@ export default function DashboardFeed({
           </button>
         </div>
 
+        {showFeedFilterControl && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Filter size={14} className="shrink-0 text-text-faint" aria-hidden="true" />
+            <select
+              aria-label="Filter feed by kind"
+              value={feedFilter.kind}
+              onChange={(event) => handleKindFilterChange(event.target.value)}
+              className={feedFilterControlInputClass}
+            >
+              <option value="">All kinds</option>
+              {kindFilterOptions.map((kind) => (
+                <option key={kind} value={kind}>{kind}</option>
+              ))}
+            </select>
+            <input
+              type="text"
+              aria-label="Filter feed by key prefix"
+              list="dashboard-feed-key-prefixes"
+              value={keyPrefixDraft}
+              maxLength={KEY_PREFIX_MAX_LENGTH}
+              placeholder="Key prefix (e.g. docs-maintenance:)"
+              onChange={(event) => handleKeyPrefixInputChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitKeyPrefix(keyPrefixDraft);
+                }
+              }}
+              onBlur={() => commitKeyPrefix(keyPrefixDraft)}
+              className={`${feedFilterControlInputClass} min-w-0 flex-1 sm:flex-none sm:w-64`}
+            />
+            <datalist id="dashboard-feed-key-prefixes">
+              {keyPrefixSuggestions.map((prefix) => (
+                <option key={prefix} value={prefix} />
+              ))}
+            </datalist>
+            {hasActiveFeedFilter && (
+              <button
+                type="button"
+                onClick={clearFeedFilter}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+              >
+                <X size={12} />
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         {feedMutationError && (
           <div
             className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-sm text-error"
@@ -827,10 +995,17 @@ export default function DashboardFeed({
             )}
           </div>
         ) : (
-          <EmptyState
-            message="No feed cards"
-            sub="Agents can publish durable cards here for curated alerts, follow-ups, decisions, and artifacts."
-          />
+          hasActiveFeedFilter ? (
+            <EmptyState
+              message="No feed cards match this filter"
+              sub="Adjust the kind or key prefix, or clear the filter. Key prefix matches keyed cards only."
+            />
+          ) : (
+            <EmptyState
+              message="No feed cards"
+              sub="Agents can publish durable cards here for curated alerts, follow-ups, decisions, and artifacts."
+            />
+          )
         )}
       </section>
       )}
