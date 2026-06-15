@@ -1329,6 +1329,7 @@ export interface FeedQueryFilters {
   kind?: string;
   taskId?: string;
   sessionId?: string;
+  keyPrefix?: string;
   limit?: number;
   cursor?: string;
   includeDismissed?: boolean;
@@ -1357,6 +1358,7 @@ function buildFeedQuery(filters: FeedQueryFilters = {}): string {
   if (filters.kind) params.set("kind", filters.kind);
   if (filters.taskId) params.set("taskId", filters.taskId);
   if (filters.sessionId) params.set("sessionId", filters.sessionId);
+  if (filters.keyPrefix) params.set("keyPrefix", filters.keyPrefix);
   if (filters.limit !== undefined) params.set("limit", String(filters.limit));
   if (filters.cursor) params.set("cursor", filters.cursor);
   if (filters.includeDismissed !== undefined) params.set("includeDismissed", String(filters.includeDismissed));

@@ -157,6 +157,20 @@ describe("Feed routes", () => {
     expect(all.body.cards).toHaveLength(3);
   });
 
+  it("GET /api/feed isolates a keyed card family by keyPrefix", async () => {
+    const docsCheck = ctx.feedStore.saveCard({ key: "docs-maintenance:check:1", title: "Docs check" }).card;
+    const docsAudit = ctx.feedStore.saveCard({ key: "docs-maintenance:audit:2", title: "Docs audit" }).card;
+    ctx.feedStore.saveCard({ key: "platform-audit:slug", title: "Platform audit" });
+    ctx.feedStore.saveCard({ title: "Keyless card" });
+
+    const family = await request(app).get(`/api/feed?keyPrefix=${encodeURIComponent("docs-maintenance:")}`);
+    expect(family.status).toBe(200);
+    expect(new Set(family.body.cards.map((card: any) => card.id))).toEqual(new Set([docsCheck.id, docsAudit.id]));
+
+    const narrower = await request(app).get(`/api/feed?keyPrefix=${encodeURIComponent("docs-maintenance:check:")}`);
+    expect(narrower.body.cards.map((card: any) => card.id)).toEqual([docsCheck.id]);
+  });
+
   it("GET /api/feed paginates cards with an opaque cursor", async () => {
     const first = ctx.feedStore.saveCard({ title: "First" }).card;
     const second = ctx.feedStore.saveCard({ title: "Second" }).card;

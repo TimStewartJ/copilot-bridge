@@ -3532,6 +3532,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         kind: parseFeedQueryString("kind", req.query.kind),
         taskId: parseFeedQueryString("taskId", req.query.taskId),
         sessionId: parseFeedQueryString("sessionId", req.query.sessionId),
+        keyPrefix: parseFeedQueryString("keyPrefix", req.query.keyPrefix),
         limit: parseFeedLimit(req.query.limit),
         includeDismissed: parseFeedBoolean("includeDismissed", req.query.includeDismissed),
         cursor: parseFeedCursor(req.query.cursor),

@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { getDashboardTabPath, getExplicitDashboardTabFromPathname, getRememberedDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useFeedPagesQuery } from "../hooks/queries/useFeed";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
 import DashboardChecklist from "./DashboardChecklist";
-import DashboardFeed from "./DashboardFeed";
+import DashboardFeed, { type FeedFilterState } from "./DashboardFeed";
 import DashboardTabs from "./DashboardTabs";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
@@ -123,11 +123,32 @@ export default function Dashboard({
   const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
   const checklist = useDashboardChecklist(data);
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
+  const [feedFilter, setFeedFilter] = useState<FeedFilterState>({ kind: "", keyPrefix: "" });
   const activeTab = getRememberedDashboardTabFromPathname(location.pathname);
   const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
-  const activeFeedFilters = useMemo(() => ({ limit: ACTIVE_FEED_PAGE_SIZE }), []);
-  const doneFeedFilters = useMemo(() => ({ status: "done" as const, limit: RESOLVED_FEED_PAGE_SIZE }), []);
-  const dismissedFeedFilters = useMemo(() => ({ status: "dismissed" as const, limit: RESOLVED_FEED_PAGE_SIZE }), []);
+  const handleFeedFilterChange = useCallback((patch: Partial<FeedFilterState>) => {
+    setFeedFilter((prev) => ({ ...prev, ...patch }));
+  }, []);
+  const feedFilterFragment = useMemo(() => {
+    const fragment: { kind?: string; keyPrefix?: string } = {};
+    const kind = feedFilter.kind.trim();
+    const keyPrefix = feedFilter.keyPrefix.trim();
+    if (kind) fragment.kind = kind;
+    if (keyPrefix) fragment.keyPrefix = keyPrefix;
+    return fragment;
+  }, [feedFilter]);
+  const activeFeedFilters = useMemo(
+    () => ({ ...feedFilterFragment, limit: ACTIVE_FEED_PAGE_SIZE }),
+    [feedFilterFragment],
+  );
+  const doneFeedFilters = useMemo(
+    () => ({ ...feedFilterFragment, status: "done" as const, limit: RESOLVED_FEED_PAGE_SIZE }),
+    [feedFilterFragment],
+  );
+  const dismissedFeedFilters = useMemo(
+    () => ({ ...feedFilterFragment, status: "dismissed" as const, limit: RESOLVED_FEED_PAGE_SIZE }),
+    [feedFilterFragment],
+  );
   const activeFeedQuery = useFeedPagesQuery(activeFeedFilters);
   const doneFeedQuery = useFeedPagesQuery(doneFeedFilters, { enabled: showResolvedFeed });
   const dismissedFeedQuery = useFeedPagesQuery(dismissedFeedFilters, { enabled: showResolvedFeed });
@@ -212,6 +233,8 @@ export default function Dashboard({
             taskGroups={taskGroups}
             feedLoading={feedLoading}
             showResolvedFeed={showResolvedFeed}
+            feedFilter={feedFilter}
+            onFeedFilterChange={handleFeedFilterChange}
             activeHasMore={Boolean(activeFeedQuery.hasNextPage)}
             resolvedHasMore={showResolvedFeed && Boolean(doneFeedQuery.hasNextPage || dismissedFeedQuery.hasNextPage)}
             activeLoadingMore={activeFeedQuery.isFetchingNextPage}

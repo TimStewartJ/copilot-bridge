@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FeedCard as FeedCardData, Task, TaskGroup } from "../api";
 import {
   createReactDomHarness,
+  advanceTimersByTimeAct as advanceTimersByTimeWithAct,
   findAllByTag,
   getReactProps,
   waitTick,
@@ -10,6 +11,40 @@ import {
   type ReactDomHarness,
   type WaitUntilActOptions,
 } from "../test-react-harness";
+import { installDomShim } from "../test-dom-shim";
+
+function installSelectAwareDomShim() {
+  const dom = installDomShim();
+  const documentRef = globalThis.document as typeof globalThis.document & { createElement: (tag: string) => any };
+  const originalCreateElement = documentRef.createElement.bind(documentRef);
+  documentRef.createElement = (tag: string) => {
+    const element = originalCreateElement(tag);
+    const normalizedTag = tag.toUpperCase();
+    if (normalizedTag === "SELECT") {
+      Object.defineProperty(element, "options", {
+        configurable: true,
+        get: () => Array.from(element.childNodes ?? []).filter((child: any) => child.tagName === "OPTION"),
+      });
+    }
+    if (normalizedTag === "OPTION") {
+      Object.defineProperty(element, "value", {
+        configurable: true,
+        get: () => element.getAttribute("value") ?? element.textContent ?? "",
+        set: (value) => element.setAttribute("value", String(value)),
+      });
+      Object.defineProperty(element, "selected", { configurable: true, writable: true, value: false });
+    }
+    return element;
+  };
+
+  return {
+    container: dom.container,
+    cleanup() {
+      documentRef.createElement = originalCreateElement;
+      dom.cleanup();
+    },
+  };
+}
 
 const apiMocks = vi.hoisted(() => ({
   patchFeedCard: vi.fn(),
@@ -222,7 +257,7 @@ describe("DashboardFeed feed mutations", () => {
     vi.clearAllMocks();
     apiMocks.patchFeedCard.mockResolvedValue(makeCard({ status: "done" }));
     apiMocks.deleteFeedCard.mockResolvedValue(undefined);
-    harness = await createReactDomHarness();
+    harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     dom = harness.dom;
   });
 
@@ -787,5 +822,154 @@ describe("DashboardFeed feed mutations", () => {
 
     expect(onLoadMoreActive).toHaveBeenCalledTimes(1);
     expect(onLoadMoreResolved).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("DashboardFeed feed filter", () => {
+  let harness: ReactDomHarness | null = null;
+  let dom: ReactDomHarness["dom"] | null = null;
+
+  function getHarness() {
+    if (!harness) throw new Error("DashboardFeed harness has not been initialized");
+    return harness;
+  }
+
+  async function act(callback: () => void | Promise<void>): Promise<void> {
+    await getHarness().act(callback);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    dom = harness.dom;
+  });
+
+  afterEach(async () => {
+    await harness?.cleanup();
+    harness = null;
+    dom = null;
+    vi.useRealTimers();
+  });
+
+  async function renderFeed(props: Partial<ComponentProps<typeof DashboardFeed>> = {}) {
+    const resolvedProps: ComponentProps<typeof DashboardFeed> = {
+      active: true,
+      feedCards: [makeCard()],
+      feedLoading: false,
+      showResolvedFeed: false,
+      onToggleResolvedFeed: vi.fn(),
+      onSelectTask: vi.fn(),
+      onSelectSession: vi.fn(),
+      onStartPromptSession: vi.fn(async () => "session-new"),
+      onRefetchFeed: vi.fn(async () => undefined),
+      ...props,
+    };
+    await getHarness().render(createElement(DashboardFeed, resolvedProps));
+    return resolvedProps;
+  }
+
+  it("commits a kind selection immediately and lists kinds from loaded cards", async () => {
+    const onFeedFilterChange = vi.fn();
+    await renderFeed({
+      feedCards: [
+        makeCard({ id: "c1", kind: "status" }),
+        makeCard({ id: "c2", kind: "note", dedupeKey: "docs-maintenance:audit:1" }),
+      ],
+      feedFilter: { kind: "", keyPrefix: "" },
+      onFeedFilterChange,
+    });
+
+    const select = findByAriaLabel(dom?.container, "Filter feed by kind");
+    expect(select).toBeTruthy();
+    const optionValues = findAllByTag(select, "OPTION").map((option: any) => option.getAttribute("value"));
+    expect(optionValues).toContain("note");
+    expect(optionValues).toContain("status");
+
+    await act(async () => {
+      getReactProps(select)?.onChange?.({ target: { value: "note" } });
+    });
+
+    expect(onFeedFilterChange).toHaveBeenCalledWith({ kind: "note" });
+  });
+
+  it("debounces the key prefix input before committing", async () => {
+    vi.useFakeTimers();
+    const onFeedFilterChange = vi.fn();
+    await renderFeed({ feedFilter: { kind: "", keyPrefix: "" }, onFeedFilterChange });
+
+    const input = findByAriaLabel(dom?.container, "Filter feed by key prefix");
+    expect(input).toBeTruthy();
+
+    await act(async () => {
+      getReactProps(input)?.onChange?.({ target: { value: "docs-maintenance:" } });
+    });
+    expect(onFeedFilterChange).not.toHaveBeenCalled();
+
+    await advanceTimersByTimeWithAct(getHarness().act, 250);
+    expect(onFeedFilterChange).toHaveBeenCalledWith({ keyPrefix: "docs-maintenance:" });
+  });
+
+  it("commits the key prefix immediately on Enter and trims whitespace", async () => {
+    const onFeedFilterChange = vi.fn();
+    await renderFeed({ feedFilter: { kind: "", keyPrefix: "" }, onFeedFilterChange });
+
+    const input = findByAriaLabel(dom?.container, "Filter feed by key prefix");
+    await act(async () => {
+      getReactProps(input)?.onChange?.({ target: { value: "  docs-maintenance:  " } });
+    });
+    await act(async () => {
+      getReactProps(input)?.onKeyDown?.({ key: "Enter", preventDefault: vi.fn() });
+    });
+
+    expect(onFeedFilterChange).toHaveBeenCalledWith({ keyPrefix: "docs-maintenance:" });
+  });
+
+  it("clears active filters", async () => {
+    const onFeedFilterChange = vi.fn();
+    await renderFeed({
+      feedCards: [makeCard({ kind: "note" })],
+      feedFilter: { kind: "note", keyPrefix: "docs:" },
+      onFeedFilterChange,
+    });
+
+    await act(async () => {
+      clickButton(findButtonByText(dom?.container, "Clear"));
+    });
+
+    expect(onFeedFilterChange).toHaveBeenCalledWith({ kind: "", keyPrefix: "" });
+  });
+
+  it("shows a filtered empty state when no cards match", async () => {
+    await renderFeed({
+      feedCards: [],
+      feedFilter: { kind: "", keyPrefix: "docs-maintenance:" },
+      onFeedFilterChange: vi.fn(),
+    });
+
+    expect(dom?.container.textContent).toContain("No feed cards match this filter");
+    expect(findByAriaLabel(dom?.container, "Filter feed by key prefix")).toBeTruthy();
+  });
+
+  it("keeps previously seen kinds selectable after the loaded set narrows", async () => {
+    const onFeedFilterChange = vi.fn();
+    await renderFeed({
+      feedCards: [
+        makeCard({ id: "c1", kind: "status" }),
+        makeCard({ id: "c2", kind: "note" }),
+      ],
+      feedFilter: { kind: "", keyPrefix: "" },
+      onFeedFilterChange,
+    });
+
+    await renderFeed({
+      feedCards: [makeCard({ id: "c1", kind: "status" })],
+      feedFilter: { kind: "status", keyPrefix: "" },
+      onFeedFilterChange,
+    });
+
+    const select = findByAriaLabel(dom?.container, "Filter feed by kind");
+    const optionValues = findAllByTag(select, "OPTION").map((option: any) => option.getAttribute("value"));
+    expect(optionValues).toContain("note");
+    expect(optionValues).toContain("status");
   });
 });
