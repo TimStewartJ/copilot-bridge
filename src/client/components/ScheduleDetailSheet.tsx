@@ -34,6 +34,12 @@ const CRON_PRESETS = [
 ];
 const MAX_AUTO_ARCHIVE_KEEP = 1000;
 
+// Format a Date as a minute-precision `datetime-local` input value in local time.
+function toDatetimeLocalValue(date: Date): string {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
 // ── Props ────────────────────────────────────────────────────────
 
 interface ScheduleDetailSheetProps {
@@ -401,6 +407,14 @@ function EditMode({
     if (!name.trim() || !prompt.trim()) { setError("Name and prompt are required"); return; }
     if (type === "cron" && !cronExpr.trim()) { setError("Cron expression is required"); return; }
     if (type === "once" && !runAt) { setError("Run time is required"); return; }
+    if (type === "once") {
+      const runAtMs = new Date(runAt).getTime();
+      const currentMinuteMs = Math.floor(Date.now() / 60_000) * 60_000;
+      if (Number.isNaN(runAtMs) || runAtMs < currentMinuteMs) {
+        setError("Run time must be in the future");
+        return;
+      }
+    }
     const autoArchiveKeepValue = autoArchiveKeep.trim();
     const parsedAutoArchiveKeep = autoArchiveKeepValue ? Number(autoArchiveKeepValue) : null;
     if (parsedAutoArchiveKeep !== null
@@ -522,6 +536,7 @@ function EditMode({
               ) : (
                 <input
                   type="datetime-local"
+                  min={toDatetimeLocalValue(new Date())}
                   className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
                   value={runAt}
                   onChange={(e) => setRunAt(e.target.value)}
