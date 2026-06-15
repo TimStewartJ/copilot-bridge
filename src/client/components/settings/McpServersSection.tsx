@@ -71,6 +71,10 @@ export function McpServersSection({
   };
 
   const removeServer = async (server: McpServer) => {
+    const confirmed = window.confirm(
+      `Delete MCP server "${server.name}"?\n\nThis can't be undone.`,
+    );
+    if (!confirmed) return;
     setSavingServerId(server.id);
     setError(null);
     try {
