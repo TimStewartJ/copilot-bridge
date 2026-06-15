@@ -202,6 +202,50 @@ export {
 type CopilotModelList = AgentModelInfo[];
 export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
 
+// Graceful shutdown must finish before the launcher's force-kill window
+// (GRACEFUL_EXIT_WAIT = 15s) so the server exits on its own. The overall budget
+// is shared across every phase (session drain, browser teardown, backend stop)
+// so a hung backend can never push the server past the launcher deadline.
+const GRACEFUL_SHUTDOWN_BUDGET_MS = 13_000;
+const SESSION_DRAIN_TIMEOUT_MS = 10_000;
+const BROWSER_SHUTDOWN_TIMEOUT_MS = 3_000;
+const BACKEND_STOP_TIMEOUT_MS = 4_000;
+
+type SettledTimeout<T> = { timedOut: boolean; value?: T; error?: unknown };
+
+// Run an async operation with an upper time bound. On timeout the operation is
+// left running (its result/rejection is swallowed) and the caller is told it did
+// not finish, so shutdown can move on without ever blocking unbounded.
+async function settleWithTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+): Promise<SettledTimeout<T>> {
+  let promise: Promise<T>;
+  try {
+    promise = operation();
+  } catch (error) {
+    return { timedOut: false, error };
+  }
+  if (timeoutMs <= 0) {
+    void promise.catch(() => {});
+    return { timedOut: true };
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<{ __timeout: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ __timeout: true }), timeoutMs);
+    if (typeof timer?.unref === "function") timer.unref();
+  });
+  const workPromise = promise.then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  const result = await Promise.race([workPromise, timeoutPromise]);
+  if (timer) clearTimeout(timer);
+  if ("__timeout" in result) return { timedOut: true };
+  if ("error" in result) return { timedOut: false, error: result.error };
+  return { timedOut: false, value: result.value };
+}
+
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
   stopPrevious: "stopping the previous client",
   startNext: "starting the refreshed client",
@@ -2333,6 +2377,9 @@ export class SessionManager {
   }
 
   async gracefulShutdown(): Promise<void> {
+    const deadline = Date.now() + GRACEFUL_SHUTDOWN_BUDGET_MS;
+    const remaining = (): number => Math.max(0, deadline - Date.now());
+
     const active = this.getActiveSessions();
     if (active.length > 0) {
       console.log(`[sdk] Graceful shutdown: aborting ${active.length} active session(s)...`);
@@ -2350,10 +2397,11 @@ export class SessionManager {
         }),
       );
 
-      // Wait up to 10s for sessions to drain (they clean up in their .finally())
-      const deadline = Date.now() + 10_000;
+      // Wait for sessions to drain (they clean up in their .finally()), bounded by
+      // both the per-phase drain limit and the overall shutdown budget.
+      const drainDeadline = Date.now() + Math.min(SESSION_DRAIN_TIMEOUT_MS, remaining());
       let activeCount = this.getActiveSessions().length;
-      while (activeCount > 0 && Date.now() < deadline) {
+      while (activeCount > 0 && Date.now() < drainDeadline) {
         await new Promise((r) => setTimeout(r, 250));
         activeCount = this.getActiveSessions().length;
       }
@@ -2370,24 +2418,43 @@ export class SessionManager {
     );
 
     if (this.deps.browserSessionStore) {
-      await this.deps.browserSessionStore.closeAll();
-    }
-
-    try {
-      const outcome = await this.deps.browserLifecycle?.shutdown();
-      if (outcome?.skipped) {
-        if (outcome.reason === "no_browser_activity") {
-          console.log("[browser] Primary browser shutdown skipped (no runtime activity detected)");
-        }
+      const store = this.deps.browserSessionStore;
+      const { timedOut } = await settleWithTimeout(
+        () => store.closeAll(),
+        Math.min(BROWSER_SHUTDOWN_TIMEOUT_MS, remaining()),
+      );
+      if (timedOut) {
+        console.error("[browser] Browser session cleanup timed out during shutdown");
       }
-    } catch (err) {
-      console.error("[browser] Primary browser shutdown failed:", err);
     }
 
-    // Stop the SDK client
+    if (this.deps.browserLifecycle) {
+      const lifecycle = this.deps.browserLifecycle;
+      const outcome = await settleWithTimeout(
+        () => lifecycle.shutdown(),
+        Math.min(BROWSER_SHUTDOWN_TIMEOUT_MS, remaining()),
+      );
+      if (outcome.timedOut) {
+        console.error("[browser] Primary browser shutdown timed out during shutdown");
+      } else if (outcome.error) {
+        console.error("[browser] Primary browser shutdown failed:", outcome.error);
+      } else if (outcome.value?.skipped && outcome.value.reason === "no_browser_activity") {
+        console.log("[browser] Primary browser shutdown skipped (no runtime activity detected)");
+      }
+    }
+
+    // Stop the SDK client, bounded so a hung backend cannot exceed the budget.
     if (this.backend) {
       console.log("[sdk] Stopping Copilot SDK client...");
-      await this.backend.stop();
+      const backend = this.backend;
+      const { timedOut } = await settleWithTimeout(
+        () => Promise.resolve(backend.stop()),
+        Math.min(BACKEND_STOP_TIMEOUT_MS, remaining()),
+      );
+      if (timedOut) {
+        console.error("[sdk] Backend stop timed out during graceful shutdown; forcing stop");
+        this.forceStopTimedOutBackend(backend, "graceful shutdown");
+      }
       this.backend = null;
       this.backendCreatedAtMs = null;
     }

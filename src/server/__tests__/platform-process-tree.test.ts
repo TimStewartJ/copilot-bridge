@@ -7,6 +7,8 @@ import { makeTestDir } from "./helpers.js";
 import {
   createDirectoryLink,
   getDeviceHibernateCommand,
+  getProcessTreeSnapshot,
+  isProcessTreeAlive,
   killProcessTree,
   listDescendantPids,
   removeDirectoryLink,
@@ -150,14 +152,17 @@ describe("process tree platform helpers", () => {
     });
   });
 
-  it("uses shell-safe taskkill arguments and tracks Windows descendants", () => {
+  it("captures Windows descendants and identities from one batched snapshot call", () => {
     setPlatform("win32");
+    let powershellCalls = 0;
     execFileSyncMock.mockImplementation((command: string) => {
-      if (command === "wmic") {
+      if (command === "powershell.exe") {
+        powershellCalls++;
         return [
-          "ParentProcessId  ProcessId",
-          "100              101",
-          "101              102",
+          "100 1 1000",
+          "101 100 1001",
+          "102 101 1002",
+          "999 5 900",
         ].join("\n");
       }
       return "";
@@ -169,9 +174,11 @@ describe("process tree platform helpers", () => {
     expect(execFileSyncMock).toHaveBeenCalledWith(
       "taskkill",
       ["/T", "/F", "/PID", "100"],
-      expect.objectContaining({ stdio: "ignore" }),
+      expect.objectContaining({ stdio: "ignore", timeout: expect.any(Number) }),
     );
     expect(killSpy).not.toHaveBeenCalled();
+    // The whole tree is captured in a single batched call, not one call per PID.
+    expect(powershellCalls).toBe(1);
     expect(result).toMatchObject({
       rootPid: 100,
       descendantPids: [101, 102],
@@ -179,6 +186,111 @@ describe("process tree platform helpers", () => {
       processGroupId: undefined,
       killRequested: true,
     });
+    expect(result?.trackedIdentities).toEqual([
+      { pid: 100, startMarker: "1000" },
+      { pid: 101, startMarker: "1001" },
+      { pid: 102, startMarker: "1002" },
+    ]);
+  });
+
+  it("builds hundreds of Windows descendants from a single batched snapshot", () => {
+    setPlatform("win32");
+    const lines = ["100 1 1000"];
+    // A deep chain of 400 descendants: 101<-100, 102<-101, ... each created after its parent.
+    for (let pid = 101; pid <= 500; pid++) {
+      lines.push(`${pid} ${pid - 1} ${1000 + (pid - 100)}`);
+    }
+    let powershellCalls = 0;
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") {
+        powershellCalls++;
+        return lines.join("\n");
+      }
+      return "";
+    });
+
+    const snapshot = getProcessTreeSnapshot(100);
+
+    expect(powershellCalls).toBe(1);
+    expect(snapshot.descendantPids).toHaveLength(400);
+    expect(snapshot.trackedPids).toHaveLength(401);
+    expect(snapshot.trackedIdentities).toHaveLength(401);
+  });
+
+  it("drops Windows edges whose child was created before its parent (PPID reuse)", () => {
+    setPlatform("win32");
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") {
+        return [
+          "100 1 2000",
+          // PID 200 claims 100 as parent but was created earlier — a recycled PID.
+          "200 100 1500",
+          // PID 300 is a legitimate child created after the parent.
+          "300 100 2500",
+        ].join("\n");
+      }
+      return "";
+    });
+
+    const snapshot = getProcessTreeSnapshot(100);
+
+    expect(snapshot.descendantPids).toEqual([300]);
+  });
+
+  it("falls back to PID-presence tracking when Windows creation markers are missing", () => {
+    setPlatform("win32");
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") throw new Error("CIM unavailable");
+      if (command === "wmic") {
+        return [
+          "ParentProcessId  ProcessId",
+          "100              101",
+        ].join("\n");
+      }
+      return "";
+    });
+
+    const result = killProcessTree(100);
+
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      "taskkill",
+      ["/T", "/F", "/PID", "100"],
+      expect.objectContaining({ stdio: "ignore" }),
+    );
+    expect(result).toMatchObject({
+      rootPid: 100,
+      descendantPids: [101],
+      trackedPids: [100, 101],
+      killRequested: true,
+    });
+    // Without reliable creation markers, identities are not authoritative.
+    expect(result?.trackedIdentities).toBeUndefined();
+  });
+
+  it("still force-kills the verified root when a Windows descendant lacks a creation marker", () => {
+    setPlatform("win32");
+    execFileSyncMock.mockImplementation((command: string, args?: readonly string[]) => {
+      if (command === "powershell.exe") {
+        const joined = Array.isArray(args) ? args.join(" ") : "";
+        // Single-PID identity precheck for the root.
+        if (joined.includes("ProcessId = 100")) return "1000";
+        // Batched table: descendant 101 has no creation marker.
+        return ["100 1 1000", "101 100 "].join("\n");
+      }
+      return "";
+    });
+
+    const result = killProcessTree(100, { pid: 100, startMarker: "1000" });
+
+    expect(result).not.toBeNull();
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      "taskkill",
+      ["/T", "/F", "/PID", "100"],
+      expect.objectContaining({ stdio: "ignore" }),
+    );
+    expect(result?.descendantPids).toEqual([101]);
+    // The root identity survives even though a descendant is markerless.
+    expect(result?.trackedIdentities).toEqual([{ pid: 100, startMarker: "1000" }]);
   });
 
   it("does not terminate a Windows process whose PID was reused", () => {
@@ -198,6 +310,63 @@ describe("process tree platform helpers", () => {
       expect.anything(),
     );
     expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it("treats Windows liveness as a single batched probe and detects PID reuse", () => {
+    setPlatform("win32");
+    const snapshot: ProcessTreeSnapshot = {
+      rootPid: 100,
+      descendantPids: [101],
+      trackedPids: [100, 101],
+      trackedIdentities: [
+        { pid: 100, startMarker: "1000" },
+        { pid: 101, startMarker: "1001" },
+      ],
+    };
+
+    // Root still alive with the same creation marker → tree is alive.
+    let calls = 0;
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") {
+        calls++;
+        return ["100 1 1000"].join("\n");
+      }
+      return "";
+    });
+    expect(isProcessTreeAlive(snapshot)).toBe(true);
+    expect(calls).toBe(1);
+
+    // Same PIDs present but with different creation markers → all reused → gone.
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") return ["100 1 9999", "101 100 8888"].join("\n");
+      return "";
+    });
+    expect(isProcessTreeAlive(snapshot)).toBe(false);
+
+    // No tracked PIDs present at all → exited, no throw.
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === "powershell.exe") return "";
+      return "";
+    });
+    expect(isProcessTreeAlive(snapshot)).toBe(false);
+  });
+
+  it("returns promptly from a bounded Windows force-kill once the tree exits", async () => {
+    setPlatform("win32");
+    const snapshot: ProcessTreeSnapshot = {
+      rootPid: 100,
+      descendantPids: [101, 102],
+      trackedPids: [100, 101, 102],
+      trackedIdentities: [
+        { pid: 100, startMarker: "1000" },
+        { pid: 101, startMarker: "1001" },
+        { pid: 102, startMarker: "1002" },
+      ],
+    };
+    // Process table read returns no rows → every tracked PID is gone.
+    execFileSyncMock.mockReturnValue("");
+
+    await expect(waitForProcessTreeExit(snapshot, 5_000, 1)).resolves.toBe(true);
   });
 
   it("waits until tracked PIDs are gone", async () => {
