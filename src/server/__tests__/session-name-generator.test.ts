@@ -92,6 +92,22 @@ describe("session name generator helpers", () => {
     expect(model).toBe("enabled-mini");
   });
 
+  it("ignores token-price records without a positive batch size", () => {
+    const model = selectSessionTitleModel([
+      { id: "placeholder-mini", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 0 } } },
+      { id: "placeholder-large", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0 } } },
+      { id: "real-mini", billing: { tokenPrices: { inputPrice: 25_000_000_000, outputPrice: 200_000_000_000, cachePrice: 2_500_000_000, batchSize: 1_000_000 } } },
+    ] as any);
+
+    expect(model).toBe("real-mini");
+  });
+
+  it("does not select a model whose only billing is a batch-less zero-price record", () => {
+    expect(selectSessionTitleModel([
+      { id: "placeholder-mini", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 0 } } },
+    ] as any)).toBeUndefined();
+  });
+
   it("uses only recent non-empty user messages in the title prompt", () => {
     const prompt = buildSessionTitleUserPrompt([
       "",

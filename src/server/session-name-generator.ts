@@ -54,8 +54,11 @@ function modelTokenPrices(model: AgentModelInfo): {
   const tokenPrices = tokenPricesRecord(model);
   if (!tokenPrices) return undefined;
 
-  const rawBatchSize = finiteNumber(tokenPrices.batchSize);
-  const batchSize = rawBatchSize && rawBatchSize > 0 ? rawBatchSize : 1;
+  // A usable price record must declare a positive batch size. A non-positive or
+  // missing batch size means the record carries no real billing data, so we
+  // treat the model as having unknown pricing rather than inferring it is free.
+  const batchSize = finiteNumber(tokenPrices.batchSize);
+  if (batchSize === undefined || batchSize <= 0) return undefined;
   const inputPrice = normalizedTokenPrice(tokenPrices.inputPrice, batchSize);
   const outputPrice = normalizedTokenPrice(tokenPrices.outputPrice, batchSize);
   const cachePrice = normalizedTokenPrice(tokenPrices.cachePrice, batchSize);
