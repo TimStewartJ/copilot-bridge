@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import type { BridgeDistributionMode } from "./server/distribution-mode.js";
+import { remainingMs, type Deadline } from "./server/deadline.js";
 
 type ExitAwareChildProcess = Pick<ChildProcess, "exitCode" | "signalCode" | "once" | "off">;
 
@@ -24,11 +25,13 @@ export function resolveServerLaunchDistributionMode(
   return isReleaseSlot ? "release" : launcherMode;
 }
 
-export async function waitForChildExit(proc: ExitAwareChildProcess | null, timeoutMs: number): Promise<boolean> {
+export async function waitForChildExit(proc: ExitAwareChildProcess | null, deadline: Deadline): Promise<boolean> {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
     return true;
   }
 
+  const timeoutMs = remainingMs(deadline);
+  if (timeoutMs <= 0) return false;
   return await new Promise<boolean>((resolve) => {
     const onExit = () => {
       clearTimeout(timeout);

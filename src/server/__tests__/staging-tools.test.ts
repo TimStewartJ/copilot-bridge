@@ -116,12 +116,14 @@ const preparePatchedPackagesForInstallMock = vi.fn(() => ({
 }));
 const createDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
 const removeDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
-const killProcessTreeMock = vi.fn(() => ({
-  rootPid: 12345,
-  processGroupId: 12345,
-  descendantPids: [],
-  trackedPids: [12345],
-  killRequested: true,
+const captureProcessIdentityMock = vi.fn(async (pid: number) => ({
+  pid,
+  startMarker: `start-${pid}`,
+}));
+const terminateProcessTreeMock = vi.fn(async (root: { pid: number; startMarker: string }) => ({
+  ok: true,
+  status: "terminated",
+  root,
 }));
 const buildPublicUrlMock = vi.fn(() => undefined);
 
@@ -241,9 +243,11 @@ vi.mock("../release-slots.js", () => ({
 }));
 
 vi.mock("../platform.js", () => ({
+  PROCESS_TREE_TERMINATION_BUDGET_MS: 25_000,
   createDirectoryLink: createDirectoryLinkMock,
   removeDirectoryLink: removeDirectoryLinkMock,
-  killProcessTree: killProcessTreeMock,
+  captureProcessIdentity: captureProcessIdentityMock,
+  terminateProcessTree: terminateProcessTreeMock,
 }));
 
 vi.mock("../tunnel.js", () => ({
@@ -439,14 +443,8 @@ afterEach(() => {
   execSyncMock.mockReset();
   execSyncMock.mockReturnValue("");
   spawnMock.mockClear();
-  killProcessTreeMock.mockReset();
-  killProcessTreeMock.mockReturnValue({
-    rootPid: 12345,
-    processGroupId: 12345,
-    descendantPids: [],
-    trackedPids: [12345],
-    killRequested: true,
-  });
+  captureProcessIdentityMock.mockClear();
+  terminateProcessTreeMock.mockClear();
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();

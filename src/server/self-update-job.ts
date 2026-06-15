@@ -19,7 +19,6 @@ import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
-import { killProcessTree } from "./platform.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTROL_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -84,7 +83,6 @@ function createSelfUpdateRunner(
         cwd,
         env,
         timeoutMs: options.timeoutMs ?? 120_000,
-        killProcessTree,
         failureOutputFormat: "plain",
       });
       if (result.output.trim()) log(result.output.trimEnd());

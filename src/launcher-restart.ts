@@ -4,6 +4,22 @@ export type RestartOutcome =
   | "failed"
   | "invalid-release-candidate";
 
+export type VerifiedReplacement<T> =
+  | { stopped: false; replacement: null }
+  | { stopped: true; replacement: T };
+
+/**
+ * The only legal path from one managed server to another: replacement creation
+ * is not invoked until the previous process tree has a verified stop result.
+ */
+export async function startAfterVerifiedStop<T>(
+  stop: () => Promise<boolean>,
+  startReplacement: () => T,
+): Promise<VerifiedReplacement<T>> {
+  if (!(await stop())) return { stopped: false, replacement: null };
+  return { stopped: true, replacement: startReplacement() };
+}
+
 export function didRestartRecover(outcome: RestartOutcome): boolean {
   return outcome === "restarted" || outcome === "recovered-via-rollback";
 }

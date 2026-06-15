@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   didRestartRecover,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
+  startAfterVerifiedStop,
   shouldPersistReleaseFailureState,
 } from "./launcher-restart.js";
 
@@ -108,6 +109,35 @@ describe("resolveReleaseCandidateRestartOutcome", () => {
         releaseCandidateResolved: false,
       }),
     ).toBeNull();
+  });
+
+  describe("startAfterVerifiedStop", () => {
+    it("never starts a replacement after an unverifiable stop", async () => {
+      const startReplacement = vi.fn(() => ({ pid: 2 }));
+
+      await expect(startAfterVerifiedStop(
+        async () => false,
+        startReplacement,
+      )).resolves.toEqual({ stopped: false, replacement: null });
+      expect(startReplacement).not.toHaveBeenCalled();
+    });
+
+    it("stops a failed candidate before starting rollback", async () => {
+      const order: string[] = [];
+      const result = await startAfterVerifiedStop(
+        async () => {
+          order.push("stop-candidate");
+          return true;
+        },
+        () => {
+          order.push("start-rollback");
+          return { pid: 3 };
+        },
+      );
+
+      expect(order).toEqual(["stop-candidate", "start-rollback"]);
+      expect(result).toEqual({ stopped: true, replacement: { pid: 3 } });
+    });
   });
 
   it("returns no terminal outcome when the requested release candidate resolves", () => {

@@ -4,7 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeTestDir } from "./helpers.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
-const killProcessTreeMock = vi.hoisted(() => vi.fn());
+const captureProcessIdentityMock = vi.hoisted(() => vi.fn(async (pid: number) => ({
+  pid,
+  startMarker: `start-${pid}`,
+})));
+const terminateProcessTreeMock = vi.hoisted(() => vi.fn(async (root: { pid: number; startMarker: string }) => ({
+  ok: true,
+  status: "terminated",
+  root,
+})));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -15,7 +23,9 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 vi.mock("../platform.js", () => ({
-  killProcessTree: killProcessTreeMock,
+  PROCESS_TREE_TERMINATION_BUDGET_MS: 25_000,
+  captureProcessIdentity: captureProcessIdentityMock,
+  terminateProcessTree: terminateProcessTreeMock,
 }));
 
 type MockSpawnResult = {
@@ -64,7 +74,8 @@ function mockSpawnResult(result: MockSpawnResult): void {
 afterEach(() => {
   vi.restoreAllMocks();
   spawnMock.mockReset();
-  killProcessTreeMock.mockReset();
+  captureProcessIdentityMock.mockClear();
+  terminateProcessTreeMock.mockClear();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }

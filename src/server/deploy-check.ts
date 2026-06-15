@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import { killProcessTree } from "./platform.js";
 import {
   buildValidationCommandLogPath,
   formatCommandDuration,
@@ -74,7 +73,6 @@ function runStep(step: DeployCheckStep, stepIndex: number, totalSteps: number): 
     cwd,
     env: process.env,
     shell,
-    killProcessTree,
   }).then((result) => {
     const elapsed = formatCommandDuration(result.elapsedMs);
     if (result.ok) {

@@ -30,8 +30,8 @@ import {
   createAppContext,
   initializeSchedulerAndDeferredRunners,
   startBridgeToolsMcpServer,
-  shutdownAppContextServices,
 } from "./app-context-factory.js";
+import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -55,12 +55,13 @@ const { ctx: defaultContext } = createAppContext({
   enableStartupDocsSnapshot: true,
 });
 const sessionManager = defaultContext.sessionManager;
+const shutdownCoordinator = createServerShutdownCoordinator(defaultContext);
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
-}, createApiRouter(defaultContext));
+}, createApiRouter(defaultContext, { shutdownCoordinator }));
 
 // ── Static files (Vite build output) ──────────────────────────────
 
@@ -195,15 +196,8 @@ async function main(): Promise<void> {
   }
 }
 
-async function gracefulExit(signal: string) {
-  console.log(`\n[web] ${signal} received — graceful shutdown...`);
-  try {
-    defaultContext.scheduler?.setGlobalPause(true);
-    await shutdownAppContextServices(defaultContext);
-  } catch (err) {
-    console.error("[web] Error during graceful shutdown:", err);
-  }
-  process.exit(0);
+function gracefulExit(signal: string): void {
+  void shutdownCoordinator.request(`${signal} received`);
 }
 
 process.on("SIGINT", () => gracefulExit("SIGINT"));

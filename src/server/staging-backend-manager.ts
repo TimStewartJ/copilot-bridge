@@ -12,11 +12,17 @@ import { createSettingsStore } from "./settings-store.js";
 import { clearRestartPending, triggerRestartPending } from "./session-manager.js";
 import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "./restart-signal.js";
 import {
-  getProcessTreeSnapshot,
-  killProcessTree,
+  captureProcessIdentity,
+  PROCESS_TREE_TERMINATION_BUDGET_MS,
   shouldSpawnDetachedProcessGroup,
-  waitForProcessTreeExit,
+  terminateProcessTree,
+  type ProcessIdentity,
 } from "./platform.js";
+import {
+  createDeadline,
+  remainingMs,
+  settleByDeadline,
+} from "./deadline.js";
 import { BRIDGE_CONTROL_ROOT_ENV } from "./control-root.js";
 import {
   BRIDGE_ACTIVE_RELEASE_ROOT_ENV,
@@ -31,9 +37,7 @@ import {
   STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS,
   STAGING_BACKEND_IDLE_TTL_MS,
   STAGING_BACKEND_LIVE_LIMIT,
-  STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS,
   STAGING_BACKEND_REQUEST_START_WAIT_MS,
-  STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS,
   STAGING_BACKEND_STARTUP_RESTORE_LIMIT,
   STAGING_BACKEND_STARTUP_TIMEOUT_MS,
   STAGING_PREVIEW_MODEL,
@@ -55,6 +59,7 @@ import { log } from "./staging-log.js";
 
 export interface ActiveStagingBackend {
   child: ChildProcess;
+  identity: Promise<ProcessIdentity | null>;
   baseUrl: string;
   port: number;
   output: CapturedCommandOutput;
@@ -792,45 +797,26 @@ function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<bool
   });
 }
 
-async function stopStagingBackendChild(child: ChildProcess): Promise<void> {
-  const pid = child.pid;
-  if (!pid) {
-    await waitForChildClose(child, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-    return;
+async function stopStagingBackendChild(
+  child: ChildProcess,
+  identityPromise: Promise<ProcessIdentity | null>,
+): Promise<void> {
+  if (childHasClosed(child)) return;
+  const deadline = createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS);
+  const identityResult = await settleByDeadline(() => identityPromise, deadline);
+  const identity = identityResult.status === "fulfilled" ? identityResult.value : null;
+  if (!identity) {
+    throw new Error("Staging backend creation identity was unavailable; refusing bare-PID termination.");
   }
-
-  let snapshot: ReturnType<typeof getProcessTreeSnapshot> | null = null;
-  try {
-    snapshot = getProcessTreeSnapshot(pid);
-  } catch {
-    snapshot = null;
+  const result = await terminateProcessTree(identity, deadline);
+  if (!result.ok) {
+    const survivors = result.survivors?.map(({ pid }) => pid).join(",") ?? "none";
+    throw new Error(
+      `Staging backend process tree stop could not be verified: ${result.status}; `
+      + `survivors=${survivors}${result.error ? `; ${result.error}` : ""}`,
+    );
   }
-
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
-  }
-  if (await waitForChildClose(child, STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS)) {
-    await waitForProcessTreeExit(snapshot, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-    return;
-  }
-
-  killProcessTree(pid);
-  await waitForProcessTreeExit(snapshot, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-  await waitForChildClose(child, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-}
-
-let backendProcessExitCleanupInstalled = false;
-
-function installBackendProcessExitCleanup(): void {
-  if (backendProcessExitCleanupInstalled) return;
-  backendProcessExitCleanupInstalled = true;
-  process.once("exit", () => {
-    for (const backend of activeStagingBackends.values()) {
-      if (backend.child.pid) {
-        killProcessTree(backend.child.pid);
-      }
-    }
-  });
+  await waitForChildClose(child, remainingMs(deadline));
 }
 
 function handleStagingBackendExit(
@@ -854,7 +840,6 @@ export async function startStagingBackendProcess(
   apiBasePath: string,
   options: StagingBackendStartOptions = {},
 ): Promise<ActiveStagingBackend> {
-  installBackendProcessExitCleanup();
   const spawnConfig = buildStagingBackendSpawnConfig(stagingDir, runtimePaths, apiBasePath, options);
   const output: CapturedCommandOutput = { output: "", truncatedChars: 0 };
   const child = spawn(spawnConfig.command, spawnConfig.args, {
@@ -865,6 +850,9 @@ export async function startStagingBackendProcess(
     detached: shouldSpawnDetachedProcessGroup(),
   });
   trackChildClose(child);
+  const identity = child.pid
+    ? captureProcessIdentity(child.pid, createDeadline(STAGING_BACKEND_STARTUP_TIMEOUT_MS))
+    : Promise.resolve(null);
 
   child.stdout?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stdout", output, chunk));
   child.stderr?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stderr", output, chunk));
@@ -881,7 +869,7 @@ export async function startStagingBackendProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      stopStagingBackendChild(child).catch((cleanupError) => {
+      stopStagingBackendChild(child, identity).catch((cleanupError) => {
         log(`Warning: failed to stop staging backend after startup failure: ${cleanupError}`);
       });
       reject(new Error(`${error.message}\n\nChild output:\n${backendOutputTail(output)}`));
@@ -906,6 +894,7 @@ export async function startStagingBackendProcess(
       const baseUrl = `http://127.0.0.1:${port}`;
       backend = {
         child,
+        identity,
         baseUrl,
         port,
         output,
@@ -916,7 +905,7 @@ export async function startStagingBackendProcess(
         inflightRequests: 0,
         cleanup: async () => {
           backend!.stopping = true;
-          await stopStagingBackendChild(child);
+          await stopStagingBackendChild(child, identity);
         },
       };
       resolve(backend);

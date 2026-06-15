@@ -71,6 +71,14 @@ import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
+import {
+  capDeadline,
+  createDeadline,
+  deadlineBefore,
+  remainingMs,
+  settleByDeadline,
+  type Deadline,
+} from "./deadline.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
@@ -207,44 +215,11 @@ export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
 // is shared across every phase (session drain, browser teardown, backend stop)
 // so a hung backend can never push the server past the launcher deadline.
 const GRACEFUL_SHUTDOWN_BUDGET_MS = 13_000;
-const SESSION_DRAIN_TIMEOUT_MS = 10_000;
-const BROWSER_SHUTDOWN_TIMEOUT_MS = 3_000;
+const SESSION_ABORT_TIMEOUT_MS = 4_000;
+const SESSION_DRAIN_TIMEOUT_MS = 3_000;
+const BROWSER_SHUTDOWN_TIMEOUT_MS = 1_500;
 const BACKEND_STOP_TIMEOUT_MS = 4_000;
-
-type SettledTimeout<T> = { timedOut: boolean; value?: T; error?: unknown };
-
-// Run an async operation with an upper time bound. On timeout the operation is
-// left running (its result/rejection is swallowed) and the caller is told it did
-// not finish, so shutdown can move on without ever blocking unbounded.
-async function settleWithTimeout<T>(
-  operation: () => Promise<T>,
-  timeoutMs: number,
-): Promise<SettledTimeout<T>> {
-  let promise: Promise<T>;
-  try {
-    promise = operation();
-  } catch (error) {
-    return { timedOut: false, error };
-  }
-  if (timeoutMs <= 0) {
-    void promise.catch(() => {});
-    return { timedOut: true };
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<{ __timeout: true }>((resolve) => {
-    timer = setTimeout(() => resolve({ __timeout: true }), timeoutMs);
-    if (typeof timer?.unref === "function") timer.unref();
-  });
-  const workPromise = promise.then(
-    (value) => ({ value }),
-    (error) => ({ error }),
-  );
-  const result = await Promise.race([workPromise, timeoutPromise]);
-  if (timer) clearTimeout(timer);
-  if ("__timeout" in result) return { timedOut: true };
-  if ("error" in result) return { timedOut: false, error: result.error };
-  return { timedOut: false, value: result.value };
-}
+const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
   stopPrevious: "stopping the previous client",
@@ -1733,8 +1708,23 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  // Abort an in-progress session turn
-  async abortSession(sessionId: string): Promise<boolean> {
+  private completeSessionAbortLocally(sessionId: string, content: string): void {
+    this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
+    const runController = this.activeRunControllers.get(sessionId);
+    if (runController) {
+      runController.completeAborted(content);
+      return;
+    }
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    bus?.emit({ type: "aborted", content });
+    this.setSessionRunState(sessionId, "idle");
+    this.flushPendingSessionEviction(sessionId);
+  }
+
+  // Abort an in-progress session turn. Shutdown callers pass their shared
+  // absolute deadline so a hung SDK abort is finalized locally and cannot
+  // block the remainder of process teardown.
+  async abortSession(sessionId: string, deadline?: Deadline): Promise<boolean> {
     if (!this.runStateController.hasSessionRun(sessionId)) return false;
 
     const runController = this.activeRunControllers.get(sessionId);
@@ -1745,10 +1735,7 @@ export class SessionManager {
     };
     if (!runController) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Missing run controller during abort — resolving locally`);
-      this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
-      bus?.emit({ type: "aborted", content: getAbortContent() });
-      this.setSessionRunState(sessionId, "idle");
-      this.flushPendingSessionEviction(sessionId);
+      this.completeSessionAbortLocally(sessionId, getAbortContent());
       return true;
     }
 
@@ -1762,12 +1749,39 @@ export class SessionManager {
     const sid = sessionId.slice(0, 8);
     console.log(`[sdk] [${sid}] 🛑 Aborting session...`);
     try {
-      await session.abort();
+      if (deadline) {
+        const abortResult = await settleByDeadline(() => session.abort(), deadline);
+        if (abortResult.status === "timed-out") {
+          console.error(`[sdk] [${sid}] 🛑 Abort timed out; resolving locally`);
+          this.completeSessionAbortLocally(sessionId, getAbortContent());
+          return true;
+        }
+        if (abortResult.status === "rejected") throw abortResult.error;
+      } else {
+        await session.abort();
+      }
       console.log(`[sdk] [${sid}] 🛑 Abort sent`);
-      await runController.awaitAbortConfirmation(ABORT_CONFIRMATION_TIMEOUT_MS, getAbortContent);
+      if (deadline) {
+        const confirmationDeadline = capDeadline(
+          deadline,
+          Math.min(ABORT_CONFIRMATION_TIMEOUT_MS, remainingMs(deadline)),
+        );
+        const confirmation = await settleByDeadline(
+          () => runController.awaitAbortConfirmation(
+            Math.max(1, remainingMs(confirmationDeadline)),
+            getAbortContent,
+          ),
+          confirmationDeadline,
+        );
+        if (confirmation.status !== "fulfilled") {
+          this.completeSessionAbortLocally(sessionId, getAbortContent());
+        }
+      } else {
+        await runController.awaitAbortConfirmation(ABORT_CONFIRMATION_TIMEOUT_MS, getAbortContent);
+      }
     } catch (err) {
       console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);
-      runController.completeAborted(getAbortContent());
+      this.completeSessionAbortLocally(sessionId, getAbortContent());
     }
     return true;
   }
@@ -2376,19 +2390,18 @@ export class SessionManager {
     return this.runStateController.getSessionActivity();
   }
 
-  async gracefulShutdown(): Promise<void> {
-    const deadline = Date.now() + GRACEFUL_SHUTDOWN_BUDGET_MS;
-    const remaining = (): number => Math.max(0, deadline - Date.now());
-
+  async gracefulShutdown(
+    deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
+  ): Promise<void> {
     const active = this.getActiveSessions();
     if (active.length > 0) {
       console.log(`[sdk] Graceful shutdown: aborting ${active.length} active session(s)...`);
-      // Abort all active sessions in parallel
+      const abortDeadline = capDeadline(deadline, SESSION_ABORT_TIMEOUT_MS);
       await Promise.allSettled(
         active.map(async (sessionId) => {
           const sid = sessionId.slice(0, 8);
           try {
-            if (await this.abortSession(sessionId)) {
+            if (await this.abortSession(sessionId, abortDeadline)) {
               console.log(`[sdk] [${sid}] Aborted for shutdown`);
             }
           } catch (err) {
@@ -2397,12 +2410,12 @@ export class SessionManager {
         }),
       );
 
-      // Wait for sessions to drain (they clean up in their .finally()), bounded by
-      // both the per-phase drain limit and the overall shutdown budget.
-      const drainDeadline = Date.now() + Math.min(SESSION_DRAIN_TIMEOUT_MS, remaining());
+      // A timed-out SDK abort is locally finalized by abortSession. Give the
+      // normal run finally-blocks a bounded opportunity to release resources.
+      const drainDeadline = capDeadline(deadline, SESSION_DRAIN_TIMEOUT_MS);
       let activeCount = this.getActiveSessions().length;
-      while (activeCount > 0 && Date.now() < drainDeadline) {
-        await new Promise((r) => setTimeout(r, 250));
+      while (activeCount > 0 && remainingMs(drainDeadline) > 0) {
+        await new Promise((r) => setTimeout(r, Math.min(250, remainingMs(drainDeadline))));
         activeCount = this.getActiveSessions().length;
       }
       if (activeCount > 0) {
@@ -2419,41 +2432,57 @@ export class SessionManager {
 
     if (this.deps.browserSessionStore) {
       const store = this.deps.browserSessionStore;
-      const { timedOut } = await settleWithTimeout(
+      const outcome = await settleByDeadline(
         () => store.closeAll(),
-        Math.min(BROWSER_SHUTDOWN_TIMEOUT_MS, remaining()),
+        capDeadline(deadline, BROWSER_SHUTDOWN_TIMEOUT_MS),
       );
-      if (timedOut) {
+      if (outcome.status === "timed-out") {
         console.error("[browser] Browser session cleanup timed out during shutdown");
+      } else if (outcome.status === "rejected") {
+        console.error("[browser] Browser session cleanup failed during shutdown:", outcome.error);
       }
     }
 
     if (this.deps.browserLifecycle) {
       const lifecycle = this.deps.browserLifecycle;
-      const outcome = await settleWithTimeout(
+      const outcome = await settleByDeadline(
         () => lifecycle.shutdown(),
-        Math.min(BROWSER_SHUTDOWN_TIMEOUT_MS, remaining()),
+        capDeadline(deadline, BROWSER_SHUTDOWN_TIMEOUT_MS),
       );
-      if (outcome.timedOut) {
+      if (outcome.status === "timed-out") {
         console.error("[browser] Primary browser shutdown timed out during shutdown");
-      } else if (outcome.error) {
+      } else if (outcome.status === "rejected") {
         console.error("[browser] Primary browser shutdown failed:", outcome.error);
-      } else if (outcome.value?.skipped && outcome.value.reason === "no_browser_activity") {
+      } else if (outcome.value.skipped && outcome.value.reason === "no_browser_activity") {
         console.log("[browser] Primary browser shutdown skipped (no runtime activity detected)");
       }
     }
 
-    // Stop the SDK client, bounded so a hung backend cannot exceed the budget.
+    // Reserve time for forceStop. Both calls consume the same overall deadline.
     if (this.backend) {
       console.log("[sdk] Stopping Copilot SDK client...");
       const backend = this.backend;
-      const { timedOut } = await settleWithTimeout(
-        () => Promise.resolve(backend.stop()),
-        Math.min(BACKEND_STOP_TIMEOUT_MS, remaining()),
+      const stopDeadline = capDeadline(
+        deadlineBefore(deadline, BACKEND_FORCE_STOP_RESERVE_MS),
+        BACKEND_STOP_TIMEOUT_MS,
       );
-      if (timedOut) {
-        console.error("[sdk] Backend stop timed out during graceful shutdown; forcing stop");
-        this.forceStopTimedOutBackend(backend, "graceful shutdown");
+      const stopOutcome = await settleByDeadline(
+        () => Promise.resolve(backend.stop()),
+        stopDeadline,
+      );
+      if (stopOutcome.status !== "fulfilled" && typeof backend.forceStop === "function") {
+        console.error(
+          `[sdk] Backend stop ${stopOutcome.status === "timed-out" ? "timed out" : "failed"} during graceful shutdown; forcing stop`,
+        );
+        const forceOutcome = await settleByDeadline(
+          () => Promise.resolve(backend.forceStop!()),
+          deadline,
+        );
+        if (forceOutcome.status === "timed-out") {
+          console.error("[sdk] Backend force stop timed out during graceful shutdown");
+        } else if (forceOutcome.status === "rejected") {
+          console.error("[sdk] Backend force stop failed during graceful shutdown:", forceOutcome.error);
+        }
       }
       this.backend = null;
       this.backendCreatedAtMs = null;
@@ -2462,15 +2491,6 @@ export class SessionManager {
   }
 
   async shutdown(): Promise<void> {
-    this.cancelAllPendingUserInputRequests(
-      "session_ended",
-      "Session manager shut down before the user input request was answered",
-    );
-    if (this.backend) {
-      console.log("[sdk] Shutting down Copilot SDK client...");
-      await this.backend.stop();
-      this.backend = null;
-      this.backendCreatedAtMs = null;
-    }
+    await this.gracefulShutdown();
   }
 }

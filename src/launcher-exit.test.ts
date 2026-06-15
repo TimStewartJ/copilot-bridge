@@ -1,136 +1,156 @@
 import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
+import { createDeadline } from "./server/deadline.js";
 import {
   drainLauncherChildren,
   LAUNCHER_CLEANUP_FAILURE_EXIT_CODE,
   LAUNCHER_TERMINAL_EXIT_CODE,
   resolveLauncherShutdownExitCode,
+  stopLauncherChild,
+  type LauncherChild,
+  type LauncherChildShutdownDependencies,
 } from "./launcher-exit.js";
-import type { ProcessIdentity, ProcessTreeKillResult } from "./server/platform.js";
+import type {
+  ProcessIdentity,
+  ProcessTreeTerminationResult,
+} from "./server/platform.js";
 
-function child(pid?: number): ChildProcess {
-  return { pid } as ChildProcess;
-}
-
-function identity(pid: number, startMarker = `start-${pid}`): ProcessIdentity {
-  return { pid, startMarker };
-}
-
-function killResult(pid: number): ProcessTreeKillResult {
+function child(pid: number): ChildProcess {
   return {
-    rootPid: pid,
-    descendantPids: [pid + 1],
-    trackedPids: [pid, pid + 1],
-    killRequested: true,
+    pid,
+    exitCode: null,
+    signalCode: null,
+  } as ChildProcess;
+}
+
+function identity(pid: number): ProcessIdentity {
+  return { pid, startMarker: `start-${pid}` };
+}
+
+function managed(label: string, pid: number): LauncherChild {
+  return { label, process: child(pid), identity: Promise.resolve(identity(pid)) };
+}
+
+function stopped(root: ProcessIdentity): ProcessTreeTerminationResult {
+  return { ok: true, status: "terminated", root };
+}
+
+function dependencies(
+  overrides: Partial<LauncherChildShutdownDependencies> = {},
+): LauncherChildShutdownDependencies {
+  return {
+    terminateProcessTree: vi.fn(async (root) => stopped(root)),
+    waitForChildExit: vi.fn(async () => false),
+    log: vi.fn(),
+    ...overrides,
   };
 }
 
-describe("launcher terminal shutdown", () => {
-  it("drains every managed child and children discovered after the first snapshot", async () => {
-    const server = child(100);
-    const runner = child(200);
-    const alive = new Set([100, 200]);
-    let snapshots = 0;
-    const getChildren = () => {
-      snapshots++;
-      return snapshots < 3
-        ? [{ label: "server", process: server, identity: identity(100) }]
-        : [
-            { label: "server", process: server, identity: identity(100) },
-            { label: "management job runner", process: runner, identity: identity(200) },
-          ];
-    };
-    const killProcessTree = vi.fn((process: ChildProcess) => killResult(process.pid!));
-    const waitForProcessTreeExit = vi.fn(async (result: ProcessTreeKillResult) => {
-      alive.delete(result.rootPid);
-      return true;
+describe("launcher managed-child shutdown", () => {
+  it("uses graceful exit without a force action", async () => {
+    const server = managed("server", 100);
+    const terminateProcessTree = vi.fn();
+    const deps = dependencies({
+      terminateProcessTree,
+      waitForChildExit: vi.fn(async () => true),
     });
 
-    const outcome = await drainLauncherChildren(getChildren, {
-      killProcessTree,
-      waitForProcessTreeExit,
-      isProcessIdentityCurrent: ({ pid }) => alive.has(pid),
-      timeoutMs: 5_000,
-      maxAttempts: 3,
-      log: vi.fn(),
+    const outcome = await stopLauncherChild(server, deps, {
+      deadline: createDeadline(5_000),
+      gracefulDeadline: createDeadline(1_000),
+      requestGraceful: vi.fn(async () => undefined),
     });
 
-    expect(outcome).toEqual({ ok: true, attempts: 2, remaining: [] });
-    expect(killProcessTree.mock.calls.map(([process]) => process.pid)).toEqual([100, 200]);
+    expect(outcome).toEqual({ ok: true, mode: "graceful" });
+    expect(terminateProcessTree).not.toHaveBeenCalled();
   });
 
-  it("retries failed cleanup and returns an explicit caller-level failure exit", async () => {
-    const tunnel = child(300);
-    const log = vi.fn();
-    const killProcessTree = vi.fn(() => killResult(300));
-    const waitForProcessTreeExit = vi.fn(async () => false);
-    let snapshots = 0;
+  it("performs exactly one force action when graceful shutdown hangs", async () => {
+    const server = managed("server", 200);
+    const terminateProcessTree = vi.fn(async (root: ProcessIdentity) => stopped(root));
+    const deps = dependencies({ terminateProcessTree });
+    const options = {
+      deadline: createDeadline(5_000),
+      gracefulDeadline: createDeadline(1_000),
+      requestGraceful: vi.fn(() => new Promise<void>(() => {})),
+    };
 
+    const [first, second] = await Promise.all([
+      stopLauncherChild(server, deps, options),
+      stopLauncherChild(server, deps, options),
+    ]);
+
+    expect(first).toEqual({ ok: true, mode: "forced" });
+    expect(second).toEqual(first);
+    expect(terminateProcessTree).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when forced stop cannot be verified", async () => {
+    const server = managed("server", 300);
+    const root = identity(300);
+    const deps = dependencies({
+      terminateProcessTree: vi.fn(async () => ({
+        ok: false as const,
+        status: "survivors" as const,
+        root,
+        survivors: [root],
+      })),
+    });
+
+    await expect(stopLauncherChild(server, deps, {
+      deadline: createDeadline(5_000),
+    })).resolves.toEqual({ ok: false, reason: "survivors" });
+  });
+
+  it("refuses destructive work when child identity was not captured", async () => {
+    const server: LauncherChild = {
+      label: "server",
+      process: child(400),
+      identity: Promise.resolve(null),
+    };
+    const terminateProcessTree = vi.fn();
+    const deps = dependencies({ terminateProcessTree });
+
+    await expect(stopLauncherChild(server, deps, {
+      deadline: createDeadline(5_000),
+    })).resolves.toEqual({ ok: false, reason: "identity-unavailable" });
+    expect(terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("drains each terminal child once under one deadline", async () => {
+    const terminateProcessTree = vi.fn(async (root: ProcessIdentity) => stopped(root));
+    const deps = dependencies({ terminateProcessTree });
+    const children = [managed("server", 500), managed("tunnel", 600)];
+
+    const outcome = await drainLauncherChildren(
+      () => children,
+      deps,
+      createDeadline(5_000),
+    );
+
+    expect(outcome).toEqual({ ok: true, attempts: 1, remaining: [] });
+    expect(terminateProcessTree).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns the cleanup failure exit code instead of retrying an unverifiable stop", async () => {
+    const tunnel = managed("tunnel", 700);
+    const root = identity(700);
+    const terminateProcessTree = vi.fn(async () => ({
+      ok: false as const,
+      status: "snapshot-unavailable" as const,
+      root,
+    }));
     const result = await resolveLauncherShutdownExitCode(
       LAUNCHER_TERMINAL_EXIT_CODE,
-      () => (++snapshots === 1
-        ? [{ label: "tunnel", process: tunnel, identity: identity(300) }]
-        : []),
-      {
-        killProcessTree,
-        waitForProcessTreeExit,
-        isProcessIdentityCurrent: () => true,
-        timeoutMs: 250,
-        maxAttempts: 3,
-        log,
-      },
+      () => [tunnel],
+      dependencies({ terminateProcessTree }),
+      createDeadline(5_000),
     );
 
     expect(result).toEqual({
       exitCode: LAUNCHER_CLEANUP_FAILURE_EXIT_CODE,
-      outcome: { ok: false, attempts: 3, remaining: ["tunnel"] },
+      outcome: { ok: false, attempts: 1, remaining: ["tunnel"] },
     });
-    expect(killProcessTree).toHaveBeenCalledTimes(3);
-    expect(waitForProcessTreeExit).toHaveBeenCalledTimes(3);
-    expect(log).toHaveBeenCalledWith(
-      "Launcher child cleanup failed after 3 attempts; remaining: tunnel",
-    );
-  });
-
-  it("preserves the requested terminal code only after cleanup succeeds", async () => {
-    const result = await resolveLauncherShutdownExitCode(
-      LAUNCHER_TERMINAL_EXIT_CODE,
-      () => [],
-      {
-        killProcessTree: vi.fn(),
-        waitForProcessTreeExit: vi.fn(),
-        isProcessIdentityCurrent: vi.fn(),
-        timeoutMs: 100,
-        maxAttempts: 3,
-        log: vi.fn(),
-      },
-    );
-
-    expect(result.exitCode).toBe(LAUNCHER_TERMINAL_EXIT_CODE);
-    expect(result.outcome.ok).toBe(true);
-  });
-
-  it("drops a stale child identity and never kills a process that reused its PID", async () => {
-    const original = child(400);
-    const originalIdentity = identity(400, "original-start");
-    const killProcessTree = vi.fn();
-    const identityChecks = vi.fn()
-      .mockReturnValueOnce(true)
-      .mockReturnValue(false);
-
-    const outcome = await drainLauncherChildren(
-      () => [{ label: "server", process: original, identity: originalIdentity }],
-      {
-        killProcessTree,
-        waitForProcessTreeExit: vi.fn(),
-        isProcessIdentityCurrent: identityChecks,
-        timeoutMs: 100,
-        maxAttempts: 2,
-        log: vi.fn(),
-      },
-    );
-
-    expect(outcome).toEqual({ ok: true, attempts: 1, remaining: [] });
-    expect(killProcessTree).not.toHaveBeenCalled();
+    expect(terminateProcessTree).toHaveBeenCalledTimes(1);
   });
 });

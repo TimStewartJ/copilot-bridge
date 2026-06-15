@@ -10,6 +10,17 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  createDeadline,
+  settleByDeadline,
+  type Deadline,
+} from "./deadline.js";
+import {
+  captureProcessIdentity,
+  PROCESS_TREE_TERMINATION_BUDGET_MS,
+  terminateProcessTree,
+  type ProcessIdentity,
+} from "./platform.js";
+import {
   appendCapturedCommandOutput,
   joinFailureSections,
   renderCapturedCommandOutput,
@@ -40,7 +51,6 @@ export interface AsyncValidationCommandRunOptions {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   shell?: boolean;
-  killProcessTree?: (pid: number) => unknown;
   failureOutputFormat?: ValidationCommandFailureOutputFormat;
 }
 
@@ -64,7 +74,6 @@ export interface StreamingValidationCommandRunOptions {
   env: NodeJS.ProcessEnv;
   shell?: boolean;
   timeoutMs?: number;
-  killProcessTree?: (pid: number) => unknown;
 }
 
 export interface StreamingValidationCommandRunResult extends ValidationCommandRunResult {
@@ -276,19 +285,16 @@ function spawnShell(options: Pick<AsyncValidationCommandRunOptions, "args" | "sh
   return options.shell ?? (!options.args || options.args.length === 0);
 }
 
-function stopChild(
+async function stopChild(
   child: ReturnType<typeof spawn>,
-  killProcessTree: ((pid: number) => unknown) | undefined,
-): void {
-  if (child.pid) {
-    if (killProcessTree) {
-      killProcessTree(child.pid);
-      return;
-    }
-    child.kill("SIGKILL");
-    return;
-  }
-  child.kill("SIGKILL");
+  identityPromise: Promise<ProcessIdentity | null>,
+  deadline: Deadline,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const identityResult = await settleByDeadline(() => identityPromise, deadline);
+  const identity = identityResult.status === "fulfilled" ? identityResult.value : null;
+  if (!identity) return;
+  await terminateProcessTree(identity, deadline);
 }
 
 export async function runValidationCommand(
@@ -315,6 +321,15 @@ export async function runValidationCommand(
       });
     const stdout: CapturedCommandOutput = { output: "", truncatedChars: 0 };
     const stderr: CapturedCommandOutput = { output: "", truncatedChars: 0 };
+    const operationDeadline = options.timeoutMs > 0
+      ? createDeadline(options.timeoutMs + PROCESS_TREE_TERMINATION_BUDGET_MS)
+      : null;
+    const identity = child.pid
+      ? captureProcessIdentity(
+        child.pid,
+        operationDeadline ?? createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+      )
+      : Promise.resolve(null);
     let spawnError: Error | undefined;
     let timedOut = false;
     let settled = false;
@@ -353,7 +368,11 @@ export async function runValidationCommand(
     const timeout = options.timeoutMs > 0
       ? setTimeout(() => {
         timedOut = true;
-        stopChild(child, options.killProcessTree);
+        void stopChild(
+          child,
+          identity,
+          operationDeadline ?? createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+        ).finally(() => finish(null, null));
       }, options.timeoutMs)
       : undefined;
 
@@ -443,6 +462,15 @@ export async function runStreamingValidationCommand(
       });
     const stdout: CapturedCommandOutput = { output: "", truncatedChars: 0 };
     const stderr: CapturedCommandOutput = { output: "", truncatedChars: 0 };
+    const operationDeadline = timeoutMs > 0
+      ? createDeadline(timeoutMs + PROCESS_TREE_TERMINATION_BUDGET_MS)
+      : null;
+    const identity = child.pid
+      ? captureProcessIdentity(
+        child.pid,
+        operationDeadline ?? createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+      )
+      : Promise.resolve(null);
     let spawnError: Error | undefined;
     let timedOut = false;
     let logWriteError: string | undefined;
@@ -458,14 +486,22 @@ export async function runStreamingValidationCommand(
       if (logWriteError) return;
       logWriteError = formatLogError(error);
       closeLog();
-      stopChild(child, options.killProcessTree);
+      void stopChild(
+        child,
+        identity,
+        operationDeadline ?? createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+      ).finally(() => finish(null, null));
     };
 
     const timeout = options.timeoutMs === undefined || options.timeoutMs <= 0
       ? undefined
       : setTimeout(() => {
         timedOut = true;
-        stopChild(child, options.killProcessTree);
+        void stopChild(
+          child,
+          identity,
+          operationDeadline ?? createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+        ).finally(() => finish(null, null));
       }, options.timeoutMs);
 
     const finish = (code: number | null, signal: NodeJS.Signals | null) => {

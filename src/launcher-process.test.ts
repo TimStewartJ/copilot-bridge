@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeadline } from "./server/deadline.js";
 import {
   isChildProcessActive,
   resolveServerLaunchDistributionMode,
@@ -62,12 +63,12 @@ describe("waitForChildExit", () => {
     const child = new FakeChildProcess();
     child.exitCode = 0;
 
-    await expect(waitForChildExit(child as any, 10)).resolves.toBe(true);
+    await expect(waitForChildExit(child as any, createDeadline(10))).resolves.toBe(true);
   });
 
   it("waits for the exit event before resolving", async () => {
     const child = new FakeChildProcess();
-    const wait = waitForChildExit(child as any, 100);
+    const wait = waitForChildExit(child as any, createDeadline(100));
 
     child.exitCode = 0;
     child.emit("exit", 0, null);
@@ -78,7 +79,7 @@ describe("waitForChildExit", () => {
   it("returns false when the child still has not exited by the timeout", async () => {
     vi.useFakeTimers();
     const child = new FakeChildProcess();
-    const wait = waitForChildExit(child as any, 10);
+    const wait = waitForChildExit(child as any, createDeadline(10));
 
     await vi.advanceTimersByTimeAsync(10);
 
