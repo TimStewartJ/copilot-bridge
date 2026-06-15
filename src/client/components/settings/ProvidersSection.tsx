@@ -46,6 +46,14 @@ export function ProvidersSection({
     setEditingProvider(null);
   };
 
+  const removeProvider = (label: string, key: "ado" | "github" | "linear") => {
+    const confirmed = window.confirm(
+      `Remove ${label} provider configuration?\n\nThis can't be undone.`,
+    );
+    if (!confirmed) return;
+    updateProvider({ ...providers, [key]: undefined });
+  };
+
   const configuredBadge = (
     <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
       <Check size={10} />
@@ -92,7 +100,7 @@ export function ProvidersSection({
             onEdit={() => setEditingProvider("ado")}
             onRemove={
               providers.ado
-                ? () => updateProvider({ ...providers, ado: undefined })
+                ? () => removeProvider("Azure DevOps", "ado")
                 : undefined
             }
             removeTitle="Remove"
@@ -146,7 +154,7 @@ export function ProvidersSection({
             onEdit={() => setEditingProvider("github")}
             onRemove={
               providers.github
-                ? () => updateProvider({ ...providers, github: undefined })
+                ? () => removeProvider("GitHub", "github")
                 : undefined
             }
             removeTitle="Remove"
@@ -202,7 +210,7 @@ export function ProvidersSection({
             onEdit={() => setEditingProvider("linear")}
             onRemove={
               providers.linear
-                ? () => updateProvider({ ...providers, linear: undefined })
+                ? () => removeProvider("Linear", "linear")
                 : undefined
             }
             removeTitle="Remove"
