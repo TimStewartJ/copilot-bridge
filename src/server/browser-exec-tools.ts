@@ -129,7 +129,8 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
                   items: { type: "string" },
                   description:
                     "String arguments for the command. Element-targeting commands (click, fill, type, select, check) use refs from snapshot output — " +
-                    "pass the ref with @ prefix (e.g. @e42 for an element shown as [ref=e42] in the snapshot). CSS selectors are not supported for element targeting.",
+                    "pass the ref with @ prefix (e.g. @e42 for an element shown as [ref=e42] in the snapshot). CSS selectors are not supported for element targeting. " +
+                    "The get command reads page or element info: use args ['url'] for the current URL, ['title'] for the page title, or ['text', '@e42'] for an element's text by ref.",
                 },
                 timeoutMs: {
                   type: "number",
