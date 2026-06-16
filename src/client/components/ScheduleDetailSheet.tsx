@@ -228,7 +228,7 @@ function ViewMode({
                 </span>
               )}
             </div>
-            {schedule.nextRunAt && (
+            {schedule.enabled && schedule.nextRunAt && (
               <div>
                 <span className="text-text-faint block mb-0.5">Next run</span>
                 <span className="text-text-secondary" title={new Date(schedule.nextRunAt).toLocaleString()}>{timeAgo(schedule.nextRunAt)}</span>
