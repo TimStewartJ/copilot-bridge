@@ -119,7 +119,7 @@ export default function ScheduleRow({
           {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
           {schedule.type === "cron" && schedule.timezone && ` (${schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})`}
           {schedule.lastRunAt && ` · Last: ${timeAgo(schedule.lastRunAt)}`}
-          {schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
+          {schedule.enabled && schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
           {schedule.runCount > 0 && ` · ${schedule.runCount} run${schedule.runCount !== 1 ? "s" : ""}`}
         </div>
       )}
@@ -134,7 +134,7 @@ export default function ScheduleRow({
           </div>
           <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
             {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
-            {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
+            {schedule.enabled && schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
             {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
           </div>
         </>
@@ -144,7 +144,7 @@ export default function ScheduleRow({
       {onSelectTask && (
         <div className={`text-[10px] text-text-faint ${isCompact ? "mt-0.5 ml-5" : "mt-0.5 ml-6"} flex items-center gap-2`}>
           {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
-          {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
+          {schedule.enabled && schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
           {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
         </div>
       )}
