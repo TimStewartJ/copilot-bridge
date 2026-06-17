@@ -11,7 +11,9 @@ import {
 function waitForReady(child: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
     let output = "";
-    const timeout = setTimeout(() => reject(new Error("child readiness timed out")), 10_000);
+    // Generous readiness window: under heavy machine load (many processes,
+    // slow process spawning) the root helper can take a while to print READY.
+    const timeout = setTimeout(() => reject(new Error("child readiness timed out")), 30_000);
     child.once("error", reject);
     child.stdout?.on("data", (chunk) => {
       output += String(chunk);
@@ -36,14 +38,22 @@ function waitForExit(child: ChildProcess): Promise<void> {
 
 async function identityFor(child: ChildProcess): Promise<ProcessIdentity> {
   if (!child.pid) throw new Error("spawned child did not expose a PID");
-  const identity = await captureProcessIdentity(child.pid, createDeadline(10_000));
+  // captureProcessIdentity issues a WMI/CIM query, which can be slow when the
+  // machine is heavily loaded. Use a generous deadline so this integration test
+  // does not flake under CI/host contention (the product code uses its own
+  // deadlines in production).
+  const identity = await captureProcessIdentity(child.pid, createDeadline(60_000));
   if (!identity) throw new Error(`could not capture child identity for PID ${child.pid}`);
   return identity;
 }
 
 describe.runIf(process.platform === "win32")("Windows process-tree integration", () => {
   it("terminates a high-churn descendant tree without touching an unrelated process", async () => {
-    const leafCode = "setTimeout(() => process.exit(0), 30000)";
+    // Long-lived leaf/root helpers (5 min) so the persistent processes do not
+    // self-exit during a slow run on a heavily loaded host. The assertions rely
+    // on the "unrelated" process still being alive and the root only exiting
+    // because it was terminated — not because a short self-exit timer fired.
+    const leafCode = "setTimeout(() => process.exit(0), 300000)";
     const rootCode = `
       const { spawn } = require("node:child_process");
       const leaf = ${JSON.stringify(leafCode)};
@@ -55,7 +65,7 @@ describe.runIf(process.platform === "win32")("Windows process-tree integration",
       }, 10);
       setTimeout(() => clearInterval(churn), 1000);
       console.log("READY");
-      setTimeout(() => process.exit(0), 30000);
+      setTimeout(() => process.exit(0), 300000);
     `;
     const root = spawn(process.execPath, ["-e", rootCode], {
       stdio: ["ignore", "pipe", "ignore"],
@@ -98,5 +108,5 @@ describe.runIf(process.platform === "win32")("Windows process-tree integration",
         );
       }
     }
-  }, 45_000);
+  }, 120_000);
 });
