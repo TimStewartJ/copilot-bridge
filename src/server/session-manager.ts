@@ -445,6 +445,19 @@ export class SessionManager {
   private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
   private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
+  // Upper bound on resumed session objects kept warm in memory. Each cached
+  // session holds its MCP server subprocesses open in the Copilot CLI, so an
+  // unbounded cache leaks processes as sessions are resumed over time. When the
+  // cache exceeds this cap the least-recently-resumed idle session is evicted
+  // (which stops its MCP servers). Active/resuming sessions are never evicted.
+  // Override with BRIDGE_MAX_CACHED_SESSIONS.
+  private maxCachedSessions = SessionManager.resolveMaxCachedSessions();
+
+  private static resolveMaxCachedSessions(): number {
+    const raw = Number(process.env.BRIDGE_MAX_CACHED_SESSIONS);
+    return Number.isFinite(raw) && raw >= 2 ? Math.floor(raw) : 16;
+  }
+
   constructor(deps: SessionManagerDeps) {
     this.deps = { ...deps, browserLifecycle: deps.browserLifecycle ?? noopBrowserLifecycle };
     this.workspaceController = new SessionWorkspaceController({
@@ -1322,11 +1335,14 @@ export class SessionManager {
   private cacheResumedSession(sessionId: string, session: AgentSession): AgentSession {
     const current = this.sessionObjects.get(sessionId);
     if (current && current !== session) {
-      try { session.disconnect?.(); } catch { /* best-effort */ }
+      try { void session.disconnect?.(); } catch { /* best-effort */ }
       return current;
     }
+    // Re-insert so the map's iteration order tracks resume recency (LRU).
+    this.sessionObjects.delete(sessionId);
     this.sessionObjects.set(sessionId, session);
     this.slashCommandListCache.delete(sessionId);
+    this.enforceSessionCacheLimit(sessionId);
     // Eager loading is carried by `defer: "never"`; resume warmup is diagnostic.
     void this.warmNativeBridgeTools(sessionId, session);
     this.maybeAutoNameSession(sessionId, { session });
@@ -1336,11 +1352,14 @@ export class SessionManager {
   private replaceCachedSession(sessionId: string, expectedSession: AgentSession, nextSession: AgentSession): AgentSession {
     const current = this.sessionObjects.get(sessionId);
     if (current && current !== expectedSession && current !== nextSession) {
-      try { nextSession.disconnect?.(); } catch { /* best-effort */ }
+      try { void nextSession.disconnect?.(); } catch { /* best-effort */ }
       return current;
     }
+    // Re-insert so the map's iteration order tracks resume recency (LRU).
+    this.sessionObjects.delete(sessionId);
     this.sessionObjects.set(sessionId, nextSession);
     this.slashCommandListCache.delete(sessionId);
+    this.enforceSessionCacheLimit(sessionId);
     // Eager loading is carried by `defer: "never"`; resume warmup is diagnostic.
     void this.warmNativeBridgeTools(sessionId, nextSession);
     return nextSession;
@@ -2186,12 +2205,39 @@ export class SessionManager {
   private evictCachedSession(sessionId: string): boolean {
     const session = this.sessionObjects.get(sessionId);
     if (!session) return false;
-    try { session.disconnect?.(); } catch { /* best-effort */ }
+    // The SDK's `disconnect()` (session.destroy) disposes the host-side session,
+    // which terminates that session's MCP server child processes while
+    // preserving on-disk history. This is what reaps the per-session MCP
+    // subprocesses; the unbounded cache is why eviction (and thus reaping)
+    // never happened for idle sessions until enforceSessionCacheLimit was added.
+    try { void session.disconnect?.(); } catch { /* best-effort */ }
     this.sessionObjects.delete(sessionId);
     this.liveSessionModelState.delete(sessionId);
     this.slashCommandListCache.delete(sessionId);
     this.agentRegistry.markSessionUnavailable(sessionId);
     return true;
+  }
+
+  /**
+   * Evict least-recently-resumed idle sessions until the cache is within
+   * {@link maxCachedSessions}. Active, resuming, and model-switching sessions
+   * are protected, as is the session that was just cached.
+   */
+  private enforceSessionCacheLimit(justCachedId: string): void {
+    const max = this.maxCachedSessions;
+    if (this.sessionObjects.size <= max) return;
+    const protectedIds = new Set<string>(this.getActiveSessions());
+    protectedIds.add(justCachedId);
+    for (const id of [...this.sessionObjects.keys()]) {
+      if (this.sessionObjects.size <= max) break;
+      if (protectedIds.has(id)) continue;
+      this.evictCachedSession(id);
+    }
+    if (this.sessionObjects.size > max) {
+      console.warn(
+        `[sdk] Session cache at ${this.sessionObjects.size}/${max}; remaining sessions are active and cannot be evicted`,
+      );
+    }
   }
 
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
