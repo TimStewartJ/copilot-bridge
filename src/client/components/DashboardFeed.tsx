@@ -107,8 +107,26 @@ function getParentElement(element: HTMLElement): HTMLElement | null {
   return parent?.nodeType === 1 ? parent as HTMLElement : null;
 }
 
+function getComputedOverflowY(element: HTMLElement): string | null {
+  try {
+    const view = element.ownerDocument?.defaultView ?? (typeof window !== "undefined" ? window : null);
+    if (!view || typeof view.getComputedStyle !== "function") return null;
+    return view.getComputedStyle(element)?.overflowY ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function isScrollableElement(element: HTMLElement): boolean {
-  return element.scrollTop > 0 || element.scrollHeight > element.clientHeight;
+  if ((element.scrollTop ?? 0) > 0) return true;
+  const scrollHeight = element.scrollHeight ?? 0;
+  const clientHeight = element.clientHeight ?? 0;
+  if (scrollHeight <= clientHeight) return false;
+  const overflowY = getComputedOverflowY(element);
+  // When the computed style is unavailable (e.g. test environments) fall back to
+  // the size heuristic; otherwise only treat genuinely scrollable overflow as a container.
+  if (overflowY === null) return true;
+  return overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
 }
 
 function findScrollableAncestor(element: HTMLElement): HTMLElement | null {
@@ -120,25 +138,19 @@ function findScrollableAncestor(element: HTMLElement): HTMLElement | null {
   return null;
 }
 
-function prefersReducedMotion(): boolean {
-  return typeof window !== "undefined"
-    && typeof window.matchMedia === "function"
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function scrollFeedCardTopIntoViewIfAbove(cardElement: HTMLElement) {
-  const scrollContainer = findScrollableAncestor(cardElement);
+// Adjusts the scroll container so an anchor element stays visually fixed after a
+// re-render shifts the list. Instant (no smooth animation) so it never races
+// mobile touch momentum.
+function compensateScrollForAnchor(anchorElement: HTMLElement, previousTop: number) {
+  const scrollContainer = findScrollableAncestor(anchorElement);
   if (!scrollContainer) return;
 
-  const cardRect = cardElement.getBoundingClientRect();
-  const containerRect = scrollContainer.getBoundingClientRect();
-  const cardTopRelativeToContainer = cardRect.top - containerRect.top;
-  if (cardTopRelativeToContainer >= -SCROLL_TOP_EPSILON) return;
+  const delta = anchorElement.getBoundingClientRect().top - previousTop;
+  if (Math.abs(delta) < SCROLL_TOP_EPSILON) return;
 
-  const top = Math.max(0, scrollContainer.scrollTop + cardTopRelativeToContainer);
-  const behavior = prefersReducedMotion() ? "auto" : "smooth";
+  const top = Math.max(0, scrollContainer.scrollTop + delta);
   if (typeof scrollContainer.scrollTo === "function") {
-    scrollContainer.scrollTo({ top, behavior });
+    scrollContainer.scrollTo({ top, behavior: "auto" });
   } else {
     scrollContainer.scrollTop = top;
   }
@@ -235,7 +247,8 @@ export default function DashboardFeed({
   const startedDeleteIdsRef = useRef<Set<string>>(new Set());
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedCardElementsRef = useRef<Record<string, HTMLDivElement>>({});
-  const pendingDismissScrollRef = useRef<{ nextCardId: string } | null>(null);
+  const pendingScrollAnchorRef = useRef<{ anchorCardId: string; previousTop: number } | null>(null);
+  const statusMutationInFlightRef = useRef<Set<string>>(new Set());
   const keyPrefixCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCommittedKeyPrefixRef = useRef(feedFilter.keyPrefix);
   const actionSubmitting = actionSubmitMode !== null;
@@ -321,9 +334,15 @@ export default function DashboardFeed({
       return pendingStatus ? { ...card, status: pendingStatus.status } : card;
     });
   const activeFeedCards = displayFeedCards.filter((card) => card.status === "active");
-  const resolvedFeedCards = displayFeedCards.filter((card) => card.status !== "active");
+  // When the resolved section is hidden, optimistically-resolved cards are dropped
+  // from view entirely (like a pending delete) instead of flashing in a transient
+  // "Resolved" section that then vanishes on refetch.
+  const resolvedFeedCards = showResolvedFeed
+    ? displayFeedCards.filter((card) => card.status !== "active")
+    : [];
   const showResolvedDivider = activeFeedCards.length > 0 && resolvedFeedCards.length > 0;
   const renderedFeedCards = [...activeFeedCards, ...resolvedFeedCards];
+  const visibleFeedCardCount = renderedFeedCards.length;
 
   useEffect(() => {
     setKnownKinds((current) => {
@@ -378,7 +397,7 @@ export default function DashboardFeed({
   );
 
   const hasActiveFeedFilter = Boolean(feedFilter.kind || feedFilter.keyPrefix);
-  const showFeedFilterControl = displayFeedCards.length > 0 || hasActiveFeedFilter;
+  const showFeedFilterControl = visibleFeedCardCount > 0 || hasActiveFeedFilter;
 
   const commitKeyPrefix = (value: string) => {
     if (keyPrefixCommitTimerRef.current) {
@@ -417,12 +436,12 @@ export default function DashboardFeed({
   };
 
   useLayoutEffect(() => {
-    const pendingDismissScroll = pendingDismissScrollRef.current;
-    if (!pendingDismissScroll) return;
-    pendingDismissScrollRef.current = null;
+    const pendingScrollAnchor = pendingScrollAnchorRef.current;
+    if (!pendingScrollAnchor) return;
+    pendingScrollAnchorRef.current = null;
 
-    const nextCardElement = feedCardElementsRef.current[pendingDismissScroll.nextCardId];
-    if (nextCardElement) scrollFeedCardTopIntoViewIfAbove(nextCardElement);
+    const anchorElement = feedCardElementsRef.current[pendingScrollAnchor.anchorCardId];
+    if (anchorElement) compensateScrollForAnchor(anchorElement, pendingScrollAnchor.previousTop);
   });
 
   const refetchAfterFeedMutationFailure = async () => {
@@ -549,18 +568,32 @@ export default function DashboardFeed({
     }
   };
 
+  const captureScrollAnchor = (cardId: string): { anchorCardId: string; previousTop: number } | null => {
+    const cardIndex = renderedFeedCards.findIndex((candidate) => candidate.id === cardId);
+    if (cardIndex < 0) return null;
+    const anchorCard = renderedFeedCards[cardIndex + 1] ?? renderedFeedCards[cardIndex - 1] ?? null;
+    if (!anchorCard) return null;
+    const anchorElement = feedCardElementsRef.current[anchorCard.id];
+    if (!anchorElement) return null;
+    return { anchorCardId: anchorCard.id, previousTop: anchorElement.getBoundingClientRect().top };
+  };
+
   const handleFeedStatusChange = async (card: FeedCardData, status: FeedCardStatus) => {
-    if (status === "dismissed") {
-      const cardIndex = renderedFeedCards.findIndex((candidate) => candidate.id === card.id);
-      const nextCardId = cardIndex >= 0 ? renderedFeedCards[cardIndex + 1]?.id ?? null : null;
-      pendingDismissScrollRef.current = nextCardId ? { nextCardId } : null;
+    if (statusMutationInFlightRef.current.has(card.id)) return;
+    if ((status === "done" || status === "dismissed") && card.status === "active") {
+      pendingScrollAnchorRef.current = captureScrollAnchor(card.id);
     }
-    await commitFeedStatusChange({
-      cardId: card.id,
-      title: card.title,
-      status,
-      previousStatus: card.status,
-    });
+    statusMutationInFlightRef.current.add(card.id);
+    try {
+      await commitFeedStatusChange({
+        cardId: card.id,
+        title: card.title,
+        status,
+        previousStatus: card.status,
+      });
+    } finally {
+      statusMutationInFlightRef.current.delete(card.id);
+    }
   };
 
   const handleFeedDelete = (card: FeedCardData) => {
@@ -874,8 +907,8 @@ export default function DashboardFeed({
           <h2 className={UI.text.sectionTitle}>
             <Inbox size={14} />
             Feed
-            {displayFeedCards.length > 0 && (
-              <span className="text-text-faint font-normal">({displayFeedCards.length})</span>
+            {visibleFeedCardCount > 0 && (
+              <span className="text-text-faint font-normal">({visibleFeedCardCount})</span>
             )}
           </h2>
           <button
@@ -945,7 +978,7 @@ export default function DashboardFeed({
           </div>
         )}
 
-        {feedLoading && displayFeedCards.length === 0 ? (
+        {feedLoading && visibleFeedCardCount === 0 ? (
           <div className="space-y-2">
             <SkeletonCard className="space-y-3">
               <div className="flex gap-2">
@@ -962,7 +995,7 @@ export default function DashboardFeed({
               <SkeletonText lines={2} widths={["64%", "82%"]} />
             </SkeletonCard>
           </div>
-        ) : displayFeedCards.length > 0 ? (
+        ) : visibleFeedCardCount > 0 ? (
           <div className="space-y-2">
             {activeFeedCards.map(renderFeedCard)}
             {activeHasMore && (

@@ -184,10 +184,11 @@ function createRect(top: number, height = 100): DOMRect {
   } as DOMRect;
 }
 
-function setElementTop(element: any, top: number) {
+function setElementTopSequence(element: any, tops: number[]) {
+  let callIndex = 0;
   Object.defineProperty(element, "getBoundingClientRect", {
     configurable: true,
-    value: () => createRect(top),
+    value: () => createRect(tops[Math.min(callIndex++, tops.length - 1)]),
   });
 }
 
@@ -217,22 +218,6 @@ function setScrollContainerGeometry(
     value: vi.fn((options: ScrollToOptions) => {
       element.scrollTop = options.top ?? element.scrollTop;
     }),
-  });
-}
-
-function setPrefersReducedMotion(matches: boolean) {
-  Object.defineProperty(globalThis.window, "matchMedia", {
-    configurable: true,
-    value: vi.fn((query: string) => ({
-      matches: query === "(prefers-reduced-motion: reduce)" ? matches : false,
-      media: query,
-      onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })),
   });
 }
 
@@ -329,7 +314,7 @@ describe("DashboardFeed feed mutations", () => {
     expect(onRefetchFeed).toHaveBeenCalledTimes(2);
   });
 
-  it("scrolls the next feed card top into view when dismissing leaves it above the feed viewport", async () => {
+  it("anchors the scroll position to the next card when marking a card done", async () => {
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -349,15 +334,52 @@ describe("DashboardFeed feed mutations", () => {
     });
     const nextCard = findFeedCardElement(container, "card-2");
     expect(nextCard).toBeTruthy();
-    setElementTop(nextCard, 40);
+    // Anchor card sits at 200 before the resolve and shifts up to 100 after it.
+    setElementTopSequence(nextCard, [200, 100]);
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Mark done"));
+      await waitTick();
+    });
+
+    await waitUntilAct(() => container.scrollTop === 200);
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "done" }));
+      await waitTick();
+    });
+  });
+
+  it("anchors the scroll position to the next card when dismissing a card", async () => {
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({ id: "card-1", title: "First card" }),
+        makeCard({ id: "card-2", title: "Second card" }),
+      ],
+    });
+    const container = dom!.container as any;
+    setScrollContainerGeometry(container, {
+      scrollTop: 300,
+      scrollHeight: 1_200,
+      clientHeight: 400,
+      top: 100,
+    });
+    const nextCard = findFeedCardElement(container, "card-2");
+    expect(nextCard).toBeTruthy();
+    setElementTopSequence(nextCard, [200, 100]);
 
     await act(async () => {
       clickButton(findButtonByLabel(container, "Dismiss"));
       await waitTick();
     });
 
-    await waitUntilAct(() => container.scrollTop === 240);
-    expect(container.scrollTo).toHaveBeenCalledWith({ top: 240, behavior: "smooth" });
+    await waitUntilAct(() => container.scrollTop === 200);
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
 
     await act(async () => {
       resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
@@ -365,7 +387,7 @@ describe("DashboardFeed feed mutations", () => {
     });
   });
 
-  it("does not scroll after dismissing when the next feed card is already below the viewport top", async () => {
+  it("does not adjust the scroll when the anchor card has not moved", async () => {
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -385,7 +407,7 @@ describe("DashboardFeed feed mutations", () => {
     });
     const nextCard = findFeedCardElement(container, "card-2");
     expect(nextCard).toBeTruthy();
-    setElementTop(nextCard, 150);
+    setElementTopSequence(nextCard, [150, 150]);
 
     await act(async () => {
       clickButton(findButtonByLabel(container, "Dismiss"));
@@ -402,8 +424,68 @@ describe("DashboardFeed feed mutations", () => {
     });
   });
 
-  it("uses instant dismiss scrolling when reduced motion is preferred", async () => {
-    setPrefersReducedMotion(true);
+  it("skips scroll compensation when there is no neighbor card to anchor", async () => {
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      feedCards: [makeCard({ id: "card-1", title: "Only card" })],
+    });
+    const container = dom!.container as any;
+    setScrollContainerGeometry(container, {
+      scrollTop: 300,
+      scrollHeight: 1_200,
+      clientHeight: 400,
+      top: 100,
+    });
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Dismiss"));
+      await waitTick();
+    });
+    await waitUntilAct(() => container.textContent?.includes('Dismissed "Only card".') ?? false);
+
+    expect(container.scrollTop).toBe(300);
+    expect(container.scrollTo).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      await waitTick();
+    });
+  });
+
+  it("hides an optimistically resolved card instead of flashing a resolved section when resolved feed is hidden", async () => {
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      showResolvedFeed: false,
+      feedCards: [
+        makeCard({ id: "card-1", title: "First card" }),
+        makeCard({ id: "card-2", title: "Second card" }),
+      ],
+    });
+    const container = dom!.container as any;
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Dismiss"));
+      await waitTick();
+    });
+    await waitUntilAct(() => findFeedCardElement(container, "card-1") === null);
+
+    expect(findFeedCardElement(container, "card-1")).toBeNull();
+    expect(findFeedCardElement(container, "card-2")).toBeTruthy();
+    expect(container.textContent).not.toContain("Resolved");
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      await waitTick();
+    });
+  });
+
+  it("ignores a repeated resolve click while the first mutation is in flight", async () => {
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -415,26 +497,18 @@ describe("DashboardFeed feed mutations", () => {
       ],
     });
     const container = dom!.container as any;
-    setScrollContainerGeometry(container, {
-      scrollTop: 300,
-      scrollHeight: 1_200,
-      clientHeight: 400,
-      top: 100,
-    });
-    const nextCard = findFeedCardElement(container, "card-2");
-    expect(nextCard).toBeTruthy();
-    setElementTop(nextCard, 40);
+    const markDoneButton = findButtonByLabel(container, "Mark done");
 
     await act(async () => {
-      clickButton(findButtonByLabel(container, "Dismiss"));
+      clickButton(markDoneButton);
+      clickButton(markDoneButton);
       await waitTick();
     });
 
-    await waitUntilAct(() => container.scrollTop === 240);
-    expect(container.scrollTo).toHaveBeenCalledWith({ top: 240, behavior: "auto" });
+    expect(apiMocks.patchFeedCard).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      resolvePatch(makeCard({ id: "card-1", status: "done" }));
       await waitTick();
     });
   });
