@@ -66,4 +66,21 @@ describe("device-hibernate scheduler", () => {
     await vi.advanceTimersByTimeAsync(50_000);
     expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
   });
+
+  it("honors a delay beyond Node's max timeout instead of firing immediately", async () => {
+    const NODE_MAX_TIMEOUT_MS = 2_147_483_647; // ~24.8 days
+    const extraMs = 60_000;
+    const status = scheduleHibernate(command, NODE_MAX_TIMEOUT_MS + extraMs);
+    expect(status.delayMs).toBe(NODE_MAX_TIMEOUT_MS + extraMs);
+
+    // Advancing to the first chunk boundary must not fire early.
+    await vi.advanceTimersByTimeAsync(NODE_MAX_TIMEOUT_MS);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    expect(getHibernateStatus().pending).toBe(true);
+
+    // Advancing across the chunk boundary fires exactly once.
+    await vi.advanceTimersByTimeAsync(extraMs);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+    expect(getHibernateStatus().pending).toBe(false);
+  });
 });

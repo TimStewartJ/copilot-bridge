@@ -7,6 +7,7 @@
 // the real server state by re-fetching status.
 
 import { requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
+import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
 
 export type HibernateScheduleStatus = {
   pending: boolean;
@@ -16,7 +17,7 @@ export type HibernateScheduleStatus = {
 
 type PendingHibernate = {
   token: number;
-  timer: NodeJS.Timeout;
+  timer: LongTimeout;
   scheduledAt: number;
   delayMs: number;
 };
@@ -34,24 +35,24 @@ export function scheduleHibernate(
   delayMs: number,
 ): HibernateScheduleStatus {
   cancelHibernate();
-  const safeDelayMs = Math.max(0, Math.floor(delayMs));
+  const safeDelayMs = Number.isFinite(delayMs) ? Math.max(0, Math.floor(delayMs)) : 0;
   const token = ++tokenCounter;
   const scheduledAt = Date.now() + safeDelayMs;
-  const timer = setTimeout(() => {
+  const timer = safeSetTimeout(() => {
     if (!pending || pending.token !== token) return;
     pending = null;
     void requestDeviceHibernate(command).catch((error) => {
       console.error("[device] Hibernate request failed:", error);
     });
   }, safeDelayMs);
-  timer.unref?.();
+  timer.unref();
   pending = { token, timer, scheduledAt, delayMs: safeDelayMs };
   return getHibernateStatus();
 }
 
 export function cancelHibernate(): boolean {
   if (!pending) return false;
-  clearTimeout(pending.timer);
+  pending.timer.cancel();
   pending = null;
   return true;
 }
