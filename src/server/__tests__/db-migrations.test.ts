@@ -142,6 +142,7 @@ describe("database migration registry", () => {
       "task-groups-notes-column",
       "tasks-kind-momentum-and-status-repair",
       "task-work-items-text-item-id",
+      "voice-jobs-task-foreign-key",
       "session-context-telemetry-tables",
       "copilot-model-prices-table",
     ]);
@@ -167,6 +168,7 @@ describe("database migration registry", () => {
       "task-groups-notes-column": "auto",
       "tasks-kind-momentum-and-status-repair": "self",
       "task-work-items-text-item-id": "auto",
+      "voice-jobs-task-foreign-key": "self",
       "session-context-telemetry-tables": "auto",
       "copilot-model-prices-table": "auto",
     });
