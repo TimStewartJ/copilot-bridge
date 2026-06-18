@@ -104,6 +104,14 @@ function assertNoForeignKeyViolations(db: DatabaseSync, migrationName: string): 
   }
 }
 
+function assertNoForeignKeyViolationsForTable(db: DatabaseSync, table: string, migrationName: string): void {
+  // PRAGMA arguments cannot be bound, so only pass trusted literal table names.
+  const violations = db.prepare(`PRAGMA foreign_key_check(${table})`).all() as any[];
+  if (violations.length > 0) {
+    throw new Error(`${migrationName} left ${violations.length} foreign key violation(s) in ${table}`);
+  }
+}
+
 function runMigrationInTransaction(db: DatabaseSync, apply: () => void): void {
   let shouldRollback = false;
   try {
@@ -708,6 +716,76 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
   }
 }
 
+function voiceJobsTaskIdHasSetNullForeignKey(db: DatabaseSync): boolean {
+  if (!sqliteTableExists(db, "voice_jobs")) return false;
+  const foreignKeys = db.prepare("PRAGMA foreign_key_list(voice_jobs)").all() as Array<{
+    table?: string;
+    from?: string;
+    on_delete?: string;
+  }>;
+  return foreignKeys.some(
+    (fk) =>
+      fk.table === "tasks" &&
+      fk.from === "taskId" &&
+      String(fk.on_delete ?? "").toUpperCase() === "SET NULL",
+  );
+}
+
+function ensureVoiceJobsTaskForeignKey(db: DatabaseSync): void {
+  // voice_jobs.taskId historically had no foreign key, so deleting a task left
+  // orphaned rows with a dangling taskId. Rebuild the table with an
+  // ON DELETE SET NULL reference to match the other task-child tables. The guard
+  // makes this idempotent: once the FK exists the rebuild is skipped.
+  if (!sqliteTableExists(db, "voice_jobs")) return;
+  if (voiceJobsTaskIdHasSetNullForeignKey(db)) return;
+
+  withForeignKeysDisabled(db, () => {
+    runMigrationInTransaction(db, () => {
+      db.exec(`
+        CREATE TABLE voice_jobs_new (
+          id TEXT PRIMARY KEY,
+          composerKey TEXT NOT NULL,
+          taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+          targetSessionId TEXT,
+          status TEXT NOT NULL,
+          audioPath TEXT NOT NULL,
+          transcript TEXT,
+          error TEXT,
+          createdAt TEXT NOT NULL,
+          updatedAt TEXT NOT NULL
+        );
+      `);
+      // Pre-existing orphaned taskIds are reset to NULL so they satisfy the new
+      // FK and match ON DELETE SET NULL semantics instead of failing the check.
+      db.exec(`
+        INSERT INTO voice_jobs_new (
+          id, composerKey, taskId, targetSessionId, status, audioPath, transcript, error, createdAt, updatedAt
+        )
+        SELECT
+          id,
+          composerKey,
+          CASE WHEN taskId IN (SELECT id FROM tasks) THEN taskId ELSE NULL END,
+          targetSessionId,
+          status,
+          audioPath,
+          transcript,
+          error,
+          createdAt,
+          updatedAt
+        FROM voice_jobs;
+      `);
+      db.exec("DROP TABLE voice_jobs");
+      db.exec("ALTER TABLE voice_jobs_new RENAME TO voice_jobs");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_voice_jobs_composer ON voice_jobs(composerKey)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_voice_jobs_target_session ON voice_jobs(targetSessionId)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_voice_jobs_status ON voice_jobs(status)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_voice_jobs_updated ON voice_jobs(updatedAt)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_voice_jobs_taskId ON voice_jobs(taskId)");
+      assertNoForeignKeyViolationsForTable(db, "voice_jobs", "Voice jobs task foreign key migration");
+    });
+  });
+}
+
 function ensureCopilotModelPricesTable(db: DatabaseSync): void {
   // Last-known-good cache of SDK-provided model token prices. Populated via
   // write-through whenever live model metadata is fetched; never hand-maintained.
@@ -1070,6 +1148,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Rebuild task_work_items when itemId was stored as INTEGER so string identifiers are preserved.",
     apply: migrateTaskWorkItemIdsToText,
+  },
+  {
+    id: "voice-jobs-task-foreign-key",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "self",
+    description: "Rebuild voice_jobs with an ON DELETE SET NULL task reference so deleting a task clears taskId instead of orphaning rows.",
+    apply: ensureVoiceJobsTaskForeignKey,
   },
   {
     id: "session-context-telemetry-tables",

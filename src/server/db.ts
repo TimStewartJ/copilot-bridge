@@ -619,7 +619,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS voice_jobs (
       id TEXT PRIMARY KEY,
       composerKey TEXT NOT NULL,
-      taskId TEXT,
+      taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
       targetSessionId TEXT,
       status TEXT NOT NULL,
       audioPath TEXT NOT NULL,
@@ -632,6 +632,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_voice_jobs_target_session ON voice_jobs(targetSessionId);
     CREATE INDEX IF NOT EXISTS idx_voice_jobs_status ON voice_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_voice_jobs_updated ON voice_jobs(updatedAt);
+    CREATE INDEX IF NOT EXISTS idx_voice_jobs_taskId ON voice_jobs(taskId);
 
     -- Docs knowledge base — structured metadata table
     CREATE TABLE IF NOT EXISTS docs_pages (
