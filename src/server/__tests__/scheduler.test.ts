@@ -1292,6 +1292,53 @@ describe("scheduler startup recovery", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot");
   });
 
+  it("does not fire a one-shot scheduled beyond Node's max timeout until its real deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "far-future-one-shot" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    // ~30 days out, well beyond Node's ~24.8 day (2^31-1 ms) setTimeout ceiling.
+    const NODE_MAX_TIMEOUT_MS = 2_147_483_647;
+    const extraMs = 60 * 60_000; // 1 hour past the first chunk boundary
+    const runAt = new Date(Date.now() + NODE_MAX_TIMEOUT_MS + extraMs).toISOString();
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Far-future one-shot",
+      prompt: "run far in the future",
+      type: "once",
+      runAt,
+    });
+
+    scheduler.armOneShot(schedule.id, runAt);
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBe(runAt);
+
+    // Advancing to the first chunk boundary must NOT trigger the run early.
+    await vi.advanceTimersByTimeAsync(NODE_MAX_TIMEOUT_MS);
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+
+    // Advancing the remaining time across the chunk boundary fires exactly once.
+    await vi.advanceTimersByTimeAsync(extraMs);
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionManager.startWork).toHaveBeenCalledWith("far-future-one-shot", "run far in the future");
+  });
+
   it("retries a one-shot timer in-process after a transient pre-launch failure", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));

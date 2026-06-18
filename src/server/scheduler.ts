@@ -20,13 +20,14 @@ import {
 import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 import { computeNextRunAt, validateSupportedCronExpression } from "./cron-next-run.js";
+import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
 
 export { computeNextRunAt, matchesCron, matchesField, validateSupportedCronExpression } from "./cron-next-run.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
 const cronJobs = new Map<string, ScheduledTask>();
-const oneShotTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const oneShotTimers = new Map<string, LongTimeout>();
 const automaticRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let sessionMgr: SessionManager | null = null;
 let busUnsubscribe: (() => void) | undefined;
@@ -108,7 +109,7 @@ export function shutdown(): void {
     cronJobs.delete(id);
   }
   for (const [id, timer] of oneShotTimers) {
-    clearTimeout(timer);
+    timer.cancel();
     oneShotTimers.delete(id);
   }
   clearAutomaticRetryTimers();
@@ -214,7 +215,7 @@ export function unregisterSchedule(scheduleId: string): void {
   }
   const timer = oneShotTimers.get(scheduleId);
   if (timer) {
-    clearTimeout(timer);
+    timer.cancel();
     oneShotTimers.delete(scheduleId);
   }
   clearAutomaticRetryTimers(scheduleId);
@@ -227,7 +228,7 @@ export function unregisterSchedule(scheduleId: string): void {
 export function armOneShot(scheduleId: string, runAt: string): void {
   // Clear existing timer
   const existing = oneShotTimers.get(scheduleId);
-  if (existing) clearTimeout(existing);
+  if (existing) existing.cancel();
 
   const scheduledFor = new Date(runAt).toISOString();
   scheduleStore.updateNextRunAt(scheduleId, scheduledFor);
@@ -235,7 +236,7 @@ export function armOneShot(scheduleId: string, runAt: string): void {
   const delay = Date.parse(scheduledFor) - Date.now();
   if (delay <= 0) return;
 
-  const timer = setTimeout(() => {
+  const timer = safeSetTimeout(() => {
     oneShotTimers.delete(scheduleId);
     triggerSchedule(scheduleId, { source: "once", scheduledFor }).catch((err) => {
       console.error(`[scheduler] One-shot trigger failed for ${scheduleId}:`, err);
@@ -249,10 +250,10 @@ function armOneShotRetry(scheduleId: string, scheduledFor: string): void {
   if (!schedule || !schedule.enabled || schedule.type !== "once") return;
 
   const existing = oneShotTimers.get(scheduleId);
-  if (existing) clearTimeout(existing);
+  if (existing) existing.cancel();
 
   const retryAt = new Date(Date.now() + ONE_SHOT_RETRY_DELAY_MS).toISOString();
-  const timer = setTimeout(() => {
+  const timer = safeSetTimeout(() => {
     oneShotTimers.delete(scheduleId);
     triggerSchedule(scheduleId, { source: "once", scheduledFor }).catch((err) => {
       console.error(`[scheduler] One-shot retry failed for ${scheduleId}:`, err);
@@ -616,7 +617,7 @@ function registerAllSchedules(): void {
   // Clear existing jobs
   for (const job of cronJobs.values()) job.stop();
   cronJobs.clear();
-  for (const timer of oneShotTimers.values()) clearTimeout(timer);
+  for (const timer of oneShotTimers.values()) timer.cancel();
   oneShotTimers.clear();
   clearAutomaticRetryTimers();
 
