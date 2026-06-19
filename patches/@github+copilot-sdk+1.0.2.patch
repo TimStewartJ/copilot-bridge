@@ -1,0 +1,40 @@
+diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/@github/copilot-sdk/dist/cjs/client.js
+index 3540ef8..03cf1bb 100644
+--- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
++++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
+@@ -909,6 +909,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+@@ -1084,6 +1085,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
+index d7ab024..37547a9 100644
+--- a/node_modules/@github/copilot-sdk/dist/client.js
++++ b/node_modules/@github/copilot-sdk/dist/client.js
+@@ -895,6 +895,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+@@ -1070,6 +1071,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
