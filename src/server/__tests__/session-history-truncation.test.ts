@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { findQuietIntervalDeferTailTruncationCandidate } from "../session-history-truncation.js";
+import {
+  findQuietIntervalDeferTailTruncationCandidate,
+  truncateQuietIntervalDeferTail,
+} from "../session-history-truncation.js";
 
 function quietIntervalUserMessage(id: string, deferId = "interval_loop-1") {
   return {
@@ -162,5 +165,64 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
       { id: "turn-end", type: "assistant.turn_end", data: {} },
       { id: "late-assistant", type: "assistant.message", data: { content: "late" } },
     ], "interval_loop-1")).toBeUndefined();
+  });
+});
+
+class ReceiverSensitiveFakeSession {
+  readonly truncateCalls: { eventId: string }[] = [];
+  getEventsCalls = 0;
+
+  constructor(private readonly events: { id: string; type: string; data?: unknown }[]) {}
+
+  async getEvents() {
+    this.getEventsCalls += 1;
+    return this.events;
+  }
+
+  async truncateHistory(params: { eventId: string }) {
+    this.truncateCalls.push(params);
+    const index = this.events.findIndex((event) => event.id === params.eventId);
+    const eventsRemoved = index < 0 ? 0 : this.events.length - index;
+    return { eventsRemoved };
+  }
+}
+
+const silentLogger = { log() {}, warn() {} };
+
+describe("truncateQuietIntervalDeferTail", () => {
+  it("invokes truncateHistory with its receiver so prototype methods that depend on `this` work", async () => {
+    const session = new ReceiverSensitiveFakeSession([
+      quietIntervalUserMessage("quiet-user"),
+      { id: "turn-start", type: "assistant.turn_start", data: {} },
+      { id: "assistant", type: "assistant.message", data: { content: "No change" } },
+      { id: "idle", type: "session.idle", data: {} },
+    ]);
+
+    const result = await truncateQuietIntervalDeferTail({
+      session,
+      sessionId: "session-1",
+      deferId: "interval_loop-1",
+      logger: silentLogger,
+    });
+
+    expect(result).toEqual({
+      status: "truncated",
+      eventId: "quiet-user",
+      eventsRemoved: 4,
+      candidateEventsToRemove: 4,
+    });
+    expect(session.truncateCalls).toEqual([{ eventId: "quiet-user" }]);
+    expect(session.getEventsCalls).toBe(1);
+  });
+
+  it("skips with missing-api when the session cannot truncate history", async () => {
+    const result = await truncateQuietIntervalDeferTail({
+      session: { getEvents: async () => [] },
+      sessionId: "session-1",
+      deferId: "interval_loop-1",
+      logger: silentLogger,
+    });
+
+    expect(result).toEqual({ status: "skipped", reason: "missing-api" });
   });
 });
