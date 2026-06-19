@@ -162,7 +162,9 @@ export async function truncateQuietIntervalDeferTail({
   recordSpan,
 }: TruncateQuietIntervalDeferTailOptions): Promise<QuietIntervalDeferTailTruncationResult> {
   const start = Date.now();
-  const truncate = session.truncateHistory;
+  const truncateHistory = session.truncateHistory;
+  const truncate =
+    typeof truncateHistory === "function" ? truncateHistory.bind(session) : undefined;
   if (typeof session.getEvents !== "function" || typeof truncate !== "function") {
     logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Quiet defer history truncation unavailable`);
     recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
