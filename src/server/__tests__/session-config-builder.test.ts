@@ -172,6 +172,21 @@ describe("session-config-builder", () => {
     expect(resumeCfg.reasoningEffort).toBeUndefined();
   });
 
+  it("explicitly disables cloud-backed Copilot memory on create and resume", () => {
+    const createCfg = buildSessionConfig({
+      deps: createDeps(),
+      callbacks: createCallbacks(),
+    });
+    const resumeCfg = buildSessionConfig({
+      deps: createDeps(),
+      options: { forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(createCfg.memory).toEqual({ enabled: false });
+    expect(resumeCfg.memory).toEqual({ enabled: false });
+  });
+
   it("keeps staging instructions for source-managed release-slot sessions", () => {
     const runtimePaths = makeTestRuntimePaths(
       "source-release-slot-session-config",
