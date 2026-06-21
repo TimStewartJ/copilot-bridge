@@ -57,6 +57,7 @@ import {
   seedStagingData,
   startStagingBackendProcess,
   writeRestartSignalOrRollback,
+  __testing as backendManagerTesting,
   type RestoreStagingBackendWithRetryOptions,
   type SeedStagingDataOptions,
 } from "./staging-backend-manager.js";
@@ -326,7 +327,11 @@ async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void)
     if (existsSync(join(distDir, "index.html"))) continue;
     writeLog(`Staging preview ${prefix} disappeared from disk — cleaning up in-process backend state`);
     activePreviews.delete(prefix);
-    await cleanupStagingBackendResources(prefix);
+    try {
+      await cleanupStagingBackendResources(prefix);
+    } catch (error) {
+      writeLog(`Warning: cleanup for disappeared staging preview ${prefix} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }
 
@@ -731,6 +736,18 @@ export const __testing = {
   pruneOrphanedWorktreesImpl,
   getStagingPreviewParent: () => STAGING_PREVIEW_PARENT,
   listStagingPreviewParents,
+  cleanupMissingRegisteredPreviews,
+  cleanupStagingBackendResources,
+  seedActivePreview(prefix: string, distDir: string): void {
+    activePreviews.set(prefix, distDir);
+  },
+  hasActivePreview(prefix: string): boolean {
+    return activePreviews.has(prefix);
+  },
+  resetActivePreviews(): void {
+    activePreviews.clear();
+  },
+  backendManager: backendManagerTesting,
 };
 
 export interface StagingPreviewJobInput {
