@@ -223,6 +223,12 @@ vi.mock("node:fs", async (importOriginal) => {
       if (isDeployValidationStampPath(String(target)) || isStagingValidationStampPath(String(target))) return;
       return actual.renameSync(...args);
     },
+    rmSync: (path: Parameters<typeof actual.rmSync>[0], ...args: unknown[]) => {
+      if (rmSyncThrowDirs.has(String(path))) {
+        throw new Error(`EBUSY: resource busy or locked, rm '${String(path)}'`);
+      }
+      return actual.rmSync(path, ...(args as []));
+    },
   };
 });
 
@@ -257,6 +263,16 @@ vi.mock("../tunnel.js", () => ({
 vi.mock("../config.js", () => ({
   config: { web: { port: 3333 } },
 }));
+
+const stagingLogMock = vi.hoisted(() => vi.fn<(msg: string) => void>());
+vi.mock("../staging-log.js", () => ({
+  log: stagingLogMock,
+}));
+
+// Paths for which the mocked node:fs rmSync should fail, simulating EPERM/EBUSY
+// (e.g. a Windows file lock) after retries are exhausted. Used to exercise
+// staging preview data-removal failure handling.
+const rmSyncThrowDirs = vi.hoisted(() => new Set<string>());
 
 const tempDirs: string[] = [];
 
@@ -415,6 +431,7 @@ function createStagingPreviewTestApp(mod: StagingToolsModule) {
 }
 
 afterEach(() => {
+  rmSyncThrowDirs.clear();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -449,6 +466,7 @@ afterEach(() => {
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
   renameSyncCallMock.mockReset();
+  stagingLogMock.mockClear();
   vi.resetModules();
 });
 
@@ -1951,5 +1969,113 @@ describe("staging tools", () => {
     expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
       writeFileSyncCallMock.mock.invocationCallOrder[signalWriteIndex],
     );
+  });
+});
+
+describe("staging preview cleanup hardening", () => {
+  it("clears in-memory preview data dir state even when removePreviewData throws", async () => {
+    const mod = await loadStagingToolsModule();
+    mod.__testing.backendManager.resetBackendState();
+
+    const prefix = "preview-data-throws";
+    const dataDir = createTempDir("bridge-preview-data-throw-");
+    mod.__testing.backendManager.seedPreviewDataDir(prefix, dataDir);
+    rmSyncThrowDirs.add(dataDir);
+
+    await expect(
+      mod.__testing.cleanupStagingBackendResources(prefix, { removeData: true }),
+    ).resolves.toBeUndefined();
+
+    // The in-memory entry is cleared even though the on-disk removal failed.
+    expect(mod.__testing.backendManager.hasPreviewDataDir(prefix)).toBe(false);
+    // The data dir still exists because rmSync threw — removal was attempted.
+    expect(existsSync(dataDir)).toBe(true);
+    expect(stagingLogMock).toHaveBeenCalledWith(
+      expect.stringContaining(`failed to remove preview data for ${prefix}`),
+    );
+  });
+
+  it("keeps cleaning later previews when one preview's data removal throws", async () => {
+    const mod = await loadStagingToolsModule();
+    mod.__testing.backendManager.resetBackendState();
+    mod.__testing.resetActivePreviews();
+
+    const failingPrefix = "preview-fails";
+    const followingPrefix = "preview-follows";
+    // Dist dirs without index.html so both previews count as "disappeared".
+    const failingDist = join(createTempDir("bridge-preview-dist-fail-"), "missing-dist");
+    const followingDist = join(createTempDir("bridge-preview-dist-follow-"), "missing-dist");
+    const failingDataDir = createTempDir("bridge-preview-data-fail-");
+    const followingDataDir = createTempDir("bridge-preview-data-follow-");
+
+    mod.__testing.seedActivePreview(failingPrefix, failingDist);
+    mod.__testing.seedActivePreview(followingPrefix, followingDist);
+    mod.__testing.backendManager.seedPreviewDataDir(failingPrefix, failingDataDir);
+    mod.__testing.backendManager.seedPreviewDataDir(followingPrefix, followingDataDir);
+    rmSyncThrowDirs.add(failingDataDir);
+
+    const writeLog = vi.fn<(msg: string) => void>();
+
+    await expect(
+      mod.__testing.cleanupMissingRegisteredPreviews(writeLog),
+    ).resolves.toBeUndefined();
+
+    // The failing preview's in-memory state is still cleared despite the throw.
+    expect(mod.__testing.backendManager.hasPreviewDataDir(failingPrefix)).toBe(false);
+    expect(mod.__testing.hasActivePreview(failingPrefix)).toBe(false);
+    expect(existsSync(failingDataDir)).toBe(true);
+
+    // The loop continued to the following preview and cleaned it fully.
+    expect(mod.__testing.backendManager.hasPreviewDataDir(followingPrefix)).toBe(false);
+    expect(mod.__testing.hasActivePreview(followingPrefix)).toBe(false);
+    expect(existsSync(followingDataDir)).toBe(false);
+
+    expect(stagingLogMock).toHaveBeenCalledWith(
+      expect.stringContaining(`failed to remove preview data for ${failingPrefix}`),
+    );
+  });
+
+  it("logs and continues the discovery loop when a preview's backend cleanup throws", async () => {
+    const mod = await loadStagingToolsModule();
+    mod.__testing.backendManager.resetBackendState();
+    mod.__testing.resetActivePreviews();
+
+    const backendMod = await import("../staging-backend-manager.js");
+    const failingPrefix = "preview-cleanup-throws";
+    const followingPrefix = "preview-cleanup-ok";
+    const failingDist = join(createTempDir("bridge-preview-dist-cleanup-fail-"), "missing-dist");
+    const followingDist = join(createTempDir("bridge-preview-dist-cleanup-ok-"), "missing-dist");
+
+    mod.__testing.seedActivePreview(failingPrefix, failingDist);
+    mod.__testing.seedActivePreview(followingPrefix, followingDist);
+
+    const cleanupSpy = vi
+      .spyOn(backendMod, "cleanupStagingBackendResources")
+      .mockImplementation(async (prefix: string) => {
+        if (prefix === failingPrefix) {
+          throw new Error("teardown failed");
+        }
+      });
+
+    const writeLog = vi.fn<(msg: string) => void>();
+
+    try {
+      await expect(
+        mod.__testing.cleanupMissingRegisteredPreviews(writeLog),
+      ).resolves.toBeUndefined();
+
+      // The loop reached and cleaned the following preview despite the throw.
+      expect(cleanupSpy).toHaveBeenCalledWith(failingPrefix);
+      expect(cleanupSpy).toHaveBeenCalledWith(followingPrefix);
+      expect(mod.__testing.hasActivePreview(failingPrefix)).toBe(false);
+      expect(mod.__testing.hasActivePreview(followingPrefix)).toBe(false);
+
+      // The per-iteration guard surfaced the failure with its distinct message.
+      expect(writeLog).toHaveBeenCalledWith(
+        expect.stringContaining(`cleanup for disappeared staging preview ${failingPrefix} failed`),
+      );
+    } finally {
+      cleanupSpy.mockRestore();
+    }
   });
 });
