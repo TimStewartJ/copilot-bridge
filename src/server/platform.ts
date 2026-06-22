@@ -277,6 +277,29 @@ export function shouldSpawnDetachedProcessGroup(): boolean {
   return !isWindows();
 }
 
+/**
+ * Concise process-tree sampling helper for telemetry.
+ *
+ * Reads exactly one bounded process-table snapshot, resolves the root
+ * identity from that snapshot, and returns a {@link ProcessTreeSnapshot}
+ * containing the root and all reachable descendants with valid start markers.
+ * Returns null when the deadline is expired, the snapshot cannot be read, or
+ * the root PID is absent or has no start marker in the snapshot.
+ */
+export async function sampleProcessTree(
+  rootPid: number,
+  deadline: Deadline,
+): Promise<ProcessTreeSnapshot | null> {
+  if (!isValidPid(rootPid) || deadlineExpired(deadline)) return null;
+  const result = await readProcessTable(capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS));
+  if (!result.ok) return null;
+  const rootEntry = result.table.get(rootPid);
+  if (!rootEntry?.startMarker) return null;
+  const root: ProcessIdentity = { pid: rootPid, startMarker: rootEntry.startMarker };
+  const { descendants } = collectDescendantIdentities(rootPid, result.table);
+  return { root, descendants };
+}
+
 export async function captureProcessIdentity(
   pid: number,
   deadline: Deadline,

@@ -100,7 +100,7 @@ describe("SessionManager run state", () => {
   }
 
   async function flushMicrotasks() {
-    for (let i = 0; i < 10; i++) await Promise.resolve();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
   }
 
   function latestSpanMetadata(telemetryStore: TelemetryStore | undefined, name: string, sessionId: string): Record<string, unknown> {
@@ -2127,7 +2127,7 @@ describe("SessionManager run state", () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(session.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    await vi.waitFor(() => expect(manager.getSessionRunState("session-1")).toBe("idle"));
   });
 
   it("does not attempt a second recovery while one is already in progress", async () => {

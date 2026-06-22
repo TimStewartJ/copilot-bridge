@@ -50,7 +50,7 @@ export function createTagToolDefinitions(ctx: AppContext): BridgeToolDefinition[
       if (args.instructions !== undefined) updates.instructions = args.instructions;
       if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: name, color, instructions");
       tagStore.value.updateTag(args.tagId, updates);
-      ctx.sessionManager.evictAllCachedSessions();
+      await ctx.sessionManager.evictAllCachedSessions();
       return { success: true, message: `Tag updated` };
     },
   }),
@@ -59,7 +59,7 @@ export function createTagToolDefinitions(ctx: AppContext): BridgeToolDefinition[
     parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID to delete" } }, required: ["tagId"] },
     handler: async (args: any) => {
       ctx.tagStore?.deleteTag(args.tagId);
-      ctx.sessionManager.evictAllCachedSessions();
+      await ctx.sessionManager.evictAllCachedSessions();
       return { success: true, message: "Tag deleted" };
     },
   }),

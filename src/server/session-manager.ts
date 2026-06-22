@@ -89,6 +89,7 @@ import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
+import { sampleProcessTree } from "./platform.js";
 import { buildBridgeToolsSessionMcpServerConfig } from "./agent-tools-mcp/config.js";
 import {
   BRIDGE_TOOLS_MCP_SERVER_NAME,
@@ -220,6 +221,19 @@ const SESSION_DRAIN_TIMEOUT_MS = 3_000;
 const BROWSER_SHUTDOWN_TIMEOUT_MS = 1_500;
 const BACKEND_STOP_TIMEOUT_MS = 4_000;
 const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
+const DISCONNECT_TIMEOUT_MS = 5_000;
+const DISCONNECT_MAX_ATTEMPTS = 2;
+const PROCESS_TREE_SAMPLE_THROTTLE_MS = 60_000;
+const PROCESS_TREE_SAMPLE_DEADLINE_MS = 5_000;
+const PROCESS_TREE_WARNING_THRESHOLD = 128;
+const PROCESS_TREE_GROWTH_WARNING_THRESHOLD = 64;
+
+type SessionCleanupRecord = {
+  sessionId: string;
+  state: "pending" | "failed";
+  attempts: number;
+  lastOutcome?: "rejected" | "timed-out";
+};
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
   stopPrevious: "stopping the previous client",
@@ -426,6 +440,11 @@ export class SessionManager {
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
   private pendingSessionEvictions = new Set<string>();
+  private cacheQueue: Promise<void> = Promise.resolve();
+  private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
+  private cumulativeCleanupFailures = 0;
+  private processTreeBaselineCount: number | null = null;
+  private lastProcessTreeSampleAt = 0;
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly runStateController: SessionRunStateController;
@@ -470,7 +489,10 @@ export class SessionManager {
         if (busy) {
           this.pendingSessionEvictions.add(sessionId);
         } else {
-          this.evictCachedSession(sessionId);
+          this.scheduleCacheOperation(
+            this.evictCachedSession(sessionId, undefined, "workspace changed"),
+            "evicting a session after its workspace changed",
+          );
         }
         this.invalidateSessionListCache("workspace:changed");
       },
@@ -545,6 +567,8 @@ export class SessionManager {
       cacheResumedSession: (sessionId, session) => this.cacheResumedSession(sessionId, session),
       replaceCachedSession: (sessionId, expectedSession, nextSession) =>
         this.replaceCachedSession(sessionId, expectedSession, nextSession),
+      abandonCachedSession: (sessionId, expectedSession) => this.abandonCachedSession(sessionId, expectedSession),
+      disposeSession: (sessionId, session, reason) => this.disposeSession(sessionId, session, reason),
       probeMcpStatus: (sessionId, session) => this.probeMcpStatus(sessionId, session),
       markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
       deferMcpStatusSessionEviction: (sessionId, reason) => this.deferMcpStatusSessionEviction(sessionId, reason),
@@ -564,6 +588,357 @@ export class SessionManager {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
+  }
+
+  private getSessionCacheState(): {
+    ready: number;
+    retained: number;
+    pendingCleanup: number;
+    failedCleanup: number;
+  } {
+    let pendingCleanup = 0;
+    let failedCleanup = 0;
+    for (const record of this.cleanupOwnership.values()) {
+      if (record.state === "pending") pendingCleanup++;
+      else failedCleanup++;
+    }
+    return {
+      ready: this.sessionObjects.size,
+      retained: this.sessionObjects.size + this.cleanupOwnership.size,
+      pendingCleanup,
+      failedCleanup,
+    };
+  }
+
+  private recordSessionCacheState(
+    operation: string,
+    outcome: "succeeded" | "failed",
+    duration: number,
+    sessionId?: string,
+  ): void {
+    this.recordSpan("session.cache.operation", duration, sessionId, {
+      operation,
+      outcome,
+      max: this.maxCachedSessions,
+      cumulativeCleanupFailures: this.cumulativeCleanupFailures,
+      ...this.getSessionCacheState(),
+    });
+  }
+
+  private enqueueCache<T>(
+    operation: string,
+    sessionId: string | undefined,
+    work: () => T | Promise<T>,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    const run = this.cacheQueue.then(async () => {
+      try {
+        const result = await work();
+        this.recordSessionCacheState(operation, "succeeded", Date.now() - startedAt, sessionId);
+        return result;
+      } catch (error) {
+        this.recordSessionCacheState(operation, "failed", Date.now() - startedAt, sessionId);
+        throw error;
+      } finally {
+        this.maybeSampleProcessTree();
+      }
+    });
+    this.cacheQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async _drainCacheQueue(): Promise<void> {
+    await this.cacheQueue;
+  }
+
+  private scheduleCacheOperation(operation: Promise<unknown>, context: string): void {
+    void operation.catch((error) => {
+      console.error(`[sdk] Cache cleanup failed while ${context}:`, error);
+    });
+  }
+
+  private async cleanupSessionUnsafe(
+    sessionId: string,
+    session: AgentSession,
+    reason: string,
+  ): Promise<boolean> {
+    const record = this.cleanupOwnership.get(session) ?? {
+      sessionId,
+      state: "pending" as const,
+      attempts: 0,
+    };
+    record.sessionId = sessionId;
+    record.state = "pending";
+    delete record.lastOutcome;
+    this.cleanupOwnership.set(session, record);
+
+    let lastOutcome: "rejected" | "timed-out" = "rejected";
+    for (let cycleAttempt = 1; cycleAttempt <= DISCONNECT_MAX_ATTEMPTS; cycleAttempt++) {
+      const startedAt = Date.now();
+      record.attempts++;
+      const result = await settleByDeadline<void>(
+        () => Promise.resolve(session.disconnect?.()).then(() => undefined),
+        createDeadline(DISCONNECT_TIMEOUT_MS),
+      );
+      this.recordSpan("session.cache.disconnect", Date.now() - startedAt, sessionId, {
+        reason,
+        attempt: record.attempts,
+        cycleAttempt,
+        outcome: result.status,
+        ...this.getSessionCacheState(),
+      });
+      if (result.status === "fulfilled") {
+        this.cleanupOwnership.delete(session);
+        return true;
+      }
+      lastOutcome = result.status;
+    }
+
+    this.cumulativeCleanupFailures++;
+    record.state = "failed";
+    record.lastOutcome = lastOutcome;
+    console.warn(
+      `[sdk] [${sessionId.slice(0, 8)}] Session disconnect ${lastOutcome} after ${DISCONNECT_MAX_ATTEMPTS} attempts; retained for retry (${reason})`,
+    );
+    return false;
+  }
+
+  private async retryFailedCleanupUnsafe(excluded = new Set<AgentSession>()): Promise<boolean> {
+    for (const [session, record] of this.cleanupOwnership) {
+      if (record.state !== "failed" || excluded.has(session)) continue;
+      return this.cleanupSessionUnsafe(record.sessionId, session, "retrying failed cleanup");
+    }
+    return false;
+  }
+
+  private removeReadySessionUnsafe(sessionId: string, expectedSession?: AgentSession): AgentSession | undefined {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session || (expectedSession && session !== expectedSession)) return undefined;
+    this.sessionObjects.delete(sessionId);
+    this.liveSessionModelState.delete(sessionId);
+    this.slashCommandListCache.delete(sessionId);
+    this.agentRegistry.markSessionUnavailable(sessionId);
+    return session;
+  }
+
+  private async evictCachedSessionUnsafe(
+    sessionId: string,
+    expectedSession: AgentSession | undefined,
+    reason: string,
+  ): Promise<boolean> {
+    const session = this.removeReadySessionUnsafe(sessionId, expectedSession);
+    if (!session) return false;
+    return this.cleanupSessionUnsafe(sessionId, session, reason);
+  }
+
+  private async rejectCacheAdmissionUnsafe(
+    sessionId: string,
+    session: AgentSession,
+    reason: string,
+  ): Promise<never> {
+    this.removeReadySessionUnsafe(sessionId, session);
+    const cleaned = await this.cleanupSessionUnsafe(sessionId, session, "rejecting cache admission");
+    throw new Error(
+      `${reason}; incoming session cleanup ${cleaned ? "succeeded" : "failed and remains tracked"}`,
+    );
+  }
+
+  private async enforceSessionCacheLimitUnsafe(
+    justCachedId: string,
+    justCachedSession: AgentSession,
+  ): Promise<void> {
+    const protectedIds = new Set<string>(this.getActiveSessions());
+    protectedIds.add(justCachedId);
+    const failedThisPass = new Set<AgentSession>();
+    while (this.getSessionCacheState().retained > this.maxCachedSessions) {
+      const candidateId = [...this.sessionObjects.keys()]
+        .find((id) => !protectedIds.has(id));
+      if (candidateId) {
+        const candidate = this.sessionObjects.get(candidateId);
+        const cleaned = await this.evictCachedSessionUnsafe(
+          candidateId,
+          undefined,
+          "enforcing session cache limit",
+        );
+        if (cleaned) continue;
+        if (candidate) failedThisPass.add(candidate);
+        continue;
+      }
+
+      const failedCleanup = [...this.cleanupOwnership.values()]
+        .some((record) => record.state === "failed");
+      if (failedCleanup && await this.retryFailedCleanupUnsafe(failedThisPass)) continue;
+      if (!failedCleanup) {
+        const state = this.getSessionCacheState();
+        console.warn(
+          `[sdk] Session cache temporarily above ${this.maxCachedSessions}; ${state.ready} ready session(s) are protected`,
+        );
+        return;
+      }
+      await this.rejectCacheAdmissionUnsafe(
+        justCachedId,
+        justCachedSession,
+        "Session cache admission blocked by unreaped session cleanup",
+      );
+    }
+  }
+
+  private async trimSessionCacheUnsafe(reason: string): Promise<void> {
+    const protectedIds = new Set(this.getActiveSessions());
+    const failedThisPass = new Set<AgentSession>();
+    while (this.getSessionCacheState().retained > this.maxCachedSessions) {
+      const candidateId = [...this.sessionObjects.keys()]
+        .find((id) => !protectedIds.has(id));
+      if (candidateId) {
+        const candidate = this.sessionObjects.get(candidateId);
+        const cleaned = await this.evictCachedSessionUnsafe(candidateId, undefined, reason);
+        if (!cleaned && candidate) failedThisPass.add(candidate);
+        continue;
+      }
+      if (!await this.retryFailedCleanupUnsafe(failedThisPass)) {
+        const state = this.getSessionCacheState();
+        if (state.ready > this.maxCachedSessions) {
+          console.warn(
+            `[sdk] Session cache remains at ${state.ready}/${this.maxCachedSessions}; remaining sessions are protected`,
+          );
+        }
+        return;
+      }
+    }
+  }
+
+  private trimSessionCache(reason: string): Promise<void> {
+    return this.enqueueCache("trim", undefined, () => this.trimSessionCacheUnsafe(reason));
+  }
+
+  private maybeSampleProcessTree(): void {
+    if (!this.deps.telemetryStore) return;
+    const now = Date.now();
+    if (now - this.lastProcessTreeSampleAt < PROCESS_TREE_SAMPLE_THROTTLE_MS) return;
+    this.lastProcessTreeSampleAt = now;
+    void sampleProcessTree(process.pid, createDeadline(PROCESS_TREE_SAMPLE_DEADLINE_MS))
+      .then((snapshot) => {
+        if (!snapshot) {
+          this.recordSpan("session.cache.processTree", 0, undefined, { outcome: "unavailable" });
+          return;
+        }
+        const nodeCount = 1 + snapshot.descendants.length;
+        this.processTreeBaselineCount ??= nodeCount;
+        const baseline = this.processTreeBaselineCount;
+        const absoluteThreshold = SessionManager.resolvePositiveIntegerEnv(
+          "BRIDGE_PROCESS_TREE_WARNING_THRESHOLD",
+          PROCESS_TREE_WARNING_THRESHOLD,
+        );
+        const growthThreshold = SessionManager.resolvePositiveIntegerEnv(
+          "BRIDGE_PROCESS_TREE_GROWTH_WARNING_THRESHOLD",
+          PROCESS_TREE_GROWTH_WARNING_THRESHOLD,
+        );
+        const growth = nodeCount - baseline;
+        this.recordSpan("session.cache.processTree", 0, undefined, {
+          outcome: "sampled",
+          nodeCount,
+          baseline,
+          growth,
+          absoluteThreshold,
+          growthThreshold,
+          ...this.getSessionCacheState(),
+        });
+        if (nodeCount >= absoluteThreshold || growth >= growthThreshold) {
+          console.warn(
+            `[sdk] Process tree warning: ${nodeCount} nodes, growth ${growth} from baseline ${baseline}`,
+          );
+        }
+      })
+      .catch((error) => {
+        console.warn("[sdk] Process tree sampling failed:", error);
+        this.recordSpan("session.cache.processTree", 0, undefined, {
+          outcome: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  private static resolvePositiveIntegerEnv(name: string, fallback: number): number {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  }
+
+  private cacheSession(
+    sessionId: string,
+    session: AgentSession,
+    expectedSession: AgentSession | null,
+  ): Promise<AgentSession> {
+    return this.enqueueCache("insert", sessionId, async () => {
+      const current = this.sessionObjects.get(sessionId);
+      const accepted = current === undefined
+        || current === session
+        || (expectedSession !== null && current === expectedSession);
+      if (!accepted) {
+        const incomingCleaned = await this.cleanupSessionUnsafe(
+          sessionId,
+          session,
+          "discarding superseded session",
+        );
+        const expectedCleaned = expectedSession === null
+          || expectedSession === current
+          || expectedSession === session
+          || await this.cleanupSessionUnsafe(
+            sessionId,
+            expectedSession,
+            "discarding superseded cached session",
+          );
+        if (!incomingCleaned || !expectedCleaned) {
+          throw new Error(`Superseded session ${sessionId} could not be reaped`);
+        }
+        return current;
+      }
+
+      if (current !== session) {
+        this.sessionObjects.delete(sessionId);
+        this.sessionObjects.set(sessionId, session);
+        this.slashCommandListCache.delete(sessionId);
+        if (current) {
+          await this.cleanupSessionUnsafe(sessionId, current, "replacing cached session");
+        }
+      } else {
+        this.sessionObjects.delete(sessionId);
+        this.sessionObjects.set(sessionId, session);
+      }
+
+      await this.enforceSessionCacheLimitUnsafe(sessionId, session);
+      return session;
+    });
+  }
+
+  private evictCachedSession(
+    sessionId: string,
+    expectedSession?: AgentSession,
+    reason = "evicting cached session",
+  ): Promise<boolean> {
+    return this.enqueueCache(
+      "evict",
+      sessionId,
+      () => this.evictCachedSessionUnsafe(sessionId, expectedSession, reason),
+    );
+  }
+
+  private abandonCachedSession(sessionId: string, expectedSession: AgentSession): Promise<void> {
+    return this.enqueueCache("abandon", sessionId, async () => {
+      const current = this.sessionObjects.get(sessionId);
+      if (current === expectedSession) {
+        await this.evictCachedSessionUnsafe(sessionId, expectedSession, "abandoning cached session");
+      } else {
+        await this.cleanupSessionUnsafe(sessionId, expectedSession, "abandoning superseded session");
+      }
+    });
+  }
+
+  private disposeSession(sessionId: string, session: AgentSession, reason: string): Promise<void> {
+    return this.enqueueCache("dispose", sessionId, async () => {
+      this.removeReadySessionUnsafe(sessionId, session);
+      const cleaned = await this.cleanupSessionUnsafe(sessionId, session, reason);
+      if (!cleaned) throw new Error(`Session ${sessionId} could not be reaped while ${reason}`);
+    });
   }
 
   private persistLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void {
@@ -669,7 +1044,14 @@ export class SessionManager {
   private flushPendingSessionEviction(sessionId: string): void {
     if (!this.pendingSessionEvictions.has(sessionId) || this.isSessionBusy(sessionId)) return;
     this.pendingSessionEvictions.delete(sessionId);
-    this.evictCachedSession(sessionId);
+    this.scheduleCacheOperation(
+      this.evictCachedSession(sessionId, undefined, "flushing pending eviction"),
+      `flushing pending eviction for ${sessionId}`,
+    );
+    this.scheduleCacheOperation(
+      this.trimSessionCache("session protection ended"),
+      "trimming the session cache after protection ended",
+    );
   }
 
   private markCachedSessionForEviction(sessionId: string, reason: string): void {
@@ -723,6 +1105,10 @@ export class SessionManager {
       this.resumingSessions.set(sessionId, count - 1);
     }
     this.syncRestartWaitingIfPending();
+    this.scheduleCacheOperation(
+      this.trimSessionCache("session resume ended"),
+      "trimming the session cache after a resume",
+    );
   }
 
   private isSessionResuming(sessionId: string): boolean {
@@ -958,7 +1344,11 @@ export class SessionManager {
     session: AgentSession,
     backend: AgentBackend,
   ): Promise<never> {
-    try { await session.disconnect?.(); } catch { /* best-effort */ }
+    try {
+      await this.disposeSession(session.sessionId, session, "rejecting mismatched created session");
+    } catch (error) {
+      console.warn("[sdk] Failed to reap mismatched created session:", error);
+    }
     try { await backend.deleteSession(session.sessionId); } catch { /* best-effort */ }
     await this.closeSessionMcpEndpoint(expectedSessionId);
     throw new Error(
@@ -1011,8 +1401,12 @@ export class SessionManager {
     const previousBackend = this.backend;
     if (!previousBackend) throw new Error("SessionManager not initialized");
 
-    this.evictAllCachedSessions();
+    // Set backendRotation synchronously before the first await so concurrent
+    // callers (e.g. listModels) join this rotation rather than starting a new one.
+    // Eviction is moved inside the rotation body to preserve ordering: sessions
+    // are drained before the backend stops.
     const rotation = Promise.resolve().then(async () => {
+      await this.evictAllCachedSessions();
       console.log("[sdk] Rotating agent backend for model refresh...");
       this.backend = null;
       try {
@@ -1274,7 +1668,13 @@ export class SessionManager {
       );
       return await operation(session);
     } finally {
-      try { await session?.disconnect?.(); } catch { /* best-effort */ }
+      if (session) {
+        try {
+          await this.disposeSession(sessionId, session, "closing temporary session-name RPC");
+        } catch (error) {
+          console.warn(`[sdk] [${sessionId.slice(0, 8)}] Temporary session-name cleanup failed:`, error);
+        }
+      }
       this.endSessionResume(sessionId);
       this.flushPendingSessionEviction(sessionId);
     }
@@ -1332,37 +1732,23 @@ export class SessionManager {
       .catch(() => { /* best-effort */ });
   }
 
-  private cacheResumedSession(sessionId: string, session: AgentSession): AgentSession {
-    const current = this.sessionObjects.get(sessionId);
-    if (current && current !== session) {
-      try { void session.disconnect?.(); } catch { /* best-effort */ }
-      return current;
-    }
-    // Re-insert so the map's iteration order tracks resume recency (LRU).
-    this.sessionObjects.delete(sessionId);
-    this.sessionObjects.set(sessionId, session);
-    this.slashCommandListCache.delete(sessionId);
-    this.enforceSessionCacheLimit(sessionId);
-    // Eager loading is carried by `defer: "never"`; resume warmup is diagnostic.
-    void this.warmNativeBridgeTools(sessionId, session);
-    this.maybeAutoNameSession(sessionId, { session });
-    return session;
+  private cacheResumedSession(sessionId: string, session: AgentSession): Promise<AgentSession> {
+    return this.cacheSession(sessionId, session, null).then((cachedSession) => {
+      if (cachedSession === session) {
+        void this.warmNativeBridgeTools(sessionId, session);
+        this.maybeAutoNameSession(sessionId, { session });
+      }
+      return cachedSession;
+    });
   }
 
-  private replaceCachedSession(sessionId: string, expectedSession: AgentSession, nextSession: AgentSession): AgentSession {
-    const current = this.sessionObjects.get(sessionId);
-    if (current && current !== expectedSession && current !== nextSession) {
-      try { void nextSession.disconnect?.(); } catch { /* best-effort */ }
-      return current;
-    }
-    // Re-insert so the map's iteration order tracks resume recency (LRU).
-    this.sessionObjects.delete(sessionId);
-    this.sessionObjects.set(sessionId, nextSession);
-    this.slashCommandListCache.delete(sessionId);
-    this.enforceSessionCacheLimit(sessionId);
-    // Eager loading is carried by `defer: "never"`; resume warmup is diagnostic.
-    void this.warmNativeBridgeTools(sessionId, nextSession);
-    return nextSession;
+  private replaceCachedSession(sessionId: string, expectedSession: AgentSession, nextSession: AgentSession): Promise<AgentSession> {
+    return this.cacheSession(sessionId, nextSession, expectedSession).then((cachedSession) => {
+      if (cachedSession === nextSession) {
+        void this.warmNativeBridgeTools(sessionId, nextSession);
+      }
+      return cachedSession;
+    });
   }
 
   async listSlashCommands(sessionId: string): Promise<{ supported: boolean; commands: AgentSlashCommandInfo[] }> {
@@ -1439,7 +1825,7 @@ export class SessionManager {
           client.resumeSession(sessionId, resumeConfig),
           "MCP auth resume timed out after 60s",
         );
-        session = this.cacheResumedSession(sessionId, session);
+        session = await this.cacheResumedSession(sessionId, session);
       }
 
       if (typeof session.startMcpOauthLogin !== "function") {
@@ -1571,8 +1957,15 @@ export class SessionManager {
       await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
     }
 
-    this.sessionObjects.set(session.sessionId, session);
-    this.slashCommandListCache.delete(session.sessionId);
+    try {
+      await this.cacheSession(session.sessionId, session, null);
+    } catch (error) {
+      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
+      try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
+        console.warn(`[sdk] Failed to delete rejected session ${session.sessionId}:`, cleanupError);
+      }
+      throw error;
+    }
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
@@ -1623,7 +2016,7 @@ export class SessionManager {
           forResume: true,
         });
         const forkedSession = await backend.resumeSession(result.sessionId, forkResumeConfig);
-        this.cacheResumedSession(result.sessionId, forkedSession);
+        await this.cacheResumedSession(result.sessionId, forkedSession);
         this.probeMcpStatus(result.sessionId, forkedSession);
       } catch (error) {
         await this.closeSessionMcpEndpoint(result.sessionId);
@@ -1703,8 +2096,15 @@ export class SessionManager {
       await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
     }
 
-    this.sessionObjects.set(session.sessionId, session);
-    this.slashCommandListCache.delete(session.sessionId);
+    try {
+      await this.cacheSession(session.sessionId, session, null);
+    } catch (error) {
+      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
+      try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
+        console.warn(`[sdk] Failed to delete rejected task session ${session.sessionId}:`, cleanupError);
+      }
+      throw error;
+    }
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
@@ -1887,13 +2287,13 @@ export class SessionManager {
         try {
           const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
           if (endpointReady) await endpointReady;
-          this.sessionObjects.delete(sessionId);
+          await this.evictCachedSession(sessionId, session, "discarding stale cached session");
           session = await resumeSessionWithTimeout(
             client.resumeSession(sessionId, msgResumeConfig),
             "resumeSession timed out after 60s",
           );
           resumeMs = Date.now() - tResume;
-          session = this.cacheResumedSession(sessionId, session);
+          session = await this.cacheResumedSession(sessionId, session);
           const tGm = Date.now();
           events = await readSdkSessionEvents(session);
           getEventsMs = Date.now() - tGm;
@@ -1916,7 +2316,7 @@ export class SessionManager {
           "resumeSession timed out after 60s",
         );
         resumeMs = Date.now() - tResume;
-        session = this.cacheResumedSession(sessionId, session);
+        session = await this.cacheResumedSession(sessionId, session);
         const tGm = Date.now();
         events = await readSdkSessionEvents(session);
         getEventsMs = Date.now() - tGm;
@@ -2022,7 +2422,7 @@ export class SessionManager {
           client.resumeSession(sessionId, resumeConfig),
           "warmSession timed out after 60s",
         );
-        const cachedSession = this.cacheResumedSession(sessionId, session);
+        const cachedSession = await this.cacheResumedSession(sessionId, session);
         this.probeMcpStatus(sessionId, cachedSession);
         this.invalidateSessionListCache("session:warm");
         this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
@@ -2062,7 +2462,7 @@ export class SessionManager {
       "session_ended",
       "Session was deleted before the user input request was answered",
     );
-    this.evictCachedSession(sessionId);
+    await this.evictCachedSession(sessionId);
     this.agentRegistry.forget(sessionId);
     clearEventLogStatsCache(sessionId);
     try {
@@ -2114,7 +2514,7 @@ export class SessionManager {
         "session_ended",
         "Session was reloaded before the user input request was answered",
       );
-      this.evictCachedSession(sessionId);
+      await this.evictCachedSession(sessionId);
       this.mcpStatus.delete(sessionId);
 
       console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
@@ -2124,7 +2524,7 @@ export class SessionManager {
         client.resumeSession(sessionId, resumeConfig),
         "reloadSession timed out after 60s",
       );
-      this.cacheResumedSession(sessionId, session);
+      await this.cacheResumedSession(sessionId, session);
 
       return this.getMcpStatus(sessionId);
     } finally {
@@ -2202,56 +2602,21 @@ export class SessionManager {
     ]));
   }
 
-  private evictCachedSession(sessionId: string): boolean {
-    const session = this.sessionObjects.get(sessionId);
-    if (!session) return false;
-    // The SDK's `disconnect()` (session.destroy) disposes the host-side session,
-    // which terminates that session's MCP server child processes while
-    // preserving on-disk history. This is what reaps the per-session MCP
-    // subprocesses; the unbounded cache is why eviction (and thus reaping)
-    // never happened for idle sessions until enforceSessionCacheLimit was added.
-    try { void session.disconnect?.(); } catch { /* best-effort */ }
-    this.sessionObjects.delete(sessionId);
-    this.liveSessionModelState.delete(sessionId);
-    this.slashCommandListCache.delete(sessionId);
-    this.agentRegistry.markSessionUnavailable(sessionId);
-    return true;
-  }
-
-  /**
-   * Evict least-recently-resumed idle sessions until the cache is within
-   * {@link maxCachedSessions}. Active, resuming, and model-switching sessions
-   * are protected, as is the session that was just cached.
-   */
-  private enforceSessionCacheLimit(justCachedId: string): void {
-    const max = this.maxCachedSessions;
-    if (this.sessionObjects.size <= max) return;
-    const protectedIds = new Set<string>(this.getActiveSessions());
-    protectedIds.add(justCachedId);
-    for (const id of [...this.sessionObjects.keys()]) {
-      if (this.sessionObjects.size <= max) break;
-      if (protectedIds.has(id)) continue;
-      this.evictCachedSession(id);
-    }
-    if (this.sessionObjects.size > max) {
-      console.warn(
-        `[sdk] Session cache at ${this.sessionObjects.size}/${max}; remaining sessions are active and cannot be evicted`,
-      );
-    }
-  }
-
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
-  evictAllCachedSessions(): void {
-    const busy = new Set(this.getActiveSessions());
-    for (const id of busy) {
-      this.pendingSessionEvictions.add(id);
-    }
-    let evicted = 0;
-    for (const [id] of this.sessionObjects) {
-      if (busy.has(id)) continue; // don't disrupt active turns
-      if (this.evictCachedSession(id)) evicted++;
-    }
-    console.log(`[sdk] Evicted ${evicted} cached session(s) (${busy.size} busy, skipped)`);
+  async evictAllCachedSessions(): Promise<void> {
+    return this.enqueueCache("evict-all", undefined, async () => {
+      const busy = new Set(this.getActiveSessions());
+      for (const id of busy) {
+        this.pendingSessionEvictions.add(id);
+      }
+      let evicted = 0;
+      for (const [id] of this.sessionObjects) {
+        if (busy.has(id)) continue;
+        await this.evictCachedSessionUnsafe(id, undefined, "evicting all cached sessions");
+        evicted++;
+      }
+      console.log(`[sdk] Evicted ${evicted} cached session(s) (${busy.size} busy, skipped)`);
+    });
   }
 
   /**
@@ -2296,7 +2661,7 @@ export class SessionManager {
             client.resumeSession(sessionId, resumeConfig),
             "resumeSession timed out after 60s",
           );
-          session = this.cacheResumedSession(sessionId, session);
+          session = await this.cacheResumedSession(sessionId, session);
           this.probeMcpStatus(sessionId, session);
         } finally {
           this.endSessionResume(sessionId);
@@ -2370,6 +2735,10 @@ export class SessionManager {
       this.modelSwitchingSessions.delete(sessionId);
       this.syncRestartWaitingIfPending();
       this.flushPendingSessionEviction(sessionId);
+      this.scheduleCacheOperation(
+        this.trimSessionCache("model switch ended"),
+        "trimming the session cache after a model switch",
+      );
     }
   }
 

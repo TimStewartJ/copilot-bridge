@@ -261,7 +261,7 @@ describe("SessionManager.setSessionModel", () => {
     manager.sessionObjects.set("session-1", session);
 
     const switching = manager.setSessionModel("session-1", "gpt-5.5");
-    manager.evictAllCachedSessions();
+    await manager.evictAllCachedSessions();
     await vi.waitFor(() => expect(session.setModel).toHaveBeenCalled());
 
     expect(session.disconnect).not.toHaveBeenCalled();
@@ -285,12 +285,13 @@ describe("SessionManager.setSessionModel", () => {
 
     const switching = manager.setSessionModel("cold-session", "gpt-5.5");
     await vi.waitFor(() => expect(resumeSession).toHaveBeenCalledTimes(1));
-    manager.evictAllCachedSessions();
+    await manager.evictAllCachedSessions();
 
     expect(manager.sessionObjects.has("cold-session")).toBe(false);
 
     resolveResume(session);
     await switching;
+    await manager._drainCacheQueue();
 
     expect(session.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("cold-session")).toBe(false);
