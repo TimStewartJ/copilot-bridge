@@ -13,6 +13,7 @@ import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
+import { sniffImageMime } from "./image-mime.js";
 import { toolFailure } from "./tool-results.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -134,7 +135,7 @@ export function createStatelessComputerUseTools(): BridgeToolDefinition[] {
   return [
     defineBridgeTool("computer_screenshot", {
       description:
-        "Take a screenshot of the desktop. Returns the image as a base64-encoded PNG. " +
+        "Take a screenshot of the desktop. Returns the image as base64-encoded image bytes. " +
         "Optionally crop to a specific region by providing x, y, width, height.",
       parameters: {
         type: "object" as const,
@@ -179,13 +180,18 @@ export function createStatelessComputerUseTools(): BridgeToolDefinition[] {
             "", [], display.width, display.height,
             hasCrop ? args.x : 0, hasCrop ? args.y : 0,
             hasCrop ? args.width : 0, hasCrop ? args.height : 0,
-            -1, // PNG
+            -1, // request best quality; the addon picks an implementation-defined
+                // encoding (PNG or JPEG depending on platform/addon version).
           );
           if (!buf) return toolFailure("Screenshot failed");
+          const bytes = Buffer.from(buf);
           return {
             type: "image",
-            mimeType: "image/png",
-            data: Buffer.from(buf).toString("base64"),
+            // Detect the real encoding from the bytes — the native addon's output
+            // format is platform/version dependent, and a media type that does not
+            // match the magic bytes makes some model APIs reject the request.
+            mimeType: sniffImageMime(bytes) ?? "image/png",
+            data: bytes.toString("base64"),
           };
         });
       },

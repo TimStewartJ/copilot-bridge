@@ -18,6 +18,7 @@ import {
 
 import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_MCP_SERVER_NAME, isWindowsNamedPipeEndpoint } from "./endpoint.js";
+import { sniffImageMimeFromBase64 } from "../image-mime.js";
 
 export type BridgeToolHandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 export type BridgeToolHandlerResult = string | CallToolResult | object;
@@ -62,9 +63,23 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/**
+ * Relabel image content items whose declared MIME type disagrees with their
+ * actual magic bytes. A mismatch makes some model APIs reject the whole request,
+ * so the detected type wins for any image we recognize.
+ */
+function correctImageContentMimes(content: CallToolResult["content"]): CallToolResult["content"] {
+  return content.map((item) =>
+    item.type === "image" && typeof item.data === "string"
+      ? { ...item, mimeType: sniffImageMimeFromBase64(item.data) ?? item.mimeType }
+      : item,
+  );
+}
+
 export function normalizeToolResult(result: BridgeToolHandlerResult): CallToolResult {
   if (isRecord(result) && Array.isArray(result.content)) {
-    return result as CallToolResult;
+    const callResult = result as CallToolResult;
+    return { ...callResult, content: correctImageContentMimes(callResult.content) };
   }
   if (typeof result === "string") {
     return { content: [{ type: "text", text: result }] };
@@ -86,7 +101,8 @@ export function normalizeToolResult(result: BridgeToolHandlerResult): CallToolRe
     typeof result.data === "string" &&
     typeof result.mimeType === "string"
   ) {
-    return { content: [{ type: "image", data: result.data, mimeType: result.mimeType }] };
+    const mimeType = sniffImageMimeFromBase64(result.data) ?? result.mimeType;
+    return { content: [{ type: "image", data: result.data, mimeType }] };
   }
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
