@@ -314,13 +314,14 @@ describe("SessionManager getSessionMessages resume", () => {
     expect(manager.isSessionBusy("session-msg-overlap")).toBe(true);
     expect(manager.getActiveSessions()).toContain("session-msg-overlap");
 
-    manager.evictAllCachedSessions();
+    await manager.evictAllCachedSessions();
 
     expect(firstSession.disconnect).not.toHaveBeenCalled();
     expect(manager.sessionObjects.get("session-msg-overlap")).toBe(firstSession);
 
     resumeResolvers[1](secondSession);
     await secondLoad;
+    await manager._drainCacheQueue();
 
     expect(secondSession.disconnect).toHaveBeenCalledTimes(1);
     expect(firstSession.disconnect).toHaveBeenCalledTimes(1);

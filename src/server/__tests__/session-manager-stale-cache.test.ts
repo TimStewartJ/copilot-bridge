@@ -170,13 +170,14 @@ describe("SessionManager stale cached session recovery", () => {
     // after `setSessionRunState(sessionId, "idle")`. (`_doWork` is a test seam
     // that bypasses `startBackgroundRun`'s wrapper.)
     manager.flushPendingSessionEviction("session-1");
+    await manager._drainCacheQueue();
 
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
   });
 
-  it("defers MCP-status eviction without flushing, even when no run is busy", () => {
+  it("defers MCP-status eviction without flushing, even when no run is busy", async () => {
     // Regression: previously markCachedSessionForEviction (called inline from
     // the mcp_server_status_changed handler) immediately invoked
     // flushPendingSessionEviction. If isSessionBusy transiently returned
@@ -215,6 +216,7 @@ describe("SessionManager stale cached session recovery", () => {
     // The drain path (invoked by SessionRunner's `.finally()` after
     // setSessionRunState(sessionId, "idle")) performs the eviction.
     manager.flushPendingSessionEviction("session-1");
+    await manager._drainCacheQueue();
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);

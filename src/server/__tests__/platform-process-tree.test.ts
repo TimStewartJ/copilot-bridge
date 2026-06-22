@@ -17,6 +17,7 @@ import {
   createDirectoryLink,
   getDeviceHibernateCommand,
   removeDirectoryLink,
+  sampleProcessTree,
   shouldSpawnDetachedProcessGroup,
   terminateProcessTree,
 } from "../platform.js";
@@ -294,5 +295,94 @@ describe("process tree platform helpers", () => {
     expect(removeDirectoryLink(link, root)).toEqual({ ok: true, output: "" });
     expect(existsSync(link)).toBe(false);
     expect(existsSync(target)).toBe(true);
+  });
+});
+
+describe("sampleProcessTree", () => {
+  it("returns root identity and all descendants from a Windows snapshot", async () => {
+    setPlatform("win32");
+    mockExec((command, _args, _options, callback) => {
+      expect(command).toBe("powershell.exe");
+      callback(
+        null,
+        ["2000 1 9000", "2001 2000 9001", "2002 2001 9002", "2003 2001 9003"].join("\n"),
+        "",
+      );
+    });
+
+    const result = await sampleProcessTree(2000, createDeadline(5_000));
+
+    expect(result).not.toBeNull();
+    expect(result!.root).toEqual({ pid: 2000, startMarker: "9000" });
+    expect(result!.descendants).toHaveLength(3);
+    expect(result!.descendants.map((d) => d.pid).sort((a, b) => a - b)).toEqual([2001, 2002, 2003]);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns root identity and all descendants from a POSIX snapshot", async () => {
+    setPlatform("linux");
+    mockExec((command, _args, _options, callback) => {
+      expect(command).toBe("ps");
+      callback(
+        null,
+        [
+          "  3000     1 Mon Jan  1 00:00:00 2024",
+          "  3001  3000 Mon Jan  1 00:00:01 2024",
+          "  3002  3001 Mon Jan  1 00:00:02 2024",
+        ].join("\n"),
+        "",
+      );
+    });
+
+    const result = await sampleProcessTree(3000, createDeadline(5_000));
+
+    expect(result).not.toBeNull();
+    expect(result!.root).toEqual({ pid: 3000, startMarker: "Mon Jan  1 00:00:00 2024" });
+    expect(result!.descendants).toHaveLength(2);
+    expect(result!.descendants.map((d) => d.pid).sort((a, b) => a - b)).toEqual([3001, 3002]);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null when the root PID is absent from the snapshot", async () => {
+    setPlatform("win32");
+    mockExec((_command, _args, _options, callback) => {
+      callback(null, "9999 1 5000", "");
+    });
+
+    const result = await sampleProcessTree(1234, createDeadline(5_000));
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the root PID has no start marker in the snapshot", async () => {
+    setPlatform("linux");
+    mockExec((_command, _args, _options, callback) => {
+      // Entry for root has no lstart — line won't match the POSIX regex, so
+      // the PID is absent from the parsed table.
+      callback(null, "  4000     1", "");
+    });
+
+    const result = await sampleProcessTree(4000, createDeadline(5_000));
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the process-table snapshot fails", async () => {
+    setPlatform("linux");
+    mockExec((_command, _args, _options, callback) => {
+      callback(new Error("ps: command not found"), "", "");
+    });
+
+    const result = await sampleProcessTree(5000, createDeadline(5_000));
+    expect(result).toBeNull();
+  });
+
+  it("issues exactly one snapshot read and no side-effecting commands", async () => {
+    setPlatform("win32");
+    mockExec((_command, _args, _options, callback) => {
+      callback(null, "6000 1 7000\n6001 6000 7001", "");
+    });
+
+    await sampleProcessTree(6000, createDeadline(5_000));
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(execFileMock.mock.calls.every(([cmd]) => cmd === "powershell.exe")).toBe(true);
   });
 });

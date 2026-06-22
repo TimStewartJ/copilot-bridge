@@ -253,8 +253,10 @@ export interface SessionRunnerDeps {
     sessionId: string,
     attachments?: StartWorkAttachment[],
   ): RoutedSdkAttachment[] | undefined;
-  cacheResumedSession(sessionId: string, session: any): any;
-  replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): any;
+  cacheResumedSession(sessionId: string, session: any): Promise<any>;
+  replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): Promise<any>;
+  abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
+  disposeSession(sessionId: string, session: any, reason: string): Promise<void>;
   probeMcpStatus(sessionId: string, session: any): void;
   markCachedSessionForEviction(sessionId: string, reason: string): void;
   /**
@@ -589,7 +591,7 @@ export class SessionRunner {
           this.client!.resumeSession(sessionId, resumeConfig),
           "resumeSession timed out after 60s",
         );
-        s = this.deps.cacheResumedSession(sessionId, s);
+        s = await this.deps.cacheResumedSession(sessionId, s);
         this.deps.probeMcpStatus(sessionId, s);
         const resumeDuration = Date.now() - resumeStart;
         this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
@@ -598,16 +600,12 @@ export class SessionRunner {
       return s;
     };
 
-    const abandonSession = (activeSession: any) => {
-      try { activeSession.disconnect?.(); } catch { /* best-effort */ }
-      if (this.deps.sessionObjects.get(sessionId) === activeSession) {
-        this.deps.sessionObjects.delete(sessionId);
-      }
-    };
+    const abandonSession = (activeSession: any) =>
+      this.deps.abandonCachedSession(sessionId, activeSession);
 
     let session = await resumeSession();
     if (runController.isCompleted()) {
-      abandonSession(session);
+      await abandonSession(session);
       return;
     }
 
@@ -641,7 +639,7 @@ export class SessionRunner {
           console.warn(`[sdk] [${sid}] ${stepName} rejected after run completion:`, error);
         });
         console.warn(`[sdk] [${sid}] ${stepName} still pending after run completion — abandoning cached session`);
-        abandonSession(session);
+        await abandonSession(session);
         return { completed: true };
       }
       if (result.type === "error") throw result.error;
@@ -876,7 +874,9 @@ export class SessionRunner {
         forceReleaseThresholdMs: STALLED_RUN_FORCE_RELEASE_MS,
       }, now);
       runController.completeError(message);
-      abandonSession(session);
+      void abandonSession(session).catch((error) => {
+        console.error(`[sdk] [${sid}] Failed to reap force-released session:`, error);
+      });
       return true;
     };
     const getTerminalCompletionSource = (eventType: string, origin: SessionEventOrigin): string => {
@@ -1582,7 +1582,11 @@ export class SessionRunner {
         const recoveredSession = await resumeFreshRecoverySession();
 
         if (runController.isCompleted() || this.deps.runStateController.getSessionRunState(sessionId) !== "stalled") {
-          try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
+          await this.deps.disposeSession(
+            sessionId,
+            recoveredSession,
+            "discarding completed stall-recovery session",
+          );
           recordRecoveryOutcome("skipped_not_stalled_or_completed", {
             completed: runController.isCompleted(),
             runState: this.deps.runStateController.getSessionRunState(sessionId),
@@ -1592,7 +1596,11 @@ export class SessionRunner {
 
         const persistedTerminalAfterResume = readStalledRecoveryPersistedTerminalEvent();
         if (persistedTerminalAfterResume) {
-          try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
+          await this.deps.disposeSession(
+            sessionId,
+            recoveredSession,
+            "discarding redundant stall-recovery session",
+          );
           resolvePersistedTerminalEvent(persistedTerminalAfterResume, "after resume");
           recordRecoveryOutcome("resolved_persisted_terminal", {
             when: "after_resume",
@@ -1608,7 +1616,7 @@ export class SessionRunner {
           return replayKey !== undefined && handledCurrentTurnEventKeys.has(replayKey);
         };
 
-        const recoverySession = this.deps.replaceCachedSession(sessionId, previousSession, recoveredSession);
+        const recoverySession = await this.deps.replaceCachedSession(sessionId, previousSession, recoveredSession);
         const bufferedRecoveredEvents: any[] = [];
         let acceptingRecoveredEvents = false;
         const recoveredUnsub = recoverySession.on((event: any) => {
@@ -1626,9 +1634,6 @@ export class SessionRunner {
         acceptingSessionEvents = true;
 
         try { previousUnsub?.(); } catch { /* best-effort */ }
-        if (previousSession !== recoverySession) {
-          try { previousSession.disconnect?.(); } catch { /* best-effort */ }
-        }
 
         acceptingRecoveredEvents = true;
         for (const event of bufferedRecoveredEvents) {
@@ -1740,14 +1745,14 @@ export class SessionRunner {
           console.warn(`[sdk] [${sid}] Stale cached session (${getErrorMessage(operationErr)}) — evicting and re-resuming...`);
           unsub?.();
           unsub = undefined;
-          abandonSession(session);
+          await abandonSession(session);
           session = await resumeSession();
           staleCacheRetryCount += 1;
           lastEventTime = Date.now();
           sendStart = lastEventTime;
           resetRunTelemetryState();
           if (runController.isCompleted()) {
-            abandonSession(session);
+            await abandonSession(session);
             return;
           }
           if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session))).completed) return;

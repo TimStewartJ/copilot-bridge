@@ -2931,7 +2931,7 @@ export function createApiRouter(
     try {
       const server = mcpServerStore.createMcpServer({ name, config: config as McpServerConfig, enabledByDefault });
       console.log("[mcp] MCP server registry changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.status(201).json({ server });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -2959,7 +2959,7 @@ export function createApiRouter(
     try {
       const server = mcpServerStore.updateMcpServer(req.params.id, updates);
       console.log("[mcp] MCP server registry changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ server });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2977,7 +2977,7 @@ export function createApiRouter(
     ctx.tagStore?.removeTagMcpServerRefsByServerId(req.params.id);
     mcpServerStore.deleteMcpServer(req.params.id);
     console.log("[mcp] MCP server registry changed — evicting cached sessions");
-    ctx.sessionManager.evictAllCachedSessions();
+    void ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
   });
 
@@ -3008,7 +3008,7 @@ export function createApiRouter(
       if (result === "invalid") return res.status(400).json({ error: "invalid skill id" });
       if (result === "not-found") return res.status(404).json({ error: "skill not found" });
       console.log("[skills] Home skill deleted — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -3052,7 +3052,7 @@ export function createApiRouter(
       // Evict cached sessions if name or instructions changed
       if (req.body.instructions !== undefined || req.body.name !== undefined) {
         console.log("[tags] Tag changed — evicting cached sessions");
-        ctx.sessionManager.evictAllCachedSessions();
+        void ctx.sessionManager.evictAllCachedSessions();
       }
       res.json({ tag });
     } catch (err) {
@@ -3064,7 +3064,7 @@ export function createApiRouter(
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     ctx.tagStore.deleteTag(req.params.id);
     console.log("[tags] Tag deleted — evicting cached sessions");
-    ctx.sessionManager.evictAllCachedSessions();
+    void ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
   });
 
@@ -3095,7 +3095,7 @@ export function createApiRouter(
     try {
       const servers = ctx.tagStore.replaceTagMcpServerRefs(req.params.id, serverIds);
       console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ servers });
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -3110,7 +3110,7 @@ export function createApiRouter(
     try {
       const server = ctx.tagStore.addTagMcpServerRef(req.params.id, req.params.serverId);
       console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ server });
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -3121,7 +3121,7 @@ export function createApiRouter(
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     ctx.tagStore.removeTagMcpServerRef(req.params.id, req.params.serverId);
     console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-    ctx.sessionManager.evictAllCachedSessions();
+    void ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
   });
 
@@ -3130,7 +3130,7 @@ export function createApiRouter(
     try {
       ctx.tagStore.setTagMcpServer(req.params.id, req.params.serverName, req.body);
       console.log("[tags] Tag MCP server changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -3141,7 +3141,7 @@ export function createApiRouter(
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     ctx.tagStore.removeTagMcpServer(req.params.id, req.params.serverName);
     console.log("[tags] Tag MCP server removed — evicting cached sessions");
-    ctx.sessionManager.evictAllCachedSessions();
+    void ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
   });
 
@@ -3167,7 +3167,7 @@ export function createApiRouter(
       ctx.tagStore.setEntityTags("task", req.params.id, tagIds);
       const tags = ctx.tagStore.getEntityTags("task", req.params.id);
       console.log("[tags] Task tags changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ tags });
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -3183,7 +3183,7 @@ export function createApiRouter(
       ctx.tagStore.setEntityTags("task_group", req.params.id, tagIds);
       const tags = ctx.tagStore.getEntityTags("task_group", req.params.id);
       console.log("[tags] Group tags changed — evicting cached sessions");
-      ctx.sessionManager.evictAllCachedSessions();
+      void ctx.sessionManager.evictAllCachedSessions();
       res.json({ tags });
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -4559,7 +4559,7 @@ export function createApiRouter(
       // next resume rebuilds with the new MCP config.
       if (mcpChanged) {
         console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
-        ctx.sessionManager.evictAllCachedSessions();
+        void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached
         // sessions keep the model already persisted in their SDK state.

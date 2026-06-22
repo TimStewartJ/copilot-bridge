@@ -427,6 +427,7 @@ describe("SessionManager workspace resolution", () => {
 
     manager.setSessionRunState("session-1", "idle");
     manager.flushPendingSessionEviction("session-1");
+    await manager._drainCacheQueue();
 
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
