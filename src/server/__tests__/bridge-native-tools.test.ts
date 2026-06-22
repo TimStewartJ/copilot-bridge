@@ -114,4 +114,62 @@ describe("bridge-native-tools", () => {
       ],
     });
   });
+
+  it("relabels an image whose declared MIME type contradicts its magic bytes", () => {
+    const jpegData = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]).toString("base64");
+
+    const result = convertBridgeToolResultToSdk({
+      type: "image",
+      data: jpegData,
+      mimeType: "image/png",
+    });
+
+    expect(result).toMatchObject({
+      resultType: "success",
+      binaryResultsForLlm: [
+        {
+          type: "image",
+          data: jpegData,
+          mimeType: "image/jpeg",
+        },
+      ],
+    });
+  });
+
+  it("relabels mismatched images on SDK-shaped success results", () => {
+    const jpegData = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]).toString("base64");
+
+    const result = convertBridgeToolResultToSdk({
+      textResultForLlm: "",
+      resultType: "success",
+      binaryResultsForLlm: [
+        { type: "image", data: jpegData, mimeType: "image/png" },
+      ],
+    } as any);
+
+    expect(result).toMatchObject({
+      resultType: "success",
+      binaryResultsForLlm: [
+        { type: "image", data: jpegData, mimeType: "image/jpeg" },
+      ],
+    });
+  });
+
+  it("leaves correctly-labeled SDK-shaped image binaries untouched", () => {
+    const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString("base64");
+
+    const result = convertBridgeToolResultToSdk({
+      textResultForLlm: "",
+      resultType: "success",
+      binaryResultsForLlm: [
+        { type: "image", data: pngData, mimeType: "image/png" },
+      ],
+    } as any);
+
+    expect(result).toMatchObject({
+      binaryResultsForLlm: [
+        { type: "image", data: pngData, mimeType: "image/png" },
+      ],
+    });
+  });
 });
