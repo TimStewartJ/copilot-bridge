@@ -269,6 +269,7 @@ describe("SessionManager.setSessionModel", () => {
 
     resolveSetModel();
     await switching;
+    await manager._drainCacheQueue();
 
     expect(session.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
