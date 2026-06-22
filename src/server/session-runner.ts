@@ -247,6 +247,7 @@ export interface SessionRunnerDeps {
   getSessionStateDir(sessionId: string): string;
   buildSessionConfig(opts?: SessionConfigOptions): any;
   ensureSessionMcpEndpoint?(sessionId: string): Promise<void> | undefined;
+  assertSessionCacheAvailable(): void;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
   persistAndRouteAttachments(
@@ -585,6 +586,7 @@ export class SessionRunner {
       } else {
         usedCache = false;
         console.log(`[sdk] [${sid}] Resuming session...`);
+        this.deps.assertSessionCacheAvailable();
         const endpointReady = this.deps.ensureSessionMcpEndpoint?.(sessionId);
         if (endpointReady) await endpointReady;
         s = await resumeSessionWithTimeout(

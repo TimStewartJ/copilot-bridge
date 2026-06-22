@@ -42,15 +42,11 @@ function createManager(options: { telemetry?: boolean } = {}): {
   return { manager, telemetryStore };
 }
 
-function retainedSize(manager: any): number {
-  return manager.sessionObjects.size + manager.cleanupOwnership.size;
-}
-
 describe("SessionManager bounded session lifecycle", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.useRealTimers());
 
-  it("awaits disconnect before reporting a cached session evicted", async () => {
+  it("awaits cleanup for explicit evict-all operations", async () => {
     const { manager } = createManager();
     const session = fakeSession();
     manager.sessionObjects.set("s1", session);
@@ -62,125 +58,38 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.cleanupOwnership.size).toBe(0);
   });
 
-  it("bounds repeated fresh task sessions from the scheduler creation path", async () => {
+  it("keeps fresh scheduled-session creation responsive while cleanup runs independently", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 2;
+    let releaseOldest!: () => void;
     const sessions: Array<FakeSession & { sessionId: string }> = [];
     manager.backend = {
       createSession: vi.fn(async () => {
         const session = fakeSession(`scheduled-${sessions.length}`) as FakeSession & { sessionId: string };
+        if (sessions.length === 0) {
+          session.disconnect.mockImplementation(() => new Promise<void>((resolve) => {
+            releaseOldest = resolve;
+          }));
+        }
         sessions.push(session);
         return session;
       }),
     };
 
-    for (let index = 0; index < 5; index++) {
-      await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
-      expect(retainedSize(manager)).toBeLessThanOrEqual(2);
-    }
+    await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
+    await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
+    await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
+    await vi.waitFor(() => expect(sessions[0].disconnect).toHaveBeenCalledTimes(1));
 
-    expect([...manager.sessionObjects.keys()]).toEqual(["scheduled-3", "scheduled-4"]);
-    expect(sessions.slice(0, 3).every((session) => session.disconnect.mock.calls.length === 1)).toBe(true);
-    expect(sessions.slice(3).every((session) => session.disconnect.mock.calls.length === 0)).toBe(true);
+    expect([...manager.sessionObjects.keys()]).toEqual(["scheduled-1", "scheduled-2"]);
+    expect(manager.cleanupOwnership.has(sessions[0])).toBe(true);
+
+    releaseOldest();
+    await manager._drainCacheQueue();
+    expect(manager.cleanupOwnership.size).toBe(0);
   });
 
-  it("bounds repeated resumed-session insertion", async () => {
-    const { manager } = createManager();
-    manager.maxCachedSessions = 3;
-    const sessions = Array.from({ length: 7 }, () => fakeSession());
-
-    for (let index = 0; index < sessions.length; index++) {
-      await manager.cacheResumedSession(`resumed-${index}`, sessions[index]);
-      expect(retainedSize(manager)).toBeLessThanOrEqual(3);
-    }
-
-    expect([...manager.sessionObjects.keys()]).toEqual(["resumed-4", "resumed-5", "resumed-6"]);
-    expect(sessions.slice(0, 4).every((session) => session.disconnect.mock.calls.length === 1)).toBe(true);
-  });
-
-  it("retries a rejected disconnect before admitting the next session", async () => {
-    const { manager } = createManager();
-    manager.maxCachedSessions = 1;
-    const first = {
-      disconnect: vi.fn()
-        .mockRejectedValueOnce(new Error("transient"))
-        .mockResolvedValue(undefined),
-    };
-
-    await manager.cacheResumedSession("first", first);
-    await manager.cacheResumedSession("second", fakeSession());
-
-    expect(first.disconnect).toHaveBeenCalledTimes(2);
-    expect(retainedSize(manager)).toBe(1);
-    expect(manager.cumulativeCleanupFailures).toBe(0);
-  });
-
-  it("rejects admission when a victim cannot be reaped and retains failed cleanup ownership", async () => {
-    const { manager } = createManager();
-    manager.maxCachedSessions = 1;
-    const stuck = { disconnect: vi.fn().mockRejectedValue(new Error("still running")) };
-    const incoming = fakeSession();
-
-    await manager.cacheResumedSession("stuck", stuck);
-    await expect(manager.cacheResumedSession("incoming", incoming))
-      .rejects.toThrow("admission blocked");
-
-    expect(stuck.disconnect).toHaveBeenCalledTimes(2);
-    expect(incoming.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
-      sessionId: "stuck",
-      state: "failed",
-      lastOutcome: "rejected",
-    });
-    expect(retainedSize(manager)).toBe(1);
-    expect(manager.sessionObjects.has("incoming")).toBe(false);
-  });
-
-  it("admits a session when another idle victim can be reaped", async () => {
-    const { manager } = createManager();
-    manager.maxCachedSessions = 2;
-    const stuck = { disconnect: vi.fn().mockRejectedValue(new Error("still running")) };
-    const reapable = fakeSession();
-
-    await manager.cacheResumedSession("stuck", stuck);
-    await manager.cacheResumedSession("reapable", reapable);
-    await manager.cacheResumedSession("incoming", fakeSession());
-
-    expect(stuck.disconnect).toHaveBeenCalledTimes(2);
-    expect(reapable.disconnect).toHaveBeenCalledTimes(1);
-    expect([...manager.sessionObjects.keys()]).toEqual(["incoming"]);
-    expect(retainedSize(manager)).toBe(2);
-  });
-
-  it("times out disconnect attempts, retains ownership, and rejects the incoming session", async () => {
-    vi.useFakeTimers();
-    const { manager } = createManager();
-    manager.maxCachedSessions = 1;
-    const stuck = { disconnect: vi.fn(() => new Promise<void>(() => {})) };
-    const incoming = fakeSession();
-
-    await manager.cacheResumedSession("stuck", stuck);
-    const admission = manager.cacheResumedSession("incoming", incoming);
-    const admissionError = admission.then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    await vi.advanceTimersByTimeAsync(10_500);
-    await expect(admissionError).resolves.toMatchObject({
-      message: expect.stringContaining("admission blocked"),
-    });
-
-    expect(stuck.disconnect).toHaveBeenCalledTimes(2);
-    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
-      sessionId: "stuck",
-      state: "failed",
-      lastOutcome: "timed-out",
-    });
-    expect(incoming.disconnect).toHaveBeenCalledTimes(1);
-    expect(retainedSize(manager)).toBe(1);
-  });
-
-  it("serializes concurrent insertions while bounded cleanup is pending", async () => {
+  it("returns concurrent cache insertions before a hung disconnect finishes", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     let releaseFirst!: () => void;
@@ -193,25 +102,22 @@ describe("SessionManager bounded session lifecycle", () => {
     const third = fakeSession();
     await manager.cacheResumedSession("first", first);
 
-    const insertSecond = manager.cacheResumedSession("second", second);
-    const insertThird = manager.cacheResumedSession("third", third);
-    await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalledTimes(1));
+    await manager.cacheResumedSession("second", second);
+    await manager.cacheResumedSession("third", third);
 
+    expect([...manager.sessionObjects.keys()]).toEqual(["third"]);
+    expect(manager.cleanupOwnership.has(first)).toBe(true);
+    expect(manager.cleanupOwnership.has(second)).toBe(true);
     expect(second.disconnect).not.toHaveBeenCalled();
-    expect(manager.sessionObjects.has("third")).toBe(false);
 
     releaseFirst();
-    await insertSecond;
-    await insertThird;
-
+    await manager._drainCacheQueue();
     expect(second.disconnect).toHaveBeenCalledTimes(1);
-    expect([...manager.sessionObjects.keys()]).toEqual(["third"]);
-    expect(retainedSize(manager)).toBe(1);
+    expect(manager.cleanupOwnership.size).toBe(0);
   });
 
-  it("tracks same-id replacement cleanup by session object identity", async () => {
+  it("tracks same-id replacement cleanup without delaying the replacement", async () => {
     const { manager } = createManager();
-    manager.maxCachedSessions = 2;
     let releaseOld!: () => void;
     const oldSession = {
       disconnect: vi.fn(() => new Promise<void>((resolve) => {
@@ -221,22 +127,121 @@ describe("SessionManager bounded session lifecycle", () => {
     const replacement = fakeSession();
     await manager.cacheResumedSession("same", oldSession);
 
-    const replacing = manager.replaceCachedSession("same", oldSession, replacement);
-    await vi.waitFor(() => expect(oldSession.disconnect).toHaveBeenCalledTimes(1));
+    await manager.replaceCachedSession("same", oldSession, replacement);
 
     expect(manager.sessionObjects.get("same")).toBe(replacement);
     expect(manager.cleanupOwnership.get(oldSession)).toMatchObject({
       sessionId: "same",
       state: "pending",
     });
-    expect(manager.cleanupOwnership.has(replacement)).toBe(false);
-
     releaseOld();
-    await replacing;
+    await manager._drainCacheQueue();
     expect(manager.cleanupOwnership.has(oldSession)).toBe(false);
   });
 
-  it("protects active, resuming, and model-switching sessions, then converges after protection ends", async () => {
+  it("retries a rejected disconnect in the cleanup worker", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const first = {
+      disconnect: vi.fn()
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockResolvedValue(undefined),
+    };
+
+    await manager.cacheResumedSession("first", first);
+    await manager.cacheResumedSession("second", fakeSession());
+    await manager._drainCacheQueue();
+
+    expect(first.disconnect).toHaveBeenCalledTimes(2);
+    expect(manager.cleanupOwnership.size).toBe(0);
+    expect(manager.cumulativeCleanupFailures).toBe(0);
+  });
+
+  it("retains failed cleanup ownership and blocks new SDK session creation", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const stuck = { disconnect: vi.fn().mockRejectedValue(new Error("still running")) };
+    await manager.cacheResumedSession("stuck", stuck);
+    await manager.cacheResumedSession("next", fakeSession());
+    await manager._drainCacheQueue();
+
+    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
+      sessionId: "stuck",
+      state: "failed",
+      lastOutcome: "rejected",
+    });
+    const createSession = vi.fn();
+    manager.backend = { createSession };
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+      .rejects.toThrow("cleanup failure");
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("retains timed-out cleanup ownership without blocking the cache insertion", async () => {
+    vi.useFakeTimers();
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const stuck = { disconnect: vi.fn(() => new Promise<void>(() => {})) };
+    await manager.cacheResumedSession("stuck", stuck);
+
+    await manager.cacheResumedSession("next", fakeSession());
+    expect([...manager.sessionObjects.keys()]).toEqual(["next"]);
+
+    const drain = manager._drainCacheQueue();
+    await vi.advanceTimersByTimeAsync(10_500);
+    await drain;
+    expect(stuck.disconnect).toHaveBeenCalledTimes(2);
+    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
+      sessionId: "stuck",
+      state: "failed",
+      lastOutcome: "timed-out",
+    });
+  });
+
+  it("blocks new SDK sessions when the cleanup backlog reaches its cap", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    manager.maxPendingSessionCleanups = 1;
+    let release!: () => void;
+    const first = {
+      disconnect: vi.fn(() => new Promise<void>((resolve) => {
+        release = resolve;
+      })),
+    };
+    await manager.cacheResumedSession("first", first);
+    await manager.cacheResumedSession("second", fakeSession());
+    await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalledTimes(1));
+
+    const createSession = vi.fn();
+    manager.backend = { createSession };
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+      .rejects.toThrow("cleanup demand");
+    expect(createSession).not.toHaveBeenCalled();
+
+    release();
+    await manager._drainCacheQueue();
+  });
+
+  it("reserves cleanup capacity across concurrent session creation", async () => {
+    const { manager } = createManager();
+    manager.maxPendingSessionCleanups = 1;
+    let resolveCreate!: (session: FakeSession & { sessionId: string }) => void;
+    const createSession = vi.fn(() => new Promise<FakeSession & { sessionId: string }>((resolve) => {
+      resolveCreate = resolve;
+    }));
+    manager.backend = { createSession };
+
+    const first = manager.createTaskSession("task-1", "Scheduled task", [], [], "");
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+      .rejects.toThrow("cleanup demand");
+
+    resolveCreate(fakeSession("created") as FakeSession & { sessionId: string });
+    await first;
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("protects active, resuming, and model-switching sessions, then trims after protection ends", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const active = fakeSession();
@@ -252,47 +257,48 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager.cacheResumedSession("new", fakeSession());
     expect(manager.sessionObjects.size).toBe(4);
     expect(active.disconnect).not.toHaveBeenCalled();
-    expect(resuming.disconnect).not.toHaveBeenCalled();
-    expect(switching.disconnect).not.toHaveBeenCalled();
 
     manager.sessionRuns.delete("active");
     manager.resumingSessions.clear();
     manager.modelSwitchingSessions.clear();
     await manager.trimSessionCache("test protection ended");
+    await manager._drainCacheQueue();
 
-    expect(retainedSize(manager)).toBe(1);
     expect([...manager.sessionObjects.keys()]).toEqual(["new"]);
+    expect(active.disconnect).toHaveBeenCalledTimes(1);
+    expect(resuming.disconnect).toHaveBeenCalledTimes(1);
+    expect(switching.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it("records operation and cleanup state telemetry", async () => {
+  it("records state operations separately from cleanup duration", async () => {
     const { manager, telemetryStore } = createManager({ telemetry: true });
     manager.maxCachedSessions = 1;
     manager.lastProcessTreeSampleAt = Date.now();
     await manager.cacheResumedSession("first", fakeSession());
     await manager.cacheResumedSession("second", fakeSession());
 
-    const operations = telemetryStore!.querySpans({ name: "session.cache.operation" });
-    const disconnects = telemetryStore!.querySpans({ name: "session.cache.disconnect" });
-
-    expect(operations[0].metadata).toMatchObject({
+    const operation = telemetryStore!.querySpans({ name: "session.cache.operation" })[0];
+    expect(operation.metadata).toMatchObject({
       operation: "insert",
       outcome: "succeeded",
-      max: 1,
       ready: 1,
-      retained: 1,
-      pendingCleanup: 0,
-      failedCleanup: 0,
     });
-    expect(disconnects[0].metadata).toMatchObject({
+
+    await manager._drainCacheQueue();
+    const disconnect = telemetryStore!.querySpans({ name: "session.cache.disconnect" })[0];
+    expect(disconnect.metadata).toMatchObject({
       outcome: "fulfilled",
       reason: "enforcing session cache limit",
     });
   });
 
-  it("defaults the cap from BRIDGE_MAX_CACHED_SESSIONS", () => {
+  it("defaults limits from environment variables", () => {
     vi.stubEnv("BRIDGE_MAX_CACHED_SESSIONS", "4");
+    vi.stubEnv("BRIDGE_MAX_PENDING_SESSION_CLEANUPS", "3");
     try {
-      expect(createManager().manager.maxCachedSessions).toBe(4);
+      const { manager } = createManager();
+      expect(manager.maxCachedSessions).toBe(4);
+      expect(manager.maxPendingSessionCleanups).toBe(3);
     } finally {
       vi.unstubAllEnvs();
     }
