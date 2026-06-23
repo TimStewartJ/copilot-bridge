@@ -1310,6 +1310,10 @@ describe("scheduler startup recovery", () => {
       sessionMetaStore: ctx.sessionMetaStore,
       globalBus: ctx.globalBus,
     });
+    // Stop the recurring missed-run watchdog so advancing fake time across
+    // Node's max-timeout boundary exercises only the one-shot timer under test
+    // instead of iterating the 60s watchdog interval tens of thousands of times.
+    scheduler.stopMissedRunWatchdogForTests();
 
     const task = ctx.taskStore.createTask("Scheduled Task");
     // ~30 days out, well beyond Node's ~24.8 day (2^31-1 ms) setTimeout ceiling.
@@ -1368,6 +1372,10 @@ describe("scheduler startup recovery", () => {
       sessionMetaStore: ctx.sessionMetaStore,
       globalBus: ctx.globalBus,
     });
+    // Stop the recurring missed-run watchdog so it cannot perturb
+    // vi.advanceTimersByTimeAsync under load and fire the +30s in-process retry
+    // early; the one-shot timer armed by initialize stays armed.
+    scheduler.stopMissedRunWatchdogForTests();
 
     await vi.advanceTimersByTimeAsync(1_000);
 
