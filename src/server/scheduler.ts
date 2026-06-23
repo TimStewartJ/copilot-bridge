@@ -124,6 +124,25 @@ export function shutdown(): void {
   console.log("[scheduler] Shut down — all jobs stopped");
 }
 
+/**
+ * Test-only: stop the recurring missed-run watchdog interval started by
+ * {@link initialize}, leaving store wiring, armed one-shot timers, and the
+ * missed-run catch-up controller intact.
+ *
+ * Focused one-shot timer tests use this after {@link initialize} so advancing
+ * fake timers across long ranges exercises only the timer under test. The
+ * watchdog is a dense recurring fake-timer source (a 60s `setInterval` that
+ * also performs real restart-state I/O); under Vitest's async fake-timer
+ * advancement it competes with the timer under test, ballooning very long
+ * advances into tens of thousands of interval iterations and, under full
+ * parallel load, perturbing `vi.advanceTimersByTimeAsync` so it runs past the
+ * requested window and fires unrelated timers. Tests that exercise the watchdog
+ * or missed-run catch-up directly must not call this.
+ */
+export function stopMissedRunWatchdogForTests(): void {
+  clearMissedRunWatchdog();
+}
+
 export interface TriggerScheduleOptions {
   source?: ScheduleTriggerSource;
   scheduledFor?: string;
