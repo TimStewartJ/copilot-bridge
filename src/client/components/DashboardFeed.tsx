@@ -156,6 +156,28 @@ function compensateScrollForAnchor(anchorElement: HTMLElement, previousTop: numb
   }
 }
 
+// Touch input scrolls with momentum, so resolving a card needs the neighbor card
+// pinned in place to avoid racing the fling. A precise pointer (mouse/trackpad)
+// instead expects the natural list behavior: the cards below close the gap so the
+// next card slides up under the cursor for rapid triage. This reads the primary
+// pointer; a hybrid touch-laptop driven by a mouse intentionally gets the desktop
+// behavior. Per-event PointerEvent.pointerType could refine this later if needed.
+function prefersAnchoredScroll(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  try {
+    return window.matchMedia("(pointer: coarse)").matches;
+  } catch {
+    return false;
+  }
+}
+
+// "anchor" keeps a stable neighbor card visually fixed (touch). "pin" restores the
+// scroll container's offset so the list reflows upward deterministically even if the
+// browser's native scroll anchoring would otherwise hold the neighbor in place (desktop).
+type PendingScrollAdjustment =
+  | { mode: "anchor"; anchorCardId: string; previousTop: number }
+  | { mode: "pin"; container: HTMLElement; previousScrollTop: number };
+
 function feedStatusActionLabel(status: FeedCardStatus): string {
   switch (status) {
     case "done":
@@ -247,7 +269,7 @@ export default function DashboardFeed({
   const startedDeleteIdsRef = useRef<Set<string>>(new Set());
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedCardElementsRef = useRef<Record<string, HTMLDivElement>>({});
-  const pendingScrollAnchorRef = useRef<{ anchorCardId: string; previousTop: number } | null>(null);
+  const pendingScrollAdjustmentRef = useRef<PendingScrollAdjustment | null>(null);
   const statusMutationInFlightRef = useRef<Set<string>>(new Set());
   const keyPrefixCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCommittedKeyPrefixRef = useRef(feedFilter.keyPrefix);
@@ -436,12 +458,21 @@ export default function DashboardFeed({
   };
 
   useLayoutEffect(() => {
-    const pendingScrollAnchor = pendingScrollAnchorRef.current;
-    if (!pendingScrollAnchor) return;
-    pendingScrollAnchorRef.current = null;
+    const pending = pendingScrollAdjustmentRef.current;
+    if (!pending) return;
+    pendingScrollAdjustmentRef.current = null;
 
-    const anchorElement = feedCardElementsRef.current[pendingScrollAnchor.anchorCardId];
-    if (anchorElement) compensateScrollForAnchor(anchorElement, pendingScrollAnchor.previousTop);
+    if (pending.mode === "anchor") {
+      const anchorElement = feedCardElementsRef.current[pending.anchorCardId];
+      if (anchorElement) compensateScrollForAnchor(anchorElement, pending.previousTop);
+      return;
+    }
+
+    // Desktop: undo any native scroll anchoring so the list visibly closes upward.
+    // Reading layout metrics first forces a reflow so any browser-applied scroll
+    // anchoring is settled, then we clamp to the (now shorter) max scroll extent.
+    const maxScrollTop = Math.max(0, pending.container.scrollHeight - pending.container.clientHeight);
+    pending.container.scrollTop = Math.min(pending.previousScrollTop, maxScrollTop);
   });
 
   const refetchAfterFeedMutationFailure = async () => {
@@ -568,20 +599,28 @@ export default function DashboardFeed({
     }
   };
 
-  const captureScrollAnchor = (cardId: string): { anchorCardId: string; previousTop: number } | null => {
-    const cardIndex = renderedFeedCards.findIndex((candidate) => candidate.id === cardId);
-    if (cardIndex < 0) return null;
-    const anchorCard = renderedFeedCards[cardIndex + 1] ?? renderedFeedCards[cardIndex - 1] ?? null;
-    if (!anchorCard) return null;
-    const anchorElement = feedCardElementsRef.current[anchorCard.id];
-    if (!anchorElement) return null;
-    return { anchorCardId: anchorCard.id, previousTop: anchorElement.getBoundingClientRect().top };
+  const captureScrollAdjustment = (cardId: string): PendingScrollAdjustment | null => {
+    const cardElement = feedCardElementsRef.current[cardId];
+
+    if (prefersAnchoredScroll()) {
+      const cardIndex = renderedFeedCards.findIndex((candidate) => candidate.id === cardId);
+      if (cardIndex < 0) return null;
+      const anchorCard = renderedFeedCards[cardIndex + 1] ?? renderedFeedCards[cardIndex - 1] ?? null;
+      if (!anchorCard) return null;
+      const anchorElement = feedCardElementsRef.current[anchorCard.id];
+      if (!anchorElement) return null;
+      return { mode: "anchor", anchorCardId: anchorCard.id, previousTop: anchorElement.getBoundingClientRect().top };
+    }
+
+    const container = cardElement ? findScrollableAncestor(cardElement) : null;
+    if (!container) return null;
+    return { mode: "pin", container, previousScrollTop: container.scrollTop };
   };
 
   const handleFeedStatusChange = async (card: FeedCardData, status: FeedCardStatus) => {
     if (statusMutationInFlightRef.current.has(card.id)) return;
     if ((status === "done" || status === "dismissed") && card.status === "active") {
-      pendingScrollAnchorRef.current = captureScrollAnchor(card.id);
+      pendingScrollAdjustmentRef.current = captureScrollAdjustment(card.id);
     }
     statusMutationInFlightRef.current.add(card.id);
     try {
