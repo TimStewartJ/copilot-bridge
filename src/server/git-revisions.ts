@@ -1,12 +1,11 @@
-import { execFile, execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
+import { runGit as runGitInDir, runGitSync as runGitSyncInDir } from "./git-command.js";
+import type { GitCommandResult } from "./git-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
-const LOCAL_GIT_TIMEOUT_MS = 5_000;
 const REMOTE_GIT_TIMEOUT_MS = 10_000;
 const REMOTE_CACHE_TTL_MS = 30_000;
 const COMMIT_FORMAT = "%H%n%h%n%s";
@@ -52,10 +51,6 @@ export interface BridgeGitRevisions {
 
 export type BridgeGitRevisionReader = (options?: { forceRefresh?: boolean }) => Promise<BridgeGitRevisions>;
 
-type GitCommandResult =
-  | { ok: true; output: string }
-  | { ok: false; error: string };
-
 type RemoteTarget =
   | { ok: true; remoteName: string; remoteBranch: string; ref: string }
   | { ok: false; ref: string; error: string };
@@ -68,37 +63,8 @@ let cachedRemoteCommit:
     }
   | null = null;
 
-function formatGitError(error: unknown, stdout?: unknown, stderr?: unknown): string {
-  const stderrText = normalizeStreamOutput(stderr ?? (error as { stderr?: unknown } | null)?.stderr);
-  if (stderrText) return stderrText;
-  const stdoutText = normalizeStreamOutput(stdout ?? (error as { stdout?: unknown } | null)?.stdout);
-  if (stdoutText) return stdoutText;
-  if (error && typeof error === "object") {
-    return error instanceof Error ? error.message : String(error);
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-function normalizeStreamOutput(output: unknown): string {
-  if (typeof output === "string") return output.trim();
-  if (Buffer.isBuffer(output)) return output.toString("utf-8").trim();
-  return "";
-}
-
-function runGitSync(args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): GitCommandResult {
-  try {
-    return {
-      ok: true,
-      output: execFileSync("git", ["--no-pager", ...args], {
-        cwd: ROOT,
-        encoding: "utf-8",
-        env: withNonInteractiveCommandEnv(),
-        timeout: timeoutMs,
-      }).trim(),
-    };
-  } catch (error) {
-    return { ok: false, error: formatGitError(error) };
-  }
+function runGitSync(args: string[], timeoutMs?: number): GitCommandResult {
+  return runGitSyncInDir(ROOT, args, timeoutMs);
 }
 
 export function gitHash(): string {
@@ -106,29 +72,8 @@ export function gitHash(): string {
   return result.ok && result.output ? result.output : "unknown";
 }
 
-function runGit(args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): Promise<GitCommandResult> {
-  return new Promise((resolve) => {
-    execFile(
-      "git",
-      ["--no-pager", ...args],
-      {
-        cwd: ROOT,
-        encoding: "utf-8",
-        env: withNonInteractiveCommandEnv(),
-        timeout: timeoutMs,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          resolve({
-            ok: false,
-            error: formatGitError(error, stdout, stderr),
-          });
-          return;
-        }
-        resolve({ ok: true, output: stdout.trim() });
-      },
-    );
-  });
+function runGit(args: string[], timeoutMs?: number): Promise<GitCommandResult> {
+  return runGitInDir(ROOT, args, timeoutMs);
 }
 
 function parseCommitSnapshot(output: string, ref: string): GitCommitSnapshot {

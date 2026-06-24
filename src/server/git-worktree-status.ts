@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { posix, win32 } from "node:path";
-import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
+import { runGit } from "./git-command.js";
 
-const LOCAL_GIT_TIMEOUT_MS = 5_000;
 const GIT_WORKTREE_STATUS_CACHE_TTL_MS = 60_000;
 const GIT_WORKTREE_STATUS_CACHE_MAX_STALE_MS = 2 * GIT_WORKTREE_STATUS_CACHE_TTL_MS;
 const GIT_WORKTREE_STATUS_CACHE_MAX_ENTRIES = 128;
@@ -73,10 +71,6 @@ export interface TaskGitStatusNotConfigured {
 
 export type TaskGitStatusResponse = GitWorktreeStatus | TaskGitStatusNotConfigured;
 
-type GitCommandResult =
-  | { ok: true; output: string }
-  | { ok: false; error: string };
-
 interface ReadCachedGitWorktreeStatusOptions {
   forceRefresh?: boolean;
   now?: () => number;
@@ -125,45 +119,6 @@ const UNMERGED_PORCELAIN_STATUS_CODES: ReadonlySet<UnmergedPorcelainStatusCode> 
 
 function isUnmergedPorcelainStatus(code: string): code is UnmergedPorcelainStatusCode {
   return UNMERGED_PORCELAIN_STATUS_CODES.has(code as UnmergedPorcelainStatusCode);
-}
-
-function normalizeStreamOutput(output: unknown): string {
-  if (typeof output === "string") return output.trim();
-  if (Buffer.isBuffer(output)) return output.toString("utf-8").trim();
-  return "";
-}
-
-function formatGitError(error: unknown, stdout?: unknown, stderr?: unknown): string {
-  const stderrText = normalizeStreamOutput(stderr ?? (error as { stderr?: unknown } | null)?.stderr);
-  if (stderrText) return stderrText;
-  const stdoutText = normalizeStreamOutput(stdout ?? (error as { stdout?: unknown } | null)?.stdout);
-  if (stdoutText) return stdoutText;
-  return error instanceof Error ? error.message : String(error);
-}
-
-function runGit(cwd: string, args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): Promise<GitCommandResult> {
-  return new Promise((resolve) => {
-    execFile(
-      "git",
-      ["--no-pager", ...args],
-      {
-        cwd,
-        encoding: "utf-8",
-        env: withNonInteractiveCommandEnv(),
-        timeout: timeoutMs,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          resolve({
-            ok: false,
-            error: formatGitError(error, stdout, stderr),
-          });
-          return;
-        }
-        resolve({ ok: true, output: stdout.trim() });
-      },
-    );
-  });
 }
 
 function isNotRepoError(error: string): boolean {
