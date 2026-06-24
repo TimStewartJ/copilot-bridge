@@ -238,6 +238,36 @@ describe("DashboardFeed feed mutations", () => {
     await waitUntilWithAct(getHarness().act, predicate, options);
   }
 
+  let savedMatchMedia: { value: unknown; existed: boolean } | null = null;
+
+  function setPointerType(type: "coarse" | "fine") {
+    const win = globalThis.window as unknown as { matchMedia?: unknown };
+    if (!savedMatchMedia) {
+      savedMatchMedia = { value: win.matchMedia, existed: "matchMedia" in win };
+    }
+    win.matchMedia = vi.fn((query: string) => ({
+      matches: query.includes(`pointer: ${type}`),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }));
+  }
+
+  function restorePointerType() {
+    if (!savedMatchMedia) return;
+    const win = globalThis.window as unknown as { matchMedia?: unknown };
+    if (savedMatchMedia.existed) {
+      win.matchMedia = savedMatchMedia.value;
+    } else {
+      delete win.matchMedia;
+    }
+    savedMatchMedia = null;
+  }
+
   beforeEach(async () => {
     vi.clearAllMocks();
     apiMocks.patchFeedCard.mockResolvedValue(makeCard({ status: "done" }));
@@ -247,6 +277,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   afterEach(async () => {
+    restorePointerType();
     await harness?.cleanup();
     harness = null;
     dom = null;
@@ -315,6 +346,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   it("anchors the scroll position to the next card when marking a card done", async () => {
+    setPointerType("coarse");
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -352,6 +384,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   it("anchors the scroll position to the next card when dismissing a card", async () => {
+    setPointerType("coarse");
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -388,6 +421,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   it("does not adjust the scroll when the anchor card has not moved", async () => {
+    setPointerType("coarse");
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -425,6 +459,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   it("skips scroll compensation when there is no neighbor card to anchor", async () => {
+    setPointerType("coarse");
     let resolvePatch!: (card: FeedCardData) => void;
     apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
       resolvePatch = resolve;
@@ -448,6 +483,45 @@ describe("DashboardFeed feed mutations", () => {
 
     expect(container.scrollTop).toBe(300);
     expect(container.scrollTo).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
+      await waitTick();
+    });
+  });
+
+  it("does not anchor to a neighbor on a fine pointer so the list reflows upward", async () => {
+    setPointerType("fine");
+    let resolvePatch!: (card: FeedCardData) => void;
+    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePatch = resolve;
+    }));
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({ id: "card-1", title: "First card" }),
+        makeCard({ id: "card-2", title: "Second card" }),
+      ],
+    });
+    const container = dom!.container as any;
+    setScrollContainerGeometry(container, {
+      scrollTop: 300,
+      scrollHeight: 1_200,
+      clientHeight: 400,
+      top: 100,
+    });
+    const nextCard = findFeedCardElement(container, "card-2");
+    expect(nextCard).toBeTruthy();
+    // The neighbor shifts up, but on a fine pointer we must NOT compensate for it.
+    setElementTopSequence(nextCard, [200, 100]);
+
+    await act(async () => {
+      clickButton(findButtonByLabel(container, "Dismiss"));
+      await waitTick();
+    });
+    await waitUntilAct(() => container.textContent?.includes('Dismissed "First card".') ?? false);
+
+    expect(container.scrollTo).not.toHaveBeenCalled();
+    expect(container.scrollTop).toBe(300);
 
     await act(async () => {
       resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
