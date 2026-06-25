@@ -7,6 +7,22 @@ export interface TerminalCompletion {
   sourceEventType: string;
 }
 
+// Canonical terminal-completion contract
+// --------------------------------------
+// A "terminal completion" is the agent's explicit end-of-turn summary, produced either by a
+// `session.task_complete` event (extractTerminalCompletion) or a `task_complete` tool call captured
+// as a *pending* completion (extractTerminalCompletionFromToolCall).
+//
+// Contract: a pending terminal completion is surfaced exactly once, as a `completion` entry, on the
+// FIRST turn-terminal event that closes the run — whether that terminal is normal
+// (session.task_complete / session.idle / assistant.turn_end) or abnormal (abort / session.shutdown
+// / session.error). It is scoped to the turn it closes and carries that turn's id when available.
+//
+// The disk reference implementations (event-transform.transformEventsToMessages and the
+// session-disk-reader pagination scanner) flush a pending completion on any of these terminal
+// events. The live SSE producer (event-bus) and the reconnect snapshot normalizer (api-router) must
+// therefore carry pending completions through abort/shutdown/error too, so live streaming, reconnect
+// replay, event replay, and disk pagination all agree on the same completion entry.
 const TERMINAL_COMPLETION_EVENT_TYPES = new Set([
   "session.task_complete",
 ]);
@@ -14,6 +30,23 @@ const TERMINAL_COMPLETION_EVENT_TYPES = new Set([
 const TERMINAL_COMPLETION_TOOL_NAMES = new Set([
   "task_complete",
 ]);
+
+/**
+ * Turn-terminal event types that close a run and flush a pending terminal completion.
+ * Shared so disk replay (event-transform) and disk pagination (session-disk-reader) stay in sync.
+ */
+export const TERMINAL_TURN_EVENT_TYPES = new Set([
+  "assistant.turn_end",
+  "session.shutdown",
+  "abort",
+  "session.idle",
+  "session.error",
+  "session.task_complete",
+]);
+
+export function isTerminalTurnEventType(eventType: unknown): eventType is string {
+  return typeof eventType === "string" && TERMINAL_TURN_EVENT_TYPES.has(eventType);
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)

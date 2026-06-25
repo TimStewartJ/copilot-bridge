@@ -287,6 +287,57 @@ describe("readMessagesFromDisk latest-page path", () => {
     );
   });
 
+  it("counts a pending terminal completion flushed by an abort terminal in pagination totals", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-tail-completion-abort");
+    const oldMessages = Array.from({ length: 20 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `old-${index}` },
+    }));
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, "completion-tail-abort", {
+      events: [
+        ...oldMessages,
+        ...padding,
+        {
+          type: "tool.execution_start",
+          timestamp: "2026-04-30T10:59:58.000Z",
+          data: {
+            toolCallId: "tool-1",
+            toolName: "task_complete",
+            arguments: { summary: "Wrapped up before abort." },
+          },
+        },
+        {
+          type: "tool.execution_complete",
+          timestamp: "2026-04-30T10:59:59.000Z",
+          data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
+        },
+        {
+          type: "abort",
+          timestamp: "2026-04-30T11:00:00.000Z",
+          data: { reason: "user cancelled" },
+        },
+      ],
+    });
+
+    const { deps } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "completion-tail-abort", { limit: 1 });
+
+    expect(result.total).toBe(21);
+    expect(result.messages).toMatchObject([
+      {
+        type: "completion",
+        content: "Wrapped up before abort.",
+        completion: { sourceEventType: "tool.execution_complete" },
+      },
+    ]);
+  });
+
   it("reuses event-log stats while the event log size and mtime are unchanged", async () => {
     const copilotHome = makeTestDir("session-disk-reader-stats-cache");
     const sessionId = "stats-cache";

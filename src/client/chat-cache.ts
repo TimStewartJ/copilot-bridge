@@ -151,14 +151,6 @@ function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
   return undefined;
 }
 
-function findLastCompletion(entries: ChatEntry[]): ChatCompletionEntry | undefined {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.type === "completion") return entry;
-  }
-  return undefined;
-}
-
 function findLastToolEntryIndex(entries: ChatEntry[], toolCallId: string): number {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
@@ -208,9 +200,27 @@ function isDuplicateLiveMessageEntry(previousEntries: ChatEntry[], incomingEntry
 }
 
 function isDuplicateLiveCompletionEntry(previousEntries: ChatEntry[], incomingEntry: ChatCompletionEntry): boolean {
-  const lastCompletion = findLastCompletion(previousEntries);
-  return lastCompletion?.content === incomingEntry.content
-    && lastCompletion.completion.sourceEventType === incomingEntry.completion.sourceEventType;
+  // Only a completion currently at the tail of the transcript can be a reconnect/replay duplicate.
+  // A genuinely distinct later turn appends its completion after new message/tool/visual entries, so
+  // its trailing entry won't be the matching completion — which keeps identical-summary turns intact.
+  const lastEntry = previousEntries[previousEntries.length - 1];
+  if (!lastEntry || lastEntry.type !== "completion") return false;
+
+  // Same turn re-delivered: a live stream drop + reconnect replays the same turn id.
+  if (incomingEntry.turnId && lastEntry.turnId && incomingEntry.turnId === lastEntry.turnId) {
+    return true;
+  }
+
+  // A reconnect/snapshot replay of an already-rendered terminal completion can carry a different
+  // turn id than the canonical disk entry (disk `turn-N` vs live `turn-<uuid>`), so fall back to
+  // content + source identity — but only for snapshot-derived completions, so distinct live turns
+  // with identical summaries are never collapsed.
+  if (incomingEntry.liveSource === "snapshot") {
+    return lastEntry.content === incomingEntry.content
+      && lastEntry.completion.sourceEventType === incomingEntry.completion.sourceEventType;
+  }
+
+  return false;
 }
 
 export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries: ChatEntry[]): ChatEntry[] {

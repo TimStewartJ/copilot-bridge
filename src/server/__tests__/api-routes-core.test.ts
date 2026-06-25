@@ -93,7 +93,7 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('data: {"type":"done","content":"Run finished"}');
+    expect(res.text).toContain('data: {"type":"done","content":"Run finished","fromSnapshot":true}');
     expect(res.text).not.toContain('"type":"snapshot"');
   });
 
@@ -136,7 +136,7 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('data: {"type":"done","content":"Run finished"}');
+    expect(res.text).toContain('data: {"type":"done","content":"Run finished","fromSnapshot":true}');
     expect(res.text).not.toContain('"type":"snapshot"');
   });
 
@@ -157,7 +157,37 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('data: {"type":"shutdown","content":"Partial answer"}');
+    expect(res.text).toContain('data: {"type":"shutdown","content":"Partial answer","fromSnapshot":true}');
+    expect(res.text).not.toContain('"type":"snapshot"');
+  });
+
+  it("GET /api/sessions/:id/stream forwards a pending terminal completion on an aborted snapshot replay", async () => {
+    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
+      subscribe(listener: (event: unknown) => void) {
+        listener({
+          type: "snapshot",
+          complete: true,
+          terminalType: "aborted",
+          finalContent: "Partial answer",
+          terminalCompletion: {
+            content: "Wrapped up before abort",
+            title: "Task complete",
+            status: "success",
+            sourceEventType: "tool.execution_complete",
+          },
+        });
+        return () => {};
+      },
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"type":"aborted"');
+    expect(res.text).toContain('"fromSnapshot":true');
+    expect(res.text).toContain('"terminalCompletion"');
+    expect(res.text).toContain('"content":"Wrapped up before abort"');
     expect(res.text).not.toContain('"type":"snapshot"');
   });
 

@@ -2543,16 +2543,17 @@ export function createApiRouter(
       if (closed || res.writableEnded) return;
       const normalized = event.type === "snapshot" && event.complete
         ? event.terminalType === "error" || event.errorMessage
-          ? { type: "error", message: event.errorMessage ?? "Unknown session error", timestamp: event.terminalTimestamp, turnId: event.turnId }
+          ? { type: "error", message: event.errorMessage ?? "Unknown session error", timestamp: event.terminalTimestamp, turnId: event.turnId, fromSnapshot: true, ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}) }
           : event.terminalType === "aborted"
-            ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
+            ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId, fromSnapshot: true, ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}) }
             : event.terminalType === "shutdown"
-              ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
+              ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId, fromSnapshot: true, ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}) }
             : {
                 type: "done",
                 content: event.finalContent,
                 timestamp: event.terminalTimestamp,
                 turnId: event.turnId,
+                fromSnapshot: true,
                 ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}),
               }
         : event;

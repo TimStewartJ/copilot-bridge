@@ -61,6 +61,58 @@ describe("event-bus", () => {
       });
     });
 
+    it("carries a pending terminal completion into abnormal terminal snapshots and broadcasts", () => {
+      const terminalTypes = ["aborted", "shutdown", "error"] as const;
+
+      terminalTypes.forEach((terminalType, index) => {
+        const bus = getOrCreateBus(`test-pending-terminal-${terminalType}-${index}`);
+        const received: StreamEvent[] = [];
+        bus.subscribe((event) => received.push(event));
+
+        bus.emit({ type: "thinking", turnId: "turn-1" });
+        bus.emit({
+          type: "tool_start",
+          toolCallId: "tc-complete",
+          name: "task_complete",
+          args: { summary: "Wrapped up before the interruption" },
+        });
+
+        const terminalEvent: StreamEvent = terminalType === "error"
+          ? { type: "error", message: "boom" }
+          : { type: terminalType, content: "partial" };
+        bus.emit(terminalEvent);
+
+        const snap = bus.getSnapshot();
+        expect(snap.terminalType).toBe(terminalType);
+        expect(snap.terminalCompletion).toMatchObject({
+          content: "Wrapped up before the interruption",
+          sourceEventType: "tool.execution_complete",
+        });
+
+        const broadcastTerminal = received.find((event) => event.type === terminalType);
+        expect(broadcastTerminal?.terminalCompletion).toMatchObject({
+          content: "Wrapped up before the interruption",
+          sourceEventType: "tool.execution_complete",
+        });
+      });
+    });
+
+    it("does not leak a pending terminal completion into the next turn", () => {
+      const bus = getOrCreateBus("test-pending-terminal-reset-1");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({
+        type: "tool_start",
+        toolCallId: "tc-complete",
+        name: "task_complete",
+        args: { summary: "First turn summary" },
+      });
+      // New turn starts before any terminal event fires.
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+      bus.emit({ type: "aborted", content: "partial" });
+
+      expect(bus.getSnapshot().terminalCompletion).toBeUndefined();
+    });
+
     it("can clear pendingPrompt after the user message is persisted", () => {
       const bus = getOrCreateBus("test-pending-prompt-1");
       bus.setPendingPrompt("recover me");

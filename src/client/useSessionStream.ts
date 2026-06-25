@@ -119,11 +119,13 @@ function createCompletionEntry(
   completion: TerminalCompletion,
   timestamp?: string,
   turnId?: string,
+  liveSource: "snapshot" | "event" = "event",
 ): ChatCompletionEntry {
   return {
     type: "completion",
     content: completion.content,
     completion,
+    liveSource,
     ...(timestamp ? { timestamp } : {}),
     ...(turnId ? { turnId } : {}),
   };
@@ -613,7 +615,7 @@ export function useSessionStream(
                     const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
                     if (terminalCompletion) {
                       onEntriesRef.current([
-                        createCompletionEntry(terminalCompletion, event.terminalTimestamp ?? event.timestamp, turnId),
+                        createCompletionEntry(terminalCompletion, event.terminalTimestamp ?? event.timestamp, turnId, "snapshot"),
                       ]);
                     } else if (event.errorMessage) {
                       onEntriesRef.current([{
@@ -924,7 +926,7 @@ export function useSessionStream(
                   {
                     const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
                     if (terminalCompletion) {
-                      onEntriesRef.current([createCompletionEntry(terminalCompletion, event.timestamp, activeTurnId)]);
+                      onEntriesRef.current([createCompletionEntry(terminalCompletion, event.timestamp, activeTurnId, event.fromSnapshot ? "snapshot" : "event")]);
                     } else if (event.content) {
                       onEntriesRef.current([{
                         role: "assistant",
@@ -942,14 +944,19 @@ export function useSessionStream(
                 case "aborted": {
                   activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("aborted", event.timestamp);
-                  const text = event.content || accumulatedContent;
-                  if (text) {
-                    onEntriesRef.current([{
-                      role: "assistant",
-                      content: formatTerminalContent(text, "aborted"),
-                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
-                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
-                    }]);
+                  const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
+                  if (terminalCompletion) {
+                    onEntriesRef.current([createCompletionEntry(terminalCompletion, event.timestamp, activeTurnId, event.fromSnapshot ? "snapshot" : "event")]);
+                  } else {
+                    const text = event.content || accumulatedContent;
+                    if (text) {
+                      onEntriesRef.current([{
+                        role: "assistant",
+                        content: formatTerminalContent(text, "aborted"),
+                        ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                        ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                      }]);
+                    }
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   accumulatedContent = "";
@@ -959,32 +966,43 @@ export function useSessionStream(
                 case "shutdown": {
                   activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("shutdown", event.timestamp);
-                  const text = event.content || accumulatedContent;
-                  if (text) {
-                    onEntriesRef.current([{
-                      role: "assistant",
-                      content: formatTerminalContent(text, "shutdown"),
-                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
-                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
-                    }]);
+                  const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
+                  if (terminalCompletion) {
+                    onEntriesRef.current([createCompletionEntry(terminalCompletion, event.timestamp, activeTurnId, event.fromSnapshot ? "snapshot" : "event")]);
+                  } else {
+                    const text = event.content || accumulatedContent;
+                    if (text) {
+                      onEntriesRef.current([{
+                        role: "assistant",
+                        content: formatTerminalContent(text, "shutdown"),
+                        ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                        ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                      }]);
+                    }
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   accumulatedContent = "";
                   activeTurnId = undefined;
                   break;
                 }
-                case "error":
+                case "error": {
                   activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("error", event.timestamp);
-                  onEntriesRef.current([{
-                    role: "assistant",
-                    content: `⚠️ Error: ${event.message}`,
-                    ...(event.timestamp ? { timestamp: event.timestamp } : {}),
-                    ...(activeTurnId ? { turnId: activeTurnId } : {}),
-                  }]);
+                  const terminalCompletion = normalizeTerminalCompletion(event.terminalCompletion);
+                  if (terminalCompletion) {
+                    onEntriesRef.current([createCompletionEntry(terminalCompletion, event.timestamp, activeTurnId, event.fromSnapshot ? "snapshot" : "event")]);
+                  } else {
+                    onEntriesRef.current([{
+                      role: "assistant",
+                      content: `⚠️ Error: ${event.message}`,
+                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                    }]);
+                  }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   activeTurnId = undefined;
                   break;
+                }
                 case "mcp_status":
                   setStreamState((s) => ({ ...s, mcpServers: event.servers ?? [] }));
                   break;

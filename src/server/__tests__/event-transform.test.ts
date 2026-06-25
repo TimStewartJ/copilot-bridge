@@ -450,6 +450,67 @@ describe("event-transform tool results", () => {
     ]);
   });
 
+  it("flushes a pending terminal completion when the turn aborts before a completion event", () => {
+    const entries = transformEventsToMessages([
+      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:00.000Z", data: {} },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: {
+          toolCallId: "tool-1",
+          toolName: "task_complete",
+          arguments: { summary: "Stopped after wrapping up" },
+        },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
+      },
+      { type: "abort", timestamp: "2026-04-10T10:00:03.000Z", data: { reason: "user cancelled" } },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "completion",
+        content: "Stopped after wrapping up",
+        timestamp: "2026-04-10T10:00:03.000Z",
+        turnId: "turn-1",
+        completion: { sourceEventType: "tool.execution_complete" },
+      },
+    ]);
+  });
+
+  it("flushes a pending terminal completion on shutdown and on error terminals", () => {
+    for (const terminal of ["session.shutdown", "session.error"]) {
+      const entries = transformEventsToMessages([
+        {
+          type: "tool.execution_start",
+          timestamp: "2026-04-10T10:00:00.000Z",
+          data: {
+            toolCallId: "tool-1",
+            toolName: "task_complete",
+            arguments: { summary: "Final summary" },
+          },
+        },
+        {
+          type: "tool.execution_complete",
+          timestamp: "2026-04-10T10:00:01.000Z",
+          data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
+        },
+        { type: terminal, timestamp: "2026-04-10T10:00:02.000Z", data: {} },
+      ]);
+
+      expect(entries).toMatchObject([
+        {
+          type: "completion",
+          content: "Final summary",
+          completion: { sourceEventType: "tool.execution_complete" },
+        },
+      ]);
+    }
+  });
+
   it("prefers detailedContent for successful tools", () => {
     const entries = transformEventsToMessages([
       {

@@ -276,6 +276,8 @@ export interface ChatCompletionEntry {
   content: string;
   timestamp?: string;
   completion: TerminalCompletion;
+  /** Whether this completion came from a reconnect/snapshot replay vs a live stream event. */
+  liveSource?: "snapshot" | "event";
 }
 
 /** An agent-injected skill context, rendered as a collapsed/labeled card */
