@@ -228,15 +228,23 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
     },
   }),
   defineBridgeTool("schedule_list", {
-    description: "List all scheduled sessions, optionally filtered by task.",
+    description: "List all scheduled sessions, optionally filtered by task and/or name.",
     parameters: {
       type: "object",
       properties: {
         taskId: { type: "string", description: "Filter by task ID (optional)" },
+        name: {
+          type: "string",
+          description: "Filter by schedule name (optional). Case-insensitive substring match.",
+        },
       },
     },
     handler: async (args: any) => {
-      const schedules = ctx.scheduleStore.listSchedules(args.taskId);
+      let schedules = ctx.scheduleStore.listSchedules(args.taskId);
+      if (typeof args.name === "string" && args.name.trim() !== "") {
+        const needle = args.name.trim().toLowerCase();
+        schedules = schedules.filter((s) => s.name.toLowerCase().includes(needle));
+      }
       return {
         schedules: schedules.map((s) => ({
           id: s.id,
