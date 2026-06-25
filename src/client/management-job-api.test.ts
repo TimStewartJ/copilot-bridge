@@ -85,8 +85,8 @@ describe("management job client API", () => {
       { method: "POST", headers: { "Content-Type": "application/json" } },
     );
 
-    stubJsonResponse({ job: detail, retriedFrom: "old-job" });
-    await expect(retryManagementJob("old-job")).resolves.toEqual({ job: detail, retriedFrom: "old-job" });
+    stubJsonResponse({ job: detail, retriedFrom: "old-job", reused: false });
+    await expect(retryManagementJob("old-job")).resolves.toEqual({ job: detail, retriedFrom: "old-job", reused: false });
     expect(fetchMock()).toHaveBeenLastCalledWith(
       "/api/management-jobs/old-job/retry",
       { method: "POST", headers: { "Content-Type": "application/json" } },

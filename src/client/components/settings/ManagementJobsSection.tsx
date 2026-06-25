@@ -115,7 +115,11 @@ export function ManagementJobsSection() {
       const retryResult = await retryMutation.mutateAsync(job.id);
       const nextJobId = retryResult.job.id;
       setSelectedJobId(nextJobId);
-      setActionMessage(`Retry queued as ${shortJobId(nextJobId)}.`);
+      setActionMessage(
+        retryResult.reused
+          ? `Using existing active job ${shortJobId(nextJobId)}.`
+          : `Retry queued as ${shortJobId(nextJobId)}.`,
+      );
       await activeJobsQuery.refetch();
       await jobsQuery.refetch();
     } catch (error) {

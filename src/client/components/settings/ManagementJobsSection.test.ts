@@ -85,6 +85,7 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
   const retryMutateAsync = vi.fn(async () => ({
     job: createDetail(createJob({ id: "retry-job", status: "queued" })),
     retriedFrom: "job-1",
+    reused: false,
   }));
 
   hookMocks.useManagementJobsQuery.mockImplementation(() => ({

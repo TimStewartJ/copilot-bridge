@@ -99,7 +99,6 @@ import {
 import { DocsStoreValidationError } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
 import {
-  ActiveManagementJobError,
   isManagementJobStatus,
   isManagementJobType,
   MAX_MANAGEMENT_JOB_LIST_LIMIT,
@@ -4457,27 +4456,31 @@ export function createApiRouter(
         ));
       }
 
-      try {
-        const retried = store.enqueue(job.type, job.input);
-        emitManagementJobChanged(retried);
-        res.json({
-          job: toManagementJobDetailResponse(retried, {
+      const { job: retried, reused } = enqueueManagementJob(ctx, {
+        type: job.type,
+        input: job.input,
+      });
+      if (!reused) emitManagementJobChanged(retried);
+      res.json({
+        job: toManagementJobDetailResponse(retried, {
+          now: new Date(),
+          staleAfterMs,
+          logTail: store.readLogTail(retried),
+        }),
+        retriedFrom: job.id,
+        reused,
+      });
+    } catch (err) {
+      if (err instanceof ManagementJobEnqueueError) {
+        const body: Record<string, unknown> = { error: err.message };
+        if (err.activeJob) {
+          body.activeJob = toManagementJobSummaryResponse(err.activeJob, {
             now: new Date(),
-            staleAfterMs,
-            logTail: store.readLogTail(retried),
-          }),
-          retriedFrom: job.id,
-        });
-      } catch (err) {
-        if (err instanceof ActiveManagementJobError) {
-          return res.status(409).json({
-            error: err.message,
-            activeJob: toManagementJobSummaryResponse(err.activeJob, { now: new Date(), staleAfterMs }),
+            staleAfterMs: managementJobStaleAfterMs(),
           });
         }
-        throw err;
+        return res.status(err.statusCode).json(body);
       }
-    } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
