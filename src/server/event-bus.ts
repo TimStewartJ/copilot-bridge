@@ -10,7 +10,10 @@ import type {
   UserInputRequestId,
 } from "./user-input-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
-import type { TerminalCompletion } from "../shared/terminal-completion.js";
+import {
+  extractTerminalCompletionFromToolCall,
+  type TerminalCompletion,
+} from "../shared/terminal-completion.js";
 
 export type {
   NativeUserInputRequest,
@@ -176,6 +179,12 @@ export class SessionEventBus {
   private intentText = "";
   private finalContent?: string;
   private terminalCompletion?: TerminalCompletion;
+  /**
+   * Pending terminal completion captured from a hidden `task_complete` tool start. Carried into the
+   * terminal event (done/aborted/shutdown/error) so abnormal endings surface the agent's summary,
+   * matching disk replay. Cleared when a new turn starts.
+   */
+  private pendingTerminalCompletion?: TerminalCompletion;
   private errorMessage?: string;
   private terminalType?: "done" | "error" | "aborted" | "shutdown";
   private terminalTimestamp?: string;
@@ -267,6 +276,8 @@ export class SessionEventBus {
           const tool = buildActiveTool(event);
           this.activeTools = upsertActiveTool(this.activeTools, tool);
           this.currentTurnTools = upsertCurrentTurnTool(this.currentTurnTools, tool);
+          const pending = extractTerminalCompletionFromToolCall(event.name, event.args);
+          if (pending) this.pendingTerminalCompletion = pending;
         }
         break;
       case "tool_update":
@@ -359,12 +370,18 @@ export class SessionEventBus {
         }
         break;
       }
-      case "done":
+      case "done": {
+        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
+          ?? this.pendingTerminalCompletion;
+        if (resolved && event.terminalCompletion !== resolved) {
+          event = { ...event, terminalCompletion: resolved };
+        }
         this.terminalTurnId = getStreamTurnId(event);
         this.terminalType = "done";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
-        this.terminalCompletion = event.terminalCompletion as TerminalCompletion | undefined;
+        this.terminalCompletion = resolved;
+        this.pendingTerminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -374,12 +391,19 @@ export class SessionEventBus {
         this.currentTurnId = undefined;
         this.scheduleCleanup();
         break;
-      case "aborted":
+      }
+      case "aborted": {
+        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
+          ?? this.pendingTerminalCompletion;
+        if (resolved && event.terminalCompletion !== resolved) {
+          event = { ...event, terminalCompletion: resolved };
+        }
         this.terminalTurnId = getStreamTurnId(event);
         this.terminalType = "aborted";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
-        this.terminalCompletion = undefined;
+        this.terminalCompletion = resolved;
+        this.pendingTerminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -389,12 +413,19 @@ export class SessionEventBus {
         this.currentTurnId = undefined;
         this.scheduleCleanup();
         break;
-      case "shutdown":
+      }
+      case "shutdown": {
+        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
+          ?? this.pendingTerminalCompletion;
+        if (resolved && event.terminalCompletion !== resolved) {
+          event = { ...event, terminalCompletion: resolved };
+        }
         this.terminalTurnId = getStreamTurnId(event);
         this.terminalType = "shutdown";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
-        this.terminalCompletion = undefined;
+        this.terminalCompletion = resolved;
+        this.pendingTerminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -404,12 +435,19 @@ export class SessionEventBus {
         this.currentTurnId = undefined;
         this.scheduleCleanup();
         break;
-      case "error":
+      }
+      case "error": {
+        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
+          ?? this.pendingTerminalCompletion;
+        if (resolved && event.terminalCompletion !== resolved) {
+          event = { ...event, terminalCompletion: resolved };
+        }
         this.terminalTurnId = getStreamTurnId(event);
         this.terminalType = "error";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.errorMessage = event.message;
-        this.terminalCompletion = undefined;
+        this.terminalCompletion = resolved;
+        this.pendingTerminalCompletion = undefined;
         this._complete = true;
         this.accumulatedContent = "";
         this.intentText = "";
@@ -419,6 +457,7 @@ export class SessionEventBus {
         this.currentTurnId = undefined;
         this.scheduleCleanup();
         break;
+      }
       case "mcp_status":
         this.mcpServers = (event.servers as unknown[]) ?? [];
         break;
@@ -499,6 +538,7 @@ export class SessionEventBus {
     this.terminalTimestamp = undefined;
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
+    this.pendingTerminalCompletion = undefined;
     this.errorMessage = undefined;
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;

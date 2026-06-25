@@ -2,8 +2,8 @@ import { getToolExecutionDisplayText } from "./tool-results.js";
 import {
   extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
-  isTerminalCompletionEventType,
   isTerminalCompletionToolName,
+  isTerminalTurnEventType,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
 
@@ -61,12 +61,7 @@ export interface TransformedEntry {
 export type TransformedMessage = TransformedEntry;
 
 function isTurnTerminalEvent(event: any): boolean {
-  return event.type === "assistant.turn_end"
-    || event.type === "session.shutdown"
-    || event.type === "abort"
-    || event.type === "session.idle"
-    || event.type === "session.error"
-    || isTerminalCompletionEventType(event.type);
+  return isTerminalTurnEventType(event?.type);
 }
 
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);

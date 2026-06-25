@@ -12,6 +12,7 @@ import {
 import {
   extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
+  TERMINAL_TURN_EVENT_TYPES,
 } from "../shared/terminal-completion.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
@@ -43,14 +44,7 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [
   "abort",
 ];
 
-const TURN_TERMINAL_EVENT_TYPES = new Set([
-  "assistant.turn_end",
-  "session.shutdown",
-  "abort",
-  "session.idle",
-  "session.error",
-  "session.task_complete",
-]);
+const TURN_TERMINAL_EVENT_TYPES = TERMINAL_TURN_EVENT_TYPES;
 
 export interface SessionDiskReaderDeps {
   copilotHome?: string;

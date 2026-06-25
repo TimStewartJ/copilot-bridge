@@ -197,6 +197,100 @@ describe("useSessionStream terminal completions", () => {
       });
     });
   });
+
+  it("renders a terminal completion carried by an aborted terminal instead of stopped text", async () => {
+    await withSessionStreamHarness(async ({ getState, entriesAppended, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      await emitAndWait(act, sse, {
+        type: "aborted",
+        content: "stopped midway",
+        timestamp: "2026-04-30T12:00:00.000Z",
+        turnId: "turn-1",
+        terminalCompletion: {
+          content: "All wrapped up",
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "tool.execution_complete",
+        },
+      }, () => entriesAppended.mock.calls.some(([entries]) => entries.some((entry) => entry.type === "completion")));
+
+      const appendedEntries = entriesAppended.mock.calls.flatMap(([entries]) => entries);
+      expect(appendedEntries).toMatchObject([
+        {
+          type: "completion",
+          content: "All wrapped up",
+          turnId: "turn-1",
+          liveSource: "event",
+          completion: { sourceEventType: "tool.execution_complete" },
+        },
+      ]);
+      expect(appendedEntries.some((entry) =>
+        entry.type !== "completion"
+        && entry.type !== "tool"
+        && entry.type !== "visual"
+        && typeof entry.content === "string"
+        && entry.content.includes("stopped midway"))).toBe(false);
+
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
+  });
+
+  it("renders a terminal completion forwarded by a reconnect snapshot as a snapshot-sourced entry", async () => {
+    await withSessionStreamHarness(async ({ getState, entriesAppended, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      await emitAndWait(act, sse, {
+        type: "error",
+        message: "boom",
+        timestamp: "2026-04-30T12:00:00.000Z",
+        turnId: "turn-7",
+        fromSnapshot: true,
+        terminalCompletion: {
+          content: "Completed before failure",
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "tool.execution_complete",
+        },
+      }, () => entriesAppended.mock.calls.some(([entries]) => entries.some((entry) => entry.type === "completion")));
+
+      const appendedEntries = entriesAppended.mock.calls.flatMap(([entries]) => entries);
+      expect(appendedEntries).toMatchObject([
+        {
+          type: "completion",
+          content: "Completed before failure",
+          turnId: "turn-7",
+          liveSource: "snapshot",
+        },
+      ]);
+      expect(appendedEntries.some((entry) =>
+        entry.type !== "completion"
+        && entry.type !== "tool"
+        && entry.type !== "visual"
+        && typeof entry.content === "string"
+        && entry.content.includes("Error"))).toBe(false);
+
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
+  });
 });
 
 describe("buildTerminalToolEntries", () => {
