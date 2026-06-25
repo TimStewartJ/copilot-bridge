@@ -65,6 +65,35 @@ export interface FeedCardListPage {
   nextCursor: string | null;
 }
 
+export interface FeedKindStat {
+  kind: string;
+  total: number;
+  active: number;
+  done: number;
+  dismissed: number;
+  lastActivityAt: string | null;
+  buckets: number[];
+}
+
+export interface FeedKindStats {
+  generatedAt: string;
+  windowDays: number;
+  bucketCount: number;
+  windowStart: string;
+  windowEnd: string;
+  total: number;
+  active: number;
+  buckets: number[];
+  kinds: FeedKindStat[];
+}
+
+export interface FeedKindStatsOptions {
+  now?: number;
+  days?: number;
+  buckets?: number;
+  keyPrefix?: string;
+}
+
 export interface FeedCardMutationInput {
   key?: unknown;
   dedupeKey?: unknown;
@@ -110,6 +139,11 @@ const DEFAULT_STATUS: FeedCardStatus = "active";
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_LINKS = 20;
+const STATS_DAY_MS = 86_400_000;
+const DEFAULT_STATS_DAYS = 30;
+const MAX_STATS_DAYS = 365;
+const DEFAULT_STATS_BUCKETS = 14;
+const MAX_STATS_BUCKETS = 60;
 const FEED_CURSOR_VERSION = 1;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -590,6 +624,14 @@ function normalizeFilterString(field: keyof typeof FIELD_LIMITS, value: unknown)
   return normalized ?? undefined;
 }
 
+function clampStatsInt(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  const int = Math.trunc(value);
+  if (int < min) return min;
+  if (int > max) return max;
+  return int;
+}
+
 function feedListOrder(status: FeedCardStatus | undefined): FeedListOrder {
   if (status === "done" || status === "dismissed") return "resolved";
   if (status === "active") return "active";
@@ -991,6 +1033,87 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     return true;
   }
 
+  function getKindStats(statsOptions: FeedKindStatsOptions = {}): FeedKindStats {
+    const days = clampStatsInt(statsOptions.days, DEFAULT_STATS_DAYS, 1, MAX_STATS_DAYS);
+    const buckets = clampStatsInt(statsOptions.buckets, DEFAULT_STATS_BUCKETS, 1, MAX_STATS_BUCKETS);
+    const windowEndMs = Number.isFinite(statsOptions.now) ? (statsOptions.now as number) : Date.now();
+    const windowMs = days * STATS_DAY_MS;
+    const windowStartMs = windowEndMs - windowMs;
+    const bucketWidthMs = windowMs / buckets;
+    const windowStartIso = new Date(windowStartMs).toISOString();
+    const windowEndIso = new Date(windowEndMs).toISOString();
+
+    const keyPrefix = typeof statsOptions.keyPrefix === "string" && statsOptions.keyPrefix.length > 0
+      ? statsOptions.keyPrefix
+      : undefined;
+
+    const totalsRows = db.prepare(`
+      SELECT kind,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+        SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissed,
+        MAX(updatedAt) AS lastActivityAt
+      FROM feed_cards${keyPrefix ? " WHERE instr(dedupeKey, ?) = 1" : ""}
+      GROUP BY kind
+    `).all(...(keyPrefix ? [keyPrefix] : [])) as any[];
+
+    const activityRows = db.prepare(`
+      SELECT kind, updatedAt FROM feed_cards
+      WHERE updatedAt >= ? AND updatedAt <= ?${keyPrefix ? " AND instr(dedupeKey, ?) = 1" : ""}
+    `).all(...(keyPrefix ? [windowStartIso, windowEndIso, keyPrefix] : [windowStartIso, windowEndIso])) as any[];
+
+    const statByKind = new Map<string, FeedKindStat>();
+    for (const row of totalsRows) {
+      statByKind.set(row.kind, {
+        kind: row.kind,
+        total: Number(row.total) || 0,
+        active: Number(row.active) || 0,
+        done: Number(row.done) || 0,
+        dismissed: Number(row.dismissed) || 0,
+        lastActivityAt: row.lastActivityAt ?? null,
+        buckets: new Array<number>(buckets).fill(0),
+      });
+    }
+
+    const aggregateBuckets = new Array<number>(buckets).fill(0);
+    for (const row of activityRows) {
+      const stat = statByKind.get(row.kind);
+      if (!stat) continue;
+      const t = Date.parse(row.updatedAt);
+      if (!Number.isFinite(t)) continue;
+      let idx = Math.floor((t - windowStartMs) / bucketWidthMs);
+      if (idx === buckets) idx = buckets - 1;
+      if (idx < 0 || idx >= buckets) continue;
+      stat.buckets[idx] += 1;
+      aggregateBuckets[idx] += 1;
+    }
+
+    const kinds = [...statByKind.values()].sort((a, b) => {
+      if (b.total !== a.total) return b.total - a.total;
+      return a.kind.localeCompare(b.kind);
+    });
+
+    let total = 0;
+    let active = 0;
+    for (const stat of kinds) {
+      total += stat.total;
+      active += stat.active;
+    }
+
+    return {
+      generatedAt: windowEndIso,
+      windowDays: days,
+      bucketCount: buckets,
+      windowStart: windowStartIso,
+      windowEnd: windowEndIso,
+      total,
+      active,
+      buckets: aggregateBuckets,
+      kinds,
+    };
+  }
+
   function listCardPage(filters: FeedCardPageFilters = {}): FeedCardListPage {
     const normalized = normalizeListFilters(filters);
     const where: string[] = [];
@@ -1022,6 +1145,7 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
 
   return {
     listCardPage,
+    getKindStats,
     getCard,
     getCardByKey,
     saveCard,

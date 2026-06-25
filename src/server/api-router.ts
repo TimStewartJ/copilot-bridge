@@ -3534,6 +3534,14 @@ export function createApiRouter(
     res.status(500).json({ error: String(error) });
   }
 
+  function parseFeedStatsInt(field: string, value: unknown): number | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (typeof value !== "string") throw new FeedCardValidationError(`${field} must be a positive integer`);
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) throw new FeedCardValidationError(`${field} must be a positive integer`);
+    return parsed;
+  }
+
   router.get("/feed", (req, res) => {
     try {
       const t0 = Date.now();
@@ -3549,6 +3557,21 @@ export function createApiRouter(
       });
       res.json(page);
       ctx.telemetryStore?.recordSpan({ name: "feed.list", duration: Date.now() - t0, source: "server" });
+    } catch (error) {
+      sendFeedError(res, error);
+    }
+  });
+
+  router.get("/feed/kind-stats", (req, res) => {
+    try {
+      const t0 = Date.now();
+      const stats = ctx.feedStore.getKindStats({
+        days: parseFeedStatsInt("days", req.query.days),
+        buckets: parseFeedStatsInt("buckets", req.query.buckets),
+        keyPrefix: parseFeedQueryString("keyPrefix", req.query.keyPrefix),
+      });
+      res.json(stats);
+      ctx.telemetryStore?.recordSpan({ name: "feed.kindStats", duration: Date.now() - t0, source: "server" });
     } catch (error) {
       sendFeedError(res, error);
     }

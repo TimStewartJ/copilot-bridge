@@ -387,4 +387,51 @@ describe("Feed routes", () => {
       expect.objectContaining({ type: "feed:changed", cardId: id, dedupeKey: "event:one" }),
     ]);
   });
+
+  describe("GET /api/feed/kind-stats", () => {
+    it("returns per-kind totals and activity buckets", async () => {
+      ctx.feedStore.saveCard({ title: "s1", kind: "status" });
+      ctx.feedStore.saveCard({ title: "s2", kind: "status", status: "done" });
+      ctx.feedStore.saveCard({ title: "n1", kind: "note" });
+
+      const res = await request(app).get("/api/feed/kind-stats");
+
+      expect(res.status).toBe(200);
+      expect(res.body.windowDays).toBe(30);
+      expect(res.body.bucketCount).toBe(14);
+      expect(res.body.total).toBe(3);
+      expect(res.body.active).toBe(2);
+      expect(res.body.kinds.map((stat: { kind: string }) => stat.kind)).toEqual(["status", "note"]);
+      const status = res.body.kinds.find((stat: { kind: string }) => stat.kind === "status");
+      expect(status).toMatchObject({ total: 2, active: 1, done: 1, dismissed: 0 });
+      expect(status.buckets).toHaveLength(14);
+    });
+
+    it("honors the buckets query parameter", async () => {
+      ctx.feedStore.saveCard({ title: "n1", kind: "note" });
+      const res = await request(app).get("/api/feed/kind-stats?buckets=5");
+      expect(res.status).toBe(200);
+      expect(res.body.bucketCount).toBe(5);
+      expect(res.body.buckets).toHaveLength(5);
+    });
+
+    it("scopes counts by keyPrefix", async () => {
+      ctx.feedStore.saveCard({ key: "docs:1", title: "docs one", kind: "note" });
+      ctx.feedStore.saveCard({ key: "ops:1", title: "ops one", kind: "note" });
+
+      const res = await request(app).get("/api/feed/kind-stats?keyPrefix=docs:");
+
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(1);
+      expect(res.body.kinds).toHaveLength(1);
+      expect(res.body.kinds[0]).toMatchObject({ kind: "note", total: 1 });
+    });
+
+    it("rejects invalid query parameters", async () => {
+      const invalidDays = await request(app).get("/api/feed/kind-stats?days=abc");
+      expect(invalidDays.status).toBe(400);
+      const zeroBuckets = await request(app).get("/api/feed/kind-stats?buckets=0");
+      expect(zeroBuckets.status).toBe(400);
+    });
+  });
 });
