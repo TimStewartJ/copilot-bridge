@@ -894,3 +894,68 @@ describe("event-transform turn grouping", () => {
     ]);
   });
 });
+
+describe("event-transform file attachment display names", () => {
+  it("derives the basename from a Windows-style backslash path", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: {
+          content: "See attached",
+          attachments: [{ type: "file", path: "C:\\Users\\me\\report.png" }],
+        },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "message",
+        role: "user",
+        attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "report.png" }],
+      },
+    ]);
+  });
+
+  it("derives the basename from a POSIX-style forward-slash path", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: {
+          content: "See attached",
+          attachments: [{ type: "file", path: "/home/me/report.png" }],
+        },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "message",
+        role: "user",
+        attachments: [{ type: "file", path: "/home/me/report.png", displayName: "report.png" }],
+      },
+    ]);
+  });
+
+  it("prefers an explicit displayName over the derived basename", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: {
+          content: "See attached",
+          attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "Quarterly report" }],
+        },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "message",
+        role: "user",
+        attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "Quarterly report" }],
+      },
+    ]);
+  });
+});
