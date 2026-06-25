@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { request } from "./api-routes-test-helpers.js";
 import { createTestApp, makeTestDir } from "./helpers.js";
 import { createManagementJobStore, type ManagementJobStore } from "../management-job-store.js";
@@ -154,29 +154,89 @@ describe("management job API routes", () => {
     expect(retry.status).toBe(403);
   });
 
-  it("retries failed or cancelled jobs with the same type and input", async () => {
+  it("retries failed or cancelled jobs with the same type and normalized input", async () => {
     const { app, store } = createManagementJobApiTestApp();
-    const failed = store.enqueue("staging_preview", { stagingDir: "retry-failed", validate: false });
+    const failedDir = makeRealStagingDir("retry-failed");
+    const failed = store.enqueue("staging_preview", { stagingDir: failedDir, validate: false });
     store.fail(failed.id, "boom", { reason: "test" });
 
     const failedRetry = await request(app).post(`/api/management-jobs/${failed.id}/retry`);
 
     expect(failedRetry.status).toBe(200);
+    expect(failedRetry.body.reused).toBe(false);
     expect(failedRetry.body.retriedFrom).toBe(failed.id);
     expect(failedRetry.body.job).toMatchObject({
       type: "staging_preview",
       status: "queued",
-      input: { stagingDir: "retry-failed", validate: false },
+      input: { stagingDir: failedDir, validate: false },
     });
-    expect(store.get(failedRetry.body.job.id)?.input).toEqual({ stagingDir: "retry-failed", validate: false });
+    // Retry routes through the shared enqueue helper, so the new job stores the
+    // normalized input (profile added, explicit validate preserved).
+    expect(store.get(failedRetry.body.job.id)?.input).toEqual({
+      stagingDir: failedDir,
+      validate: false,
+      profile: "clone",
+    });
 
-    const cancelled = store.enqueue("staging_preview", { stagingDir: "retry-cancelled" });
+    const cancelledDir = makeRealStagingDir("retry-cancelled");
+    const cancelled = store.enqueue("staging_preview", { stagingDir: cancelledDir });
     store.cancel(cancelled.id);
 
     const cancelledRetry = await request(app).post(`/api/management-jobs/${cancelled.id}/retry`);
     expect(cancelledRetry.status).toBe(200);
+    expect(cancelledRetry.body.reused).toBe(false);
     expect(cancelledRetry.body.retriedFrom).toBe(cancelled.id);
     expect(cancelledRetry.body.job.status).toBe("queued");
+    expect(store.get(cancelledRetry.body.job.id)?.input).toEqual({
+      stagingDir: cancelledDir,
+      validate: true,
+      profile: "clone",
+    });
+  });
+
+  it("returns 400 when retrying a staging_preview whose stagingDir no longer exists", async () => {
+    const { app, store } = createManagementJobApiTestApp();
+    const stagingDir = makeRealStagingDir("retry-missing-dir");
+    const failed = store.enqueue("staging_preview", { stagingDir });
+    store.fail(failed.id, "boom");
+
+    rmSync(stagingDir, { recursive: true, force: true });
+
+    const res = await request(app).post(`/api/management-jobs/${failed.id}/retry`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Staging directory not found");
+    // The shared helper rejects before enqueuing, so no replacement job is created.
+    expect(store.listActive(["staging_preview"])).toHaveLength(0);
+  });
+
+  it("reuses an active matching preview job when retrying a failed preview", async () => {
+    const { app, store } = createManagementJobApiTestApp();
+    const stagingDir = makeRealStagingDir("retry-reuse-preview");
+    const failed = store.enqueue("staging_preview", { stagingDir });
+    store.fail(failed.id, "boom");
+    // An equivalent preview is already active (e.g. a rapid double-click retry).
+    const active = store.enqueue("staging_preview", { stagingDir, validate: true, profile: "clone" });
+
+    const res = await request(app).post(`/api/management-jobs/${failed.id}/retry`);
+    expect(res.status).toBe(200);
+    expect(res.body.reused).toBe(true);
+    expect(res.body.retriedFrom).toBe(failed.id);
+    expect(res.body.job.id).toBe(active.id);
+    // No replacement job: only the single active preview remains.
+    expect(store.listActive(["staging_preview"])).toHaveLength(1);
+  });
+
+  it("reuses an active self_update when retrying a failed self_update", async () => {
+    const { app, store } = createManagementJobApiTestApp();
+    const failed = store.enqueue("self_update", { source: "old" });
+    store.fail(failed.id, "boom");
+    const active = store.enqueue("self_update", {});
+
+    const res = await request(app).post(`/api/management-jobs/${failed.id}/retry`);
+    expect(res.status).toBe(200);
+    expect(res.body.reused).toBe(true);
+    expect(res.body.job.id).toBe(active.id);
+    expect(store.listActive(["self_update"])).toHaveLength(1);
   });
 
   it("returns retry conflicts for active jobs and active exclusive jobs", async () => {

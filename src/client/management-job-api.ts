@@ -46,6 +46,7 @@ export interface ManagementJobLogResponse {
 export interface RetryManagementJobResponse {
   job: ManagementJobDetail;
   retriedFrom: string;
+  reused: boolean;
 }
 
 export interface ManagementJobFilters {
