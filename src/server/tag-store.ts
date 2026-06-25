@@ -265,10 +265,6 @@ export function createTagStore(db: DatabaseSync) {
     clearLegacyTagMcpServers(tagId);
   }
 
-  function removeTagMcpServerRefsByServerId(serverId: string): void {
-    db.prepare("DELETE FROM tag_mcp_server_refs WHERE serverId = ?").run(serverId);
-  }
-
   function matchingTagMcpServerRefIds(tagId: string, serverName: string): string[] {
     const lowerName = serverName.trim().toLocaleLowerCase();
     if (!lowerName) return [];
@@ -351,7 +347,7 @@ export function createTagStore(db: DatabaseSync) {
     listTags, getTag, getTagByName, createTag, updateTag, deleteTag, reorderTags,
     setEntityTags, getEntityTags, getEntitiesByTag, getEffectiveTaskTags,
     getTagMcpServerIds, getTagMcpServers,
-    replaceTagMcpServerRefs, addTagMcpServerRef, removeTagMcpServerRef, removeTagMcpServerRefsByServerId,
+    replaceTagMcpServerRefs, addTagMcpServerRef, removeTagMcpServerRef,
     setTagMcpServer, removeTagMcpServer,
     resolveEffectiveTags,
   };
