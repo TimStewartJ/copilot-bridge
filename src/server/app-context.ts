@@ -35,7 +35,6 @@ import type * as SchedulerModule from "./scheduler.js";
 import type { PushSubscriptionStore } from "./push-subscription-store.js";
 import type { PushNotificationService } from "./push-notification-service.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/index.js";
-import type { McpServerConfig } from "./mcp-config.js";
 import type { ManagementJobStore } from "./management-job-store.js";
 
 export interface AppContext {
@@ -83,8 +82,6 @@ export interface AppContext {
   apiBasePath?: string;
   runtimePaths?: RuntimePaths;
   bridgeToolsMcpServer?: BridgeToolsMcpServer;
-  bridgeToolsMcpConfig?: { name: string; config: McpServerConfig };
-  bridgeToolsMcpEndpoint?: string;
   /** Shared launcher log file path when this server was started by the launcher */
   launcherLogPath?: string;
   isStaging?: boolean;

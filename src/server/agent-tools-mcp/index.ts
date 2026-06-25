@@ -1,16 +1,4 @@
 export {
-  BRIDGE_MCP_ENDPOINT_ENV,
-  BRIDGE_TOOLS_SESSION_MCP_SERVER_NAME,
-  BRIDGE_TOOLS_MCP_SERVER_NAME,
-  createBridgeToolsMcpEndpoint,
-  isWindowsNamedPipeEndpoint,
-} from "./endpoint.js";
-export {
-  buildBridgeToolsMcpServerConfig,
-  buildBridgeToolsSessionMcpServerConfig,
-  type BridgeToolsMcpServerConfigOptions,
-} from "./config.js";
-export {
   defineBridgeTool,
   registerBridgeToolDefinitions,
   type BridgeToolInvocation,
@@ -22,8 +10,9 @@ export {
 } from "./register.js";
 export {
   BridgeToolsMcpServer,
+  normalizeToolResult,
   type BridgeToolDefinition,
   type BridgeToolHandlerExtra,
   type BridgeToolHandlerResult,
-  type BridgeToolsMcpServerOptions,
+  type BridgeToolScope,
 } from "./server.js";

@@ -65,7 +65,6 @@ async function main(): Promise<void> {
     {
       createAppContext,
       initializeSchedulerAndDeferredRunners,
-      startBridgeToolsMcpServer,
       shutdownAppContextServices,
     },
     { resolveRuntimePaths },
@@ -121,7 +120,6 @@ async function main(): Promise<void> {
     );
   });
 
-  await startBridgeToolsMcpServer(ctx);
   await ctx.sessionManager.initialize();
   ctx.voiceJobManager.resumePendingJobs();
   initializeSchedulerAndDeferredRunners(ctx);

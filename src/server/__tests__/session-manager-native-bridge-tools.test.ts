@@ -4,8 +4,9 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { SessionManager } from "../session-manager.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
-import { BRIDGE_TOOLS_MCP_SERVER_NAME } from "../agent-tools-mcp/endpoint.js";
 import { createTestBus, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
+
+const EXTRA_MCP_SERVER_NAME = "extra-tools";
 
 function createCapabilities() {
   return {
@@ -96,7 +97,7 @@ function createManager() {
     } as any,
     config: { sessionMcpServers: { custom: { command: "custom-mcp", args: [] } } },
     builtInMcpServers: {
-      [BRIDGE_TOOLS_MCP_SERVER_NAME]: { command: "node", args: ["bridge-mcp.js"], tools: ["global_bridge_tool"] },
+      [EXTRA_MCP_SERVER_NAME]: { command: "node", args: ["extra-mcp.js"] },
     },
     bridgeToolsMcpServer,
     clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
@@ -113,7 +114,7 @@ afterEach(async () => {
 });
 
 describe("SessionManager native Bridge tools", () => {
-  it("promotes Bridge tools as canonical native tools and suppresses Bridge MCP on create", async () => {
+  it("promotes Bridge tools as canonical native tools without starting a Bridge MCP transport", async () => {
     const { manager, backend, db } = createManager();
     try {
       await manager.initialize();
@@ -128,7 +129,11 @@ describe("SessionManager native Bridge tools", () => {
       expect(config.tools.every((tool: any) => tool.defer === "never")).toBe(true);
       expect(config.tools.every((tool: any) => tool.skipPermission === true)).toBe(true);
       expect(config.mcpServers.custom).toEqual({ command: "custom-mcp", args: [] });
-      expect(config.mcpServers[BRIDGE_TOOLS_MCP_SERVER_NAME]).toBeUndefined();
+      // Generic built-in MCP seam still flows through untouched.
+      expect(config.mcpServers[EXTRA_MCP_SERVER_NAME]).toEqual({ command: "node", args: ["extra-mcp.js"] });
+      // No Bridge tools stdio/socket MCP server is injected anymore.
+      expect(config.mcpServers["bridge-tools"]).toBeUndefined();
+      expect(config.mcpServers["bridge-tools-session"]).toBeUndefined();
       expect((await backend.createSession.mock.results[0].value).initializeTools).toHaveBeenCalledOnce();
     } finally {
       await manager.gracefulShutdown();
@@ -148,7 +153,9 @@ describe("SessionManager native Bridge tools", () => {
         "session_bridge_tool",
       ]);
       expect(config.mcpServers.custom).toEqual({ command: "custom-mcp", args: [] });
-      expect(config.mcpServers[BRIDGE_TOOLS_MCP_SERVER_NAME]).toBeUndefined();
+      expect(config.mcpServers[EXTRA_MCP_SERVER_NAME]).toEqual({ command: "node", args: ["extra-mcp.js"] });
+      expect(config.mcpServers["bridge-tools"]).toBeUndefined();
+      expect(config.mcpServers["bridge-tools-session"]).toBeUndefined();
       expect(config.model).toBeUndefined();
       expect(config.reasoningEffort).toBeUndefined();
     } finally {
