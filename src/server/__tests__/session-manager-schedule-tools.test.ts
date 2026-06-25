@@ -123,4 +123,53 @@ describe("schedule tools", () => {
     });
     expect(result.schedules[0]).not.toHaveProperty("sessionMode");
   });
+
+  it("filters schedules by name (case-insensitive substring)", async () => {
+    const sessionManager = createMockSessionManager();
+    const { ctx } = createTestApp({ sessionManager });
+    const task = ctx.taskStore.createTask("Schedule Host");
+    ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Daily standup prep",
+      prompt: "prep standup",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    const nightly = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Nightly docs audit",
+      prompt: "audit docs",
+      type: "cron",
+      cron: "0 1 * * *",
+    });
+    const tool = getTool(ctx, "schedule_list");
+
+    const meta = {
+      sessionId: "session-1",
+      toolCallId: "tool-list",
+      toolName: "schedule_list",
+      arguments: {},
+    };
+
+    const matched = (await tool.handler({ name: "nightly" }, meta)) as {
+      schedules: Array<Record<string, unknown>>;
+    };
+    expect(matched.schedules).toHaveLength(1);
+    expect(matched.schedules[0]).toMatchObject({ id: nightly.id, name: "Nightly docs audit" });
+
+    const all = (await tool.handler({}, meta)) as {
+      schedules: Array<Record<string, unknown>>;
+    };
+    expect(all.schedules).toHaveLength(2);
+
+    const blank = (await tool.handler({ name: "   " }, meta)) as {
+      schedules: Array<Record<string, unknown>>;
+    };
+    expect(blank.schedules).toHaveLength(2);
+
+    const none = (await tool.handler({ name: "missing" }, meta)) as {
+      schedules: Array<Record<string, unknown>>;
+    };
+    expect(none.schedules).toHaveLength(0);
+  });
 });
