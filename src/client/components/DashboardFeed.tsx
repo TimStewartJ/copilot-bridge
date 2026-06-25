@@ -5,6 +5,7 @@ import {
   patchFeedCard,
   type FeedCard as FeedCardData,
   type FeedCardStatus,
+  type FeedKindStats,
   type Task,
   type TaskGroup,
 } from "../api";
@@ -17,6 +18,7 @@ import {
 import EmptyState from "./shared/EmptyState";
 import FeedActionDialog, { type FeedActionSubmitMode, type FeedActionTaskPreview } from "./FeedActionDialog";
 import FeedCard from "./FeedCard";
+import FeedKindFilter from "./FeedKindFilter";
 import { Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
 
@@ -213,6 +215,8 @@ interface DashboardFeedProps {
   showResolvedFeed: boolean;
   feedFilter?: FeedFilterState;
   onFeedFilterChange?: (patch: Partial<FeedFilterState>) => void;
+  kindStats?: FeedKindStats | null;
+  kindStatsLoading?: boolean;
   activeHasMore?: boolean;
   resolvedHasMore?: boolean;
   activeLoadingMore?: boolean;
@@ -239,6 +243,8 @@ export default function DashboardFeed({
   showResolvedFeed,
   feedFilter = { kind: "", keyPrefix: "" },
   onFeedFilterChange,
+  kindStats = null,
+  kindStatsLoading = false,
   activeHasMore = false,
   resolvedHasMore = false,
   activeLoadingMore = false,
@@ -962,17 +968,13 @@ export default function DashboardFeed({
         {showFeedFilterControl && (
           <div className="flex flex-wrap items-center gap-2">
             <Filter size={14} className="shrink-0 text-text-faint" aria-hidden="true" />
-            <select
-              aria-label="Filter feed by kind"
+            <FeedKindFilter
               value={feedFilter.kind}
-              onChange={(event) => handleKindFilterChange(event.target.value)}
-              className={feedFilterControlInputClass}
-            >
-              <option value="">All kinds</option>
-              {kindFilterOptions.map((kind) => (
-                <option key={kind} value={kind}>{kind}</option>
-              ))}
-            </select>
+              onChange={handleKindFilterChange}
+              fallbackKinds={kindFilterOptions}
+              stats={kindStats}
+              statsLoading={kindStatsLoading}
+            />
             <input
               type="text"
               aria-label="Filter feed by key prefix"

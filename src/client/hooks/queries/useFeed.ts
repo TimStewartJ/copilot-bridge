@@ -1,5 +1,5 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { fetchFeedPage, type FeedQueryFilters } from "../../api";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { fetchFeedKindStats, fetchFeedPage, type FeedKindStatsParams, type FeedQueryFilters } from "../../api";
 import { queryKeys } from "../../queryClient";
 
 export function useFeedPagesQuery(filters: FeedQueryFilters = {}, options: { enabled?: boolean } = {}) {
@@ -12,6 +12,18 @@ export function useFeedPagesQuery(filters: FeedQueryFilters = {}, options: { ena
     }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: options.enabled ?? true,
+    refetchOnWindowFocus: true,
+  });
+}
+
+export function useFeedKindStatsQuery(
+  params: FeedKindStatsParams = {},
+  options: { enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: queryKeys.feedKindStats({ ...params }),
+    queryFn: () => fetchFeedKindStats(params),
     enabled: options.enabled ?? true,
     refetchOnWindowFocus: true,
   });

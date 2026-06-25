@@ -614,6 +614,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_feed_cards_taskId ON feed_cards(taskId);
     CREATE INDEX IF NOT EXISTS idx_feed_cards_sessionId ON feed_cards(sessionId);
     CREATE INDEX IF NOT EXISTS idx_feed_cards_kind ON feed_cards(kind);
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_updatedAt ON feed_cards(updatedAt, kind);
 
     -- Voice jobs
     CREATE TABLE IF NOT EXISTS voice_jobs (

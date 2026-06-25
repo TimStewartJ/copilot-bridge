@@ -510,3 +510,105 @@ describe("feed-store", () => {
     )).toThrow();
   });
 });
+
+describe("feed-store getKindStats", () => {
+  function setUpdatedAt(id: string, iso: string) {
+    db.prepare("UPDATE feed_cards SET updatedAt = ?, createdAt = ? WHERE id = ?").run(iso, iso, id);
+  }
+
+  const NOW = Date.parse("2026-06-24T00:00:00.000Z");
+
+  it("returns an empty, zero-filled result for an empty feed", () => {
+    const stats = store.getKindStats();
+    expect(stats.kinds).toEqual([]);
+    expect(stats.total).toBe(0);
+    expect(stats.active).toBe(0);
+    expect(stats.windowDays).toBe(30);
+    expect(stats.bucketCount).toBe(14);
+    expect(stats.buckets).toHaveLength(14);
+    expect(stats.buckets.every((value) => value === 0)).toBe(true);
+  });
+
+  it("aggregates totals and per-status counts sorted by total desc", () => {
+    store.saveCard({ title: "s1", kind: "status" });
+    store.saveCard({ title: "s2", kind: "status" });
+    store.saveCard({ title: "s3", kind: "status", status: "done" });
+    store.saveCard({ title: "n1", kind: "note" });
+    store.saveCard({ title: "d1", kind: "decision" });
+    store.saveCard({ title: "d2", kind: "decision", status: "dismissed" });
+
+    const stats = store.getKindStats({ now: NOW });
+
+    expect(stats.kinds.map((stat) => stat.kind)).toEqual(["status", "decision", "note"]);
+    const status = stats.kinds.find((stat) => stat.kind === "status")!;
+    expect(status).toMatchObject({ total: 3, active: 2, done: 1, dismissed: 0 });
+    const decision = stats.kinds.find((stat) => stat.kind === "decision")!;
+    expect(decision).toMatchObject({ total: 2, active: 1, done: 0, dismissed: 1 });
+    expect(stats.total).toBe(6);
+    expect(stats.active).toBe(4);
+  });
+
+  it("buckets activity by updatedAt within the window", () => {
+    const a = store.saveCard({ title: "a", kind: "note" }).card;
+    const b = store.saveCard({ title: "b", kind: "note" }).card;
+    const c = store.saveCard({ title: "c", kind: "note" }).card;
+    const d = store.saveCard({ title: "d", kind: "status" }).card;
+    setUpdatedAt(a.id, "2026-06-14T01:00:00.000Z"); // bucket 0
+    setUpdatedAt(b.id, "2026-06-15T00:00:00.000Z"); // bucket 0
+    setUpdatedAt(c.id, "2026-06-22T12:00:00.000Z"); // bucket 4
+    setUpdatedAt(d.id, "2026-06-19T00:00:00.000Z"); // bucket 2
+
+    const stats = store.getKindStats({ now: NOW, days: 10, buckets: 5 });
+
+    expect(stats.bucketCount).toBe(5);
+    const note = stats.kinds.find((stat) => stat.kind === "note")!;
+    expect(note.buckets).toEqual([2, 0, 0, 0, 1]);
+    const status = stats.kinds.find((stat) => stat.kind === "status")!;
+    expect(status.buckets).toEqual([0, 0, 1, 0, 0]);
+    expect(stats.buckets).toEqual([2, 0, 1, 0, 1]);
+  });
+
+  it("counts out-of-window cards in totals but excludes them from buckets", () => {
+    const past = store.saveCard({ title: "past", kind: "note" }).card;
+    const future = store.saveCard({ title: "future", kind: "note" }).card;
+    setUpdatedAt(past.id, "2026-06-01T00:00:00.000Z"); // before window start
+    setUpdatedAt(future.id, "2026-06-30T00:00:00.000Z"); // after window end (now)
+
+    const stats = store.getKindStats({ now: NOW, days: 10, buckets: 5 });
+
+    const note = stats.kinds.find((stat) => stat.kind === "note")!;
+    expect(note.total).toBe(2);
+    expect(note.buckets).toEqual([0, 0, 0, 0, 0]);
+  });
+
+  it("scopes counts by keyPrefix", () => {
+    store.saveCard({ key: "docs:1", title: "docs one", kind: "note" });
+    store.saveCard({ key: "docs:2", title: "docs two", kind: "status" });
+    store.saveCard({ key: "ops:1", title: "ops one", kind: "note" });
+    store.saveCard({ title: "keyless", kind: "note" });
+
+    const stats = store.getKindStats({ now: NOW, keyPrefix: "docs:" });
+
+    expect(stats.total).toBe(2);
+    expect(stats.kinds.map((stat) => stat.kind).sort()).toEqual(["note", "status"]);
+    expect(stats.kinds.every((stat) => stat.total === 1)).toBe(true);
+  });
+
+  it("skips unparseable timestamps without dropping the card from totals", () => {
+    const card = store.saveCard({ title: "weird", kind: "note" }).card;
+    db.prepare("UPDATE feed_cards SET updatedAt = ? WHERE id = ?").run("2026-06-20T99:99:99.000Z", card.id);
+
+    const stats = store.getKindStats({ now: NOW, days: 10, buckets: 5 });
+
+    const note = stats.kinds.find((stat) => stat.kind === "note")!;
+    expect(note.total).toBe(1);
+    expect(note.buckets).toEqual([0, 0, 0, 0, 0]);
+  });
+
+  it("clamps days and buckets to supported ranges", () => {
+    const stats = store.getKindStats({ now: NOW, days: 10_000, buckets: 1_000 });
+    expect(stats.windowDays).toBe(365);
+    expect(stats.bucketCount).toBe(60);
+    expect(stats.buckets).toHaveLength(60);
+  });
+});

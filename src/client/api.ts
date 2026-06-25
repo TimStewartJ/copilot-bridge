@@ -1370,6 +1370,43 @@ export async function fetchFeedPage(filters: FeedQueryFilters = {}): Promise<Fee
   return apiFetch<FeedPage>(`/api/feed${buildFeedQuery(filters)}`);
 }
 
+export interface FeedKindStat {
+  kind: string;
+  total: number;
+  active: number;
+  done: number;
+  dismissed: number;
+  lastActivityAt: string | null;
+  buckets: number[];
+}
+
+export interface FeedKindStats {
+  generatedAt: string;
+  windowDays: number;
+  bucketCount: number;
+  windowStart: string;
+  windowEnd: string;
+  total: number;
+  active: number;
+  buckets: number[];
+  kinds: FeedKindStat[];
+}
+
+export interface FeedKindStatsParams {
+  days?: number;
+  buckets?: number;
+  keyPrefix?: string;
+}
+
+export async function fetchFeedKindStats(params: FeedKindStatsParams = {}): Promise<FeedKindStats> {
+  const search = new URLSearchParams();
+  if (params.days !== undefined) search.set("days", String(params.days));
+  if (params.buckets !== undefined) search.set("buckets", String(params.buckets));
+  if (params.keyPrefix) search.set("keyPrefix", params.keyPrefix);
+  const query = search.toString();
+  return apiFetch<FeedKindStats>(`/api/feed/kind-stats${query ? `?${query}` : ""}`);
+}
+
 export async function saveFeedCard(input: FeedCardMutation): Promise<FeedSaveResult> {
   return apiFetch<FeedSaveResult>("/api/feed", input);
 }

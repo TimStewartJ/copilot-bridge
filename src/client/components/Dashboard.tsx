@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { getDashboardTabPath, getExplicitDashboardTabFromPathname, getRememberedDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
-import { useFeedPagesQuery } from "../hooks/queries/useFeed";
+import { useFeedKindStatsQuery, useFeedPagesQuery } from "../hooks/queries/useFeed";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
 import DashboardChecklist from "./DashboardChecklist";
 import DashboardFeed, { type FeedFilterState } from "./DashboardFeed";
@@ -152,6 +152,11 @@ export default function Dashboard({
   const activeFeedQuery = useFeedPagesQuery(activeFeedFilters);
   const doneFeedQuery = useFeedPagesQuery(doneFeedFilters, { enabled: showResolvedFeed });
   const dismissedFeedQuery = useFeedPagesQuery(dismissedFeedFilters, { enabled: showResolvedFeed });
+  const kindStatsParams = useMemo(
+    () => ({ keyPrefix: feedFilterFragment.keyPrefix }),
+    [feedFilterFragment.keyPrefix],
+  );
+  const kindStatsQuery = useFeedKindStatsQuery(kindStatsParams, { enabled: activeTab === "feed" });
   const activeFeedCards = useMemo(() => flattenFeedPages(activeFeedQuery.data), [activeFeedQuery.data]);
   const doneFeedCards = useMemo(() => flattenFeedPages(doneFeedQuery.data), [doneFeedQuery.data]);
   const dismissedFeedCards = useMemo(() => flattenFeedPages(dismissedFeedQuery.data), [dismissedFeedQuery.data]);
@@ -235,6 +240,8 @@ export default function Dashboard({
             showResolvedFeed={showResolvedFeed}
             feedFilter={feedFilter}
             onFeedFilterChange={handleFeedFilterChange}
+            kindStats={kindStatsQuery.data ?? null}
+            kindStatsLoading={kindStatsQuery.isLoading}
             activeHasMore={Boolean(activeFeedQuery.hasNextPage)}
             resolvedHasMore={showResolvedFeed && Boolean(doneFeedQuery.hasNextPage || dismissedFeedQuery.hasNextPage)}
             activeLoadingMore={activeFeedQuery.isFetchingNextPage}

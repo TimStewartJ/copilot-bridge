@@ -156,6 +156,20 @@ function findById(root: any, id: string): any {
   return null;
 }
 
+function findAllByRole(root: any, role: string): any[] {
+  const results: any[] = [];
+  if (!root) return results;
+  if (root.getAttribute?.("role") === role) results.push(root);
+  for (const child of root.childNodes ?? []) {
+    results.push(...findAllByRole(child, role));
+  }
+  return results;
+}
+
+function findOptionByKind(root: any, kind: string): any {
+  return findAllByRole(root, "option").find((option) => option.getAttribute?.("data-kind") === kind) ?? null;
+}
+
 function clickButton(button: any): unknown {
   return getReactProps(button)?.onClick?.({ currentTarget: button });
 }
@@ -1027,14 +1041,18 @@ describe("DashboardFeed feed filter", () => {
       onFeedFilterChange,
     });
 
-    const select = findByAriaLabel(dom?.container, "Filter feed by kind");
-    expect(select).toBeTruthy();
-    const optionValues = findAllByTag(select, "OPTION").map((option: any) => option.getAttribute("value"));
-    expect(optionValues).toContain("note");
-    expect(optionValues).toContain("status");
+    const trigger = findByAriaLabel(dom?.container, "Filter feed by kind");
+    expect(trigger).toBeTruthy();
+    await act(async () => {
+      clickButton(trigger);
+    });
+
+    const optionKinds = findAllByRole(dom?.container, "option").map((option: any) => option.getAttribute("data-kind"));
+    expect(optionKinds).toContain("note");
+    expect(optionKinds).toContain("status");
 
     await act(async () => {
-      getReactProps(select)?.onChange?.({ target: { value: "note" } });
+      getReactProps(findOptionByKind(dom?.container, "note"))?.onClick?.({});
     });
 
     expect(onFeedFilterChange).toHaveBeenCalledWith({ kind: "note" });
@@ -1115,9 +1133,12 @@ describe("DashboardFeed feed filter", () => {
       onFeedFilterChange,
     });
 
-    const select = findByAriaLabel(dom?.container, "Filter feed by kind");
-    const optionValues = findAllByTag(select, "OPTION").map((option: any) => option.getAttribute("value"));
-    expect(optionValues).toContain("note");
-    expect(optionValues).toContain("status");
+    const trigger = findByAriaLabel(dom?.container, "Filter feed by kind");
+    await act(async () => {
+      clickButton(trigger);
+    });
+    const optionKinds = findAllByRole(dom?.container, "option").map((option: any) => option.getAttribute("data-kind"));
+    expect(optionKinds).toContain("note");
+    expect(optionKinds).toContain("status");
   });
 });
