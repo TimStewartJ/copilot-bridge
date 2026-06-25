@@ -88,10 +88,12 @@ describe("MCP server registry routes", () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
-    const { app, ctx } = createTestApp({ sessionManager });
+    const { app, ctx, db } = createTestApp({ sessionManager });
     const tag = ctx.tagStore!.createTag("Tools");
     const alpha = ctx.mcpServerStore!.createMcpServer({ name: "Alpha", config: localConfig });
     const beta = ctx.mcpServerStore!.createMcpServer({ name: "Beta", config: remoteConfig });
+    const refCount = (serverId: string) =>
+      (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_server_refs WHERE serverId = ?").get(serverId) as any).count;
 
     const selected = await request(app)
       .put(`/api/tags/${tag.id}/mcp-servers`)
@@ -101,14 +103,40 @@ describe("MCP server registry routes", () => {
     expect(selected.body.servers.map((server: any) => server.serverId)).toEqual([alpha.id, beta.id]);
     expect(selected.body.servers.map((server: any) => server.serverName)).toEqual(["Alpha", "Beta"]);
     expect(evictSpy).toHaveBeenCalledTimes(1);
+    expect(refCount(alpha.id)).toBe(1);
 
     const legacyRead = await request(app).get(`/api/tags/${tag.id}/mcp`);
     expect(legacyRead.body.servers.map((server: any) => server.serverId)).toEqual([alpha.id, beta.id]);
 
+    evictSpy.mockClear();
     const deleted = await request(app).delete(`/api/mcp-servers/${alpha.id}`);
     expect(deleted.status).toBe(200);
-    expect(evictSpy).toHaveBeenCalledTimes(2);
+    expect(deleted.body).toEqual({ success: true });
+    expect(evictSpy).toHaveBeenCalledTimes(1);
+    // SQLite ON DELETE CASCADE owns child-row cleanup — the route no longer deletes refs itself.
+    expect(refCount(alpha.id)).toBe(0);
+    expect(refCount(beta.id)).toBe(1);
     expect(ctx.tagStore!.getTagMcpServerIds(tag.id)).toEqual([beta.id]);
+  });
+
+  it("does not evict or mutate tag refs when deleting a missing MCP server", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const { app, ctx, db } = createTestApp({ sessionManager });
+    const tag = ctx.tagStore!.createTag("Tools");
+    const alpha = ctx.mcpServerStore!.createMcpServer({ name: "Alpha", config: localConfig });
+    ctx.tagStore!.addTagMcpServerRef(tag.id, alpha.id);
+
+    const missingDelete = await request(app).delete("/api/mcp-servers/missing-server");
+    expect(missingDelete.status).toBe(404);
+    expect(missingDelete.body.error).toMatch(/not found/i);
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(ctx.mcpServerStore!.getMcpServer(alpha.id)).toBeDefined();
+    expect(ctx.tagStore!.getTagMcpServerIds(tag.id)).toEqual([alpha.id]);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_server_refs WHERE serverId = ?").get(alpha.id) as any).count,
+    ).toBe(1);
   });
 
   it("supports incremental tag refs and legacy tag MCP routes with cache eviction", async () => {

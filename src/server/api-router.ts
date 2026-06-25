@@ -2974,7 +2974,6 @@ export function createApiRouter(
       return res.status(404).json({ error: "MCP server not found" });
     }
 
-    ctx.tagStore?.removeTagMcpServerRefsByServerId(req.params.id);
     mcpServerStore.deleteMcpServer(req.params.id);
     console.log("[mcp] MCP server registry changed — evicting cached sessions");
     void ctx.sessionManager.evictAllCachedSessions();

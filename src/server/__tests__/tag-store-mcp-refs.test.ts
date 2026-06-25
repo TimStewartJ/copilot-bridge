@@ -22,6 +22,10 @@ function tagRefCount(tagId: string): number {
   return (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_server_refs WHERE tagId = ?").get(tagId) as any).count;
 }
 
+function serverRefCount(serverId: string): number {
+  return (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_server_refs WHERE serverId = ?").get(serverId) as any).count;
+}
+
 function insertLegacyTagServer(tagId: string, serverName: string): void {
   db.prepare("INSERT OR REPLACE INTO tag_mcp_servers (tagId, serverName, config) VALUES (?, ?, ?)").run(
     tagId,
@@ -75,24 +79,55 @@ describe("tag-store MCP server references", () => {
     expect(legacyTagServerCount(tag.id)).toBe(0);
   });
 
-  it("drops selected refs when a registry server is deleted", () => {
+  it("removes a deleted registry server's refs across tags via SQLite cascade", () => {
     const tag = tagStore.createTag("Cascade");
     const otherTag = tagStore.createTag("Other cascade");
     const server = mcpStore.createMcpServer({ name: "Cascade MCP", config: { command: "cascade", args: [] } });
+    const survivor = mcpStore.createMcpServer({ name: "Survivor MCP", config: { command: "survivor", args: [] } });
     tagStore.addTagMcpServerRef(tag.id, server.id);
+    tagStore.addTagMcpServerRef(tag.id, survivor.id);
     tagStore.addTagMcpServerRef(otherTag.id, server.id);
+    expect(serverRefCount(server.id)).toBe(2);
 
-    tagStore.removeTagMcpServerRefsByServerId(server.id);
-
-    expect(mcpStore.getMcpServer(server.id)).toBeDefined();
-    expect(tagStore.getTagMcpServers(tag.id)).toEqual([]);
-    expect(tagStore.getTagMcpServers(otherTag.id)).toEqual([]);
-    tagStore.addTagMcpServerRef(tag.id, server.id);
-
+    // Delete only the parent row — no tag-store helper. SQLite ON DELETE CASCADE owns child cleanup.
     mcpStore.deleteMcpServer(server.id);
 
-    expect(tagStore.getTagMcpServers(tag.id)).toEqual([]);
-    expect(tagRefCount(tag.id)).toBe(0);
+    expect(mcpStore.getMcpServer(server.id)).toBeUndefined();
+    // Raw junction rows for the deleted server are gone (cascade), not merely hidden by the registry JOIN.
+    expect(serverRefCount(server.id)).toBe(0);
+    // Refs to other servers survive.
+    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([survivor.id]);
+    expect(tagRefCount(tag.id)).toBe(1);
+    expect(serverRefCount(survivor.id)).toBe(1);
+    // The other tag loses its only ref.
+    expect(tagStore.getTagMcpServers(otherTag.id)).toEqual([]);
+    expect(tagRefCount(otherTag.id)).toBe(0);
+  });
+
+  it("preserves tag refs when deleting an unrelated or missing registry server", () => {
+    const tag = tagStore.createTag("Stable");
+    const kept = mcpStore.createMcpServer({ name: "Kept MCP", config: { command: "kept", args: [] } });
+    const unrelated = mcpStore.createMcpServer({ name: "Unrelated MCP", config: { command: "unrelated", args: [] } });
+    tagStore.addTagMcpServerRef(tag.id, kept.id);
+
+    mcpStore.deleteMcpServer(unrelated.id);
+    mcpStore.deleteMcpServer("missing-server");
+
+    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([kept.id]);
+    expect(tagRefCount(tag.id)).toBe(1);
+    expect(serverRefCount(kept.id)).toBe(1);
+  });
+
+  it("locks in the serverId → mcp_servers ON DELETE CASCADE foreign key", () => {
+    expect((db.prepare("PRAGMA foreign_keys").get() as any).foreign_keys).toBe(1);
+    const fks = db.prepare("PRAGMA foreign_key_list(tag_mcp_server_refs)").all() as Array<{
+      table: string;
+      from: string;
+      to: string;
+      on_delete: string;
+    }>;
+    const serverFk = fks.find((fk) => fk.from === "serverId");
+    expect(serverFk).toMatchObject({ table: "mcp_servers", to: "id", on_delete: "CASCADE" });
   });
 
   it("routes legacy compatibility writes through registry refs and clears old rows", () => {
