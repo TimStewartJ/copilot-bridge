@@ -246,7 +246,6 @@ export interface SessionRunnerDeps {
   hasPlan(sessionId: string): boolean;
   getSessionStateDir(sessionId: string): string;
   buildSessionConfig(opts?: SessionConfigOptions): any;
-  ensureSessionMcpEndpoint?(sessionId: string): Promise<void> | undefined;
   assertSessionCacheAvailable(): void;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
@@ -587,8 +586,6 @@ export class SessionRunner {
         usedCache = false;
         console.log(`[sdk] [${sid}] Resuming session...`);
         this.deps.assertSessionCacheAvailable();
-        const endpointReady = this.deps.ensureSessionMcpEndpoint?.(sessionId);
-        if (endpointReady) await endpointReady;
         s = await resumeSessionWithTimeout(
           this.client!.resumeSession(sessionId, resumeConfig),
           "resumeSession timed out after 60s",
@@ -1533,8 +1530,6 @@ export class SessionRunner {
     const resumeFreshRecoverySession = async (): Promise<any> => {
       const resumeStart = Date.now();
       console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
-      const endpointReady = this.deps.ensureSessionMcpEndpoint?.(sessionId);
-      if (endpointReady) await endpointReady;
       const recoveredSession = await resumeSessionWithTimeout(
         this.client!.resumeSession(sessionId, resumeConfig),
         "resumeSession timed out after 60s",

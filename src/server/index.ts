@@ -29,7 +29,6 @@ import {
 import {
   createAppContext,
   initializeSchedulerAndDeferredRunners,
-  startBridgeToolsMcpServer,
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
 
@@ -116,7 +115,6 @@ async function main(): Promise<void> {
   console.log("╚════════════════════════════════════════╝");
   console.log();
 
-  await startBridgeToolsMcpServer(defaultContext);
   await sessionManager.initialize();
   configureRestartStateStore(runtimePaths);
   const sweptRestartTemps = sweepStaleRestartStateTempFiles(

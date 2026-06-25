@@ -90,12 +90,6 @@ import type { BrowserSessionStore } from "./browser-session-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import { sampleProcessTree } from "./platform.js";
-import { buildBridgeToolsSessionMcpServerConfig } from "./agent-tools-mcp/config.js";
-import {
-  BRIDGE_TOOLS_MCP_SERVER_NAME,
-  BRIDGE_TOOLS_SESSION_MCP_SERVER_NAME,
-  createBridgeToolsMcpEndpoint,
-} from "./agent-tools-mcp/endpoint.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
@@ -570,7 +564,6 @@ export class SessionManager {
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
-      ensureSessionMcpEndpoint: (sessionId) => this.ensureSessionMcpEndpoint(sessionId),
       assertSessionCacheAvailable: () => this.assertSessionCacheAvailable(true),
       cacheResumedSession: (sessionId, session) => this.cacheResumedSession(sessionId, session),
       replaceCachedSession: (sessionId, expectedSession, nextSession) =>
@@ -1151,16 +1144,10 @@ export class SessionManager {
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const nativeBridgeTools = this.resolveNativeBridgeTools();
-    const sessionBuiltInMcpServers = this.resolveSessionBuiltInMcpServers(opts.sessionId);
-    const builtInMcpServers = this.resolveBuiltInMcpServersForSession({
-      ...(this.deps.builtInMcpServers ?? {}),
-      ...sessionBuiltInMcpServers,
-    });
     const modelMetadata = opts.modelMetadata ?? this.modelMetadataForContextTiers;
     const cfg = buildSessionConfigWithDeps({
       deps: {
         ...this.deps,
-        builtInMcpServers,
         nativeBridgeTools,
         permissionPolicy: this.backend?.permissionPolicy,
       },
@@ -1203,18 +1190,6 @@ export class SessionManager {
     const definitions = this.eligibleNativeBridgeToolDefinitions();
     if (definitions.length === 0) return undefined;
     return createNativeBridgeTools(definitions);
-  }
-
-  private resolveBuiltInMcpServersForSession(
-    servers: Record<string, McpServerConfig>,
-  ): Record<string, McpServerConfig> {
-    if (!this.shouldUseNativeBridgeTools()) return servers;
-    const {
-      [BRIDGE_TOOLS_MCP_SERVER_NAME]: _globalBridgeTools,
-      [BRIDGE_TOOLS_SESSION_MCP_SERVER_NAME]: _sessionBridgeTools,
-      ...remaining
-    } = servers;
-    return remaining;
   }
 
   private async loadModelMetadataForContextTiers(
@@ -1284,36 +1259,6 @@ export class SessionManager {
     return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
   }
 
-  private resolveSessionBuiltInMcpServers(sessionId: string | undefined): Record<string, McpServerConfig> {
-    if (this.shouldUseNativeBridgeTools()) return {};
-    const bridgeToolsMcpServer = this.deps.bridgeToolsMcpServer;
-    if (!sessionId || !bridgeToolsMcpServer) return {};
-    const config = buildBridgeToolsSessionMcpServerConfig({
-      endpoint: this.resolveSessionMcpEndpoint(sessionId),
-      toolNames: bridgeToolsMcpServer.getToolNames("session"),
-      distributionMode: this.deps.runtimePaths?.distributionMode,
-    });
-    return config ? { [config.name]: config.config } : {};
-  }
-
-  private resolveSessionMcpEndpoint(sessionId: string): string {
-    return createBridgeToolsMcpEndpoint({
-      dataDir: this.deps.runtimePaths?.dataDir,
-      sessionId,
-    });
-  }
-
-  private ensureSessionMcpEndpoint(sessionId: string): Promise<void> | undefined {
-    if (this.shouldUseNativeBridgeTools()) return;
-    const bridgeToolsMcpServer = this.deps.bridgeToolsMcpServer;
-    if (!bridgeToolsMcpServer || bridgeToolsMcpServer.getToolNames("session").length === 0) return;
-    return bridgeToolsMcpServer.listenForSession(sessionId, this.resolveSessionMcpEndpoint(sessionId));
-  }
-
-  private async closeSessionMcpEndpoint(sessionId: string): Promise<void> {
-    await this.deps.bridgeToolsMcpServer?.closeSessionEndpoint(sessionId);
-  }
-
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
     if (!this.shouldUseNativeBridgeTools() || !this.backend?.capabilities.toolMetadataWarmup) return;
     if (typeof session.initializeTools !== "function") return;
@@ -1360,7 +1305,6 @@ export class SessionManager {
       console.warn("[sdk] Failed to reap mismatched created session:", error);
     }
     try { await backend.deleteSession(session.sessionId); } catch { /* best-effort */ }
-    await this.closeSessionMcpEndpoint(expectedSessionId);
     throw new Error(
       `Agent backend returned session ${session.sessionId} instead of requested Bridge session ${expectedSessionId}`,
     );
@@ -1829,8 +1773,6 @@ export class SessionManager {
       let session = this.sessionObjects.get(sessionId);
       if (!session) {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
-        const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-        if (endpointReady) await endpointReady;
         session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, resumeConfig),
           "MCP auth resume timed out after 60s",
@@ -1947,8 +1889,6 @@ export class SessionManager {
 
     const t0 = Date.now();
     const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
-    const endpointReady = bridgeSessionId ? this.ensureSessionMcpEndpoint(bridgeSessionId) : undefined;
-    if (endpointReady) await endpointReady;
     const modelMetadata = await this.loadModelMetadataForContextTiers(client);
     let session: AgentSession;
     let sessionConfig: any;
@@ -1963,7 +1903,6 @@ export class SessionManager {
       session = await client.createSession(sessionConfig);
     } catch (error) {
       if (creationStarted) this.endSessionCreation();
-      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
       throw error;
     }
     const duration = Date.now() - t0;
@@ -1976,7 +1915,6 @@ export class SessionManager {
       await this.cacheSession(session.sessionId, session, null);
     } catch (error) {
       if (creationStarted) this.endSessionCreation();
-      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
       try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
         console.warn(`[sdk] Failed to delete rejected session ${session.sessionId}:`, cleanupError);
       }
@@ -2022,8 +1960,6 @@ export class SessionManager {
     const t0 = Date.now();
     const result = await backend.forkSession(sourceSessionId, forkOpts);
     const duration = Date.now() - t0;
-    const endpointReady = this.ensureSessionMcpEndpoint(result.sessionId);
-    if (endpointReady) await endpointReady;
     if (this.deps.bridgeToolsMcpServer && typeof backend.resumeSession === "function") {
       try {
         const forkResumeConfig = this.buildSessionConfig({
@@ -2042,7 +1978,6 @@ export class SessionManager {
           this.flushPendingSessionEviction(result.sessionId);
         }
       } catch (error) {
-        await this.closeSessionMcpEndpoint(result.sessionId);
         try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
         throw error;
       }
@@ -2093,8 +2028,6 @@ export class SessionManager {
 
     const t0 = Date.now();
     const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
-    const endpointReady = bridgeSessionId ? this.ensureSessionMcpEndpoint(bridgeSessionId) : undefined;
-    if (endpointReady) await endpointReady;
     const modelMetadata = await this.loadModelMetadataForContextTiers(client);
     const sessionConfig = this.buildSessionConfig({
       ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
@@ -2115,7 +2048,6 @@ export class SessionManager {
       );
     } catch (error) {
       if (creationStarted) this.endSessionCreation();
-      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
       throw error;
     }
     const duration = Date.now() - t0;
@@ -2128,7 +2060,6 @@ export class SessionManager {
       await this.cacheSession(session.sessionId, session, null);
     } catch (error) {
       if (creationStarted) this.endSessionCreation();
-      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
       try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
         console.warn(`[sdk] Failed to delete rejected task session ${session.sessionId}:`, cleanupError);
       }
@@ -2315,8 +2246,6 @@ export class SessionManager {
         this.beginSessionResume(sessionId);
         const tResume = Date.now();
         try {
-          const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-          if (endpointReady) await endpointReady;
           await this.evictCachedSession(sessionId, session, "discarding stale cached session");
           session = await resumeSessionWithTimeout(
             client.resumeSession(sessionId, msgResumeConfig),
@@ -2339,8 +2268,6 @@ export class SessionManager {
       this.beginSessionResume(sessionId);
       const tResume = Date.now();
       try {
-        const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-        if (endpointReady) await endpointReady;
         session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, msgResumeConfig),
           "resumeSession timed out after 60s",
@@ -2446,8 +2373,6 @@ export class SessionManager {
     const warmPromise = (async () => {
       this.beginSessionResume(sessionId);
       try {
-        const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-        if (endpointReady) await endpointReady;
         const session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, resumeConfig),
           "warmSession timed out after 60s",
@@ -2506,7 +2431,6 @@ export class SessionManager {
       }
     }
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
-    await this.closeSessionMcpEndpoint(sessionId);
 
     // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
     const copilotHome = this.getCopilotHome();
@@ -2548,8 +2472,6 @@ export class SessionManager {
       this.mcpStatus.delete(sessionId);
 
       console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
-      const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-      if (endpointReady) await endpointReady;
       const session = await resumeSessionWithTimeout(
         client.resumeSession(sessionId, resumeConfig),
         "reloadSession timed out after 60s",
@@ -2689,8 +2611,6 @@ export class SessionManager {
         });
         this.beginSessionResume(sessionId);
         try {
-          const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
-          if (endpointReady) await endpointReady;
           session = await resumeSessionWithTimeout(
             client.resumeSession(sessionId, resumeConfig),
             "resumeSession timed out after 60s",
