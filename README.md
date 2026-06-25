@@ -225,7 +225,7 @@ Use `check:fast` during day-to-day editing, then run the area-specific `check:*`
 - Do not hardcode Unix-only fixtures like `/tmp/...` or `/usr/bin/...` in tests.
 - Do not skip Windows with `skipIf(isWindows)` when the behavior can be tested with mocks instead.
 - Prefer mocking failure paths over Unix-only filesystem tricks like `chmod`.
-- Run `npm run test:preview` before preview/deploy; `staging_preview` also runs it automatically. `preview:smoke` checks the staged preview/backend without re-running validation by default; use `npm run preview:smoke:full` to validate and smoke in one command.
+- Run `npm run check:pr` before preview/deploy; `staging_preview` also runs validation automatically. `preview:smoke` checks the staged preview/backend without re-running validation by default; use `npm run preview:smoke:full` to validate and smoke in one command.
 
 ### Build
 
