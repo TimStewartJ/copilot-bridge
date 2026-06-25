@@ -1,3 +1,4 @@
+import { win32 as winPath } from "node:path";
 import { getToolExecutionDisplayText } from "./tool-results.js";
 import {
   extractTerminalCompletion,
@@ -493,7 +494,9 @@ export function transformEventsToMessages(
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
       const fileAttachments = data.attachments
         ?.filter((a: any) => a.type === "file" && a.path)
-        ?.map((a: any) => ({ type: "file" as const, path: a.path, displayName: a.displayName ?? a.path.split("/").pop() }));
+        // Attachment paths recorded on Windows are backslash-separated; win32.basename strips
+        // both "\\" and "/" separators on any host and is identical to posix basename for "/"-paths.
+        ?.map((a: any) => ({ type: "file" as const, path: a.path, displayName: a.displayName ?? winPath.basename(a.path) }));
       const allAttachments = [...(blobAttachments ?? []), ...(fileAttachments ?? [])];
       entries.push({
         id: `entry-${idx++}`,
