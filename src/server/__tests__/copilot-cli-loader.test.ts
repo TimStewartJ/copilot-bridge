@@ -11,6 +11,11 @@ async createSession(n){let o=await this.resolveSessionAuth(n);let a={};if(n.enab
 async resumeSession(l,n){let o=await this.resolveSessionAuth(n);let p={};if(n.enableConfigDiscovery&&o&&!n.provider&&!n.gitHubToken){let h=await this.createBuiltInGitHubMcpConfig(o);h&&(p.mcpServers={"github-mcp-server":h,...p.mcpServers})}}
 `;
 
+const CONFIG_CALL_SITES_DIFFERENT_SESSION_VARS = `
+async createSession(r){let s=await this.resolveSessionAuth(r);let c={};if(r.enableConfigDiscovery&&s&&!r.provider&&!r.gitHubToken){let g=await this.createBuiltInGitHubMcpConfig(s);g&&(c.mcpServers={"github-mcp-server":g,...c.mcpServers})}}
+async resumeSession(l,r){let o=await this.resolveSessionAuth(r);let p={};if(r.enableConfigDiscovery&&o&&!r.provider&&!r.gitHubToken){let y=await this.createBuiltInGitHubMcpConfig(o);y&&(p.mcpServers={"github-mcp-server":y,...p.mcpServers})}}
+`;
+
 describe("copilot-cli-loader", () => {
   it("patches the current simple GitHub MCP config method shape", () => {
     const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}}`;
@@ -43,5 +48,18 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain(`{"github-mcp-server":m,...a.mcpServers}`);
     expect(patched).toContain(`{"github-mcp-server":h,...p.mcpServers}`);
     expect(patched).not.toContain("r.githubMcpToolOptions");
+  });
+
+  it("patches call sites that use different minified session variables", () => {
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_DIFFERENT_SESSION_VARS}}`;
+
+    const patched = patchCopilotAppSource(source);
+
+    expect(patched).toContain("if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&s&&!r.provider&&!r.gitHubToken)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,r.githubMcpToolOptions)");
+    expect(patched).toContain(`{"github-mcp-server":g,...c.mcpServers}`);
+    expect(patched).toContain("if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&o&&!r.provider&&!r.gitHubToken)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions)");
+    expect(patched).toContain(`{"github-mcp-server":y,...p.mcpServers}`);
   });
 });
