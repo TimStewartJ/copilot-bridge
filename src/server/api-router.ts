@@ -65,6 +65,7 @@ import {
 } from "../shared/session-agents.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
+import { TaskGroupValidationError } from "./task-group-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
@@ -2884,7 +2885,13 @@ export function createApiRouter(
       const tags = ctx.tagStore?.getEntityTags("task_group", group.id) ?? [];
       res.json({ group: { ...group, tags } });
     } catch (err) {
-      res.status(404).json({ error: String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      const status = err instanceof TaskGroupValidationError
+        ? 400
+        : /Group .* not found/.test(message)
+          ? 404
+          : 400;
+      res.status(status).json({ error: message });
     }
   });
 
