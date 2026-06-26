@@ -2,49 +2,49 @@
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 24,
+    "line": 26,
     "character": 33,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 25,
+    "line": 27,
     "character": 33,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 32,
+    "line": 34,
     "character": 7,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 43,
+    "line": 45,
     "character": 7,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 53,
+    "line": 55,
     "character": 7,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 65,
+    "line": 67,
     "character": 9,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 86,
+    "line": 88,
     "character": 9,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
   },
@@ -170,21 +170,21 @@
   {
     "code": 2345,
     "file": "src/client/components/DocsView.tsx",
-    "line": 1626,
+    "line": 1643,
     "character": 57,
     "message": "Argument of type 'string | null' is not assignable to parameter of type 'string'.\n  Type 'null' is not assignable to type 'string'."
   },
   {
     "code": 2345,
     "file": "src/client/components/DocsView.tsx",
-    "line": 1687,
+    "line": 1704,
     "character": 17,
     "message": "Argument of type '(prev: DbSortState) => { field: string; order: string; }' is not assignable to parameter of type 'SetStateAction<DbSortState>'.\n  Type '(prev: DbSortState) => { field: string; order: string; }' is not assignable to type '(prevState: DbSortState) => DbSortState'.\n    Call signature return types '{ field: string; order: string; }' and 'DbSortState' are incompatible.\n      The types of 'order' are incompatible between these types.\n        Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
   },
   {
     "code": 2345,
     "file": "src/client/components/DocsView.tsx",
-    "line": 1691,
+    "line": 1708,
     "character": 30,
     "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
   },

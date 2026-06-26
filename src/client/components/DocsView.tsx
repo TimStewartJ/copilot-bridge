@@ -48,6 +48,8 @@ import {
   searchDocs,
   fetchDbSchema,
   fetchDbEntries,
+  updateDbEntryPage,
+  deleteDbEntryPage,
   resolveWikilinks,
   type DocTreeNode,
   type DocPage,
@@ -1089,23 +1091,32 @@ export default function DocsView() {
   const handleSave = useCallback(async () => {
     if (!selectedPath) return;
     setDocError(null);
+    const targetPath = page?.isDbItem ? page.path : selectedPath;
     try {
-      await writeDocPage(selectedPath, editorContent);
-      const nextPage = await fetchDocPage(selectedPath);
+      if (page?.isDbItem) {
+        await updateDbEntryPage(targetPath, { content: editorContent });
+      } else {
+        await writeDocPage(targetPath, editorContent);
+      }
+      const nextPage = await fetchDocPage(targetPath);
       setPage(nextPage);
       setEditing(false);
     } catch (err) {
       console.error("Save failed:", err);
       setDocError(err instanceof Error ? err.message : String(err));
     }
-  }, [selectedPath, editorContent]);
+  }, [selectedPath, editorContent, page]);
 
   const handleDelete = useCallback(async () => {
     if (!selectedPath) return;
     if (!confirm("Delete this page?")) return;
     setDocError(null);
     try {
-      await deleteDocPage(selectedPath);
+      if (page?.isDbItem) {
+        await deleteDbEntryPage(page.path);
+      } else {
+        await deleteDocPage(selectedPath);
+      }
       setPage(null);
       loadTree();
       navigate("/docs", { replace: true });
@@ -1113,7 +1124,7 @@ export default function DocsView() {
       console.error("Delete failed:", err);
       setDocError(err instanceof Error ? err.message : String(err));
     }
-  }, [selectedPath, loadTree, navigate]);
+  }, [selectedPath, loadTree, navigate, page]);
 
   const openInspector = useCallback(() => {
     setInspectorOpen(true);
@@ -1138,9 +1149,15 @@ export default function DocsView() {
   const startEdit = useCallback(() => {
     if (!page) return;
     setDocError(null);
+    // DB-entry frontmatter is re-parsed as YAML on save, so serialize every value via JSON
+    // (a valid YAML subset) to keep special characters round-trippable. Plain pages keep their
+    // raw text representation.
+    const serializeValue = page.isDbItem
+      ? (v: unknown) => JSON.stringify(v)
+      : (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
     const frontmatter = Object.keys(page.frontmatter).length
       ? `---\n${Object.entries(page.frontmatter)
-          .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+          .map(([k, v]) => `${k}: ${serializeValue(v)}`)
           .join("\n")}\n---\n\n`
       : "";
     setEditorContent(frontmatter + page.body);

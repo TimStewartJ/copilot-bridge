@@ -272,20 +272,9 @@ export function createDocsToolDefinitions(ctx: AppContext): BridgeToolDefinition
       parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, slug: { type: "string", description: "Entry slug (filename without .md, returned by docs_db_add or docs_db_query)" } }, required: ["folder", "slug"] },
       handler: async (args: any) => {
         try {
-          const schema = ctx.docsStore!.readSchema(args.folder);
-          if (!schema) return toolFailure(`No database collection found at "${args.folder}"`);
-          const pagePath = `${args.folder}/${args.slug}`;
-          // Verify it's actually a DB entry
-          const page = ctx.docsStore!.readPage(pagePath);
-          if (page && !page.isDbItem) {
-            return toolFailure(`"${pagePath}" is not a database entry`);
-          }
-          if (page) {
-            createPreDeleteSnapshot(ctx);
-          }
-          const deleted = ctx.docsStore!.deletePage(pagePath);
-          const indexResult = deleted ? ctx.docsIndex!.removePage(pagePath) : undefined;
-          return { folder: args.folder, slug: args.slug, deleted, ...docsIndexMutationWarning(indexResult) };
+          const result = ctx.docsStore!.deleteDbEntry(args.folder, args.slug, () => createPreDeleteSnapshot(ctx));
+          const indexResult = result.deleted ? ctx.docsIndex!.removePage(result.path) : undefined;
+          return { folder: args.folder, slug: args.slug, deleted: result.deleted, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }

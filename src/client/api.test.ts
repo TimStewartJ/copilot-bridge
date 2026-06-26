@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  deleteDbEntryPage,
   getSessionActivityTime,
   getSessionReadThroughActivityTime,
   getSessionRunState,
   isSessionActive,
   serializeSettingsPatch,
+  updateDbEntryPage,
   type Session,
 } from "./api";
 
@@ -108,5 +110,62 @@ describe("serializeSettingsPatch", () => {
     expect(serializeSettingsPatch({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" })).toBe(
       JSON.stringify({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" }),
     );
+  });
+});
+
+describe("docs DB entry client API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubJsonResponse(body: unknown, init: { ok?: boolean; status?: number; statusText?: string } = {}) {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: init.ok ?? true,
+      status: init.status ?? 200,
+      statusText: init.statusText ?? "OK",
+      json: async () => body,
+    })));
+  }
+
+  it("updateDbEntryPage PATCHes the DB entry route with the editor content", async () => {
+    stubJsonResponse({ path: "incidents/march-outage", success: true });
+
+    await expect(updateDbEntryPage("incidents/march-outage", { content: "---\ntitle: X\n---\n\nbody" }))
+      .resolves.toEqual({ path: "incidents/march-outage", success: true });
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "/api/docs/db/incidents/march-outage",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "---\ntitle: X\n---\n\nbody" }),
+      },
+    );
+  });
+
+  it("updateDbEntryPage throws the server error message on failure", async () => {
+    stubJsonResponse({ error: "Invalid frontmatter: bad" }, { ok: false, status: 400 });
+
+    await expect(updateDbEntryPage("incidents/x", { content: "bad" }))
+      .rejects.toThrow("Invalid frontmatter: bad");
+  });
+
+  it("deleteDbEntryPage DELETEs the DB entry route", async () => {
+    stubJsonResponse({ path: "incidents/march-outage", deleted: true });
+
+    await expect(deleteDbEntryPage("incidents/march-outage"))
+      .resolves.toEqual({ path: "incidents/march-outage", deleted: true });
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "/api/docs/db/incidents/march-outage",
+      { method: "DELETE" },
+    );
+  });
+
+  it("deleteDbEntryPage throws the server error message on failure", async () => {
+    stubJsonResponse({ error: "No database collection found at \"incidents\"" }, { ok: false, status: 400 });
+
+    await expect(deleteDbEntryPage("incidents/x"))
+      .rejects.toThrow('No database collection found at "incidents"');
   });
 });

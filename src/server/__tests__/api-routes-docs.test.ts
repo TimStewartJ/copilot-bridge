@@ -678,4 +678,91 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain(`Cannot write raw content to DB folder "${folder}"`);
     expect(res.body.error).toContain("docs_db_add");
   });
+
+  it("DELETE /api/docs/db removes a DB entry", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Deletable outage", severity: "sev1" }, body: "Body content" });
+    const slug = create.body.slug;
+    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.isDbItem).toBe(true);
+
+    const res = await request(app).delete(`/api/docs/db/${folder}/${slug}`);
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(true);
+    expect(res.body.path).toBe(`${folder}/${slug}`);
+    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)).toBeNull();
+
+    const search = await request(app).get("/api/docs/search?q=Deletable%20outage");
+    expect(search.body.results.map((r: any) => r.path)).not.toContain(`${folder}/${slug}`);
+  });
+
+  it("DELETE /api/docs/db returns deleted:false for a missing slug", async () => {
+    const res = await request(app).delete(`/api/docs/db/${folder}/does-not-exist`);
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(false);
+  });
+
+  it("DELETE /api/docs/db rejects an unknown collection", async () => {
+    const res = await request(app).delete("/api/docs/db/not-a-collection/some-slug");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("No database collection found");
+  });
+
+  it("DELETE /api/docs/db rejects a path without a slug", async () => {
+    const res = await request(app).delete(`/api/docs/db/${folder}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("folder/slug");
+  });
+
+  it("PATCH /api/docs/db updates fields and body from raw editor content", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Raw editable", severity: "sev3" }, body: "Original body" });
+    const slug = create.body.slug;
+    const originalCreated = ctx.docsStore!.readPage(`${folder}/${slug}`)?.frontmatter.created;
+
+    const content = [
+      "---",
+      'title: "Raw editable"',
+      'severity: "sev1"',
+      'created: "2000-01-01T00:00:00.000Z"',
+      'modified: "2000-01-01T00:00:00.000Z"',
+      "---",
+      "",
+      "Updated raw body",
+    ].join("\n");
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ content });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const page = ctx.docsStore!.readPage(`${folder}/${slug}`);
+    expect(page?.frontmatter.severity).toBe("sev1");
+    expect(page?.frontmatter.title).toBe("Raw editable");
+    expect(page?.body).toBe("Updated raw body");
+    // System fields from the editor payload are ignored; original created is preserved.
+    expect(page?.frontmatter.created).toBe(originalCreated);
+    expect(page?.frontmatter.modified).not.toBe("2000-01-01T00:00:00.000Z");
+  });
+
+  it("PATCH /api/docs/db rejects malformed frontmatter content without mutating the entry", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Protected from corruption", severity: "sev2" }, body: "Keep me" });
+    const slug = create.body.slug;
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ content: "---\nseverity: [unterminated\n---\n\nNew body" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid frontmatter");
+
+    const page = ctx.docsStore!.readPage(`${folder}/${slug}`);
+    expect(page?.frontmatter.severity).toBe("sev2");
+    expect(page?.body).toBe("Keep me");
+  });
 });

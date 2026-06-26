@@ -250,3 +250,90 @@ describe("docs store DB input normalization", () => {
     )).toThrow('Field name "__proto__" is not allowed');
   });
 });
+
+describe("docs store DB raw-content normalization", () => {
+  it("strictly parses frontmatter+body from content and strips system fields", () => {
+    const store = makeStore();
+
+    const normalized = store.normalizeDbEntryInput({
+      content: [
+        "---",
+        'title: "Has: a colon"',
+        'severity: "sev1"',
+        'created: "2026-04-09T00:00:00.000Z"',
+        'modified: "2026-04-09T00:00:00.000Z"',
+        "---",
+        "",
+        "Body content",
+      ].join("\n"),
+    }, "update", "incidents");
+
+    expect(normalized.fields).toMatchObject({
+      title: "Has: a colon",
+      severity: "sev1",
+    });
+    expect(normalized.fields).not.toHaveProperty("created");
+    expect(normalized.fields).not.toHaveProperty("modified");
+    expect(normalized.body).toBe("\nBody content");
+  });
+
+  it("throws Invalid frontmatter for malformed content instead of silently using it as body", () => {
+    const store = makeStore();
+
+    expect(() => store.normalizeDbEntryInput(
+      { content: "---\nseverity: [unterminated\n---\n\nBody" },
+      "update",
+      "incidents",
+    )).toThrow(/Invalid frontmatter/);
+  });
+
+  it("treats content without frontmatter as a body-only update", () => {
+    const store = makeStore();
+
+    const normalized = store.normalizeDbEntryInput({
+      content: "Just a plain body, no frontmatter",
+    }, "update", "incidents");
+
+    expect(normalized.fields).toEqual({});
+    expect(normalized.body).toBe("Just a plain body, no frontmatter");
+  });
+});
+
+describe("docs store deleteDbEntry", () => {
+  it("deletes a DB entry and returns its canonical path", () => {
+    const store = makeStore();
+    store.writeSchema("incidents", {
+      name: "Incidents",
+      fields: [{ name: "severity", type: "select", options: ["sev1", "sev2"] }],
+    });
+    const entry = store.addDbEntry("incidents", { title: "Outage", severity: "sev1" });
+    expect(store.readPage(entry.path)?.isDbItem).toBe(true);
+
+    const result = store.deleteDbEntry("incidents", entry.slug);
+
+    expect(result).toEqual({ path: entry.path, deleted: true });
+    expect(store.readPage(entry.path)).toBeNull();
+  });
+
+  it("runs the beforeDelete hook only when the entry exists", () => {
+    const store = makeStore();
+    store.writeSchema("incidents", { name: "Incidents", fields: [] });
+    const entry = store.addDbEntry("incidents", { title: "Snapshot me" });
+
+    const hook = vi.fn();
+    store.deleteDbEntry("incidents", entry.slug, hook);
+    expect(hook).toHaveBeenCalledTimes(1);
+
+    hook.mockClear();
+    const missing = store.deleteDbEntry("incidents", "missing-slug", hook);
+    expect(missing).toEqual({ path: "incidents/missing-slug", deleted: false });
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it("throws when the collection has no schema", () => {
+    const store = makeStore();
+    expect(() => store.deleteDbEntry("not-a-collection", "slug")).toThrow(
+      'No database collection found at "not-a-collection"',
+    );
+  });
+});
