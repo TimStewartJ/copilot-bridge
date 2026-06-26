@@ -21,38 +21,25 @@ installApiRouteTestHooks((state) => {
 // ── Session manager routes (mock-based) ──────────────────────────
 
 describe("Session manager routes", () => {
-  it("GET /api/sessions/:id/messages returns paginated messages", async () => {
-    const res = await request(app).get("/api/sessions/test-id/messages");
+  it("GET /api/sessions/:id/messages-fast returns paginated messages", async () => {
+    const res = await request(app).get("/api/sessions/test-id/messages-fast");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("messages");
     expect(res.body).toHaveProperty("total");
     expect(res.body).toHaveProperty("hasMore");
     expect(res.body).toHaveProperty("runState");
     expect(res.body).toHaveProperty("busy");
+    expect(res.body).toHaveProperty("warm");
   });
 
-  it("GET /api/sessions/:id/messages returns runState for stalled sessions", async () => {
+  it("GET /api/sessions/:id/messages-fast returns runState for stalled sessions", async () => {
     ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
 
-    const res = await request(app).get("/api/sessions/test-id/messages");
+    const res = await request(app).get("/api/sessions/test-id/messages-fast");
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ runState: "stalled", busy: true });
-  });
-
-  it("GET /api/sessions/:id/messages includes visible activity metadata", async () => {
-    ctx.sessionManager.getSessionMessages = vi.fn().mockResolvedValue({
-      messages: [],
-      total: 0,
-      hasMore: false,
-      lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-    });
-
-    const res = await request(app).get("/api/sessions/test-id/messages");
-
-    expect(res.status).toBe(200);
-    expect(res.body.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
   });
 
   it("GET /api/sessions/:id/messages-fast includes visible activity metadata", async () => {
