@@ -22,7 +22,7 @@ import {
 
 const useSessionStreamMock = vi.hoisted(() => vi.fn());
 const submitUserInputResponseMock = vi.hoisted(() => vi.fn());
-const fetchMessagesMock = vi.hoisted(() => vi.fn());
+const fetchOlderMessagesFastMock = vi.hoisted(() => vi.fn());
 const fetchMessagesFastMock = vi.hoisted(() => vi.fn());
 const fetchMcpStatusMock = vi.hoisted(() => vi.fn());
 const fetchSessionContextMock = vi.hoisted(() => vi.fn());
@@ -39,7 +39,6 @@ vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
   return {
     ...actual,
-    fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
     fetchMessagesFast: (...args: unknown[]) => fetchMessagesFastMock(...args),
     fetchMcpStatus: (...args: unknown[]) => fetchMcpStatusMock(...args),
     fetchSessionContext: (...args: unknown[]) => fetchSessionContextMock(...args),
@@ -293,12 +292,17 @@ async function renderChatView(
 
   const fetchMessagesFastResult = options.fetchMessagesFastResult
     ?? { messages: [], busy: false, total: 0, warm: true, hasMore: false };
-  fetchMessagesFastMock.mockReturnValue(
-    fetchMessagesFastResult instanceof Promise
-      ? fetchMessagesFastResult
-      : Promise.resolve(fetchMessagesFastResult),
-  );
-  fetchMessagesMock.mockResolvedValue({ messages: [], hasMore: false, total: 0 });
+  const initialMessagesFastResult = fetchMessagesFastResult instanceof Promise
+    ? fetchMessagesFastResult
+    : Promise.resolve(fetchMessagesFastResult);
+  // fetchMessagesFast serves both the initial/background load (no `before`) and
+  // older-page pagination (`before` set). Route older pages to a dedicated mock so
+  // tests can assert and stub older-page reads independently of the initial load.
+  fetchMessagesFastMock.mockImplementation((sessionId: string, opts?: { before?: number }) => {
+    if (opts?.before != null) return fetchOlderMessagesFastMock(sessionId, opts);
+    return initialMessagesFastResult;
+  });
+  fetchOlderMessagesFastMock.mockResolvedValue({ messages: [], hasMore: false, total: 0 });
   fetchMcpStatusMock.mockResolvedValue([]);
   const fetchSessionContextResult = options.fetchSessionContextResult ?? createEmptyContext();
   fetchSessionContextMock.mockReturnValue(
@@ -737,7 +741,7 @@ describe("ChatView cached resume loading state", () => {
       },
     });
 
-    fetchMessagesMock.mockResolvedValueOnce({
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({
       messages: olderEntries,
       hasMore: false,
       total: 100,
@@ -752,7 +756,7 @@ describe("ChatView cached resume loading state", () => {
         getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
         await waitTick();
       });
-      await waitUntilAct(act, () => fetchMessagesMock.mock.calls.length === 1);
+      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
 
       expect(getCachedChatSnapshot(queryClient, "session-1")).toBeUndefined();
     } finally {
@@ -789,7 +793,7 @@ describe("ChatView cached resume loading state", () => {
       }),
     });
 
-    fetchMessagesMock.mockResolvedValueOnce({
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({
       messages: olderEntries,
       hasMore: false,
       total: 100,
@@ -809,7 +813,7 @@ describe("ChatView cached resume loading state", () => {
         getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
         await waitTick();
       });
-      await waitUntilAct(act, () => fetchMessagesMock.mock.calls.length === 1);
+      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
 
       const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
       expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:05:00.000Z");
@@ -942,7 +946,7 @@ describe("ChatView cached resume loading state", () => {
       }),
     });
 
-    fetchMessagesMock.mockResolvedValueOnce({
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({
       messages: olderEntries,
       hasMore: true,
       total: 151,
@@ -956,7 +960,7 @@ describe("ChatView cached resume loading state", () => {
         getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
         await waitTick();
       });
-      await waitUntilAct(act, () => fetchMessagesMock.mock.calls.length === 1);
+      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
 
       const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
       expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
@@ -1020,7 +1024,7 @@ describe("ChatView cached resume loading state", () => {
       }),
     });
 
-    fetchMessagesMock.mockResolvedValueOnce({
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({
       messages: olderEntries,
       hasMore: true,
       total: 150,
@@ -1034,7 +1038,7 @@ describe("ChatView cached resume loading state", () => {
         getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
         await waitTick();
       });
-      await waitUntilAct(act, () => fetchMessagesMock.mock.calls.length === 1);
+      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
 
       expect(getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt)
         .toBe("2026-04-29T12:00:00.000Z");
@@ -1093,7 +1097,7 @@ describe("ChatView cached resume loading state", () => {
       }),
     });
 
-    fetchMessagesMock.mockResolvedValueOnce({
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({
       messages: olderEntries,
       hasMore: true,
       total: 150,
@@ -1107,7 +1111,7 @@ describe("ChatView cached resume loading state", () => {
         getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
         await waitTick();
       });
-      await waitUntilAct(act, () => fetchMessagesMock.mock.calls.length === 1);
+      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
 
       expect(getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt).toBeUndefined();
 
@@ -1170,7 +1174,7 @@ describe("ChatView history pagination", () => {
       },
       streamOverrides: { isStreaming: false, pendingOrigin: null },
     });
-    fetchMessagesMock.mockReturnValueOnce(olderMessages.promise);
+    fetchOlderMessagesFastMock.mockReturnValueOnce(olderMessages.promise);
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
@@ -1182,7 +1186,12 @@ describe("ChatView history pagination", () => {
         await waitTick();
       });
 
-      expect(fetchMessagesMock).toHaveBeenCalledWith("session-1", {
+      expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", {
+        limit: 200,
+        before: 3,
+      });
+      // Older pages must go through the disk-backed fast reader, not the SDK-resume path.
+      expect(fetchMessagesFastMock).toHaveBeenCalledWith("session-1", {
         limit: 200,
         before: 3,
       });
@@ -1226,7 +1235,7 @@ describe("ChatView history pagination", () => {
       },
       streamOverrides: { isStreaming: false, pendingOrigin: null },
     });
-    fetchMessagesMock.mockRejectedValueOnce(new Error("network unavailable"));
+    fetchOlderMessagesFastMock.mockRejectedValueOnce(new Error("network unavailable"));
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);

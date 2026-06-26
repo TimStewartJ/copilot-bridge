@@ -592,3 +592,92 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect(result).toEqual({ messages: [], total: 0, hasMore: false });
   });
 });
+
+describe("readMessagesFromDisk older-page pagination", () => {
+  beforeEach(() => {
+    clearEventLogStatsCache();
+  });
+
+  function writeVisibleHistory(copilotHome: string, sessionId: string) {
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        { type: "user.message", timestamp: "2026-04-30T10:00:01.000Z", data: { content: "m0" } },
+        { type: "user.message", timestamp: "2026-04-30T10:00:02.000Z", data: { content: "m1" } },
+        // Hidden tool — must be filtered out of totals and windows, matching the SDK path.
+        {
+          type: "tool.execution_start",
+          timestamp: "2026-04-30T10:00:02.500Z",
+          data: { toolCallId: "intent-1", toolName: "report_intent", arguments: { intent: "thinking" } },
+        },
+        { type: "user.message", timestamp: "2026-04-30T10:00:03.000Z", data: { content: "m2" } },
+        { type: "user.message", timestamp: "2026-04-30T10:00:04.000Z", data: { content: "m3" } },
+        { type: "user.message", timestamp: "2026-04-30T10:00:05.000Z", data: { content: "m4" } },
+      ],
+    });
+  }
+
+  it("returns an older window via before with correct ordering, total, hasMore, and visible activity", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-older-window");
+    writeVisibleHistory(copilotHome, "older");
+
+    const { deps, spans, persistLastVisibleActivityAt } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "older", { limit: 2, before: 4 });
+
+    // Hidden report_intent is excluded, so only the 5 user messages count.
+    expect(result.total).toBe(5);
+    expect(result.hasMore).toBe(true);
+    expect(result.messages.map((entry) => entry.content)).toEqual(["m2", "m3"]);
+    // lastVisibleActivityAt is computed from the full log, not the returned window.
+    expect(result.lastVisibleActivityAt).toBe("2026-04-30T10:00:05.000Z");
+    expect(persistLastVisibleActivityAt).toHaveBeenCalledWith("older", "2026-04-30T10:00:05.000Z");
+
+    // Older pages must take the full read path, never the bounded-tail optimization.
+    const readSpan = spans.find((span) => span.name === "session.readFromDisk");
+    expect(readSpan?.metadata).toMatchObject({ mode: "full", totalMessages: 5, messageCount: 2 });
+    expect(spans.some((span) => span.name === "session.readFromDisk.tailRead")).toBe(false);
+  });
+
+  it("clamps the first older window and reports no more history", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-older-clamp");
+    writeVisibleHistory(copilotHome, "older-clamp");
+
+    const { deps } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "older-clamp", { limit: 3, before: 2 });
+
+    expect(result.total).toBe(5);
+    expect(result.hasMore).toBe(false);
+    expect(result.messages.map((entry) => entry.content)).toEqual(["m0", "m1"]);
+  });
+
+  it("bypasses the bounded-tail optimization for before pages even on large histories", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-older-large");
+    const visible = Array.from({ length: 25 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `msg-${index}` },
+    }));
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, "older-large", { events: [...visible, ...padding] });
+
+    const { deps, spans } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "older-large", { limit: 5, before: 10 });
+
+    expect(result.total).toBe(25);
+    expect(result.hasMore).toBe(true);
+    expect(result.messages.map((entry) => entry.content)).toEqual([
+      "msg-5",
+      "msg-6",
+      "msg-7",
+      "msg-8",
+      "msg-9",
+    ]);
+
+    const readSpan = spans.find((span) => span.name === "session.readFromDisk");
+    expect(readSpan?.metadata).toMatchObject({ mode: "full", totalMessages: 25, messageCount: 5 });
+    expect(spans.some((span) => span.name === "session.readFromDisk.tailRead")).toBe(false);
+  });
+});

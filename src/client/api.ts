@@ -712,20 +712,6 @@ export async function fetchSlashCommands(sessionId: string): Promise<SlashComman
   return apiFetch<SlashCommandListResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/slash-commands`);
 }
 
-export async function fetchMessages(
-  sessionId: string,
-  opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
-  const params = new URLSearchParams();
-  if (opts?.limit != null) params.set("limit", String(opts.limit));
-  if (opts?.before != null) params.set("before", String(opts.before));
-  const qs = params.toString();
-  const data = await apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; lastVisibleActivityAt?: string }>(
-    `/api/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`,
-  );
-  return data;
-}
-
 /** Fast message loading — reads from disk, no SDK resume needed */
 export async function fetchMessagesFast(
   sessionId: string,

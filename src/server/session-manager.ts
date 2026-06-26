@@ -20,7 +20,6 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
@@ -160,7 +159,6 @@ import {
   type SetSessionNameOptions,
   type SessionNameRpc,
 } from "./session-name-rpc.js";
-import { readSdkSessionEvents } from "./sdk-session-events.js";
 import {
   createSessionNameAutogenerator,
   type SessionNameAutogenerator,
@@ -2214,104 +2212,6 @@ export class SessionManager {
     options?: StartWorkOptions,
   ): Promise<void> {
     return this.sessionRunner.doWork(sessionId, prompt, bus, runController, attachments, options);
-  }
-
-  async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
-    const client = this.getBackend();
-
-    const t0 = Date.now();
-    const sid = sessionId.slice(0, 8);
-    const linkedTask = this.findLinkedTask(sessionId);
-    const msgResumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
-    const tConfig = Date.now();
-
-    // Reuse cached session object — avoids overwriting the active one in the SDK
-    let session = this.sessionObjects.get(sessionId);
-    let events: any[];
-    let cacheHit = true;
-    let resumeMs = 0;
-    let getEventsMs = 0;
-
-    if (session) {
-      console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
-      try {
-        const tGm = Date.now();
-        events = await readSdkSessionEvents(session);
-        getEventsMs = Date.now() - tGm;
-        console.log(`[sdk] [${sid}] Loaded ${events.length} events from cached session`);
-      } catch (err) {
-        // Stale cache — CLI may have restarted. Evict and re-resume.
-        cacheHit = false;
-        console.log(`[sdk] [${sid}] Cached session stale (${err instanceof Error ? err.message : String(err)}), re-resuming...`);
-        this.beginSessionResume(sessionId);
-        const tResume = Date.now();
-        try {
-          await this.evictCachedSession(sessionId, session, "discarding stale cached session");
-          session = await resumeSessionWithTimeout(
-            client.resumeSession(sessionId, msgResumeConfig),
-            "resumeSession timed out after 60s",
-          );
-          resumeMs = Date.now() - tResume;
-          session = await this.cacheResumedSession(sessionId, session);
-          const tGm = Date.now();
-          events = await readSdkSessionEvents(session);
-          getEventsMs = Date.now() - tGm;
-          console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
-        } finally {
-          this.endSessionResume(sessionId);
-          this.flushPendingSessionEviction(sessionId);
-        }
-      }
-    } else {
-      cacheHit = false;
-      console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
-      this.beginSessionResume(sessionId);
-      const tResume = Date.now();
-      try {
-        session = await resumeSessionWithTimeout(
-          client.resumeSession(sessionId, msgResumeConfig),
-          "resumeSession timed out after 60s",
-        );
-        resumeMs = Date.now() - tResume;
-        session = await this.cacheResumedSession(sessionId, session);
-        const tGm = Date.now();
-        events = await readSdkSessionEvents(session);
-        getEventsMs = Date.now() - tGm;
-        console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
-      } finally {
-        this.endSessionResume(sessionId);
-        this.flushPendingSessionEviction(sessionId);
-      }
-    }
-
-    const tTransform = Date.now();
-    const messages = transformEventsToMessages(events, sessionId);
-    const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
-    this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
-
-    console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
-    const transformMs = Date.now() - tTransform;
-    this.recordSpan("session.getEvents", Date.now() - t0, sessionId, {
-      eventCount: events.length,
-      messageCount: messages.length,
-      cacheHit,
-      configMs: tConfig - t0,
-      resumeMs,
-      getEventsMs,
-      transformMs,
-    });
-
-    const total = messages.length;
-
-    // Apply pagination: return a window of messages from the end
-    if (opts?.limit != null && opts.limit > 0) {
-      const end = opts.before != null ? opts.before : total;
-      const start = Math.max(0, end - opts.limit);
-      const sliced = messages.slice(start, end);
-      return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt };
-    }
-
-    return { messages, total, hasMore: false, lastVisibleActivityAt };
   }
 
   /**

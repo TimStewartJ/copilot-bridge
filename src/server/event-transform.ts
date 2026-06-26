@@ -10,7 +10,7 @@ import {
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
-// Used by both getSessionMessages (SDK path) and readMessagesFromDisk (fast path)
+// Used by the disk reader (readMessagesFromDisk) and other on-disk event consumers.
 
 export interface TransformedVisual {
   artifactId: string;

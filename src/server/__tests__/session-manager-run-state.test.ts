@@ -761,7 +761,7 @@ describe("SessionManager run state", () => {
         }),
       };
 
-      const messageLoad = manager.getSessionMessages("message-session");
+      const messageLoad = manager.warmSession("message-session");
       manager.startWork("run-session", "hello");
       await flushMicrotasks();
 
@@ -827,7 +827,7 @@ describe("SessionManager run state", () => {
         })),
       };
 
-      const messageLoad = manager.getSessionMessages("message-session");
+      const messageLoad = manager.warmSession("message-session");
       await flushMicrotasks();
 
       expect(getRestartWaitingCount()).toBe(1);

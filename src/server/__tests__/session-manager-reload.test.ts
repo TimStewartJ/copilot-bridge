@@ -222,45 +222,16 @@ describe("SessionManager warmSession", () => {
 
     expect(resumeSession).not.toHaveBeenCalled();
   });
-});
 
-describe("SessionManager getSessionMessages resume", () => {
-  function createManager() {
-    const db = setupTestDb();
-    return new SessionManager({
-      globalBus: createTestBus(),
-      eventBusRegistry: createEventBusRegistry(),
-      sessionTitles: createSessionTitlesStore(db),
-      taskStore: {
-        findTaskBySessionId: vi.fn().mockReturnValue(null),
-      } as any,
-      settingsStore: {
-        getMcpServers: () => ({}),
-        getSettings: () => ({ model: "claude-opus-4.7" }),
-      } as any,
-      config: { sessionMcpServers: {} },
-    }) as any;
-  }
-
-  it("does not call setModel when cold-resuming to load messages", async () => {
+  it("discards a superseded warm resume without evicting the newer cached session", async () => {
     const manager = createManager();
     const resumedSession = {
-      setModel: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue([]),
+      disconnect: vi.fn(),
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
     };
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
-
-    await manager.getSessionMessages("session-msg-1");
-
-    expect(resumedSession.setModel).not.toHaveBeenCalled();
-    expect(resumedSession.getEvents).toHaveBeenCalledOnce();
-  });
-
-  it("treats cold message resume as busy until messages are loaded", async () => {
-    const manager = createManager();
-    const resumedSession = {
-      setModel: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue([]),
+    const newerSession = {
+      disconnect: vi.fn(),
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
     };
     let resolveResume!: (session: typeof resumedSession) => void;
     manager.backend = {
@@ -269,111 +240,16 @@ describe("SessionManager getSessionMessages resume", () => {
       })),
     };
 
-    const loading = manager.getSessionMessages("session-msg-race");
-
-    expect(manager.isSessionBusy("session-msg-race")).toBe(true);
-    expect(manager.getSessionRunState("session-msg-race")).toBe("busy");
-    expect(manager.getActiveSessions()).toContain("session-msg-race");
-    await expect(manager.setSessionModel("session-msg-race", "gpt-5.5"))
-      .rejects.toThrow("Cannot switch model on a busy session");
+    const warming = manager.warmSession("session-warm-superseded");
+    // A newer cached session arrives before the in-flight resume resolves.
+    manager.sessionObjects.set("session-warm-superseded", newerSession);
 
     resolveResume(resumedSession);
-    await loading;
-
-    expect(manager.isSessionBusy("session-msg-race")).toBe(false);
-    expect(manager.getActiveSessions()).not.toContain("session-msg-race");
-  });
-
-  it("keeps overlapping cold message resumes busy until the last resume finishes", async () => {
-    const manager = createManager();
-    const firstSession = {
-      disconnect: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue([]),
-    };
-    const secondSession = {
-      disconnect: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue([]),
-    };
-    type ResumedSession = typeof firstSession;
-    const resumeResolvers: Array<(session: ResumedSession) => void> = [];
-    manager.backend = {
-      resumeSession: vi.fn(() => new Promise<ResumedSession>((resolve) => {
-        resumeResolvers.push(resolve);
-      })),
-    };
-
-    const firstLoad = manager.getSessionMessages("session-msg-overlap");
-    const secondLoad = manager.getSessionMessages("session-msg-overlap");
-
-    expect(resumeResolvers).toHaveLength(2);
-    expect(manager.getActiveSessions()).toContain("session-msg-overlap");
-
-    resumeResolvers[0](firstSession);
-    await firstLoad;
-
-    expect(manager.isSessionBusy("session-msg-overlap")).toBe(true);
-    expect(manager.getActiveSessions()).toContain("session-msg-overlap");
-
-    await manager.evictAllCachedSessions();
-
-    expect(firstSession.disconnect).not.toHaveBeenCalled();
-    expect(manager.sessionObjects.get("session-msg-overlap")).toBe(firstSession);
-
-    resumeResolvers[1](secondSession);
-    await secondLoad;
+    await warming;
     await manager._drainCacheQueue();
 
-    expect(secondSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(firstSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.sessionObjects.has("session-msg-overlap")).toBe(false);
-    expect(manager.isSessionBusy("session-msg-overlap")).toBe(false);
-  });
-
-  it("does not let a superseded cold message resume overwrite a newer cached session", async () => {
-    const manager = createManager();
-    const resumedSession = {
-      disconnect: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue([{ type: "assistant.message", data: { content: "stale" } }]),
-    };
-    let resolveResume!: (session: typeof resumedSession) => void;
-    const newerSession = {
-      getEvents: vi.fn().mockResolvedValue([]),
-    };
-    manager.backend = {
-      resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
-        resolveResume = resolve;
-      })),
-    };
-
-    const loading = manager.getSessionMessages("session-msg-superseded");
-    manager.sessionObjects.set("session-msg-superseded", newerSession);
-
-    resolveResume(resumedSession);
-    await loading;
-
-    expect(manager.sessionObjects.get("session-msg-superseded")).toBe(newerSession);
+    expect(manager.sessionObjects.get("session-warm-superseded")).toBe(newerSession);
     expect(resumedSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(resumedSession.getEvents).not.toHaveBeenCalled();
-    expect(newerSession.getEvents).toHaveBeenCalledOnce();
-  });
-
-  it("does not call setModel when re-resuming after stale cache failure", async () => {
-    const manager = createManager();
-    const staleSession = {
-      setModel: vi.fn(),
-      getEvents: vi.fn().mockRejectedValue(new Error("RPC disconnected")),
-    };
-    const freshSession = {
-      setModel: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue([]),
-    };
-    manager.sessionObjects.set("session-msg-2", staleSession);
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(freshSession) };
-
-    await manager.getSessionMessages("session-msg-2");
-
-    expect(staleSession.setModel).not.toHaveBeenCalled();
-    expect(freshSession.setModel).not.toHaveBeenCalled();
-    expect(freshSession.getEvents).toHaveBeenCalledOnce();
+    expect(newerSession.disconnect).not.toHaveBeenCalled();
   });
 });

@@ -1997,25 +1997,6 @@ export function createApiRouter(
     req.on("close", () => { close(); });
   });
 
-  router.get("/sessions/:id/messages", async (req, res) => {
-    try {
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-      const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore, lastVisibleActivityAt } = await timeRequestOperation(
-        res,
-        "sessions.messages.sdkRead",
-        () => ctx.sessionManager.getSessionMessages(
-          req.params.id,
-          { limit, before },
-        ),
-        { sessionId: req.params.id, limit, before },
-      );
-      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, lastVisibleActivityAt });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
   router.get("/sessions/:id/attachments/:attachmentId", (req, res) => {
     if (!isCanonicalSessionId(req.params.id)) {
       return res.status(400).json({ error: "Valid sessionId is required" });

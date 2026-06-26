@@ -2,7 +2,6 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } fr
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fetchSlashCommands,
-  fetchMessages,
   fetchMessagesFast,
   warmSession,
   loginMcpServer,
@@ -1243,7 +1242,7 @@ export default function ChatView({
     setLoadMoreError(null);
     const beforeIndex = firstItemIndex.current;
     const requestSessionId = sessionId;
-    fetchMessages(sessionId, { limit, before: beforeIndex })
+    fetchMessagesFast(sessionId, { limit, before: beforeIndex })
       .then(({ messages: older, hasMore: more, total, lastVisibleActivityAt }) => {
         if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
         const currentEntries = entriesRef.current;
