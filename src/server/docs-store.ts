@@ -51,7 +51,7 @@ export interface DbEntry {
 }
 
 const VALID_FIELD_TYPES = new Set(["text", "select", "date", "number", "boolean", "url"]);
-const DB_INPUT_RESERVED_KEYS = new Set(["folder", "slug", "body", "fields"]);
+const DB_INPUT_RESERVED_KEYS = new Set(["folder", "slug", "body", "fields", "content"]);
 const DANGEROUS_DB_FIELD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SYSTEM_DB_FIELD_KEYS = new Set(["created", "modified"]);
 const WINDOWS_RESERVED_PATH_CHARS = /[<>:"|?*]/;
@@ -614,6 +614,24 @@ export function createDocsStore(docsDir: string) {
   // ── DB entry CRUD ─────────────────────────────────────────────
 
   function normalizeDbEntryInput(input: Record<string, any>, mode: "add" | "update", folder?: string): { fields: Record<string, any>; body?: string } {
+    // Strict raw-content path: the docs UI editor sends the full frontmatter+body text under
+    // `content`. Parse it strictly so malformed frontmatter surfaces an error instead of being
+    // silently written into the markdown body (which would corrupt the entry's fields).
+    if (typeof input.content === "string") {
+      let parsed: matter.GrayMatterFile<string>;
+      try {
+        parsed = matter(input.content);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid frontmatter: ${message}`);
+      }
+      const contentFields = createSafeFieldMap();
+      if (isPlainObject(parsed.data)) {
+        assignDbFields(contentFields, parsed.data);
+      }
+      return { fields: contentFields, body: parsed.content };
+    }
+
     const explicitFields = isPlainObject(input.fields) ? input.fields : undefined;
     let normalizedBody = typeof input.body === "string" ? input.body : undefined;
     const inferredFields = createSafeFieldMap();
@@ -717,6 +735,21 @@ export function createDocsStore(docsDir: string) {
     };
   }
 
+  function deleteDbEntry(folder: string, slug: string, beforeDelete?: () => void): { path: string; deleted: boolean } {
+    const schema = readSchema(folder);
+    if (!schema) throw new DocsStoreValidationError(`No database collection found at "${folder}"`);
+
+    const pagePath = `${folder}/${slug}`;
+    const page = readPage(pagePath);
+    if (!page) return { path: pagePath, deleted: false };
+    if (!page.isDbItem) {
+      throw new DocsStoreValidationError(`"${page.path}" is not a database entry`);
+    }
+
+    beforeDelete?.();
+    return { path: page.path, deleted: deletePage(page.path) };
+  }
+
   function listDbEntries(folder: string): DbEntry[] {
     const segments = validateDocsPathSegments(folder, "folder");
     const folderPath = resolveContainedDocsPath(docsRoot, segments, [], "folder");
@@ -813,7 +846,7 @@ export function createDocsStore(docsDir: string) {
     readPage, readUserPage, writePage, previewEditPageContent, editPage, deletePage, deleteUserPage, listTree, scanAllPages, deleteFolder,
     readSchema, writeSchema, isDbFolder,
     normalizeDbEntryInput,
-    addDbEntry, updateDbEntry, listDbEntries,
+    addDbEntry, updateDbEntry, deleteDbEntry, listDbEntries,
     generateSlug, docsDir, renameTagInDocs,
   };
 }

@@ -4905,9 +4905,9 @@ export function createApiRouter(
       try {
         const fullPath = paramPath((req.params as any).path);
         const lastSlash = fullPath.lastIndexOf("/");
-        if (lastSlash === -1) return res.status(400).json({ error: "Path must be folder/slug" });
-        const folder = fullPath.slice(0, lastSlash);
-        const slug = fullPath.slice(lastSlash + 1);
+        const folder = lastSlash === -1 ? "" : fullPath.slice(0, lastSlash);
+        const slug = lastSlash === -1 ? "" : fullPath.slice(lastSlash + 1);
+        if (!folder || !slug) return res.status(400).json({ error: "Path must be folder/slug" });
         const { fields, body } = docs.normalizeDbEntryInput(req.body ?? {}, "update", folder);
         const entry = docs.updateDbEntry(folder, slug, fields, body);
         // Re-index the updated page
@@ -4917,7 +4917,28 @@ export function createApiRouter(
       } catch (err: any) {
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
-        res.status(400).json({ error: err.message || String(err) });
+        res.status(400).json({ error: err?.message || String(err) });
+      }
+    });
+
+    router.delete("/docs/db/*path", (req, res) => {
+      try {
+        const fullPath = paramPath((req.params as any).path);
+        const lastSlash = fullPath.lastIndexOf("/");
+        const folder = lastSlash === -1 ? "" : fullPath.slice(0, lastSlash);
+        const slug = lastSlash === -1 ? "" : fullPath.slice(lastSlash + 1);
+        if (!folder || !slug) return res.status(400).json({ error: "Path must be folder/slug" });
+        const result = docs.deleteDbEntry(folder, slug, createPreDeleteDocsSnapshot);
+        let indexResult: DocsFtsMutationResult | undefined;
+        if (result.deleted) {
+          indexResult = docsIdx.removePage(result.path);
+        }
+        res.json({ ...result, ...docsIndexMutationWarning(indexResult) });
+      } catch (err: any) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
+        const message = err?.message || String(err);
+        res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
   }

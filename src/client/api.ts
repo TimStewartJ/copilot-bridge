@@ -2338,6 +2338,31 @@ export async function fetchDbSchema(folder: string): Promise<DbSchema> {
   return apiFetch<DbSchema>(`/api/docs/schema/${folder}`);
 }
 
+export async function updateDbEntryPage(
+  path: string,
+  input: { content?: string; fields?: Record<string, unknown>; body?: string },
+): Promise<{ path: string; success: boolean }> {
+  const res = await fetch(`${API_BASE}/api/docs/db/${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function deleteDbEntryPage(path: string): Promise<{ path: string; deleted: boolean }> {
+  const res = await fetch(`${API_BASE}/api/docs/db/${path}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
 export async function fetchDbEntries(
   folder: string,
   options?: { filters?: Record<string, string>; sort?: { field: string; order: "asc" | "desc" } },
