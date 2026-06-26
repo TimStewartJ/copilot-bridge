@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import { findUnknownFields, formatUnknownFieldsError } from "./schedule-validation.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -7,6 +8,45 @@ export const GROUP_COLORS = [
 ] as const;
 
 export type GroupColor = (typeof GROUP_COLORS)[number];
+
+export class TaskGroupValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskGroupValidationError";
+  }
+}
+
+export type TaskGroupUpdate = Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>;
+
+const TASK_GROUP_UPDATE_FIELDS = ["name", "color", "collapsed", "notes"] as const;
+
+function isGroupColor(value: unknown): value is GroupColor {
+  return typeof value === "string" && (GROUP_COLORS as readonly string[]).includes(value);
+}
+
+function normalizeGroupUpdate(updates: unknown): TaskGroupUpdate {
+  if (updates === null || typeof updates !== "object" || Array.isArray(updates)) {
+    throw new TaskGroupValidationError("Request body must be an object");
+  }
+  const input = updates as Record<string, unknown>;
+
+  const unknownFields = findUnknownFields(input, TASK_GROUP_UPDATE_FIELDS);
+  if (unknownFields.length > 0) {
+    throw new TaskGroupValidationError(formatUnknownFieldsError(unknownFields));
+  }
+
+  const normalized: TaskGroupUpdate = {};
+  if (input.color !== undefined) {
+    if (!isGroupColor(input.color)) {
+      throw new TaskGroupValidationError(`color must be one of: ${GROUP_COLORS.join(", ")}`);
+    }
+    normalized.color = input.color;
+  }
+  if (input.name !== undefined) normalized.name = input.name as string;
+  if (input.collapsed !== undefined) normalized.collapsed = input.collapsed as boolean;
+  if (input.notes !== undefined) normalized.notes = input.notes as string;
+  return normalized;
+}
 
 export interface TaskGroup {
   id: string;
@@ -65,22 +105,19 @@ export function createTaskGroupStore(db: DatabaseSync) {
     return getGroup(id)!;
   }
 
-  function updateGroup(
-    id: string,
-    updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>,
-  ): TaskGroup {
+  function updateGroup(id: string, updates: unknown): TaskGroup {
+    const normalized = normalizeGroupUpdate(updates);
+
     const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as any;
     if (!row) throw new Error(`Group ${id} not found`);
 
     const fields: string[] = ["updatedAt = ?"];
     const values: any[] = [new Date().toISOString()];
 
-    if (updates.name !== undefined) { fields.push("name = ?"); values.push(updates.name); }
-    if (updates.color !== undefined && GROUP_COLORS.includes(updates.color)) {
-      fields.push("color = ?"); values.push(updates.color);
-    }
-    if (updates.collapsed !== undefined) { fields.push("collapsed = ?"); values.push(updates.collapsed ? 1 : 0); }
-    if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
+    if (normalized.name !== undefined) { fields.push("name = ?"); values.push(normalized.name); }
+    if (normalized.color !== undefined) { fields.push("color = ?"); values.push(normalized.color); }
+    if (normalized.collapsed !== undefined) { fields.push("collapsed = ?"); values.push(normalized.collapsed ? 1 : 0); }
+    if (normalized.notes !== undefined) { fields.push("notes = ?"); values.push(normalized.notes); }
 
     values.push(id);
     db.prepare(`UPDATE task_groups SET ${fields.join(", ")} WHERE id = ?`).run(...values);

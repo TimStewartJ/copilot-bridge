@@ -548,6 +548,57 @@ describe("Task group routes", () => {
     expect(res.body.group.name).toBe("New Name");
   });
 
+  it("PATCH /api/task-groups/:id applies a full valid update", async () => {
+    const create = await request(app)
+      .post("/api/task-groups")
+      .send({ name: "Old Name" });
+    const id = create.body.group.id;
+
+    const res = await request(app)
+      .patch(`/api/task-groups/${id}`)
+      .send({ name: "Renamed", color: "purple", collapsed: true, notes: "hello" });
+    expect(res.status).toBe(200);
+    expect(res.body.group.name).toBe("Renamed");
+    expect(res.body.group.color).toBe("purple");
+    expect(res.body.group.collapsed).toBe(true);
+    expect(res.body.group.notes).toBe("hello");
+  });
+
+  it("PATCH /api/task-groups/:id rejects unknown fields with 400", async () => {
+    const create = await request(app)
+      .post("/api/task-groups")
+      .send({ name: "Group" });
+    const id = create.body.group.id;
+
+    const res = await request(app)
+      .patch(`/api/task-groups/${id}`)
+      .send({ colour: "blue" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown field/);
+
+    const list = await request(app).get("/api/task-groups");
+    const unchanged = list.body.groups.find((g: { id: string }) => g.id === id);
+    expect(unchanged.name).toBe("Group");
+  });
+
+  it("PATCH /api/task-groups/:id rejects an invalid color with 400 and leaves the group unchanged", async () => {
+    const create = await request(app)
+      .post("/api/task-groups")
+      .send({ name: "Group" });
+    const id = create.body.group.id;
+    const originalColor = create.body.group.color;
+
+    const res = await request(app)
+      .patch(`/api/task-groups/${id}`)
+      .send({ color: "bad" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/color must be one of/);
+
+    const list = await request(app).get("/api/task-groups");
+    const unchanged = list.body.groups.find((g: { id: string }) => g.id === id);
+    expect(unchanged.color).toBe(originalColor);
+  });
+
   it("DELETE /api/task-groups/:id deletes a group", async () => {
     const create = await request(app)
       .post("/api/task-groups")
