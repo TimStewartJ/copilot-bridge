@@ -374,7 +374,7 @@ function EditMode({
   const [prompt, setPrompt] = useState(schedule?.prompt ?? "");
   const [type, setType] = useState<"cron" | "once">(schedule?.type ?? "cron");
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
-  const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
+  const [runAt, setRunAt] = useState(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
@@ -397,7 +397,7 @@ function EditMode({
     setPrompt(schedule?.prompt ?? "");
     setType(schedule?.type ?? "cron");
     setCronExpr(schedule?.cron ?? "0 8 * * 1-5");
-    setRunAt(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
+    setRunAt(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
     setTimezone(schedule?.timezone ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
     setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");

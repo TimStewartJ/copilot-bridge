@@ -9,6 +9,7 @@ import {
 } from "../test-react-harness";
 import { installDomShim } from "../test-dom-shim";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
+import type { Schedule } from "../api";
 
 const apiMocks = vi.hoisted(() => ({
   createSchedule: vi.fn(),
@@ -130,6 +131,42 @@ async function renderCreateSheet() {
   return { harness, onSaved };
 }
 
+function makeOnceSchedule(runAt: string): Schedule {
+  return {
+    id: "sched-1",
+    taskId: "task-1",
+    name: "Future run",
+    prompt: "Do the thing",
+    type: "once",
+    runAt,
+    enabled: true,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+    runCount: 0,
+  };
+}
+
+async function renderEditSheet(schedule: Schedule) {
+  const onSaved = vi.fn();
+  const noop = vi.fn();
+  const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+  await harness.render(
+    createElement(ScheduleDetailSheet, {
+      schedule,
+      taskId: "task-1",
+      mode: "edit",
+      onClose: noop,
+      onSwitchToEdit: noop,
+      onSwitchToView: noop,
+      onTrigger: noop,
+      onToggle: noop,
+      onDelete: noop,
+      onSaved,
+    }),
+  );
+  return { harness, onSaved };
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ now: NOW });
   apiMocks.createSchedule.mockReset();
@@ -191,6 +228,50 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
       expect(input.type).toBe("once");
       expect(input.runAt).toBe(new Date(future).toISOString());
       expect(harness.dom.container.textContent ?? "").not.toContain("Run time must be in the future");
+      await waitUntilAct(harness.act, () => onSaved.mock.calls.length > 0);
+      expect(onSaved).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
+describe("ScheduleDetailSheet one-time run-at editing", () => {
+  // Pin a non-UTC timezone so a naive UTC-string slice would visibly shift the
+  // stored run time, proving the local-time conversion round-trips correctly.
+  beforeEach(() => {
+    vi.stubEnv("TZ", "America/New_York");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("initializes the run-at input from the stored UTC time in local time", async () => {
+    const runAt = "2026-06-20T13:30:00.000Z";
+    const { harness } = await renderEditSheet(makeOnceSchedule(runAt));
+    try {
+      const value = getReactProps(findRunAtInput(harness))?.value;
+      expect(value).toBe(toDatetimeLocalValue(new Date(runAt)));
+      // A naive UTC slice would not match local time in this timezone.
+      expect(value).not.toBe(runAt.slice(0, 16));
+      // The displayed local value round-trips back to the original UTC instant.
+      expect(new Date(value).toISOString()).toBe(runAt);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("preserves the stored UTC run time when saving an unchanged once-schedule", async () => {
+    const runAt = "2026-06-20T13:30:00.000Z";
+    const { harness, onSaved } = await renderEditSheet(makeOnceSchedule(runAt));
+    try {
+      await clickButton(harness, "Save Changes");
+
+      await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
+      expect(apiMocks.patchSchedule).toHaveBeenCalledOnce();
+      const [id, patch] = apiMocks.patchSchedule.mock.calls[0];
+      expect(id).toBe("sched-1");
+      expect(patch.runAt).toBe(runAt);
       await waitUntilAct(harness.act, () => onSaved.mock.calls.length > 0);
       expect(onSaved).toHaveBeenCalledOnce();
     } finally {
