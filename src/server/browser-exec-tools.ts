@@ -102,7 +102,10 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
         "Execute structured browser automation steps through the bridge-managed browser session. " +
         "Use this for hardened freeform browsing when browser_fetch is too narrow but you still " +
         "want bridge-owned session/profile handling, primary-lane serialization, clone support, " +
-        "and Chrome recovery. For unsupported low-level agent-browser features, use the browser skill.",
+        "and Chrome recovery. Element refs (for example, @e12) are valid only within the same browser_exec call as the snapshot that produced them, " +
+        "so include the snapshot and any ref-targeting click, fill, type, select, or check step in one commands array. " +
+        'If a snapshot ref must be reused across calls, use lane: "primary" or the browser_session_* tools. ' +
+        "For unsupported low-level agent-browser features, use the browser skill.",
       parameters: {
         type: "object" as const,
         properties: {
