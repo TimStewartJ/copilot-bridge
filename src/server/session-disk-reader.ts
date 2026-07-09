@@ -5,7 +5,7 @@ import {
   createVisibleActivityTracker,
   getLastVisibleActivityAt,
   getVisualArtifactFromToolCompletion,
-  isVisibleTransformedEntryEvent,
+  isVisibleMessageEvent,
   transformEventsToMessages,
   type TransformedEntry,
 } from "./event-transform.js";
@@ -370,7 +370,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
       }
     }
 
-    if (isVisibleTransformedEntryEvent(event, sessionId)) {
+    if (isVisibleMessageEvent(event, sessionId)) {
       totalEntries += 1;
       if (extractTerminalCompletion(event)) pendingTerminalCompletionEntry = false;
       if (event.type === "tool.execution_start") {

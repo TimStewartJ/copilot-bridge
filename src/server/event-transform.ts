@@ -58,9 +58,6 @@ export interface TransformedEntry {
   completion?: TerminalCompletion;
 }
 
-// Keep backward compat alias — server API consumers still reference this
-export type TransformedMessage = TransformedEntry;
-
 function isTurnTerminalEvent(event: any): boolean {
   return isTerminalTurnEventType(event?.type);
 }
@@ -176,7 +173,7 @@ function isHiddenTool(toolName: string, args: unknown, sessionId?: string): bool
   return targetSessionId === undefined || (sessionId !== undefined && targetSessionId === sessionId);
 }
 
-function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
+export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   const data = event?.data;
 
   if (event.type === "user.message") {
@@ -197,10 +194,6 @@ function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   }
 
   return false;
-}
-
-export function isVisibleTransformedEntryEvent(event: any, sessionId?: string): boolean {
-  return isVisibleMessageEvent(event, sessionId);
 }
 
 function parsePublishedVisualResult(rawResult: unknown): Record<string, unknown> | undefined {
