@@ -1,6 +1,20 @@
-const GITHUB_MCP_CONFIG_METHOD_PATTERN = /async createBuiltInGitHubMcpConfig\((\w+)\)\{let (\w+);try\{\2=await (\w+)\(\1\)\}catch\{return\}if\(!\2\)return;let (\w+)=await (\w+)\(\);return (\w+)\(\2,\1,\{excludeGhReplaceableTools:\4\},(\w+)\)\}/g;
-const GITHUB_MCP_CONFIG_SIMPLE_METHOD_PATTERN = /async createBuiltInGitHubMcpConfig\((\w+)\)\{let (\w+);try\{\2=await (\w+)\(\1\)\}catch\{return\}if\(\2\)return (\w+)\(\2,\1,\{\},(\w+)\)\}/g;
-const GITHUB_MCP_CONFIG_CALL_PATTERN = /if\((\w+)\.enableConfigDiscovery&&(\w+)&&!\1\.provider&&!\1\.gitHubToken\)\{let (\w+)=await this\.createBuiltInGitHubMcpConfig\(\2\);\3&&\((\w+)\.mcpServers=\{"github-mcp-server":\3,\.\.\.\4\.mcpServers\}\)\}/g;
+// Minified JS identifiers can legally contain "$" (and "_"), which the Copilot
+// bundle's minifier uses for some helper names (e.g. "$R"). Match the full set
+// of valid identifier characters so pattern matching survives minifier renames.
+const ID = String.raw`[$A-Za-z_][\w$]*`;
+
+const GITHUB_MCP_CONFIG_METHOD_PATTERN = new RegExp(
+  String.raw`async createBuiltInGitHubMcpConfig\((${ID})\)\{let (${ID});try\{\2=await (${ID})\(\1\)\}catch\{return\}if\(!\2\)return;let (${ID})=await (${ID})\(\);return (${ID})\(\2,\1,\{excludeGhReplaceableTools:\4\},(${ID})\)\}`,
+  "g",
+);
+const GITHUB_MCP_CONFIG_SIMPLE_METHOD_PATTERN = new RegExp(
+  String.raw`async createBuiltInGitHubMcpConfig\((${ID})\)\{let (${ID});try\{\2=await (${ID})\(\1\)\}catch\{return\}if\(\2\)return (${ID})\(\2,\1,\{\},(${ID})\)\}`,
+  "g",
+);
+const GITHUB_MCP_CONFIG_CALL_PATTERN = new RegExp(
+  String.raw`if\((${ID})\.enableConfigDiscovery&&(${ID})&&!\1\.provider&&!\1\.gitHubToken\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\4\.mcpServers\}\)\}`,
+  "g",
+);
 
 export function patchCopilotAppSource(source) {
   let methodMatches = 0;
