@@ -33,34 +33,8 @@ import {
   type ScheduleContext,
   type SessionConfigOptions,
 } from "./session-config-builder.js";
-export {
-  BRIDGE_EXCLUDED_TOOLS,
-  BROWSER_GUIDANCE,
-  DEFAULT_IDENTITY,
-  FEED_GUIDANCE,
-  RESEARCH_GUIDANCE,
-  STAGING_INSTRUCTIONS,
-} from "./session-instructions.js";
 import { BRIDGE_EXCLUDED_TOOLS } from "./session-instructions.js";
 export type { ScheduleContext, SessionConfigOptions } from "./session-config-builder.js";
-export {
-  formatTaskMomentumContext,
-} from "./session-task-momentum.js";
-export {
-  buildSessionAttachmentUrlPath,
-  encodeAttachmentUrlSegment,
-  escapeAttachmentMarkdownText,
-  escapePromptLiteral,
-  escapePromptText,
-  escapeUnicodeLineSeparators,
-  formatPromptTag,
-  formatPromptTagList,
-  formatRelatedDocManifestEntry,
-  normalizeInlineText,
-  parseWorkspaceCwd,
-  renderPublishedAttachment,
-  resolvePublishableAttachmentSourcePath,
-} from "./session-formatting.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
