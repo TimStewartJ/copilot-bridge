@@ -1777,7 +1777,3 @@ export class SessionRunner {
     }
   }
 }
-
-// Re-exported only so SessionManager keeps a single source of truth for the
-// abort confirmation message used in the standalone abort fallback path.
-export { PROMPT_DELIVERY_ABORTED_MESSAGE };
