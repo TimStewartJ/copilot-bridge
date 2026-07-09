@@ -50,7 +50,6 @@ export function createVoiceJobManager({
   const voiceJobsDir = join(dataDir, "voice-jobs");
   mkdirSync(voiceJobsDir, { recursive: true });
 
-  const processingJobs = new Set<string>();
   const processingJobRuns = new Map<string, Promise<void>>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const SEND_ACCEPTANCE_TIMEOUT_MS = 15_000;
@@ -128,8 +127,6 @@ export function createVoiceJobManager({
     }
 
     const run = (async () => {
-      processingJobs.add(jobId);
-
       try {
         const job = store.getVoiceJob(jobId);
         const canResume =
@@ -144,7 +141,6 @@ export function createVoiceJobManager({
         }
         await transcribeAndSend(job, job.transcript);
       } finally {
-        processingJobs.delete(jobId);
         processingJobRuns.delete(jobId);
       }
     })();
