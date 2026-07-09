@@ -48,7 +48,6 @@ let _globalPause = false;
 
 const MIN_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes minimum between runs
 const MAX_CONCURRENT = 3;
-const MAX_CONSECUTIVE_FAILURES = 5;
 const AUTOMATIC_CLAIM_RENEW_INTERVAL_MS = 30 * 1000;
 const ONE_SHOT_RETRY_DELAY_MS = 30 * 1000;
 const MISSED_RUN_WATCHDOG_INTERVAL_MS = 60 * 1000;
