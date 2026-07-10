@@ -9,6 +9,7 @@ import {
   fetchSessionContext,
   reportTiming,
   submitUserInputResponse,
+  undoSessionTurn,
   type Attachment,
   type BackgroundAgentsSummary,
   type ChatEntry,
@@ -475,6 +476,8 @@ export default function ChatView({
   const [loadingMore, setLoadingMore] = useState(false);
   const [forkingBoundaryEventId, setForkingBoundaryEventId] = useState<string | null>(null);
   const [forkError, setForkError] = useState<string | null>(null);
+  const [undoingEventId, setUndoingEventId] = useState<string | null>(null);
+  const [undoError, setUndoError] = useState<string | null>(null);
   const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -716,6 +719,7 @@ export default function ChatView({
     contextRefreshStreamingRef.current = isStreaming;
     if (!sessionId || !wasStreaming || isStreaming) return;
     void refreshSessionContext(sessionId, { background: true });
+    loadAndReconnectRef.current({ background: true });
   }, [isStreaming, refreshSessionContext, sessionId]);
 
   const cancelFollowScroll = useCallback(() => {
@@ -861,6 +865,8 @@ export default function ChatView({
     prevSessionRef.current = sessionId;
     prevComposerKeyRef.current = composerKey;
     setForkError(null);
+    setUndoError(null);
+    setUndoingEventId(null);
     setLoadMoreError(null);
 
     if (!sessionId) {
@@ -1652,15 +1658,22 @@ export default function ChatView({
   }, [activeRootNodes.length, handleSubmitUserInput, hasStreamingText, pendingUserInputRequests, runHeaderState]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
-  const composerDisabled = newWorkDisabled || warming || loading;
+  const composerDisabled = newWorkDisabled || warming || loading || Boolean(undoingEventId);
   const composerDisabledHint = newWorkDisabled
     ? newWorkDisabledHint
     : loading
       ? "Loading history…"
       : warming
         ? "Reconnecting…"
-        : undefined;
-  const forkFromHereDisabled = loading || isStreaming || creating || warming || refreshingHistory;
+        : undoingEventId
+          ? "Undoing chat history…"
+          : undefined;
+  const forkFromHereDisabled = loading
+    || isStreaming
+    || creating
+    || warming
+    || refreshingHistory
+    || Boolean(undoingEventId);
   const handleForkFromHere = useCallback(async (message: ChatMessage) => {
     if (!sessionId || !onForkSession || !message.forkBoundaryEventId) return;
     setForkError(null);
@@ -1712,6 +1725,49 @@ export default function ChatView({
     closeMessageMenu();
     void handleForkFromHere(target.message);
   }, [closeMessageMenu, handleForkFromHere, messageMenuTarget]);
+
+  const handleUndoFromHere = useCallback(async (message: ChatMessage) => {
+    if (!sessionId || !message.undoEventId) return;
+    const confirmed = window.confirm(
+      "Undo this turn and every later turn?\n\n"
+      + "This removes chat history from this point. It does not reverse files, commands, tasks, docs, browser actions, or other external side effects.",
+    );
+    if (!confirmed) return;
+
+    const targetSessionId = sessionId;
+    const undoEventId = message.undoEventId;
+    setUndoError(null);
+    setUndoingEventId(undoEventId);
+    try {
+      await undoSessionTurn(targetSessionId, undoEventId);
+      if (sessionIdRef.current !== targetSessionId) return;
+      const boundaryIndex = entriesRef.current.findIndex(
+        (entry) => isChatMessageEntry(entry) && entry.undoEventId === undoEventId,
+      );
+      if (boundaryIndex >= 0) {
+        const nextEntries = entriesRef.current.slice(0, boundaryIndex);
+        applyHistory(nextEntries, {
+          total: firstItemIndex.current + nextEntries.length,
+          hasMore: firstItemIndex.current > 0,
+          isCanonical: false,
+          lastVisibleActivityAt: getLatestEntryActivityTimestamp(nextEntries) ?? null,
+        });
+      }
+      loadAndReconnectRef.current({ background: true, replace: true });
+    } catch (error) {
+      console.error("Failed to undo chat turn:", error);
+      setUndoError(`Undo failed: ${getErrorMessage(error)}`);
+    } finally {
+      setUndoingEventId((current) => current === undoEventId ? null : current);
+    }
+  }, [applyHistory, sessionId]);
+
+  const handleUndoMessageMenu = useCallback(() => {
+    const target = messageMenuTarget;
+    if (!target) return;
+    closeMessageMenu();
+    void handleUndoFromHere(target.message);
+  }, [closeMessageMenu, handleUndoFromHere, messageMenuTarget]);
 
   if (!sessionId && !isDraft) {
     return (
@@ -1840,6 +1896,10 @@ export default function ChatView({
   const messageMenuForkLoading = Boolean(
     messageMenuForkBoundary && forkingBoundaryEventId === messageMenuForkBoundary,
   );
+  const messageMenuUndoBoundary = messageMenuTarget?.message.undoEventId;
+  const messageMenuUndoLoading = Boolean(
+    messageMenuUndoBoundary && undoingEventId === messageMenuUndoBoundary,
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -1963,9 +2023,12 @@ export default function ChatView({
           copied={copiedMessageKey === messageMenuTarget.key}
           forkLoading={messageMenuForkLoading}
           forkDisabled={forkFromHereDisabled}
+          undoLoading={messageMenuUndoLoading}
+          undoDisabled={forkFromHereDisabled}
           onClose={closeMessageMenu}
           onCopy={handleCopyMessage}
           onFork={handleForkMessageMenu}
+          onUndo={handleUndoMessageMenu}
         />
       )}
       {forkError && (
@@ -1975,6 +2038,16 @@ export default function ChatView({
             role="alert"
           >
             {forkError}
+          </div>
+        </div>
+      )}
+      {undoError && (
+        <div className={`${CHAT_RAIL_CLASS} pb-2`}>
+          <div
+            className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error"
+            role="alert"
+          >
+            {undoError}
           </div>
         </div>
       )}

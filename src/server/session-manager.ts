@@ -116,6 +116,12 @@ import {
   type DerivedModelState,
 } from "./session-events-model.js";
 import {
+  getLastVisibleActivityAt,
+  getUndoBoundaryEventId,
+} from "./event-transform.js";
+import { readSdkSessionEvents } from "./sdk-session-events.js";
+import { createSessionContextTruncationMarker } from "./session-context-normalizer.js";
+import {
   getModelCapabilitiesOverrideForContextTier,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
@@ -342,6 +348,18 @@ export interface McpLoginResult {
   servers: McpServerStatus[];
 }
 
+export type SessionHistoryUndoErrorCode = "busy" | "stale-boundary" | "unsupported";
+
+export class SessionHistoryUndoError extends Error {
+  constructor(
+    readonly code: SessionHistoryUndoErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SessionHistoryUndoError";
+  }
+}
+
 
 /**
  * Factory that maps AppContext → SessionManagerDeps.
@@ -403,6 +421,7 @@ export class SessionManager {
   private resumingSessions = new Map<string, number>();
   private creatingSessions = 0;
   private modelSwitchingSessions = new Set<string>();
+  private historyUndoingSessions = new Set<string>();
   private sessionObjects = new Map<string, AgentSession>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
@@ -1828,6 +1847,7 @@ export class SessionManager {
       || this.runStateController.hasSessionRun(sessionId)
       || this.isSessionResuming(sessionId)
       || this.modelSwitchingSessions.has(sessionId)
+      || this.historyUndoingSessions.has(sessionId)
       || this.userInputController.getPendingCount(sessionId) > 0
     ) {
       return true;
@@ -1963,6 +1983,191 @@ export class SessionManager {
       bounded: Boolean(toEventId),
     });
     return result;
+  }
+
+  async undoSessionTurn(
+    sessionId: string,
+    eventId: string,
+  ): Promise<{ eventsRemoved: number; lastVisibleActivityAt?: string }> {
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
+    if (this.isSessionBusy(sessionId)) {
+      throw new SessionHistoryUndoError("busy", "Cannot undo history on a busy session");
+    }
+
+    const boundaryEventId = eventId.trim();
+    if (!boundaryEventId) {
+      throw new SessionHistoryUndoError("stale-boundary", "Undo boundary is missing or no longer available");
+    }
+
+    const backend = this.getBackend();
+    const startedAt = Date.now();
+    this.historyUndoingSessions.add(sessionId);
+    this.syncRestartWaitingIfPending();
+
+    try {
+      let session = this.sessionObjects.get(sessionId);
+      if (!session) {
+        const linkedTask = this.findLinkedTask(sessionId);
+        const resumeConfig = this.buildSessionConfig({
+          sessionId,
+          task: linkedTask,
+          groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
+          forResume: true,
+        });
+        this.beginSessionResume(sessionId);
+        try {
+          session = await resumeSessionWithTimeout(
+            backend.resumeSession(sessionId, resumeConfig),
+            "undo history resume timed out after 60s",
+          );
+          session = await this.cacheResumedSession(sessionId, session);
+          this.probeMcpStatus(sessionId, session);
+        } finally {
+          this.endSessionResume(sessionId);
+        }
+      }
+
+      if (typeof session.truncateHistory !== "function" || typeof session.getEvents !== "function") {
+        throw new SessionHistoryUndoError(
+          "unsupported",
+          "Session history undo is not available in this agent backend",
+        );
+      }
+
+      let events: unknown[];
+      try {
+        events = await readSdkSessionEvents(session);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/event API is not available/i.test(message)) {
+          throw new SessionHistoryUndoError(
+            "unsupported",
+            "Session history undo is not available in this agent backend",
+          );
+        }
+        throw error;
+      }
+
+      const boundaryIndex = events.findIndex(
+        (event) => getUndoBoundaryEventId(event) === boundaryEventId,
+      );
+      if (boundaryIndex < 0) {
+        throw new SessionHistoryUndoError(
+          "stale-boundary",
+          "This turn is no longer available to undo. Refresh the chat and try again.",
+        );
+      }
+
+      const expectedEventsRemoved = events.length - boundaryIndex;
+      let truncateResult: { eventsRemoved?: number } | undefined;
+      try {
+        truncateResult = await session.truncateHistory({ eventId: boundaryEventId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/event.*not found|eventId.*not found/i.test(message)) {
+          throw new SessionHistoryUndoError(
+            "stale-boundary",
+            "This turn is no longer available to undo. Refresh the chat and try again.",
+          );
+        }
+        throw error;
+      }
+
+      const eventsRemoved = truncateResult?.eventsRemoved;
+      if (typeof eventsRemoved !== "number") {
+        throw new SessionHistoryUndoError(
+          "unsupported",
+          "Session history undo is not available in this agent backend",
+        );
+      }
+      if (eventsRemoved <= 0) {
+        throw new SessionHistoryUndoError(
+          "stale-boundary",
+          "This turn was already removed. Refresh the chat and try again.",
+        );
+      }
+
+      if (eventsRemoved !== expectedEventsRemoved) {
+        console.warn(
+          `[sdk] [${sessionId.slice(0, 8)}] Undo removed ${eventsRemoved} event(s), expected ${expectedEventsRemoved}`,
+        );
+      }
+
+      const remainingEvents = events.slice(0, boundaryIndex);
+      const lastVisibleActivityAt = getLastVisibleActivityAt(remainingEvents, sessionId);
+      const boundaryEvent = events[boundaryIndex] as any;
+      const boundaryOccurredAt = boundaryEvent?.data?.timestamp ?? boundaryEvent?.timestamp;
+      try {
+        clearEventLogStatsCache(sessionId);
+      } catch (error) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to clear message stats after undo:`, error);
+      }
+      try {
+        this.deps.sessionMetaStore?.replaceLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
+        const lastAttentionAt = this.deps.sessionMetaStore?.getMeta(sessionId)?.lastAttentionAt;
+        if (
+          lastAttentionAt
+          && (
+            typeof boundaryOccurredAt !== "string"
+            || lastAttentionAt >= boundaryOccurredAt
+          )
+        ) {
+          this.deps.sessionMetaStore?.replaceLastAttentionAt(sessionId, undefined);
+        }
+      } catch (error) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to refresh session activity after undo:`, error);
+      }
+      try {
+        this.deps.sessionContextStore?.recordContextEvent(createSessionContextTruncationMarker({
+          sessionId,
+          provider: "copilot",
+          providerSessionId: sessionId,
+          eventId: boundaryEventId,
+          eventsRemoved,
+          candidateEventsToRemove: expectedEventsRemoved,
+          reason: "user-undo",
+        }));
+      } catch (error) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to record context truncation after undo:`, error);
+      }
+      try {
+        this.invalidateSessionListCache("session:history-undo");
+      } catch (error) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to invalidate session list after undo:`, error);
+      }
+      try {
+        this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
+        this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
+      } catch (error) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to publish history undo:`, error);
+      }
+
+      this.recordSpan("session.history.undo", Date.now() - startedAt, sessionId, {
+        outcome: "truncated",
+        eventId: boundaryEventId,
+        eventsRemoved,
+        expectedEventsRemoved,
+      });
+      console.log(
+        `[sdk] [${sessionId.slice(0, 8)}] Undid chat history from ${boundaryEventId} (${eventsRemoved} event(s))`,
+      );
+      return {
+        eventsRemoved,
+        ...(lastVisibleActivityAt ? { lastVisibleActivityAt } : {}),
+      };
+    } catch (error) {
+      this.recordSpan("session.history.undo", Date.now() - startedAt, sessionId, {
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      this.historyUndoingSessions.delete(sessionId);
+      this.syncRestartWaitingIfPending();
+      this.flushPendingSessionEviction(sessionId);
+    }
   }
 
   async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {
@@ -2227,11 +2432,13 @@ export class SessionManager {
 
     const skipReason = this.modelSwitchingSessions.has(sessionId)
       ? "model-switching"
-      : this.isSessionResuming(sessionId)
-        ? "resuming"
-        : this.runStateController.isSessionBusy(sessionId)
-          ? "running"
-          : undefined;
+      : this.historyUndoingSessions.has(sessionId)
+        ? "history-undo"
+        : this.isSessionResuming(sessionId)
+          ? "resuming"
+          : this.runStateController.isSessionBusy(sessionId)
+            ? "running"
+            : undefined;
     if (skipReason) {
       this.recordSpan("session.warm.skipped", 0, sessionId, { reason: skipReason });
       return;
@@ -2361,12 +2568,14 @@ export class SessionManager {
 
   isSessionBusy(sessionId: string): boolean {
     return this.modelSwitchingSessions.has(sessionId)
+      || this.historyUndoingSessions.has(sessionId)
       || this.isSessionResuming(sessionId)
       || this.runStateController.isSessionBusy(sessionId);
   }
 
   getSessionRunState(sessionId: string): SessionRunState {
     if (this.modelSwitchingSessions.has(sessionId)) return "busy";
+    if (this.historyUndoingSessions.has(sessionId)) return "busy";
     if (this.isSessionResuming(sessionId)) return "busy";
     return this.runStateController.getSessionRunState(sessionId);
   }
@@ -2425,6 +2634,7 @@ export class SessionManager {
       ...this.runStateController.getActiveSessions(),
       ...this.resumingSessions.keys(),
       ...this.modelSwitchingSessions,
+      ...this.historyUndoingSessions,
     ]));
   }
 

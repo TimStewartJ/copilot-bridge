@@ -36,6 +36,7 @@ export interface TransformedEntry {
   content?: string;
   timestamp?: string;
   forkBoundaryEventId?: string;
+  undoEventId?: string;
   attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
   // Skill fields (when type === "skill") — agent-injected skill context, shown as a collapsed card
   skill?: { id: string; label: string };
@@ -124,6 +125,12 @@ function getSkillSource(event: any): string | undefined {
   if (typeof source !== "string") return undefined;
   const trimmed = source.trim();
   return SKILL_SOURCE_PATTERN.test(trimmed) ? trimmed : undefined;
+}
+
+export function getUndoBoundaryEventId(event: any): string | undefined {
+  if (event?.type !== "user.message" || getSkillSource(event)) return undefined;
+  if (!isVisibleMessageEvent(event)) return undefined;
+  return getRawEventId(event);
 }
 
 function getSkillLabel(source: string, content: string): string {
@@ -387,6 +394,7 @@ export function transformEventsToMessages(
   let idx = 0;
   let turnIndex = options.initialTurnIndex ?? 0;
   let activeTurnId = options.initialActiveTurnId;
+  let activeUndoEventId: string | undefined;
   let pendingTerminalCompletion: TerminalCompletion | undefined;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
@@ -482,6 +490,7 @@ export function transformEventsToMessages(
         });
         continue;
       }
+      activeUndoEventId = getUndoBoundaryEventId(event);
       const blobAttachments = data.attachments
         ?.filter((a: any) => a.type === "blob" && a.mimeType)
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
@@ -497,6 +506,7 @@ export function transformEventsToMessages(
         role: "user",
         content,
         timestamp: data.timestamp ?? (event as any).timestamp,
+        ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         ...(allAttachments.length ? { attachments: allAttachments } : {}),
       });
     } else if (event.type === "assistant.message") {
@@ -513,6 +523,7 @@ export function transformEventsToMessages(
           timestamp: data.timestamp ?? (event as any).timestamp,
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
           ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
+          ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         });
       }
     } else if (event.type === "tool.execution_start") {

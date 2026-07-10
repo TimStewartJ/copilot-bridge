@@ -390,6 +390,45 @@ describe("event-transform fork boundaries", () => {
   });
 });
 
+describe("event-transform undo boundaries", () => {
+  it("anchors user and assistant messages to the visible user event that began the turn", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
+      {
+        id: "skill-browser",
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
+      },
+      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "Still turn one" } },
+      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+      { id: "assistant-3", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
+    ]);
+
+    expect(entries.filter((entry) => entry.type === "message").map((entry) => ({
+      content: entry.content,
+      undoEventId: entry.undoEventId,
+    }))).toEqual([
+      { content: "First", undoEventId: "user-1" },
+      { content: "Answer one", undoEventId: "user-1" },
+      { content: "Still turn one", undoEventId: "user-1" },
+      { content: "Second", undoEventId: "user-2" },
+      { content: "Answer two", undoEventId: "user-2" },
+    ]);
+  });
+
+  it("omits undo actions when the visible user event has no stable raw id", () => {
+    const entries = transformEventsToMessages([
+      { type: "user.message", data: { content: "No id" } },
+      { id: "assistant-1", type: "assistant.message", data: { content: "Answer" } },
+    ]);
+
+    expect(entries.filter((entry) => entry.type === "message").map((entry) => entry.undoEventId))
+      .toEqual([undefined, undefined]);
+  });
+});
+
 describe("event-transform tool results", () => {
   it("hides terminal completion tool rows and uses the terminal summary entry instead", () => {
     const entries = transformEventsToMessages([

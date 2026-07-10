@@ -36,11 +36,12 @@ describe("SessionManager run state", () => {
     );
     const copilotHome = opts.copilotHome ?? runtimePaths.copilotHome;
     configureRestartStateStore(runtimePaths);
+    const sessionMetaStore = createSessionMetaStore(db);
     const manager = new SessionManager({
       globalBus,
       eventBusRegistry,
       sessionTitles: createSessionTitlesStore(db),
-      sessionMetaStore: createSessionMetaStore(db),
+      sessionMetaStore,
       taskStore: {
         findTaskBySessionId: vi.fn().mockReturnValue(null),
       } as any,
@@ -56,7 +57,7 @@ describe("SessionManager run state", () => {
       runtimePaths,
     }) as any;
 
-    return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore };
+    return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore, sessionMetaStore };
   }
 
   function makeSession(opts: { replayOnSubscribe?: any | (() => any) } = {}) {
@@ -1356,6 +1357,148 @@ describe("SessionManager run state", () => {
       timestamp: new Date(Date.now() + 2).toISOString(),
     });
     await flushMicrotasks();
+  });
+
+  it("undoes a validated user turn, rewinds activity metadata, and publishes refresh events", async () => {
+    const {
+      manager,
+      globalBus,
+      sessionContextStore,
+      sessionMetaStore,
+    } = createManager({ telemetry: true });
+    const statusEvents: any[] = [];
+    const events = [
+      { id: "user-1", type: "user.message", timestamp: "2026-05-09T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-05-09T10:00:01.000Z", data: { content: "Answer one" } },
+      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-05-09T10:00:02.000Z", data: {} },
+      { id: "user-2", type: "user.message", timestamp: "2026-05-09T10:01:00.000Z", data: { content: "Second" } },
+      { id: "assistant-2", type: "assistant.message", timestamp: "2026-05-09T10:01:01.000Z", data: { content: "Answer two" } },
+    ];
+    const truncateHistory = vi.fn().mockResolvedValue({ eventsRemoved: 2 });
+    const session = {
+      sessionId: "session-1",
+      on: vi.fn(() => vi.fn()),
+      send: vi.fn(),
+      abort: vi.fn(),
+      setModel: vi.fn(),
+      disconnect: vi.fn(),
+      getEvents: vi.fn().mockResolvedValue(events),
+      truncateHistory,
+    };
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+    sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-05-09T10:01:01.000Z");
+    sessionMetaStore.setLastAttentionAt("session-1", "2026-05-09T10:01:02.000Z");
+    globalBus.subscribe((event) => statusEvents.push(event));
+
+    await expect(manager.undoSessionTurn("session-1", " user-2 ")).resolves.toEqual({
+      eventsRemoved: 2,
+      lastVisibleActivityAt: "2026-05-09T10:00:01.000Z",
+    });
+
+    expect(truncateHistory).toHaveBeenCalledWith({ eventId: "user-2" });
+    expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt)
+      .toBe("2026-05-09T10:00:01.000Z");
+    expect(sessionMetaStore.getMeta("session-1")?.lastAttentionAt).toBeUndefined();
+    expect(statusEvents).toEqual(expect.arrayContaining([
+      { type: "session:history-truncated", sessionId: "session-1" },
+      { type: "sessions:changed", sessionId: "session-1" },
+    ]));
+    expect(sessionContextStore.getSessionContext("session-1").events[0]).toMatchObject({
+      type: "truncation",
+      metadata: { eventId: "user-2", reason: "user-undo" },
+    });
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("rejects stale or non-user undo boundaries before truncating history", async () => {
+    const { manager } = createManager();
+    const truncateHistory = vi.fn();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue({
+        sessionId: "session-1",
+        on: vi.fn(() => vi.fn()),
+        send: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn(),
+        disconnect: vi.fn(),
+        getEvents: vi.fn().mockResolvedValue([
+          {
+            id: "skill-browser",
+            type: "user.message",
+            data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
+          },
+        ]),
+        truncateHistory,
+      }),
+    };
+
+    await expect(manager.undoSessionTurn("session-1", "skill-browser")).rejects.toMatchObject({
+      code: "stale-boundary",
+    });
+    expect(truncateHistory).not.toHaveBeenCalled();
+  });
+
+  it("can undo the first turn and clear all derived session activity", async () => {
+    const { manager, sessionMetaStore } = createManager();
+    sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-05-09T10:00:01.000Z");
+    sessionMetaStore.setLastAttentionAt("session-1", "2026-05-09T10:00:02.000Z");
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue({
+        sessionId: "session-1",
+        on: vi.fn(() => vi.fn()),
+        send: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn(),
+        disconnect: vi.fn(),
+        getEvents: vi.fn().mockResolvedValue([
+          { id: "user-1", type: "user.message", timestamp: "2026-05-09T10:00:00.000Z", data: { content: "First" } },
+          { id: "assistant-1", type: "assistant.message", timestamp: "2026-05-09T10:00:01.000Z", data: { content: "Answer" } },
+        ]),
+        truncateHistory: vi.fn().mockResolvedValue({ eventsRemoved: 2 }),
+      }),
+    };
+
+    await expect(manager.undoSessionTurn("session-1", "user-1"))
+      .resolves.toEqual({ eventsRemoved: 2 });
+    expect(sessionMetaStore.getMeta("session-1")).toBeUndefined();
+  });
+
+  it("marks undo as busy so concurrent mutations cannot race it", async () => {
+    const { manager } = createManager();
+    let releaseTruncate!: () => void;
+    const truncateHistory = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        releaseTruncate = resolve;
+      });
+      return { eventsRemoved: 1 };
+    });
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue({
+        sessionId: "session-1",
+        on: vi.fn(() => vi.fn()),
+        send: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn(),
+        disconnect: vi.fn(),
+        getEvents: vi.fn().mockResolvedValue([
+          { id: "user-1", type: "user.message", data: { content: "First" } },
+        ]),
+        truncateHistory,
+      }),
+    };
+
+    const firstUndo = manager.undoSessionTurn("session-1", "user-1");
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+    await expect(manager.undoSessionTurn("session-1", "user-1")).rejects.toMatchObject({
+      code: "busy",
+    });
+
+    releaseTruncate();
+    await expect(firstUndo).resolves.toEqual({ eventsRemoved: 1 });
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
   it("transitions busy → stalled → busy → idle from the server run-state model", async () => {

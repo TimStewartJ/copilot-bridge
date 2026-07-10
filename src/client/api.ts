@@ -227,6 +227,8 @@ export interface ChatMessage {
   turnId?: string;
   /** Raw exclusive SDK event boundary for safe "fork from here" actions. */
   forkBoundaryEventId?: string;
+  /** Raw user-message event that starts this turn and can be used to rewind history. */
+  undoEventId?: string;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
@@ -665,6 +667,21 @@ export async function forkSession(id: string, opts?: { toEventId?: string }): Pr
     opts?.toEventId ? { toEventId: opts.toEventId } : {},
   );
   return data.sessionId;
+}
+
+export interface UndoSessionTurnResult {
+  eventsRemoved: number;
+  lastVisibleActivityAt?: string;
+}
+
+export async function undoSessionTurn(
+  sessionId: string,
+  eventId: string,
+): Promise<UndoSessionTurnResult> {
+  return apiFetch<UndoSessionTurnResult>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/undo`,
+    { eventId },
+  );
 }
 
 export interface ChatMessageAcceptedResponse {
