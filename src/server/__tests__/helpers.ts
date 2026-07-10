@@ -223,6 +223,7 @@ export function createMockSessionManager() {
     markSessionAttention: () => {},
     abortSession: async () => true,
     readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false }),
+    undoSessionTurn: async () => ({ eventsRemoved: 1 }),
     warmSession: async () => {},
     reloadSession: async () => [],
     submitUserInputResponse: async (_sessionId: string, requestId: string, payload: any) => ({

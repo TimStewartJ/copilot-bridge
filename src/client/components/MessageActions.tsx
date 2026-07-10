@@ -1,4 +1,4 @@
-import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal } from "lucide-react";
+import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal, Undo2 } from "lucide-react";
 import type { ChatMessage } from "../api";
 import { timeAgo } from "../time";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
@@ -96,9 +96,12 @@ interface MessageActionsMenuProps {
   copied: boolean;
   forkLoading: boolean;
   forkDisabled: boolean;
+  undoLoading: boolean;
+  undoDisabled: boolean;
   onClose: () => void;
   onCopy: () => void;
   onFork: () => void;
+  onUndo: () => void;
 }
 
 export function MessageActionsMenu({
@@ -107,9 +110,12 @@ export function MessageActionsMenu({
   copied,
   forkLoading,
   forkDisabled,
+  undoLoading,
+  undoDisabled,
   onClose,
   onCopy,
   onFork,
+  onUndo,
 }: MessageActionsMenuProps) {
   const timestamp = formatMessageTimestamp(target.message.timestamp);
   const forkBoundaryEventId = target.message.role === "assistant"
@@ -143,6 +149,21 @@ export function MessageActionsMenu({
           disabled={forkDisabled || forkLoading}
           title={forkDisabled ? "Wait until this session is idle" : "Fork a new session through this response"}
         />
+      )}
+      {target.message.undoEventId && (
+        <>
+          <CtxDivider />
+          <CtxItem
+            icon={undoLoading ? <Loader2 size={14} className="animate-spin" /> : <Undo2 size={14} />}
+            label={undoLoading ? "Undoing..." : "Undo turn from here"}
+            onClick={onUndo}
+            disabled={undoDisabled || undoLoading}
+            className="text-error"
+            title={undoDisabled
+              ? "Wait until this session is idle"
+              : "Remove this turn and every later turn from chat history"}
+          />
+        </>
       )}
     </ContextMenu>
   );

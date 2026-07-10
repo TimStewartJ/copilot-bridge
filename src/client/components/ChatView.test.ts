@@ -28,6 +28,7 @@ const fetchMcpStatusMock = vi.hoisted(() => vi.fn());
 const fetchSessionContextMock = vi.hoisted(() => vi.fn());
 const warmSessionMock = vi.hoisted(() => vi.fn());
 const reportTimingMock = vi.hoisted(() => vi.fn());
+const undoSessionTurnMock = vi.hoisted(() => vi.fn());
 const chatInputMock = vi.hoisted(() => vi.fn());
 const mcpStatusBarMock = vi.hoisted(() => vi.fn());
 
@@ -45,6 +46,7 @@ vi.mock("../api", async (importOriginal) => {
     warmSession: (...args: unknown[]) => warmSessionMock(...args),
     reportTiming: (...args: unknown[]) => reportTimingMock(...args),
     submitUserInputResponse: (...args: unknown[]) => submitUserInputResponseMock(...args),
+    undoSessionTurn: (...args: unknown[]) => undoSessionTurnMock(...args),
   };
 });
 
@@ -170,6 +172,16 @@ function clickButton(button: any) {
     preventDefault: vi.fn(),
     stopPropagation: vi.fn(),
   });
+}
+
+function stubWindowConfirm(result: boolean) {
+  const confirm = vi.fn(() => result);
+  Object.defineProperty(window, "confirm", {
+    configurable: true,
+    writable: true,
+    value: confirm,
+  });
+  return confirm;
 }
 
 function createSnapshot(
@@ -312,6 +324,7 @@ async function renderChatView(
   );
   warmSessionMock.mockResolvedValue(undefined);
   reportTimingMock.mockResolvedValue(undefined);
+  undoSessionTurnMock.mockResolvedValue({ eventsRemoved: 1 });
   submitUserInputResponseMock.mockResolvedValue({
     requestId: pendingUserInputs[0]?.requestId ?? "request-1",
     answer: "ok",
@@ -392,6 +405,8 @@ async function renderChatView(
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+  delete (window as unknown as { confirm?: typeof window.confirm }).confirm;
   vi.clearAllMocks();
   resetCachedChatSnapshotState();
 });
@@ -1409,6 +1424,48 @@ describe("ChatView live streaming UX", () => {
 });
 
 describe("ChatView message actions", () => {
+  it("reconciles completed live turns from disk so undo boundaries appear without navigation", async () => {
+    const { dom, act, cleanup, render } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [],
+        busy: true,
+        total: 0,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: true },
+    });
+
+    try {
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length >= 1);
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [
+          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
+          { id: "assistant-1", role: "assistant", content: "reply one", undoEventId: "user-event-1" },
+        ],
+        busy: false,
+        total: 2,
+        warm: true,
+        hasMore: false,
+      });
+
+      await render({ streamOverrides: { isStreaming: false } });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("reply one") ?? false);
+
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
+        getReactProps(button)?.["aria-label"] === "Open message actions"
+      ));
+      await act(async () => {
+        clickButton(menuButton);
+      });
+
+      expect(dom.container.textContent).toContain("Undo turn from here");
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("shows timestamp, copy, and bounded fork actions for assistant messages", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const onForkSession = vi.fn().mockResolvedValue(undefined);
@@ -1509,6 +1566,137 @@ describe("ChatView message actions", () => {
 
       await waitUntilAct(act, () => dom.container.textContent?.includes("Fork failed: Session not found: fork-session") ?? false);
       expect(onForkSession).toHaveBeenCalledWith("session-1", { toEventId: "event-after-assistant-1" });
+    } finally {
+      errorSpy.mockRestore();
+      await cleanup();
+    }
+  });
+
+  it("offers undo on assistant messages and optimistically removes that turn and later history", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
+          { id: "assistant-1", role: "assistant", content: "reply one", undoEventId: "user-event-1" },
+          { id: "user-2", role: "user", content: "second", undoEventId: "user-event-2" },
+          { id: "assistant-2", role: "assistant", content: "reply two", undoEventId: "user-event-2" },
+        ],
+        busy: false,
+        total: 4,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+    const confirm = stubWindowConfirm(true);
+    const refresh = createDeferred<FetchMessagesFastResult>();
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("reply two") ?? false);
+      fetchMessagesFastMock.mockImplementation(() => refresh.promise);
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-2");
+      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
+        getReactProps(button)?.["aria-label"] === "Open message actions"
+      ));
+      expect(menuButton).toBeDefined();
+
+      await act(async () => {
+        clickButton(menuButton);
+      });
+      expect(dom.container.textContent).toContain("Undo turn from here");
+
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Undo turn from here"));
+        await waitTick();
+      });
+
+      expect(confirm).toHaveBeenCalled();
+      expect(undoSessionTurnMock).toHaveBeenCalledWith("session-1", "user-event-2");
+      expect(dom.container.textContent).toContain("reply one");
+      expect(dom.container.textContent).not.toContain("second");
+      expect(dom.container.textContent).not.toContain("reply two");
+    } finally {
+      refresh.resolve({
+        messages: [],
+        busy: false,
+        total: 0,
+        warm: true,
+        hasMore: false,
+      });
+      await cleanup();
+    }
+  });
+
+  it("offers undo on user messages but does not call the API when confirmation is canceled", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
+        ],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+    const confirm = stubWindowConfirm(false);
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("first") ?? false);
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "user-1");
+      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
+        getReactProps(button)?.["aria-label"] === "Open message actions"
+      ));
+
+      await act(async () => {
+        clickButton(menuButton);
+      });
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Undo turn from here"));
+      });
+
+      expect(confirm).toHaveBeenCalled();
+      expect(undoSessionTurnMock).not.toHaveBeenCalled();
+      expect(dom.container.textContent).toContain("first");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("surfaces undo failures without mutating the visible transcript", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    undoSessionTurnMock.mockRejectedValueOnce(new Error("This turn is no longer available to undo."));
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
+        ],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+    const confirm = stubWindowConfirm(true);
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("first") ?? false);
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "user-1");
+      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
+        getReactProps(button)?.["aria-label"] === "Open message actions"
+      ));
+      await act(async () => {
+        clickButton(menuButton);
+      });
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Undo turn from here"));
+        await waitTick();
+      });
+
+      expect(dom.container.textContent).toContain("Undo failed: This turn is no longer available to undo.");
+      expect(dom.container.textContent).toContain("first");
     } finally {
       errorSpy.mockRestore();
       await cleanup();

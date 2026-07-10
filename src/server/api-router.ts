@@ -23,6 +23,7 @@ import {
   ModelRefreshBlockedError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
+  SessionHistoryUndoError,
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
@@ -2402,6 +2403,41 @@ export function createApiRouter(
       res.json(result);
     } catch (err) {
       handleForkError(res, err);
+    }
+  });
+
+  // POST /sessions/:id/undo — remove a selected turn and all later persisted history
+  router.post("/sessions/:id/undo", async (req, res) => {
+    const sessionId = req.params.id;
+    const eventId = isRecord(req.body) && typeof req.body.eventId === "string"
+      ? req.body.eventId.trim()
+      : "";
+    if (!eventId) {
+      return res.status(400).json({ error: "eventId must be a non-empty string" });
+    }
+    if (isRestartCutoverInProgress(await refreshRestartState())) {
+      res.set("Retry-After", "5");
+      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+    }
+    try {
+      const result = await ctx.sessionManager.undoSessionTurn(sessionId, eventId);
+      return res.json(result);
+    } catch (error) {
+      if (error instanceof SessionHistoryUndoError) {
+        if (error.code === "unsupported") {
+          return res.status(501).json({ error: error.message, code: error.code });
+        }
+        return res.status(409).json({ error: error.message, code: error.code });
+      }
+      if (isRestartPendingError(error)) {
+        res.set("Retry-After", "5");
+        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (/session .*not found|session not found/i.test(message)) {
+        return res.status(404).json({ error: message });
+      }
+      return res.status(500).json({ error: message });
     }
   });
 

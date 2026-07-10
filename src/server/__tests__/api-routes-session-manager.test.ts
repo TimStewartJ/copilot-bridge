@@ -10,6 +10,7 @@ import {
   mkdirSync,
   request,
 } from "./api-routes-test-helpers.js";
+import { SessionHistoryUndoError } from "../session-manager.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -228,6 +229,62 @@ describe("Session manager routes", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("POST /api/sessions/:id/undo passes a validated turn boundary to the session manager", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.undoSessionTurn = vi.fn().mockResolvedValue({
+      eventsRemoved: 4,
+      lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+    });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: " user-event-2 " });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      eventsRemoved: 4,
+      lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+    });
+    expect(sessionManager.undoSessionTurn).toHaveBeenCalledWith("test-id", "user-event-2");
+  });
+
+  it("POST /api/sessions/:id/undo rejects empty and stale boundaries", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.undoSessionTurn = vi.fn().mockRejectedValue(
+      new SessionHistoryUndoError("stale-boundary", "This turn is no longer available to undo."),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const empty = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: "   " });
+    expect(empty.status).toBe(400);
+    expect(sessionManager.undoSessionTurn).not.toHaveBeenCalled();
+
+    const stale = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: "user-event-2" });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toContain("no longer available");
+    expect(stale.body.code).toBe("stale-boundary");
+  });
+
+  it("POST /api/sessions/:id/undo reports unsupported backends clearly", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.undoSessionTurn = vi.fn().mockRejectedValue(
+      new SessionHistoryUndoError("unsupported", "Session history undo is not available in this agent backend"),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: "user-event-2" });
+
+    expect(res.status).toBe(501);
+    expect(res.body.code).toBe("unsupported");
   });
 
   it("POST /api/sessions/:id/fork preserves all task links from the source session", async () => {

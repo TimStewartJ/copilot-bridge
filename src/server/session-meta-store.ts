@@ -74,8 +74,16 @@ export function createSessionMetaStore(db: DatabaseSync) {
     bridgeSessionStateStore.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
   }
 
+  function replaceLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void {
+    bridgeSessionStateStore.replaceLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
+  }
+
   function setLastAttentionAt(sessionId: string, lastAttentionAt: string): void {
     bridgeSessionStateStore.setLastAttentionAt(sessionId, lastAttentionAt);
+  }
+
+  function replaceLastAttentionAt(sessionId: string, lastAttentionAt?: string): void {
+    bridgeSessionStateStore.replaceLastAttentionAt(sessionId, lastAttentionAt);
   }
 
   function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {
@@ -121,7 +129,9 @@ export function createSessionMetaStore(db: DatabaseSync) {
     deleteMeta,
     setScheduleMeta,
     setLastVisibleActivityAt,
+    replaceLastVisibleActivityAt,
     setLastAttentionAt,
+    replaceLastAttentionAt,
     recordScheduleRun,
     listMeta,
     listScheduleRuns,
