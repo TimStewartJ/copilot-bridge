@@ -14,6 +14,7 @@ import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import {
+  AGENT_LIFECYCLE_GUIDANCE,
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
@@ -325,6 +326,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // Identity override — always replace the SDK default with Bridge identity
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
   sections.identity = { action: "replace", content: identityText };
+
+  // Tighten the SDK's native task/write_agent contract without replacing its
+  // broader per-tool guidance.
+  sections.tool_instructions = { action: "append", content: AGENT_LIFECYCLE_GUIDANCE };
 
   // Custom instructions — append user-defined instructions to context
   if (settings?.customInstructions?.trim()) {
