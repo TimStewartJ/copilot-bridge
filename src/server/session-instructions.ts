@@ -4,6 +4,14 @@ export const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql", "report_intent"];
 
 export const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.`;
 
+export const AGENT_LIFECYCLE_GUIDANCE = `
+**Sub-agent lifecycle**
+* Treat agents launched with mode "sync" as one-shot agents.
+* Never call write_agent on an agent launched in sync mode.
+* If an agent might need correction, refinement, review, or any follow-up, launch it with mode "background".
+* To block while preserving multi-turn support, launch the agent in background mode and call read_agent with wait: true.
+`.trim();
+
 export const TOOL_NAMING_GUIDANCE = `
 <tool_naming>
 Bridge-owned tools are canonical labels such as staging_preview, docs_read, and task_update. Prefer those exact first-class tool names when they are available. Some fallback runtimes may expose compatibility MCP tools with a server-qualified prefix (for example, bridge-tools-staging_preview); when a literal canonical name is not available, use the exposed tool whose final name segment and description match the requested Bridge tool.

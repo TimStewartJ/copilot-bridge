@@ -127,6 +127,10 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.sections.identity).toEqual({ action: "replace", content: "Custom Bridge identity" });
     expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
     expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
+    expect(cfg.systemMessage.sections.tool_instructions).toMatchObject({
+      action: "append",
+      content: expect.stringContaining('mode "sync" as one-shot agents'),
+    });
     expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
     expect(cfg.systemMessage.content).toContain("Prefer concise summaries.");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
@@ -170,6 +174,31 @@ describe("session-config-builder", () => {
     expect(resumeCfg.tools).toBe(nativeTools);
     expect(resumeCfg.model).toBeUndefined();
     expect(resumeCfg.reasoningEffort).toBeUndefined();
+  });
+
+  it("appends reusable-agent lifecycle guidance on create and resume", () => {
+    const createCfg = buildSessionConfig({
+      deps: createDeps(),
+      callbacks: createCallbacks(),
+    });
+    const resumeCfg = buildSessionConfig({
+      deps: createDeps(),
+      options: { forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    for (const cfg of [createCfg, resumeCfg]) {
+      expect(cfg.systemMessage.sections.tool_instructions.action).toBe("append");
+      expect(cfg.systemMessage.sections.tool_instructions.content).toContain(
+        "Never call write_agent on an agent launched in sync mode.",
+      );
+      expect(cfg.systemMessage.sections.tool_instructions.content).toContain(
+        'launch it with mode "background"',
+      );
+      expect(cfg.systemMessage.sections.tool_instructions.content).toContain(
+        "call read_agent with wait: true",
+      );
+    }
   });
 
   it("explicitly disables cloud-backed Copilot memory on create and resume", () => {
