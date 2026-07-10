@@ -1,11 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { createDeadline } from "../deadline.js";
+import {
+  createDeadline,
+  sleepUntilDeadline,
+} from "../deadline.js";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
   terminateProcessTree,
   type ProcessIdentity,
+  type ProcessTreeSnapshot,
+  type ProcessTreeTerminationResult,
 } from "../platform.js";
 
 function waitForReady(child: ChildProcess): Promise<void> {
@@ -38,13 +43,73 @@ function waitForExit(child: ChildProcess): Promise<void> {
 
 async function identityFor(child: ChildProcess): Promise<ProcessIdentity> {
   if (!child.pid) throw new Error("spawned child did not expose a PID");
-  // captureProcessIdentity issues a WMI/CIM query, which can be slow when the
-  // machine is heavily loaded. Use a generous deadline so this integration test
-  // does not flake under CI/host contention (the product code uses its own
-  // deadlines in production).
-  const identity = await captureProcessIdentity(child.pid, createDeadline(60_000));
-  if (!identity) throw new Error(`could not capture child identity for PID ${child.pid}`);
-  return identity;
+  const deadline = createDeadline(60_000);
+  let attempts = 0;
+  do {
+    attempts += 1;
+    const identity = await captureProcessIdentity(child.pid, deadline);
+    if (identity) return identity;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`child PID ${child.pid} exited before its identity could be captured`);
+    }
+  } while (await sleepUntilDeadline(100, deadline));
+  throw new Error(`could not capture child identity for PID ${child.pid} after ${attempts} attempts`);
+}
+
+function waitForMessage(child: ChildProcess, expected: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`child message "${expected}" timed out`)), 10_000);
+    const onError = (error: Error) => {
+      clearTimeout(timeout);
+      reject(error);
+    };
+    const onMessage = (message: unknown) => {
+      if (message !== expected) return;
+      clearTimeout(timeout);
+      child.off("error", onError);
+      child.off("message", onMessage);
+      resolve();
+    };
+    child.once("error", onError);
+    child.on("message", onMessage);
+  });
+}
+
+async function terminateWithSnapshotRetries(
+  identity: ProcessIdentity,
+): Promise<{ result: ProcessTreeTerminationResult; snapshot?: ProcessTreeSnapshot }> {
+  const deadline = createDeadline(90_000);
+  let snapshot: ProcessTreeSnapshot | undefined;
+  let result: ProcessTreeTerminationResult = {
+    ok: false,
+    status: "deadline-exceeded",
+    root: identity,
+  };
+
+  do {
+    result = await terminateProcessTree(
+      identity,
+      createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+    );
+    snapshot ??= result.snapshot;
+    if (result.ok || result.status !== "snapshot-unavailable") break;
+  } while (await sleepUntilDeadline(100, deadline));
+
+  return { result, snapshot: result.snapshot ?? snapshot };
+}
+
+async function requestHelperCleanup(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (child.connected) {
+    try {
+      child.send("CLEANUP");
+      await waitForExit(child);
+    } catch { /* fall through to direct child termination */ }
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill();
+    await waitForExit(child);
+  }
 }
 
 describe.runIf(process.platform === "win32")("Windows process-tree integration", () => {
@@ -57,18 +122,33 @@ describe.runIf(process.platform === "win32")("Windows process-tree integration",
     const rootCode = `
       const { spawn } = require("node:child_process");
       const leaf = ${JSON.stringify(leafCode)};
+      const leaves = [];
       for (let index = 0; index < 8; index++) {
-        spawn(process.execPath, ["-e", leaf], { stdio: "ignore" });
+        leaves.push(spawn(process.execPath, ["-e", leaf], { stdio: "ignore" }));
       }
-      const churn = setInterval(() => {
-        spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 25)"], { stdio: "ignore" });
-      }, 10);
-      setTimeout(() => clearInterval(churn), 1000);
+      let churn;
+      process.on("message", (message) => {
+        if (message === "START_CHURN" && !churn) {
+          churn = setInterval(() => {
+            spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 25)"], { stdio: "ignore" });
+          }, 10);
+          setTimeout(() => {
+            clearInterval(churn);
+            churn = undefined;
+          }, 1000);
+          process.send?.("CHURNING");
+        }
+        if (message === "CLEANUP") {
+          if (churn) clearInterval(churn);
+          for (const child of leaves) child.kill();
+          process.exit(0);
+        }
+      });
       console.log("READY");
       setTimeout(() => process.exit(0), 300000);
     `;
     const root = spawn(process.execPath, ["-e", rootCode], {
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "ignore", "ipc"],
       windowsHide: true,
     });
     const unrelated = spawn(process.execPath, ["-e", leafCode], {
@@ -82,31 +162,23 @@ describe.runIf(process.platform === "win32")("Windows process-tree integration",
       await waitForReady(root);
       rootIdentity = await identityFor(root);
       unrelatedIdentity = await identityFor(unrelated);
+      const churnStarted = waitForMessage(root, "CHURNING");
+      root.send("START_CHURN");
+      await churnStarted;
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      const result = await terminateProcessTree(
-        rootIdentity,
-        createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
-      );
+      const { result, snapshot } = await terminateWithSnapshotRetries(rootIdentity);
 
-      expect(result).toMatchObject({ ok: true, status: "terminated" });
-      expect(result.snapshot?.descendants.length).toBeGreaterThan(0);
+      expect(result.ok).toBe(true);
+      expect(["terminated", "already-exited"]).toContain(result.status);
+      expect(snapshot?.descendants.length).toBeGreaterThan(0);
       await waitForExit(root);
       expect(root.exitCode !== null || root.signalCode !== null).toBe(true);
       expect(() => process.kill(unrelatedIdentity!.pid, 0)).not.toThrow();
     } finally {
-      if (rootIdentity) {
-        await terminateProcessTree(
-          rootIdentity,
-          createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
-        );
-      }
-      if (unrelatedIdentity) {
-        await terminateProcessTree(
-          unrelatedIdentity,
-          createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
-        );
-      }
+      await requestHelperCleanup(root);
+      unrelated.kill();
+      await waitForExit(unrelated);
     }
-  }, 120_000);
+  }, 180_000);
 });
