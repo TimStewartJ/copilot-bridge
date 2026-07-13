@@ -60,6 +60,37 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
+  it("reports tracked weight and running protection, notifying only on task changes", async () => {
+    const { bus } = makeBus();
+    let status = "running";
+    const onTasksChanged = vi.fn();
+    const session = fakeSession(async () => ({
+      tasks: [
+        agentTask({ id: "a", status }),
+        agentTask({ id: "b", status: "completed" }),
+      ],
+    }));
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: () => session,
+      onTasksChanged,
+    });
+
+    await registry.refresh("s1", "first");
+    expect(registry.getTrackedAgentCount("s1")).toBe(2);
+    expect(registry.hasRunningAgents("s1")).toBe(true);
+    expect(onTasksChanged).toHaveBeenCalledTimes(1);
+
+    await registry.refresh("s1", "unchanged");
+    expect(onTasksChanged).toHaveBeenCalledTimes(1);
+
+    status = "idle";
+    await registry.refresh("s1", "idle");
+    expect(registry.hasRunningAgents("s1")).toBe(false);
+    expect(onTasksChanged).toHaveBeenCalledTimes(2);
+    registry.dispose();
+  });
+
   it("suppresses duplicate emissions when counts are unchanged", async () => {
     const { bus, events } = makeBus();
     const session = fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "running" })] }));
@@ -187,6 +218,34 @@ describe("SessionAgentRegistry", () => {
     await vi.advanceTimersByTimeAsync(11 * 60_000);
     const agentEvents = events.filter((e) => e.type === "session:agents");
     expect(agentEvents.at(-1)?.backgroundAgents).toMatchObject({ idle: 1, source: "lastSeen" });
+    registry.dispose();
+  });
+
+  it("keeps refreshing beyond the poll cap while an agent is still running", async () => {
+    const { bus } = makeBus();
+    let status = "running";
+    let calls = 0;
+    const session = fakeSession(async () => {
+      calls++;
+      return { tasks: [agentTask({ id: "a", status })] };
+    });
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: () => session,
+      pollIntervalMs: 1_000,
+    });
+
+    await registry.refresh("s1", "test");
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+    expect(calls).toBeGreaterThan(2);
+    expect(registry.hasRunningAgents("s1")).toBe(true);
+
+    status = "completed";
+    await vi.advanceTimersByTimeAsync(1_000);
+    const callsAfterCompletion = calls;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(calls).toBe(callsAfterCompletion);
+    expect(registry.hasRunningAgents("s1")).toBe(false);
     registry.dispose();
   });
 

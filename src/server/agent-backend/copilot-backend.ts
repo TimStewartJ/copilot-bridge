@@ -308,6 +308,13 @@ class CopilotAgentSession implements AgentSession {
     const result = await cancel.call(this.session.rpc.tasks, { id });
     return { cancelled: Boolean((result as any)?.cancelled) };
   }
+
+  async removeTask(id: string): Promise<{ removed: boolean } | undefined> {
+    const remove = this.session?.rpc?.tasks?.remove;
+    if (typeof remove !== "function") return undefined;
+    const result = await remove.call(this.session.rpc.tasks, { id });
+    return { removed: Boolean((result as any)?.removed) };
+  }
 }
 
 /**

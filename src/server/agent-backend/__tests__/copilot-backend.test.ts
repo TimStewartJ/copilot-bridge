@@ -346,6 +346,17 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(cancel).toHaveBeenCalledWith({ id: "explore-docs" });
   });
 
+  it("removeTask delegates to rpc.tasks.remove and normalizes the result", async () => {
+    const missing = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(missing.removeTask!("x")).resolves.toBeUndefined();
+
+    const remove = vi.fn(async () => ({ removed: true }));
+    const session = createFakeSession({ tasks: { remove } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+    await expect(wrapped.removeTask!("explore-docs")).resolves.toEqual({ removed: true });
+    expect(remove).toHaveBeenCalledWith({ id: "explore-docs" });
+  });
+
   it("tool metadata warmup delegates to rpc.tools when available", async () => {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.initializeTools!()).resolves.toBeUndefined();
