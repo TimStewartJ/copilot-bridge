@@ -20,6 +20,7 @@
     "build:client": "vite build",
     "build:server": "tsc",
     "build": "npm run build:client && npm run build:server",
+    "postbuild": "node scripts/release-slot-postbuild-delay.mjs",
     "start": "node dist/server/index.js",
     "typecheck:server": "tsc --noEmit -p tsconfig.json",
     "typecheck:server:ts7-preview": "tsgo --noEmit -p tsconfig.json",

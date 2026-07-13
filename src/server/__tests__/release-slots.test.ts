@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { rename } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -131,6 +132,89 @@ describe("release slots", () => {
     expect(existsSync(join(result.manifest.root, ".vitest-slowest.json"))).toBe(false);
     expect(existsSync(join(result.manifest.root, ".git"))).toBe(false);
     expect(existsSync(join(result.manifest.root, "dist", "stale.txt"))).toBe(false);
+  });
+
+  it("retries transient Windows rename failures before finalizing the slot", async () => {
+    const sourceDir = makeTestDir("release-slot-rename-retry-source");
+    const dataDir = makeTestDir("release-slot-rename-retry-data");
+    writeSourceFixture(sourceDir);
+    const waits: number[] = [];
+    let attempts = 0;
+
+    const result = await prepareReleaseSlot({
+      sourceDir,
+      dataDir,
+      commitSha: "abcdef1234567890",
+      source: "staging_deploy",
+      validationMode: "deploy",
+      installCommand: "npm install --test",
+      installTimeoutMs: 30_000,
+      now: new Date("2026-05-18T22:00:00.000Z"),
+      run: async (command, cwd) => {
+        if (command === "npm run build") {
+          mkdirSync(join(cwd, "dist", "server"), { recursive: true });
+          writeFileSync(join(cwd, "dist", "server", "index.js"), "console.log('built');\n");
+        }
+        return { ok: true, output: "" };
+      },
+      renamePath: async (from, to) => {
+        attempts++;
+        if (attempts <= 3) {
+          const error = new Error("temporarily locked") as NodeJS.ErrnoException;
+          error.code = attempts === 1 ? "EPERM" : attempts === 2 ? "EACCES" : "EBUSY";
+          throw error;
+        }
+        await rename(from, to);
+      },
+      wait: async (delayMs) => {
+        waits.push(delayMs);
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(attempts).toBe(4);
+    expect(waits).toEqual([100, 250, 500]);
+  });
+
+  it("does not retry non-transient release slot rename failures", async () => {
+    const sourceDir = makeTestDir("release-slot-rename-failure-source");
+    const dataDir = makeTestDir("release-slot-rename-failure-data");
+    writeSourceFixture(sourceDir);
+    let attempts = 0;
+
+    const result = await prepareReleaseSlot({
+      sourceDir,
+      dataDir,
+      commitSha: "abcdef1234567890",
+      source: "staging_deploy",
+      validationMode: "deploy",
+      installCommand: "npm install --test",
+      installTimeoutMs: 30_000,
+      now: new Date("2026-05-18T23:00:00.000Z"),
+      run: async (command, cwd) => {
+        if (command === "npm run build") {
+          mkdirSync(join(cwd, "dist", "server"), { recursive: true });
+          writeFileSync(join(cwd, "dist", "server", "index.js"), "console.log('built');\n");
+        }
+        return { ok: true, output: "" };
+      },
+      renamePath: async () => {
+        attempts++;
+        const error = new Error("missing source") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      },
+      wait: async () => {
+        throw new Error("wait should not be called");
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      command: "prepare release slot",
+      output: "missing source",
+    });
+    expect(attempts).toBe(1);
   });
 
   it("prunes stale dotted temp directories without removing finalized or live slots", () => {

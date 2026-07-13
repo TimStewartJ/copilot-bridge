@@ -21,6 +21,8 @@ const RELEASE_SLOT_MANIFEST = "release-slot.json";
 const ACTIVE_RELEASE_FILE = "active-release.json";
 const RELEASE_SLOT_KEEP_RECENT = 5;
 const TEMP_DIR_SUFFIX = ".tmp";
+const RELEASE_SLOT_RENAME_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 1_500] as const;
+const RETRYABLE_RELEASE_SLOT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
 const ROOT_COPY_EXCLUDES = new Set([
   ".env",
@@ -71,6 +73,10 @@ export interface PrepareReleaseSlotOptions {
   buildCommand?: string;
   buildTimeoutMs?: number;
   now?: Date;
+  /** Test seam for deterministic Windows rename retry coverage. */
+  renamePath?: typeof rename;
+  /** Test seam for deterministic retry timing. */
+  wait?: (delayMs: number) => Promise<void>;
 }
 
 export function getReleaseSlotsDir(dataDir: string): string {
@@ -287,6 +293,35 @@ async function removePath(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
+function isRetryableReleaseSlotRenameError(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  return RETRYABLE_RELEASE_SLOT_RENAME_CODES.has(String((error as NodeJS.ErrnoException).code));
+}
+
+async function finalizeReleaseSlot(
+  tempRoot: string,
+  slotRoot: string,
+  options: Pick<PrepareReleaseSlotOptions, "log" | "renamePath" | "wait">,
+): Promise<void> {
+  const renamePath = options.renamePath ?? rename;
+  const wait = options.wait ?? ((delayMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await renamePath(tempRoot, slotRoot);
+      return;
+    } catch (error) {
+      const delayMs = RELEASE_SLOT_RENAME_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined || !isRetryableReleaseSlotRenameError(error)) throw error;
+      options.log?.(
+        `Release slot rename failed with ${(error as NodeJS.ErrnoException).code}; retrying in ${delayMs}ms`,
+      );
+      await wait(delayMs);
+    }
+  }
+}
+
 export async function prepareReleaseSlot(options: PrepareReleaseSlotOptions): Promise<PrepareReleaseSlotResult> {
   const now = options.now ?? new Date();
   const sourceDir = resolve(options.sourceDir);
@@ -348,7 +383,7 @@ export async function prepareReleaseSlot(options: PrepareReleaseSlotOptions): Pr
       validationMode: options.validationMode,
     };
     await writeFile(releaseSlotManifestPath(tempRoot), `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
-    await rename(tempRoot, slotRoot);
+    await finalizeReleaseSlot(tempRoot, slotRoot, options);
     options.log?.(`Release slot prepared: ${slotRoot}`);
     return { ok: true, manifest };
   } catch (error) {
