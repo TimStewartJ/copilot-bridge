@@ -12,6 +12,7 @@ import {
   createAgentBackend,
   type AgentBackend,
   type AgentBackendFactory,
+  type AgentBackgroundTask,
   type AgentModelInfo,
   type AgentSession,
   type AgentSlashCommandInfo,
@@ -195,6 +196,10 @@ const BACKEND_STOP_TIMEOUT_MS = 4_000;
 const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
 const DISCONNECT_TIMEOUT_MS = 5_000;
 const DISCONNECT_MAX_ATTEMPTS = 2;
+const SESSION_TASK_CLEANUP_TIMEOUT_MS = 10_000;
+const SESSION_TASK_CLEANUP_POLL_MS = 100;
+const DEFAULT_SESSION_CACHE_IDLE_TTL_MS = 60 * 60_000;
+const SESSION_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const PROCESS_TREE_SAMPLE_THROTTLE_MS = 60_000;
 const PROCESS_TREE_SAMPLE_DEADLINE_MS = 5_000;
 const PROCESS_TREE_WARNING_THRESHOLD = 128;
@@ -204,9 +209,17 @@ type SessionCleanupRecord = {
   sessionId: string;
   state: "pending" | "failed";
   attempts: number;
+  contextWeight: number;
   lastOutcome?: "rejected" | "timed-out";
   promise?: Promise<boolean>;
 };
+
+class SessionTaskCleanupTimeoutError extends Error {
+  constructor() {
+    super("Background task cleanup timed out");
+    this.name = "SessionTaskCleanupTimeoutError";
+  }
+}
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
   stopPrevious: "stopping the previous client",
@@ -430,6 +443,8 @@ export class SessionManager {
   private cacheQueue: Promise<void> = Promise.resolve();
   private cleanupQueue: Promise<void> = Promise.resolve();
   private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
+  private readonly sessionTreeLastActivityAt = new Map<string, number>();
+  private sessionCacheSweepHandle?: ReturnType<typeof setInterval>;
   private cumulativeCleanupFailures = 0;
   private processTreeBaselineCount: number | null = null;
   private lastProcessTreeSampleAt = 0;
@@ -452,13 +467,19 @@ export class SessionManager {
   private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
   private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
-  // Upper bound on resumed session objects kept warm in memory. Each cached
-  // session holds its MCP server subprocesses open in the Copilot CLI, so an
-  // unbounded cache leaks processes as sessions are resumed over time. When the
-  // cache exceeds this cap the least-recently-resumed idle session is evicted
-  // (which stops its MCP servers). Active/resuming sessions are never evicted.
-  // Override with BRIDGE_MAX_CACHED_SESSIONS.
+  // Parent sessions and their tracked background agents form one cache tree.
+  // Parent count, total context weight, and a shared idle TTL bound the MCP
+  // subprocess footprint. Active/resuming parents and running agents protect
+  // their tree; eviction cancels/removes child tasks before disconnecting it.
   private maxCachedSessions = SessionManager.resolveMaxCachedSessions();
+  private maxCachedContexts = SessionManager.resolvePositiveIntegerEnv(
+    "BRIDGE_MAX_CACHED_CONTEXTS",
+    this.maxCachedSessions,
+  );
+  private sessionCacheIdleTtlMs = SessionManager.resolvePositiveIntegerEnv(
+    "BRIDGE_SESSION_CACHE_IDLE_TTL_SECONDS",
+    DEFAULT_SESSION_CACHE_IDLE_TTL_MS / 1_000,
+  ) * 1_000;
   private maxPendingSessionCleanups = SessionManager.resolvePositiveIntegerEnv(
     "BRIDGE_MAX_PENDING_SESSION_CLEANUPS",
     this.maxCachedSessions,
@@ -467,6 +488,23 @@ export class SessionManager {
   private static resolveMaxCachedSessions(): number {
     const raw = Number(process.env.BRIDGE_MAX_CACHED_SESSIONS);
     return Number.isFinite(raw) && raw >= 2 ? Math.floor(raw) : 16;
+  }
+
+  private startSessionCacheSweep(): void {
+    const intervalMs = Math.min(this.sessionCacheIdleTtlMs, SESSION_CACHE_SWEEP_INTERVAL_MS);
+    this.sessionCacheSweepHandle = setInterval(() => {
+      this.scheduleCacheOperation(
+        this.trimSessionCache("session tree idle TTL"),
+        "sweeping idle session trees",
+      );
+    }, intervalMs);
+    this.sessionCacheSweepHandle.unref?.();
+  }
+
+  private stopSessionCacheSweep(): void {
+    if (!this.sessionCacheSweepHandle) return;
+    clearInterval(this.sessionCacheSweepHandle);
+    this.sessionCacheSweepHandle = undefined;
   }
 
   constructor(deps: SessionManagerDeps) {
@@ -511,6 +549,13 @@ export class SessionManager {
     this.agentRegistry = new SessionAgentRegistry({
       globalBus: deps.globalBus,
       getLiveSession: (sessionId) => this.sessionObjects.get(sessionId),
+      onTasksChanged: (sessionId) => {
+        this.touchSessionTree(sessionId);
+        this.scheduleCacheOperation(
+          this.trimSessionCache("background agent tasks changed"),
+          "trimming the session-tree cache after background agent activity",
+        );
+      },
     });
     this.sessionNameRpc = createSessionNameRpc({
       withSessionNameRpc: (sessionId, operation) => this.withSessionNameRpc(sessionId, operation),
@@ -568,12 +613,14 @@ export class SessionManager {
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
+      touchSessionActivity: (sessionId, at) => this.touchSessionTree(sessionId, at),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
     });
     configureRestartStateStore(deps.runtimePaths);
     configureRestartEventBus(deps.globalBus);
     void refreshRestartState();
+    this.startSessionCacheSweep();
   }
 
   private recordSpan(name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>): void {
@@ -585,18 +632,37 @@ export class SessionManager {
   private getSessionCacheState(): {
     ready: number;
     retained: number;
+    readyParents: number;
+    retainedParents: number;
+    trackedAgents: number;
+    readyContextWeight: number;
+    retainedContextWeight: number;
     pendingCleanup: number;
     failedCleanup: number;
   } {
     let pendingCleanup = 0;
     let failedCleanup = 0;
+    let cleanupContextWeight = 0;
     for (const record of this.cleanupOwnership.values()) {
       if (record.state === "pending") pendingCleanup++;
       else failedCleanup++;
+      cleanupContextWeight += record.contextWeight;
     }
+    const readyParents = this.sessionObjects.size;
+    let trackedAgents = 0;
+    for (const sessionId of this.sessionObjects.keys()) {
+      trackedAgents += this.agentRegistry.getTrackedAgentCount(sessionId);
+    }
+    const readyContextWeight = readyParents + trackedAgents;
+    const retainedParents = readyParents + this.cleanupOwnership.size;
     return {
-      ready: this.sessionObjects.size,
-      retained: this.sessionObjects.size + this.cleanupOwnership.size,
+      ready: readyParents,
+      retained: retainedParents,
+      readyParents,
+      retainedParents,
+      trackedAgents,
+      readyContextWeight,
+      retainedContextWeight: readyContextWeight + cleanupContextWeight,
       pendingCleanup,
       failedCleanup,
     };
@@ -622,6 +688,33 @@ export class SessionManager {
         `Cannot start another session while cleanup demand is ${projectedCleanupDemand}/${this.maxPendingSessionCleanups}`,
       );
     }
+    const uncachedActiveReservations = this.getActiveSessions()
+      .filter((sessionId) => !this.sessionObjects.has(sessionId))
+      .length;
+    const protectedReadyContextWeight = [...this.getProtectedSessionTreeIds()]
+      .filter((sessionId) => this.sessionObjects.has(sessionId))
+      .reduce((total, sessionId) => total + this.getSessionTreeContextWeight(sessionId), 0);
+    const cleanupContextWeight = state.retainedContextWeight - state.readyContextWeight;
+    const newReservation = reservationAlreadyActive ? 0 : 1;
+    const projectedNonEvictableContexts = cleanupContextWeight
+      + protectedReadyContextWeight
+      + uncachedActiveReservations
+      + this.creatingSessions
+      + newReservation;
+    if (projectedNonEvictableContexts > this.maxCachedContexts) {
+      throw new Error(
+        `Cannot start another session while protected context demand is ${projectedNonEvictableContexts}/${this.maxCachedContexts}`,
+      );
+    }
+    const projectedRetainedContexts = state.retainedContextWeight
+      + uncachedActiveReservations
+      + this.creatingSessions
+      + newReservation;
+    if (state.pendingCleanup > 0 && projectedRetainedContexts > this.maxCachedContexts) {
+      throw new Error(
+        `Cannot start another session while retained context demand is ${projectedRetainedContexts}/${this.maxCachedContexts}`,
+      );
+    }
   }
 
   private beginSessionCreation(): void {
@@ -643,6 +736,8 @@ export class SessionManager {
       operation,
       outcome,
       max: this.maxCachedSessions,
+      maxContexts: this.maxCachedContexts,
+      idleTtlMs: this.sessionCacheIdleTtlMs,
       maxPendingCleanup: this.maxPendingSessionCleanups,
       cumulativeCleanupFailures: this.cumulativeCleanupFailures,
       ...this.getSessionCacheState(),
@@ -682,6 +777,63 @@ export class SessionManager {
     });
   }
 
+  private isTerminalBackgroundTask(task: AgentBackgroundTask): boolean {
+    return task.status === "completed" || task.status === "failed" || task.status === "cancelled";
+  }
+
+  private async runTaskRpcBeforeDeadline<T>(
+    operation: () => Promise<T>,
+    deadline: Deadline,
+  ): Promise<T> {
+    const outcome = await settleByDeadline(operation, deadline);
+    if (outcome.status === "timed-out") throw new SessionTaskCleanupTimeoutError();
+    if (outcome.status === "rejected") throw outcome.error;
+    return outcome.value;
+  }
+
+  private async reapSessionTasks(sessionId: string, session: AgentSession): Promise<void> {
+    if (typeof session.listTasks !== "function") return;
+    const deadline = createDeadline(SESSION_TASK_CLEANUP_TIMEOUT_MS);
+
+    while (remainingMs(deadline) > 0) {
+      const result = await this.runTaskRpcBeforeDeadline(
+        () => Promise.resolve(session.listTasks!()),
+        deadline,
+      );
+      const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
+      if (tasks.length === 0) {
+        return;
+      }
+
+      for (const task of tasks) {
+        if (this.isTerminalBackgroundTask(task)) {
+          if (typeof session.removeTask !== "function") {
+            throw new Error("Agent backend cannot remove completed background tasks");
+          }
+          await this.runTaskRpcBeforeDeadline(
+            () => Promise.resolve(session.removeTask!(task.id)),
+            deadline,
+          );
+        } else {
+          if (typeof session.cancelTask !== "function") {
+            throw new Error("Agent backend cannot cancel active background tasks");
+          }
+          await this.runTaskRpcBeforeDeadline(
+            () => Promise.resolve(session.cancelTask!(task.id)),
+            deadline,
+          );
+        }
+      }
+
+      const waitMs = Math.min(SESSION_TASK_CLEANUP_POLL_MS, remainingMs(deadline));
+      if (waitMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
+    throw new SessionTaskCleanupTimeoutError();
+  }
+
   private async runSessionCleanup(
     sessionId: string,
     session: AgentSession,
@@ -694,6 +846,29 @@ export class SessionManager {
     for (let cycleAttempt = 1; cycleAttempt <= DISCONNECT_MAX_ATTEMPTS; cycleAttempt++) {
       const startedAt = Date.now();
       record.attempts++;
+      let taskOutcome: "fulfilled" | "rejected" | "timed-out" = "fulfilled";
+      try {
+        await this.reapSessionTasks(sessionId, session);
+      } catch (error) {
+        taskOutcome = error instanceof SessionTaskCleanupTimeoutError ? "timed-out" : "rejected";
+        lastOutcome = taskOutcome;
+        this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
+          reason,
+          attempt: record.attempts,
+          cycleAttempt,
+          outcome: taskOutcome,
+          error: error instanceof Error ? error.message : String(error),
+          ...this.getSessionCacheState(),
+        });
+        continue;
+      }
+      this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
+        reason,
+        attempt: record.attempts,
+        cycleAttempt,
+        outcome: taskOutcome,
+        ...this.getSessionCacheState(),
+      });
       const result = await settleByDeadline<void>(
         () => Promise.resolve(session.disconnect?.()).then(() => undefined),
         createDeadline(DISCONNECT_TIMEOUT_MS),
@@ -707,6 +882,7 @@ export class SessionManager {
       });
       if (result.status === "fulfilled") {
         this.cleanupOwnership.delete(session);
+        this.agentRegistry.forgetIfOwnedBy(sessionId, session);
         return true;
       }
       lastOutcome = result.status;
@@ -717,7 +893,7 @@ export class SessionManager {
     record.lastOutcome = lastOutcome;
     delete record.promise;
     console.warn(
-      `[sdk] [${sessionId.slice(0, 8)}] Session disconnect ${lastOutcome} after ${DISCONNECT_MAX_ATTEMPTS} attempts; retained for retry (${reason})`,
+      `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup ${lastOutcome} after ${DISCONNECT_MAX_ATTEMPTS} attempts; retained for retry (${reason})`,
     );
     return false;
   }
@@ -734,9 +910,14 @@ export class SessionManager {
       sessionId,
       state: "pending" as const,
       attempts: 0,
+      contextWeight: 1 + this.agentRegistry.getTrackedAgentCount(sessionId),
     };
     record.sessionId = sessionId;
     record.state = "pending";
+    record.contextWeight = Math.max(
+      record.contextWeight,
+      1 + this.agentRegistry.getTrackedAgentCount(sessionId),
+    );
     delete record.lastOutcome;
     this.cleanupOwnership.set(session, record);
 
@@ -757,6 +938,7 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (!session || (expectedSession && session !== expectedSession)) return undefined;
     this.sessionObjects.delete(sessionId);
+    this.sessionTreeLastActivityAt.delete(sessionId);
     this.liveSessionModelState.delete(sessionId);
     this.slashCommandListCache.delete(sessionId);
     this.agentRegistry.markSessionUnavailable(sessionId);
@@ -778,7 +960,10 @@ export class SessionManager {
     reason: string,
     warning: string,
   ): void {
-    while (this.sessionObjects.size > this.maxCachedSessions) {
+    while (
+      this.sessionObjects.size > this.maxCachedSessions
+      || this.getReadySessionContextWeight() > this.maxCachedContexts
+    ) {
       const candidateId = [...this.sessionObjects.keys()]
         .find((id) => !protectedIds.has(id));
       if (!candidateId) {
@@ -789,21 +974,42 @@ export class SessionManager {
     }
   }
 
+  private getReadySessionContextWeight(): number {
+    let weight = this.sessionObjects.size;
+    for (const sessionId of this.sessionObjects.keys()) {
+      weight += this.agentRegistry.getTrackedAgentCount(sessionId);
+    }
+    return weight;
+  }
+
+  private getSessionTreeContextWeight(sessionId: string): number {
+    return 1 + this.agentRegistry.getTrackedAgentCount(sessionId);
+  }
+
+  private evictExpiredSessionTreesUnsafe(protectedIds: Set<string>, now = Date.now()): void {
+    for (const sessionId of [...this.sessionObjects.keys()]) {
+      if (protectedIds.has(sessionId) || !this.isSessionTreeIdleExpired(sessionId, now)) continue;
+      this.evictCachedSessionUnsafe(sessionId, undefined, "session tree idle TTL");
+    }
+  }
+
   private enforceSessionCacheLimitUnsafe(justCachedId: string): void {
-    const protectedIds = new Set<string>(this.getActiveSessions());
-    protectedIds.add(justCachedId);
+    const protectedIds = this.getProtectedSessionTreeIds(justCachedId);
+    this.evictExpiredSessionTreesUnsafe(protectedIds);
     this.evictReadySessionsOverLimitUnsafe(
       protectedIds,
-      "enforcing session cache limit",
-      `[sdk] Session cache temporarily above ${this.maxCachedSessions}; remaining ready sessions are protected`,
+      "enforcing session-tree cache limit",
+      `[sdk] Session-tree cache temporarily above parent/context limits ${this.maxCachedSessions}/${this.maxCachedContexts}; remaining trees are protected`,
     );
   }
 
   private trimSessionCacheUnsafe(reason: string): void {
+    const protectedIds = this.getProtectedSessionTreeIds();
+    this.evictExpiredSessionTreesUnsafe(protectedIds);
     this.evictReadySessionsOverLimitUnsafe(
-      new Set(this.getActiveSessions()),
+      protectedIds,
       reason,
-      `[sdk] Session cache remains above ${this.maxCachedSessions}; remaining ready sessions are protected`,
+      `[sdk] Session-tree cache remains above parent/context limits ${this.maxCachedSessions}/${this.maxCachedContexts}; remaining trees are protected`,
     );
     this.retryFailedCleanupsUnsafe();
   }
@@ -898,6 +1104,7 @@ export class SessionManager {
         this.sessionObjects.set(sessionId, session);
       }
 
+      this.sessionTreeLastActivityAt.set(sessionId, Date.now());
       this.enforceSessionCacheLimitUnsafe(sessionId);
       return session;
     });
@@ -974,6 +1181,30 @@ export class SessionManager {
 
   private touchSessionRun(sessionId: string, at = Date.now()): void {
     this.runStateController.touchSessionRun(sessionId, at);
+    this.touchSessionTree(sessionId, at);
+  }
+
+  private touchSessionTree(sessionId: string, at = Date.now()): void {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session) return;
+    const previous = this.sessionTreeLastActivityAt.get(sessionId) ?? 0;
+    this.sessionTreeLastActivityAt.set(sessionId, Math.max(previous, at));
+    this.sessionObjects.delete(sessionId);
+    this.sessionObjects.set(sessionId, session);
+  }
+
+  private getProtectedSessionTreeIds(extraProtectedId?: string): Set<string> {
+    const protectedIds = new Set(this.getActiveSessions());
+    if (extraProtectedId) protectedIds.add(extraProtectedId);
+    for (const sessionId of this.sessionObjects.keys()) {
+      if (this.agentRegistry.hasRunningAgents(sessionId)) protectedIds.add(sessionId);
+    }
+    return protectedIds;
+  }
+
+  private isSessionTreeIdleExpired(sessionId: string, now = Date.now()): boolean {
+    const lastActivityAt = this.sessionTreeLastActivityAt.get(sessionId);
+    return lastActivityAt !== undefined && now - lastActivityAt >= this.sessionCacheIdleTtlMs;
   }
 
   private getCopilotHome(): string {
@@ -1087,6 +1318,7 @@ export class SessionManager {
 
   private beginSessionResume(sessionId: string): void {
     this.assertSessionCacheAvailable();
+    this.touchSessionTree(sessionId);
     this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
     this.syncRestartWaitingIfPending();
   }
@@ -2846,6 +3078,7 @@ export class SessionManager {
   async gracefulShutdown(
     deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
   ): Promise<void> {
+    this.stopSessionCacheSweep();
     const active = this.getActiveSessions();
     if (active.length > 0) {
       console.log(`[sdk] Graceful shutdown: aborting ${active.length} active session(s)...`);
@@ -2940,6 +3173,7 @@ export class SessionManager {
       this.backend = null;
       this.backendCreatedAtMs = null;
     }
+    this.agentRegistry.dispose();
     console.log("[sdk] Graceful shutdown complete");
   }
 

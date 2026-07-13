@@ -251,6 +251,9 @@ export interface AgentSession {
 
   /** Request cancellation of a tracked background task. Optional. */
   cancelTask?(id: string): Promise<{ cancelled: boolean } | undefined>;
+
+  /** Remove a completed or cancelled background task from SDK tracking. Optional. */
+  removeTask?(id: string): Promise<{ removed: boolean } | undefined>;
 }
 
 /**

@@ -51,6 +51,8 @@ const KNOWN_STATUSES: ReadonlySet<string> = new Set<AgentTaskStatus>([
 
 interface RegistryEntry {
   tasks: SessionAgentTask[];
+  tasksSignature?: string;
+  ownerSession?: AgentSession;
   /** Epoch ms of the last successful live refresh. */
   refreshedAt: number;
   /** Whether this entry has ever been populated from a live SDK refresh. */
@@ -66,6 +68,8 @@ export interface SessionAgentRegistryDeps {
   globalBus: GlobalBus;
   /** Returns the cached live SDK session object, or undefined when not cached. */
   getLiveSession(sessionId: string): AgentSession | undefined;
+  /** Called when the authoritative task set or task activity changes. */
+  onTasksChanged?(sessionId: string): void;
   now?(): number;
   pollIntervalMs?: number;
   /** Soft cap on retained entries (see DEFAULT_MAX_ENTRIES). Normalized to a finite int >= 1. */
@@ -121,6 +125,19 @@ export class SessionAgentRegistry {
     };
   }
 
+  /** Number of tracked agent task contexts owned by a cached parent session. */
+  getTrackedAgentCount(sessionId: string): number {
+    return this.entries.get(sessionId)?.tasks.length ?? 0;
+  }
+
+  /** True while any tracked agent task is actively running. */
+  hasRunningAgents(sessionId: string): boolean {
+    const entry = this.entries.get(sessionId);
+    return !!entry
+      && this.deriveSource(entry) === "live"
+      && entry.tasks.some((task) => task.status === "running");
+  }
+
   /**
    * Refresh a session's tasks from its live SDK session object. No-ops (leaving
    * any prior snapshot to age into `lastSeen`) when no session is cached or the
@@ -145,14 +162,30 @@ export class SessionAgentRegistry {
         return;
       }
       const rawTasks = Array.isArray(result?.tasks) ? result!.tasks! : [];
-      entry.tasks = rawTasks
+      const tasks = rawTasks
         .filter((task) => task.kind === "agent")
         .map((task) => this.normalizeTask(task));
+      const tasksSignature = this.getTasksSignature(tasks);
+      const tasksChanged = entry.tasksSignature !== tasksSignature;
+      entry.tasks = tasks;
+      entry.tasksSignature = tasksSignature;
+      entry.ownerSession = session;
       entry.refreshedAt = this.now();
       entry.hadLiveRefresh = true;
       this.emitIfChanged(sessionId, entry);
       this.managePoll(sessionId, entry);
       this.enforceEntryBound(sessionId);
+      if (tasksChanged) {
+        try {
+          this.deps.onTasksChanged?.(sessionId);
+        } catch (err) {
+          this.logger.warn(
+            `[agents] [${sessionId.slice(0, 8)}] task-change callback failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
     } catch (err) {
       this.logger.warn(
         `[agents] [${sessionId.slice(0, 8)}] tasks.list refresh failed (${reason}): ${
@@ -192,6 +225,14 @@ export class SessionAgentRegistry {
     this.entries.delete(sessionId);
   }
 
+  /** Drop state only when it still belongs to the session object being cleaned. */
+  forgetIfOwnedBy(sessionId: string, session: AgentSession): void {
+    const entry = this.entries.get(sessionId);
+    if (!entry || entry.ownerSession !== session) return;
+    this.stopPoll(entry);
+    this.entries.delete(sessionId);
+  }
+
   /** Stop all timers (server shutdown / test teardown). */
   dispose(): void {
     for (const entry of this.entries.values()) this.stopPoll(entry);
@@ -202,6 +243,20 @@ export class SessionAgentRegistry {
 
   private createEntry(): RegistryEntry {
     return { tasks: [], refreshedAt: 0, hadLiveRefresh: false, refreshing: false };
+  }
+
+  private getTasksSignature(tasks: readonly SessionAgentTask[]): string {
+    return tasks
+      .map((task) => [
+        task.id,
+        task.status,
+        task.executionMode ?? "",
+        task.activeTimeMs ?? "",
+        task.idleSince ?? "",
+        task.completedAt ?? "",
+      ].join("\u0000"))
+      .sort()
+      .join("\u0001");
   }
 
   /** Strip heavy untruncated free-text from retained tasks (in place). */
@@ -327,6 +382,11 @@ export class SessionAgentRegistry {
         current.pollStartedAt !== undefined &&
         this.now() - current.pollStartedAt > POLL_MAX_DURATION_MS
       ) {
+        if (current.tasks.some((task) => task.status === "running")) {
+          current.pollStartedAt = this.now();
+          void this.refresh(sessionId, "running-poll");
+          return;
+        }
         this.stopPoll(current);
         this.emitLastSeenIfSurfaced(sessionId, current);
         return;

@@ -273,6 +273,7 @@ export interface SessionRunnerDeps {
     message?: string,
   ): void;
   recordSessionAttention(sessionId: string, at?: string): void;
+  touchSessionActivity?(sessionId: string, at: number): void;
   invalidateSessionListCache(reason?: string): void;
   maybeAutoNameSession(
     sessionId: string,
@@ -312,6 +313,7 @@ export class SessionRunner {
 
   private touchSessionRun(sessionId: string, at = Date.now()): void {
     this.deps.runStateController.touchSessionRun(sessionId, at);
+    this.deps.touchSessionActivity?.(sessionId, at);
   }
 
   /**

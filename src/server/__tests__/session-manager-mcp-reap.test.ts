@@ -17,6 +17,38 @@ function fakeSession(sessionId?: string): FakeSession {
   };
 }
 
+function fakeSessionWithAgent(
+  sessionId: string,
+  initialStatus: "running" | "idle" | "completed" = "idle",
+): FakeSession & {
+  listTasks: ReturnType<typeof vi.fn>;
+  cancelTask: ReturnType<typeof vi.fn>;
+  removeTask: ReturnType<typeof vi.fn>;
+  setStatus(status: "running" | "idle" | "completed" | "cancelled"): void;
+} {
+  let status: "running" | "idle" | "completed" | "cancelled" | "removed" = initialStatus;
+  return {
+    sessionId,
+    disconnect: vi.fn().mockResolvedValue(undefined),
+    listTasks: vi.fn(async () => ({
+      tasks: status === "removed"
+        ? []
+        : [{ kind: "agent", id: `${sessionId}-agent`, status, executionMode: "background" }],
+    })),
+    cancelTask: vi.fn(async () => {
+      status = "cancelled";
+      return { cancelled: true };
+    }),
+    removeTask: vi.fn(async () => {
+      status = "removed";
+      return { removed: true };
+    }),
+    setStatus(nextStatus) {
+      status = nextStatus;
+    },
+  };
+}
+
 function createManager(options: { telemetry?: boolean } = {}): {
   manager: any;
   telemetryStore?: ReturnType<typeof createTelemetryStore>;
@@ -56,6 +88,119 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(session.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("s1")).toBe(false);
     expect(manager.cleanupOwnership.size).toBe(0);
+  });
+
+  it("cancels and removes owned agents before disconnecting the parent", async () => {
+    const { manager } = createManager();
+    const session = fakeSessionWithAgent("s1");
+    manager.sessionObjects.set("s1", session);
+
+    await manager.evictAllCachedSessions();
+
+    expect(session.cancelTask).toHaveBeenCalledWith("s1-agent");
+    expect(session.removeTask).toHaveBeenCalledWith("s1-agent");
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
+    expect(session.removeTask.mock.invocationCallOrder[0]).toBeLessThan(
+      session.disconnect.mock.invocationCallOrder[0],
+    );
+    expect(manager.agentRegistry.getTrackedAgentCount("s1")).toBe(0);
+  });
+
+  it("evicts by total parent plus agent context weight", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 10;
+    manager.maxCachedContexts = 2;
+    const first = fakeSessionWithAgent("first");
+    const second = fakeSession("second") as FakeSession & { sessionId: string };
+
+    await manager.cacheResumedSession("first", first);
+    await manager.agentRegistry.refresh("first", "test");
+    await manager._drainCacheQueue();
+    await manager.cacheResumedSession("second", second);
+    await manager._drainCacheQueue();
+
+    expect([...manager.sessionObjects.keys()]).toEqual(["second"]);
+    expect(first.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.getSessionCacheState()).toMatchObject({
+      readyParents: 1,
+      trackedAgents: 0,
+      readyContextWeight: 1,
+    });
+  });
+
+  it("protects a tree with a running agent until the agent becomes idle", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 10;
+    manager.maxCachedContexts = 2;
+    const first = fakeSessionWithAgent("first", "running");
+    const second = fakeSession("second") as FakeSession & { sessionId: string };
+
+    await manager.cacheResumedSession("first", first);
+    await manager.agentRegistry.refresh("first", "running");
+    await manager.cacheResumedSession("second", second);
+    await manager._drainCacheQueue();
+    expect(manager.sessionObjects.has("first")).toBe(true);
+    expect(manager.sessionObjects.has("second")).toBe(true);
+
+    first.setStatus("idle");
+    await manager.agentRegistry.refresh("first", "idle");
+    await manager._drainCacheQueue();
+
+    expect(manager.sessionObjects.has("first")).toBe(true);
+    expect(manager.sessionObjects.has("second")).toBe(false);
+    expect(second.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("evicts an entirely idle session tree after the general TTL", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { manager } = createManager();
+    manager.sessionCacheIdleTtlMs = 1_000;
+    const session = fakeSession();
+
+    await manager.cacheResumedSession("idle", session);
+    vi.setSystemTime(1_001);
+    await manager.trimSessionCache("test TTL");
+    await manager._drainCacheQueue();
+
+    expect(manager.sessionObjects.has("idle")).toBe(false);
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes the general TTL when the parent session is active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { manager } = createManager();
+    manager.sessionCacheIdleTtlMs = 1_000;
+    const session = fakeSession();
+
+    await manager.cacheResumedSession("active", session);
+    vi.setSystemTime(900);
+    manager.sessionRunner.touchSessionRun("active", 900);
+    vi.setSystemTime(1_500);
+    await manager.trimSessionCache("before refreshed TTL");
+    expect(manager.sessionObjects.has("active")).toBe(true);
+
+    vi.setSystemTime(1_901);
+    await manager.trimSessionCache("after refreshed TTL");
+    await manager._drainCacheQueue();
+    expect(manager.sessionObjects.has("active")).toBe(false);
+  });
+
+  it("retains cleanup ownership when task removal fails", async () => {
+    const { manager } = createManager();
+    const session = fakeSessionWithAgent("stuck", "completed");
+    session.removeTask.mockRejectedValue(new Error("remove failed"));
+    await manager.cacheResumedSession("stuck", session);
+
+    await manager.evictAllCachedSessions();
+
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.get(session)).toMatchObject({
+      sessionId: "stuck",
+      state: "failed",
+      lastOutcome: "rejected",
+    });
   });
 
   it("keeps fresh scheduled-session creation responsive while cleanup runs independently", async () => {
@@ -137,6 +282,45 @@ describe("SessionManager bounded session lifecycle", () => {
     releaseOld();
     await manager._drainCacheQueue();
     expect(manager.cleanupOwnership.has(oldSession)).toBe(false);
+  });
+
+  it("does not erase replacement agent accounting when old same-id cleanup finishes", async () => {
+    const { manager } = createManager();
+    let releaseOld!: () => void;
+    const oldSession = {
+      sessionId: "same",
+      listTasks: vi.fn(async () => ({ tasks: [] })),
+      disconnect: vi.fn(() => new Promise<void>((resolve) => {
+        releaseOld = resolve;
+      })),
+    };
+    const replacement = fakeSessionWithAgent("same", "running");
+    await manager.cacheResumedSession("same", oldSession);
+    await manager.replaceCachedSession("same", oldSession, replacement);
+    await manager.agentRegistry.refresh("same", "replacement");
+
+    await vi.waitFor(() => expect(oldSession.disconnect).toHaveBeenCalledTimes(1));
+    releaseOld();
+    await manager._drainCacheQueue();
+
+    expect(manager.sessionObjects.get("same")).toBe(replacement);
+    expect(manager.agentRegistry.getTrackedAgentCount("same")).toBe(1);
+    expect(manager.agentRegistry.hasRunningAgents("same")).toBe(true);
+  });
+
+  it("drops old agent accounting when an unrefreshed same-id replacement exists", async () => {
+    const { manager } = createManager();
+    const oldSession = fakeSessionWithAgent("same", "completed");
+    const replacement = fakeSession();
+    await manager.cacheResumedSession("same", oldSession);
+    await manager.agentRegistry.refresh("same", "old");
+    expect(manager.agentRegistry.getTrackedAgentCount("same")).toBe(1);
+
+    await manager.replaceCachedSession("same", oldSession, replacement);
+    await manager._drainCacheQueue();
+
+    expect(manager.sessionObjects.get("same")).toBe(replacement);
+    expect(manager.agentRegistry.getTrackedAgentCount("same")).toBe(0);
   });
 
   it("retries a rejected disconnect in the cleanup worker", async () => {
@@ -222,6 +406,41 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager._drainCacheQueue();
   });
 
+  it("blocks new SDK sessions while retained context weight exceeds the budget", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    manager.maxCachedContexts = 1;
+    manager.maxPendingSessionCleanups = 10;
+    let release!: () => void;
+    const first = {
+      disconnect: vi.fn(() => new Promise<void>((resolve) => {
+        release = resolve;
+      })),
+    };
+    await manager.cacheResumedSession("first", first);
+    await manager.cacheResumedSession("second", fakeSession());
+    await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalledTimes(1));
+
+    const createSession = vi.fn();
+    manager.backend = { createSession };
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+      .rejects.toThrow("context demand");
+    expect(createSession).not.toHaveBeenCalled();
+
+    release();
+    await manager._drainCacheQueue();
+  });
+
+  it("counts uncached resume reservations against protected context demand", () => {
+    const { manager } = createManager();
+    manager.maxCachedContexts = 1;
+
+    manager.beginSessionResume("first");
+    expect(() => manager.beginSessionResume("second"))
+      .toThrow("protected context demand is 2/1");
+    manager.endSessionResume("first");
+  });
+
   it("reserves cleanup capacity across concurrent session creation", async () => {
     const { manager } = createManager();
     manager.maxPendingSessionCleanups = 1;
@@ -288,16 +507,20 @@ describe("SessionManager bounded session lifecycle", () => {
     const disconnect = telemetryStore!.querySpans({ name: "session.cache.disconnect" })[0];
     expect(disconnect.metadata).toMatchObject({
       outcome: "fulfilled",
-      reason: "enforcing session cache limit",
+      reason: "enforcing session-tree cache limit",
     });
   });
 
   it("defaults limits from environment variables", () => {
     vi.stubEnv("BRIDGE_MAX_CACHED_SESSIONS", "4");
+    vi.stubEnv("BRIDGE_MAX_CACHED_CONTEXTS", "6");
+    vi.stubEnv("BRIDGE_SESSION_CACHE_IDLE_TTL_SECONDS", "120");
     vi.stubEnv("BRIDGE_MAX_PENDING_SESSION_CLEANUPS", "3");
     try {
       const { manager } = createManager();
       expect(manager.maxCachedSessions).toBe(4);
+      expect(manager.maxCachedContexts).toBe(6);
+      expect(manager.sessionCacheIdleTtlMs).toBe(120_000);
       expect(manager.maxPendingSessionCleanups).toBe(3);
     } finally {
       vi.unstubAllEnvs();
