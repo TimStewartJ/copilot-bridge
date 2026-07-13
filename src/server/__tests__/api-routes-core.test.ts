@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
+import { ElicitationBrokerError } from "../elicitation-broker.js";
 import {
   createCopilotUsageTestHome,
   createMockSessionManager,
@@ -282,6 +283,54 @@ describe("User input response route", () => {
     expect(res.body).toEqual({
       error: "Pending user input request not found",
       code: "request_not_found",
+    });
+  });
+});
+
+describe("Elicitation response route", () => {
+  it("submits a sanitized elicitation response", async () => {
+    const submittedAt = "2026-07-13T12:34:56.000Z";
+    const submitElicitationResponse = vi.fn().mockResolvedValue({
+      requestId: "el-1",
+      action: "accept",
+      timestamp: submittedAt,
+    });
+    ctx.sessionManager.submitElicitationResponse = submitElicitationResponse;
+
+    const payload = {
+      action: "accept",
+      content: {
+        target: "staging",
+        reason: "Safer",
+      },
+    };
+    const res = await request(app)
+      .post("/api/sessions/session-123/elicitation/el-1/respond")
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      requestId: "el-1",
+      action: "accept",
+      timestamp: submittedAt,
+    });
+    expect(res.body).not.toHaveProperty("content");
+    expect(submitElicitationResponse).toHaveBeenCalledWith("session-123", "el-1", payload);
+  });
+
+  it("maps elicitation validation errors", async () => {
+    ctx.sessionManager.submitElicitationResponse = vi.fn().mockRejectedValue(
+      new ElicitationBrokerError("invalid_response", "Missing required field"),
+    );
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/elicitation/el-1/respond")
+      .send({ action: "accept", content: {} });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "Missing required field",
+      code: "invalid_response",
     });
   });
 });

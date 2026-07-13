@@ -72,8 +72,16 @@ import { createBridgeBrowserLifecycle, noopBrowserLifecycle, type BrowserLifecyc
 import type { RuntimePaths } from "./runtime-paths.js";
 import { UserInputBrokerError, type UserInputBroker } from "./user-input-broker.js";
 import type { NativeUserInputRequest, NativeUserInputResponse, UserInputCancelReason, UserInputRequestId } from "./user-input-types.js";
+import { ElicitationBrokerError, type ElicitationBroker } from "./elicitation-broker.js";
+import type {
+  ElicitationRequestId,
+  NativeElicitationRequest,
+  NativeElicitationResult,
+  SubmittedElicitationResponse,
+} from "./elicitation-types.js";
 import { SessionWorkspaceController } from "./session-workspace-controller.js";
 import { SessionUserInputController } from "./session-user-input-controller.js";
+import { SessionElicitationController } from "./session-elicitation-controller.js";
 import {
   deduplicateFilename as deduplicateAttachmentFilename,
   persistAndRouteAttachments as persistAndRouteSessionAttachments,
@@ -309,6 +317,7 @@ export interface SessionManagerDeps {
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   userInputBroker?: UserInputBroker;
+  elicitationBroker?: ElicitationBroker;
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
   sessionMetaStore?: SessionMetaStore;
@@ -450,6 +459,7 @@ export class SessionManager {
   private lastProcessTreeSampleAt = 0;
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
+  private readonly elicitationController: SessionElicitationController;
   private readonly runStateController: SessionRunStateController;
   private readonly agentRegistry: SessionAgentRegistry;
   private readonly sessionNameRpc: SessionNameRpc;
@@ -532,6 +542,13 @@ export class SessionManager {
       eventBusRegistry: deps.eventBusRegistry,
       globalBus: deps.globalBus,
       touchActivity: (sessionId, timestamp) => this.touchUserInputActivity(sessionId, timestamp),
+      getPendingCount: (sessionId) => this.getPendingInteractionCount(sessionId),
+    });
+    this.elicitationController = new SessionElicitationController({
+      broker: deps.elicitationBroker,
+      eventBusRegistry: deps.eventBusRegistry,
+      touchActivity: (sessionId, timestamp) => this.touchUserInputActivity(sessionId, timestamp),
+      emitPendingStatus: (sessionId) => this.userInputController.emitPendingStatus(sessionId),
     });
     this.runStateController = new SessionRunStateController({
       globalBus: deps.globalBus,
@@ -1348,16 +1365,29 @@ export class SessionManager {
     return this.userInputController.requestUserInput(invocation.sessionId, request);
   }
 
+  private handleElicitationRequest(
+    request: NativeElicitationRequest,
+  ): Promise<NativeElicitationResult> {
+    return this.elicitationController.requestElicitation(request);
+  }
+
   private cancelPendingUserInputRequests(
     sessionId: string,
     reason: UserInputCancelReason,
     message?: string,
   ): void {
     this.userInputController.cancelPendingSessionRequests(sessionId, reason, message);
+    this.elicitationController.cancelPendingSessionRequests(sessionId, reason, message);
   }
 
   private cancelAllPendingUserInputRequests(reason: UserInputCancelReason, message?: string): void {
     this.userInputController.cancelAllPendingRequests(reason, message);
+    this.elicitationController.cancelAllPendingRequests(reason, message);
+  }
+
+  private getPendingInteractionCount(sessionId: string): number {
+    return this.userInputController.getPendingCount(sessionId)
+      + this.elicitationController.getPendingCount(sessionId);
   }
 
   private touchUserInputActivity(sessionId: string, timestamp?: string): void {
@@ -1382,6 +1412,7 @@ export class SessionManager {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
         getCopilotHome: () => this.getCopilotHome(),
         handleUserInputRequest: (request, invocation) => this.handleUserInputRequest(request, invocation),
+        handleElicitationRequest: (request) => this.handleElicitationRequest(request),
       },
     });
     if (opts.forResume && opts.sessionId) {
@@ -2080,7 +2111,7 @@ export class SessionManager {
       || this.isSessionResuming(sessionId)
       || this.modelSwitchingSessions.has(sessionId)
       || this.historyUndoingSessions.has(sessionId)
-      || this.userInputController.getPendingCount(sessionId) > 0
+      || this.getPendingInteractionCount(sessionId) > 0
     ) {
       return true;
     }
@@ -2103,6 +2134,30 @@ export class SessionManager {
     const response = this.userInputController.submitUserInputResponse(normalizedSessionId, normalizedRequestId, payload);
     const timestamp = new Date().toISOString();
     return { requestId: normalizedRequestId, ...response, timestamp };
+  }
+
+  async submitElicitationResponse(
+    sessionId: string,
+    requestId: ElicitationRequestId,
+    payload: unknown,
+  ): Promise<SubmittedElicitationResponse> {
+    const normalizedSessionId = this.normalizeUserInputIdentifier(sessionId, "sessionId");
+    const normalizedRequestId = this.normalizeUserInputIdentifier(requestId, "requestId");
+
+    if (!(await this.canAddressSession(normalizedSessionId))) {
+      throw new ElicitationBrokerError("request_not_found", "Session not found", { statusCode: 404 });
+    }
+
+    const result = this.elicitationController.submitResponse(
+      normalizedSessionId,
+      normalizedRequestId,
+      payload,
+    );
+    return {
+      requestId: normalizedRequestId,
+      action: result.action,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   async createSession(): Promise<{ sessionId: string }> {
@@ -2854,7 +2909,7 @@ export class SessionManager {
   }
 
   getPendingUserInputCount(sessionId: string): number {
-    return this.userInputController.getPendingCount(sessionId);
+    return this.getPendingInteractionCount(sessionId);
   }
 
   hasActiveTurns(): boolean {

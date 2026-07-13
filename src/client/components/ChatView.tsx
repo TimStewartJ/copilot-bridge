@@ -8,6 +8,7 @@ import {
   fetchMcpStatus,
   fetchSessionContext,
   reportTiming,
+  submitElicitationResponse,
   submitUserInputResponse,
   undoSessionTurn,
   type Attachment,
@@ -15,6 +16,8 @@ import {
   type ChatEntry,
   type ChatMessage,
   type McpServerStatus,
+  type ElicitationResponseEndpointPayload,
+  type PendingElicitationRequestView,
   type PendingUserInputRequestView,
   type SlashCommandInfo,
   type ToolCall,
@@ -34,6 +37,7 @@ import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
+import ElicitationCard from "./ElicitationCard";
 import {
   MessageActionsMenu,
   MessageActionToolbar,
@@ -285,9 +289,9 @@ function getLatestEntryActivityTimestamp(entries: ChatEntry[]): string | undefin
   return latest;
 }
 
-function sortPendingUserInputRequests(
-  requests: PendingUserInputRequestView[],
-): PendingUserInputRequestView[] {
+function sortPendingRequests<T extends { requestedAt?: string }>(
+  requests: T[],
+): T[] {
   return requests
     .map((request, index) => {
       const requestedAt = request.requestedAt ? Date.parse(request.requestedAt) : Number.NaN;
@@ -627,12 +631,14 @@ export default function ChatView({
     pendingOrigin,
     runMode,
     pendingUserInputs = [],
+    pendingElicitations = [],
     mcpServers: streamMcpServers,
     contextSummary: streamContextSummary,
     sendMessage,
     abortSession,
     reconnect,
   } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
+  const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
 
   useEffect(() => {
     if (!sessionId || loading || creating) {
@@ -837,10 +843,10 @@ export default function ChatView({
     clearProgrammaticScroll();
     stickToBottomRef.current = false;
     anchoredMessageKeyRef.current = null;
-    if (isStreaming || creating || pendingUserInputs.length > 0) {
+    if (isStreaming || creating || pendingInteractionCount > 0) {
       setShowJumpToLatest(true);
     }
-  }, [cancelFollowScroll, clearProgrammaticScroll, creating, isStreaming, pendingUserInputs.length]);
+  }, [cancelFollowScroll, clearProgrammaticScroll, creating, isStreaming, pendingInteractionCount]);
 
   const handleJumpToLatest = useCallback(() => {
     scrollToLatest({ force: true });
@@ -1360,7 +1366,7 @@ export default function ChatView({
     anchoredMessageKeyRef.current = null;
     if (following) {
       setShowJumpToLatest(false);
-    } else if (isStreaming || creating || pendingUserInputs.length > 0) {
+    } else if (isStreaming || creating || pendingInteractionCount > 0) {
       setShowJumpToLatest(true);
     }
 
@@ -1374,7 +1380,7 @@ export default function ChatView({
     }
     if (!autoLoadArmedRef.current) return;
     scheduleAutoLoad();
-  }, [clearPendingAutoLoad, creating, isStreaming, pendingUserInputs.length, scheduleAutoLoad]);
+  }, [clearPendingAutoLoad, creating, isStreaming, pendingInteractionCount, scheduleAutoLoad]);
 
   // If the first page doesn't overflow, schedule the same delayed auto-load from the top.
   useEffect(() => {
@@ -1467,10 +1473,15 @@ export default function ChatView({
   }, [composerKey, creating, handleSend, isStreaming, loading, sessionId]);
 
   const pendingUserInputRequests = useMemo(
-    () => sortPendingUserInputRequests(pendingUserInputs),
+    () => sortPendingRequests(pendingUserInputs),
     [pendingUserInputs],
   );
-  const hasPendingUserInputs = pendingUserInputRequests.length > 0;
+  const pendingElicitationRequests = useMemo(
+    () => sortPendingRequests(pendingElicitations),
+    [pendingElicitations],
+  );
+  const hasPendingInteractions = pendingUserInputRequests.length > 0
+    || pendingElicitationRequests.length > 0;
 
   const handleSubmitUserInput = useCallback(async (
     requestId: string,
@@ -1478,6 +1489,14 @@ export default function ChatView({
   ) => {
     if (!sessionId) throw new Error("Session not available");
     await submitUserInputResponse(sessionId, requestId, payload);
+  }, [sessionId]);
+
+  const handleSubmitElicitation = useCallback(async (
+    requestId: string,
+    payload: ElicitationResponseEndpointPayload,
+  ) => {
+    if (!sessionId) throw new Error("Session not available");
+    await submitElicitationResponse(sessionId, requestId, payload);
   }, [sessionId]);
 
   const activeToolCalls = useMemo<ToolCall[]>(
@@ -1611,18 +1630,19 @@ export default function ChatView({
 
   // Auto-scroll during streaming until the newest message itself reaches the viewport top.
   useEffect(() => {
-    if (!isStreaming && !creating && !hasPendingUserInputs) return;
+    if (!isStreaming && !creating && !hasPendingInteractions) return;
     if (latestMessageAnchorKey && anchoredMessageKeyRef.current === latestMessageAnchorKey) return;
     scrollToLatest({ anchorKey: latestMessageAnchorKey });
   }, [
     creating,
     currentTurnTools,
     displayedStreamingContent,
-    hasPendingUserInputs,
+    hasPendingInteractions,
     isStreaming,
     latestMessageAnchorKey,
     liveEntries.length,
     pendingUserInputRequests.length,
+    pendingElicitationRequests.length,
     runHeaderState?.phase,
     scrollToLatest,
   ]);
@@ -1653,9 +1673,27 @@ export default function ChatView({
       );
     }
 
+    for (const request of pendingElicitationRequests) {
+      parts.push(
+        <ElicitationCard
+          key={`elicitation-${request.requestId}`}
+          request={request}
+          onSubmit={handleSubmitElicitation}
+        />,
+      );
+    }
+
     if (parts.length === 0) return null;
     return <div className="space-y-3 pb-4">{parts}</div>;
-  }, [activeRootNodes.length, handleSubmitUserInput, hasStreamingText, pendingUserInputRequests, runHeaderState]);
+  }, [
+    activeRootNodes.length,
+    handleSubmitElicitation,
+    handleSubmitUserInput,
+    hasStreamingText,
+    pendingElicitationRequests,
+    pendingUserInputRequests,
+    runHeaderState,
+  ]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
   const composerDisabled = newWorkDisabled || warming || loading || Boolean(undoingEventId);
@@ -1952,7 +1990,7 @@ export default function ChatView({
             </div>
           </div>
         </LoadingSkeletonRegion>
-      ) : entries.length === 0 && !isStreaming && !creating && !hasPendingUserInputs ? (
+      ) : entries.length === 0 && !isStreaming && !creating && !hasPendingInteractions ? (
         <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
           Send a message to get started
         </div>

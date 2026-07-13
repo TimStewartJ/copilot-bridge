@@ -85,7 +85,7 @@
     "yaml": "^2.8.3"
   },
   "overrides": {
-    "@github/copilot": "1.0.69"
+    "@github/copilot": "1.0.70"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",

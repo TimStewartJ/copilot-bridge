@@ -70,6 +70,7 @@ import { TaskGroupValidationError } from "./task-group-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
+import { ElicitationBrokerError } from "./elicitation-broker.js";
 import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
@@ -2503,6 +2504,22 @@ export function createApiRouter(
       res.json(response);
     } catch (err) {
       if (err instanceof UserInputBrokerError) {
+        return res.status(err.statusCode).json({ error: err.message, code: err.code });
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/sessions/:sessionId/elicitation/:requestId/respond", async (req, res) => {
+    try {
+      const response = await ctx.sessionManager.submitElicitationResponse(
+        req.params.sessionId,
+        req.params.requestId,
+        req.body,
+      );
+      res.json(response);
+    } catch (err) {
+      if (err instanceof ElicitationBrokerError) {
         return res.status(err.statusCode).json({ error: err.message, code: err.code });
       }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

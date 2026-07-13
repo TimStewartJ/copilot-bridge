@@ -577,6 +577,81 @@ describe("useSessionStream user input state", () => {
         sse.close();
         await waitTick();
       });
+
+    });
+  });
+
+  it("hydrates and resolves pending elicitation requests", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      const pending = {
+        requestId: "el-1",
+        message: "Configure deployment",
+        mode: "form",
+        elicitationSource: "deployment-mcp",
+        requestedAt: "2026-07-13T12:00:00.000Z",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            target: {
+              type: "string",
+              enum: ["staging", "production"],
+            },
+          },
+          required: ["target"],
+        },
+      };
+      await emitAndWait(act, sse, {
+        type: "snapshot",
+        accumulatedContent: "",
+        activeTools: [],
+        intentText: "",
+        complete: false,
+        pendingElicitations: [pending],
+      }, () => getState().pendingElicitations.length === 1);
+
+      expect(getState().pendingElicitations).toEqual([pending]);
+
+      await emitAndWait(act, sse, {
+        type: "elicitation_requested",
+        requestId: "el-url",
+        message: "Authorize provider",
+        mode: "url",
+        url: "https://example.com/authorize",
+        timestamp: "2026-07-13T12:00:01.000Z",
+      }, () => getState().pendingElicitations.length === 2);
+
+      expect(getState().pendingElicitations[1]).toEqual({
+        requestId: "el-url",
+        message: "Authorize provider",
+        mode: "url",
+        url: "https://example.com/authorize",
+        requestedAt: "2026-07-13T12:00:01.000Z",
+      });
+
+      await emitAndWait(act, sse, {
+        type: "elicitation_resolved",
+        requestId: "el-1",
+        action: "accept",
+      }, () => getState().pendingElicitations.length === 1);
+      await emitAndWait(act, sse, {
+        type: "elicitation_canceled",
+        requestId: "el-url",
+        reason: "session_ended",
+      }, () => getState().pendingElicitations.length === 0);
+
+      expect(getState().pendingElicitations).toEqual([]);
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
     });
   });
 });

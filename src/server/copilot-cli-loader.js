@@ -15,6 +15,20 @@ const GITHUB_MCP_CONFIG_CALL_PATTERN = new RegExp(
   String.raw`if\((${ID})\.enableConfigDiscovery&&(${ID})&&!\1\.provider&&!\1\.gitHubToken\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\4\.mcpServers\}\)\}`,
   "g",
 );
+const GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN = new RegExp(
+  String.raw`if\(this\.shouldInjectBuiltInGitHubMcp\((${ID})\)&&(${ID})&&!\1\.provider\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\4\.mcpServers\}\)\}`,
+  "g",
+);
+// The CLI already ships the native schema-driven ask_user implementation, but
+// currently keeps it behind a runtime flag and fails to construct its callback
+// for headless SDK capability providers. These drift-checked patches remove
+// only those two gates; the native descriptor, validation, and result handling
+// remain owned by Copilot.
+const ASK_USER_ELICITATION_PATTERN = new RegExp(
+  String.raw`let (${ID})=!!(${ID})\.requestUserInput,(${ID})=!!\2\.featureFlags\?\.ASK_USER_ELICITATION&&!!\2\.requestElicitation;`,
+  "g",
+);
+const ELICITATION_CALLBACK_PATTERN = /requestElicitation:this\.hasEventListeners\("elicitation\.requested"\)\?/g;
 
 export function patchCopilotAppSource(source) {
   let methodMatches = 0;
@@ -36,16 +50,57 @@ export function patchCopilotAppSource(source) {
     throw new Error(`Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 config method, found ${methodMatches}.`);
   }
 
-  let callMatches = 0;
+  let legacyCallMatches = 0;
   source = source.replace(
     GITHUB_MCP_CONFIG_CALL_PATTERN,
     (match, optionsVar, sessionVar, configVar, mcpTargetVar) => {
-      callMatches++;
+      legacyCallMatches++;
       return `if((${optionsVar}.enableConfigDiscovery||${optionsVar}.githubMcpToolOptions)&&${sessionVar}&&!${optionsVar}.provider&&!${optionsVar}.gitHubToken){let ${configVar}=await this.createBuiltInGitHubMcpConfig(${sessionVar},${optionsVar}.githubMcpToolOptions);${configVar}&&(${mcpTargetVar}.mcpServers={"github-mcp-server":${configVar},...${mcpTargetVar}.mcpServers})}`;
     },
   );
-  if (callMatches !== 2) {
-    throw new Error(`Unable to patch Copilot app for Bridge GitHub MCP auth: expected 2 config call sites, found ${callMatches}.`);
+  let helperCallMatches = 0;
+  source = source.replace(
+    GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN,
+    (match, optionsVar, sessionVar, configVar, mcpTargetVar) => {
+      helperCallMatches++;
+      return `if((this.shouldInjectBuiltInGitHubMcp(${optionsVar})||(${optionsVar}.githubMcpToolOptions&&!${optionsVar}.gitHubToken))&&${sessionVar}&&!${optionsVar}.provider){let ${configVar}=await this.createBuiltInGitHubMcpConfig(${sessionVar},${optionsVar}.githubMcpToolOptions);${configVar}&&(${mcpTargetVar}.mcpServers={"github-mcp-server":${configVar},...${mcpTargetVar}.mcpServers})}`;
+    },
+  );
+  const hasLegacyCallSites = legacyCallMatches === 2 && helperCallMatches === 0;
+  const hasHelperCallSites = legacyCallMatches === 0 && helperCallMatches === 2;
+  if (!hasLegacyCallSites && !hasHelperCallSites) {
+    throw new Error(
+      "Unable to patch Copilot app for Bridge GitHub MCP auth: expected exactly 2 legacy or 2 helper config call sites, "
+        + `found ${legacyCallMatches} legacy and ${helperCallMatches} helper.`,
+    );
+  }
+
+  let askUserMatches = 0;
+  source = source.replace(
+    ASK_USER_ELICITATION_PATTERN,
+    (match, legacyVar, optionsVar, elicitationVar) => {
+      askUserMatches++;
+      return `let ${legacyVar}=!!${optionsVar}.requestUserInput,${elicitationVar}=!!${optionsVar}.requestElicitation;`;
+    },
+  );
+  if (askUserMatches !== 1) {
+    throw new Error(
+      `Unable to patch Copilot app for native ask_user elicitation: expected 1 tool-selection gate, found ${askUserMatches}.`,
+    );
+  }
+
+  let elicitationCallbackMatches = 0;
+  source = source.replace(
+    ELICITATION_CALLBACK_PATTERN,
+    () => {
+      elicitationCallbackMatches++;
+      return 'requestElicitation:(this.hasEventListeners("elicitation.requested")||this.supportsElicitation())?';
+    },
+  );
+  if (elicitationCallbackMatches !== 1) {
+    throw new Error(
+      `Unable to patch Copilot app for SDK elicitation callbacks: expected 1 callback gate, found ${elicitationCallbackMatches}.`,
+    );
   }
 
   return source;
