@@ -5,6 +5,7 @@ import type {
   ChatEntry,
   ChatVisualEntry,
   McpServerStatus,
+  PendingElicitationRequestView,
   PendingUserInputRequestView,
   ToolArgs,
   ToolCall,
@@ -51,6 +52,7 @@ export interface StreamState {
   streamingContent: string;
   activeTools: PendingTool[];
   pendingUserInputs: PendingUserInputRequestView[];
+  pendingElicitations: PendingElicitationRequestView[];
   currentTurnTools: ToolCall[];
   intentText: string;
   streamStatus: StreamStatus;
@@ -202,6 +204,73 @@ function removePendingUserInput(
   requests: PendingUserInputRequestView[],
   requestId: string,
 ): PendingUserInputRequestView[] {
+  return requests.filter((request) => request.requestId !== requestId);
+}
+
+function normalizePendingElicitationRequest(
+  input: unknown,
+  fallbackTimestamp?: string,
+): PendingElicitationRequestView | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  if (
+    typeof record.requestId !== "string"
+    || typeof record.message !== "string"
+    || (record.mode !== "form" && record.mode !== "url")
+  ) {
+    return undefined;
+  }
+  const requestedAt = typeof record.requestedAt === "string"
+    ? record.requestedAt
+    : fallbackTimestamp;
+  const common = {
+    requestId: record.requestId,
+    message: record.message,
+    ...(requestedAt ? { requestedAt } : {}),
+    ...(typeof record.elicitationSource === "string"
+      ? { elicitationSource: record.elicitationSource }
+      : {}),
+  };
+  if (record.mode === "url") {
+    return typeof record.url === "string"
+      ? { ...common, mode: "url", url: record.url }
+      : undefined;
+  }
+  if (!record.requestedSchema || typeof record.requestedSchema !== "object") return undefined;
+  const schema = record.requestedSchema as Record<string, unknown>;
+  if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) {
+    return undefined;
+  }
+  return {
+    ...common,
+    mode: "form",
+    requestedSchema: structuredClone(record.requestedSchema) as PendingElicitationRequestView["requestedSchema"],
+  };
+}
+
+function normalizePendingElicitationRequests(input: unknown): PendingElicitationRequestView[] {
+  if (!Array.isArray(input)) return [];
+  return input.flatMap((request) => {
+    const normalized = normalizePendingElicitationRequest(request);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function upsertPendingElicitation(
+  requests: PendingElicitationRequestView[],
+  nextRequest: PendingElicitationRequestView,
+): PendingElicitationRequestView[] {
+  const existingIndex = requests.findIndex((request) => request.requestId === nextRequest.requestId);
+  if (existingIndex < 0) return [...requests, nextRequest];
+  return requests.map((request, index) => (
+    index === existingIndex ? { ...nextRequest, requestId: request.requestId } : request
+  ));
+}
+
+function removePendingElicitation(
+  requests: PendingElicitationRequestView[],
+  requestId: string,
+): PendingElicitationRequestView[] {
   return requests.filter((request) => request.requestId !== requestId);
 }
 
@@ -505,6 +574,7 @@ export function useSessionStream(
     streamingContent: "",
     activeTools: [],
     pendingUserInputs: [],
+    pendingElicitations: [],
     currentTurnTools: [],
     intentText: "",
     hadVisibleOutput: false,
@@ -545,6 +615,7 @@ export function useSessionStream(
       pendingOrigin,
       runMode: runMode ?? s.runMode,
       pendingUserInputs: pendingOrigin === "reconnect" ? s.pendingUserInputs : [],
+      pendingElicitations: pendingOrigin === "reconnect" ? s.pendingElicitations : [],
     }));
 
     fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
@@ -644,6 +715,7 @@ export function useSessionStream(
                   accumulatedContent = event.accumulatedContent ?? "";
                   activeTurnId = getEventTurnId(event);
                   const pendingUserInputs = normalizePendingUserInputRequests(event.pendingUserInputs);
+                  const pendingElicitations = normalizePendingElicitationRequests(event.pendingElicitations);
                   const snapshotToolState = buildSnapshotToolState(event, sid);
                   const tools = snapshotToolState.activeTools;
                   const contextSummary = getStreamContextSummary(event);
@@ -660,6 +732,7 @@ export function useSessionStream(
                     streamingContent: accumulatedContent,
                     activeTools: tools,
                     pendingUserInputs,
+                    pendingElicitations,
                     currentTurnTools: snapshotToolState.currentTurnTools,
                     intentText: event.intentText ?? "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
@@ -912,6 +985,34 @@ export function useSessionStream(
                     setStreamState((s) => ({
                       ...s,
                       pendingUserInputs: removePendingUserInput(s.pendingUserInputs, event.requestId),
+                      streamStatus: s.streamStatus === "idle" ? "thinking" : s.streamStatus,
+                      isStreaming: true,
+                    }));
+                  }
+                  break;
+                case "elicitation_requested": {
+                  const request = normalizePendingElicitationRequest(
+                    event,
+                    typeof event.timestamp === "string" ? event.timestamp : undefined,
+                  );
+                  if (!request) break;
+                  setStreamState((s) => ({
+                    ...s,
+                    pendingElicitations: upsertPendingElicitation(s.pendingElicitations, request),
+                    streamStatus: s.streamingContent || s.activeTools.length > 0 ? "streaming" : "thinking",
+                    isStreaming: true,
+                  }));
+                  break;
+                }
+                case "elicitation_resolved":
+                case "elicitation_canceled":
+                  if (typeof event.requestId === "string") {
+                    setStreamState((s) => ({
+                      ...s,
+                      pendingElicitations: removePendingElicitation(
+                        s.pendingElicitations,
+                        event.requestId,
+                      ),
                       streamStatus: s.streamStatus === "idle" ? "thinking" : s.streamStatus,
                       isStreaming: true,
                     }));

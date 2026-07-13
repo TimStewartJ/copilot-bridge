@@ -232,6 +232,11 @@ export function createMockSessionManager() {
       wasFreeform: payload?.wasFreeform,
       timestamp: "2026-04-29T12:00:00.000Z",
     }),
+    submitElicitationResponse: async (_sessionId: string, requestId: string, payload: any) => ({
+      requestId,
+      action: payload?.action,
+      timestamp: "2026-07-13T12:00:00.000Z",
+    }),
     deleteSession: async () => {},
     gracefulShutdown: async () => {},
     evictAllCachedSessions: async () => {},

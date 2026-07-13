@@ -13,6 +13,7 @@ export interface SessionUserInputControllerDeps {
   eventBusRegistry: EventBusRegistry;
   globalBus: GlobalBus;
   touchActivity(sessionId: string, timestamp?: string): void;
+  getPendingCount?: (sessionId: string) => number;
 }
 
 export class SessionUserInputController {
@@ -85,7 +86,8 @@ export class SessionUserInputController {
   }
 
   emitPendingStatus(sessionId: string): void {
-    const pendingUserInputCount = this.getPendingCount(sessionId);
+    const pendingUserInputCount = this.deps.getPendingCount?.(sessionId)
+      ?? this.getPendingCount(sessionId);
     this.deps.globalBus.emit({
       type: "session:user-input",
       sessionId,

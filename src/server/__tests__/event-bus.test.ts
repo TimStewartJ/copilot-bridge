@@ -197,6 +197,39 @@ describe("event-bus", () => {
       });
     });
 
+    it("tracks pending elicitation requests without storing submitted content", () => {
+      const bus = getOrCreateBus("test-elicitation-pending-1");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+
+      bus.emitElicitationRequested({
+        requestId: "el-1",
+        message: "Configure deployment",
+        mode: "form",
+        requestedAt: "2026-07-13T12:00:00.000Z",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            target: {
+              type: "string",
+              enum: ["staging", "production"],
+            },
+          },
+          required: ["target"],
+        },
+      });
+
+      expect(bus.getSnapshot().pendingElicitations).toHaveLength(1);
+      bus.emitElicitationResolved("el-1", "accept", "2026-07-13T12:00:01.000Z");
+      expect(bus.getSnapshot().pendingElicitations).toEqual([]);
+      expect(events.find((event) => event.type === "elicitation_resolved")).toEqual({
+        type: "elicitation_resolved",
+        requestId: "el-1",
+        action: "accept",
+        timestamp: "2026-07-13T12:00:01.000Z",
+      });
+    });
+
     it("removes pending user input requests when answered or canceled", () => {
       const bus = getOrCreateBus("test-user-input-complete-1");
       const events: StreamEvent[] = [];

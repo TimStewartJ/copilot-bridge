@@ -9,6 +9,13 @@ import type {
   UserInputCancelReason,
   UserInputRequestId,
 } from "./user-input-types.js";
+import type {
+  ElicitationAction,
+  ElicitationCancelReason,
+  ElicitationRequestId,
+  ElicitationSchema,
+  PendingElicitationRequestView,
+} from "./elicitation-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import {
   extractTerminalCompletionFromToolCall,
@@ -29,6 +36,22 @@ export type {
   UserInputSnapshotState,
   UserInputStreamEvent,
 } from "./user-input-types.js";
+export type {
+  ElicitationAction,
+  ElicitationCanceledStreamEvent,
+  ElicitationMode,
+  ElicitationRequestId,
+  ElicitationResolvedStreamEvent,
+  ElicitationResponseEndpointPayload,
+  ElicitationSchema,
+  ElicitationSchemaField,
+  ElicitationSnapshotState,
+  ElicitationStreamEvent,
+  NativeElicitationRequest,
+  NativeElicitationResult,
+  PendingElicitationRequestView,
+  SubmittedElicitationResponse,
+} from "./elicitation-types.js";
 
 export interface StreamEvent {
   type: string;
@@ -76,6 +99,8 @@ export interface BusSnapshot {
   pendingPrompt?: string;
   /** Pending native user input requests only; answered/canceled requests are omitted. */
   pendingUserInputs: PendingUserInputRequestView[];
+  /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
+  pendingElicitations: PendingElicitationRequestView[];
   [key: string]: unknown;
 }
 
@@ -85,6 +110,12 @@ const CLEANUP_DELAY = 60_000; // 60s after done before clearing
 
 interface UserInputCanceledOptions {
   reason?: UserInputCancelReason;
+  message?: string;
+  timestamp?: string;
+}
+
+interface ElicitationCanceledOptions {
+  reason?: ElicitationCancelReason;
   message?: string;
   timestamp?: string;
 }
@@ -194,6 +225,7 @@ export class SessionEventBus {
   /** The user prompt that initiated this turn (for reconnect recovery) */
   private pendingPrompt?: string;
   private pendingUserInputs = new Map<UserInputRequestId, PendingUserInputRequestView>();
+  private pendingElicitations = new Map<ElicitationRequestId, PendingElicitationRequestView>();
   private contextSummary: SessionContextSummary | null = null;
 
   constructor(
@@ -246,6 +278,41 @@ export class SessionEventBus {
   emitUserInputCanceled(requestId: UserInputRequestId, options: UserInputCanceledOptions = {}): void {
     this.emit({
       type: "user_input_canceled",
+      requestId,
+      reason: options.reason,
+      message: options.message,
+      timestamp: options.timestamp,
+    });
+  }
+
+  emitElicitationRequested(request: PendingElicitationRequestView, timestamp?: string): void {
+    this.emit({
+      type: "elicitation_requested",
+      ...structuredClone(request),
+      requestedAt: request.requestedAt ?? timestamp,
+      timestamp,
+    });
+  }
+
+  emitElicitationResolved(
+    requestId: ElicitationRequestId,
+    action: ElicitationAction,
+    timestamp?: string,
+  ): void {
+    this.emit({
+      type: "elicitation_resolved",
+      requestId,
+      action,
+      timestamp,
+    });
+  }
+
+  emitElicitationCanceled(
+    requestId: ElicitationRequestId,
+    options: ElicitationCanceledOptions = {},
+  ): void {
+    this.emit({
+      type: "elicitation_canceled",
       requestId,
       reason: options.reason,
       message: options.message,
@@ -370,6 +437,21 @@ export class SessionEventBus {
         }
         break;
       }
+      case "elicitation_requested": {
+        const pending = this.pendingElicitationFromEvent(event);
+        if (pending) {
+          this.pendingElicitations.set(pending.requestId, pending);
+        }
+        break;
+      }
+      case "elicitation_resolved":
+      case "elicitation_canceled": {
+        const requestId = this.elicitationRequestIdFromEvent(event);
+        if (requestId) {
+          this.pendingElicitations.delete(requestId);
+        }
+        break;
+      }
       case "done": {
         const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
           ?? this.pendingTerminalCompletion;
@@ -387,6 +469,7 @@ export class SessionEventBus {
         this.intentText = "";
         this.activeTools = [];
         this.pendingUserInputs.clear();
+        this.pendingElicitations.clear();
         this.currentTurnTools = [];
         this.currentTurnId = undefined;
         this.scheduleCleanup();
@@ -409,6 +492,7 @@ export class SessionEventBus {
         this.intentText = "";
         this.activeTools = [];
         this.pendingUserInputs.clear();
+        this.pendingElicitations.clear();
         this.currentTurnTools = [];
         this.currentTurnId = undefined;
         this.scheduleCleanup();
@@ -431,6 +515,7 @@ export class SessionEventBus {
         this.intentText = "";
         this.activeTools = [];
         this.pendingUserInputs.clear();
+        this.pendingElicitations.clear();
         this.currentTurnTools = [];
         this.currentTurnId = undefined;
         this.scheduleCleanup();
@@ -453,6 +538,7 @@ export class SessionEventBus {
         this.intentText = "";
         this.activeTools = [];
         this.pendingUserInputs.clear();
+        this.pendingElicitations.clear();
         this.currentTurnTools = [];
         this.currentTurnId = undefined;
         this.scheduleCleanup();
@@ -492,6 +578,7 @@ export class SessionEventBus {
       contextSummary: this.contextSummary,
       pendingPrompt: this.pendingPrompt,
       pendingUserInputs: [...this.pendingUserInputs.values()],
+      pendingElicitations: [...this.pendingElicitations.values()].map((request) => structuredClone(request)),
       ...(turnId ? { turnId } : {}),
     };
   }
@@ -526,6 +613,7 @@ export class SessionEventBus {
     this.resetLiveTurnState();
     this.pendingPrompt = undefined;
     this.pendingUserInputs.clear();
+    this.pendingElicitations.clear();
   }
 
   private resetLiveTurnState(): void {
@@ -584,6 +672,46 @@ export class SessionEventBus {
   }
 
   private userInputRequestIdFromEvent(event: StreamEvent): UserInputRequestId | undefined {
+    return typeof event.requestId === "string" ? event.requestId : undefined;
+  }
+
+  private pendingElicitationFromEvent(event: StreamEvent): PendingElicitationRequestView | undefined {
+    const requestId = this.elicitationRequestIdFromEvent(event);
+    if (!requestId || typeof event.message !== "string") return undefined;
+    const mode = event.mode === "url" ? "url" : event.mode === "form" ? "form" : undefined;
+    if (!mode) return undefined;
+    const requestedAt = typeof event.requestedAt === "string"
+      ? event.requestedAt
+      : typeof event.timestamp === "string"
+        ? event.timestamp
+        : undefined;
+    if (mode === "url") {
+      if (typeof event.url !== "string") return undefined;
+      return {
+        requestId,
+        message: event.message,
+        mode,
+        url: event.url,
+        requestedAt,
+        elicitationSource: typeof event.elicitationSource === "string"
+          ? event.elicitationSource
+          : undefined,
+      };
+    }
+    if (!event.requestedSchema || typeof event.requestedSchema !== "object") return undefined;
+    return {
+      requestId,
+      message: event.message,
+      mode,
+      requestedSchema: structuredClone(event.requestedSchema as ElicitationSchema),
+      requestedAt,
+      elicitationSource: typeof event.elicitationSource === "string"
+        ? event.elicitationSource
+        : undefined,
+    };
+  }
+
+  private elicitationRequestIdFromEvent(event: StreamEvent): ElicitationRequestId | undefined {
     return typeof event.requestId === "string" ? event.requestId : undefined;
   }
 }

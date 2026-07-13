@@ -21,6 +21,11 @@ import type {
   UserInputAnswerEndpointPayload as UserInputAnswerEndpointPayloadType,
   UserInputRequestId as UserInputRequestIdType,
 } from "../server/user-input-types.js";
+import type {
+  ElicitationRequestId as ElicitationRequestIdType,
+  ElicitationResponseEndpointPayload as ElicitationResponseEndpointPayloadType,
+  SubmittedElicitationResponse as SubmittedElicitationResponseType,
+} from "../server/elicitation-types.js";
 export type { McpServerConfig };
 export type {
   AgentCountsSource,
@@ -47,6 +52,27 @@ export type {
   UserInputSnapshotState,
   UserInputStreamEvent,
 } from "../server/user-input-types.js";
+export type {
+  ElicitationAction,
+  ElicitationBooleanField,
+  ElicitationEnumField,
+  ElicitationFieldValue,
+  ElicitationMode,
+  ElicitationMultiSelectField,
+  ElicitationNumberField,
+  ElicitationRequestId,
+  ElicitationResponseEndpointPayload,
+  ElicitationSchema,
+  ElicitationSchemaField,
+  ElicitationTextField,
+  ElicitationTitledEnumField,
+  ElicitationSnapshotState,
+  ElicitationStreamEvent,
+  NativeElicitationRequest,
+  NativeElicitationResult,
+  PendingElicitationRequestView,
+  SubmittedElicitationResponse,
+} from "../server/elicitation-types.js";
 
 export interface SessionWorkspaceOverride {
   cwd: string;
@@ -778,6 +804,17 @@ export async function submitUserInputResponse(
 ): Promise<NativeUserInputResponseType> {
   return apiFetch<NativeUserInputResponseType>(
     `/api/sessions/${encodeURIComponent(sessionId)}/user-input/${encodeURIComponent(requestId)}/respond`,
+    payload,
+  );
+}
+
+export async function submitElicitationResponse(
+  sessionId: string,
+  requestId: ElicitationRequestIdType,
+  payload: ElicitationResponseEndpointPayloadType,
+): Promise<SubmittedElicitationResponseType> {
+  return apiFetch<SubmittedElicitationResponseType>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/elicitation/${encodeURIComponent(requestId)}/respond`,
     payload,
   );
 }
