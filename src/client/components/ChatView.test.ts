@@ -1,7 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatEntry, PendingUserInputRequestView } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import {
@@ -122,6 +122,7 @@ type RenderChatViewOptions = {
   activeSessionActivityAt?: string;
   busySignal?: number;
   fetchMessagesFastResult?: Promise<FetchMessagesFastResult> | FetchMessagesFastResult;
+  fetchSessionContextError?: Error;
   fetchSessionContextResult?: Promise<SessionContextResponse> | SessionContextResponse;
   pendingUserInputs?: PendingUserInputRequestView[];
   seedQueryClient?: (queryClient: QueryClient) => void;
@@ -210,6 +211,19 @@ function createDeferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+let ChatView: typeof import("./ChatView").default;
+
+beforeAll(async () => {
+  // Warm the large component graph outside the first test timeout while
+  // preserving the DOM-before-React-DOM import ordering required by the harness.
+  const harness = await createReactDomHarness();
+  try {
+    ({ default: ChatView } = await import("./ChatView"));
+  } finally {
+    await harness.cleanup();
+  }
+}, 30_000);
 
 function findButtonByText(root: any, text: string): any {
   const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.textContent === text);
@@ -316,12 +330,16 @@ async function renderChatView(
   });
   fetchOlderMessagesFastMock.mockResolvedValue({ messages: [], hasMore: false, total: 0 });
   fetchMcpStatusMock.mockResolvedValue([]);
-  const fetchSessionContextResult = options.fetchSessionContextResult ?? createEmptyContext();
-  fetchSessionContextMock.mockReturnValue(
-    fetchSessionContextResult instanceof Promise
-      ? fetchSessionContextResult
-      : Promise.resolve(fetchSessionContextResult),
-  );
+  if (options.fetchSessionContextError) {
+    fetchSessionContextMock.mockRejectedValue(options.fetchSessionContextError);
+  } else {
+    const fetchSessionContextResult = options.fetchSessionContextResult ?? createEmptyContext();
+    fetchSessionContextMock.mockReturnValue(
+      fetchSessionContextResult instanceof Promise
+        ? fetchSessionContextResult
+        : Promise.resolve(fetchSessionContextResult),
+    );
+  }
   warmSessionMock.mockResolvedValue(undefined);
   reportTimingMock.mockResolvedValue(undefined);
   undoSessionTurnMock.mockResolvedValue({ eventsRemoved: 1 });
@@ -348,8 +366,6 @@ async function renderChatView(
     ...nextOptions.streamOverrides,
   });
   useSessionStreamMock.mockReturnValue(buildStreamState(options));
-
-  const { default: ChatView } = await import("./ChatView");
 
   const render = async (overrideOptions: Partial<RenderChatViewOptions> = {}) => {
     const nextOptions = {
@@ -438,7 +454,7 @@ describe("ChatView cached resume loading state", () => {
         warm: true,
         hasMore: false,
       },
-      fetchSessionContextResult: Promise.reject(new Error("context offline")),
+      fetchSessionContextError: new Error("context offline"),
       streamOverrides: { isStreaming: false, pendingOrigin: null },
     });
 
