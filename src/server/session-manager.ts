@@ -115,7 +115,12 @@ import {
   type SessionRunState,
   type SessionActivity,
 } from "./session-run-state-controller.js";
-import { SessionRunner, type McpServerStatus, type StartWorkOptions } from "./session-runner.js";
+import {
+  isStaleAgentSessionError,
+  SessionRunner,
+  type McpServerStatus,
+  type StartWorkOptions,
+} from "./session-runner.js";
 import { SessionAgentRegistry } from "./session-agent-registry.js";
 import type { BackgroundAgentsSummary, SessionAgentTask, AgentCountsSource } from "../shared/session-agents.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
@@ -867,6 +872,18 @@ export class SessionManager {
       try {
         await this.reapSessionTasks(sessionId, session);
       } catch (error) {
+        if (isStaleAgentSessionError(error)) {
+          this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
+            reason,
+            attempt: record.attempts,
+            cycleAttempt,
+            outcome: "stale-session",
+            error: error instanceof Error ? error.message : String(error),
+            ...this.getSessionCacheState(),
+          });
+          this.completeSessionCleanup(sessionId, session, reason, "task cleanup found the session no longer addressable");
+          return true;
+        }
         taskOutcome = error instanceof SessionTaskCleanupTimeoutError ? "timed-out" : "rejected";
         lastOutcome = taskOutcome;
         this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
@@ -890,16 +907,24 @@ export class SessionManager {
         () => Promise.resolve(session.disconnect?.()).then(() => undefined),
         createDeadline(DISCONNECT_TIMEOUT_MS),
       );
+      const staleSession = result.status === "rejected" && isStaleAgentSessionError(result.error);
       this.recordSpan("session.cache.disconnect", Date.now() - startedAt, sessionId, {
         reason,
         attempt: record.attempts,
         cycleAttempt,
-        outcome: result.status,
+        outcome: staleSession ? "stale-session" : result.status,
+        ...(result.status === "rejected"
+          ? { error: result.error instanceof Error ? result.error.message : String(result.error) }
+          : {}),
         ...this.getSessionCacheState(),
       });
-      if (result.status === "fulfilled") {
-        this.cleanupOwnership.delete(session);
-        this.agentRegistry.forgetIfOwnedBy(sessionId, session);
+      if (result.status === "fulfilled" || staleSession) {
+        this.completeSessionCleanup(
+          sessionId,
+          session,
+          reason,
+          staleSession ? "disconnect found the session no longer addressable" : undefined,
+        );
         return true;
       }
       lastOutcome = result.status;
@@ -913,6 +938,21 @@ export class SessionManager {
       `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup ${lastOutcome} after ${DISCONNECT_MAX_ATTEMPTS} attempts; retained for retry (${reason})`,
     );
     return false;
+  }
+
+  private completeSessionCleanup(
+    sessionId: string,
+    session: AgentSession,
+    reason: string,
+    staleOutcome?: string,
+  ): void {
+    this.cleanupOwnership.delete(session);
+    this.agentRegistry.forgetIfOwnedBy(sessionId, session);
+    if (staleOutcome) {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup self-healed: ${staleOutcome} (${reason})`,
+      );
+    }
   }
 
   private queueSessionCleanupUnsafe(

@@ -215,11 +215,12 @@ function getErrorMessage(error: unknown): string {
   return typeof error === "string" ? error : "unknown error";
 }
 
-function isStaleCachedSessionError(error: unknown): boolean {
+export function isStaleAgentSessionError(error: unknown): boolean {
   if (error instanceof ConnectionError) {
     return error.code === ConnectionErrors.Closed || error.code === ConnectionErrors.Disposed;
   }
-  return error instanceof Error && error.message.includes("Session not found");
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return /\bSession not found\b/i.test(message);
 }
 
 export interface SessionRunnerDeps {
@@ -1740,7 +1741,7 @@ export class SessionRunner {
         if ((await runStepOrCompletion("send prompt", () => opts.execute!(session))).completed) return;
         runController.markPromptAccepted();
       } catch (operationErr) {
-        if (usedCache && isStaleCachedSessionError(operationErr)) {
+        if (usedCache && isStaleAgentSessionError(operationErr)) {
           console.warn(`[sdk] [${sid}] Stale cached session (${getErrorMessage(operationErr)}) — evicting and re-resuming...`);
           unsub?.();
           unsub = undefined;

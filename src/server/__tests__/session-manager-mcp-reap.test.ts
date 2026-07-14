@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -339,6 +340,85 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(first.disconnect).toHaveBeenCalledTimes(2);
     expect(manager.cleanupOwnership.size).toBe(0);
     expect(manager.cumulativeCleanupFailures).toBe(0);
+  });
+
+  it("self-heals when task cleanup finds the upstream session already absent", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const vanished = fakeSessionWithAgent("vanished");
+    await manager.cacheResumedSession("vanished", vanished);
+    await manager.agentRegistry.refresh("vanished", "test");
+    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
+    vanished.listTasks.mockRejectedValue(new Error("Session not found: vanished"));
+
+    await manager.cacheResumedSession("next", fakeSession());
+    await manager._drainCacheQueue();
+
+    expect(vanished.disconnect).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.has(vanished)).toBe(false);
+    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(0);
+    expect(manager.cumulativeCleanupFailures).toBe(0);
+    expect(() => manager.assertSessionCacheAvailable()).not.toThrow();
+  });
+
+  it("self-heals when an upstream session disappears during background task cancellation", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const vanished = fakeSessionWithAgent("vanished", "idle");
+    await manager.cacheResumedSession("vanished", vanished);
+    await manager.agentRegistry.refresh("vanished", "test");
+    vanished.cancelTask.mockRejectedValue(
+      new Error("Request session.mode.set failed: Session not found: vanished"),
+    );
+
+    await manager.cacheResumedSession("next", fakeSession());
+    await manager._drainCacheQueue();
+
+    expect(vanished.cancelTask).toHaveBeenCalledWith("vanished-agent");
+    expect(vanished.disconnect).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.has(vanished)).toBe(false);
+    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(0);
+    expect(manager.cumulativeCleanupFailures).toBe(0);
+  });
+
+  it("self-heals when disconnect reports that the upstream session is already absent", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const vanished = {
+      disconnect: vi.fn().mockRejectedValue(new Error("Session not found: vanished")),
+    };
+    await manager.cacheResumedSession("vanished", vanished);
+    await manager.cacheResumedSession("next", fakeSession());
+    await manager._drainCacheQueue();
+
+    expect(vanished.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.cleanupOwnership.has(vanished)).toBe(false);
+    expect(manager.cumulativeCleanupFailures).toBe(0);
+
+    const createSession = vi.fn().mockResolvedValue(fakeSession("created"));
+    manager.maxCachedSessions = 16;
+    manager.backend = { createSession };
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+      .resolves.toEqual({ sessionId: "created" });
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("self-heals cleanup after the SDK connection is closed", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 1;
+    const disconnected = {
+      disconnect: vi.fn().mockRejectedValue(
+        new ConnectionError(ConnectionErrors.Closed, "Connection is closed."),
+      ),
+    };
+    await manager.cacheResumedSession("disconnected", disconnected);
+    await manager.cacheResumedSession("next", fakeSession());
+    await manager._drainCacheQueue();
+
+    expect(disconnected.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.cleanupOwnership.has(disconnected)).toBe(false);
+    expect(manager.cumulativeCleanupFailures).toBe(0);
+    expect(() => manager.assertSessionCacheAvailable()).not.toThrow();
   });
 
   it("retains failed cleanup ownership and blocks new SDK session creation", async () => {
