@@ -14,6 +14,7 @@ import {
   writeFileSync,
   writeRestartState,
 } from "./api-routes-test-helpers.js";
+import { SessionCapacityError } from "../session-manager.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -498,6 +499,38 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).post("/api/sessions");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("sessionId");
+  });
+
+  it("POST /api/sessions reports saturated weighted capacity as retryable", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createSession = vi.fn().mockRejectedValue(
+      new SessionCapacityError("weighted-capacity", {
+        contexts: 12,
+        contextLimit: 16,
+        localMcpInstances: 80,
+        capacityUnits: 32,
+        capacityLimit: 32,
+      }),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions");
+
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBe("2");
+    expect(res.body).toEqual({
+      error: "Live Copilot capacity is full at 32/32 units across 12 contexts and 80 estimated local MCP slots. Wait for work to finish, or stop a running chat or agent, then try again.",
+      code: "session_capacity",
+      details: {
+        reason: "weighted-capacity",
+        retryAfterSeconds: 2,
+        contexts: 12,
+        contextLimit: 16,
+        localMcpInstances: 80,
+        capacityUnits: 32,
+        capacityLimit: 32,
+      },
+    });
   });
 
   it("POST /api/sessions creates a session when restart is active in persisted state", async () => {

@@ -358,7 +358,10 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.cleanupOwnership.has(vanished)).toBe(false);
     expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(0);
     expect(manager.cumulativeCleanupFailures).toBe(0);
-    expect(() => manager.assertSessionCacheAvailable()).not.toThrow();
+    expect(() => manager.assertSessionCapacityAvailable({
+      capacityUnits: 1,
+      localMcpInstances: 0,
+    })).not.toThrow();
   });
 
   it("self-heals when an upstream session disappears during background task cancellation", async () => {
@@ -418,11 +421,15 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(disconnected.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.cleanupOwnership.has(disconnected)).toBe(false);
     expect(manager.cumulativeCleanupFailures).toBe(0);
-    expect(() => manager.assertSessionCacheAvailable()).not.toThrow();
+    expect(() => manager.assertSessionCapacityAvailable({
+      capacityUnits: 1,
+      localMcpInstances: 0,
+    })).not.toThrow();
   });
 
   it("retains failed cleanup ownership and blocks new SDK session creation", async () => {
     const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedSessions = 1;
     const stuck = { disconnect: vi.fn().mockRejectedValue(new Error("still running")) };
     await manager.cacheResumedSession("stuck", stuck);
@@ -437,7 +444,7 @@ describe("SessionManager bounded session lifecycle", () => {
     const createSession = vi.fn();
     manager.backend = { createSession };
     await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
-      .rejects.toThrow("cleanup failure");
+      .rejects.toMatchObject({ reason: "cleanup-failed" });
     expect(createSession).not.toHaveBeenCalled();
   });
 
@@ -464,6 +471,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
   it("blocks new SDK sessions when the cleanup backlog reaches its cap", async () => {
     const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedSessions = 1;
     manager.maxPendingSessionCleanups = 1;
     let release!: () => void;
@@ -479,7 +487,7 @@ describe("SessionManager bounded session lifecycle", () => {
     const createSession = vi.fn();
     manager.backend = { createSession };
     await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
-      .rejects.toThrow("cleanup demand");
+      .rejects.toMatchObject({ reason: "cleanup-demand" });
     expect(createSession).not.toHaveBeenCalled();
 
     release();
@@ -488,6 +496,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
   it("blocks new SDK sessions while retained context weight exceeds the budget", async () => {
     const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedSessions = 1;
     manager.maxCachedContexts = 1;
     manager.maxPendingSessionCleanups = 10;
@@ -504,25 +513,151 @@ describe("SessionManager bounded session lifecycle", () => {
     const createSession = vi.fn();
     manager.backend = { createSession };
     await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
-      .rejects.toThrow("context demand");
+      .rejects.toMatchObject({ reason: "context-limit" });
     expect(createSession).not.toHaveBeenCalled();
 
     release();
     await manager._drainCacheQueue();
   });
 
-  it("counts uncached resume reservations against protected context demand", () => {
+  it("counts uncached resume reservations against the hard context limit", async () => {
     const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedContexts = 1;
 
-    manager.beginSessionResume("first");
-    expect(() => manager.beginSessionResume("second"))
-      .toThrow("protected context demand is 2/1");
-    manager.endSessionResume("first");
+    const firstLease = await manager.beginSessionResume("first", { mcpServers: {} });
+    await expect(manager.beginSessionResume("second", { mcpServers: {} }))
+      .rejects.toMatchObject({
+        name: "SessionCapacityError",
+        reason: "context-limit",
+        snapshot: {
+          contexts: 2,
+          contextLimit: 1,
+        },
+      });
+    manager.endSessionResume(firstLease);
+  });
+
+  it("weights local MCP instances across every context in a session tree", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 10;
+    manager.maxCachedContexts = 10;
+    manager.maxSessionCapacityUnits = 3;
+    manager.localMcpCapacityWeight = 0.25;
+    const session = fakeSessionWithAgent("weighted");
+    const sessionConfig = {
+      mcpServers: {
+        localOne: { command: "one", args: [] },
+        localTwo: { type: "stdio", command: "two", args: [] },
+        remote: { type: "http", url: "https://example.test/mcp" },
+      },
+    };
+
+    await manager.cacheResumedSession("weighted", session, sessionConfig);
+    await manager.agentRegistry.refresh("weighted", "test");
+
+    expect(manager.getSessionCacheState()).toMatchObject({
+      readyContextWeight: 2,
+      readyLocalMcpInstances: 4,
+      readyCapacityUnits: 3,
+    });
+  });
+
+  it("blocks on weighted capacity before the hard context limit", async () => {
+    const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
+    manager.maxCachedContexts = 10;
+    manager.maxSessionCapacityUnits = 2.5;
+    const config = {
+      mcpServers: {
+        one: { command: "one", args: [] },
+        two: { command: "two", args: [] },
+        remote: { type: "http", url: "https://example.test/mcp" },
+      },
+    };
+
+    const firstLease = await manager.beginSessionResume("first", config);
+    await expect(manager.beginSessionResume("second", config))
+      .rejects.toMatchObject({
+        reason: "weighted-capacity",
+        snapshot: {
+          contexts: 2,
+          localMcpInstances: 4,
+          capacityUnits: 3,
+          capacityLimit: 2.5,
+        },
+      });
+    manager.endSessionResume(firstLease);
+  });
+
+  it("waits for capacity and admits the next resume when a slot is released", async () => {
+    const { manager } = createManager();
+    manager.maxCachedContexts = 1;
+    manager.sessionCapacityWaitTimeoutMs = 5_000;
+
+    const firstLease = await manager.beginSessionResume("first", { mcpServers: {} });
+    const second = manager.beginSessionResume("second", { mcpServers: {} });
+    await vi.waitFor(() => expect(manager.sessionCapacityWaiters.size).toBe(1));
+
+    manager.endSessionResume(firstLease);
+    const secondLease = await second;
+
+    expect(manager.resumingSessions.has("second")).toBe(true);
+    manager.endSessionResume(secondLease);
+  });
+
+  it("does not double count a session that is already marked active", async () => {
+    const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
+    manager.maxCachedContexts = 1;
+    manager.modelSwitchingSessions.add("switching");
+
+    const switchingLease = await manager.beginSessionResume(
+      "switching",
+      { mcpServers: {} },
+    );
+
+    manager.endSessionResume(switchingLease);
+    manager.modelSwitchingSessions.delete("switching");
+  });
+
+  it("protects a cached session operation without reserving a second context", async () => {
+    const { manager } = createManager();
+    manager.maxCachedContexts = 1;
+    await manager.cacheResumedSession("cached", fakeSession(), { mcpServers: {} });
+
+    const cachedLease = await manager.beginSessionResume("cached", { mcpServers: {} });
+
+    expect(manager.getSessionCacheState()).toMatchObject({
+      readyContextWeight: 1,
+      reservedContexts: 0,
+    });
+    manager.endSessionResume(cachedLease);
+  });
+
+  it("releases only the capacity lease owned by each overlapping cached operation", async () => {
+    const { manager } = createManager();
+    manager.maxCachedContexts = 2;
+    await manager.cacheResumedSession("cached", fakeSession(), { mcpServers: {} });
+
+    const reloadLease = await manager.beginSessionResume(
+      "cached",
+      { mcpServers: {} },
+      { reserveCachedSession: true },
+    );
+    const cachedLease = await manager.beginSessionResume("cached", { mcpServers: {} });
+    expect(manager.getSessionCacheState().reservedContexts).toBe(1);
+
+    manager.endSessionResume(cachedLease);
+    expect(manager.getSessionCacheState().reservedContexts).toBe(1);
+
+    manager.endSessionResume(reloadLease);
+    expect(manager.getSessionCacheState().reservedContexts).toBe(0);
   });
 
   it("reserves cleanup capacity across concurrent session creation", async () => {
     const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxPendingSessionCleanups = 1;
     let resolveCreate!: (session: FakeSession & { sessionId: string }) => void;
     const createSession = vi.fn(() => new Promise<FakeSession & { sessionId: string }>((resolve) => {
@@ -533,7 +668,7 @@ describe("SessionManager bounded session lifecycle", () => {
     const first = manager.createTaskSession("task-1", "Scheduled task", [], [], "");
     await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
     await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
-      .rejects.toThrow("cleanup demand");
+      .rejects.toMatchObject({ reason: "cleanup-demand" });
 
     resolveCreate(fakeSession("created") as FakeSession & { sessionId: string });
     await first;
@@ -591,17 +726,39 @@ describe("SessionManager bounded session lifecycle", () => {
     });
   });
 
+  it("defaults to a generous context ceiling while keeping the idle parent cache bounded", () => {
+    vi.stubEnv("BRIDGE_MAX_CACHED_SESSIONS", "");
+    vi.stubEnv("BRIDGE_MAX_CACHED_CONTEXTS", "");
+    vi.stubEnv("BRIDGE_MAX_PENDING_SESSION_CLEANUPS", "");
+    vi.stubEnv("BRIDGE_MAX_SESSION_CAPACITY_UNITS", "");
+    try {
+      const { manager } = createManager();
+      expect(manager.maxCachedSessions).toBe(16);
+      expect(manager.maxCachedContexts).toBe(32);
+      expect(manager.maxPendingSessionCleanups).toBe(32);
+      expect(manager.maxSessionCapacityUnits).toBe(64);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("defaults limits from environment variables", () => {
     vi.stubEnv("BRIDGE_MAX_CACHED_SESSIONS", "4");
     vi.stubEnv("BRIDGE_MAX_CACHED_CONTEXTS", "6");
     vi.stubEnv("BRIDGE_SESSION_CACHE_IDLE_TTL_SECONDS", "120");
     vi.stubEnv("BRIDGE_MAX_PENDING_SESSION_CLEANUPS", "3");
+    vi.stubEnv("BRIDGE_MAX_SESSION_CAPACITY_UNITS", "40");
+    vi.stubEnv("BRIDGE_LOCAL_MCP_CAPACITY_WEIGHT", "0.5");
+    vi.stubEnv("BRIDGE_SESSION_CAPACITY_WAIT_SECONDS", "9");
     try {
       const { manager } = createManager();
       expect(manager.maxCachedSessions).toBe(4);
       expect(manager.maxCachedContexts).toBe(6);
       expect(manager.sessionCacheIdleTtlMs).toBe(120_000);
       expect(manager.maxPendingSessionCleanups).toBe(3);
+      expect(manager.maxSessionCapacityUnits).toBe(40);
+      expect(manager.localMcpCapacityWeight).toBe(0.5);
+      expect(manager.sessionCapacityWaitTimeoutMs).toBe(9_000);
     } finally {
       vi.unstubAllEnvs();
     }

@@ -201,7 +201,7 @@ describe("SessionManager warmSession", () => {
     const firstWarm = manager.warmSession("session-warm-race");
     const secondWarm = manager.warmSession("session-warm-race");
 
-    expect(resumeSession).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(resumeSession).toHaveBeenCalledTimes(1));
     resolveResume(resumedSession);
     await Promise.all([firstWarm, secondWarm]);
 
@@ -241,6 +241,7 @@ describe("SessionManager warmSession", () => {
     };
 
     const warming = manager.warmSession("session-warm-superseded");
+    await vi.waitFor(() => expect(manager.backend.resumeSession).toHaveBeenCalledTimes(1));
     // A newer cached session arrives before the in-flight resume resolves.
     manager.sessionObjects.set("session-warm-superseded", newerSession);
 

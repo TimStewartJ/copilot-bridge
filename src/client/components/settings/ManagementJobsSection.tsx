@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   Download,
+  Gauge,
   Loader2,
   Power,
   RotateCcw,
@@ -240,6 +241,12 @@ export function ManagementJobsSection() {
           error={runtimeQuery.error}
         />
 
+        <CapacityCard
+          status={runtimeQuery.data ?? null}
+          loading={runtimeQuery.isLoading && !runtimeQuery.data}
+          error={runtimeQuery.error}
+        />
+
         <BridgeControlsCard
           selfUpdateDisabledReason={selfUpdateDisabledReason}
           restartDisabledReason={restartDisabledReason}
@@ -396,6 +403,138 @@ function CurrentActivityCard({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function CapacityCard({
+  status,
+  loading,
+  error,
+}: {
+  status: BridgeRuntimeStatus | null;
+  loading: boolean;
+  error: unknown;
+}) {
+  const capacity = status?.capacity;
+  return (
+    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-accent">
+            <Gauge size={15} />
+            Copilot capacity
+          </div>
+          <p className="mt-1 text-xs text-text-muted">
+            Admission uses both a hard live-context limit and an MCP-weighted unit budget. Idle cached parents are evictable and do not count as used pressure.
+          </p>
+        </div>
+        <div className="text-[11px] text-text-faint">
+          Updated {loading ? "checking…" : formatDateTime(status?.fetchedAt)}
+        </div>
+      </div>
+
+      {error && !status ? (
+        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          Capacity status unavailable: {formatError(error)}
+        </div>
+      ) : !capacity ? (
+        <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+          {loading ? "Loading capacity status…" : "Capacity statistics are unavailable from this server version."}
+        </div>
+      ) : (
+        <>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <SummaryMetric
+              label="Live contexts"
+              value={`${formatCapacityValue(capacity.contexts.used)} / ${formatCapacityValue(capacity.contexts.limit)}`}
+              tone={capacityTone(capacity.contexts.used, capacity.contexts.limit)}
+            />
+            <SummaryMetric
+              label="Weighted units"
+              value={`${formatCapacityValue(capacity.weightedUnits.used)} / ${formatCapacityValue(capacity.weightedUnits.limit)}`}
+              tone={capacityTone(capacity.weightedUnits.used, capacity.weightedUnits.limit)}
+            />
+            <SummaryMetric
+              label="Local MCP slots"
+              value={formatCapacityValue(capacity.localMcpSlots.used)}
+              tone={capacity.localMcpSlots.used > 0 ? "info" : "default"}
+            />
+            <SummaryMetric
+              label="Waiting requests"
+              value={String(capacity.waitingRequests)}
+              tone={capacity.waitingRequests > 0 ? "warning" : "success"}
+            />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <CapacityBar
+              label="Context pressure"
+              used={capacity.contexts.used}
+              retained={capacity.contexts.retained}
+              limit={capacity.contexts.limit}
+            />
+            <CapacityBar
+              label="Weighted pressure"
+              used={capacity.weightedUnits.used}
+              retained={capacity.weightedUnits.retained}
+              limit={capacity.weightedUnits.limit}
+            />
+          </div>
+
+          {capacity.cleanup.failed > 0 && (
+            <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+              New work is blocked while {capacity.cleanup.failed} failed cleanup{capacity.cleanup.failed === 1 ? "" : "s"} remain. Bridge retries these automatically; restart if the count does not clear.
+            </div>
+          )}
+          {capacity.cleanup.failed === 0 && capacity.waitingRequests > 0 && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+              {capacity.waitingRequests} request{capacity.waitingRequests === 1 ? " is" : "s are"} waiting for live capacity or cleanup headroom.
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-faint">
+            <span>
+              Parent cache {capacity.cache.readyParents}/{capacity.cache.limit}, {capacity.cache.protectedParents} protected
+            </span>
+            <span>
+              Cleanup {capacity.cleanup.pending} pending, {capacity.cleanup.failed} failed, limit {capacity.cleanup.limit}
+            </span>
+            <span>Local MCP weight +{formatCapacityValue(capacity.localMcpWeight)} per context</span>
+            <span>Capacity wait {formatCapacityValue(capacity.waitTimeoutSeconds)}s</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function CapacityBar({
+  label,
+  used,
+  retained,
+  limit,
+}: {
+  label: string;
+  used: number;
+  retained: number;
+  limit: number;
+}) {
+  const percentage = limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0;
+  return (
+    <div className="rounded-md border border-border bg-bg-primary p-3">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="font-medium text-text-secondary">{label}</span>
+        <span className="text-text-muted">
+          {formatCapacityValue(used)} used, {formatCapacityValue(retained)} retained
+        </span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-bg-surface">
+        <div
+          className={`h-full rounded-full transition-[width] ${capacityBarClassName(used, limit)}`}
+          style={{ width: `${percentage}%` }}
+        />
+      </div>
     </div>
   );
 }
@@ -1046,6 +1185,32 @@ function metricToneClassName(tone: "default" | "success" | "warning" | "error" |
     default:
       return "text-text-primary";
   }
+}
+
+function capacityTone(
+  used: number,
+  limit: number,
+): "default" | "success" | "warning" | "error" | "info" {
+  if (limit <= 0) return "default";
+  const ratio = used / limit;
+  if (ratio >= 1) return "error";
+  if (ratio >= 0.8) return "warning";
+  if (ratio > 0) return "info";
+  return "success";
+}
+
+function capacityBarClassName(used: number, limit: number): string {
+  const tone = capacityTone(used, limit);
+  if (tone === "error") return "bg-error";
+  if (tone === "warning") return "bg-warning";
+  if (tone === "success") return "bg-success";
+  return "bg-info";
+}
+
+function formatCapacityValue(value: number): string {
+  return Number.isInteger(value)
+    ? String(value)
+    : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function getSelfUpdateDisabledReason({
