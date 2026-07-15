@@ -29,6 +29,16 @@ describe("server management API routes", () => {
         staleSessions: 1,
         unknownSessions: 0,
       },
+      capacity: {
+        contexts: { used: 11, retained: 14, limit: 32 },
+        weightedUnits: { used: 17.5, retained: 22, limit: 64 },
+        localMcpSlots: { used: 26, retained: 32 },
+        cache: { readyParents: 10, protectedParents: 3, limit: 16 },
+        cleanup: { pending: 1, failed: 0, limit: 32 },
+        waitingRequests: 2,
+        localMcpWeight: 0.25,
+        waitTimeoutSeconds: 30,
+      },
     });
 
     const response = await request(app).get("/api/server/runtime-status");
@@ -46,6 +56,16 @@ describe("server management API routes", () => {
         liveSessions: 3,
         staleSessions: 1,
         unknownSessions: 0,
+      },
+      capacity: {
+        contexts: { used: 11, retained: 14, limit: 32 },
+        weightedUnits: { used: 17.5, retained: 22, limit: 64 },
+        localMcpSlots: { used: 26, retained: 32 },
+        cache: { readyParents: 10, protectedParents: 3, limit: 16 },
+        cleanup: { pending: 1, failed: 0, limit: 32 },
+        waitingRequests: 2,
+        localMcpWeight: 0.25,
+        waitTimeoutSeconds: 30,
       },
     });
     expect(response.body.fetchedAt).toEqual(expect.any(String));

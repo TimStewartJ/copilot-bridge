@@ -10,7 +10,7 @@ import {
   mkdirSync,
   request,
 } from "./api-routes-test-helpers.js";
-import { SessionHistoryUndoError } from "../session-manager.js";
+import { SessionCapacityError, SessionHistoryUndoError } from "../session-manager.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -414,5 +414,33 @@ describe("Session manager routes", () => {
       .send({ prompt: "Hello" });
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("sessionId");
+  });
+
+  it("POST /api/tasks/:id/session leaves the task unchanged when capacity stays full", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createTaskSession = vi.fn().mockRejectedValue(
+      new SessionCapacityError("context-limit", {
+        contexts: 17,
+        contextLimit: 16,
+        localMcpInstances: 40,
+        capacityUnits: 27,
+        capacityLimit: 64,
+      }),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = (await request(app).post("/api/tasks").send({ title: "Queued task" })).body.task;
+
+    const res = await request(app).post(`/api/tasks/${task.id}/session`);
+
+    expect(res.status).toBe(429);
+    expect(res.body).toMatchObject({
+      code: "session_capacity",
+      details: {
+        reason: "context-limit",
+        contexts: 17,
+        contextLimit: 16,
+      },
+    });
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual([]);
   });
 });

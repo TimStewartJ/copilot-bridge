@@ -61,7 +61,7 @@ import type { SessionContextStore } from "./session-context-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
-import type { McpServerConfig } from "./mcp-config.js";
+import { isLocalMcpServerConfig, type McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import { sampleProcessTree } from "./platform.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
@@ -119,6 +119,7 @@ import {
   isStaleAgentSessionError,
   SessionRunner,
   type McpServerStatus,
+  type SessionResumeLease,
   type StartWorkOptions,
 } from "./session-runner.js";
 import { SessionAgentRegistry } from "./session-agent-registry.js";
@@ -223,12 +224,97 @@ const PROCESS_TREE_SAMPLE_THROTTLE_MS = 60_000;
 const PROCESS_TREE_SAMPLE_DEADLINE_MS = 5_000;
 const PROCESS_TREE_WARNING_THRESHOLD = 128;
 const PROCESS_TREE_GROWTH_WARNING_THRESHOLD = 64;
+const DEFAULT_MAX_CACHED_CONTEXTS = 32;
+const DEFAULT_SESSION_CAPACITY_UNITS = 64;
+const DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT = 0.25;
+const DEFAULT_SESSION_CAPACITY_WAIT_SECONDS = 30;
+const SESSION_CAPACITY_WAIT_POLL_MS = 500;
+
+type SessionCapacityProfile = {
+  localMcpCount: number;
+};
+
+type SessionCapacityReservation = {
+  capacityUnits: number;
+  localMcpInstances: number;
+};
+
+export type SessionCapacityReason =
+  | "cleanup-failed"
+  | "cleanup-demand"
+  | "context-limit"
+  | "weighted-capacity"
+  | "retained-capacity";
+
+export interface SessionCapacitySnapshot {
+  contexts: number;
+  contextLimit: number;
+  localMcpInstances: number;
+  capacityUnits: number;
+  capacityLimit: number;
+}
+
+export interface SessionCapacityRuntimeStatus {
+  contexts: {
+    used: number;
+    retained: number;
+    limit: number;
+  };
+  weightedUnits: {
+    used: number;
+    retained: number;
+    limit: number;
+  };
+  localMcpSlots: {
+    used: number;
+    retained: number;
+  };
+  cache: {
+    readyParents: number;
+    protectedParents: number;
+    limit: number;
+  };
+  cleanup: {
+    pending: number;
+    failed: number;
+    limit: number;
+  };
+  waitingRequests: number;
+  localMcpWeight: number;
+  waitTimeoutSeconds: number;
+}
+
+function formatCapacityUnits(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+export class SessionCapacityError extends Error {
+  readonly code = "session_capacity";
+  readonly retryAfterSeconds = 2;
+
+  constructor(
+    readonly reason: SessionCapacityReason,
+    readonly snapshot: SessionCapacitySnapshot,
+  ) {
+    const message = reason === "cleanup-failed"
+      ? "Bridge could not release one or more previous Copilot sessions. Wait for automatic cleanup, or restart Bridge if this persists."
+      : reason === "cleanup-demand" || reason === "retained-capacity"
+        ? "Copilot session cleanup is still catching up. Wait a few seconds for another chat to finish closing, then try again."
+        : reason === "context-limit"
+          ? `All ${snapshot.contextLimit} live Copilot contexts are currently in use. Wait for one to finish, or stop a running chat or agent, then try again.`
+          : `Live Copilot capacity is full at ${formatCapacityUnits(snapshot.capacityUnits)}/${formatCapacityUnits(snapshot.capacityLimit)} units across ${snapshot.contexts} context${snapshot.contexts === 1 ? "" : "s"} and ${snapshot.localMcpInstances} estimated local MCP slot${snapshot.localMcpInstances === 1 ? "" : "s"}. Wait for work to finish, or stop a running chat or agent, then try again.`;
+    super(message);
+    this.name = "SessionCapacityError";
+  }
+}
 
 type SessionCleanupRecord = {
   sessionId: string;
   state: "pending" | "failed";
   attempts: number;
   contextWeight: number;
+  localMcpInstances: number;
+  capacityUnits: number;
   lastOutcome?: "rejected" | "timed-out";
   promise?: Promise<boolean>;
 };
@@ -452,10 +538,14 @@ export class SessionManager {
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
+  private readonly resumingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
   private creatingSessions = 0;
+  private creatingCapacityUnits = 0;
+  private creatingLocalMcpInstances = 0;
   private modelSwitchingSessions = new Set<string>();
   private historyUndoingSessions = new Set<string>();
   private sessionObjects = new Map<string, AgentSession>();
+  private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
@@ -466,8 +556,22 @@ export class SessionManager {
   private readonly sessionTreeLastActivityAt = new Map<string, number>();
   private sessionCacheSweepHandle?: ReturnType<typeof setInterval>;
   private cumulativeCleanupFailures = 0;
+  private failedCleanupRetryScheduled = false;
   private processTreeBaselineCount: number | null = null;
   private lastProcessTreeSampleAt = 0;
+  private sessionCapacityWaitTimeoutMs = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_SESSION_CAPACITY_WAIT_SECONDS",
+    DEFAULT_SESSION_CAPACITY_WAIT_SECONDS,
+  ) * 1_000;
+  private maxSessionCapacityUnits = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_MAX_SESSION_CAPACITY_UNITS",
+    DEFAULT_SESSION_CAPACITY_UNITS,
+  );
+  private localMcpCapacityWeight = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_LOCAL_MCP_CAPACITY_WEIGHT",
+    DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT,
+  );
+  private readonly sessionCapacityWaiters = new Set<() => void>();
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly elicitationController: SessionElicitationController;
@@ -495,7 +599,7 @@ export class SessionManager {
   private maxCachedSessions = SessionManager.resolveMaxCachedSessions();
   private maxCachedContexts = SessionManager.resolvePositiveIntegerEnv(
     "BRIDGE_MAX_CACHED_CONTEXTS",
-    this.maxCachedSessions,
+    DEFAULT_MAX_CACHED_CONTEXTS,
   );
   private sessionCacheIdleTtlMs = SessionManager.resolvePositiveIntegerEnv(
     "BRIDGE_SESSION_CACHE_IDLE_TTL_SECONDS",
@@ -503,7 +607,7 @@ export class SessionManager {
   ) * 1_000;
   private maxPendingSessionCleanups = SessionManager.resolvePositiveIntegerEnv(
     "BRIDGE_MAX_PENDING_SESSION_CLEANUPS",
-    this.maxCachedSessions,
+    this.maxCachedContexts,
   );
 
   private static resolveMaxCachedSessions(): number {
@@ -579,6 +683,7 @@ export class SessionManager {
       getLiveSession: (sessionId) => this.sessionObjects.get(sessionId),
       onTasksChanged: (sessionId) => {
         this.touchSessionTree(sessionId);
+        this.notifySessionCapacityChanged();
         this.scheduleCacheOperation(
           this.trimSessionCache("background agent tasks changed"),
           "trimming the session-tree cache after background agent activity",
@@ -627,8 +732,14 @@ export class SessionManager {
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
-      assertSessionCacheAvailable: () => this.assertSessionCacheAvailable(true),
-      cacheResumedSession: (sessionId, session) => this.cacheResumedSession(sessionId, session),
+      beginSessionResume: (sessionId, sessionConfig, isCancelled) =>
+        this.beginSessionResume(sessionId, sessionConfig, {
+          isCancelled,
+        }),
+      endSessionResume: (lease) => this.endSessionResume(lease),
+      notifySessionCapacityChanged: () => this.notifySessionCapacityChanged(),
+      cacheResumedSession: (sessionId, session, sessionConfig) =>
+        this.cacheResumedSession(sessionId, session, sessionConfig),
       replaceCachedSession: (sessionId, expectedSession, nextSession) =>
         this.replaceCachedSession(sessionId, expectedSession, nextSession),
       abandonCachedSession: (sessionId, expectedSession) => this.abandonCachedSession(sessionId, expectedSession),
@@ -666,24 +777,47 @@ export class SessionManager {
     trackedAgents: number;
     readyContextWeight: number;
     retainedContextWeight: number;
+    readyLocalMcpInstances: number;
+    retainedLocalMcpInstances: number;
+    readyCapacityUnits: number;
+    retainedCapacityUnits: number;
+    reservedContexts: number;
+    reservedLocalMcpInstances: number;
+    reservedCapacityUnits: number;
     pendingCleanup: number;
     failedCleanup: number;
+    waitingForCapacity: number;
   } {
     let pendingCleanup = 0;
     let failedCleanup = 0;
     let cleanupContextWeight = 0;
+    let cleanupLocalMcpInstances = 0;
+    let cleanupCapacityUnits = 0;
     for (const record of this.cleanupOwnership.values()) {
       if (record.state === "pending") pendingCleanup++;
       else failedCleanup++;
       cleanupContextWeight += record.contextWeight;
+      cleanupLocalMcpInstances += record.localMcpInstances;
+      cleanupCapacityUnits += record.capacityUnits;
     }
     const readyParents = this.sessionObjects.size;
     let trackedAgents = 0;
+    let readyLocalMcpInstances = 0;
+    let readyCapacityUnits = 0;
     for (const sessionId of this.sessionObjects.keys()) {
       trackedAgents += this.agentRegistry.getTrackedAgentCount(sessionId);
+      const capacity = this.getSessionTreeCapacity(sessionId);
+      readyLocalMcpInstances += capacity.localMcpInstances;
+      readyCapacityUnits += capacity.capacityUnits;
     }
     const readyContextWeight = readyParents + trackedAgents;
     const retainedParents = readyParents + this.cleanupOwnership.size;
+    const resumeReservations = [...this.resumingCapacityReservations.values()];
+    const reservedContexts = this.creatingSessions + resumeReservations.length;
+    const reservedLocalMcpInstances = this.creatingLocalMcpInstances
+      + resumeReservations.reduce((total, reservation) => total + reservation.localMcpInstances, 0);
+    const reservedCapacityUnits = this.creatingCapacityUnits
+      + resumeReservations.reduce((total, reservation) => total + reservation.capacityUnits, 0);
     return {
       ready: readyParents,
       retained: retainedParents,
@@ -692,67 +826,326 @@ export class SessionManager {
       trackedAgents,
       readyContextWeight,
       retainedContextWeight: readyContextWeight + cleanupContextWeight,
+      readyLocalMcpInstances,
+      retainedLocalMcpInstances: readyLocalMcpInstances + cleanupLocalMcpInstances,
+      readyCapacityUnits,
+      retainedCapacityUnits: readyCapacityUnits + cleanupCapacityUnits,
+      reservedContexts,
+      reservedLocalMcpInstances,
+      reservedCapacityUnits,
       pendingCleanup,
       failedCleanup,
+      waitingForCapacity: this.sessionCapacityWaiters.size,
     };
   }
 
-  private assertSessionCacheAvailable(reservationAlreadyActive = false): void {
+  private getSessionCapacityPressure(): {
+    state: ReturnType<SessionManager["getSessionCacheState"]>;
+    protectedReadySessionCount: number;
+    contexts: number;
+    localMcpInstances: number;
+    capacityUnits: number;
+  } {
     const state = this.getSessionCacheState();
+    const protectedSessionIds = this.getProtectedSessionTreeIds();
+    let protectedReadySessionCount = 0;
+    let protectedReadyContextWeight = 0;
+    let protectedReadyLocalMcpInstances = 0;
+    let protectedReadyCapacityUnits = 0;
+    for (const sessionId of protectedSessionIds) {
+      if (!this.sessionObjects.has(sessionId)) continue;
+      protectedReadySessionCount++;
+      protectedReadyContextWeight += this.getSessionTreeContextWeight(sessionId);
+      const capacity = this.getSessionTreeCapacity(sessionId);
+      protectedReadyLocalMcpInstances += capacity.localMcpInstances;
+      protectedReadyCapacityUnits += capacity.capacityUnits;
+    }
+    return {
+      state,
+      protectedReadySessionCount,
+      contexts: state.retainedContextWeight - state.readyContextWeight
+        + protectedReadyContextWeight
+        + state.reservedContexts,
+      localMcpInstances: state.retainedLocalMcpInstances - state.readyLocalMcpInstances
+        + protectedReadyLocalMcpInstances
+        + state.reservedLocalMcpInstances,
+      capacityUnits: state.retainedCapacityUnits - state.readyCapacityUnits
+        + protectedReadyCapacityUnits
+        + state.reservedCapacityUnits,
+    };
+  }
+
+  private getSessionCapacityRuntimeStatus(): SessionCapacityRuntimeStatus {
+    const pressure = this.getSessionCapacityPressure();
+    const { state } = pressure;
+    return {
+      contexts: {
+        used: pressure.contexts,
+        retained: state.retainedContextWeight + state.reservedContexts,
+        limit: this.maxCachedContexts,
+      },
+      weightedUnits: {
+        used: pressure.capacityUnits,
+        retained: state.retainedCapacityUnits + state.reservedCapacityUnits,
+        limit: this.maxSessionCapacityUnits,
+      },
+      localMcpSlots: {
+        used: pressure.localMcpInstances,
+        retained: state.retainedLocalMcpInstances + state.reservedLocalMcpInstances,
+      },
+      cache: {
+        readyParents: state.readyParents,
+        protectedParents: pressure.protectedReadySessionCount,
+        limit: this.maxCachedSessions,
+      },
+      cleanup: {
+        pending: state.pendingCleanup,
+        failed: state.failedCleanup,
+        limit: this.maxPendingSessionCleanups,
+      },
+      waitingRequests: state.waitingForCapacity,
+      localMcpWeight: this.localMcpCapacityWeight,
+      waitTimeoutSeconds: this.sessionCapacityWaitTimeoutMs / 1_000,
+    };
+  }
+
+  private getCapacityProfile(sessionConfig: { mcpServers?: Record<string, McpServerConfig> }): SessionCapacityProfile {
+    return {
+      localMcpCount: Object.values(sessionConfig.mcpServers ?? {})
+        .filter(isLocalMcpServerConfig)
+        .length,
+    };
+  }
+
+  private getCapacityReservation(
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+  ): SessionCapacityReservation {
+    const profile = this.getCapacityProfile(sessionConfig);
+    return {
+      localMcpInstances: profile.localMcpCount,
+      capacityUnits: 1 + profile.localMcpCount * this.localMcpCapacityWeight,
+    };
+  }
+
+  private trackSessionCapacityProfile(
+    session: AgentSession,
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+  ): void {
+    this.sessionCapacityProfiles.set(session, this.getCapacityProfile(sessionConfig));
+  }
+
+  private getSessionTreeCapacity(sessionId: string): SessionCapacityReservation {
+    const session = this.sessionObjects.get(sessionId);
+    const profile = session ? this.sessionCapacityProfiles.get(session) : undefined;
+    const contexts = this.getSessionTreeContextWeight(sessionId);
+    const localMcpInstances = contexts * (profile?.localMcpCount ?? 0);
+    return {
+      localMcpInstances,
+      capacityUnits: contexts + localMcpInstances * this.localMcpCapacityWeight,
+    };
+  }
+
+  private getCapacitySnapshot(
+    contexts: number,
+    localMcpInstances: number,
+    capacityUnits: number,
+  ): SessionCapacitySnapshot {
+    return {
+      contexts,
+      contextLimit: this.maxCachedContexts,
+      localMcpInstances,
+      capacityUnits,
+      capacityLimit: this.maxSessionCapacityUnits,
+    };
+  }
+
+  private assertSessionCapacityAvailable(
+    request: SessionCapacityReservation,
+  ): void {
+    const pressure = this.getSessionCapacityPressure();
+    const { state } = pressure;
     if (state.failedCleanup > 0) {
-      this.scheduleCacheOperation(
-        this.enqueueCache("retry-cleanup", undefined, () => this.retryFailedCleanupsUnsafe()),
-        "retrying failed session cleanup",
-      );
-      throw new Error(
-        `Cannot start another session while ${state.failedCleanup} session cleanup failure(s) remain unreaped`,
+      if (!this.failedCleanupRetryScheduled) {
+        this.failedCleanupRetryScheduled = true;
+        const retry = this.enqueueCache("retry-cleanup", undefined, () => this.retryFailedCleanupsUnsafe());
+        void retry.then(
+          () => { this.failedCleanupRetryScheduled = false; },
+          () => { this.failedCleanupRetryScheduled = false; },
+        );
+        this.scheduleCacheOperation(retry, "retrying failed session cleanup");
+      }
+      throw new SessionCapacityError(
+        "cleanup-failed",
+        this.getCapacitySnapshot(
+          state.retainedContextWeight + state.reservedContexts,
+          state.retainedLocalMcpInstances + state.reservedLocalMcpInstances,
+          state.retainedCapacityUnits + state.reservedCapacityUnits,
+        ),
       );
     }
     const projectedCleanupDemand = state.pendingCleanup
-      + this.getActiveSessions().length
-      + this.creatingSessions
-      + (reservationAlreadyActive ? 0 : 1);
-    if (projectedCleanupDemand > this.maxPendingSessionCleanups) {
-      throw new Error(
-        `Cannot start another session while cleanup demand is ${projectedCleanupDemand}/${this.maxPendingSessionCleanups}`,
+      + pressure.protectedReadySessionCount
+      + state.reservedContexts
+      + 1;
+    const projectedNonEvictableContexts = pressure.contexts + 1;
+    const projectedNonEvictableLocalMcpInstances = pressure.localMcpInstances
+      + request.localMcpInstances;
+    const projectedNonEvictableCapacityUnits = pressure.capacityUnits
+      + request.capacityUnits;
+    if (projectedNonEvictableContexts > this.maxCachedContexts) {
+      throw new SessionCapacityError(
+        "context-limit",
+        this.getCapacitySnapshot(
+          projectedNonEvictableContexts,
+          projectedNonEvictableLocalMcpInstances,
+          projectedNonEvictableCapacityUnits,
+        ),
       );
     }
-    const uncachedActiveReservations = this.getActiveSessions()
-      .filter((sessionId) => !this.sessionObjects.has(sessionId))
-      .length;
-    const protectedReadyContextWeight = [...this.getProtectedSessionTreeIds()]
-      .filter((sessionId) => this.sessionObjects.has(sessionId))
-      .reduce((total, sessionId) => total + this.getSessionTreeContextWeight(sessionId), 0);
-    const cleanupContextWeight = state.retainedContextWeight - state.readyContextWeight;
-    const newReservation = reservationAlreadyActive ? 0 : 1;
-    const projectedNonEvictableContexts = cleanupContextWeight
-      + protectedReadyContextWeight
-      + uncachedActiveReservations
-      + this.creatingSessions
-      + newReservation;
-    if (projectedNonEvictableContexts > this.maxCachedContexts) {
-      throw new Error(
-        `Cannot start another session while protected context demand is ${projectedNonEvictableContexts}/${this.maxCachedContexts}`,
+    if (projectedNonEvictableCapacityUnits > this.maxSessionCapacityUnits) {
+      throw new SessionCapacityError(
+        "weighted-capacity",
+        this.getCapacitySnapshot(
+          projectedNonEvictableContexts,
+          projectedNonEvictableLocalMcpInstances,
+          projectedNonEvictableCapacityUnits,
+        ),
+      );
+    }
+    if (projectedCleanupDemand > this.maxPendingSessionCleanups) {
+      throw new SessionCapacityError(
+        "cleanup-demand",
+        this.getCapacitySnapshot(
+          state.retainedContextWeight + state.reservedContexts + 1,
+          state.retainedLocalMcpInstances + state.reservedLocalMcpInstances + request.localMcpInstances,
+          state.retainedCapacityUnits + state.reservedCapacityUnits + request.capacityUnits,
+        ),
       );
     }
     const projectedRetainedContexts = state.retainedContextWeight
-      + uncachedActiveReservations
-      + this.creatingSessions
-      + newReservation;
-    if (state.pendingCleanup > 0 && projectedRetainedContexts > this.maxCachedContexts) {
-      throw new Error(
-        `Cannot start another session while retained context demand is ${projectedRetainedContexts}/${this.maxCachedContexts}`,
+      + state.reservedContexts
+      + 1;
+    const projectedRetainedLocalMcpInstances = state.retainedLocalMcpInstances
+      + state.reservedLocalMcpInstances
+      + request.localMcpInstances;
+    const projectedRetainedCapacityUnits = state.retainedCapacityUnits
+      + state.reservedCapacityUnits
+      + request.capacityUnits;
+    if (
+      state.pendingCleanup > 0
+      && (
+        projectedRetainedContexts > this.maxCachedContexts
+        || projectedRetainedCapacityUnits > this.maxSessionCapacityUnits
+      )
+    ) {
+      throw new SessionCapacityError(
+        "retained-capacity",
+        this.getCapacitySnapshot(
+          projectedRetainedContexts,
+          projectedRetainedLocalMcpInstances,
+          projectedRetainedCapacityUnits,
+        ),
       );
     }
   }
 
-  private beginSessionCreation(): void {
-    this.assertSessionCacheAvailable();
-    this.creatingSessions++;
+  private notifySessionCapacityChanged(): void {
+    const waiters = [...this.sessionCapacityWaiters];
+    this.sessionCapacityWaiters.clear();
+    for (const resolve of waiters) resolve();
   }
 
-  private endSessionCreation(): void {
+  private waitForSessionCapacityChange(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.sessionCapacityWaiters.delete(finish);
+        resolve();
+      };
+      this.sessionCapacityWaiters.add(finish);
+      timer = setTimeout(finish, timeoutMs);
+      timer.unref?.();
+    });
+  }
+
+  private async waitForSessionCapacity(
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+    options: {
+      isCancelled?: () => boolean;
+      reserve: (reservation: SessionCapacityReservation) => void;
+    },
+  ): Promise<boolean> {
+    const startedAt = Date.now();
+    const deadline = startedAt + this.sessionCapacityWaitTimeoutMs;
+    const request = this.getCapacityReservation(sessionConfig);
+    let lastCapacityError: SessionCapacityError | undefined;
+    let waitingLogged = false;
+
+    while (!options.isCancelled?.()) {
+      try {
+        this.assertSessionCapacityAvailable(request);
+        options.reserve(request);
+        if (waitingLogged) {
+          this.recordSpan("session.capacity.wait", Date.now() - startedAt, undefined, {
+            outcome: "admitted",
+            reason: lastCapacityError?.reason,
+            ...lastCapacityError?.snapshot,
+          });
+        }
+        return true;
+      } catch (error) {
+        if (!(error instanceof SessionCapacityError)) throw error;
+        lastCapacityError = error;
+      }
+
+      const remaining = deadline - Date.now();
+      if (this.sessionCapacityWaitTimeoutMs <= 0 || remaining <= 0) {
+        this.recordSpan("session.capacity.wait", Date.now() - startedAt, undefined, {
+          outcome: "timed-out",
+          reason: lastCapacityError.reason,
+          ...lastCapacityError.snapshot,
+        });
+        throw lastCapacityError;
+      }
+      if (!waitingLogged) {
+        waitingLogged = true;
+        console.warn(
+          `[sdk] Session capacity is full (${formatCapacityUnits(lastCapacityError.snapshot.capacityUnits)}/${formatCapacityUnits(lastCapacityError.snapshot.capacityLimit)} units, ${lastCapacityError.snapshot.contexts}/${lastCapacityError.snapshot.contextLimit} contexts); waiting up to ${Math.ceil(this.sessionCapacityWaitTimeoutMs / 1_000)}s`,
+        );
+      }
+      await this.waitForSessionCapacityChange(Math.min(SESSION_CAPACITY_WAIT_POLL_MS, remaining));
+    }
+
+    return false;
+  }
+
+  private async beginSessionCreation(
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+  ): Promise<SessionCapacityReservation> {
+    let capacityReservation: SessionCapacityReservation | undefined;
+    await this.waitForSessionCapacity(sessionConfig, {
+      reserve: (reservation) => {
+        capacityReservation = reservation;
+        this.creatingSessions++;
+        this.creatingCapacityUnits += reservation.capacityUnits;
+        this.creatingLocalMcpInstances += reservation.localMcpInstances;
+      },
+    });
+    return capacityReservation!;
+  }
+
+  private endSessionCreation(reservation: SessionCapacityReservation): void {
     this.creatingSessions = Math.max(0, this.creatingSessions - 1);
+    this.creatingCapacityUnits = Math.max(0, this.creatingCapacityUnits - reservation.capacityUnits);
+    this.creatingLocalMcpInstances = Math.max(
+      0,
+      this.creatingLocalMcpInstances - reservation.localMcpInstances,
+    );
+    this.notifySessionCapacityChanged();
   }
 
   private recordSessionCacheState(
@@ -766,6 +1159,9 @@ export class SessionManager {
       outcome,
       max: this.maxCachedSessions,
       maxContexts: this.maxCachedContexts,
+      maxCapacityUnits: this.maxSessionCapacityUnits,
+      localMcpCapacityWeight: this.localMcpCapacityWeight,
+      capacityWaitTimeoutMs: this.sessionCapacityWaitTimeoutMs,
       idleTtlMs: this.sessionCacheIdleTtlMs,
       maxPendingCleanup: this.maxPendingSessionCleanups,
       cumulativeCleanupFailures: this.cumulativeCleanupFailures,
@@ -941,6 +1337,7 @@ export class SessionManager {
     record.state = "failed";
     record.lastOutcome = lastOutcome;
     delete record.promise;
+    this.notifySessionCapacityChanged();
     console.warn(
       `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup ${lastOutcome} after ${DISCONNECT_MAX_ATTEMPTS} attempts; retained for retry (${reason})`,
     );
@@ -955,6 +1352,7 @@ export class SessionManager {
   ): void {
     this.cleanupOwnership.delete(session);
     this.agentRegistry.forgetIfOwnedBy(sessionId, session);
+    this.notifySessionCapacityChanged();
     if (staleOutcome) {
       console.warn(
         `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup self-healed: ${staleOutcome} (${reason})`,
@@ -970,18 +1368,26 @@ export class SessionManager {
     const existing = this.cleanupOwnership.get(session);
     if (existing?.state === "pending" && existing.promise) return existing.promise;
 
+    const contextWeight = 1 + this.agentRegistry.getTrackedAgentCount(sessionId);
+    const localMcpCount = this.sessionCapacityProfiles.get(session)?.localMcpCount ?? 0;
+    const localMcpInstances = contextWeight * localMcpCount;
+    const capacityUnits = contextWeight + localMcpInstances * this.localMcpCapacityWeight;
     const record = existing ?? {
       sessionId,
       state: "pending" as const,
       attempts: 0,
-      contextWeight: 1 + this.agentRegistry.getTrackedAgentCount(sessionId),
+      contextWeight,
+      localMcpInstances,
+      capacityUnits,
     };
     record.sessionId = sessionId;
     record.state = "pending";
     record.contextWeight = Math.max(
       record.contextWeight,
-      1 + this.agentRegistry.getTrackedAgentCount(sessionId),
+      contextWeight,
     );
+    record.localMcpInstances = Math.max(record.localMcpInstances, localMcpInstances);
+    record.capacityUnits = Math.max(record.capacityUnits, capacityUnits);
     delete record.lastOutcome;
     this.cleanupOwnership.set(session, record);
 
@@ -1027,6 +1433,7 @@ export class SessionManager {
     while (
       this.sessionObjects.size > this.maxCachedSessions
       || this.getReadySessionContextWeight() > this.maxCachedContexts
+      || this.getReadySessionCapacityUnits() > this.maxSessionCapacityUnits
     ) {
       const candidateId = [...this.sessionObjects.keys()]
         .find((id) => !protectedIds.has(id));
@@ -1046,6 +1453,14 @@ export class SessionManager {
     return weight;
   }
 
+  private getReadySessionCapacityUnits(): number {
+    let units = 0;
+    for (const sessionId of this.sessionObjects.keys()) {
+      units += this.getSessionTreeCapacity(sessionId).capacityUnits;
+    }
+    return units;
+  }
+
   private getSessionTreeContextWeight(sessionId: string): number {
     return 1 + this.agentRegistry.getTrackedAgentCount(sessionId);
   }
@@ -1063,7 +1478,7 @@ export class SessionManager {
     this.evictReadySessionsOverLimitUnsafe(
       protectedIds,
       "enforcing session-tree cache limit",
-      `[sdk] Session-tree cache temporarily above parent/context limits ${this.maxCachedSessions}/${this.maxCachedContexts}; remaining trees are protected`,
+      `[sdk] Session-tree cache temporarily above parent/context/capacity limits ${this.maxCachedSessions}/${this.maxCachedContexts}/${formatCapacityUnits(this.maxSessionCapacityUnits)}; remaining trees are protected`,
     );
   }
 
@@ -1073,7 +1488,7 @@ export class SessionManager {
     this.evictReadySessionsOverLimitUnsafe(
       protectedIds,
       reason,
-      `[sdk] Session-tree cache remains above parent/context limits ${this.maxCachedSessions}/${this.maxCachedContexts}; remaining trees are protected`,
+      `[sdk] Session-tree cache remains above parent/context/capacity limits ${this.maxCachedSessions}/${this.maxCachedContexts}/${formatCapacityUnits(this.maxSessionCapacityUnits)}; remaining trees are protected`,
     );
     this.retryFailedCleanupsUnsafe();
   }
@@ -1134,13 +1549,27 @@ export class SessionManager {
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
   }
 
+  private static resolvePositiveNumberEnv(name: string, fallback: number): number {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+
   private cacheSession(
     sessionId: string,
     session: AgentSession,
     expectedSession: AgentSession | null,
+    sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<AgentSession> {
     return this.enqueueCache("insert", sessionId, () => {
       const current = this.sessionObjects.get(sessionId);
+      const capacityProfile = sessionConfig
+        ? this.getCapacityProfile(sessionConfig)
+        : expectedSession
+          ? this.sessionCapacityProfiles.get(expectedSession)
+          : current
+            ? this.sessionCapacityProfiles.get(current)
+            : undefined;
+      this.sessionCapacityProfiles.set(session, capacityProfile ?? { localMcpCount: 0 });
       const accepted = current === undefined
         || current === session
         || (expectedSession !== null && current === expectedSession);
@@ -1380,14 +1809,36 @@ export class SessionManager {
     }
   }
 
-  private beginSessionResume(sessionId: string): void {
-    this.assertSessionCacheAvailable();
-    this.touchSessionTree(sessionId);
-    this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
-    this.syncRestartWaitingIfPending();
+  private async beginSessionResume(
+    sessionId: string,
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+    options: {
+      isCancelled?: () => boolean;
+      reserveCachedSession?: boolean;
+    } = {},
+  ): Promise<SessionResumeLease | null> {
+    const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
+    if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
+      this.touchSessionTree(sessionId);
+      this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
+      this.syncRestartWaitingIfPending();
+      return lease;
+    }
+    const admitted = await this.waitForSessionCapacity(sessionConfig, {
+      isCancelled: options.isCancelled,
+      reserve: (reservation) => {
+        this.resumingCapacityReservations.set(lease.token, reservation);
+        this.touchSessionTree(sessionId);
+        this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
+        this.syncRestartWaitingIfPending();
+      },
+    });
+    return admitted ? lease : null;
   }
 
-  private endSessionResume(sessionId: string): void {
+  private endSessionResume(lease: SessionResumeLease): void {
+    const { sessionId } = lease;
+    this.resumingCapacityReservations.delete(lease.token);
     const count = this.resumingSessions.get(sessionId) ?? 0;
     if (count <= 1) {
       this.resumingSessions.delete(sessionId);
@@ -1395,6 +1846,7 @@ export class SessionManager {
       this.resumingSessions.set(sessionId, count - 1);
     }
     this.syncRestartWaitingIfPending();
+    this.notifySessionCapacityChanged();
     this.scheduleCacheOperation(
       this.trimSessionCache("session resume ended"),
       "trimming the session cache after a resume",
@@ -1914,13 +2366,16 @@ export class SessionManager {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    this.beginSessionResume(sessionId);
+    const sessionConfig = buildSessionNameResumeConfig(this.backend?.permissionPolicy);
+    const resumeLease = await this.beginSessionResume(sessionId, sessionConfig);
+    if (!resumeLease) throw new Error("Session name resume cancelled before admission");
     let session: any | undefined;
     try {
       session = await resumeSessionWithTimeout(
-        client.resumeSession(sessionId, buildSessionNameResumeConfig(this.backend?.permissionPolicy)),
+        client.resumeSession(sessionId, sessionConfig),
         "name resume timed out after 60s",
       );
+      this.trackSessionCapacityProfile(session, sessionConfig);
       return await operation(session);
     } finally {
       if (session) {
@@ -1930,7 +2385,7 @@ export class SessionManager {
           console.warn(`[sdk] [${sessionId.slice(0, 8)}] Temporary session-name cleanup failed:`, error);
         }
       }
-      this.endSessionResume(sessionId);
+      this.endSessionResume(resumeLease);
       this.flushPendingSessionEviction(sessionId);
     }
   }
@@ -1987,8 +2442,12 @@ export class SessionManager {
       .catch(() => { /* best-effort */ });
   }
 
-  private cacheResumedSession(sessionId: string, session: AgentSession): Promise<AgentSession> {
-    return this.cacheSession(sessionId, session, null).then((cachedSession) => {
+  private cacheResumedSession(
+    sessionId: string,
+    session: AgentSession,
+    sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
+  ): Promise<AgentSession> {
+    return this.cacheSession(sessionId, session, null, sessionConfig).then((cachedSession) => {
       if (cachedSession === session) {
         void this.warmNativeBridgeTools(sessionId, session);
         this.maybeAutoNameSession(sessionId, { session });
@@ -2069,7 +2528,8 @@ export class SessionManager {
       throw new Error(`MCP server "${requestedServerName}" is not configured for this session`);
     }
 
-    this.beginSessionResume(sessionId);
+    const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
+    if (!resumeLease) throw new Error("MCP authentication resume cancelled before admission");
     try {
       let session = this.sessionObjects.get(sessionId);
       if (!session) {
@@ -2078,7 +2538,7 @@ export class SessionManager {
           client.resumeSession(sessionId, resumeConfig),
           "MCP auth resume timed out after 60s",
         );
-        session = await this.cacheResumedSession(sessionId, session);
+        session = await this.cacheResumedSession(sessionId, session, resumeConfig);
       }
 
       if (typeof session.startMcpOauthLogin !== "function") {
@@ -2102,7 +2562,7 @@ export class SessionManager {
         servers,
       };
     } finally {
-      this.endSessionResume(sessionId);
+      this.endSessionResume(resumeLease);
       this.flushPendingSessionEviction(sessionId);
     }
   }
@@ -2217,36 +2677,40 @@ export class SessionManager {
     const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
     const modelMetadata = await this.loadModelMetadataForContextTiers(client);
     let session: AgentSession;
-    let sessionConfig: any;
-    let creationStarted = false;
+    const sessionConfig = this.buildSessionConfig({
+      ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+      ...(modelMetadata ? { modelMetadata } : {}),
+    });
+    let creationReservation: SessionCapacityReservation | undefined;
     try {
-      this.beginSessionCreation();
-      creationStarted = true;
-      sessionConfig = this.buildSessionConfig({
-        ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
-        ...(modelMetadata ? { modelMetadata } : {}),
-      });
+      creationReservation = await this.beginSessionCreation(sessionConfig);
       session = await client.createSession(sessionConfig);
     } catch (error) {
-      if (creationStarted) this.endSessionCreation();
+      if (creationReservation) this.endSessionCreation(creationReservation);
       throw error;
     }
     const duration = Date.now() - t0;
     if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
-      if (creationStarted) this.endSessionCreation();
+      if (creationReservation) {
+        this.endSessionCreation(creationReservation);
+        creationReservation = undefined;
+      }
       await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
     }
 
     try {
-      await this.cacheSession(session.sessionId, session, null);
+      await this.cacheSession(session.sessionId, session, null, sessionConfig);
     } catch (error) {
-      if (creationStarted) this.endSessionCreation();
+      if (creationReservation) {
+        this.endSessionCreation(creationReservation);
+        creationReservation = undefined;
+      }
       try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
         console.warn(`[sdk] Failed to delete rejected session ${session.sessionId}:`, cleanupError);
       }
       throw error;
     }
-    if (creationStarted) this.endSessionCreation();
+    if (creationReservation) this.endSessionCreation(creationReservation);
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
@@ -2294,13 +2758,14 @@ export class SessionManager {
           groupNotes: this.lookupGroupNotes(sourceTask?.groupId),
           forResume: true,
         });
-        this.beginSessionResume(result.sessionId);
+        const resumeLease = await this.beginSessionResume(result.sessionId, forkResumeConfig);
+        if (!resumeLease) throw new Error("Fork resume cancelled before admission");
         try {
           const forkedSession = await backend.resumeSession(result.sessionId, forkResumeConfig);
-          await this.cacheResumedSession(result.sessionId, forkedSession);
+          await this.cacheResumedSession(result.sessionId, forkedSession, forkResumeConfig);
           this.probeMcpStatus(result.sessionId, forkedSession);
         } finally {
-          this.endSessionResume(result.sessionId);
+          this.endSessionResume(resumeLease);
           this.flushPendingSessionEviction(result.sessionId);
         }
       } catch (error) {
@@ -2350,16 +2815,17 @@ export class SessionManager {
           groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
         });
-        this.beginSessionResume(sessionId);
+        const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
+        if (!resumeLease) throw new Error("History undo resume cancelled before admission");
         try {
           session = await resumeSessionWithTimeout(
             backend.resumeSession(sessionId, resumeConfig),
             "undo history resume timed out after 60s",
           );
-          session = await this.cacheResumedSession(sessionId, session);
+          session = await this.cacheResumedSession(sessionId, session, resumeConfig);
           this.probeMcpStatus(sessionId, session);
         } finally {
-          this.endSessionResume(sessionId);
+          this.endSessionResume(resumeLease);
         }
       }
 
@@ -2550,33 +3016,38 @@ export class SessionManager {
       ...(modelMetadata ? { modelMetadata } : {}),
     });
     let session: AgentSession;
-    let creationStarted = false;
+    let creationReservation: SessionCapacityReservation | undefined;
     try {
-      this.beginSessionCreation();
-      creationStarted = true;
+      creationReservation = await this.beginSessionCreation(sessionConfig);
       session = await client.createSession(
         sessionConfig,
       );
     } catch (error) {
-      if (creationStarted) this.endSessionCreation();
+      if (creationReservation) this.endSessionCreation(creationReservation);
       throw error;
     }
     const duration = Date.now() - t0;
     if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
-      if (creationStarted) this.endSessionCreation();
+      if (creationReservation) {
+        this.endSessionCreation(creationReservation);
+        creationReservation = undefined;
+      }
       await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
     }
 
     try {
-      await this.cacheSession(session.sessionId, session, null);
+      await this.cacheSession(session.sessionId, session, null, sessionConfig);
     } catch (error) {
-      if (creationStarted) this.endSessionCreation();
+      if (creationReservation) {
+        this.endSessionCreation(creationReservation);
+        creationReservation = undefined;
+      }
       try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
         console.warn(`[sdk] Failed to delete rejected task session ${session.sessionId}:`, cleanupError);
       }
       throw error;
     }
-    if (creationStarted) this.endSessionCreation();
+    if (creationReservation) this.endSessionCreation(creationReservation);
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
@@ -2786,13 +3257,14 @@ export class SessionManager {
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
     const warmPromise = (async () => {
-      this.beginSessionResume(sessionId);
+      const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
+      if (!resumeLease) throw new Error("Session warmup cancelled before admission");
       try {
         const session = await resumeSessionWithTimeout(
           client.resumeSession(sessionId, resumeConfig),
           "warmSession timed out after 60s",
         );
-        const cachedSession = await this.cacheResumedSession(sessionId, session);
+        const cachedSession = await this.cacheResumedSession(sessionId, session, resumeConfig);
         this.probeMcpStatus(sessionId, cachedSession);
         this.invalidateSessionListCache("session:warm");
         this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
@@ -2802,7 +3274,7 @@ export class SessionManager {
         this.recordSpan("session.warm", duration, sessionId);
         console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
       } finally {
-        this.endSessionResume(sessionId);
+        this.endSessionResume(resumeLease);
         this.flushPendingSessionEviction(sessionId);
       }
     })();
@@ -2876,7 +3348,12 @@ export class SessionManager {
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
-    this.beginSessionResume(sessionId);
+    const resumeLease = await this.beginSessionResume(
+      sessionId,
+      resumeConfig,
+      { reserveCachedSession: true },
+    );
+    if (!resumeLease) throw new Error("Session reload cancelled before admission");
     try {
       this.cancelPendingUserInputRequests(
         sessionId,
@@ -2891,11 +3368,11 @@ export class SessionManager {
         client.resumeSession(sessionId, resumeConfig),
         "reloadSession timed out after 60s",
       );
-      await this.cacheResumedSession(sessionId, session);
+      await this.cacheResumedSession(sessionId, session, resumeConfig);
 
       return this.getMcpStatus(sessionId);
     } finally {
-      this.endSessionResume(sessionId);
+      this.endSessionResume(resumeLease);
       this.flushPendingSessionEviction(sessionId);
     }
   }
@@ -2933,6 +3410,7 @@ export class SessionManager {
       waitingForUserInput: number;
     };
     agents: BackgroundAgentsAggregate;
+    capacity: SessionCapacityRuntimeStatus;
   } {
     const activeSessionIds = this.getActiveSessions();
     return {
@@ -2944,6 +3422,7 @@ export class SessionManager {
         ).length,
       },
       agents: this.agentRegistry.getAggregate(),
+      capacity: this.getSessionCapacityRuntimeStatus(),
     };
   }
 
@@ -3048,16 +3527,17 @@ export class SessionManager {
           forResume: true,
           ...(modelMetadata ? { modelMetadata } : {}),
         });
-        this.beginSessionResume(sessionId);
+        const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
+        if (!resumeLease) throw new Error("Model switch resume cancelled before admission");
         try {
           session = await resumeSessionWithTimeout(
             client.resumeSession(sessionId, resumeConfig),
             "resumeSession timed out after 60s",
           );
-          session = await this.cacheResumedSession(sessionId, session);
+          session = await this.cacheResumedSession(sessionId, session, resumeConfig);
           this.probeMcpStatus(sessionId, session);
         } finally {
-          this.endSessionResume(sessionId);
+          this.endSessionResume(resumeLease);
         }
       }
 

@@ -36,6 +36,16 @@ vi.mock("../../hooks/queries/useRestartStatus", () => ({
 }));
 
 const fetchedAt = "2026-05-20T12:10:00.000Z";
+const runtimeCapacity = {
+  contexts: { used: 11, retained: 14, limit: 32 },
+  weightedUnits: { used: 17.5, retained: 22, limit: 64 },
+  localMcpSlots: { used: 26, retained: 32 },
+  cache: { readyParents: 10, protectedParents: 3, limit: 16 },
+  cleanup: { pending: 1, failed: 0, limit: 32 },
+  waitingRequests: 2,
+  localMcpWeight: 0.25,
+  waitTimeoutSeconds: 30,
+};
 const baseJob = {
   type: "staging_preview",
   createdAt: "2026-05-20T12:00:00.000Z",
@@ -153,6 +163,7 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
         staleSessions: 1,
         unknownSessions: 0,
       },
+      capacity: runtimeCapacity,
     },
     isLoading: false,
     isFetching: false,
@@ -303,6 +314,15 @@ describe("ManagementJobsSection", () => {
       expect(text).toContain("Active sessions");
       expect(text).toContain("Agents running");
       expect(text).toContain("1 stale snapshot excluded");
+      expect(text).toContain("Copilot capacity");
+      expect(text).toContain("Live contexts");
+      expect(text).toContain("11 / 32");
+      expect(text).toContain("17.5 / 64");
+      expect(text).toContain("26");
+      expect(text).toContain("2");
+      expect(text).toContain("Parent cache 10/16, 3 protected");
+      expect(text).toContain("Local MCP weight +0.25 per context");
+      expect(text).toContain("2 requests are waiting for live capacity");
 
       await clickButton(harness, "Queue self-update");
       expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Queue a Bridge self-update job?"));
@@ -341,6 +361,15 @@ describe("ManagementJobsSection", () => {
           liveSessions: 0,
           staleSessions: 0,
           unknownSessions: 0,
+        },
+        capacity: {
+          ...runtimeCapacity,
+          contexts: { used: 0, retained: 0, limit: 32 },
+          weightedUnits: { used: 0, retained: 0, limit: 64 },
+          localMcpSlots: { used: 0, retained: 0 },
+          cache: { readyParents: 0, protectedParents: 0, limit: 16 },
+          cleanup: { pending: 0, failed: 0, limit: 32 },
+          waitingRequests: 0,
         },
       },
       isLoading: false,

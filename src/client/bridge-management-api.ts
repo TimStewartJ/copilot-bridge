@@ -21,6 +21,35 @@ export interface BridgeRuntimeStatus {
     staleSessions: number;
     unknownSessions: number;
   };
+  capacity: {
+    contexts: {
+      used: number;
+      retained: number;
+      limit: number;
+    };
+    weightedUnits: {
+      used: number;
+      retained: number;
+      limit: number;
+    };
+    localMcpSlots: {
+      used: number;
+      retained: number;
+    };
+    cache: {
+      readyParents: number;
+      protectedParents: number;
+      limit: number;
+    };
+    cleanup: {
+      pending: number;
+      failed: number;
+      limit: number;
+    };
+    waitingRequests: number;
+    localMcpWeight: number;
+    waitTimeoutSeconds: number;
+  };
 }
 
 export interface RestartBridgeResponse {

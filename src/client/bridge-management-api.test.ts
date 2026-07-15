@@ -38,6 +38,16 @@ describe("bridge management client API", () => {
         staleSessions: 0,
         unknownSessions: 0,
       },
+      capacity: {
+        contexts: { used: 8, retained: 10, limit: 32 },
+        weightedUnits: { used: 12.5, retained: 15, limit: 64 },
+        localMcpSlots: { used: 18, retained: 20 },
+        cache: { readyParents: 7, protectedParents: 2, limit: 16 },
+        cleanup: { pending: 0, failed: 0, limit: 32 },
+        waitingRequests: 0,
+        localMcpWeight: 0.25,
+        waitTimeoutSeconds: 30,
+      },
     };
     stubJsonResponse(runtime);
 

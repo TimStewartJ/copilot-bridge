@@ -222,6 +222,11 @@ export function isStaleAgentSessionError(error: unknown): boolean {
   return /\bSession not found\b/i.test(message);
 }
 
+export interface SessionResumeLease {
+  sessionId: string;
+  token: symbol;
+}
+
 export interface SessionRunnerDeps {
   /** Lazy accessor for the agent backend; the manager owns lifecycle. */
   getBackend(): AgentBackend | null;
@@ -244,14 +249,20 @@ export interface SessionRunnerDeps {
   hasPlan(sessionId: string): boolean;
   getSessionStateDir(sessionId: string): string;
   buildSessionConfig(opts?: SessionConfigOptions): any;
-  assertSessionCacheAvailable(): void;
+  beginSessionResume(
+    sessionId: string,
+    sessionConfig: any,
+    isCancelled?: () => boolean,
+  ): Promise<SessionResumeLease | null>;
+  endSessionResume(lease: SessionResumeLease): void;
+  notifySessionCapacityChanged(): void;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
   persistAndRouteAttachments(
     sessionId: string,
     attachments?: StartWorkAttachment[],
   ): RoutedSdkAttachment[] | undefined;
-  cacheResumedSession(sessionId: string, session: any): Promise<any>;
+  cacheResumedSession(sessionId: string, session: any, sessionConfig?: any): Promise<any>;
   replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): Promise<any>;
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
   disposeSession(sessionId: string, session: any, reason: string): Promise<void>;
@@ -487,6 +498,7 @@ export class SessionRunner {
       this.setSessionRunState(sessionId, "idle", {
       });
       void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
+      this.deps.notifySessionCapacityChanged();
       this.deps.flushPendingSessionEviction(sessionId);
     });
     return runController;
@@ -588,16 +600,25 @@ export class SessionRunner {
       } else {
         usedCache = false;
         console.log(`[sdk] [${sid}] Resuming session...`);
-        this.deps.assertSessionCacheAvailable();
-        s = await resumeSessionWithTimeout(
-          this.client!.resumeSession(sessionId, resumeConfig),
-          "resumeSession timed out after 60s",
+        const resumeLease = await this.deps.beginSessionResume(
+          sessionId,
+          resumeConfig,
+          () => runController.isCompleted(),
         );
-        s = await this.deps.cacheResumedSession(sessionId, s);
-        this.deps.probeMcpStatus(sessionId, s);
-        const resumeDuration = Date.now() - resumeStart;
-        this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
-        console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
+        if (!resumeLease) return null;
+        try {
+          s = await resumeSessionWithTimeout(
+            this.client!.resumeSession(sessionId, resumeConfig),
+            "resumeSession timed out after 60s",
+          );
+          s = await this.deps.cacheResumedSession(sessionId, s, resumeConfig);
+          this.deps.probeMcpStatus(sessionId, s);
+          const resumeDuration = Date.now() - resumeStart;
+          this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
+          console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
+        } finally {
+          this.deps.endSessionResume(resumeLease);
+        }
       }
       await this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
       return s;
@@ -607,7 +628,8 @@ export class SessionRunner {
       this.deps.abandonCachedSession(sessionId, activeSession);
 
     let session = await resumeSession();
-    if (runController.isCompleted()) {
+    if (!session || runController.isCompleted()) {
+      if (!session) return;
       await abandonSession(session);
       return;
     }
