@@ -69,16 +69,19 @@ vi.mock("./MessageBubble", () => ({
     message,
     actionSlot,
     isStreaming,
+    isPending,
   }: {
     message: { role: string; content: string };
     actionSlot?: ReactNode;
     isStreaming?: boolean;
+    isPending?: boolean;
   }) => createElement(
     "div",
     {
       "data-testid": "message-bubble",
       "data-role": message.role,
       "data-streaming": isStreaming ? "true" : "false",
+      "data-pending": isPending ? "true" : "false",
     },
     message.content,
     actionSlot,
@@ -1285,6 +1288,44 @@ describe("ChatView history pagination", () => {
 });
 
 describe("ChatView steering sends", () => {
+  it("marks an optimistic user message pending until the server accepts it", async () => {
+    const sendAccepted = createDeferred<void>();
+    const { dom, act, cleanup, sendMessageMock } = await renderChatView({
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+    sendMessageMock.mockReturnValueOnce(sendAccepted.promise);
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      let sendPromise!: Promise<void>;
+      await act(async () => {
+        sendPromise = props.onSend("waiting for server");
+        await waitTick();
+      });
+
+      const pendingBubble = findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("waiting for server")
+      ));
+      expect(pendingBubble?.getAttribute("data-pending")).toBe("true");
+
+      await act(async () => {
+        sendAccepted.resolve();
+        await sendPromise;
+        await waitTick();
+      });
+
+      expect(pendingBubble?.getAttribute("data-pending")).toBe("false");
+    } finally {
+      sendAccepted.resolve();
+      await cleanup();
+    }
+  });
+
   it("allows sending a steering message while the session is streaming", async () => {
     const { act, cleanup, sendMessageMock } = await renderChatView({
       fetchMessagesFastResult: {

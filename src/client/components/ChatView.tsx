@@ -487,6 +487,7 @@ export default function ChatView({
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [pendingMessageIds, setPendingMessageIds] = useState<Set<string>>(() => new Set());
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsSupported, setSlashCommandsSupported] = useState(false);
   const slashCommandFetchKeyRef = useRef<string | null>(null);
@@ -876,6 +877,7 @@ export default function ChatView({
     setUndoError(null);
     setUndoingEventId(null);
     setLoadMoreError(null);
+    setPendingMessageIds(new Set());
 
     if (!sessionId) {
       // Clear draft-only state when entering draft mode from an existing
@@ -1435,7 +1437,13 @@ export default function ChatView({
     if (!sessionId) return;
     onDraftClear?.();
     invalidateHistoryRefresh();
-    const nextEntries = [...entriesRef.current, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) } satisfies ChatEntry];
+    const localMessageId = `local-${Date.now()}`;
+    const nextEntries = [...entriesRef.current, { role: "user", content: prompt, id: localMessageId, ...(attachments?.length ? { attachments } : {}) } satisfies ChatEntry];
+    setPendingMessageIds((current) => {
+      const next = new Set(current);
+      next.add(localMessageId);
+      return next;
+    });
     applyHistory(nextEntries, {
       ownerSessionId: sessionId,
       total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntries.length),
@@ -1458,6 +1466,13 @@ export default function ChatView({
         total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntriesWithError.length),
         hasMore: firstItemIndex.current > 0,
         isCanonical: false,
+      });
+    } finally {
+      setPendingMessageIds((current) => {
+        if (!current.has(localMessageId)) return current;
+        const next = new Set(current);
+        next.delete(localMessageId);
+        return next;
       });
     }
   }, [sessionId, composerKey, loading, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, applyHistory]);
@@ -1885,6 +1900,10 @@ export default function ChatView({
       const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
       const messageAnchorKey = messageAnchorKeys.get(msg) ?? getMessageAnchorKey(msg, index);
       const isLiveStreamingMessage = msg.id === LIVE_STREAMING_MESSAGE_ID;
+      const isPendingUserMessage = msg.role === "user" && (
+        (msg.id ? pendingMessageIds.has(msg.id) : false)
+        || (creating && msg.id?.startsWith("draft-user-"))
+      );
       const menuBindings = isLiveStreamingMessage ? null : bindMessageMenu(messageKey, () => {});
       const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageKey);
       const actionSlot = isLiveStreamingMessage ? undefined : (
@@ -1921,7 +1940,12 @@ export default function ChatView({
           onTouchEnd={menuBindings?.onTouchEnd}
           onTouchCancel={menuBindings?.onTouchCancel}
         >
-          <MessageBubble message={msg} actionSlot={actionSlot} isStreaming={isLiveStreamingMessage} />
+          <MessageBubble
+            message={msg}
+            actionSlot={actionSlot}
+            isStreaming={isLiveStreamingMessage}
+            isPending={isPendingUserMessage}
+          />
         </div>,
       );
     });
@@ -1937,6 +1961,8 @@ export default function ChatView({
     handleCopySpecificMessage,
     isMessageLongPressTarget,
     openMessageActionsMenu,
+    pendingMessageIds,
+    creating,
     toolForest,
   ]);
 
