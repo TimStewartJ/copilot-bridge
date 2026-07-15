@@ -91,6 +91,46 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
+  it("reaps finished sync agents while preserving running and background agents", async () => {
+    const { bus } = makeBus();
+    let tasks = [
+      agentTask({ id: "sync-idle", status: "idle", executionMode: "sync" }),
+      agentTask({ id: "background-idle", status: "idle" }),
+      agentTask({ id: "sync-running", status: "running", executionMode: "sync" }),
+      agentTask({ id: "sync-completed", status: "completed", executionMode: "sync" }),
+      agentTask({ id: "background-completed", status: "completed" }),
+    ];
+    const removeTask = vi.fn(async (id: string) => {
+      const previousLength = tasks.length;
+      tasks = tasks.filter((task) => task.id !== id);
+      return { removed: tasks.length < previousLength };
+    });
+    const session = {
+      sessionId: "s1",
+      listTasks: vi.fn(async () => ({ tasks })),
+      removeTask,
+    } as unknown as AgentSession;
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: () => session,
+    });
+
+    await registry.refresh("s1", "test");
+    await expect(registry.reapFinishedSyncTasks("s1")).resolves.toBe(2);
+
+    expect(removeTask.mock.calls.map(([id]) => id)).toEqual([
+      "sync-idle",
+      "sync-completed",
+    ]);
+    expect(registry.getSnapshot("s1").tasks.map((task) => task.id)).toEqual([
+      "background-idle",
+      "sync-running",
+      "background-completed",
+    ]);
+    expect(registry.getTrackedAgentCount("s1")).toBe(3);
+    registry.dispose();
+  });
+
   it("suppresses duplicate emissions when counts are unchanged", async () => {
     const { bus, events } = makeBus();
     const session = fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "running" })] }));
