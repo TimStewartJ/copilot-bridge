@@ -21,6 +21,7 @@ import {
   type AgentCountsSource,
   type AgentExecutionMode,
   type AgentTaskStatus,
+  type BackgroundAgentsAggregate,
   type BackgroundAgentsSummary,
   type SessionAgentTask,
   emptyBackgroundAgentsSummary,
@@ -109,6 +110,42 @@ export class SessionAgentRegistry {
       source,
       new Date(entry.refreshedAt).toISOString(),
     );
+  }
+
+  /**
+   * Pure in-memory aggregate for server-wide activity reporting. Only fresh
+   * snapshots contribute agent counts; stale snapshots are reported separately.
+   */
+  getAggregate(): BackgroundAgentsAggregate {
+    const aggregate: BackgroundAgentsAggregate = {
+      running: 0,
+      idle: 0,
+      failed: 0,
+      total: 0,
+      liveSessions: 0,
+      staleSessions: 0,
+      unknownSessions: 0,
+    };
+
+    for (const entry of this.entries.values()) {
+      if (!entry.hadLiveRefresh) {
+        aggregate.unknownSessions += 1;
+        continue;
+      }
+      if (this.deriveSource(entry) !== "live") {
+        aggregate.staleSessions += 1;
+        continue;
+      }
+
+      aggregate.liveSessions += 1;
+      const summary = summarizeBackgroundAgents(entry.tasks, "live");
+      aggregate.running += summary.running;
+      aggregate.idle += summary.idle;
+      aggregate.failed += summary.failed;
+      aggregate.total += summary.total;
+    }
+
+    return aggregate;
   }
 
   /** Full snapshot for the authorized per-session endpoint. */

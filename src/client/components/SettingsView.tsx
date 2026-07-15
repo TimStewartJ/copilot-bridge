@@ -99,10 +99,7 @@ function SettingsShellSkeleton() {
               <div className="space-y-1">
                 {SETTINGS_CATEGORIES.map((category, index) => (
                   <div key={category.id} className="rounded-lg px-3 py-2.5">
-                    <SkeletonText
-                      lines={2}
-                      widths={index === 0 ? ["58%", "40%"] : ["68%", "34%"]}
-                    />
+                    <Skeleton height={14} width={index === 0 ? "58%" : "68%"} shape="pill" />
                   </div>
                 ))}
               </div>

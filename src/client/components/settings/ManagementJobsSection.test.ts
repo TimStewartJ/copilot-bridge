@@ -19,10 +19,21 @@ const hookMocks = vi.hoisted(() => ({
   useManagementJobsQuery: vi.fn(),
   useManagementJobQuery: vi.fn(),
   useCancelManagementJobMutation: vi.fn(),
+  useEnqueueManagementJobMutation: vi.fn(),
   useRetryManagementJobMutation: vi.fn(),
+  useBridgeRuntimeStatusQuery: vi.fn(),
+  useRestartBridgeMutation: vi.fn(),
+  useRestartStatusQuery: vi.fn(),
 }));
 
 vi.mock("../../hooks/queries/useManagementJobs", () => hookMocks);
+vi.mock("../../hooks/queries/useBridgeRuntimeStatus", () => ({
+  useBridgeRuntimeStatusQuery: hookMocks.useBridgeRuntimeStatusQuery,
+  useRestartBridgeMutation: hookMocks.useRestartBridgeMutation,
+}));
+vi.mock("../../hooks/queries/useRestartStatus", () => ({
+  useRestartStatusQuery: hookMocks.useRestartStatusQuery,
+}));
 
 const fetchedAt = "2026-05-20T12:10:00.000Z";
 const baseJob = {
@@ -82,11 +93,21 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
   const listRefetch = vi.fn(async () => list);
   const detailRefetch = vi.fn(async () => undefined);
   const cancelMutateAsync = vi.fn(async (id: string) => details.get(id));
+  const enqueueMutateAsync = vi.fn(async () => ({
+    jobId: "self-update-job",
+    status: "queued",
+    enqueuedAt: fetchedAt,
+    reused: false,
+    job: createDetail(createJob({ id: "self-update-job", type: "self_update", status: "queued" })),
+  }));
   const retryMutateAsync = vi.fn(async () => ({
     job: createDetail(createJob({ id: "retry-job", status: "queued" })),
     retriedFrom: "job-1",
     reused: false,
   }));
+  const restartMutateAsync = vi.fn(async () => ({ ok: true, waitingSessions: 2 }));
+  const runtimeRefetch = vi.fn(async () => undefined);
+  const restartStatusRefetch = vi.fn(async () => undefined);
 
   hookMocks.useManagementJobsQuery.mockImplementation(() => ({
     data: list,
@@ -106,12 +127,57 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
     isPending: false,
     mutateAsync: cancelMutateAsync,
   }));
+  hookMocks.useEnqueueManagementJobMutation.mockImplementation(() => ({
+    isPending: false,
+    mutateAsync: enqueueMutateAsync,
+  }));
   hookMocks.useRetryManagementJobMutation.mockImplementation(() => ({
     isPending: false,
     mutateAsync: retryMutateAsync,
   }));
+  hookMocks.useBridgeRuntimeStatusQuery.mockImplementation(() => ({
+    data: {
+      fetchedAt,
+      serverInstanceId: "server-1",
+      pid: 4242,
+      uptimeSeconds: 3_661,
+      isStaging: false,
+      sourceManagementAvailable: true,
+      sessions: { active: 3, stalled: 1, waitingForUserInput: 2 },
+      agents: {
+        running: 2,
+        idle: 1,
+        failed: 1,
+        total: 5,
+        liveSessions: 3,
+        staleSessions: 1,
+        unknownSessions: 0,
+      },
+    },
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    refetch: runtimeRefetch,
+  }));
+  hookMocks.useRestartBridgeMutation.mockImplementation(() => ({
+    isPending: false,
+    mutateAsync: restartMutateAsync,
+  }));
+  hookMocks.useRestartStatusQuery.mockImplementation(() => ({
+    data: {
+      pending: false,
+      phase: "idle",
+      waitingSessions: 0,
+      requestedAt: null,
+      serverInstanceId: "server-1",
+      canAcceptNewWork: true,
+    },
+    isFetching: false,
+    error: null,
+    refetch: restartStatusRefetch,
+  }));
 
-  return { cancelMutateAsync, retryMutateAsync };
+  return { cancelMutateAsync, enqueueMutateAsync, retryMutateAsync, restartMutateAsync };
 }
 
 function installSelectAwareDomShim() {
@@ -221,6 +287,75 @@ describe("ManagementJobsSection", () => {
 
       expect(retryMutateAsync).toHaveBeenCalledWith("failed-preview");
       await waitUntilAct(harness.act, () => (harness.dom.container.textContent ?? "").includes("Retry queued as retry-job"));
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("shows live activity and queues self-update and restart controls with confirmation", async () => {
+    const { enqueueMutateAsync, restartMutateAsync } = mockManagementJobs([]);
+    const confirm = vi.fn(() => true);
+    const harness = await renderSection();
+    try {
+      (globalThis.window as unknown as { confirm: typeof confirm }).confirm = confirm;
+      const text = harness.dom.container.textContent ?? "";
+      expect(text).toContain("Current activity");
+      expect(text).toContain("Active sessions");
+      expect(text).toContain("Agents running");
+      expect(text).toContain("1 stale snapshot excluded");
+
+      await clickButton(harness, "Queue self-update");
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Queue a Bridge self-update job?"));
+      expect(enqueueMutateAsync).toHaveBeenCalledWith({ type: "self_update" });
+      await waitUntilAct(harness.act, () =>
+        (harness.dom.container.textContent ?? "").includes("Self-update queued as self-updat"),
+      );
+
+      await clickButton(harness, "Restart Bridge");
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining("3 active sessions, 1 stalled, 2 awaiting input"));
+      expect(restartMutateAsync).toHaveBeenCalledOnce();
+      await waitUntilAct(harness.act, () =>
+        (harness.dom.container.textContent ?? "").includes("Restart queued. Waiting for 2 active sessions."),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("disables restart-capable controls in staging previews", async () => {
+    mockManagementJobs([]);
+    hookMocks.useBridgeRuntimeStatusQuery.mockImplementation(() => ({
+      data: {
+        fetchedAt,
+        serverInstanceId: "staging-server",
+        pid: 5000,
+        uptimeSeconds: 60,
+        isStaging: true,
+        sourceManagementAvailable: false,
+        sessions: { active: 0, stalled: 0, waitingForUserInput: 0 },
+        agents: {
+          running: 0,
+          idle: 0,
+          failed: 0,
+          total: 0,
+          liveSessions: 0,
+          staleSessions: 0,
+          unknownSessions: 0,
+        },
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    }));
+
+    const harness = await renderSection();
+    try {
+      const updateButton = findButtonByText(harness.dom.container, "Queue self-update");
+      const restartButton = findButtonByText(harness.dom.container, "Restart Bridge");
+      expect(getReactProps(updateButton)?.disabled).toBe(true);
+      expect(getReactProps(restartButton)?.disabled).toBe(true);
+      expect(harness.dom.container.textContent ?? "").toContain("Unavailable from staging previews.");
     } finally {
       await harness.cleanup();
     }

@@ -154,6 +154,27 @@ describe("management job API routes", () => {
     expect(retry.status).toBe(403);
   });
 
+  it("rejects restart-capable management mutations from staging previews", async () => {
+    const { app, store, ctx } = createManagementJobApiTestApp();
+    ctx.isStaging = true;
+
+    const enqueue = await request(app)
+      .post("/api/management-jobs")
+      .send({ type: "self_update" });
+    expect(enqueue.status).toBe(404);
+    expect(store.listActive(["self_update"])).toHaveLength(0);
+
+    const job = store.enqueue("self_update", {});
+    const cancel = await request(app).post(`/api/management-jobs/${job.id}/cancel`);
+    expect(cancel.status).toBe(404);
+    expect(store.get(job.id)?.status).toBe("queued");
+
+    store.fail(job.id, "boom");
+    const retry = await request(app).post(`/api/management-jobs/${job.id}/retry`);
+    expect(retry.status).toBe(404);
+    expect(store.listActive(["self_update"])).toHaveLength(0);
+  });
+
   it("retries failed or cancelled jobs with the same type and normalized input", async () => {
     const { app, store } = createManagementJobApiTestApp();
     const failedDir = makeRealStagingDir("retry-failed");

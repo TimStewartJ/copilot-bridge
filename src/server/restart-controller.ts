@@ -224,10 +224,8 @@ export function isPromptDeliveryInterruptedError(err: unknown): boolean {
  * Sets restart-pending state and emits the SSE event.
  * Returns the waiting-session count (excludes the calling session).
  */
-export function triggerRestartPending(): number {
-  // The calling session is still counted as active; subtract 1 since it will
-  // finish momentarily and should not count as "blocking" the restart.
-  const waitingCount = Math.max(0, _activeSessionCountProvider() - 1);
+function triggerRestartPendingWithWaitingCount(waitingSessions: number): number {
+  const waitingCount = Math.max(0, Math.floor(waitingSessions));
   const writeTarget = captureRestartStateWriteTarget();
   const nextState: RestartState = setCachedRestartState({
     requestId: randomUUID(),
@@ -244,6 +242,17 @@ export function triggerRestartPending(): number {
   });
   emitRestartPendingEvent(nextState);
   return waitingCount;
+}
+
+export function triggerRestartPending(): number {
+  // The calling session is still counted as active; subtract 1 since it will
+  // finish momentarily and should not count as "blocking" the restart.
+  return triggerRestartPendingWithWaitingCount(_activeSessionCountProvider() - 1);
+}
+
+/** UI and other external requests have no calling Copilot session to exclude. */
+export function triggerRestartPendingForExternalRequest(activeSessions: number): number {
+  return triggerRestartPendingWithWaitingCount(activeSessions);
 }
 
 export function syncRestartWaitingSessions(waitingSessions: number): void {

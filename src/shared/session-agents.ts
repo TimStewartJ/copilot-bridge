@@ -76,6 +76,23 @@ export interface BackgroundAgentsSummary {
   refreshedAt?: string;
 }
 
+export interface BackgroundAgentsAggregate {
+  /** Live background agents actively executing across all tracked sessions. */
+  running: number;
+  /** Live background agents idle/awaiting a follow-up message. */
+  idle: number;
+  /** Live background agents that ended in failure and have not been cleared. */
+  failed: number;
+  /** Total background agents in live snapshots, including terminal tasks. */
+  total: number;
+  /** Tracked sessions whose agent snapshot is still within the freshness window. */
+  liveSessions: number;
+  /** Tracked sessions with a previously-live snapshot that is now stale. */
+  staleSessions: number;
+  /** Tracked sessions that have not completed a successful live refresh. */
+  unknownSessions: number;
+}
+
 export const TERMINAL_AGENT_STATUSES: readonly AgentTaskStatus[] = [
   "completed",
   "failed",

@@ -28,6 +28,7 @@ export const queryKeys = {
   tasks: ["tasks"] as const,
   taskGroups: ["task-groups"] as const,
   restartStatus: ["restart-status"] as const,
+  bridgeRuntimeStatus: ["bridge-runtime-status"] as const,
   managementJobsRoot: ["management-jobs"] as const,
   managementJobs: (filters?: ManagementJobFilters) =>
     ["management-jobs", "list", filters ?? {}] as const,

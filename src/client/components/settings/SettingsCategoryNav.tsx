@@ -58,8 +58,6 @@ export function SettingsCategoryNav({
           <div className="space-y-1">
             {categories.map((category) => {
               const isActive = category.id === activeCategory;
-              const sectionCount = category.sections.length;
-              const sectionLabel = sectionCount === 1 ? "section" : "sections";
 
               return (
                 <button
@@ -74,13 +72,7 @@ export function SettingsCategoryNav({
                       : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
                   )}
                 >
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium">{category.label}</span>
-                    <span className={classes("block text-xs", isActive ? "text-accent/80" : "text-text-muted")}>
-                      {sectionCount} {sectionLabel}
-                    </span>
-                  </span>
-
+                  <span className="min-w-0 text-sm font-medium">{category.label}</span>
                 </button>
               );
             })}
