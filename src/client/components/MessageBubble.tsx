@@ -13,6 +13,7 @@ interface MessageBubbleProps {
   message: ChatMessage;
   actionSlot?: ReactNode;
   isStreaming?: boolean;
+  isPending?: boolean;
 }
 
 function BubbleActions({ side, children }: { side: "left" | "right"; children?: ReactNode }) {
@@ -37,14 +38,26 @@ function renderToolCalls(toolCalls: NonNullable<ChatMessage["toolCalls"]>) {
   ));
 }
 
-export default memo(function MessageBubble({ message, actionSlot, isStreaming = false }: MessageBubbleProps) {
+export default memo(function MessageBubble({
+  message,
+  actionSlot,
+  isStreaming = false,
+  isPending = false,
+}: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
     const hasAttachments = message.attachments && message.attachments.length > 0;
     return (
       <div className="flex justify-end">
-        <div className="group/message-bubble relative max-w-[85%] sm:max-w-[78%] md:max-w-[72%]">
+        <div
+          className={`group/message-bubble relative max-w-[85%] transition-[opacity,filter] duration-150 sm:max-w-[78%] md:max-w-[72%] ${
+            isPending ? "opacity-60 grayscale" : ""
+          }`}
+          aria-busy={isPending || undefined}
+          data-delivery-state={isPending ? "sending" : "sent"}
+          title={isPending ? "Sending to server..." : undefined}
+        >
           <BubbleActions side="right">{actionSlot}</BubbleActions>
           <div className="rounded-2xl rounded-br-sm border border-accent-border bg-accent-surface px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words">
             {hasAttachments && (
