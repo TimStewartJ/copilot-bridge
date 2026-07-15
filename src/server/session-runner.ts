@@ -28,7 +28,6 @@ import {
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
 import type { SessionAgentRegistry } from "./session-agent-registry.js";
-import type { SessionUserInputController } from "./session-user-input-controller.js";
 import { getToolExecutionDisplayText } from "./tool-results.js";
 import { createToolLoopGuard } from "./tool-loop-guard.js";
 import type {
@@ -232,10 +231,8 @@ export interface SessionRunnerDeps {
   mcpStatus: Map<string, McpServerStatus[]>;
   /** Shared map of in-flight run controllers (owned by SessionManager). */
   activeRunControllers: Map<string, SessionRunController>;
-
   runStateController: SessionRunStateController;
   agentRegistry: SessionAgentRegistry;
-  userInputController: SessionUserInputController;
   eventBusRegistry: EventBusRegistry;
   globalBus: GlobalBus;
   sessionMetaStore?: SessionMetaStore;
@@ -268,6 +265,8 @@ export interface SessionRunnerDeps {
    */
   deferMcpStatusSessionEviction(sessionId: string, reason: string): void;
   flushPendingSessionEviction(sessionId: string): void;
+  getPendingUserInputCount(sessionId: string): number;
+  getPendingInteractionCount(sessionId: string): number;
   cancelPendingUserInputRequests(
     sessionId: string,
     reason: UserInputCancelReason,
@@ -845,7 +844,8 @@ export class SessionRunner {
       lastLiveTurnEndAgeMs: getAgeMs(now, lastLiveTurnEndAt),
       eventsAfterLastLiveTurnEnd,
       activeEventsAfterLastLiveTurnEnd,
-      pendingUserInputCount: this.deps.userInputController.getPendingCount(sessionId),
+      pendingUserInputCount: this.deps.getPendingUserInputCount(sessionId),
+      pendingInteractionCount: this.deps.getPendingInteractionCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
       ...getActiveExternalToolTelemetry(now),
     });
@@ -1685,7 +1685,7 @@ export class SessionRunner {
       }
       if (syncShellWaitUntil > now) return;
 
-      if (this.deps.userInputController.getPendingCount(sessionId) > 0) {
+      if (this.deps.getPendingInteractionCount(sessionId) > 0) {
         lastEventTime = now;
         this.touchSessionRun(sessionId, now);
         return;
