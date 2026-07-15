@@ -154,6 +154,46 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
+  it("aggregates only fresh snapshots while reporting stale and unknown sessions", async () => {
+    const { bus } = makeBus();
+    const sessions = new Map<string, AgentSession>([
+      ["stale", fakeSession(async () => ({
+        tasks: [agentTask({ id: "stale-running", status: "running" })],
+      }))],
+      ["live", fakeSession(async () => ({
+        tasks: [
+          agentTask({ id: "live-idle", status: "idle" }),
+          agentTask({ id: "live-failed", status: "failed" }),
+          agentTask({ id: "live-completed", status: "completed" }),
+        ],
+      }))],
+      ["unknown", fakeSession(async () => {
+        throw new Error("tasks unavailable");
+      })],
+    ]);
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: (sessionId) => sessions.get(sessionId),
+      logger: { warn: vi.fn() },
+    });
+
+    await registry.refresh("stale", "test");
+    vi.setSystemTime(61_000);
+    await registry.refresh("live", "test");
+    await registry.refresh("unknown", "test");
+
+    expect(registry.getAggregate()).toEqual({
+      running: 0,
+      idle: 1,
+      failed: 1,
+      total: 3,
+      liveSessions: 1,
+      staleSessions: 1,
+      unknownSessions: 1,
+    });
+    registry.dispose();
+  });
+
   it("no-ops when no live session is cached, leaving prior snapshot intact", async () => {
     const { bus } = makeBus();
     let session: AgentSession | undefined = fakeSession(async () => ({

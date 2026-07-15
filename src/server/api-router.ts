@@ -3,7 +3,7 @@
 import express from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -24,6 +24,7 @@ import {
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
   SessionHistoryUndoError,
+  triggerRestartPendingForExternalRequest,
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
@@ -120,6 +121,10 @@ import {
   ManagementJobEnqueueError,
   enqueueManagementJob,
 } from "./management-job-enqueue.js";
+import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
+import { isRestartAlreadyInFlight } from "./restart-state.js";
+import { writeRestartSignalFile } from "./restart-signal.js";
+import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 
@@ -1980,6 +1985,69 @@ export function createApiRouter(
 
   router.get("/restart-status", async (_req, res) => {
     res.json(restartStatusResponseFromState(await refreshRestartState()));
+  });
+
+  router.get("/server/runtime-status", (_req, res) => {
+    res.json({
+      fetchedAt: new Date().toISOString(),
+      serverInstanceId: SERVER_INSTANCE_ID,
+      pid: process.pid,
+      uptimeSeconds: Math.floor(process.uptime()),
+      isStaging: ctx.isStaging === true,
+      sourceManagementAvailable: ctx.isStaging !== true && isBridgeSourceManagementAvailable(
+        ctx.runtimePaths?.env ?? process.env,
+        BRIDGE_TOOLS_REPO_ROOT,
+      ),
+      ...ctx.sessionManager.getRuntimeActivity(),
+    });
+  });
+
+  router.post("/server/restart", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Bridge restart")) return;
+    if (ctx.isStaging) return res.status(404).json({ error: "Bridge restart is not available in staging previews." });
+
+    const dataDir = ctx.runtimePaths?.dataDir;
+    if (!dataDir) return res.status(503).json({ error: "Bridge runtime paths are not available." });
+
+    const activeExclusiveJob = ctx.managementJobStore
+      ?.listActive(["self_update", "staging_deploy"])[0];
+    if (activeExclusiveJob) {
+      return res.status(409).json({
+        error: `Cannot restart while a ${activeExclusiveJob.type} management job is ${activeExclusiveJob.status}.`,
+        activeJob: toManagementJobSummaryResponse(activeExclusiveJob, {
+          now: new Date(),
+          staleAfterMs: managementJobStaleAfterMs(),
+        }),
+      });
+    }
+    if (isRestartAlreadyInFlight(dataDir)) {
+      return res.status(409).json({ error: "A restart is already pending." });
+    }
+
+    mkdirSync(dataDir, { recursive: true });
+    const signalFile = join(dataDir, "restart.signal");
+    const waitingSessions = triggerRestartPendingForExternalRequest(
+      ctx.sessionManager.getActiveSessions().length,
+    );
+    try {
+      writeRestartSignalFile(signalFile, {
+        validationMode: "operational",
+        source: "settings_ui",
+      });
+    } catch (error) {
+      clearRestartPending();
+      try {
+        unlinkSync(signalFile);
+      } catch {
+        // Best-effort cleanup after a failed signal write.
+      }
+      return res.status(500).json({
+        error: "Restart signal could not be written.",
+        details: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    res.status(202).json({ ok: true, waitingSessions });
   });
 
   // GET /status-stream — global SSE for session lifecycle events
@@ -4371,6 +4439,9 @@ export function createApiRouter(
       }
 
       const type = typeof body.type === "string" ? body.type : "";
+      if (ctx.isStaging && (type === "self_update" || type === "staging_deploy")) {
+        return res.status(404).json({ error: `${type} is not available in staging previews.` });
+      }
       const { job, reused } = enqueueManagementJob(ctx, { type, input: body.input });
 
       if (!reused) emitManagementJobChanged(job);
@@ -4484,6 +4555,9 @@ export function createApiRouter(
       if (!store) return;
       const job = store.get(req.params.id);
       if (!job) return res.status(404).json({ error: "Management job not found." });
+      if (ctx.isStaging && (job.type === "self_update" || job.type === "staging_deploy")) {
+        return res.status(404).json({ error: `${job.type} is not available in staging previews.` });
+      }
 
       const now = new Date();
       const staleAfterMs = managementJobStaleAfterMs();
@@ -4517,6 +4591,9 @@ export function createApiRouter(
       if (!store) return;
       const job = store.get(req.params.id);
       if (!job) return res.status(404).json({ error: "Management job not found." });
+      if (ctx.isStaging && (job.type === "self_update" || job.type === "staging_deploy")) {
+        return res.status(404).json({ error: `${job.type} is not available in staging previews.` });
+      }
 
       const now = new Date();
       const staleAfterMs = managementJobStaleAfterMs();

@@ -122,7 +122,12 @@ import {
   type StartWorkOptions,
 } from "./session-runner.js";
 import { SessionAgentRegistry } from "./session-agent-registry.js";
-import type { BackgroundAgentsSummary, SessionAgentTask, AgentCountsSource } from "../shared/session-agents.js";
+import type {
+  AgentCountsSource,
+  BackgroundAgentsAggregate,
+  BackgroundAgentsSummary,
+  SessionAgentTask,
+} from "../shared/session-agents.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
@@ -179,6 +184,7 @@ export {
   refreshRestartStateSync,
   syncRestartWaitingSessions,
   triggerRestartPending,
+  triggerRestartPendingForExternalRequest,
 } from "./restart-controller.js";
 export type {
   PromptDeliveryResult,
@@ -2918,6 +2924,27 @@ export class SessionManager {
    */
   getBackgroundAgentsSummary(sessionId: string): BackgroundAgentsSummary {
     return this.agentRegistry.getSummary(sessionId);
+  }
+
+  getRuntimeActivity(): {
+    sessions: {
+      active: number;
+      stalled: number;
+      waitingForUserInput: number;
+    };
+    agents: BackgroundAgentsAggregate;
+  } {
+    const activeSessionIds = this.getActiveSessions();
+    return {
+      sessions: {
+        active: activeSessionIds.length,
+        stalled: activeSessionIds.filter((sessionId) => this.isSessionStalled(sessionId)).length,
+        waitingForUserInput: activeSessionIds.filter(
+          (sessionId) => this.getPendingUserInputCount(sessionId) > 0,
+        ).length,
+      },
+      agents: this.agentRegistry.getAggregate(),
+    };
   }
 
   /**

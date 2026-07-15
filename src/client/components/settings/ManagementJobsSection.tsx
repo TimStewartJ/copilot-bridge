@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, AlertTriangle, Loader2, RotateCcw, RotateCw, Terminal, XCircle } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Download,
+  Loader2,
+  Power,
+  RotateCcw,
+  RotateCw,
+  Terminal,
+  XCircle,
+} from "lucide-react";
+import type { BridgeRuntimeStatus } from "../../bridge-management-api";
 import {
   MANAGEMENT_JOB_STATUSES,
   MANAGEMENT_JOB_TYPES,
@@ -12,10 +23,16 @@ import {
 } from "../../management-job-api";
 import {
   useCancelManagementJobMutation,
+  useEnqueueManagementJobMutation,
   useManagementJobQuery,
   useManagementJobsQuery,
   useRetryManagementJobMutation,
 } from "../../hooks/queries/useManagementJobs";
+import {
+  useBridgeRuntimeStatusQuery,
+  useRestartBridgeMutation,
+} from "../../hooks/queries/useBridgeRuntimeStatus";
+import { useRestartStatusQuery } from "../../hooks/queries/useRestartStatus";
 import EmptyState from "../shared/EmptyState";
 import { SettingsSection } from "./SettingsSection";
 
@@ -24,6 +41,7 @@ const JOB_STATUSES = MANAGEMENT_JOB_STATUSES;
 const ACTIVE_STATUSES = new Set<ManagementJobStatus>(["queued", "running"]);
 const RETRYABLE_STATUSES = new Set<ManagementJobStatus>(["failed", "cancelled"]);
 const CONFIRMATION_TYPES = new Set<ManagementJobType>(["self_update", "staging_deploy"]);
+const EXCLUSIVE_JOB_TYPES = new Set<ManagementJobType>(["self_update", "staging_deploy"]);
 const LIMITS = [25, 50, 100, 200];
 const ACTIVE_JOB_FILTERS: ManagementJobFilters = { statuses: ["queued", "running"], limit: 200 };
 
@@ -47,8 +65,12 @@ export function ManagementJobsSection() {
   const activeJobsQuery = useManagementJobsQuery(ACTIVE_JOB_FILTERS);
   const jobsQuery = useManagementJobsQuery(filters);
   const detailQuery = useManagementJobQuery(selectedJobId ?? undefined);
+  const runtimeQuery = useBridgeRuntimeStatusQuery();
+  const restartStatusQuery = useRestartStatusQuery();
   const cancelMutation = useCancelManagementJobMutation();
+  const enqueueMutation = useEnqueueManagementJobMutation();
   const retryMutation = useRetryManagementJobMutation();
+  const restartMutation = useRestartBridgeMutation();
 
   const activeList = activeJobsQuery.data ?? null;
   const list = activeList ?? jobsQuery.data ?? null;
@@ -67,8 +89,14 @@ export function ManagementJobsSection() {
   );
   const selectedSummary = jobs.find((job) => job.id === selectedJobId) ?? null;
   const selectedJob = detailQuery.data ?? selectedSummary;
-  const busy = activeJobsQuery.isFetching || jobsQuery.isFetching || detailQuery.isFetching;
-  const actionBusy = cancelMutation.isPending || retryMutation.isPending;
+  const activeExclusiveJob = activeJobs.find((job) => EXCLUSIVE_JOB_TYPES.has(job.type)) ?? null;
+  const busy = activeJobsQuery.isFetching
+    || jobsQuery.isFetching
+    || detailQuery.isFetching
+    || runtimeQuery.isLoading
+    || restartStatusQuery.isLoading;
+  const jobActionBusy = cancelMutation.isPending || retryMutation.isPending;
+  const controlBusy = enqueueMutation.isPending || restartMutation.isPending;
 
   useEffect(() => {
     if (selectedJobId || jobs.length === 0) return;
@@ -80,9 +108,11 @@ export function ManagementJobsSection() {
     await Promise.all([
       activeJobsQuery.refetch(),
       jobsQuery.refetch(),
+      runtimeQuery.refetch(),
+      restartStatusQuery.refetch(),
       selectedJobId ? detailQuery.refetch() : Promise.resolve(),
     ]);
-  }, [activeJobsQuery, detailQuery, jobsQuery, selectedJobId]);
+  }, [activeJobsQuery, detailQuery, jobsQuery, restartStatusQuery, runtimeQuery, selectedJobId]);
 
   const handleCancel = useCallback(async (job: ManagementJobSummary) => {
     if (job.status !== "queued") return;
@@ -127,10 +157,70 @@ export function ManagementJobsSection() {
     }
   }, [activeJobsQuery, jobsQuery, retryMutation]);
 
+  const handleSelfUpdate = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Queue a Bridge self-update job?\n\nThe launcher will pull the latest source, validate it, and restart the Bridge if the update succeeds.",
+    );
+    if (!confirmed) return;
+
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const result = await enqueueMutation.mutateAsync({ type: "self_update" });
+      setSelectedJobId(result.job.id);
+      setActionMessage(
+        result.reused
+          ? `Using existing self-update job ${shortJobId(result.job.id)}.`
+          : `Self-update queued as ${shortJobId(result.job.id)}.`,
+      );
+      void activeJobsQuery.refetch();
+      void jobsQuery.refetch();
+      void runtimeQuery.refetch();
+    } catch (error) {
+      setActionError(`Self-update failed to queue: ${formatError(error)}`);
+    }
+  }, [activeJobsQuery, enqueueMutation, jobsQuery, runtimeQuery]);
+
+  const handleRestart = useCallback(async () => {
+    const confirmed = window.confirm(buildRestartConfirmation(runtimeQuery.data));
+    if (!confirmed) return;
+
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const result = await restartMutation.mutateAsync();
+      setActionMessage(
+        result.waitingSessions > 0
+          ? `Restart queued. Waiting for ${result.waitingSessions} active session${result.waitingSessions === 1 ? "" : "s"}.`
+          : "Restart queued. The Bridge may reconnect momentarily.",
+      );
+      void runtimeQuery.refetch();
+      void restartStatusQuery.refetch();
+    } catch (error) {
+      setActionError(`Restart failed: ${formatError(error)}`);
+    }
+  }, [restartMutation, restartStatusQuery, runtimeQuery]);
+
+  const restartPending = restartStatusQuery.data?.pending === true;
+  const selfUpdateDisabledReason = getSelfUpdateDisabledReason({
+    runtime: runtimeQuery.data,
+    runtimeError: runtimeQuery.error,
+    restartPending,
+    activeExclusiveJob,
+    busy: controlBusy,
+  });
+  const restartDisabledReason = getRestartDisabledReason({
+    runtime: runtimeQuery.data,
+    runtimeError: runtimeQuery.error,
+    restartPending,
+    activeExclusiveJob,
+    busy: controlBusy,
+  });
+
   return (
     <SettingsSection
-      title="Management Jobs"
-      description="Monitor launcher-supervised self-update, staging preview, and staging deploy jobs with durable status and sanitized log tails."
+      title="Bridge Management"
+      description="Review live Bridge activity, queue operational controls, and inspect launcher-supervised management jobs."
       action={(
         <button
           type="button"
@@ -144,7 +234,20 @@ export function ManagementJobsSection() {
       )}
     >
       <div className="space-y-4">
-        <RunnerSummaryCard list={list} loading={(activeJobsQuery.isLoading || jobsQuery.isLoading) && !list} />
+        <CurrentActivityCard
+          status={runtimeQuery.data ?? null}
+          loading={runtimeQuery.isLoading && !runtimeQuery.data}
+          error={runtimeQuery.error}
+        />
+
+        <BridgeControlsCard
+          selfUpdateDisabledReason={selfUpdateDisabledReason}
+          restartDisabledReason={restartDisabledReason}
+          queueingUpdate={enqueueMutation.isPending}
+          restarting={restartMutation.isPending}
+          onQueueSelfUpdate={() => void handleSelfUpdate()}
+          onRestart={() => void handleRestart()}
+        />
 
         {(activeJobsQuery.error || jobsQuery.error || actionError || actionMessage) && (
           <div className="space-y-2">
@@ -166,6 +269,8 @@ export function ManagementJobsSection() {
           </div>
         )}
 
+        <RunnerSummaryCard list={list} loading={(activeJobsQuery.isLoading || jobsQuery.isLoading) && !list} />
+
         <JobListCard
           title="Active jobs"
           description="Queued and running launcher jobs are listed first. Running cancellation is disabled until cooperative cancellation is supported by job implementations."
@@ -178,7 +283,7 @@ export function ManagementJobsSection() {
           onSelectJob={setSelectedJobId}
           onCancel={handleCancel}
           onRetry={handleRetry}
-          actionBusy={actionBusy}
+          actionBusy={jobActionBusy}
         />
 
         <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
@@ -211,7 +316,7 @@ export function ManagementJobsSection() {
             onSelectJob={setSelectedJobId}
             onCancel={handleCancel}
             onRetry={handleRetry}
-            actionBusy={actionBusy}
+            actionBusy={jobActionBusy}
           />
         </div>
 
@@ -225,10 +330,142 @@ export function ManagementJobsSection() {
           onRefresh={() => void detailQuery.refetch()}
           onCancel={handleCancel}
           onRetry={handleRetry}
-          actionBusy={actionBusy}
+          actionBusy={jobActionBusy}
         />
       </div>
     </SettingsSection>
+  );
+}
+
+function CurrentActivityCard({
+  status,
+  loading,
+  error,
+}: {
+  status: BridgeRuntimeStatus | null;
+  loading: boolean;
+  error: unknown;
+}) {
+  const sessions = status?.sessions;
+  const agents = status?.agents;
+  return (
+    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-accent">
+            <Activity size={15} />
+            Current activity
+          </div>
+          <p className="mt-1 text-xs text-text-muted">
+            Live in-memory activity for top-level sessions and background agents. Stale agent snapshots are excluded from current counts.
+          </p>
+        </div>
+        <div className="text-[11px] text-text-faint">
+          Updated {loading ? "checking…" : formatDateTime(status?.fetchedAt)}
+        </div>
+      </div>
+
+      {error && !status ? (
+        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          Runtime status unavailable: {formatError(error)}
+        </div>
+      ) : (
+        <>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <SummaryMetric label="Active sessions" value={loading ? "…" : String(sessions?.active ?? 0)} tone={(sessions?.active ?? 0) > 0 ? "info" : "default"} />
+            <SummaryMetric label="Stalled sessions" value={loading ? "…" : String(sessions?.stalled ?? 0)} tone={(sessions?.stalled ?? 0) > 0 ? "warning" : "success"} />
+            <SummaryMetric label="Awaiting input" value={loading ? "…" : String(sessions?.waitingForUserInput ?? 0)} tone={(sessions?.waitingForUserInput ?? 0) > 0 ? "warning" : "default"} />
+            <SummaryMetric label="Agents running" value={loading ? "…" : String(agents?.running ?? 0)} tone={(agents?.running ?? 0) > 0 ? "info" : "default"} />
+            <SummaryMetric label="Agents idle" value={loading ? "…" : String(agents?.idle ?? 0)} />
+            <SummaryMetric label="Agents failed" value={loading ? "…" : String(agents?.failed ?? 0)} tone={(agents?.failed ?? 0) > 0 ? "error" : "success"} />
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-faint">
+            <span>PID {status?.pid ?? "unknown"}</span>
+            <span>Uptime {status ? formatDurationMs(status.uptimeSeconds * 1_000) : "unknown"}</span>
+            <span>{agents?.total ?? 0} tracked agents in {agents?.liveSessions ?? 0} live session snapshots</span>
+            {(agents?.staleSessions ?? 0) > 0 && (
+              <span>
+                {agents?.staleSessions} stale snapshot{agents?.staleSessions === 1 ? "" : "s"} excluded
+              </span>
+            )}
+            {(agents?.unknownSessions ?? 0) > 0 && (
+              <span>
+                {agents?.unknownSessions} snapshot{agents?.unknownSessions === 1 ? "" : "s"} unavailable
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function BridgeControlsCard({
+  selfUpdateDisabledReason,
+  restartDisabledReason,
+  queueingUpdate,
+  restarting,
+  onQueueSelfUpdate,
+  onRestart,
+}: {
+  selfUpdateDisabledReason: string | null;
+  restartDisabledReason: string | null;
+  queueingUpdate: boolean;
+  restarting: boolean;
+  onQueueSelfUpdate: () => void;
+  onRestart: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+      <div>
+        <div className="flex items-center gap-2 text-sm font-medium text-accent">
+          <Power size={15} />
+          Bridge controls
+        </div>
+        <p className="mt-1 text-xs text-text-muted">
+          These operations are launcher-supervised. Restart waits for active sessions; self-update records durable progress below.
+        </p>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="rounded-md border border-border bg-bg-primary p-3">
+          <div className="text-sm font-medium text-text-secondary">Self-update</div>
+          <p className="mt-1 text-xs text-text-muted">
+            Pull the latest source, validate it, and restart with automatic rollback if activation fails.
+          </p>
+          <button
+            type="button"
+            onClick={onQueueSelfUpdate}
+            disabled={Boolean(selfUpdateDisabledReason)}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {queueingUpdate ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            {queueingUpdate ? "Queueing…" : "Queue self-update"}
+          </button>
+          <p className="mt-2 text-[11px] text-text-faint">
+            {selfUpdateDisabledReason ?? "Available for source-managed Bridge installations."}
+          </p>
+        </div>
+
+        <div className="rounded-md border border-border bg-bg-primary p-3">
+          <div className="text-sm font-medium text-text-secondary">Operational restart</div>
+          <p className="mt-1 text-xs text-text-muted">
+            Reload configuration and dependencies without pulling or deploying code changes.
+          </p>
+          <button
+            type="button"
+            onClick={onRestart}
+            disabled={Boolean(restartDisabledReason)}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {restarting ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
+            {restarting ? "Queueing…" : "Restart Bridge"}
+          </button>
+          <p className="mt-2 text-[11px] text-text-faint">
+            {restartDisabledReason ?? "The launcher will wait for current sessions before cutover."}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -809,6 +1046,70 @@ function metricToneClassName(tone: "default" | "success" | "warning" | "error" |
     default:
       return "text-text-primary";
   }
+}
+
+function getSelfUpdateDisabledReason({
+  runtime,
+  runtimeError,
+  restartPending,
+  activeExclusiveJob,
+  busy,
+}: {
+  runtime: BridgeRuntimeStatus | undefined;
+  runtimeError: unknown;
+  restartPending: boolean;
+  activeExclusiveJob: ManagementJobSummary | null;
+  busy: boolean;
+}): string | null {
+  if (busy) return "A management request is being submitted.";
+  if (!runtime) return runtimeError ? "Runtime availability could not be checked." : "Checking availability…";
+  if (runtime.isStaging) return "Unavailable from staging previews.";
+  if (!runtime.sourceManagementAvailable) return "Requires a source-managed Bridge checkout.";
+  if (restartPending) return "A restart is already pending.";
+  if (activeExclusiveJob) {
+    return `${jobTypeLabel(activeExclusiveJob.type)} is already ${activeExclusiveJob.status}.`;
+  }
+  return null;
+}
+
+function getRestartDisabledReason({
+  runtime,
+  runtimeError,
+  restartPending,
+  activeExclusiveJob,
+  busy,
+}: {
+  runtime: BridgeRuntimeStatus | undefined;
+  runtimeError: unknown;
+  restartPending: boolean;
+  activeExclusiveJob: ManagementJobSummary | null;
+  busy: boolean;
+}): string | null {
+  if (busy) return "A management request is being submitted.";
+  if (!runtime) return runtimeError ? "Runtime availability could not be checked." : "Checking availability…";
+  if (runtime.isStaging) return "Unavailable from staging previews.";
+  if (restartPending) return "A restart is already pending.";
+  if (activeExclusiveJob) {
+    return `Wait for the active ${jobTypeLabel(activeExclusiveJob.type).toLowerCase()} job to finish.`;
+  }
+  return null;
+}
+
+function buildRestartConfirmation(runtime: BridgeRuntimeStatus | undefined): string {
+  if (!runtime) {
+    return "Restart Bridge now?\n\nThe launcher will wait for active sessions before cutover.";
+  }
+
+  const { active, stalled, waitingForUserInput } = runtime.sessions;
+  const activity = [
+    `${active} active session${active === 1 ? "" : "s"}`,
+    ...(stalled > 0 ? [`${stalled} stalled`] : []),
+    ...(waitingForUserInput > 0 ? [`${waitingForUserInput} awaiting input`] : []),
+  ].join(", ");
+  const timing = active > 0
+    ? "The launcher will wait for active sessions before cutover."
+    : "The restart may begin immediately.";
+  return `Restart Bridge now?\n\nCurrent activity: ${activity}.\n${timing}`;
 }
 
 function jobTypeLabel(type: ManagementJobType): string {

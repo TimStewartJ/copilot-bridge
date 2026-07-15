@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 import {
   cancelManagementJob,
+  enqueueManagementJob,
   fetchManagementJob,
   fetchManagementJobs,
   retryManagementJob,
@@ -14,6 +15,7 @@ import {
   type ManagementJobFilters,
   type ManagementJobListResponse,
   type ManagementJobStatus,
+  type EnqueueManagementJobRequest,
 } from "../../management-job-api";
 import { queryKeys } from "../../queryClient";
 
@@ -77,6 +79,19 @@ export function useCancelManagementJobMutation() {
   return useMutation({
     mutationFn: (id: string) => cancelManagementJob(id),
     onSuccess: (job) => {
+      queryClient.setQueryData(queryKeys.managementJob(job.id), job);
+    },
+    onSettled: () => {
+      invalidateManagementJobQueries(queryClient);
+    },
+  });
+}
+
+export function useEnqueueManagementJobMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: EnqueueManagementJobRequest) => enqueueManagementJob(request),
+    onSuccess: ({ job }) => {
       queryClient.setQueryData(queryKeys.managementJob(job.id), job);
     },
     onSettled: () => {
