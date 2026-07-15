@@ -608,7 +608,6 @@ export class SessionManager {
       activeRunControllers: this.activeRunControllers,
       runStateController: this.runStateController,
       agentRegistry: this.agentRegistry,
-      userInputController: this.userInputController,
       eventBusRegistry: deps.eventBusRegistry,
       globalBus: deps.globalBus,
       sessionMetaStore: deps.sessionMetaStore,
@@ -632,6 +631,8 @@ export class SessionManager {
       markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
       deferMcpStatusSessionEviction: (sessionId, reason) => this.deferMcpStatusSessionEviction(sessionId, reason),
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
+      getPendingUserInputCount: (sessionId) => this.userInputController.getPendingCount(sessionId),
+      getPendingInteractionCount: (sessionId) => this.getPendingInteractionCount(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),

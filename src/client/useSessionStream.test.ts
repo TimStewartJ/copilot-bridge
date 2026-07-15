@@ -581,10 +581,13 @@ describe("useSessionStream user input state", () => {
     });
   });
 
-  it("hydrates and resolves pending elicitation requests", async () => {
+  it("hydrates elicitation requests and preserves a visible cancellation notice", async () => {
     await withSessionStreamHarness(async ({ getState, act }) => {
       const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+      const reconnectSse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(sse.response)
+        .mockResolvedValueOnce(reconnectSse.response);
 
       await act(async () => {
         getState().reconnect("session-1");
@@ -645,11 +648,42 @@ describe("useSessionStream user input state", () => {
         type: "elicitation_canceled",
         requestId: "el-url",
         reason: "session_ended",
+        timestamp: "2026-07-13T12:00:02.000Z",
       }, () => getState().pendingElicitations.length === 0);
 
       expect(getState().pendingElicitations).toEqual([]);
+      expect(getState().elicitationCancellation).toEqual({
+        requestId: "el-url",
+        question: "Authorize provider",
+        detail: "The run ended before this question was answered.",
+        timestamp: "2026-07-13T12:00:02.000Z",
+      });
+      await emitAndWait(act, sse, {
+        type: "done",
+      }, () => getState().streamStatus === "idle");
+      expect(getState().elicitationCancellation).toMatchObject({
+        requestId: "el-url",
+        detail: "The run ended before this question was answered.",
+      });
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 2);
+      await act(async () => {
+        reconnectSse.emit({
+          type: "snapshot",
+          complete: true,
+          terminalType: "done",
+        });
+        await waitTick();
+      });
+      expect(getState().elicitationCancellation).toMatchObject({
+        requestId: "el-url",
+        question: "Authorize provider",
+      });
       await act(async () => {
         sse.close();
+        reconnectSse.close();
         await waitTick();
       });
     });

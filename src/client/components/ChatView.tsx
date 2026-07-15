@@ -38,6 +38,7 @@ import type { SessionContextResponse } from "../../shared/session-context.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
 import ElicitationCard from "./ElicitationCard";
+import ElicitationCancellationNotice from "./ElicitationCancellationNotice";
 import {
   MessageActionsMenu,
   MessageActionToolbar,
@@ -632,6 +633,7 @@ export default function ChatView({
     runMode,
     pendingUserInputs = [],
     pendingElicitations = [],
+    elicitationCancellation,
     mcpServers: streamMcpServers,
     contextSummary: streamContextSummary,
     sendMessage,
@@ -1683,6 +1685,15 @@ export default function ChatView({
       );
     }
 
+    if (elicitationCancellation) {
+      parts.push(
+        <ElicitationCancellationNotice
+          key={`elicitation-canceled-${elicitationCancellation.requestId}`}
+          notice={elicitationCancellation}
+        />,
+      );
+    }
+
     if (parts.length === 0) return null;
     return <div className="space-y-3 pb-4">{parts}</div>;
   }, [
@@ -1690,6 +1701,7 @@ export default function ChatView({
     handleSubmitElicitation,
     handleSubmitUserInput,
     hasStreamingText,
+    elicitationCancellation,
     pendingElicitationRequests,
     pendingUserInputRequests,
     runHeaderState,

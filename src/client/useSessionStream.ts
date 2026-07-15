@@ -48,11 +48,19 @@ export interface PendingToolPrelude {
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
 export type PendingOrigin = "message" | "reconnect" | null;
 
+export interface ElicitationCancellationNotice {
+  requestId: string;
+  question?: string;
+  detail: string;
+  timestamp?: string;
+}
+
 export interface StreamState {
   streamingContent: string;
   activeTools: PendingTool[];
   pendingUserInputs: PendingUserInputRequestView[];
   pendingElicitations: PendingElicitationRequestView[];
+  elicitationCancellation: ElicitationCancellationNotice | null;
   currentTurnTools: ToolCall[];
   intentText: string;
   streamStatus: StreamStatus;
@@ -99,6 +107,23 @@ export function createVisualEntryFromPublishedEvent(event: Record<string, unknow
     visual,
     ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
   };
+}
+
+function getElicitationCancellationDetail(event: Record<string, unknown>): string {
+  const message = typeof event.message === "string" && event.message.trim()
+    ? event.message.trim()
+    : undefined;
+  switch (event.reason) {
+    case "answered_elsewhere":
+      return "This question was answered elsewhere.";
+    case "superseded":
+      return "This question was replaced by a newer request.";
+    case "error":
+      return message ?? "This question closed because the run encountered an error.";
+    case "session_ended":
+    default:
+      return "The run ended before this question was answered.";
+  }
 }
 
 function isCompletionStatus(value: unknown): value is TranscriptCompletionStatus {
@@ -575,6 +600,7 @@ export function useSessionStream(
     activeTools: [],
     pendingUserInputs: [],
     pendingElicitations: [],
+    elicitationCancellation: null,
     currentTurnTools: [],
     intentText: "",
     hadVisibleOutput: false,
@@ -616,12 +642,17 @@ export function useSessionStream(
       runMode: runMode ?? s.runMode,
       pendingUserInputs: pendingOrigin === "reconnect" ? s.pendingUserInputs : [],
       pendingElicitations: pendingOrigin === "reconnect" ? s.pendingElicitations : [],
+      elicitationCancellation: pendingOrigin === "reconnect" ? s.elicitationCancellation : null,
     }));
 
     fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
       .then(async (res) => {
         if (!res.ok || !res.body) {
-          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+          setStreamState((s) => mkState("idle", {
+            mcpServers: s.mcpServers,
+            contextSummary: s.contextSummary,
+            elicitationCancellation: s.elicitationCancellation,
+          }));
           return;
         }
 
@@ -705,7 +736,11 @@ export function useSessionStream(
                       }]);
                     }
                     activeTurnId = undefined;
-                    setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+                    setStreamState((s) => mkState("idle", {
+                      mcpServers: s.mcpServers,
+                      contextSummary: s.contextSummary,
+                      elicitationCancellation: s.elicitationCancellation,
+                    }));
                     refreshTitle(event.terminalType === "done");
                     break;
                   }
@@ -733,6 +768,9 @@ export function useSessionStream(
                     activeTools: tools,
                     pendingUserInputs,
                     pendingElicitations,
+                    elicitationCancellation: pendingElicitations.length > 0
+                      ? null
+                      : prev.elicitationCancellation,
                     currentTurnTools: snapshotToolState.currentTurnTools,
                     intentText: event.intentText ?? "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
@@ -999,13 +1037,13 @@ export function useSessionStream(
                   setStreamState((s) => ({
                     ...s,
                     pendingElicitations: upsertPendingElicitation(s.pendingElicitations, request),
+                    elicitationCancellation: null,
                     streamStatus: s.streamingContent || s.activeTools.length > 0 ? "streaming" : "thinking",
                     isStreaming: true,
                   }));
                   break;
                 }
                 case "elicitation_resolved":
-                case "elicitation_canceled":
                   if (typeof event.requestId === "string") {
                     setStreamState((s) => ({
                       ...s,
@@ -1016,6 +1054,32 @@ export function useSessionStream(
                       streamStatus: s.streamStatus === "idle" ? "thinking" : s.streamStatus,
                       isStreaming: true,
                     }));
+                  }
+                  break;
+                case "elicitation_canceled":
+                  if (typeof event.requestId === "string") {
+                    setStreamState((s) => {
+                      const request = s.pendingElicitations.find(
+                        (candidate) => candidate.requestId === event.requestId,
+                      );
+                      return {
+                        ...s,
+                        pendingElicitations: removePendingElicitation(
+                          s.pendingElicitations,
+                          event.requestId,
+                        ),
+                        elicitationCancellation: {
+                          requestId: event.requestId,
+                          ...(request?.message ? { question: request.message } : {}),
+                          detail: getElicitationCancellationDetail(event),
+                          ...(typeof event.timestamp === "string"
+                            ? { timestamp: event.timestamp }
+                            : {}),
+                        },
+                        streamStatus: s.streamStatus === "idle" ? "thinking" : s.streamStatus,
+                        isStreaming: true,
+                      };
+                    });
                   }
                   break;
                 case "title_changed":
@@ -1037,7 +1101,11 @@ export function useSessionStream(
                       }]);
                     }
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+                  setStreamState((s) => mkState("idle", {
+                    mcpServers: s.mcpServers,
+                    contextSummary: s.contextSummary,
+                    elicitationCancellation: s.elicitationCancellation,
+                  }));
                   refreshTitle(true);
                   accumulatedContent = "";
                   activeTurnId = undefined;
@@ -1059,7 +1127,11 @@ export function useSessionStream(
                       }]);
                     }
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+                  setStreamState((s) => mkState("idle", {
+                    mcpServers: s.mcpServers,
+                    contextSummary: s.contextSummary,
+                    elicitationCancellation: s.elicitationCancellation,
+                  }));
                   accumulatedContent = "";
                   activeTurnId = undefined;
                   break;
@@ -1081,7 +1153,11 @@ export function useSessionStream(
                       }]);
                     }
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+                  setStreamState((s) => mkState("idle", {
+                    mcpServers: s.mcpServers,
+                    contextSummary: s.contextSummary,
+                    elicitationCancellation: s.elicitationCancellation,
+                  }));
                   accumulatedContent = "";
                   activeTurnId = undefined;
                   break;
@@ -1100,7 +1176,11 @@ export function useSessionStream(
                       ...(activeTurnId ? { turnId: activeTurnId } : {}),
                     }]);
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+                  setStreamState((s) => mkState("idle", {
+                    mcpServers: s.mcpServers,
+                    contextSummary: s.contextSummary,
+                    elicitationCancellation: s.elicitationCancellation,
+                  }));
                   activeTurnId = undefined;
                   break;
                 }
@@ -1117,7 +1197,11 @@ export function useSessionStream(
                   break;
                 }
                 case "idle":
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+                  setStreamState((s) => mkState("idle", {
+                    mcpServers: s.mcpServers,
+                    contextSummary: s.contextSummary,
+                    elicitationCancellation: s.elicitationCancellation,
+                  }));
                   break;
               }
             } catch { /* skip malformed */ }
@@ -1134,7 +1218,11 @@ export function useSessionStream(
             if (sid === sessionRef.current) connectStream(sid);
           }, 1000);
         } else {
-          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
+          setStreamState((s) => mkState("idle", {
+            mcpServers: s.mcpServers,
+            contextSummary: s.contextSummary,
+            elicitationCancellation: s.elicitationCancellation,
+          }));
         }
       });
   }, []); // stable — callbacks accessed via refs

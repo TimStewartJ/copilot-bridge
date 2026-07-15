@@ -245,6 +245,35 @@ describe("ElicitationCard", () => {
     expect(onSubmit).toHaveBeenCalledWith("el-decline", { action: "decline" });
   });
 
+  it("explains when a response arrives after the question closed", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Pending elicitation request not found"), { status: 404 }),
+    );
+    const request: PendingElicitationRequestView = {
+      requestId: "el-stale",
+      message: "Choose a target",
+      mode: "form",
+      requestedSchema: {
+        type: "object",
+        properties: {},
+      },
+    };
+
+    harness = await createReactDomHarness();
+    await harness.render(createElement(ElicitationCard, { request, onSubmit }));
+    await harness.act(async () => {
+      getReactProps(findButton(harness!.dom.container, "Decline"))?.onClick?.();
+    });
+    await waitUntilAct(
+      harness.act,
+      () => harness!.dom.container.textContent?.includes("This question is no longer active") ?? false,
+    );
+
+    expect(harness.dom.container.textContent).toContain(
+      "The run may have ended before your response was accepted.",
+    );
+  });
+
   it("shows the URL host and requires an explicit open action", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const request: PendingElicitationRequestView = {

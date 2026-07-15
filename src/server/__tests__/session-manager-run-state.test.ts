@@ -1561,6 +1561,61 @@ describe("SessionManager run state", () => {
     expect(events).toEqual(["session:busy", "session:stalled", "session:busy", "session:idle"]);
   });
 
+  it("keeps native elicitation waits busy beyond the stalled watchdog window", async () => {
+    const sessionId = "session-elicitation-wait";
+    const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.backend = { resumeSession };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    const config = (Reflect.get(manager, "buildSessionConfig") as () => any).call(manager);
+    const elicitationPromise = config.onElicitationRequest({
+      sessionId,
+      message: "Choose a deployment target",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            enum: ["staging", "production"],
+          },
+        },
+        required: ["target"],
+      },
+    });
+    await flushMicrotasks();
+
+    const requestId = eventBusRegistry.getBus(sessionId)
+      ?.getSnapshot()
+      .pendingElicitations[0]
+      ?.requestId;
+    expect(requestId).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(900_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(telemetryStore!.querySpans({ name: "session.run.stalled", sessionId })).toEqual([]);
+    expect(telemetryStore!.querySpans({ name: "session.run.force_released", sessionId })).toEqual([]);
+
+    await manager.submitElicitationResponse(sessionId, requestId!, { action: "cancel" });
+    await expect(elicitationPromise).resolves.toEqual({ action: "cancel" });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date().toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+  });
+
   it("includes the final assistant message preview on normal idle events", async () => {
     const { manager, globalBus } = createManager();
     let idleEvent: any;

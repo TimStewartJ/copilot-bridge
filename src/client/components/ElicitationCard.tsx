@@ -22,6 +22,14 @@ interface ElicitationCardProps {
 }
 
 function getSubmitError(error: unknown): string {
+  if (
+    error
+    && typeof error === "object"
+    && "status" in error
+    && error.status === 404
+  ) {
+    return "This question is no longer active. The run may have ended before your response was accepted.";
+  }
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   return "Failed to submit response.";
