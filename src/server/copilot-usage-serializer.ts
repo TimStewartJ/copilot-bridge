@@ -58,9 +58,31 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     ...serializeCostEstimate(row),
     ...serializePricingMetadata(row),
   });
+  const index = summary.index ?? {
+    state: "idle" as const,
+    startedAt: summary.generatedAt,
+    completedAt: summary.generatedAt,
+    sessionsTotal: summary.coverage.sessionsSeen,
+    sessionsProcessed: summary.coverage.sessionsSeen,
+    sessionsUpdated: summary.coverage.sessionsSeen,
+    cachedSessions: summary.coverage.sessionsSeen,
+    error: null,
+  };
 
   return {
     generatedAt: summary.generatedAt,
+    index: {
+      state: index.state,
+      startedAt: index.startedAt,
+      completedAt: index.completedAt,
+      sessionsTotal: index.sessionsTotal,
+      sessionsProcessed: index.sessionsProcessed,
+      sessionsUpdated: index.sessionsUpdated,
+      cachedSessions: index.cachedSessions,
+      ...(index.requestedSessions !== undefined ? { requestedSessions: index.requestedSessions } : {}),
+      ...(index.requestedSessionsCached !== undefined ? { requestedSessionsCached: index.requestedSessionsCached } : {}),
+      error: index.error,
+    },
     totals: {
       ...serializeTokenTotals(summary.totals),
       ...serializeCostEstimate(summary.totals),

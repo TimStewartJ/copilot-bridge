@@ -189,20 +189,6 @@
     "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
   },
   {
-    "code": 18048,
-    "file": "src/client/components/settings/CopilotUsageSection.tsx",
-    "line": 84,
-    "character": 36,
-    "message": "'data' is possibly 'undefined'."
-  },
-  {
-    "code": 18048,
-    "file": "src/client/components/settings/CopilotUsageSection.tsx",
-    "line": 84,
-    "character": 64,
-    "message": "'data' is possibly 'undefined'."
-  },
-  {
     "code": 2769,
     "file": "src/client/components/shared/Skeleton.test.ts",
     "line": 22,
@@ -215,13 +201,6 @@
     "line": 75,
     "character": 14,
     "message": "This comparison appears to be unintentional because the types '\"archived\" | \"active\" | \"done\"' and '\"paused\"' have no overlap."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/TaskDashboard.tsx",
-    "line": 1046,
-    "character": 102,
-    "message": "Argument of type 'string | undefined' is not assignable to parameter of type 'string'.\n  Type 'undefined' is not assignable to type 'string'."
   },
   {
     "code": 2322,

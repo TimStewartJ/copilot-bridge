@@ -58,6 +58,16 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
   const totals = createUsageTotals(totalTokens);
   return {
     generatedAt,
+    index: {
+      state: "idle",
+      startedAt: generatedAt,
+      completedAt: generatedAt,
+      sessionsTotal: 1,
+      sessionsProcessed: 1,
+      sessionsUpdated: 1,
+      cachedSessions: 1,
+      error: null,
+    },
     totals: {
       ...totals,
       ...createZeroCostEstimate(),
@@ -109,6 +119,7 @@ function createAbortablePromise<T>(deferred: ReturnType<typeof createDeferred<T>
 }
 
 afterEach(() => {
+  vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
@@ -118,6 +129,36 @@ describe("refreshCopilotUsageQuery", () => {
 
     expect(options.refetchOnWindowFocus).toBe(false);
     expect(options.staleTime).toBe(5 * 60_000);
+  });
+
+  it("scopes task usage queries and forwards task filtering to the API", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+    const summary = createUsageSummary("2026-04-23T12:00:00.000Z", 200);
+    vi.mocked(fetchCopilotUsage).mockResolvedValue(summary);
+
+    const options = getCopilotUsageQueryOptions({
+      taskId: "task-1",
+      sessionIds: ["session-1", "session-2"],
+    });
+    await queryClient.fetchQuery(options);
+
+    expect(options.queryKey).toEqual([
+      "copilot-usage",
+      "task-1",
+      true,
+      "session-1",
+      "session-2",
+    ]);
+    expect(vi.mocked(fetchCopilotUsage)).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "task-1",
+      includeSessions: undefined,
+    }));
   });
 
   it("cancels an in-flight stale fetch before applying the manual refresh result", async () => {

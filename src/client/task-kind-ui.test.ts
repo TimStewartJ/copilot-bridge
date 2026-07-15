@@ -197,6 +197,16 @@ function createUnpricedModelMetadata() {
 function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): CopilotUsageSummary {
   return {
     generatedAt: NOW,
+    index: {
+      state: "idle",
+      startedAt: NOW,
+      completedAt: NOW,
+      sessionsTotal: 0,
+      sessionsProcessed: 0,
+      sessionsUpdated: 0,
+      cachedSessions: 0,
+      error: null,
+    },
     totals: {
       ...createUsageTotals(),
       ...createZeroCostEstimate(),

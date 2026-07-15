@@ -96,6 +96,21 @@ export interface CopilotUsageCoverage {
   latestSkippedAt: string | null;
 }
 
+export type CopilotUsageIndexState = "idle" | "scanning" | "error";
+
+export interface CopilotUsageIndexStatus {
+  state: CopilotUsageIndexState;
+  startedAt: string | null;
+  completedAt: string | null;
+  sessionsTotal: number;
+  sessionsProcessed: number;
+  sessionsUpdated: number;
+  cachedSessions: number;
+  requestedSessions?: number;
+  requestedSessionsCached?: number;
+  error: string | null;
+}
+
 export interface CopilotUsageSummary {
   generatedAt: string;
   totals: CopilotUsageSummaryTotals;
@@ -103,6 +118,7 @@ export interface CopilotUsageSummary {
   models: CopilotUsageModelRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
+  index?: CopilotUsageIndexStatus;
 }
 
 export interface ReadCopilotUsageSummaryOptions {
@@ -121,11 +137,12 @@ export interface CopilotUsageReaderOptions extends ReadCopilotUsageSummaryOption
 }
 
 export interface CopilotUsageReader {
-  readSummary(options?: { refresh?: boolean }): Promise<CopilotUsageSummary>;
+  readSummary(options?: { refresh?: boolean; sessionIds?: readonly string[] }): Promise<CopilotUsageSummary>;
   invalidate(): void;
+  startBackgroundRefresh?(): void;
 }
 
-interface SessionScanResult {
+export interface CopilotUsageSessionScanResult {
   hasEvents: boolean;
   included: boolean;
   reason?: CopilotUsageSkipReason;
@@ -147,6 +164,7 @@ const DEFAULT_SCAN_CONCURRENCY = 8;
 const DEFAULT_CACHE_TTL_MS = 30_000;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
+export const COPILOT_USAGE_PARSER_VERSION = 1;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -161,7 +179,6 @@ export async function readCopilotUsageSummary({
   concurrency = DEFAULT_SCAN_CONCURRENCY,
   sdkModels,
 }: ReadCopilotUsageSummaryOptions): Promise<CopilotUsageSummary> {
-  const summary = createEmptySummary(now);
   const sessionStateDir = join(copilotHome, "session-state");
 
   let sessionDirs: string[];
@@ -172,65 +189,23 @@ export async function readCopilotUsageSummary({
       .map((entry) => entry.name);
   } catch (error) {
     if (getErrorCode(error) === "ENOENT") {
-      return summary;
+      return createEmptySummary(now);
     }
     throw new CopilotUsageReadError();
   }
 
   try {
-    summary.coverage.sessionsSeen = sessionDirs.length;
-
     const sessionResults = await mapWithConcurrency(
       sessionDirs,
       Math.max(1, concurrency),
-      (sessionId) => scanSession(sessionStateDir, sessionId),
+      (sessionId) => scanCopilotUsageSession(sessionStateDir, sessionId),
     );
-
-    const modelTotals = new Map<string, CopilotUsageModelRow>();
-    for (const result of sessionResults) {
-      if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
-
-      if (result.included) {
-        summary.coverage.sessionsIncluded += 1;
-        for (const usageAt of result.includedUsageAts) {
-          updateCoverageWindow(summary.coverage, "included", usageAt);
-        }
-        addTotals(summary.totals, result.totals);
-        if (result.sessionRow) {
-          summary.sessions.push(result.sessionRow);
-        }
-
-        for (const row of result.modelRows) {
-          const key = usageModelKey(row.model, row.contextTier);
-          const existing = modelTotals.get(key) ?? createZeroModelRow(row.model, 0, row.contextTier);
-          existing.sessions += row.sessions;
-          addTotals(existing, row);
-          modelTotals.set(key, existing);
-        }
-        continue;
-      }
-
-      summary.coverage.sessionsSkipped += 1;
-      if (result.reason) {
-        summary.coverage.skippedByReason[result.reason] += 1;
-      }
-      updateCoverageWindow(summary.coverage, "skipped", result.skippedAt);
-    }
-
-    summary.models = [...modelTotals.values()].sort((left, right) => (
-      right.totalTokens - left.totalTokens
-      || right.requests - left.requests
-      || right.sessions - left.sessions
-      || left.model.localeCompare(right.model)
-    ));
-    summary.sessions.sort((left, right) => (
-      compareNullableTimestampsDesc(left.shutdownAt, right.shutdownAt)
-      || right.totalTokens - left.totalTokens
-      || left.sessionId.localeCompare(right.sessionId)
-    ));
-    applyCopilotUsageCostEstimates(summary, sdkModels);
-
-    return summary;
+    return buildCopilotUsageSummaryFromSessionResults({
+      sessionResults,
+      sessionsSeen: sessionDirs.length,
+      now,
+      sdkModels,
+    });
   } catch (error) {
     if (error instanceof CopilotUsageReadError) {
       throw error;
@@ -293,10 +268,96 @@ export function createCopilotUsageReader({
   }
 
   return {
-    readSummary: async (options) => loadCachedSummary(options?.refresh === true),
+    readSummary: async (options) => filterCopilotUsageSummarySessions(
+      await loadCachedSummary(options?.refresh === true),
+      options?.sessionIds,
+    ),
     invalidate: () => {
       cached = null;
     },
+  };
+}
+
+export function buildCopilotUsageSummaryFromSessionResults({
+  sessionResults,
+  sessionsSeen,
+  now = Date.now,
+  sdkModels,
+  sessionIds,
+  index,
+}: {
+  sessionResults: Iterable<CopilotUsageSessionScanResult>;
+  sessionsSeen?: number;
+  now?: () => number;
+  sdkModels?: readonly CopilotModelMetadataForPricing[];
+  sessionIds?: readonly string[];
+  index?: CopilotUsageIndexStatus;
+}): CopilotUsageSummary {
+  const summary = createEmptySummary(now);
+  const requestedSessionIds = sessionIds ? new Set(sessionIds) : null;
+  const modelTotals = new Map<string, CopilotUsageModelRow>();
+  let resultCount = 0;
+
+  for (const result of sessionResults) {
+    resultCount += 1;
+    if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
+
+    if (result.included) {
+      summary.coverage.sessionsIncluded += 1;
+      for (const usageAt of result.includedUsageAts) {
+        updateCoverageWindow(summary.coverage, "included", usageAt);
+      }
+      addTotals(summary.totals, result.totals);
+      if (
+        result.sessionRow
+        && (!requestedSessionIds || requestedSessionIds.has(result.sessionRow.sessionId))
+      ) {
+        summary.sessions.push(cloneSessionRow(result.sessionRow));
+      }
+
+      for (const row of result.modelRows) {
+        const key = usageModelKey(row.model, row.contextTier);
+        const existing = modelTotals.get(key) ?? createZeroModelRow(row.model, 0, row.contextTier);
+        existing.sessions += row.sessions;
+        addTotals(existing, row);
+        modelTotals.set(key, existing);
+      }
+      continue;
+    }
+
+    summary.coverage.sessionsSkipped += 1;
+    if (result.reason) {
+      summary.coverage.skippedByReason[result.reason] += 1;
+    }
+    updateCoverageWindow(summary.coverage, "skipped", result.skippedAt);
+  }
+
+  summary.coverage.sessionsSeen = sessionsSeen ?? resultCount;
+  summary.models = [...modelTotals.values()].sort((left, right) => (
+    right.totalTokens - left.totalTokens
+    || right.requests - left.requests
+    || right.sessions - left.sessions
+    || left.model.localeCompare(right.model)
+  ));
+  summary.sessions.sort((left, right) => (
+    compareNullableTimestampsDesc(left.shutdownAt, right.shutdownAt)
+    || right.totalTokens - left.totalTokens
+    || left.sessionId.localeCompare(right.sessionId)
+  ));
+  applyCopilotUsageCostEstimates(summary, sdkModels);
+  if (index) summary.index = index;
+  return summary;
+}
+
+function filterCopilotUsageSummarySessions(
+  summary: CopilotUsageSummary,
+  sessionIds: readonly string[] | undefined,
+): CopilotUsageSummary {
+  if (!sessionIds) return summary;
+  const requestedSessionIds = new Set(sessionIds);
+  return {
+    ...summary,
+    sessions: summary.sessions.filter((row) => requestedSessionIds.has(row.sessionId)),
   };
 }
 
@@ -323,7 +384,10 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
     && typeof (value as { then?: unknown }).then === "function";
 }
 
-async function scanSession(sessionStateDir: string, sessionId: string): Promise<SessionScanResult> {
+export async function scanCopilotUsageSession(
+  sessionStateDir: string,
+  sessionId: string,
+): Promise<CopilotUsageSessionScanResult> {
   const eventsPath = join(sessionStateDir, sessionId, "events.jsonl");
 
   try {
@@ -353,9 +417,15 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
   let fallbackEventIndex = 0;
   const stream = createReadStream(eventsPath, { encoding: "utf-8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let linesSinceYield = 0;
 
   try {
     for await (const line of lines) {
+      linesSinceYield += 1;
+      if (linesSinceYield >= 250) {
+        linesSinceYield = 0;
+        await yieldToEventLoop();
+      }
       if (!line.trim()) continue;
 
       let event: unknown;
@@ -495,7 +565,7 @@ function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccum
 function createIncludedResult(
   sessionId: string,
   usage: { modelRows: CopilotUsageModelRow[]; includedUsageAts: string[] },
-): SessionScanResult {
+): CopilotUsageSessionScanResult {
   const modelRows = usage.modelRows.sort((left, right) => (
     right.totalTokens - left.totalTokens
     || right.requests - left.requests
@@ -766,7 +836,7 @@ function createSkippedResult(
   reason: CopilotUsageSkipReason,
   shutdownAt: string | null,
   hasEvents: boolean,
-): SessionScanResult {
+): CopilotUsageSessionScanResult {
   return {
     hasEvents,
     included: false,
@@ -905,6 +975,18 @@ function normalizeTimestamp(value: unknown): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+function cloneSessionRow(row: CopilotUsageSessionRow): CopilotUsageSessionRow {
+  return {
+    ...row,
+    costBreakdownUsd: { ...row.costBreakdownUsd },
+    models: row.models.map((model) => ({
+      ...model,
+      costBreakdownUsd: { ...model.costBreakdownUsd },
+    })),
+    unpricedModels: row.unpricedModels.map((model) => ({ ...model })),
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -935,4 +1017,8 @@ async function mapWithConcurrency<T, R>(
   );
 
   return results;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }

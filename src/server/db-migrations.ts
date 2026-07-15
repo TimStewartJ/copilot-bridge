@@ -799,6 +799,22 @@ function ensureCopilotModelPricesTable(db: DatabaseSync): void {
   `);
 }
 
+function ensureCopilotUsageCacheTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS copilot_usage_sessions (
+      sessionId TEXT PRIMARY KEY,
+      parserVersion INTEGER NOT NULL,
+      fingerprintJson TEXT NOT NULL,
+      resultJson TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS copilot_usage_scan_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      completedAt TEXT
+    );
+  `);
+}
+
 function ensureSessionContextTelemetryTables(db: DatabaseSync): void {
   // Keep this DDL as a historical compatibility snapshot. Do not import the
   // current baseline from db.ts: future baseline columns must be added below
@@ -1172,6 +1188,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Create copilot_model_prices cache for last-known-good SDK token prices.",
     apply: ensureCopilotModelPricesTable,
+  },
+  {
+    id: "copilot-usage-cache-tables",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Create the incremental per-session Copilot usage cache.",
+    apply: ensureCopilotUsageCacheTables,
   },
 ];
 
