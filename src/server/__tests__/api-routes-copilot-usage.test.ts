@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  COPILOT_USAGE_PARSER_VERSION,
+  scanCopilotUsageSession,
+} from "../copilot-usage.js";
+import { createCopilotUsageStore } from "../copilot-usage-store.js";
+import { openMemoryDatabase } from "../db.js";
 import type { ApiRouteTestState } from "./api-routes-test-helpers.js";
 import {
   createCopilotUsageTestHome,
@@ -217,6 +223,16 @@ describe("Copilot usage routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       generatedAt: expect.any(String),
+      index: {
+        state: "idle",
+        startedAt: expect.any(String),
+        completedAt: expect.any(String),
+        sessionsTotal: 1,
+        sessionsProcessed: 1,
+        sessionsUpdated: 1,
+        cachedSessions: 1,
+        error: null,
+      },
       totals: {
         ...aggregateTotals,
         ...aggregateCostEstimate,
@@ -312,6 +328,82 @@ describe("Copilot usage routes", () => {
     expect(res.body.models[0].estimatedCostUsd).toBeCloseTo(30);
     expect(res.body.totals.unpricedModelCount).toBe(0);
     expect(JSON.stringify(res.body)).not.toContain("secret-sdk-field");
+  });
+
+  it("filters per-session rows for settings and task-scoped callers while keeping global totals", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "task-session", [{
+      type: "session.shutdown",
+      timestamp: "2026-05-01T12:00:00.000Z",
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: 10 },
+          },
+        },
+      },
+    }]);
+    writeCopilotUsageEvents(copilotHome, "other-session", [{
+      type: "session.shutdown",
+      timestamp: "2026-05-01T13:00:00.000Z",
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: 20 },
+          },
+        },
+      },
+    }]);
+    const usageDb = openMemoryDatabase();
+    const copilotUsageStore = createCopilotUsageStore(usageDb);
+    const sessionStateDir = join(copilotHome, "session-state");
+    copilotUsageStore.upsertEntries([
+      {
+        sessionId: "task-session",
+        parserVersion: COPILOT_USAGE_PARSER_VERSION,
+        fingerprint: {
+          events: { state: "missing" },
+          modelState: { state: "missing" },
+        },
+        result: await scanCopilotUsageSession(sessionStateDir, "task-session"),
+      },
+      {
+        sessionId: "other-session",
+        parserVersion: COPILOT_USAGE_PARSER_VERSION,
+        fingerprint: {
+          events: { state: "missing" },
+          modelState: { state: "missing" },
+        },
+        result: await scanCopilotUsageSession(sessionStateDir, "other-session"),
+      },
+    ]);
+    copilotUsageStore.setLastCompletedAt(new Date().toISOString());
+    const state = createTestApp({ copilotHome, copilotUsageStore });
+    app = state.app;
+    const task = state.ctx.taskStore.createTask("Usage task");
+    state.ctx.taskStore.linkSession(task.id, "task-session");
+
+    const settingsRes = await request(app).get("/api/copilot-usage?sessions=none");
+    expect(settingsRes.status).toBe(200);
+    expect(settingsRes.body.totals.inputTokens).toBe(30);
+    expect(settingsRes.body.sessions).toEqual([]);
+
+    const taskRes = await request(app).get(`/api/copilot-usage?taskId=${task.id}`);
+    expect(taskRes.status).toBe(200);
+    expect(taskRes.body.totals.inputTokens).toBe(30);
+    expect(taskRes.body.sessions.map((row: { sessionId: string }) => row.sessionId)).toEqual(["task-session"]);
+    expect(taskRes.body.index).toMatchObject({
+      state: "idle",
+      requestedSessions: 1,
+      requestedSessionsCached: 1,
+    });
+
+    const missingTaskRes = await request(app).get("/api/copilot-usage?taskId=missing");
+    expect(missingTaskRes.status).toBe(404);
+    expect(missingTaskRes.body).toEqual({ error: "Task not found" });
+    usageDb.close();
   });
 
   it("GET /api/copilot-usage resolves SDK model objects through their serialized metadata", async () => {

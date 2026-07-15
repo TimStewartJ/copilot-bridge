@@ -48,6 +48,16 @@ function createCostEstimate(overrides: Partial<CopilotUsageCostEstimate> = {}): 
 function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): CopilotUsageSummary {
   return {
     generatedAt: NOW,
+    index: {
+      state: "idle",
+      startedAt: NOW,
+      completedAt: NOW,
+      sessionsTotal: 0,
+      sessionsProcessed: 0,
+      sessionsUpdated: 0,
+      cachedSessions: 0,
+      error: null,
+    },
     totals: {
       ...createUsageTotals(),
       ...createCostEstimate(),
@@ -93,6 +103,25 @@ beforeEach(() => {
 });
 
 describe("CopilotUsageSection", () => {
+  it("shows background indexing progress and requests aggregate-only usage", () => {
+    const html = renderSection(createUsageSummary({
+      index: {
+        state: "scanning",
+        startedAt: NOW,
+        completedAt: null,
+        sessionsTotal: 100,
+        sessionsProcessed: 25,
+        sessionsUpdated: 20,
+        cachedSessions: 20,
+        error: null,
+      },
+    }));
+
+    expect(html).toContain("Indexing local usage in the background");
+    expect(html).toContain("Checked 25 of 100 sessions");
+    expect(vi.mocked(useCopilotUsageQuery)).toHaveBeenCalledWith({ includeSessions: false });
+  });
+
   it("renders estimated cost and unpriced model diagnostics", () => {
     const pricedTotals = createUsageTotals({
       requests: 3,

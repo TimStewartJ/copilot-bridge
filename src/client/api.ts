@@ -1643,8 +1643,24 @@ export interface CopilotUsageCoverage {
   latestSkippedAt: string | null;
 }
 
+export type CopilotUsageIndexState = "idle" | "scanning" | "error";
+
+export interface CopilotUsageIndexStatus {
+  state: CopilotUsageIndexState;
+  startedAt: string | null;
+  completedAt: string | null;
+  sessionsTotal: number;
+  sessionsProcessed: number;
+  sessionsUpdated: number;
+  cachedSessions: number;
+  requestedSessions?: number;
+  requestedSessionsCached?: number;
+  error: string | null;
+}
+
 export interface CopilotUsageSummary {
   generatedAt: string;
+  index: CopilotUsageIndexStatus;
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
@@ -1652,10 +1668,20 @@ export interface CopilotUsageSummary {
   unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
-export async function fetchCopilotUsage(options?: { refresh?: boolean; signal?: AbortSignal }): Promise<CopilotUsageSummary> {
+export async function fetchCopilotUsage(options?: {
+  refresh?: boolean;
+  signal?: AbortSignal;
+  taskId?: string;
+  includeSessions?: boolean;
+}): Promise<CopilotUsageSummary> {
   const params = new URLSearchParams();
   if (options?.refresh) {
     params.set("refresh", "1");
+  }
+  if (options?.taskId) {
+    params.set("taskId", options.taskId);
+  } else if (options?.includeSessions === false) {
+    params.set("sessions", "none");
   }
   const query = params.toString();
   return apiFetch<CopilotUsageSummary>(`/api/copilot-usage${query ? `?${query}` : ""}`, undefined, {

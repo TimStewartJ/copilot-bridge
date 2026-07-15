@@ -145,6 +145,7 @@ describe("database migration registry", () => {
       "voice-jobs-task-foreign-key",
       "session-context-telemetry-tables",
       "copilot-model-prices-table",
+      "copilot-usage-cache-tables",
     ]);
   });
 
@@ -171,6 +172,7 @@ describe("database migration registry", () => {
       "voice-jobs-task-foreign-key": "self",
       "session-context-telemetry-tables": "auto",
       "copilot-model-prices-table": "auto",
+      "copilot-usage-cache-tables": "auto",
     });
   });
 

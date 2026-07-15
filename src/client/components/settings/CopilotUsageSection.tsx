@@ -58,7 +58,7 @@ const PRICING_STATUS_LABELS: Record<CopilotUsageModelRow["pricingStatus"], strin
 };
 
 export function CopilotUsageSection() {
-  const { data, error, isLoading, refresh } = useCopilotUsageQuery();
+  const { data, error, isLoading, refresh } = useCopilotUsageQuery({ includeSessions: false });
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -80,8 +80,9 @@ export function CopilotUsageSection() {
     }
   }, [refresh]);
 
-  const busy = refreshing || (isLoading && !data);
-  const isEmpty = Boolean(data) && data.models.length === 0 && data.coverage.sessionsIncluded === 0;
+  const indexing = data?.index.state === "scanning";
+  const busy = refreshing || indexing || (isLoading && !data);
+  const isEmpty = Boolean(data && data.models.length === 0 && data.coverage.sessionsIncluded === 0);
   const reasonSummary = useMemo(
     () => (data ? formatSkipReasonSummary(data.coverage) : "Skipped session details will appear after the first successful scan."),
     [data],
@@ -106,6 +107,25 @@ export function CopilotUsageSection() {
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
           Local estimate only. Costs use GitHub's public Copilot model pricing, assume reasoning tokens are priced at the output rate, and convert AI credits at $0.01 per credit. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded. This is not official GitHub billing.
         </div>
+
+        {data && indexing && (
+          <div className="rounded-md border border-accent/30 bg-accent/10 px-3 py-3 text-xs text-text-secondary">
+            <div className="flex items-center gap-2 font-medium text-accent">
+              <Loader2 size={13} className="animate-spin" />
+              Indexing local usage in the background
+            </div>
+            <p className="mt-1 text-text-muted">
+              Checked {formatNumber(data.index.sessionsProcessed)} of {formatNumber(data.index.sessionsTotal)} sessions.
+              Cached totals update progressively without keeping this request open.
+            </p>
+          </div>
+        )}
+
+        {data?.index.state === "error" && (
+          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-3 text-xs text-error">
+            {data.index.error ?? "Local usage indexing failed. Previously cached totals are still shown."}
+          </div>
+        )}
 
         {isLoading && !data && (
           <LoadingSkeletonRegion
@@ -206,7 +226,7 @@ export function CopilotUsageSection() {
                   </p>
                 </div>
                 <div className="shrink-0 text-right text-[11px] text-text-faint">
-                  Updated {formatDateTime(data.generatedAt)}
+                  Updated {formatDateTime(data.index.completedAt ?? data.generatedAt)}
                 </div>
               </div>
 

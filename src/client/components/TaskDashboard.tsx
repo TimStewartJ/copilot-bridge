@@ -207,7 +207,11 @@ export default function TaskDashboard({
     relatedDocs,
     refresh,
   } = ws;
-  const { data: copilotUsage, isLoading: copilotUsageLoading, refresh: refreshCopilotUsage } = useCopilotUsageQuery();
+  const {
+    data: copilotUsage,
+    isLoading: copilotUsageLoading,
+    refresh: refreshCopilotUsage,
+  } = useCopilotUsageQuery({ taskId: task.id, sessionIds: task.sessionIds });
   const {
     data: sessionStorage,
     isLoading: sessionStorageLoading,
@@ -252,7 +256,12 @@ export default function TaskDashboard({
     usageSessions: copilotUsage?.sessions ?? [],
     totalDiskSizeBytes: sessionStorage?.totalDiskSizeBytes ?? 0,
   }), [copilotUsage?.sessions, linkedSessions, sessionStorage?.totalDiskSizeBytes, task.sessionIds]);
-  const isSessionUsageLoading = copilotUsageLoading && !copilotUsage;
+  const isSessionUsageLoading = (copilotUsageLoading && !copilotUsage)
+    || Boolean(
+      copilotUsage?.index.state === "scanning"
+      && (copilotUsage.index.requestedSessionsCached ?? 0)
+        < (copilotUsage.index.requestedSessions ?? task.sessionIds.length),
+    );
 
   const inheritedTagSet = inheritedTagIds instanceof Set
     ? inheritedTagIds
@@ -454,6 +463,14 @@ export default function TaskDashboard({
                 </LoadingSkeletonRegion>
               ) : (
                 <div className={`${UI.surface.card} space-y-5 p-4`}>
+                {copilotUsage?.index.state === "scanning" && (
+                  <div className="flex items-start gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-text-muted">
+                    <Info size={14} className="mt-0.5 shrink-0 text-accent" />
+                    <span>
+                      Usage is still indexing in the background. These task totals update as linked sessions are cached.
+                    </span>
+                  </div>
+                )}
                 <div className={sessionUsage.cost.hasCostEstimate
                   ? "grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7"
                   : "grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6"}
@@ -1043,7 +1060,9 @@ function buildSessionUsageAnalytics({
 }
 
 function getLatestActivity(values: Array<string | undefined>): string {
-  const valid = values.filter((value): value is string => Boolean(value) && !Number.isNaN(Date.parse(value)));
+  const valid = values.filter((value): value is string => (
+    typeof value === "string" && !Number.isNaN(Date.parse(value))
+  ));
   if (valid.length === 0) return new Date().toISOString();
   return valid.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest, valid[0]);
 }

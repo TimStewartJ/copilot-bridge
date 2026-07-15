@@ -53,6 +53,7 @@ import {
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
 import { createCopilotUsageReader } from "./copilot-usage.js";
+import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
@@ -309,6 +310,17 @@ async function listCopilotModelMetadataForPricing(
   } catch (error) {
     console.warn("[copilot-usage] Failed to read cached model prices during outage.", error);
     return liveModels ?? [];
+  }
+}
+
+function listCachedCopilotModelMetadataForPricing(
+  ctx: AppContext,
+): readonly CopilotModelMetadataForPricing[] | undefined {
+  try {
+    return ctx.copilotModelPriceStore?.listModelPrices();
+  } catch (error) {
+    console.warn("[copilot-usage] Failed to hydrate cached model prices.", error);
+    return undefined;
   }
 }
 
@@ -1082,10 +1094,18 @@ export function createApiRouter(
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
-  const copilotUsageReader = createCopilotUsageReader({
-    copilotHome: getCopilotHome(ctx),
-    modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
-  });
+  const copilotUsageReader = ctx.copilotUsageStore
+    ? createIncrementalCopilotUsageReader({
+        copilotHome: getCopilotHome(ctx),
+        store: ctx.copilotUsageStore,
+        sdkModels: listCachedCopilotModelMetadataForPricing(ctx),
+        modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
+      })
+    : createCopilotUsageReader({
+        copilotHome: getCopilotHome(ctx),
+        modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
+      });
+  copilotUsageReader.startBackgroundRefresh?.();
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
@@ -1848,11 +1868,23 @@ export function createApiRouter(
   router.get("/copilot-usage", async (req, res) => {
     try {
       const refresh = req.query.refresh === "1";
+      const taskId = typeof req.query.taskId === "string" ? req.query.taskId.trim() : "";
+      let sessionIds: readonly string[] | undefined;
+      if (taskId) {
+        const task = ctx.taskStore.getTask(taskId);
+        if (!task) {
+          res.status(404).json({ error: "Task not found" });
+          return;
+        }
+        sessionIds = task.sessionIds;
+      } else if (req.query.sessions === "none") {
+        sessionIds = [];
+      }
       const summary = await timeRequestOperation(
         res,
         "copilot-usage.readSummary",
-        () => copilotUsageReader.readSummary({ refresh }),
-        { refresh },
+        () => copilotUsageReader.readSummary({ refresh, sessionIds }),
+        { refresh, taskId: taskId || undefined, sessionCount: sessionIds?.length },
       );
       const serialized = serializeCopilotUsageSummary(summary);
       res.json(serialized);

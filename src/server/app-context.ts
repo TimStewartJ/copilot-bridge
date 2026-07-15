@@ -19,6 +19,7 @@ import type { DocsSnapshotStore } from "./docs-snapshot-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { CopilotModelPriceStore } from "./copilot-model-price-store.js";
+import type { CopilotUsageStore } from "./copilot-usage-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -56,6 +57,7 @@ export interface AppContext {
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;
   copilotModelPriceStore?: CopilotModelPriceStore;
+  copilotUsageStore?: CopilotUsageStore;
   telemetryStore?: TelemetryStore;
   sessionContextStore?: SessionContextStore;
   globalBus: GlobalBus;
