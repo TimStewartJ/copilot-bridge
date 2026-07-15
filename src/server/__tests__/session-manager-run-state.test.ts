@@ -346,6 +346,66 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("removes a finished sync agent after its parent tool call completes", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    let status = "running";
+    let removed = false;
+    (session as any).listTasks = vi.fn(async () => ({
+      tasks: removed
+        ? []
+        : [{
+            kind: "agent",
+            id: "sync-check",
+            toolCallId: "agent-call-1",
+            status,
+            executionMode: "sync",
+            agentType: "task",
+          }],
+    }));
+    (session as any).removeTask = vi.fn(async (id: string) => {
+      removed = id === "sync-check";
+      return { removed };
+    });
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-sync-agent", "run a one-shot check");
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "tool.execution_start",
+      data: { toolCallId: "agent-call-1", toolName: "task", arguments: {} },
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    getHandler()?.({
+      type: "subagent.started",
+      data: { toolCallId: "agent-call-1", agentName: "task" },
+      timestamp: "2026-04-24T12:00:01.000Z",
+    });
+    await flushMicrotasks();
+
+    status = "idle";
+    getHandler()?.({
+      type: "tool.execution_complete",
+      data: { toolCallId: "agent-call-1", success: true, result: "done" },
+      timestamp: "2026-04-24T12:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    expect((session as any).removeTask).toHaveBeenCalledWith("sync-check");
+    expect(manager.agentRegistry.getTrackedAgentCount("session-sync-agent")).toBe(0);
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:03.000Z",
+    });
+    await flushMicrotasks();
+  });
+
   it("records usage after turn end as session overhead", async () => {
     const { manager, sessionContextStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();

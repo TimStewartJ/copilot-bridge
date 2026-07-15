@@ -486,6 +486,7 @@ export class SessionRunner {
       }
       this.setSessionRunState(sessionId, "idle", {
       });
+      void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
       this.deps.flushPendingSessionEviction(sessionId);
     });
     return runController;
@@ -598,6 +599,7 @@ export class SessionRunner {
         this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
         console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
       }
+      await this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
       return s;
     };
 
@@ -651,6 +653,7 @@ export class SessionRunner {
     const toolStartTimes = new Map<string, number>();
     const toolLoopGuard = createToolLoopGuard();
     const subAgentMap = new Map<string, string>();
+    const subAgentToolCallIds = new Set<string>();
     const subAgentTurnIdMap = new Map<string, string>();
     const subAgentResponseMap = new Map<string, string>();
     const activeExternalTools = new Map<string, ActiveExternalToolCall>();
@@ -1139,6 +1142,12 @@ export class SessionRunner {
             isSubAgent: isAgent || undefined,
             timestamp: event.timestamp,
           });
+          if (
+            typeof data?.toolCallId === "string"
+            && subAgentToolCallIds.delete(data.toolCallId)
+          ) {
+            void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId, data.toolCallId);
+          }
           break;
         }
         case "subagent.started": {
@@ -1146,6 +1155,7 @@ export class SessionRunner {
           console.log(`[sdk] [${sid}] ${displayName}`);
           if (data?.toolCallId) {
             subAgentMap.set(data.toolCallId, displayName);
+            subAgentToolCallIds.add(data.toolCallId);
             const subagentBridgeTurnId = `subagent-${randomUUID()}`;
             subAgentTurnIdMap.set(data.toolCallId, subagentBridgeTurnId);
             this.deps.sessionContextStore?.recordTurnStart({

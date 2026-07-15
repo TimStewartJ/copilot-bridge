@@ -59,7 +59,8 @@ interface RegistryEntry {
   hadLiveRefresh: boolean;
   /** Last emitted counts signature, to suppress redundant bus traffic. */
   lastSignature?: string;
-  refreshing: boolean;
+  refreshPromise?: Promise<void>;
+  reapPromise?: Promise<number>;
   pollTimer?: ReturnType<typeof setInterval>;
   pollStartedAt?: number;
 }
@@ -130,6 +131,86 @@ export class SessionAgentRegistry {
     return this.entries.get(sessionId)?.tasks.length ?? 0;
   }
 
+  /** Remove finished synchronous one-shot agents after their result is consumed. */
+  async reapFinishedSyncTasks(sessionId: string, toolCallId?: string): Promise<number> {
+    let entry = this.entries.get(sessionId);
+    if (!entry) {
+      await this.refresh(sessionId, "sync-task-reap");
+      entry = this.entries.get(sessionId);
+    }
+    if (!entry) return 0;
+
+    const previousReap = entry.reapPromise;
+    const reapPromise = (async (): Promise<number> => {
+      if (previousReap) await previousReap;
+      if (entry.refreshPromise) await entry.refreshPromise;
+
+      const session = this.deps.getLiveSession(sessionId);
+      if (
+        !session
+        || typeof session.listTasks !== "function"
+        || typeof session.removeTask !== "function"
+      ) {
+        return 0;
+      }
+
+      try {
+        const result = await session.listTasks();
+        if (this.deps.getLiveSession(sessionId) !== session) return 0;
+        const tasks = (Array.isArray(result?.tasks) ? result.tasks : [])
+          .filter((task) => task.kind === "agent")
+          .map((task) => this.normalizeTask(task));
+        this.commitTasks(sessionId, entry, session, tasks);
+
+        const candidates = tasks
+          .filter((task) =>
+            task.executionMode === "sync"
+            && task.status !== "running"
+            && (!toolCallId || task.toolCallId === toolCallId));
+        const removedIds = new Set<string>();
+        for (const task of candidates) {
+          try {
+            const removeResult = await session.removeTask(task.id);
+            if (removeResult?.removed) removedIds.add(task.id);
+          } catch (err) {
+            this.logger.warn(
+              `[agents] [${sessionId.slice(0, 8)}] failed to remove finished sync task ${task.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+
+        if (
+          removedIds.size > 0
+          && this.deps.getLiveSession(sessionId) === session
+          && entry.ownerSession === session
+        ) {
+          this.commitTasks(
+            sessionId,
+            entry,
+            session,
+            tasks.filter((task) => !removedIds.has(task.id)),
+          );
+        }
+        return removedIds.size;
+      } catch (err) {
+        this.logger.warn(
+          `[agents] [${sessionId.slice(0, 8)}] finished sync task sweep failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return 0;
+      }
+    })();
+    entry.reapPromise = reapPromise;
+    try {
+      return await reapPromise;
+    } finally {
+      if (entry.reapPromise === reapPromise) entry.reapPromise = undefined;
+    }
+  }
+
   /** True while any tracked agent task is actively running. */
   hasRunningAgents(sessionId: string): boolean {
     const entry = this.entries.get(sessionId);
@@ -146,54 +227,44 @@ export class SessionAgentRegistry {
   async refresh(sessionId: string, reason: string): Promise<void> {
     const session = this.deps.getLiveSession(sessionId);
     if (!session || typeof session.listTasks !== "function") return;
+    const listTasks = session.listTasks.bind(session);
 
     const existing = this.entries.get(sessionId);
-    if (existing?.refreshing) return;
+    if (existing?.reapPromise) {
+      await existing.reapPromise;
+      return this.refresh(sessionId, reason);
+    }
+    if (existing?.refreshPromise) return existing.refreshPromise;
     const entry = existing ?? this.createEntry();
-    entry.refreshing = true;
     this.entries.set(sessionId, entry);
 
-    try {
-      const result = await session.listTasks();
-      if (this.deps.getLiveSession(sessionId) !== session) {
-        // Session was evicted while the refresh was in flight. Don't repopulate
-        // heavy task text or emit a `live` update for a session we can no longer
-        // vouch for; leave any prior (now text-cleared) snapshot to age out.
-        return;
-      }
-      const rawTasks = Array.isArray(result?.tasks) ? result!.tasks! : [];
-      const tasks = rawTasks
-        .filter((task) => task.kind === "agent")
-        .map((task) => this.normalizeTask(task));
-      const tasksSignature = this.getTasksSignature(tasks);
-      const tasksChanged = entry.tasksSignature !== tasksSignature;
-      entry.tasks = tasks;
-      entry.tasksSignature = tasksSignature;
-      entry.ownerSession = session;
-      entry.refreshedAt = this.now();
-      entry.hadLiveRefresh = true;
-      this.emitIfChanged(sessionId, entry);
-      this.managePoll(sessionId, entry);
-      this.enforceEntryBound(sessionId);
-      if (tasksChanged) {
-        try {
-          this.deps.onTasksChanged?.(sessionId);
-        } catch (err) {
-          this.logger.warn(
-            `[agents] [${sessionId.slice(0, 8)}] task-change callback failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
+    const refreshPromise = (async (): Promise<void> => {
+      try {
+        const result = await listTasks();
+        if (this.deps.getLiveSession(sessionId) !== session) {
+          // Session was evicted while the refresh was in flight. Don't repopulate
+          // heavy task text or emit a `live` update for a session we can no longer
+          // vouch for; leave any prior (now text-cleared) snapshot to age out.
+          return;
         }
+        const rawTasks = Array.isArray(result?.tasks) ? result!.tasks! : [];
+        const tasks = rawTasks
+          .filter((task) => task.kind === "agent")
+          .map((task) => this.normalizeTask(task));
+        this.commitTasks(sessionId, entry, session, tasks);
+      } catch (err) {
+        this.logger.warn(
+          `[agents] [${sessionId.slice(0, 8)}] tasks.list refresh failed (${reason}): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
-    } catch (err) {
-      this.logger.warn(
-        `[agents] [${sessionId.slice(0, 8)}] tasks.list refresh failed (${reason}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+    })();
+    entry.refreshPromise = refreshPromise;
+    try {
+      await refreshPromise;
     } finally {
-      entry.refreshing = false;
+      if (entry.refreshPromise === refreshPromise) entry.refreshPromise = undefined;
     }
   }
 
@@ -242,7 +313,35 @@ export class SessionAgentRegistry {
   // ── internals ────────────────────────────────────────────────────
 
   private createEntry(): RegistryEntry {
-    return { tasks: [], refreshedAt: 0, hadLiveRefresh: false, refreshing: false };
+    return { tasks: [], refreshedAt: 0, hadLiveRefresh: false };
+  }
+
+  private commitTasks(
+    sessionId: string,
+    entry: RegistryEntry,
+    session: AgentSession,
+    tasks: SessionAgentTask[],
+  ): void {
+    const tasksSignature = this.getTasksSignature(tasks);
+    const tasksChanged = entry.tasksSignature !== tasksSignature;
+    entry.tasks = tasks;
+    entry.tasksSignature = tasksSignature;
+    entry.ownerSession = session;
+    entry.refreshedAt = this.now();
+    entry.hadLiveRefresh = true;
+    this.emitIfChanged(sessionId, entry);
+    this.managePoll(sessionId, entry);
+    this.enforceEntryBound(sessionId);
+    if (!tasksChanged) return;
+    try {
+      this.deps.onTasksChanged?.(sessionId);
+    } catch (err) {
+      this.logger.warn(
+        `[agents] [${sessionId.slice(0, 8)}] task-change callback failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   private getTasksSignature(tasks: readonly SessionAgentTask[]): string {
@@ -271,7 +370,7 @@ export class SessionAgentRegistry {
 
   /**
    * Enforce the soft cap on retained entries. Drops the least-recently-refreshed
-   * entries that have no live session and aren't mid-refresh, using the same
+   * entries that have no live session and aren't mid-refresh/reap, using the same
    * teardown as `forget`. The just-touched session (`keepSessionId`) and any
    * entry with a live SDK object are never evicted, so the per-session live
    * snapshot stays fully intact (the cap may be exceeded while many sessions are
@@ -281,7 +380,7 @@ export class SessionAgentRegistry {
     if (this.entries.size <= this.maxEntries) return;
     const evictable: Array<{ id: string; entry: RegistryEntry }> = [];
     for (const [id, entry] of this.entries) {
-      if (id === keepSessionId || entry.refreshing) continue;
+      if (id === keepSessionId || entry.refreshPromise || entry.reapPromise) continue;
       if (this.deps.getLiveSession(id)) continue;
       evictable.push({ id, entry });
     }
