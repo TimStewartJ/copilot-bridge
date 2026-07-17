@@ -346,15 +346,32 @@ describe("SessionManager bounded session lifecycle", () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const vanished = fakeSessionWithAgent("vanished");
+    let disconnectAttempt = 0;
+    let releaseDisconnect!: () => void;
+    vanished.disconnect.mockImplementation(() => {
+      disconnectAttempt++;
+      if (disconnectAttempt === 1) return Promise.reject(new Error("transient"));
+      return new Promise<void>((resolve) => {
+        releaseDisconnect = resolve;
+      });
+    });
     await manager.cacheResumedSession("vanished", vanished);
     await manager.agentRegistry.refresh("vanished", "test");
     expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
-    vanished.listTasks.mockRejectedValue(new Error("Session not found: vanished"));
+    vanished.listTasks.mockReset().mockRejectedValue(new Error("Session not found: vanished"));
 
     await manager.cacheResumedSession("next", fakeSession());
+    await vi.waitFor(() => expect(vanished.disconnect).toHaveBeenCalledTimes(2));
+
+    expect(vanished.listTasks).toHaveBeenCalledTimes(1);
+    expect(vanished.cancelTask).not.toHaveBeenCalled();
+    expect(vanished.removeTask).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.has(vanished)).toBe(true);
+    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
+
+    releaseDisconnect();
     await manager._drainCacheQueue();
 
-    expect(vanished.disconnect).not.toHaveBeenCalled();
     expect(manager.cleanupOwnership.has(vanished)).toBe(false);
     expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(0);
     expect(manager.cumulativeCleanupFailures).toBe(0);
@@ -368,17 +385,29 @@ describe("SessionManager bounded session lifecycle", () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const vanished = fakeSessionWithAgent("vanished", "idle");
+    let rejectDisconnect!: (error: Error) => void;
+    vanished.disconnect.mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      rejectDisconnect = reject;
+    }));
     await manager.cacheResumedSession("vanished", vanished);
     await manager.agentRegistry.refresh("vanished", "test");
+    vanished.listTasks.mockClear();
     vanished.cancelTask.mockRejectedValue(
       new Error("Request session.mode.set failed: Session not found: vanished"),
     );
 
     await manager.cacheResumedSession("next", fakeSession());
+    await vi.waitFor(() => expect(vanished.disconnect).toHaveBeenCalledTimes(1));
+
+    expect(vanished.listTasks).toHaveBeenCalledTimes(1);
+    expect(vanished.cancelTask).toHaveBeenCalledWith("vanished-agent");
+    expect(vanished.removeTask).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.has(vanished)).toBe(true);
+    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
+
+    rejectDisconnect(new Error("Session not found: vanished"));
     await manager._drainCacheQueue();
 
-    expect(vanished.cancelTask).toHaveBeenCalledWith("vanished-agent");
-    expect(vanished.disconnect).not.toHaveBeenCalled();
     expect(manager.cleanupOwnership.has(vanished)).toBe(false);
     expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(0);
     expect(manager.cumulativeCleanupFailures).toBe(0);
