@@ -99,8 +99,9 @@ async function runStopStateMachine(
   const survivorDetail = result.survivors?.length
     ? `; survivors=${result.survivors.map(({ pid }) => pid).join(",")}`
     : "";
+  const errorDetail = result.error ? `; error=${result.error}` : "";
   dependencies.log(
-    `${child.label} process tree stop failed: ${result.status}${survivorDetail}`,
+    `${child.label} process tree stop failed: ${result.status}${survivorDetail}${errorDetail}`,
   );
   return { ok: false, reason: result.status };
 }

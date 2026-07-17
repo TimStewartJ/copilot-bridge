@@ -15,6 +15,7 @@ import {
   shouldSpawnDetachedProcessGroup,
   terminateProcessTree,
   type ProcessIdentity,
+  type ProcessTreeTerminationResult,
 } from "./server/platform.js";
 import {
   createDeadline,
@@ -106,6 +107,10 @@ import {
   spawnLauncherChildIfRunning,
   waitForChildExit,
 } from "./launcher-process.js";
+import {
+  terminateProcessTreeWithExternalFixpoint,
+  type ProcessTreeTerminationHelperLaunch,
+} from "./launcher-process-tree-termination.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { openDatabase } from "./server/db.js";
 import { createManagementJobStore } from "./server/management-job-store.js";
@@ -129,6 +134,8 @@ const SOURCE_SERVER_ENTRY = "src/server/index.ts";
 const COMPILED_SERVER_ENTRY = "dist/server/index.js";
 const SOURCE_MANAGEMENT_JOB_RUNNER_ENTRY = "src/management-job-runner.ts";
 const COMPILED_MANAGEMENT_JOB_RUNNER_ENTRY = "dist/management-job-runner.js";
+const SOURCE_PROCESS_TREE_TERMINATION_HELPER_ENTRY = "src/launcher-process-tree-termination-helper.ts";
+const COMPILED_PROCESS_TREE_TERMINATION_HELPER_ENTRY = "dist/launcher-process-tree-termination-helper.js";
 if (!process.env.BRIDGE_LAUNCHER_LOG_PATH) {
   process.env.BRIDGE_LAUNCHER_LOG_PATH = join(DATA_DIR, "launcher.log");
 }
@@ -1086,6 +1093,31 @@ function asLauncherChild(label: string, child: ChildProcess | null): LauncherChi
   };
 }
 
+function processTreeTerminationHelperLaunch(): ProcessTreeTerminationHelperLaunch {
+  const sourceEntry = join(ROOT, SOURCE_PROCESS_TREE_TERMINATION_HELPER_ENTRY);
+  return {
+    command: NODE_PATH,
+    args: existsSync(sourceEntry)
+      ? [TSX_CLI, sourceEntry]
+      : [join(ROOT, COMPILED_PROCESS_TREE_TERMINATION_HELPER_ENTRY)],
+    cwd: ROOT,
+  };
+}
+
+function terminateServerProcessTree(
+  root: ProcessIdentity,
+  deadline: Deadline,
+): Promise<ProcessTreeTerminationResult> {
+  if (process.platform !== "win32") {
+    return terminateProcessTree(root, deadline);
+  }
+  return terminateProcessTreeWithExternalFixpoint(
+    root,
+    deadline,
+    processTreeTerminationHelperLaunch(),
+  );
+}
+
 async function shutdownAndExit(exitCode: number, reason: string): Promise<never> {
   if (!terminalShutdownPromise) {
     shuttingDown = true;
@@ -1128,7 +1160,7 @@ async function forceKillServerAndWait(
   log(reason);
   const outcome = await stopLauncherChild(
     asLauncherChild("server", existingServer),
-    { terminateProcessTree, waitForChildExit, log },
+    { terminateProcessTree: terminateServerProcessTree, waitForChildExit, log },
     { deadline },
   );
   if (outcome.ok && serverProcess === existingServer) {
@@ -1160,7 +1192,7 @@ async function gracefulStopServer(): Promise<boolean> {
   const gracefulDeadline = deadlineBefore(deadline, PROCESS_TREE_TERMINATION_BUDGET_MS);
   const outcome = await stopLauncherChild(
     asLauncherChild("server", existingServer),
-    { terminateProcessTree, waitForChildExit, log },
+    { terminateProcessTree: terminateServerProcessTree, waitForChildExit, log },
     {
       deadline,
       gracefulDeadline,

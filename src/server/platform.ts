@@ -322,6 +322,23 @@ function matchingIdentities(
   return identities.filter((identity) => identityMatches(table, identity));
 }
 
+function matchingProcessTrees(
+  table: Map<number, ProcessTableEntry>,
+  identities: ProcessIdentity[],
+): { survivors: ProcessIdentity[]; missingMarker: boolean } {
+  const survivors = new Map<string, ProcessIdentity>();
+  let missingMarker = false;
+  for (const identity of matchingIdentities(table, identities)) {
+    survivors.set(`${identity.pid}:${identity.startMarker}`, identity);
+    const collected = collectDescendantIdentities(identity.pid, table);
+    missingMarker ||= collected.missingMarker;
+    for (const descendant of collected.descendants) {
+      survivors.set(`${descendant.pid}:${descendant.startMarker}`, descendant);
+    }
+  }
+  return { survivors: [...survivors.values()], missingMarker };
+}
+
 async function requestWindowsTreeKill(
   identity: ProcessIdentity,
   deadline: Deadline,
@@ -425,7 +442,20 @@ export async function terminateProcessTree(
     };
   }
 
-  const survivors = matchingIdentities(verification.table, [root, ...descendants]);
+  const {
+    survivors,
+    missingMarker: survivorMissingMarker,
+  } = matchingProcessTrees(verification.table, [root, ...descendants]);
+  if (survivorMissingMarker) {
+    return {
+      ok: false,
+      status: "identity-unavailable",
+      root,
+      snapshot,
+      survivors,
+      error: "A surviving process in the captured tree did not have a creation marker.",
+    };
+  }
   if (survivors.length === 0) {
     return {
       ok: true,

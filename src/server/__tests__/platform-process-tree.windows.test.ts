@@ -1,17 +1,21 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createDeadline,
   sleepUntilDeadline,
 } from "../deadline.js";
+import { terminateProcessTreeWithExternalFixpoint } from "../../launcher-process-tree-termination.js";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
-  terminateProcessTree,
   type ProcessIdentity,
-  type ProcessTreeSnapshot,
-  type ProcessTreeTerminationResult,
 } from "../platform.js";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
+const TERMINATION_HELPER = join(ROOT, "src", "launcher-process-tree-termination-helper.ts");
 
 function waitForReady(child: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -73,29 +77,6 @@ function waitForMessage(child: ChildProcess, expected: string): Promise<void> {
     child.once("error", onError);
     child.on("message", onMessage);
   });
-}
-
-async function terminateWithSnapshotRetries(
-  identity: ProcessIdentity,
-): Promise<{ result: ProcessTreeTerminationResult; snapshot?: ProcessTreeSnapshot }> {
-  const deadline = createDeadline(90_000);
-  let snapshot: ProcessTreeSnapshot | undefined;
-  let result: ProcessTreeTerminationResult = {
-    ok: false,
-    status: "deadline-exceeded",
-    root: identity,
-  };
-
-  do {
-    result = await terminateProcessTree(
-      identity,
-      createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
-    );
-    snapshot ??= result.snapshot;
-    if (result.ok || result.status !== "snapshot-unavailable") break;
-  } while (await sleepUntilDeadline(100, deadline));
-
-  return { result, snapshot: result.snapshot ?? snapshot };
 }
 
 async function requestHelperCleanup(child: ChildProcess): Promise<void> {
@@ -167,11 +148,19 @@ describe.runIf(process.platform === "win32")("Windows process-tree integration",
       await churnStarted;
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      const { result, snapshot } = await terminateWithSnapshotRetries(rootIdentity);
+      const result = await terminateProcessTreeWithExternalFixpoint(
+        rootIdentity,
+        createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+        {
+          command: process.execPath,
+          args: [TSX_CLI, TERMINATION_HELPER],
+          cwd: ROOT,
+        },
+      );
 
       expect(result.ok).toBe(true);
       expect(["terminated", "already-exited"]).toContain(result.status);
-      expect(snapshot?.descendants.length).toBeGreaterThan(0);
+      expect(result.snapshot?.descendants.length).toBeGreaterThan(0);
       await waitForExit(root);
       expect(root.exitCode !== null || root.signalCode !== null).toBe(true);
       expect(() => process.kill(unrelatedIdentity!.pid, 0)).not.toThrow();

@@ -258,6 +258,37 @@ describe("process tree platform helpers", () => {
     expect(execFileMock).toHaveBeenCalledTimes(3);
   });
 
+  it("captures descendants created after the initial snapshot as survivors", async () => {
+    setPlatform("win32");
+    let snapshots = 0;
+    mockExec((command, _args, _options, callback) => {
+      if (command === "powershell.exe") {
+        snapshots++;
+        callback(
+          null,
+          snapshots === 1
+            ? "100 1 1000"
+            : ["100 1 1000", "101 100 1001"].join("\n"),
+          "",
+        );
+        return;
+      }
+      callback(null, "", "");
+    });
+
+    await expect(terminateProcessTree(
+      { pid: 100, startMarker: "1000" },
+      createDeadline(15_000),
+    )).resolves.toMatchObject({
+      ok: false,
+      status: "survivors",
+      survivors: [
+        { pid: 100, startMarker: "1000" },
+        { pid: 101, startMarker: "1001" },
+      ],
+    });
+  });
+
   it("threads the remaining aggregate deadline through taskkill without a fallback", async () => {
     setPlatform("win32");
     let taskkillTimeoutMs = Number.POSITIVE_INFINITY;
