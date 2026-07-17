@@ -1268,14 +1268,18 @@ export class SessionManager {
     if (!record) return true;
 
     let lastOutcome: "rejected" | "timed-out" = "rejected";
+    let staleTaskCleanup = false;
     for (let cycleAttempt = 1; cycleAttempt <= DISCONNECT_MAX_ATTEMPTS; cycleAttempt++) {
       const startedAt = Date.now();
       record.attempts++;
       let taskOutcome: "fulfilled" | "rejected" | "timed-out" = "fulfilled";
       try {
-        await this.reapSessionTasks(sessionId, session);
+        if (!staleTaskCleanup) {
+          await this.reapSessionTasks(sessionId, session);
+        }
       } catch (error) {
         if (isStaleAgentSessionError(error)) {
+          staleTaskCleanup = true;
           this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
             reason,
             attempt: record.attempts,
@@ -1284,28 +1288,29 @@ export class SessionManager {
             error: error instanceof Error ? error.message : String(error),
             ...this.getSessionCacheState(),
           });
-          this.completeSessionCleanup(sessionId, session, reason, "task cleanup found the session no longer addressable");
-          return true;
+        } else {
+          taskOutcome = error instanceof SessionTaskCleanupTimeoutError ? "timed-out" : "rejected";
+          lastOutcome = taskOutcome;
+          this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
+            reason,
+            attempt: record.attempts,
+            cycleAttempt,
+            outcome: taskOutcome,
+            error: error instanceof Error ? error.message : String(error),
+            ...this.getSessionCacheState(),
+          });
+          continue;
         }
-        taskOutcome = error instanceof SessionTaskCleanupTimeoutError ? "timed-out" : "rejected";
-        lastOutcome = taskOutcome;
+      }
+      if (!staleTaskCleanup) {
         this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
           reason,
           attempt: record.attempts,
           cycleAttempt,
           outcome: taskOutcome,
-          error: error instanceof Error ? error.message : String(error),
           ...this.getSessionCacheState(),
         });
-        continue;
       }
-      this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
-        reason,
-        attempt: record.attempts,
-        cycleAttempt,
-        outcome: taskOutcome,
-        ...this.getSessionCacheState(),
-      });
       const result = await settleByDeadline<void>(
         () => Promise.resolve(session.disconnect?.()).then(() => undefined),
         createDeadline(DISCONNECT_TIMEOUT_MS),
@@ -1326,7 +1331,11 @@ export class SessionManager {
           sessionId,
           session,
           reason,
-          staleSession ? "disconnect found the session no longer addressable" : undefined,
+          staleSession
+            ? "disconnect found the session no longer addressable"
+            : staleTaskCleanup
+              ? "task cleanup found the session no longer addressable"
+              : undefined,
         );
         return true;
       }
