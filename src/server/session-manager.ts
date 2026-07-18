@@ -1269,7 +1269,13 @@ export class SessionManager {
 
     let lastOutcome: "rejected" | "timed-out" = "rejected";
     let staleTaskCleanup = false;
-    for (let cycleAttempt = 1; cycleAttempt <= DISCONNECT_MAX_ATTEMPTS; cycleAttempt++) {
+    let disconnectAttempts = 0;
+    for (
+      let cycleAttempt = 1;
+      cycleAttempt <= DISCONNECT_MAX_ATTEMPTS
+        || (staleTaskCleanup && disconnectAttempts < DISCONNECT_MAX_ATTEMPTS);
+      cycleAttempt++
+    ) {
       const startedAt = Date.now();
       record.attempts++;
       let taskOutcome: "fulfilled" | "rejected" | "timed-out" = "fulfilled";
@@ -1311,6 +1317,7 @@ export class SessionManager {
           ...this.getSessionCacheState(),
         });
       }
+      disconnectAttempts++;
       const result = await settleByDeadline<void>(
         () => Promise.resolve(session.disconnect?.()).then(() => undefined),
         createDeadline(DISCONNECT_TIMEOUT_MS),
@@ -1320,6 +1327,7 @@ export class SessionManager {
         reason,
         attempt: record.attempts,
         cycleAttempt,
+        disconnectAttempt: disconnectAttempts,
         outcome: staleSession ? "stale-session" : result.status,
         ...(result.status === "rejected"
           ? { error: result.error instanceof Error ? result.error.message : String(result.error) }
