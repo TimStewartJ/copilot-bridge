@@ -1562,7 +1562,10 @@ export class SessionRunner {
       return { event: terminalEvent, assistantContent: assistantContentFromDisk };
     };
 
-    const resumeFreshRecoverySession = async (): Promise<any> => {
+    const resumeFreshRecoverySession = async (): Promise<{
+      session: AgentSession;
+      lease: SessionResumeLease;
+    }> => {
       const resumeStart = Date.now();
       console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
       const resumeLease = await this.deps.beginSessionResume(
@@ -1577,9 +1580,10 @@ export class SessionRunner {
         const resumeDuration = Date.now() - resumeStart;
         this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
         console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
-        return recoveredSession;
-      } finally {
+        return { session: recoveredSession, lease: resumeLease };
+      } catch (error) {
         this.deps.endSessionResume(resumeLease);
+        throw error;
       }
     };
 
@@ -1591,6 +1595,7 @@ export class SessionRunner {
       const recoveryStartedAt = Date.now();
       const attemptIndex = ++recoveryAttemptIndex;
       lastRecoveryAttempt = recoveryStartedAt;
+      let recoveryResumeLease: SessionResumeLease | undefined;
       const recordRecoveryOutcome = (
         outcome: string,
         metadata: Record<string, unknown> = {},
@@ -1619,7 +1624,9 @@ export class SessionRunner {
         console.warn(`[sdk] [${sid}] 🔄 Stall recovery: re-subscribing (${elapsed}s total)...`);
         const previousSession = session;
         const previousUnsub = unsub;
-        const recoveredSession = await resumeFreshRecoverySession();
+        const resumed = await resumeFreshRecoverySession();
+        const recoveredSession = resumed.session;
+        recoveryResumeLease = resumed.lease;
 
         if (runController.isCompleted() || this.deps.runStateController.getSessionRunState(sessionId) !== "stalled") {
           await this.deps.disposeSession(
@@ -1657,6 +1664,8 @@ export class SessionRunner {
         };
 
         const recoverySession = await this.deps.replaceCachedSession(sessionId, previousSession, recoveredSession);
+        this.deps.endSessionResume(recoveryResumeLease);
+        recoveryResumeLease = undefined;
         const bufferedRecoveredEvents: any[] = [];
         let acceptingRecoveredEvents = false;
         const recoveredUnsub = recoverySession.on((event: any) => {
@@ -1701,6 +1710,9 @@ export class SessionRunner {
           console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
         }
       } finally {
+        if (recoveryResumeLease) {
+          this.deps.endSessionResume(recoveryResumeLease);
+        }
         recoveryInProgress = false;
       }
     };

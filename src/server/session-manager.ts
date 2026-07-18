@@ -642,8 +642,10 @@ export class SessionManager {
   private processTreeSampleStatus: SessionCapacityRuntimeStatus["processes"]["sampleStatus"] = "never";
   private processTreeSampleInFlight: Promise<void> | null = null;
   private processTreeSampleSequence = 0;
-  private readonly settledProcessReservations = new Map<number, number>();
+  private readonly settledProcessReservations = new Map<number, Map<number, number>>();
   private readonly sessionBackendOwners = new WeakMap<AgentSession, BackendSessionOwner>();
+  private readonly sessionResumeLeases = new WeakMap<AgentSession, SessionResumeLease>();
+  private readonly ownedSessionResumeLeases = new WeakSet<SessionResumeLease>();
   private readonly disposableSessionOwners = new Map<string, BackendGeneration>();
   private sessionCapacityWaitTimeoutMs = SessionManager.resolvePositiveNumberEnv(
     "BRIDGE_SESSION_CAPACITY_WAIT_SECONDS",
@@ -1115,10 +1117,33 @@ export class SessionManager {
     for (const reservation of this.resumingCapacityReservations.values()) {
       total += reservation.processSlots;
     }
-    for (const processSlots of this.settledProcessReservations.values()) {
-      total += processSlots;
+    for (const generationReservations of this.settledProcessReservations.values()) {
+      for (const processSlots of generationReservations.values()) {
+        total += processSlots;
+      }
     }
     return total;
+  }
+
+  private retainSettledProcessReservation(
+    backendGeneration: number,
+    reservation: SessionCapacityReservation,
+  ): void {
+    const settledAtSequence = this.processTreeSampleSequence;
+    let generationReservations = this.settledProcessReservations.get(backendGeneration);
+    if (!generationReservations) {
+      generationReservations = new Map<number, number>();
+      this.settledProcessReservations.set(backendGeneration, generationReservations);
+    }
+    generationReservations.set(
+      settledAtSequence,
+      (generationReservations.get(settledAtSequence) ?? 0) + reservation.processSlots,
+    );
+  }
+
+  private clearSettledProcessReservationsForGeneration(backendGeneration: number): void {
+    if (!this.settledProcessReservations.delete(backendGeneration)) return;
+    this.notifySessionCapacityChanged();
   }
 
   private assertSessionCapacityAvailable(
@@ -1335,11 +1360,7 @@ export class SessionManager {
       && this.backendGeneration === lease.generation
       && this.backend === lease.generation.backend
     ) {
-      const settledAtSequence = this.processTreeSampleSequence;
-      this.settledProcessReservations.set(
-        settledAtSequence,
-        (this.settledProcessReservations.get(settledAtSequence) ?? 0) + lease.reservation.processSlots,
-      );
+      this.retainSettledProcessReservation(lease.generation.id, lease.reservation);
     }
     this.notifySessionCapacityChanged();
   }
@@ -1716,9 +1737,14 @@ export class SessionManager {
         this.lastProcessTreeDescendantCount = descendantCount;
         this.lastProcessTreeSampleSucceededAt = sampledAt;
         this.processTreeSampleStatus = "sampled";
-        for (const settledAtSequence of this.settledProcessReservations.keys()) {
-          if (settledAtSequence < sampleSequence) {
-            this.settledProcessReservations.delete(settledAtSequence);
+        for (const [backendGeneration, generationReservations] of this.settledProcessReservations) {
+          for (const settledAtSequence of generationReservations.keys()) {
+            if (settledAtSequence < sampleSequence) {
+              generationReservations.delete(settledAtSequence);
+            }
+          }
+          if (generationReservations.size === 0) {
+            this.settledProcessReservations.delete(backendGeneration);
           }
         }
         this.processTreeBaselineCount ??= nodeCount;
@@ -1869,6 +1895,8 @@ export class SessionManager {
         this.sessionObjects.set(sessionId, session);
       }
 
+      const resumeLease = this.sessionResumeLeases.get(session);
+      if (resumeLease) this.ownedSessionResumeLeases.add(resumeLease);
       this.sessionTreeLastActivityAt.set(sessionId, Date.now());
       this.enforceSessionCacheLimitUnsafe(sessionId);
       return session;
@@ -2126,7 +2154,19 @@ export class SessionManager {
 
   private endSessionResume(lease: SessionResumeLease): void {
     const { sessionId } = lease;
-    this.resumingCapacityReservations.delete(lease.token);
+    const reservation = this.resumingCapacityReservations.get(lease.token);
+    const released = this.resumingCapacityReservations.delete(lease.token);
+    if (
+      released
+      && reservation
+      && this.ownedSessionResumeLeases.has(lease)
+      && this.backendGeneration?.id === lease.backendGeneration
+      && this.backendGeneration.state === "ready"
+      && this.backend === this.backendGeneration.backend
+    ) {
+      this.retainSettledProcessReservation(lease.backendGeneration, reservation);
+    }
+    this.ownedSessionResumeLeases.delete(lease);
     if (lease.tracksResuming) {
       const count = this.resumingSessions.get(sessionId) ?? 0;
       if (count <= 1) {
@@ -2526,13 +2566,15 @@ export class SessionManager {
     if (!generation) {
       throw new SessionBackendUnavailableError("generation-fenced", lease?.backendGeneration ?? 0);
     }
-    return this.runBackendSessionOperation(
+    const session = await this.runBackendSessionOperation(
       generation,
       "resume",
       () => generation.backend.resumeSession(sessionId, sessionConfig),
       this.sessionResumeTimeoutMs,
       false,
     );
+    if (lease) this.sessionResumeLeases.set(session, lease);
+    return session;
   }
 
   private async deleteDisposableSession(sessionId: string): Promise<void> {
@@ -2654,8 +2696,7 @@ export class SessionManager {
       || this.backend !== generation.backend
     ) return;
 
-    this.settledProcessReservations.clear();
-    this.notifySessionCapacityChanged();
+    this.clearSettledProcessReservationsForGeneration(generation.id);
     this.backend = null;
     this.backendCreatedAtMs = null;
     let nextBackend: AgentBackend;
@@ -2732,6 +2773,7 @@ export class SessionManager {
 
     const previousBackend = this.backend;
     if (!previousBackend) throw new Error("SessionManager not initialized");
+    const previousGeneration = this.getCurrentBackendGeneration();
 
     // Set backendRotation synchronously before the first await so concurrent
     // callers (e.g. listModels) join this rotation rather than starting a new one.
@@ -2756,6 +2798,7 @@ export class SessionManager {
         }
         throw error;
       }
+      this.clearSettledProcessReservationsForGeneration(previousGeneration.id);
 
       const nextClient = this.createBackend();
       try {

@@ -450,6 +450,42 @@ describe("SessionManager backend generation recovery", () => {
     manager.stopSessionCacheSweep();
   });
 
+  it("retains cold and replacement resume projections without double-counting cached warmups", async () => {
+    vi.useFakeTimers();
+    const sampleProcessTree = vi.fn(async () => processSnapshot(8));
+    const backend = fakeBackend();
+    const { manager } = await createManager([backend], sampleProcessTree);
+    manager.maxProcessTreeDescendants = 10;
+    manager.sessionCapacityWaitTimeoutMs = 0;
+
+    await manager.warmSession("resume-session");
+    expect(backend.resumeSession).toHaveBeenCalledOnce();
+    expect(manager.getRuntimeActivity().capacity.processes).toMatchObject({
+      actualDescendants: 8,
+      projectedReservations: 1,
+      used: 9,
+    });
+
+    await manager.warmSession("resume-session");
+    expect(backend.resumeSession).toHaveBeenCalledOnce();
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
+
+    await manager.reloadSession("resume-session");
+    expect(backend.resumeSession).toHaveBeenCalledTimes(2);
+    expect(sampleProcessTree).toHaveBeenCalledOnce();
+    expect(manager.getRuntimeActivity().capacity.processes).toMatchObject({
+      actualDescendants: 8,
+      projectedReservations: 2,
+      used: 10,
+    });
+
+    await expect(manager.warmSession("blocked-resume")).rejects.toMatchObject({
+      reason: "process-pressure",
+    });
+    expect(backend.resumeSession).toHaveBeenCalledTimes(2);
+    manager.stopSessionCacheSweep();
+  });
+
   it("admits without a first sample but retains a last-known-high block when sampling is unavailable", async () => {
     vi.useFakeTimers();
     const slowSample = vi.fn(() => new Promise<ProcessTreeSnapshot | null>(() => {}));

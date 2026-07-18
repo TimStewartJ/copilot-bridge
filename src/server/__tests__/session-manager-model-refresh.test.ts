@@ -121,6 +121,44 @@ describe("SessionManager model refresh", () => {
     expect(result.clientCreatedAt).toBe("2026-01-01T00:05:00.000Z");
   });
 
+  it("clears only the stopped generation's settled process projections during rotation", async () => {
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    (oldBackend.createSession as any).mockResolvedValueOnce({
+      sessionId: "old-generation-session",
+      disconnect: vi.fn(async () => {}),
+    });
+    (freshBackend.createSession as any).mockResolvedValueOnce({
+      sessionId: "replacement-generation-session",
+      disconnect: vi.fn(async () => {}),
+    });
+    const { manager } = createManager([oldBackend, freshBackend]);
+
+    await manager.initialize();
+    const oldGeneration = (manager as any).backendGeneration.id;
+    const expectedReplacementGeneration = oldGeneration + 1;
+    await manager.createSession();
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
+    expect((manager as any).settledProcessReservations.has(oldGeneration)).toBe(true);
+    (manager as any).settledProcessReservations.set(
+      expectedReplacementGeneration,
+      new Map([[(manager as any).processTreeSampleSequence, 2]]),
+    );
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(3);
+
+    await manager.refreshModels();
+    const replacementGeneration = (manager as any).backendGeneration.id;
+    expect(replacementGeneration).toBe(expectedReplacementGeneration);
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(2);
+    expect((manager as any).settledProcessReservations.has(oldGeneration)).toBe(false);
+    expect((manager as any).settledProcessReservations.has(replacementGeneration)).toBe(true);
+
+    await manager.createSession();
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(3);
+    expect((manager as any).settledProcessReservations.has(replacementGeneration)).toBe(true);
+    expect((manager as any).settledProcessReservations.has(oldGeneration)).toBe(false);
+  });
+
   it("constructs the agent backend through a zero-argument factory", async () => {
     const oldBackend = createBackend([]);
     const freshBackend = createBackend([]);
