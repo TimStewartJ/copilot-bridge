@@ -23,15 +23,23 @@ export type ServerRestartSafetyState = {
   unsafeReason: string | null;
 };
 
-export function createServerRestartSafetyState(): ServerRestartSafetyState {
-  return { unsafeReason: null };
+export function createServerRestartSafetyState(
+  unsafeReason: string | null = null,
+): ServerRestartSafetyState {
+  return { unsafeReason };
+}
+
+export function isVerifiedServerCleanup(
+  result: ProcessTreeTerminationResult,
+): boolean {
+  return result.ok && result.status === "terminated" && result.snapshot !== undefined;
 }
 
 export function updateServerRestartSafetyAfterCleanup(
   state: ServerRestartSafetyState,
   result: ProcessTreeTerminationResult,
 ): void {
-  state.unsafeReason = result.ok && result.status === "terminated" && result.snapshot
+  state.unsafeReason = isVerifiedServerCleanup(result)
     ? null
     : `${result.status}${!result.ok && result.error ? `: ${result.error}` : ""}`;
 }

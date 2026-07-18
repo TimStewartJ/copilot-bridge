@@ -103,6 +103,7 @@ import {
 } from "./launcher-recovery.js";
 import {
   createServerRestartSafetyState,
+  isVerifiedServerCleanup,
   isChildProcessActive,
   resolveServerLaunchDistributionMode,
   spawnLauncherChildIfRunning,
@@ -110,6 +111,12 @@ import {
   updateServerRestartSafetyAfterCleanup,
   waitForChildExit,
 } from "./launcher-process.js";
+import {
+  clearUnsafeServerCleanupState,
+  persistUnsafeServerCleanupState,
+  readUnsafeServerCleanupState,
+  UNSAFE_SERVER_CLEANUP_STATE_FILE_NAME,
+} from "./launcher-unsafe-cleanup-state.js";
 import {
   PROCESS_TREE_TERMINATION_HELPER_MODE,
   terminateProcessTreeWithExternalFixpoint,
@@ -134,6 +141,7 @@ const IN_PROGRESS_SIGNAL_FILE = join(DATA_DIR, "restart-in-progress.json");
 const RESTART_STATE_FILE = join(DATA_DIR, "restart-state.json");
 const PRE_DEPLOY_SHA_FILE = join(DATA_DIR, "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(DATA_DIR, "rollback-required");
+const UNSAFE_SERVER_CLEANUP_STATE_FILE = join(DATA_DIR, UNSAFE_SERVER_CLEANUP_STATE_FILE_NAME);
 const SOURCE_SERVER_ENTRY = "src/server/index.ts";
 const COMPILED_SERVER_ENTRY = "dist/server/index.js";
 const SOURCE_MANAGEMENT_JOB_RUNNER_ENTRY = "src/management-job-runner.ts";
@@ -208,8 +216,10 @@ let steadyHealthFailures = 0;
 let healthPollInFlight = false;
 let recoveringServer = false;
 let tunnelStatusLogged = false;
-const serverRestartSafety = createServerRestartSafetyState();
-let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+const persistedUnsafeServerCleanup = readUnsafeServerCleanupState(UNSAFE_SERVER_CLEANUP_STATE_FILE);
+const serverRestartSafety = createServerRestartSafetyState(persistedUnsafeServerCleanup?.reason ?? null);
+let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE)
+  || serverRestartSafety.unsafeReason !== null;
 let currentServerPort = resolveBridgePort();
 let lastCommandFailure:
   | {
@@ -1115,29 +1125,69 @@ function processTreeTerminationHelperLaunch(): ProcessTreeTerminationHelperLaunc
   };
 }
 
-function terminateServerProcessTree(
+async function terminateServerProcessTree(
   root: ProcessIdentity,
   deadline: Deadline,
 ): Promise<ProcessTreeTerminationResult> {
   if (process.platform !== "win32") {
     return terminateProcessTree(root, deadline);
   }
-  return terminateProcessTreeWithExternalFixpoint(
+  try {
+    const persisted = persistUnsafeServerCleanupState(
+      UNSAFE_SERVER_CLEANUP_STATE_FILE,
+      root,
+      "Server process-tree cleanup began without an established containment boundary.",
+    );
+    serverRestartSafety.unsafeReason = persisted.reason;
+    suppressAutoRecovery = true;
+  } catch (error) {
+    const result: ProcessTreeTerminationResult = {
+      ok: false,
+      status: "unverified",
+      root,
+      error: `Unable to persist unsafe cleanup state before termination: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+    updateServerRestartSafetyAfterCleanup(serverRestartSafety, result);
+    suppressAutoRecovery = true;
+    log(`❌ ${result.error}`);
+    return result;
+  }
+
+  const result = await terminateProcessTreeWithExternalFixpoint(
     root,
     deadline,
     processTreeTerminationHelperLaunch(),
-  ).then((result) => {
-    updateServerRestartSafetyAfterCleanup(serverRestartSafety, result);
-    if (!result.ok) {
-      suppressAutoRecovery = true;
-      log(
-        `❌ Server cleanup was not verified; all replacement starts are blocked until verified cleanup or manual launcher recovery: ${serverRestartSafety.unsafeReason}`,
-      );
-    } else {
+  );
+  if (isVerifiedServerCleanup(result)) {
+    try {
+      clearUnsafeServerCleanupState(UNSAFE_SERVER_CLEANUP_STATE_FILE);
+      updateServerRestartSafetyAfterCleanup(serverRestartSafety, result);
       suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+      return result;
+    } catch (error) {
+      const persistenceFailure: ProcessTreeTerminationResult = {
+        ok: false,
+        status: "unverified",
+        root,
+        snapshot: result.snapshot,
+        error: `Verified cleanup completed, but persisted unsafe state could not be cleared: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+      updateServerRestartSafetyAfterCleanup(serverRestartSafety, persistenceFailure);
+      suppressAutoRecovery = true;
+      return persistenceFailure;
     }
-    return result;
-  });
+  }
+
+  updateServerRestartSafetyAfterCleanup(serverRestartSafety, result);
+  suppressAutoRecovery = true;
+  log(
+    `❌ Server cleanup was not verified; all replacement starts are blocked until verified cleanup or explicit removal of ${UNSAFE_SERVER_CLEANUP_STATE_FILE}: ${serverRestartSafety.unsafeReason}`,
+  );
+  return result;
 }
 
 async function shutdownAndExit(exitCode: number, reason: string): Promise<never> {
