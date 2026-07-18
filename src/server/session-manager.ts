@@ -452,6 +452,10 @@ function isModelRefreshClientRotationTimeoutError(error: unknown): error is Mode
   return error instanceof ModelRefreshClientRotationTimeoutError;
 }
 
+function getBackendStopErrors(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) && value.length > 0 ? value : undefined;
+}
+
 function withModelRefreshClientRotationTimeout<T>(
   operation: ModelRefreshClientRotationOperation,
   promise: Promise<T>,
@@ -2639,7 +2643,7 @@ export class SessionManager {
     await Promise.allSettled(cleanups);
   }
 
-  private async forceStopBackendForRecovery(backend: AgentBackend): Promise<void> {
+  private async forceStopBackendWithinDeadline(backend: AgentBackend, context: string): Promise<void> {
     if (typeof backend.forceStop !== "function") return;
     const outcome = await settleByDeadline(
       () => backend.forceStop!(),
@@ -2647,7 +2651,7 @@ export class SessionManager {
     );
     if (outcome.status !== "fulfilled") {
       console.error(
-        `[sdk] Backend recovery force stop ${outcome.status === "timed-out" ? "timed out" : "failed"}:`,
+        `[sdk] ${context} force stop ${outcome.status === "timed-out" ? "timed out" : "failed"}:`,
         outcome.status === "rejected" ? outcome.error : "",
       );
     }
@@ -2682,11 +2686,9 @@ export class SessionManager {
       ? stopOutcome.error
       : stopOutcome.status === "timed-out"
         ? "backend stop verification timed out"
-        : Array.isArray(stopOutcome.value) && stopOutcome.value.length > 0
-          ? stopOutcome.value
-          : undefined;
+        : getBackendStopErrors(stopOutcome.value);
     if (stopFailure !== undefined) {
-      await this.forceStopBackendForRecovery(generation.backend);
+      await this.forceStopBackendWithinDeadline(generation.backend, "Backend recovery");
       this.requestRestartForBackendRecovery(generation, stopFailure);
       return;
     }
@@ -2712,7 +2714,7 @@ export class SessionManager {
       createDeadline(this.backendRecoveryStartTimeoutMs),
     );
     if (startOutcome.status !== "fulfilled") {
-      await this.forceStopBackendForRecovery(nextBackend);
+      await this.forceStopBackendWithinDeadline(nextBackend, "Backend recovery replacement");
       this.requestRestartForBackendRecovery(
         generation,
         startOutcome.status === "rejected" ? startOutcome.error : "replacement backend start timed out",
@@ -2720,7 +2722,7 @@ export class SessionManager {
       return;
     }
     if (this.shuttingDown || this.backendGeneration !== generation) {
-      await this.forceStopBackendForRecovery(nextBackend);
+      await this.forceStopBackendWithinDeadline(nextBackend, "Backend recovery replacement");
       return;
     }
     const nextGeneration = this.createBackendGeneration(nextBackend);
@@ -2783,8 +2785,9 @@ export class SessionManager {
       await this.evictAllCachedSessions();
       console.log("[sdk] Rotating agent backend for model refresh...");
       this.backend = null;
+      let stopResult: unknown;
       try {
-        await withModelRefreshClientRotationTimeout(
+        stopResult = await withModelRefreshClientRotationTimeout(
           MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.stopPrevious,
           previousBackend.stop(),
         );
@@ -2797,6 +2800,15 @@ export class SessionManager {
           this.backend = previousBackend;
         }
         throw error;
+      }
+      const stopErrors = getBackendStopErrors(stopResult);
+      if (stopErrors) {
+        this.backendCreatedAtMs = null;
+        await this.forceStopBackendWithinDeadline(previousBackend, "Model refresh");
+        throw new Error(
+          `Agent backend model-refresh rotation returned ${stopErrors.length} stop error(s); shutdown was not verified.`,
+          { cause: stopErrors },
+        );
       }
       this.clearSettledProcessReservationsForGeneration(previousGeneration.id);
 

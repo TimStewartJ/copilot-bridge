@@ -159,6 +159,31 @@ describe("SessionManager model refresh", () => {
     expect((manager as any).settledProcessReservations.has(oldGeneration)).toBe(false);
   });
 
+  it("retains projections and refuses replacement when stop returns SDK errors", async () => {
+    const oldBackend = createBackend([]);
+    (oldBackend.stop as any).mockResolvedValueOnce([new Error("SDK child process remained alive")]);
+    (oldBackend.createSession as any).mockResolvedValueOnce({
+      sessionId: "unverified-stop-session",
+      disconnect: vi.fn(async () => {}),
+    });
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    const { manager, createBackendSpy } = createManager([oldBackend, freshBackend]);
+
+    await manager.initialize();
+    const oldGeneration = (manager as any).backendGeneration.id;
+    await manager.createSession();
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
+
+    await expect(manager.refreshModels()).rejects.toThrow("shutdown was not verified");
+
+    expect(oldBackend.forceStop).toHaveBeenCalledOnce();
+    expect(createBackendSpy).toHaveBeenCalledOnce();
+    expect(freshBackend.start).not.toHaveBeenCalled();
+    expect(manager.getBackendCreatedAt()).toBeNull();
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
+    expect((manager as any).settledProcessReservations.has(oldGeneration)).toBe(true);
+  });
+
   it("constructs the agent backend through a zero-argument factory", async () => {
     const oldBackend = createBackend([]);
     const freshBackend = createBackend([]);
