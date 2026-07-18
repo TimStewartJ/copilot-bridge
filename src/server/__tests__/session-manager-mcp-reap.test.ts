@@ -342,7 +342,7 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.cumulativeCleanupFailures).toBe(0);
   });
 
-  it("self-heals when task cleanup finds the upstream session already absent", async () => {
+  it("preserves the full disconnect retry budget after task cleanup becomes stale", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const vanished = fakeSessionWithAgent("vanished");
@@ -358,12 +358,14 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager.cacheResumedSession("vanished", vanished);
     await manager.agentRegistry.refresh("vanished", "test");
     expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
-    vanished.listTasks.mockReset().mockRejectedValue(new Error("Session not found: vanished"));
+    vanished.listTasks.mockReset()
+      .mockRejectedValueOnce(new Error("transient task cleanup failure"))
+      .mockRejectedValue(new Error("Session not found: vanished"));
 
     await manager.cacheResumedSession("next", fakeSession());
     await vi.waitFor(() => expect(vanished.disconnect).toHaveBeenCalledTimes(2));
 
-    expect(vanished.listTasks).toHaveBeenCalledTimes(1);
+    expect(vanished.listTasks).toHaveBeenCalledTimes(2);
     expect(vanished.cancelTask).not.toHaveBeenCalled();
     expect(vanished.removeTask).not.toHaveBeenCalled();
     expect(manager.cleanupOwnership.has(vanished)).toBe(true);
