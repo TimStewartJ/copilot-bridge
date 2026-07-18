@@ -164,7 +164,10 @@ import {
   type SessionNameAutogenerator,
 } from "./session-name-autogen.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
-import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
+import {
+  DISPOSABLE_TITLE_SESSION_ID_PREFIX,
+  isDisposableTitleSessionId,
+} from "./session-name-generator.js";
 import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
 export type { DerivedModelState } from "./session-events-model.js";
@@ -229,6 +232,7 @@ const DEFAULT_SESSION_CAPACITY_UNITS = 64;
 const DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT = 0.25;
 const DEFAULT_SESSION_CAPACITY_WAIT_SECONDS = 30;
 const SESSION_CAPACITY_WAIT_POLL_MS = 500;
+const NATIVE_TOOL_WARMUP_TIMEOUT_MS = 15_000;
 
 type SessionCapacityProfile = {
   localMcpCount: number;
@@ -317,6 +321,13 @@ type SessionCleanupRecord = {
   capacityUnits: number;
   lastOutcome?: "rejected" | "timed-out";
   promise?: Promise<boolean>;
+};
+
+type NativeToolWarmupRecord = {
+  session: AgentSession;
+  promise: Promise<void>;
+  cancelled: boolean;
+  nextSession?: AgentSession;
 };
 
 class SessionTaskCleanupTimeoutError extends Error {
@@ -553,6 +564,7 @@ export class SessionManager {
   private cacheQueue: Promise<void> = Promise.resolve();
   private cleanupQueue: Promise<void> = Promise.resolve();
   private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
+  private readonly nativeToolWarmups = new Map<string, NativeToolWarmupRecord>();
   private readonly sessionTreeLastActivityAt = new Map<string, number>();
   private sessionCacheSweepHandle?: ReturnType<typeof setInterval>;
   private cumulativeCleanupFailures = 0;
@@ -589,6 +601,7 @@ export class SessionManager {
   private sessionDiskListCacheGeneration = 0;
   private warmSessionPromises = new Map<string, Promise<void>>();
   private slashCommandListCache = new Map<string, AgentSlashCommandInfo[]>();
+  private shuttingDown = false;
   private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
   private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
@@ -642,6 +655,7 @@ export class SessionManager {
       isSessionBusy: (sessionId) => this.isSessionBusy(sessionId),
       onWorkspaceChange: (sessionId, { busy }) => {
         if (busy) {
+          this.cancelNativeToolWarmup(sessionId);
           this.pendingSessionEvictions.add(sessionId);
         } else {
           this.scheduleCacheOperation(
@@ -1404,9 +1418,17 @@ export class SessionManager {
     }
   }
 
+  private cancelNativeToolWarmup(sessionId: string, expectedSession?: AgentSession): void {
+    const warmup = this.nativeToolWarmups.get(sessionId);
+    if (!warmup || (expectedSession && warmup.session !== expectedSession)) return;
+    warmup.cancelled = true;
+    this.nativeToolWarmups.delete(sessionId);
+  }
+
   private removeReadySessionUnsafe(sessionId: string, expectedSession?: AgentSession): AgentSession | undefined {
     const session = this.sessionObjects.get(sessionId);
     if (!session || (expectedSession && session !== expectedSession)) return undefined;
+    this.cancelNativeToolWarmup(sessionId, session);
     this.sessionObjects.delete(sessionId);
     this.sessionTreeLastActivityAt.delete(sessionId);
     this.liveSessionModelState.delete(sessionId);
@@ -1586,6 +1608,7 @@ export class SessionManager {
       }
 
       if (current !== session) {
+        if (current) this.cancelNativeToolWarmup(sessionId, current);
         this.sessionObjects.delete(sessionId);
         this.sessionObjects.set(sessionId, session);
         this.slashCommandListCache.delete(sessionId);
@@ -1689,6 +1712,7 @@ export class SessionManager {
   private getProtectedSessionTreeIds(extraProtectedId?: string): Set<string> {
     const protectedIds = new Set(this.getActiveSessions());
     if (extraProtectedId) protectedIds.add(extraProtectedId);
+    for (const sessionId of this.nativeToolWarmups.keys()) protectedIds.add(sessionId);
     for (const sessionId of this.sessionObjects.keys()) {
       if (this.agentRegistry.hasRunningAgents(sessionId)) protectedIds.add(sessionId);
     }
@@ -1773,6 +1797,7 @@ export class SessionManager {
 
   private markCachedSessionForEviction(sessionId: string, reason: string): void {
     if (!this.sessionObjects.has(sessionId)) return;
+    this.cancelNativeToolWarmup(sessionId);
     const alreadyPending = this.pendingSessionEvictions.has(sessionId);
     this.pendingSessionEvictions.add(sessionId);
     if (!alreadyPending) {
@@ -1796,6 +1821,7 @@ export class SessionManager {
    */
   private deferMcpStatusSessionEviction(sessionId: string, reason: string): void {
     if (!this.sessionObjects.has(sessionId)) return;
+    this.cancelNativeToolWarmup(sessionId);
     const alreadyPending = this.pendingSessionEvictions.has(sessionId);
     this.pendingSessionEvictions.add(sessionId);
     if (!alreadyPending) {
@@ -2012,17 +2038,30 @@ export class SessionManager {
     return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
   }
 
-  private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
-    if (!this.shouldUseNativeBridgeTools() || !this.backend?.capabilities.toolMetadataWarmup) return;
-    if (typeof session.initializeTools !== "function") return;
+  private async warmNativeBridgeTools(
+    sessionId: string,
+    session: AgentSession,
+    isCancelled: () => boolean,
+  ): Promise<void> {
     const expectedTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
-    try {
-      await session.initializeTools();
+    const startedAt = Date.now();
+    const outcome = await settleByDeadline(async () => {
+      await session.initializeTools!();
+      if (isCancelled() || this.sessionObjects.get(sessionId) !== session) {
+        return { result: "superseded" as const };
+      }
       const metadata = typeof session.getCurrentToolMetadata === "function"
         ? await session.getCurrentToolMetadata()
         : undefined;
+      if (isCancelled() || this.sessionObjects.get(sessionId) !== session) {
+        return { result: "superseded" as const };
+      }
       const tools = metadata?.tools ?? [];
-      if (tools.length === 0) return;
+      if (tools.length === 0) {
+        return {
+          result: expectedTools.length === 0 ? "ready" as const : "empty-metadata" as const,
+        };
+      }
       const toolNames = new Set(tools.map((tool) => tool.name));
       const missing = expectedTools.filter((name) => !toolNames.has(name));
       const deferred = tools
@@ -2035,16 +2074,116 @@ export class SessionManager {
             missing.length > 0 ? `missing=${missing.join(", ")}` : "missing=none"
           }; ${deferred.length > 0 ? `deferred=${deferred.join(", ")}` : "deferred=none"}`,
         );
+        return {
+          result: "incomplete" as const,
+          missing,
+          deferred,
+        };
       } else {
         console.log(`[sdk] [${sid}] Native Bridge tools ready (${expectedTools.length} canonical tools)`);
+        return { result: "ready" as const };
       }
-    } catch (error) {
+    }, createDeadline(NATIVE_TOOL_WARMUP_TIMEOUT_MS));
+
+    if (isCancelled()) return;
+    const duration = Date.now() - startedAt;
+    if (outcome.status === "timed-out") {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Native Bridge tool warmup timed out after ${NATIVE_TOOL_WARMUP_TIMEOUT_MS}ms`,
+      );
+      this.recordSpan("session.nativeTools.warmup", duration, sessionId, {
+        outcome: "timed-out",
+        timeoutMs: NATIVE_TOOL_WARMUP_TIMEOUT_MS,
+      });
+      return;
+    }
+    if (outcome.status === "rejected") {
+      const error = outcome.error;
       console.warn(
         `[sdk] [${sessionId.slice(0, 8)}] Native Bridge tool warmup failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      this.recordSpan("session.nativeTools.warmup", duration, sessionId, {
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
     }
+
+    this.recordSpan("session.nativeTools.warmup", duration, sessionId, {
+      outcome: outcome.value.result,
+      ...(outcome.value.result === "incomplete"
+        ? { missing: outcome.value.missing, deferred: outcome.value.deferred }
+        : {}),
+    });
+  }
+
+  private scheduleNativeBridgeToolWarmup(sessionId: string, session: AgentSession): boolean {
+    if (
+      this.shuttingDown
+      || isDisposableTitleSessionId(sessionId)
+      || !this.shouldUseNativeBridgeTools()
+      || !this.backend?.capabilities.toolMetadataWarmup
+      || typeof session.initializeTools !== "function"
+    ) {
+      return false;
+    }
+
+    const existing = this.nativeToolWarmups.get(sessionId);
+    if (existing) {
+      if (existing.session !== session) existing.nextSession = session;
+      return true;
+    }
+
+    const record: NativeToolWarmupRecord = {
+      session,
+      promise: Promise.resolve(),
+      cancelled: false,
+    };
+    const promise = (async () => {
+      await new Promise<void>((resolve) => {
+        const handle = setImmediate(resolve);
+        handle.unref?.();
+      });
+      try {
+        if (
+          !record.cancelled
+          && !this.shuttingDown
+          && this.sessionObjects.get(sessionId) === session
+        ) {
+          await this.warmNativeBridgeTools(
+            sessionId,
+            session,
+            () => record.cancelled || this.nativeToolWarmups.get(sessionId) !== record,
+          );
+        }
+      } finally {
+        if (this.nativeToolWarmups.get(sessionId) === record) {
+          this.nativeToolWarmups.delete(sessionId);
+        }
+        if (!record.cancelled && !this.shuttingDown) {
+          const nextSession = record.nextSession;
+          if (nextSession && this.sessionObjects.get(sessionId) === nextSession) {
+            this.scheduleNativeBridgeToolWarmup(sessionId, nextSession);
+          }
+          this.flushPendingSessionEviction(sessionId);
+          this.scheduleCacheOperation(
+            this.trimSessionCache("native tool warmup ended"),
+            `trimming the session cache after native tool warmup for ${sessionId}`,
+          );
+        }
+      }
+    })();
+    record.promise = promise;
+    this.nativeToolWarmups.set(sessionId, record);
+    void promise.catch((error) => {
+      console.error(
+        `[sdk] [${sessionId.slice(0, 8)}] Native Bridge tool warmup scheduler failed:`,
+        error,
+      );
+    });
+    return true;
   }
 
   private async rejectMismatchedCreatedSession(
@@ -2178,6 +2317,7 @@ export class SessionManager {
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing agent backend...");
+    this.shuttingDown = false;
     configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
     this.backend = this.createBackend();
     await this.backend.start();
@@ -2449,7 +2589,7 @@ export class SessionManager {
   ): Promise<AgentSession> {
     return this.cacheSession(sessionId, session, null, sessionConfig).then((cachedSession) => {
       if (cachedSession === session) {
-        void this.warmNativeBridgeTools(sessionId, session);
+        this.scheduleNativeBridgeToolWarmup(sessionId, session);
         this.maybeAutoNameSession(sessionId, { session });
       }
       return cachedSession;
@@ -2459,7 +2599,7 @@ export class SessionManager {
   private replaceCachedSession(sessionId: string, expectedSession: AgentSession, nextSession: AgentSession): Promise<AgentSession> {
     return this.cacheSession(sessionId, nextSession, expectedSession).then((cachedSession) => {
       if (cachedSession === nextSession) {
-        void this.warmNativeBridgeTools(sessionId, nextSession);
+        this.scheduleNativeBridgeToolWarmup(sessionId, nextSession);
       }
       return cachedSession;
     });
@@ -2682,14 +2822,21 @@ export class SessionManager {
       ...(modelMetadata ? { modelMetadata } : {}),
     });
     let creationReservation: SessionCapacityReservation | undefined;
+    creationReservation = await this.beginSessionCreation(sessionConfig);
+    const sdkCreateStartedAt = Date.now();
     try {
-      creationReservation = await this.beginSessionCreation(sessionConfig);
       session = await client.createSession(sessionConfig);
     } catch (error) {
+      this.recordSpan("session.create.sdk", Date.now() - sdkCreateStartedAt, undefined, {
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (creationReservation) this.endSessionCreation(creationReservation);
       throw error;
     }
-    const duration = Date.now() - t0;
+    this.recordSpan("session.create.sdk", Date.now() - sdkCreateStartedAt, session.sessionId, {
+      outcome: "ok",
+    });
     if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
       if (creationReservation) {
         this.endSessionCreation(creationReservation);
@@ -2711,7 +2858,7 @@ export class SessionManager {
       throw error;
     }
     if (creationReservation) this.endSessionCreation(creationReservation);
-    await this.warmNativeBridgeTools(session.sessionId, session);
+    const warmupScheduled = this.scheduleNativeBridgeToolWarmup(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
     if (typeof model === "string" && model.trim()) {
@@ -2728,8 +2875,13 @@ export class SessionManager {
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
     this.invalidateSessionListCache("session:create");
+    const duration = Date.now() - t0;
     this.recordSpan("session.create", duration, session.sessionId);
-    console.log(`[sdk] Created session ${session.sessionId} (${duration}ms)`);
+    console.log(
+      `[sdk] Created session ${session.sessionId} (${duration}ms API-visible finalization; native tool warmup ${
+        warmupScheduled ? "scheduled" : "not required"
+      })`,
+    );
     return { sessionId: session.sessionId };
   }
 
@@ -3017,16 +3169,25 @@ export class SessionManager {
     });
     let session: AgentSession;
     let creationReservation: SessionCapacityReservation | undefined;
+    creationReservation = await this.beginSessionCreation(sessionConfig);
+    const sdkCreateStartedAt = Date.now();
     try {
-      creationReservation = await this.beginSessionCreation(sessionConfig);
       session = await client.createSession(
         sessionConfig,
       );
     } catch (error) {
+      this.recordSpan("session.createTask.sdk", Date.now() - sdkCreateStartedAt, undefined, {
+        outcome: "failed",
+        taskId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (creationReservation) this.endSessionCreation(creationReservation);
       throw error;
     }
-    const duration = Date.now() - t0;
+    this.recordSpan("session.createTask.sdk", Date.now() - sdkCreateStartedAt, session.sessionId, {
+      outcome: "ok",
+      taskId,
+    });
     if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
       if (creationReservation) {
         this.endSessionCreation(creationReservation);
@@ -3048,7 +3209,7 @@ export class SessionManager {
       throw error;
     }
     if (creationReservation) this.endSessionCreation(creationReservation);
-    await this.warmNativeBridgeTools(session.sessionId, session);
+    const warmupScheduled = this.scheduleNativeBridgeToolWarmup(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
     if (typeof model === "string" && model.trim()) {
@@ -3065,8 +3226,13 @@ export class SessionManager {
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
     this.invalidateSessionListCache("session:create-task");
+    const duration = Date.now() - t0;
     this.recordSpan("session.createTask", duration, session.sessionId, { taskId });
-    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" (${duration}ms)`);
+    console.log(
+      `[sdk] Created task session ${session.sessionId} for "${taskTitle}" (${duration}ms API-visible finalization; native tool warmup ${
+        warmupScheduled ? "scheduled" : "not required"
+      })`,
+    );
     return { sessionId: session.sessionId };
   }
 
@@ -3478,6 +3644,7 @@ export class SessionManager {
       const busy = new Set(this.getActiveSessions());
       const scheduled: Promise<boolean>[] = [];
       for (const id of busy) {
+        this.cancelNativeToolWarmup(id);
         this.pendingSessionEvictions.add(id);
       }
       let evicted = 0;
@@ -3681,6 +3848,10 @@ export class SessionManager {
   async gracefulShutdown(
     deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
   ): Promise<void> {
+    this.shuttingDown = true;
+    for (const sessionId of [...this.nativeToolWarmups.keys()]) {
+      this.cancelNativeToolWarmup(sessionId);
+    }
     this.stopSessionCacheSweep();
     const active = this.getActiveSessions();
     if (active.length > 0) {
