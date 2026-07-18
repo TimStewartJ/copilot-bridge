@@ -185,7 +185,9 @@ describe("SessionManager backend generation recovery", () => {
     const lateCreate = deferred<AgentSession>();
     const verifiedStop = deferred<void>();
     const oldBackend = fakeBackend({
-      createSession: vi.fn(() => lateCreate.promise),
+      createSession: vi.fn()
+        .mockResolvedValueOnce(fakeSession("settled-before-recovery"))
+        .mockImplementationOnce(() => lateCreate.promise),
       stop: vi.fn(() => verifiedStop.promise),
     });
     const replacement = fakeBackend({
@@ -193,6 +195,9 @@ describe("SessionManager backend generation recovery", () => {
     });
     const { manager, createBackend } = await createManager([oldBackend, replacement]);
     manager.sessionCreateTimeoutMs = 20;
+
+    await expect(manager.createSession()).resolves.toEqual({ sessionId: "settled-before-recovery" });
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
 
     const create = manager.createSession();
     const createResult = create.then(
@@ -212,6 +217,7 @@ describe("SessionManager backend generation recovery", () => {
     await flush();
     expect(createBackend).toHaveBeenCalledTimes(2);
     expect(replacement.start).toHaveBeenCalledOnce();
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(0);
     await expect(manager.createSession()).resolves.toEqual({ sessionId: "replacement-session" });
 
     lateCreate.resolve(fakeSession("late-old-session"));
@@ -226,6 +232,38 @@ describe("SessionManager backend generation recovery", () => {
       stop: vi.fn(async () => {
         throw new Error("stop verification failed");
       }),
+    });
+    const replacement = fakeBackend();
+    const { manager, createBackend, runtimePaths } = await createManager([oldBackend, replacement]);
+    await refreshRestartState();
+    manager.sessionCreateTimeoutMs = 20;
+
+    const createResult = manager.createSession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await flush();
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(createResult).resolves.toBeInstanceOf(SessionBackendUnavailableError);
+    await flush();
+
+    expect(oldBackend.forceStop).toHaveBeenCalledOnce();
+    expect(createBackend).toHaveBeenCalledOnce();
+    expect(replacement.start).not.toHaveBeenCalled();
+    expect(isRestartPending()).toBe(true);
+    expect(existsSync(join(runtimePaths.dataDir, "restart.signal"))).toBe(true);
+    await expect(manager.createSession()).rejects.toBeInstanceOf(SessionBackendUnavailableError);
+    clearRestartPending();
+    await refreshRestartState();
+    manager.stopSessionCacheSweep();
+  });
+
+  it("treats non-empty backend stop errors as unverified and does not start a replacement", async () => {
+    vi.useFakeTimers();
+    const stopErrors = [new Error("SDK child process remained alive")];
+    const oldBackend = fakeBackend({
+      createSession: vi.fn(() => new Promise<AgentSession>(() => {})),
+      stop: vi.fn(async () => stopErrors),
     });
     const replacement = fakeBackend();
     const { manager, createBackend, runtimePaths } = await createManager([oldBackend, replacement]);
@@ -342,7 +380,73 @@ describe("SessionManager backend generation recovery", () => {
       expect(result.reason).toBeInstanceOf(SessionCapacityError);
       expect(result.reason).toMatchObject({ reason: "process-pressure" });
     }
-    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(0);
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(2);
+    manager.stopSessionCacheSweep();
+  });
+
+  it("holds a creation reservation until the created session is owned by the cache", async () => {
+    vi.useFakeTimers();
+    const backend = fakeBackend({
+      createSession: vi.fn(async () => fakeSession("cache-owned")),
+    });
+    const { manager } = await createManager([backend]);
+    const cacheGate = deferred<void>();
+    manager.cacheQueue = cacheGate.promise;
+
+    const create = manager.createSession();
+    await flush();
+
+    expect(backend.createSession).toHaveBeenCalledOnce();
+    expect(manager.creatingCapacityReservations.size).toBe(1);
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
+    expect(manager.sessionObjects.has("cache-owned")).toBe(false);
+
+    cacheGate.resolve();
+    await flush();
+    await expect(create).resolves.toEqual({ sessionId: "cache-owned" });
+    expect(manager.creatingCapacityReservations.size).toBe(0);
+    expect(manager.sessionObjects.has("cache-owned")).toBe(true);
+    expect(manager.getRuntimeActivity().capacity.processes.projectedReservations).toBe(1);
+    manager.stopSessionCacheSweep();
+  });
+
+  it("retains successful create projections until a fresh sample prevents stale-sample overshoot", async () => {
+    vi.useFakeTimers();
+    const sampleProcessTree = vi.fn()
+      .mockResolvedValueOnce(processSnapshot(8))
+      .mockResolvedValueOnce(processSnapshot(10));
+    const backend = fakeBackend({
+      createSession: vi.fn()
+        .mockResolvedValueOnce(fakeSession("rapid-1"))
+        .mockResolvedValueOnce(fakeSession("rapid-2")),
+    });
+    const { manager } = await createManager([backend], sampleProcessTree);
+    manager.maxProcessTreeDescendants = 10;
+    manager.sessionCapacityWaitTimeoutMs = 0;
+
+    await expect(manager.createSession()).resolves.toEqual({ sessionId: "rapid-1" });
+    await expect(manager.createSession()).resolves.toEqual({ sessionId: "rapid-2" });
+    expect(sampleProcessTree).toHaveBeenCalledOnce();
+    expect(manager.getRuntimeActivity().capacity.processes).toMatchObject({
+      actualDescendants: 8,
+      projectedReservations: 2,
+      used: 10,
+    });
+
+    await expect(manager.createSession()).rejects.toMatchObject({
+      reason: "process-pressure",
+    });
+    expect(backend.createSession).toHaveBeenCalledTimes(2);
+
+    manager.processTreeSampleMaxAgeMs = 1;
+    await vi.advanceTimersByTimeAsync(2);
+    await manager.refreshProcessPressureForAdmission();
+    expect(sampleProcessTree).toHaveBeenCalledTimes(2);
+    expect(manager.getRuntimeActivity().capacity.processes).toMatchObject({
+      actualDescendants: 10,
+      projectedReservations: 0,
+      used: 10,
+    });
     manager.stopSessionCacheSweep();
   });
 
@@ -354,6 +458,8 @@ describe("SessionManager backend generation recovery", () => {
     });
     const first = await createManager([backend], slowSample);
     first.manager.processTreeAdmissionSampleTimeoutMs = 10;
+    first.manager.maxProcessTreeDescendants = 1;
+    first.manager.sessionCapacityWaitTimeoutMs = 0;
 
     const admitted = first.manager.createSession();
     await flush();
@@ -361,8 +467,19 @@ describe("SessionManager backend generation recovery", () => {
     await expect(admitted).resolves.toEqual({ sessionId: "no-sample" });
     expect(first.manager.getRuntimeActivity().capacity.processes).toMatchObject({
       actualDescendants: null,
+      projectedReservations: 1,
       sampleStatus: "timed-out",
     });
+    const blockedBySettledProjection = first.manager.createSession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await flush();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(blockedBySettledProjection).resolves.toMatchObject({
+      reason: "process-pressure",
+    });
+    expect(backend.createSession).toHaveBeenCalledOnce();
     first.manager.stopSessionCacheSweep();
 
     const unavailableSample = vi.fn()

@@ -641,6 +641,8 @@ export class SessionManager {
   private lastProcessTreeDescendantCount: number | null = null;
   private processTreeSampleStatus: SessionCapacityRuntimeStatus["processes"]["sampleStatus"] = "never";
   private processTreeSampleInFlight: Promise<void> | null = null;
+  private processTreeSampleSequence = 0;
+  private readonly settledProcessReservations = new Map<number, number>();
   private readonly sessionBackendOwners = new WeakMap<AgentSession, BackendSessionOwner>();
   private readonly disposableSessionOwners = new Map<string, BackendGeneration>();
   private sessionCapacityWaitTimeoutMs = SessionManager.resolvePositiveNumberEnv(
@@ -815,6 +817,7 @@ export class SessionManager {
           expectedSessionId: typeof sessionConfig?.sessionId === "string" ? sessionConfig.sessionId : undefined,
           trackDisposableOwner: true,
         });
+        this.endSessionCreation(created.lease, true);
         return created.session;
       },
       deleteSession: async (sessionId) => {
@@ -1112,6 +1115,9 @@ export class SessionManager {
     for (const reservation of this.resumingCapacityReservations.values()) {
       total += reservation.processSlots;
     }
+    for (const processSlots of this.settledProcessReservations.values()) {
+      total += processSlots;
+    }
     return total;
   }
 
@@ -1320,8 +1326,21 @@ export class SessionManager {
     return lease;
   }
 
-  private endSessionCreation(lease: SessionCreationLease): void {
-    this.creatingCapacityReservations.delete(lease.token);
+  private endSessionCreation(lease: SessionCreationLease, retainSettledProcessProjection = false): void {
+    const released = this.creatingCapacityReservations.delete(lease.token);
+    if (
+      released
+      && retainSettledProcessProjection
+      && lease.generation.state === "ready"
+      && this.backendGeneration === lease.generation
+      && this.backend === lease.generation.backend
+    ) {
+      const settledAtSequence = this.processTreeSampleSequence;
+      this.settledProcessReservations.set(
+        settledAtSequence,
+        (this.settledProcessReservations.get(settledAtSequence) ?? 0) + lease.reservation.processSlots,
+      );
+    }
     this.notifySessionCapacityChanged();
   }
 
@@ -1680,6 +1699,7 @@ export class SessionManager {
 
   private startProcessTreeSample(): Promise<void> {
     if (this.processTreeSampleInFlight) return this.processTreeSampleInFlight;
+    const sampleSequence = ++this.processTreeSampleSequence;
     this.lastProcessTreeSampleAttemptAt = Date.now();
     const sampler = this.deps.sampleProcessTree ?? (async () => null);
     const sample = Promise.resolve()
@@ -1696,6 +1716,11 @@ export class SessionManager {
         this.lastProcessTreeDescendantCount = descendantCount;
         this.lastProcessTreeSampleSucceededAt = sampledAt;
         this.processTreeSampleStatus = "sampled";
+        for (const settledAtSequence of this.settledProcessReservations.keys()) {
+          if (settledAtSequence < sampleSequence) {
+            this.settledProcessReservations.delete(settledAtSequence);
+          }
+        }
         this.processTreeBaselineCount ??= nodeCount;
         const baseline = this.processTreeBaselineCount;
         const absoluteThreshold = SessionManager.resolvePositiveIntegerEnv(
@@ -2458,9 +2483,10 @@ export class SessionManager {
       expectedSessionId?: string;
       trackDisposableOwner?: boolean;
     },
-  ): Promise<{ session: AgentSession; generation: BackendGeneration }> {
+  ): Promise<{ session: AgentSession; generation: BackendGeneration; lease: SessionCreationLease }> {
     const generation = this.getCurrentBackendGeneration();
     const lease = await this.beginSessionCreation(sessionConfig, generation);
+    let leaseTransferred = false;
     try {
       const session = await this.runBackendSessionOperation(
         generation,
@@ -2482,9 +2508,10 @@ export class SessionManager {
       if (options.trackDisposableOwner) {
         this.disposableSessionOwners.set(session.sessionId, generation);
       }
-      return { session, generation };
+      leaseTransferred = true;
+      return { session, generation, lease };
     } finally {
-      this.endSessionCreation(lease);
+      if (!leaseTransferred) this.endSessionCreation(lease);
     }
   }
 
@@ -2609,12 +2636,16 @@ export class SessionManager {
       () => generation.backend.stop(),
       createDeadline(this.backendRecoveryStopTimeoutMs),
     );
-    if (stopOutcome.status !== "fulfilled") {
+    const stopFailure = stopOutcome.status === "rejected"
+      ? stopOutcome.error
+      : stopOutcome.status === "timed-out"
+        ? "backend stop verification timed out"
+        : Array.isArray(stopOutcome.value) && stopOutcome.value.length > 0
+          ? stopOutcome.value
+          : undefined;
+    if (stopFailure !== undefined) {
       await this.forceStopBackendForRecovery(generation.backend);
-      this.requestRestartForBackendRecovery(
-        generation,
-        stopOutcome.status === "rejected" ? stopOutcome.error : "backend stop verification timed out",
-      );
+      this.requestRestartForBackendRecovery(generation, stopFailure);
       return;
     }
     if (
@@ -2623,6 +2654,8 @@ export class SessionManager {
       || this.backend !== generation.backend
     ) return;
 
+    this.settledProcessReservations.clear();
+    this.notifySessionCapacityChanged();
     this.backend = null;
     this.backendCreatedAtMs = null;
     let nextBackend: AgentBackend;
@@ -3273,8 +3306,10 @@ export class SessionManager {
     });
     session = created.session;
     const duration = Date.now() - t0;
+    let cacheOwned = false;
     try {
       await this.cacheSession(session.sessionId, session, null, sessionConfig);
+      cacheOwned = true;
     } catch (error) {
       if (
         created.generation.state === "ready"
@@ -3287,6 +3322,8 @@ export class SessionManager {
         );
       }
       throw error;
+    } finally {
+      this.endSessionCreation(created.lease, cacheOwned);
     }
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
@@ -3599,8 +3636,10 @@ export class SessionManager {
     });
     const session = created.session;
     const duration = Date.now() - t0;
+    let cacheOwned = false;
     try {
       await this.cacheSession(session.sessionId, session, null, sessionConfig);
+      cacheOwned = true;
     } catch (error) {
       if (
         created.generation.state === "ready"
@@ -3613,6 +3652,8 @@ export class SessionManager {
         );
       }
       throw error;
+    } finally {
+      this.endSessionCreation(created.lease, cacheOwned);
     }
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
