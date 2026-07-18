@@ -115,6 +115,7 @@ import {
   clearUnsafeServerCleanupState,
   persistUnsafeServerCleanupState,
   readUnsafeServerCleanupState,
+  runWithDurableUnsafeCleanupState,
   UNSAFE_SERVER_CLEANUP_STATE_FILE_NAME,
 } from "./launcher-unsafe-cleanup-state.js";
 import {
@@ -1132,34 +1133,45 @@ async function terminateServerProcessTree(
   if (process.platform !== "win32") {
     return terminateProcessTree(root, deadline);
   }
-  try {
-    const persisted = persistUnsafeServerCleanupState(
+  const guardedCleanup = await runWithDurableUnsafeCleanupState(
+    () => persistUnsafeServerCleanupState(
       UNSAFE_SERVER_CLEANUP_STATE_FILE,
       root,
       "Server process-tree cleanup began without an established containment boundary.",
-    );
-    serverRestartSafety.unsafeReason = persisted.reason;
-    suppressAutoRecovery = true;
-  } catch (error) {
+    ),
+    async (persisted) => {
+      serverRestartSafety.unsafeReason = persisted.reason;
+      suppressAutoRecovery = true;
+      return await terminateProcessTreeWithExternalFixpoint(
+        root,
+        deadline,
+        processTreeTerminationHelperLaunch(),
+      );
+    },
+  );
+  if (!guardedCleanup.ok) {
     const result: ProcessTreeTerminationResult = {
       ok: false,
       status: "unverified",
       root,
       error: `Unable to persist unsafe cleanup state before termination: ${
-        error instanceof Error ? error.message : String(error)
+        guardedCleanup.error instanceof Error
+          ? guardedCleanup.error.message
+          : String(guardedCleanup.error)
       }`,
     };
     updateServerRestartSafetyAfterCleanup(serverRestartSafety, result);
     suppressAutoRecovery = true;
-    log(`❌ ${result.error}`);
+    markPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+    if (!hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE)) {
+      log(`❌ ${result.error}; no durable restart block could be established — exiting ${LAUNCHER_CLEANUP_FAILURE_EXIT_CODE}`);
+      process.exit(LAUNCHER_CLEANUP_FAILURE_EXIT_CODE);
+    }
+    log(`❌ ${result.error}; destructive cleanup was not started`);
     return result;
   }
 
-  const result = await terminateProcessTreeWithExternalFixpoint(
-    root,
-    deadline,
-    processTreeTerminationHelperLaunch(),
-  );
+  const result = guardedCleanup.value;
   if (isVerifiedServerCleanup(result)) {
     try {
       clearUnsafeServerCleanupState(UNSAFE_SERVER_CLEANUP_STATE_FILE);

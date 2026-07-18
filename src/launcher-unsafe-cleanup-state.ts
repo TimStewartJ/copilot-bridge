@@ -20,6 +20,26 @@ export type PersistedUnsafeServerCleanupState = {
   root: ProcessIdentity;
 };
 
+export type UnsafeCleanupStateFs = {
+  existsSync: typeof existsSync;
+  mkdirSync: typeof mkdirSync;
+  readFileSync: typeof readFileSync;
+  readdirSync: typeof readdirSync;
+  renameSync: typeof renameSync;
+  rmSync: typeof rmSync;
+  writeFileSync: typeof writeFileSync;
+};
+
+const defaultFs: UnsafeCleanupStateFs = {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+};
+
 function tempStatePath(filePath: string): string {
   return join(dirname(filePath), `.${basename(filePath)}.${randomUUID()}.tmp`);
 }
@@ -33,10 +53,13 @@ function unreadableState(reason: string): PersistedUnsafeServerCleanupState {
   };
 }
 
-function tempStateNames(filePath: string): string[] | null {
+function tempStateNames(
+  filePath: string,
+  fs: UnsafeCleanupStateFs,
+): string[] | null {
   try {
     const prefix = `.${basename(filePath)}.`;
-    return readdirSync(dirname(filePath)).filter(
+    return fs.readdirSync(dirname(filePath)).filter(
       (entry) => entry.startsWith(prefix) && entry.endsWith(".tmp"),
     );
   } catch (error) {
@@ -44,12 +67,38 @@ function tempStateNames(filePath: string): string[] | null {
   }
 }
 
+function parseState(raw: string): PersistedUnsafeServerCleanupState {
+  const parsed = JSON.parse(raw) as Partial<PersistedUnsafeServerCleanupState>;
+  if (
+    parsed.version !== 1
+    || typeof parsed.reason !== "string"
+    || !parsed.reason.trim()
+    || typeof parsed.recordedAt !== "string"
+    || !Number.isSafeInteger(parsed.root?.pid)
+    || (parsed.root?.pid ?? 0) <= 0
+    || typeof parsed.root?.startMarker !== "string"
+    || !parsed.root.startMarker
+  ) {
+    throw new Error("Persisted unsafe cleanup state is malformed.");
+  }
+  return {
+    version: 1,
+    reason: parsed.reason,
+    recordedAt: parsed.recordedAt,
+    root: {
+      pid: parsed.root.pid,
+      startMarker: parsed.root.startMarker,
+    },
+  };
+}
+
 export function readUnsafeServerCleanupState(
   filePath: string,
+  fs: UnsafeCleanupStateFs = defaultFs,
 ): PersistedUnsafeServerCleanupState | null {
   try {
-    if (!existsSync(filePath)) {
-      const tempNames = tempStateNames(filePath);
+    if (!fs.existsSync(filePath)) {
+      const tempNames = tempStateNames(filePath, fs);
       if (tempNames === null) {
         return unreadableState("Unsafe cleanup state could not be inspected; manual recovery is required.");
       }
@@ -57,39 +106,36 @@ export function readUnsafeServerCleanupState(
         ? unreadableState("An incomplete unsafe cleanup state write was found; manual recovery is required.")
         : null;
     }
-    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<PersistedUnsafeServerCleanupState>;
-    if (
-      parsed.version !== 1
-      || typeof parsed.reason !== "string"
-      || !parsed.reason.trim()
-      || typeof parsed.recordedAt !== "string"
-      || !Number.isSafeInteger(parsed.root?.pid)
-      || (parsed.root?.pid ?? 0) <= 0
-      || typeof parsed.root?.startMarker !== "string"
-      || !parsed.root.startMarker
-    ) {
-      return unreadableState("Persisted unsafe cleanup state is malformed; manual recovery is required.");
-    }
-    return {
-      version: 1,
-      reason: parsed.reason,
-      recordedAt: parsed.recordedAt,
-      root: {
-        pid: parsed.root.pid,
-        startMarker: parsed.root.startMarker,
-      },
-    };
+    return parseState(String(fs.readFileSync(filePath, "utf8")));
   } catch {
     return unreadableState("Persisted unsafe cleanup state is unreadable; manual recovery is required.");
   }
+}
+
+function readVerifiableDurableState(
+  filePath: string,
+  fs: UnsafeCleanupStateFs,
+): PersistedUnsafeServerCleanupState | null {
+  if (fs.existsSync(filePath)) {
+    return parseState(String(fs.readFileSync(filePath, "utf8")));
+  }
+  const tempNames = tempStateNames(filePath, fs);
+  if (tempNames === null) {
+    throw new Error("Unsafe cleanup state location could not be inspected.");
+  }
+  if (tempNames.length > 0) {
+    throw new Error("An incomplete unsafe cleanup state marker already exists.");
+  }
+  return null;
 }
 
 export function persistUnsafeServerCleanupState(
   filePath: string,
   root: ProcessIdentity,
   reason: string,
+  fs: UnsafeCleanupStateFs = defaultFs,
 ): PersistedUnsafeServerCleanupState {
-  const existing = readUnsafeServerCleanupState(filePath);
+  const existing = readVerifiableDurableState(filePath, fs);
   if (existing) return existing;
 
   const state: PersistedUnsafeServerCleanupState = {
@@ -99,24 +145,48 @@ export function persistUnsafeServerCleanupState(
     root,
   };
   const tempPath = tempStatePath(filePath);
-  mkdirSync(dirname(filePath), { recursive: true });
+  fs.mkdirSync(dirname(filePath), { recursive: true });
   try {
-    writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-    renameSync(tempPath, filePath);
+    fs.writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    fs.renameSync(tempPath, filePath);
   } catch (error) {
-    rmSync(tempPath, { force: true });
+    // Keep any partially written temp marker. Startup treats it as unsafe, but
+    // this call still fails so destructive cleanup never begins.
     throw error;
   }
-  return state;
+  const durable = readVerifiableDurableState(filePath, fs);
+  if (!durable) {
+    throw new Error("Unsafe cleanup state was not durable after atomic rename.");
+  }
+  return durable;
 }
 
-export function clearUnsafeServerCleanupState(filePath: string): void {
-  rmSync(filePath, { force: true });
-  const tempNames = tempStateNames(filePath);
+export async function runWithDurableUnsafeCleanupState<T>(
+  persist: () => PersistedUnsafeServerCleanupState,
+  destructiveCleanup: (state: PersistedUnsafeServerCleanupState) => Promise<T>,
+): Promise<
+  | { ok: true; state: PersistedUnsafeServerCleanupState; value: T }
+  | { ok: false; error: unknown }
+> {
+  let state: PersistedUnsafeServerCleanupState;
+  try {
+    state = persist();
+  } catch (error) {
+    return { ok: false, error };
+  }
+  return { ok: true, state, value: await destructiveCleanup(state) };
+}
+
+export function clearUnsafeServerCleanupState(
+  filePath: string,
+  fs: UnsafeCleanupStateFs = defaultFs,
+): void {
+  fs.rmSync(filePath, { force: true });
+  const tempNames = tempStateNames(filePath, fs);
   if (tempNames === null) {
     throw new Error("Unsafe cleanup temporary state files could not be inspected.");
   }
   for (const tempName of tempNames) {
-    rmSync(join(dirname(filePath), tempName), { force: true });
+    fs.rmSync(join(dirname(filePath), tempName), { force: true });
   }
 }
