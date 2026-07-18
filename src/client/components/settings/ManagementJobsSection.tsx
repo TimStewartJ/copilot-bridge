@@ -444,7 +444,7 @@ function CapacityCard({
         </div>
       ) : (
         <>
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
             <SummaryMetric
               label="Live contexts"
               value={`${formatCapacityValue(capacity.contexts.used)} / ${formatCapacityValue(capacity.contexts.limit)}`}
@@ -464,6 +464,11 @@ function CapacityCard({
               label="Waiting requests"
               value={String(capacity.waitingRequests)}
               tone={capacity.waitingRequests > 0 ? "warning" : "success"}
+            />
+            <SummaryMetric
+              label="Process tree"
+              value={`${formatCapacityValue(capacity.processes.used)} / ${formatCapacityValue(capacity.processes.limit)}`}
+              tone={capacityTone(capacity.processes.used, capacity.processes.limit)}
             />
           </div>
 
@@ -502,6 +507,9 @@ function CapacityCard({
             </span>
             <span>Local MCP weight +{formatCapacityValue(capacity.localMcpWeight)} per context</span>
             <span>Capacity wait {formatCapacityValue(capacity.waitTimeoutSeconds)}s</span>
+            <span>
+              Process sample {capacity.processes.sampleStatus}, {capacity.processes.projectedReservations} reserved
+            </span>
           </div>
         </>
       )}

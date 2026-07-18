@@ -50,7 +50,6 @@ import {
   getProviderTurnIdFromEvent,
   normalizeLiveSessionContextEvent,
 } from "./session-context-normalizer.js";
-import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
 
 
@@ -225,11 +224,14 @@ export function isStaleAgentSessionError(error: unknown): boolean {
 export interface SessionResumeLease {
   sessionId: string;
   token: symbol;
+  backendGeneration: number;
+  tracksResuming: boolean;
 }
 
 export interface SessionRunnerDeps {
   /** Lazy accessor for the agent backend; the manager owns lifecycle. */
   getBackend(): AgentBackend | null;
+  resumeSession(sessionId: string, sessionConfig: any, lease?: SessionResumeLease): Promise<AgentSession>;
   /** Shared cache of CopilotSession objects (owned by SessionManager). */
   sessionObjects: Map<string, any>;
   /** Shared per-session MCP status cache (owned by SessionManager). */
@@ -253,6 +255,7 @@ export interface SessionRunnerDeps {
     sessionId: string,
     sessionConfig: any,
     isCancelled?: () => boolean,
+    options?: { reserveCachedSession?: boolean; trackResuming?: boolean },
   ): Promise<SessionResumeLease | null>;
   endSessionResume(lease: SessionResumeLease): void;
   notifySessionCapacityChanged(): void;
@@ -607,10 +610,7 @@ export class SessionRunner {
         );
         if (!resumeLease) return null;
         try {
-          s = await resumeSessionWithTimeout(
-            this.client!.resumeSession(sessionId, resumeConfig),
-            "resumeSession timed out after 60s",
-          );
+          s = await this.deps.resumeSession(sessionId, resumeConfig, resumeLease);
           s = await this.deps.cacheResumedSession(sessionId, s, resumeConfig);
           this.deps.probeMcpStatus(sessionId, s);
           const resumeDuration = Date.now() - resumeStart;
@@ -1565,14 +1565,22 @@ export class SessionRunner {
     const resumeFreshRecoverySession = async (): Promise<any> => {
       const resumeStart = Date.now();
       console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
-      const recoveredSession = await resumeSessionWithTimeout(
-        this.client!.resumeSession(sessionId, resumeConfig),
-        "resumeSession timed out after 60s",
+      const resumeLease = await this.deps.beginSessionResume(
+        sessionId,
+        resumeConfig,
+        () => runController.isCompleted(),
+        { reserveCachedSession: true, trackResuming: false },
       );
-      const resumeDuration = Date.now() - resumeStart;
-      this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
-      console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
-      return recoveredSession;
+      if (!resumeLease) throw new Error("Stalled recovery resume cancelled before admission");
+      try {
+        const recoveredSession = await this.deps.resumeSession(sessionId, resumeConfig, resumeLease);
+        const resumeDuration = Date.now() - resumeStart;
+        this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
+        console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
+        return recoveredSession;
+      } finally {
+        this.deps.endSessionResume(resumeLease);
+      }
     };
 
     const readStalledRecoveryPersistedTerminalEvent = () => readPersistedTerminalEvent();

@@ -10,7 +10,11 @@ import {
   mkdirSync,
   request,
 } from "./api-routes-test-helpers.js";
-import { SessionCapacityError, SessionHistoryUndoError } from "../session-manager.js";
+import {
+  SessionBackendUnavailableError,
+  SessionCapacityError,
+  SessionHistoryUndoError,
+} from "../session-manager.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -440,6 +444,25 @@ describe("Session manager routes", () => {
         contexts: 17,
         contextLimit: 16,
       },
+    });
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual([]);
+  });
+
+  it("POST /api/tasks/:id/session leaves the task unchanged while the backend recovers", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createTaskSession = vi.fn().mockRejectedValue(
+      new SessionBackendUnavailableError("generation-fenced", 7),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = (await request(app).post("/api/tasks").send({ title: "Recovery task" })).body.task;
+
+    const res = await request(app).post(`/api/tasks/${task.id}/session`);
+
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("5");
+    expect(res.body).toMatchObject({
+      code: "session_backend_unavailable",
+      details: { reason: "generation-fenced", generation: 7 },
     });
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual([]);
   });

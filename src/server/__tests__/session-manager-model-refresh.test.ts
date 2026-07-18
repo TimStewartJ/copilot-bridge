@@ -163,6 +163,34 @@ describe("SessionManager model refresh", () => {
     expect(freshBackend.start).not.toHaveBeenCalled();
   });
 
+  it("blocks refresh while a session create owns the current backend generation", async () => {
+    let resolveCreate!: (session: any) => void;
+    let markCreateStarted!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      markCreateStarted = resolve;
+    });
+    const oldBackend = createBackend([]);
+    oldBackend.createSession.mockImplementationOnce(() => {
+      markCreateStarted();
+      return new Promise((resolve) => {
+        resolveCreate = resolve;
+      });
+    });
+    const freshBackend = createBackend([]);
+    const { manager } = createManager([oldBackend, freshBackend]);
+
+    await manager.initialize();
+    const create = manager.createSession();
+    await createStarted;
+
+    await expect(manager.refreshModels()).rejects.toBeInstanceOf(ModelRefreshBlockedError);
+    expect(oldBackend.stop).not.toHaveBeenCalled();
+    expect(freshBackend.start).not.toHaveBeenCalled();
+
+    resolveCreate({ sessionId: "created-session", disconnect: vi.fn(async () => {}) });
+    await expect(create).resolves.toEqual({ sessionId: "created-session" });
+  });
+
   it("restores the previous client when the fresh client fails to start", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);

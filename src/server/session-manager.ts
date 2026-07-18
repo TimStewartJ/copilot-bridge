@@ -17,7 +17,7 @@ import {
   type AgentSession,
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -63,7 +63,7 @@ import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
 import { isLocalMcpServerConfig, type McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
-import { sampleProcessTree } from "./platform.js";
+import { sampleProcessTree, type ProcessTreeSnapshot } from "./platform.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
@@ -106,6 +106,7 @@ import {
   refreshRestartStateSync,
   syncRestartWaitingSessions,
   triggerRestartPending,
+  triggerRestartPendingForExternalRequest,
 } from "./restart-controller.js";
 import {
   ABORT_CONFIRMATION_TIMEOUT_MS,
@@ -129,7 +130,6 @@ import type {
   BackgroundAgentsSummary,
   SessionAgentTask,
 } from "../shared/session-agents.js";
-import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
   deriveModelStateFromEventsFile,
@@ -167,6 +167,7 @@ import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli
 import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
+import { writeRestartSignalFile } from "./restart-signal.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -229,6 +230,13 @@ const DEFAULT_SESSION_CAPACITY_UNITS = 64;
 const DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT = 0.25;
 const DEFAULT_SESSION_CAPACITY_WAIT_SECONDS = 30;
 const SESSION_CAPACITY_WAIT_POLL_MS = 500;
+const DEFAULT_SESSION_CREATE_TIMEOUT_SECONDS = 30;
+const DEFAULT_SESSION_RESUME_TIMEOUT_SECONDS = 60;
+const DEFAULT_BACKEND_RECOVERY_STOP_TIMEOUT_SECONDS = 10;
+const DEFAULT_BACKEND_RECOVERY_START_TIMEOUT_SECONDS = 30;
+const DEFAULT_MAX_PROCESS_TREE_DESCENDANTS = 96;
+const DEFAULT_PROCESS_TREE_SAMPLE_MAX_AGE_SECONDS = 5;
+const DEFAULT_PROCESS_TREE_ADMISSION_SAMPLE_TIMEOUT_MS = 1_000;
 
 type SessionCapacityProfile = {
   localMcpCount: number;
@@ -237,6 +245,30 @@ type SessionCapacityProfile = {
 type SessionCapacityReservation = {
   capacityUnits: number;
   localMcpInstances: number;
+  processSlots: number;
+};
+
+type SessionCreationLease = {
+  token: symbol;
+  reservation: SessionCapacityReservation;
+  generation: BackendGeneration;
+};
+
+type BackendGenerationState = "ready" | "fenced";
+
+type BackendGeneration = {
+  id: number;
+  backend: AgentBackend;
+  state: BackendGenerationState;
+  fenceError?: SessionBackendUnavailableError;
+  fenceSignal: Promise<SessionBackendUnavailableError>;
+  signalFence: (error: SessionBackendUnavailableError) => void;
+  recoveryStarted: boolean;
+};
+
+type BackendSessionOwner = {
+  generation: BackendGeneration;
+  deleteOnDiscard: boolean;
 };
 
 export type SessionCapacityReason =
@@ -244,7 +276,8 @@ export type SessionCapacityReason =
   | "cleanup-demand"
   | "context-limit"
   | "weighted-capacity"
-  | "retained-capacity";
+  | "retained-capacity"
+  | "process-pressure";
 
 export interface SessionCapacitySnapshot {
   contexts: number;
@@ -252,6 +285,9 @@ export interface SessionCapacitySnapshot {
   localMcpInstances: number;
   capacityUnits: number;
   capacityLimit: number;
+  processDescendants?: number | null;
+  processReservations?: number;
+  processLimit?: number;
 }
 
 export interface SessionCapacityRuntimeStatus {
@@ -279,6 +315,14 @@ export interface SessionCapacityRuntimeStatus {
     failed: number;
     limit: number;
   };
+  processes: {
+    actualDescendants: number | null;
+    projectedReservations: number;
+    used: number;
+    limit: number;
+    sampleStatus: "never" | "sampled" | "unavailable" | "failed" | "timed-out";
+    sampledAt: string | null;
+  };
   waitingRequests: number;
   localMcpWeight: number;
   waitTimeoutSeconds: number;
@@ -300,11 +344,39 @@ export class SessionCapacityError extends Error {
       ? "Bridge could not release one or more previous Copilot sessions. Wait for automatic cleanup, or restart Bridge if this persists."
       : reason === "cleanup-demand" || reason === "retained-capacity"
         ? "Copilot session cleanup is still catching up. Wait a few seconds for another chat to finish closing, then try again."
+        : reason === "process-pressure"
+          ? `Copilot process capacity is full at ${snapshot.processDescendants ?? 0} observed descendants plus ${snapshot.processReservations ?? 0} reserved process slots against a limit of ${snapshot.processLimit ?? 0}. Wait for existing sessions to finish, then try again.`
         : reason === "context-limit"
           ? `All ${snapshot.contextLimit} live Copilot contexts are currently in use. Wait for one to finish, or stop a running chat or agent, then try again.`
           : `Live Copilot capacity is full at ${formatCapacityUnits(snapshot.capacityUnits)}/${formatCapacityUnits(snapshot.capacityLimit)} units across ${snapshot.contexts} context${snapshot.contexts === 1 ? "" : "s"} and ${snapshot.localMcpInstances} estimated local MCP slot${snapshot.localMcpInstances === 1 ? "" : "s"}. Wait for work to finish, or stop a running chat or agent, then try again.`;
     super(message);
     this.name = "SessionCapacityError";
+  }
+}
+
+export type SessionBackendUnavailableReason =
+  | "create-timeout"
+  | "resume-timeout"
+  | "generation-fenced"
+  | "recovery-failed";
+
+export class SessionBackendUnavailableError extends Error {
+  readonly code = "session_backend_unavailable";
+  readonly retryAfterSeconds = 5;
+
+  constructor(
+    readonly reason: SessionBackendUnavailableReason,
+    readonly generation: number,
+    message?: string,
+  ) {
+    super(message ?? (
+      reason === "create-timeout"
+        ? "Copilot session creation timed out. The backend is recovering; retry this request shortly."
+        : reason === "resume-timeout"
+          ? "Copilot session resume timed out. The backend is recovering; retry this request shortly."
+          : "The Copilot session backend is recovering. Retry this request shortly."
+    ));
+    this.name = "SessionBackendUnavailableError";
   }
 }
 
@@ -447,6 +519,8 @@ export interface SessionManagerDeps {
    * constructs a real Copilot-backed AgentBackend via `createAgentBackend`.
    */
   createBackend?: AgentBackendFactory;
+  /** Bounded server process-tree sampler used by admission control. */
+  sampleProcessTree?: (rootPid: number, deadline: Deadline) => Promise<ProcessTreeSnapshot | null>;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
@@ -524,6 +598,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     bridgeToolsMcpServer: ctx.bridgeToolsMcpServer,
     clientEnv,
     createBackend: opts.createBackend,
+    sampleProcessTree,
     copilotHome,
     runtimePaths,
   });
@@ -534,14 +609,17 @@ export class SessionManager {
   private backend: AgentBackend | null = null;
   private backendCreatedAtMs: number | null = null;
   private backendRotation: Promise<AgentBackend> | null = null;
+  private backendGeneration: BackendGeneration | null = null;
+  private backendGenerationCounter = 0;
+  private readonly backendGenerations = new Map<number, BackendGeneration>();
+  private backendRecovery: Promise<void> | null = null;
+  private shuttingDown = false;
   private deps: SessionManagerDeps;
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
   private readonly resumingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
-  private creatingSessions = 0;
-  private creatingCapacityUnits = 0;
-  private creatingLocalMcpInstances = 0;
+  private readonly creatingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
   private modelSwitchingSessions = new Set<string>();
   private historyUndoingSessions = new Set<string>();
   private sessionObjects = new Map<string, AgentSession>();
@@ -558,7 +636,13 @@ export class SessionManager {
   private cumulativeCleanupFailures = 0;
   private failedCleanupRetryScheduled = false;
   private processTreeBaselineCount: number | null = null;
-  private lastProcessTreeSampleAt = 0;
+  private lastProcessTreeSampleAttemptAt = 0;
+  private lastProcessTreeSampleSucceededAt: number | null = null;
+  private lastProcessTreeDescendantCount: number | null = null;
+  private processTreeSampleStatus: SessionCapacityRuntimeStatus["processes"]["sampleStatus"] = "never";
+  private processTreeSampleInFlight: Promise<void> | null = null;
+  private readonly sessionBackendOwners = new WeakMap<AgentSession, BackendSessionOwner>();
+  private readonly disposableSessionOwners = new Map<string, BackendGeneration>();
   private sessionCapacityWaitTimeoutMs = SessionManager.resolvePositiveNumberEnv(
     "BRIDGE_SESSION_CAPACITY_WAIT_SECONDS",
     DEFAULT_SESSION_CAPACITY_WAIT_SECONDS,
@@ -570,6 +654,34 @@ export class SessionManager {
   private localMcpCapacityWeight = SessionManager.resolvePositiveNumberEnv(
     "BRIDGE_LOCAL_MCP_CAPACITY_WEIGHT",
     DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT,
+  );
+  private sessionCreateTimeoutMs = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_SESSION_CREATE_TIMEOUT_SECONDS",
+    DEFAULT_SESSION_CREATE_TIMEOUT_SECONDS,
+  ) * 1_000;
+  private sessionResumeTimeoutMs = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_SESSION_RESUME_TIMEOUT_SECONDS",
+    DEFAULT_SESSION_RESUME_TIMEOUT_SECONDS,
+  ) * 1_000;
+  private backendRecoveryStopTimeoutMs = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_BACKEND_RECOVERY_STOP_TIMEOUT_SECONDS",
+    DEFAULT_BACKEND_RECOVERY_STOP_TIMEOUT_SECONDS,
+  ) * 1_000;
+  private backendRecoveryStartTimeoutMs = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_BACKEND_RECOVERY_START_TIMEOUT_SECONDS",
+    DEFAULT_BACKEND_RECOVERY_START_TIMEOUT_SECONDS,
+  ) * 1_000;
+  private maxProcessTreeDescendants = SessionManager.resolvePositiveIntegerEnv(
+    "BRIDGE_MAX_PROCESS_TREE_DESCENDANTS",
+    DEFAULT_MAX_PROCESS_TREE_DESCENDANTS,
+  );
+  private processTreeSampleMaxAgeMs = SessionManager.resolvePositiveNumberEnv(
+    "BRIDGE_PROCESS_TREE_SAMPLE_MAX_AGE_SECONDS",
+    DEFAULT_PROCESS_TREE_SAMPLE_MAX_AGE_SECONDS,
+  ) * 1_000;
+  private processTreeAdmissionSampleTimeoutMs = SessionManager.resolvePositiveIntegerEnv(
+    "BRIDGE_PROCESS_TREE_ADMISSION_SAMPLE_TIMEOUT_MS",
+    DEFAULT_PROCESS_TREE_ADMISSION_SAMPLE_TIMEOUT_MS,
   );
   private readonly sessionCapacityWaiters = new Set<() => void>();
   private readonly workspaceController: SessionWorkspaceController;
@@ -698,12 +810,15 @@ export class SessionManager {
     this.sessionNameAutogenerator = createSessionNameAutogenerator({
       listModels: () => this.listModels(),
       createSession: async (sessionConfig) => {
-        const client = await this.getBackendAfterRotation();
-        return client.createSession(sessionConfig);
+        const created = await this.createBackendSession(sessionConfig, {
+          kind: "title-helper",
+          expectedSessionId: typeof sessionConfig?.sessionId === "string" ? sessionConfig.sessionId : undefined,
+          trackDisposableOwner: true,
+        });
+        return created.session;
       },
       deleteSession: async (sessionId) => {
-        const client = await this.getBackendAfterRotation();
-        await client.deleteSession(sessionId);
+        await this.deleteDisposableSession(sessionId);
       },
       getCopilotHome: () => this.getCopilotHome(),
       getSessionName: (sessionId) => this.getSessionName(sessionId),
@@ -713,7 +828,15 @@ export class SessionManager {
       logger: console,
     });
     this.sessionRunner = new SessionRunner({
-      getBackend: () => this.backend,
+      getBackend: () => {
+        if (this.backendGeneration?.state === "fenced") {
+          throw this.backendGeneration.fenceError
+            ?? new SessionBackendUnavailableError("generation-fenced", this.backendGeneration.id);
+        }
+        return this.backend ? this.getBackend() : null;
+      },
+      resumeSession: (sessionId, sessionConfig, lease) =>
+        this.resumeBackendSession(sessionId, sessionConfig, lease),
       sessionObjects: this.sessionObjects,
       mcpStatus: this.mcpStatus,
       activeRunControllers: this.activeRunControllers,
@@ -732,9 +855,11 @@ export class SessionManager {
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
-      beginSessionResume: (sessionId, sessionConfig, isCancelled) =>
+      beginSessionResume: (sessionId, sessionConfig, isCancelled, options) =>
         this.beginSessionResume(sessionId, sessionConfig, {
           isCancelled,
+          reserveCachedSession: options?.reserveCachedSession,
+          trackResuming: options?.trackResuming,
         }),
       endSessionResume: (lease) => this.endSessionResume(lease),
       notifySessionCapacityChanged: () => this.notifySessionCapacityChanged(),
@@ -812,12 +937,15 @@ export class SessionManager {
     }
     const readyContextWeight = readyParents + trackedAgents;
     const retainedParents = readyParents + this.cleanupOwnership.size;
-    const resumeReservations = [...this.resumingCapacityReservations.values()];
-    const reservedContexts = this.creatingSessions + resumeReservations.length;
-    const reservedLocalMcpInstances = this.creatingLocalMcpInstances
-      + resumeReservations.reduce((total, reservation) => total + reservation.localMcpInstances, 0);
-    const reservedCapacityUnits = this.creatingCapacityUnits
-      + resumeReservations.reduce((total, reservation) => total + reservation.capacityUnits, 0);
+    const reservations = [
+      ...this.creatingCapacityReservations.values(),
+      ...this.resumingCapacityReservations.values(),
+    ];
+    const reservedContexts = reservations.length;
+    const reservedLocalMcpInstances = reservations
+      .reduce((total, reservation) => total + reservation.localMcpInstances, 0);
+    const reservedCapacityUnits = reservations
+      .reduce((total, reservation) => total + reservation.capacityUnits, 0);
     return {
       ready: readyParents,
       retained: retainedParents,
@@ -878,6 +1006,8 @@ export class SessionManager {
   private getSessionCapacityRuntimeStatus(): SessionCapacityRuntimeStatus {
     const pressure = this.getSessionCapacityPressure();
     const { state } = pressure;
+    const projectedProcessReservations = this.getProjectedProcessReservations();
+    const actualProcessDescendants = this.lastProcessTreeDescendantCount;
     return {
       contexts: {
         used: pressure.contexts,
@@ -903,6 +1033,16 @@ export class SessionManager {
         failed: state.failedCleanup,
         limit: this.maxPendingSessionCleanups,
       },
+      processes: {
+        actualDescendants: actualProcessDescendants,
+        projectedReservations: projectedProcessReservations,
+        used: (actualProcessDescendants ?? 0) + projectedProcessReservations,
+        limit: this.maxProcessTreeDescendants,
+        sampleStatus: this.processTreeSampleStatus,
+        sampledAt: this.lastProcessTreeSampleSucceededAt === null
+          ? null
+          : new Date(this.lastProcessTreeSampleSucceededAt).toISOString(),
+      },
       waitingRequests: state.waitingForCapacity,
       localMcpWeight: this.localMcpCapacityWeight,
       waitTimeoutSeconds: this.sessionCapacityWaitTimeoutMs / 1_000,
@@ -924,6 +1064,7 @@ export class SessionManager {
     return {
       localMcpInstances: profile.localMcpCount,
       capacityUnits: 1 + profile.localMcpCount * this.localMcpCapacityWeight,
+      processSlots: 1 + profile.localMcpCount,
     };
   }
 
@@ -942,6 +1083,7 @@ export class SessionManager {
     return {
       localMcpInstances,
       capacityUnits: contexts + localMcpInstances * this.localMcpCapacityWeight,
+      processSlots: contexts + localMcpInstances,
     };
   }
 
@@ -956,7 +1098,21 @@ export class SessionManager {
       localMcpInstances,
       capacityUnits,
       capacityLimit: this.maxSessionCapacityUnits,
+      processDescendants: this.lastProcessTreeDescendantCount,
+      processReservations: this.getProjectedProcessReservations(),
+      processLimit: this.maxProcessTreeDescendants,
     };
+  }
+
+  private getProjectedProcessReservations(): number {
+    let total = 0;
+    for (const reservation of this.creatingCapacityReservations.values()) {
+      total += reservation.processSlots;
+    }
+    for (const reservation of this.resumingCapacityReservations.values()) {
+      total += reservation.processSlots;
+    }
+    return total;
   }
 
   private assertSessionCapacityAvailable(
@@ -964,6 +1120,22 @@ export class SessionManager {
   ): void {
     const pressure = this.getSessionCapacityPressure();
     const { state } = pressure;
+    const projectedProcessReservations = this.getProjectedProcessReservations() + request.processSlots;
+    const projectedProcessDescendants = (this.lastProcessTreeDescendantCount ?? 0)
+      + projectedProcessReservations;
+    if (projectedProcessDescendants > this.maxProcessTreeDescendants) {
+      throw new SessionCapacityError(
+        "process-pressure",
+        {
+          ...this.getCapacitySnapshot(
+            pressure.contexts + 1,
+            pressure.localMcpInstances + request.localMcpInstances,
+            pressure.capacityUnits + request.capacityUnits,
+          ),
+          processReservations: projectedProcessReservations,
+        },
+      );
+    }
     if (state.failedCleanup > 0) {
       if (!this.failedCleanupRetryScheduled) {
         this.failedCleanupRetryScheduled = true;
@@ -1076,6 +1248,7 @@ export class SessionManager {
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
     options: {
       isCancelled?: () => boolean;
+      assertAdmission?: () => void;
       reserve: (reservation: SessionCapacityReservation) => void;
     },
   ): Promise<boolean> {
@@ -1086,6 +1259,9 @@ export class SessionManager {
     let waitingLogged = false;
 
     while (!options.isCancelled?.()) {
+      options.assertAdmission?.();
+      await this.refreshProcessPressureForAdmission();
+      options.assertAdmission?.();
       try {
         this.assertSessionCapacityAvailable(request);
         options.reserve(request);
@@ -1125,26 +1301,27 @@ export class SessionManager {
 
   private async beginSessionCreation(
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
-  ): Promise<SessionCapacityReservation> {
+    generation: BackendGeneration,
+  ): Promise<SessionCreationLease> {
+    const lease: SessionCreationLease = {
+      token: Symbol("session-create"),
+      reservation: this.getCapacityReservation(sessionConfig),
+      generation,
+    };
     let capacityReservation: SessionCapacityReservation | undefined;
     await this.waitForSessionCapacity(sessionConfig, {
+      assertAdmission: () => this.assertBackendGenerationReady(generation),
       reserve: (reservation) => {
         capacityReservation = reservation;
-        this.creatingSessions++;
-        this.creatingCapacityUnits += reservation.capacityUnits;
-        this.creatingLocalMcpInstances += reservation.localMcpInstances;
+        this.creatingCapacityReservations.set(lease.token, reservation);
       },
     });
-    return capacityReservation!;
+    lease.reservation = capacityReservation!;
+    return lease;
   }
 
-  private endSessionCreation(reservation: SessionCapacityReservation): void {
-    this.creatingSessions = Math.max(0, this.creatingSessions - 1);
-    this.creatingCapacityUnits = Math.max(0, this.creatingCapacityUnits - reservation.capacityUnits);
-    this.creatingLocalMcpInstances = Math.max(
-      0,
-      this.creatingLocalMcpInstances - reservation.localMcpInstances,
-    );
+  private endSessionCreation(lease: SessionCreationLease): void {
+    this.creatingCapacityReservations.delete(lease.token);
     this.notifySessionCapacityChanged();
   }
 
@@ -1161,6 +1338,10 @@ export class SessionManager {
       maxContexts: this.maxCachedContexts,
       maxCapacityUnits: this.maxSessionCapacityUnits,
       localMcpCapacityWeight: this.localMcpCapacityWeight,
+      maxProcessTreeDescendants: this.maxProcessTreeDescendants,
+      processTreeSampleStatus: this.processTreeSampleStatus,
+      processTreeDescendants: this.lastProcessTreeDescendantCount,
+      projectedProcessReservations: this.getProjectedProcessReservations(),
       capacityWaitTimeoutMs: this.sessionCapacityWaitTimeoutMs,
       idleTtlMs: this.sessionCacheIdleTtlMs,
       maxPendingCleanup: this.maxPendingSessionCleanups,
@@ -1497,18 +1678,24 @@ export class SessionManager {
     return this.enqueueCache("trim", undefined, () => this.trimSessionCacheUnsafe(reason));
   }
 
-  private maybeSampleProcessTree(): void {
-    if (!this.deps.telemetryStore) return;
-    const now = Date.now();
-    if (now - this.lastProcessTreeSampleAt < PROCESS_TREE_SAMPLE_THROTTLE_MS) return;
-    this.lastProcessTreeSampleAt = now;
-    void sampleProcessTree(process.pid, createDeadline(PROCESS_TREE_SAMPLE_DEADLINE_MS))
+  private startProcessTreeSample(): Promise<void> {
+    if (this.processTreeSampleInFlight) return this.processTreeSampleInFlight;
+    this.lastProcessTreeSampleAttemptAt = Date.now();
+    const sampler = this.deps.sampleProcessTree ?? (async () => null);
+    const sample = Promise.resolve()
+      .then(() => sampler(process.pid, createDeadline(PROCESS_TREE_SAMPLE_DEADLINE_MS)))
       .then((snapshot) => {
         if (!snapshot) {
+          this.processTreeSampleStatus = "unavailable";
           this.recordSpan("session.cache.processTree", 0, undefined, { outcome: "unavailable" });
           return;
         }
-        const nodeCount = 1 + snapshot.descendants.length;
+        const sampledAt = Date.now();
+        const descendantCount = snapshot.descendants.length;
+        const nodeCount = 1 + descendantCount;
+        this.lastProcessTreeDescendantCount = descendantCount;
+        this.lastProcessTreeSampleSucceededAt = sampledAt;
+        this.processTreeSampleStatus = "sampled";
         this.processTreeBaselineCount ??= nodeCount;
         const baseline = this.processTreeBaselineCount;
         const absoluteThreshold = SessionManager.resolvePositiveIntegerEnv(
@@ -1523,6 +1710,7 @@ export class SessionManager {
         this.recordSpan("session.cache.processTree", 0, undefined, {
           outcome: "sampled",
           nodeCount,
+          descendantCount,
           baseline,
           growth,
           absoluteThreshold,
@@ -1534,14 +1722,55 @@ export class SessionManager {
             `[sdk] Process tree warning: ${nodeCount} nodes, growth ${growth} from baseline ${baseline}`,
           );
         }
+        this.notifySessionCapacityChanged();
       })
       .catch((error) => {
+        this.processTreeSampleStatus = "failed";
         console.warn("[sdk] Process tree sampling failed:", error);
         this.recordSpan("session.cache.processTree", 0, undefined, {
           outcome: "failed",
           error: error instanceof Error ? error.message : String(error),
         });
+      })
+      .finally(() => {
+        if (this.processTreeSampleInFlight === sample) {
+          this.processTreeSampleInFlight = null;
+        }
       });
+    this.processTreeSampleInFlight = sample;
+    return sample;
+  }
+
+  private async refreshProcessPressureForAdmission(): Promise<void> {
+    if (!this.deps.sampleProcessTree) {
+      if (this.processTreeSampleStatus === "never") this.processTreeSampleStatus = "unavailable";
+      return;
+    }
+    const lastSucceededAt = this.lastProcessTreeSampleSucceededAt;
+    if (
+      lastSucceededAt !== null
+      && Date.now() - lastSucceededAt <= this.processTreeSampleMaxAgeMs
+    ) {
+      return;
+    }
+    const sample = this.startProcessTreeSample();
+    const outcome = await settleByDeadline(
+      () => sample,
+      createDeadline(this.processTreeAdmissionSampleTimeoutMs),
+    );
+    if (outcome.status === "timed-out" && this.processTreeSampleInFlight === sample) {
+      this.processTreeSampleStatus = "timed-out";
+      this.recordSpan("session.cache.processTree", this.processTreeAdmissionSampleTimeoutMs, undefined, {
+        outcome: "timed-out",
+      });
+    }
+  }
+
+  private maybeSampleProcessTree(): void {
+    if (!this.deps.sampleProcessTree) return;
+    const now = Date.now();
+    if (now - this.lastProcessTreeSampleAttemptAt < PROCESS_TREE_SAMPLE_THROTTLE_MS) return;
+    void this.startProcessTreeSample();
   }
 
   private static resolvePositiveIntegerEnv(name: string, fallback: number): number {
@@ -1560,6 +1789,24 @@ export class SessionManager {
     expectedSession: AgentSession | null,
     sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<AgentSession> {
+    const owner = this.sessionBackendOwners.get(session);
+    if (
+      owner
+      && (
+        owner.generation.state !== "ready"
+        || this.backendGeneration !== owner.generation
+        || this.backend !== owner.generation.backend
+      )
+    ) {
+      return this.discardGenerationSession(
+        owner,
+        session,
+        `session ${sessionId} from fenced backend generation ${owner.generation.id}`,
+      ).then(() => {
+        throw owner.generation.fenceError
+          ?? new SessionBackendUnavailableError("generation-fenced", owner.generation.id);
+      });
+    }
     return this.enqueueCache("insert", sessionId, () => {
       const current = this.sessionObjects.get(sessionId);
       const capacityProfile = sessionConfig
@@ -1815,22 +2062,38 @@ export class SessionManager {
     options: {
       isCancelled?: () => boolean;
       reserveCachedSession?: boolean;
+      trackResuming?: boolean;
     } = {},
   ): Promise<SessionResumeLease | null> {
-    const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
+    const generation = this.backend ? this.getCurrentBackendGeneration() : null;
+    const tracksResuming = options.trackResuming !== false;
+    const lease: SessionResumeLease = {
+      sessionId,
+      token: Symbol(sessionId),
+      backendGeneration: generation?.id ?? 0,
+      tracksResuming,
+    };
     if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
+      if (generation) this.assertBackendGenerationReady(generation);
       this.touchSessionTree(sessionId);
-      this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
-      this.syncRestartWaitingIfPending();
+      if (tracksResuming) {
+        this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
+        this.syncRestartWaitingIfPending();
+      }
       return lease;
     }
     const admitted = await this.waitForSessionCapacity(sessionConfig, {
       isCancelled: options.isCancelled,
+      assertAdmission: generation
+        ? () => this.assertBackendGenerationReady(generation)
+        : undefined,
       reserve: (reservation) => {
         this.resumingCapacityReservations.set(lease.token, reservation);
         this.touchSessionTree(sessionId);
-        this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
-        this.syncRestartWaitingIfPending();
+        if (tracksResuming) {
+          this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
+          this.syncRestartWaitingIfPending();
+        }
       },
     });
     return admitted ? lease : null;
@@ -1839,13 +2102,15 @@ export class SessionManager {
   private endSessionResume(lease: SessionResumeLease): void {
     const { sessionId } = lease;
     this.resumingCapacityReservations.delete(lease.token);
-    const count = this.resumingSessions.get(sessionId) ?? 0;
-    if (count <= 1) {
-      this.resumingSessions.delete(sessionId);
-    } else {
-      this.resumingSessions.set(sessionId, count - 1);
+    if (lease.tracksResuming) {
+      const count = this.resumingSessions.get(sessionId) ?? 0;
+      if (count <= 1) {
+        this.resumingSessions.delete(sessionId);
+      } else {
+        this.resumingSessions.set(sessionId, count - 1);
+      }
+      this.syncRestartWaitingIfPending();
     }
-    this.syncRestartWaitingIfPending();
     this.notifySessionCapacityChanged();
     this.scheduleCacheOperation(
       this.trimSessionCache("session resume ended"),
@@ -2047,25 +2312,348 @@ export class SessionManager {
     }
   }
 
-  private async rejectMismatchedCreatedSession(
-    expectedSessionId: string,
-    session: AgentSession,
-    backend: AgentBackend,
-  ): Promise<never> {
-    try {
-      await this.disposeSession(session.sessionId, session, "rejecting mismatched created session");
-    } catch (error) {
-      console.warn("[sdk] Failed to reap mismatched created session:", error);
+  private createBackend(): AgentBackend {
+    return this.deps.createBackend?.() ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
+  }
+
+  private createBackendGeneration(backend: AgentBackend): BackendGeneration {
+    let signalFence!: (error: SessionBackendUnavailableError) => void;
+    const fenceSignal = new Promise<SessionBackendUnavailableError>((resolve) => {
+      signalFence = resolve;
+    });
+    const generation: BackendGeneration = {
+      id: ++this.backendGenerationCounter,
+      backend,
+      state: "ready",
+      fenceSignal,
+      signalFence,
+      recoveryStarted: false,
+    };
+    this.backendGenerations.set(generation.id, generation);
+    return generation;
+  }
+
+  private getCurrentBackendGeneration(): BackendGeneration {
+    if (this.backendRotation) {
+      throw new Error("Copilot SDK client refresh is in progress; try again shortly");
     }
-    try { await backend.deleteSession(session.sessionId); } catch { /* best-effort */ }
-    throw new Error(
-      `Agent backend returned session ${session.sessionId} instead of requested Bridge session ${expectedSessionId}`,
+    if (this.backendGeneration?.state === "fenced") {
+      throw this.backendGeneration.fenceError
+        ?? new SessionBackendUnavailableError("generation-fenced", this.backendGeneration.id);
+    }
+    if (!this.backend) throw new Error("SessionManager not initialized");
+    if (!this.backendGeneration || this.backendGeneration.backend !== this.backend) {
+      this.backendGeneration = this.createBackendGeneration(this.backend);
+    }
+    return this.backendGeneration;
+  }
+
+  private assertBackendGenerationReady(generation: BackendGeneration): void {
+    if (
+      generation.state !== "ready"
+      || this.backendGeneration !== generation
+      || this.backend !== generation.backend
+    ) {
+      throw generation.fenceError
+        ?? new SessionBackendUnavailableError("generation-fenced", generation.id);
+    }
+  }
+
+  private async discardGenerationSession(
+    owner: BackendSessionOwner,
+    session: AgentSession,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await session.disconnect?.();
+    } catch (error) {
+      console.warn(`[sdk] Failed to disconnect ${reason}:`, error);
+    }
+    if (owner.deleteOnDiscard) {
+      try {
+        await owner.generation.backend.deleteSession(session.sessionId);
+      } catch (error) {
+        console.warn(`[sdk] Failed to delete ${reason} via backend generation ${owner.generation.id}:`, error);
+      }
+    }
+  }
+
+  private async runBackendSessionOperation(
+    generation: BackendGeneration,
+    kind: "create" | "resume",
+    start: () => Promise<AgentSession>,
+    timeoutMs: number,
+    deleteOnDiscard: boolean,
+  ): Promise<AgentSession> {
+    this.assertBackendGenerationReady(generation);
+    let operation: Promise<AgentSession>;
+    try {
+      operation = Promise.resolve(start());
+    } catch (error) {
+      operation = Promise.reject(error);
+    }
+    let abandoned = false;
+    const owner = { generation, deleteOnDiscard };
+    let discardPromise: Promise<void> | undefined;
+    const discardOnce = (session: AgentSession, reason: string): Promise<void> => {
+      discardPromise ??= this.discardGenerationSession(owner, session, reason);
+      return discardPromise;
+    };
+    void operation.then(
+      (session) => {
+        if (
+          abandoned
+          || generation.state !== "ready"
+          || this.backendGeneration !== generation
+          || this.backend !== generation.backend
+        ) {
+          void discardOnce(session, `late ${kind} session ${session.sessionId}`);
+        }
+      },
+      () => {
+        // Promise.race observes the rejection; this observer owns late settlement.
+      },
+    );
+    const fenced = generation.fenceSignal.then<never>((error) => {
+      throw error;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new SessionBackendUnavailableError(
+          kind === "create" ? "create-timeout" : "resume-timeout",
+          generation.id,
+        );
+        this.fenceBackendGeneration(generation, error);
+        reject(error);
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      const session = await Promise.race([operation, fenced, timedOut]);
+      if (
+        generation.state !== "ready"
+        || this.backendGeneration !== generation
+        || this.backend !== generation.backend
+      ) {
+        abandoned = true;
+        await discardOnce(session, `fenced ${kind} session ${session.sessionId}`);
+        throw generation.fenceError
+          ?? new SessionBackendUnavailableError("generation-fenced", generation.id);
+      }
+      this.sessionBackendOwners.set(session, owner);
+      return session;
+    } catch (error) {
+      abandoned = true;
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async createBackendSession(
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig>; sessionId?: string },
+    options: {
+      kind: "normal" | "task" | "title-helper";
+      expectedSessionId?: string;
+      trackDisposableOwner?: boolean;
+    },
+  ): Promise<{ session: AgentSession; generation: BackendGeneration }> {
+    const generation = this.getCurrentBackendGeneration();
+    const lease = await this.beginSessionCreation(sessionConfig, generation);
+    try {
+      const session = await this.runBackendSessionOperation(
+        generation,
+        "create",
+        () => generation.backend.createSession(sessionConfig),
+        this.sessionCreateTimeoutMs,
+        true,
+      );
+      if (options.expectedSessionId && session.sessionId !== options.expectedSessionId) {
+        await this.discardGenerationSession(
+          { generation, deleteOnDiscard: true },
+          session,
+          `mismatched ${options.kind} session ${session.sessionId}`,
+        );
+        throw new Error(
+          `Agent backend returned session ${session.sessionId} instead of requested Bridge session ${options.expectedSessionId}`,
+        );
+      }
+      if (options.trackDisposableOwner) {
+        this.disposableSessionOwners.set(session.sessionId, generation);
+      }
+      return { session, generation };
+    } finally {
+      this.endSessionCreation(lease);
+    }
+  }
+
+  private async resumeBackendSession(
+    sessionId: string,
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+    lease?: SessionResumeLease,
+  ): Promise<AgentSession> {
+    const generation = lease
+      ? this.backendGenerations.get(lease.backendGeneration)
+      : this.getCurrentBackendGeneration();
+    if (!generation) {
+      throw new SessionBackendUnavailableError("generation-fenced", lease?.backendGeneration ?? 0);
+    }
+    return this.runBackendSessionOperation(
+      generation,
+      "resume",
+      () => generation.backend.resumeSession(sessionId, sessionConfig),
+      this.sessionResumeTimeoutMs,
+      false,
     );
   }
 
-  private createBackend(): AgentBackend {
+  private async deleteDisposableSession(sessionId: string): Promise<void> {
+    const generation = this.disposableSessionOwners.get(sessionId);
+    try {
+      const backend = generation?.backend ?? this.getBackend();
+      await backend.deleteSession(sessionId);
+    } finally {
+      this.disposableSessionOwners.delete(sessionId);
+    }
+  }
 
-    return this.deps.createBackend?.() ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
+  private fenceBackendGeneration(
+    generation: BackendGeneration,
+    error: SessionBackendUnavailableError,
+  ): void {
+    if (generation.state === "fenced") return;
+    const isCurrent = this.backendGeneration === generation
+      && this.backend === generation.backend;
+    generation.state = "fenced";
+    generation.fenceError = error;
+    generation.signalFence(error);
+    if (!isCurrent) {
+      console.warn(`[sdk] Fenced stale backend generation ${generation.id}: ${error.message}`);
+      return;
+    }
+    this.creatingCapacityReservations.clear();
+    this.resumingCapacityReservations.clear();
+    this.resumingSessions.clear();
+    this.notifySessionCapacityChanged();
+    console.error(`[sdk] Fenced backend generation ${generation.id}: ${error.message}`);
+    if (!generation.recoveryStarted) {
+      generation.recoveryStarted = true;
+      const recovery = this.recoverBackendGeneration(generation);
+      this.backendRecovery = recovery;
+      void recovery.then(
+        () => {
+          if (this.backendRecovery === recovery) this.backendRecovery = null;
+        },
+        (recoveryError) => {
+          if (this.backendRecovery === recovery) this.backendRecovery = null;
+          this.requestRestartForBackendRecovery(generation, recoveryError);
+        },
+      );
+    }
+  }
+
+  private async invalidateFencedBackendSessions(): Promise<void> {
+    const cleanups = await this.enqueueCache("backend-fence", undefined, () => {
+      const scheduled: Promise<boolean>[] = [];
+      for (const [sessionId] of this.sessionObjects) {
+        const cleanup = this.evictCachedSessionUnsafe(
+          sessionId,
+          undefined,
+          "invalidating a fenced backend generation",
+        );
+        if (cleanup) scheduled.push(cleanup);
+      }
+      this.pendingSessionEvictions.clear();
+      return scheduled;
+    });
+    await Promise.allSettled(cleanups);
+  }
+
+  private async forceStopBackendForRecovery(backend: AgentBackend): Promise<void> {
+    if (typeof backend.forceStop !== "function") return;
+    const outcome = await settleByDeadline(
+      () => backend.forceStop!(),
+      createDeadline(this.backendRecoveryStopTimeoutMs),
+    );
+    if (outcome.status !== "fulfilled") {
+      console.error(
+        `[sdk] Backend recovery force stop ${outcome.status === "timed-out" ? "timed out" : "failed"}:`,
+        outcome.status === "rejected" ? outcome.error : "",
+      );
+    }
+  }
+
+  private requestRestartForBackendRecovery(generation: BackendGeneration, cause: unknown): void {
+    console.error(`[sdk] Backend generation ${generation.id} recovery requires a full Bridge restart:`, cause);
+    triggerRestartPendingForExternalRequest(this.getActiveSessions().length);
+    const dataDir = this.deps.runtimePaths?.dataDir;
+    if (!dataDir) {
+      console.error("[sdk] Backend recovery could not write restart.signal because runtime paths are unavailable");
+      return;
+    }
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      writeRestartSignalFile(join(dataDir, "restart.signal"), {
+        validationMode: "operational",
+        source: "backend_session_recovery",
+      });
+    } catch (error) {
+      console.error("[sdk] Backend recovery failed to write restart.signal:", error);
+    }
+  }
+
+  private async recoverBackendGeneration(generation: BackendGeneration): Promise<void> {
+    await this.invalidateFencedBackendSessions();
+    const stopOutcome = await settleByDeadline(
+      () => generation.backend.stop(),
+      createDeadline(this.backendRecoveryStopTimeoutMs),
+    );
+    if (stopOutcome.status !== "fulfilled") {
+      await this.forceStopBackendForRecovery(generation.backend);
+      this.requestRestartForBackendRecovery(
+        generation,
+        stopOutcome.status === "rejected" ? stopOutcome.error : "backend stop verification timed out",
+      );
+      return;
+    }
+    if (
+      this.shuttingDown
+      || this.backendGeneration !== generation
+      || this.backend !== generation.backend
+    ) return;
+
+    this.backend = null;
+    this.backendCreatedAtMs = null;
+    let nextBackend: AgentBackend;
+    try {
+      nextBackend = this.createBackend();
+    } catch (error) {
+      this.requestRestartForBackendRecovery(generation, error);
+      return;
+    }
+    if (this.shuttingDown || this.backendGeneration !== generation) return;
+    const startOutcome = await settleByDeadline(
+      () => nextBackend.start(),
+      createDeadline(this.backendRecoveryStartTimeoutMs),
+    );
+    if (startOutcome.status !== "fulfilled") {
+      await this.forceStopBackendForRecovery(nextBackend);
+      this.requestRestartForBackendRecovery(
+        generation,
+        startOutcome.status === "rejected" ? startOutcome.error : "replacement backend start timed out",
+      );
+      return;
+    }
+    if (this.shuttingDown || this.backendGeneration !== generation) {
+      await this.forceStopBackendForRecovery(nextBackend);
+      return;
+    }
+    const nextGeneration = this.createBackendGeneration(nextBackend);
+    this.backend = nextBackend;
+    this.backendGeneration = nextGeneration;
+    this.backendCreatedAtMs = Date.now();
+    console.log(`[sdk] Recovered Copilot backend as generation ${nextGeneration.id}`);
   }
 
   private forceStopTimedOutBackend(backend: AgentBackend, context: string): void {
@@ -2083,24 +2671,28 @@ export class SessionManager {
     if (this.backendRotation) {
       throw new Error("Copilot SDK client refresh is in progress; try again shortly");
     }
-    if (!this.backend) throw new Error("SessionManager not initialized");
-    return this.backend;
+    return this.getCurrentBackendGeneration().backend;
   }
 
   private async getBackendAfterRotation(): Promise<AgentBackend> {
     if (this.backendRotation) {
       await this.backendRotation;
     }
-    if (!this.backend) throw new Error("SessionManager not initialized");
-    return this.backend;
+    return this.getCurrentBackendGeneration().backend;
   }
 
   private async rotateBackendForModelRefresh(): Promise<AgentBackend> {
     if (this.backendRotation) {
       return this.backendRotation;
     }
+    if (this.backendGeneration?.state === "fenced") {
+      throw this.backendGeneration.fenceError
+        ?? new SessionBackendUnavailableError("generation-fenced", this.backendGeneration.id);
+    }
 
-    const activeSessions = this.getActiveSessions().length;
+    const activeSessions = this.getActiveSessions().length
+      + this.creatingCapacityReservations.size
+      + this.resumingCapacityReservations.size;
     if (activeSessions > 0) {
       throw new ModelRefreshBlockedError(activeSessions);
     }
@@ -2161,6 +2753,7 @@ export class SessionManager {
         throw error;
       }
       this.backend = nextClient;
+      this.backendGeneration = this.createBackendGeneration(nextClient);
       this.backendCreatedAtMs = Date.now();
       console.log("[sdk] Agent backend rotated for model refresh");
       return nextClient;
@@ -2181,6 +2774,7 @@ export class SessionManager {
     configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
     this.backend = this.createBackend();
     await this.backend.start();
+    this.backendGeneration = this.createBackendGeneration(this.backend);
     this.backendCreatedAtMs = Date.now();
     console.log("[sdk] Agent backend ready");
     this.sweepLeakedDisposableTitleSessions();
@@ -2357,8 +2951,6 @@ export class SessionManager {
   }
 
   private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
-    const client = this.getBackend();
-
     const cachedSession = this.sessionObjects.get(sessionId);
     if (cachedSession) return operation(cachedSession);
 
@@ -2371,10 +2963,7 @@ export class SessionManager {
     if (!resumeLease) throw new Error("Session name resume cancelled before admission");
     let session: any | undefined;
     try {
-      session = await resumeSessionWithTimeout(
-        client.resumeSession(sessionId, sessionConfig),
-        "name resume timed out after 60s",
-      );
+      session = await this.resumeBackendSession(sessionId, sessionConfig, resumeLease);
       this.trackSessionCapacityProfile(session, sessionConfig);
       return await operation(session);
     } finally {
@@ -2506,7 +3095,7 @@ export class SessionManager {
     serverName: string,
     options: { forceReauth?: boolean } = {},
   ): Promise<McpLoginResult> {
-    const client = this.getBackend();
+    this.getBackend();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot authenticate MCP server for a busy session");
     }
@@ -2534,10 +3123,7 @@ export class SessionManager {
       let session = this.sessionObjects.get(sessionId);
       if (!session) {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
-        session = await resumeSessionWithTimeout(
-          client.resumeSession(sessionId, resumeConfig),
-          "MCP auth resume timed out after 60s",
-        );
+        session = await this.resumeBackendSession(sessionId, resumeConfig, resumeLease);
         session = await this.cacheResumedSession(sessionId, session, resumeConfig);
       }
 
@@ -2681,36 +3267,27 @@ export class SessionManager {
       ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
       ...(modelMetadata ? { modelMetadata } : {}),
     });
-    let creationReservation: SessionCapacityReservation | undefined;
-    try {
-      creationReservation = await this.beginSessionCreation(sessionConfig);
-      session = await client.createSession(sessionConfig);
-    } catch (error) {
-      if (creationReservation) this.endSessionCreation(creationReservation);
-      throw error;
-    }
+    const created = await this.createBackendSession(sessionConfig, {
+      kind: "normal",
+      expectedSessionId: bridgeSessionId,
+    });
+    session = created.session;
     const duration = Date.now() - t0;
-    if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
-      }
-      await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
-    }
-
     try {
       await this.cacheSession(session.sessionId, session, null, sessionConfig);
     } catch (error) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
-      }
-      try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
-        console.warn(`[sdk] Failed to delete rejected session ${session.sessionId}:`, cleanupError);
+      if (
+        created.generation.state === "ready"
+        && this.backendGeneration === created.generation
+      ) {
+        await this.discardGenerationSession(
+          { generation: created.generation, deleteOnDiscard: true },
+          session,
+          `rejected session ${session.sessionId}`,
+        );
       }
       throw error;
     }
-    if (creationReservation) this.endSessionCreation(creationReservation);
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
@@ -2761,7 +3338,11 @@ export class SessionManager {
         const resumeLease = await this.beginSessionResume(result.sessionId, forkResumeConfig);
         if (!resumeLease) throw new Error("Fork resume cancelled before admission");
         try {
-          const forkedSession = await backend.resumeSession(result.sessionId, forkResumeConfig);
+          const forkedSession = await this.resumeBackendSession(
+            result.sessionId,
+            forkResumeConfig,
+            resumeLease,
+          );
           await this.cacheResumedSession(result.sessionId, forkedSession, forkResumeConfig);
           this.probeMcpStatus(result.sessionId, forkedSession);
         } finally {
@@ -2818,10 +3399,7 @@ export class SessionManager {
         const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
         if (!resumeLease) throw new Error("History undo resume cancelled before admission");
         try {
-          session = await resumeSessionWithTimeout(
-            backend.resumeSession(sessionId, resumeConfig),
-            "undo history resume timed out after 60s",
-          );
+          session = await this.resumeBackendSession(sessionId, resumeConfig, resumeLease);
           session = await this.cacheResumedSession(sessionId, session, resumeConfig);
           this.probeMcpStatus(sessionId, session);
         } finally {
@@ -3015,39 +3593,27 @@ export class SessionManager {
       groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
       ...(modelMetadata ? { modelMetadata } : {}),
     });
-    let session: AgentSession;
-    let creationReservation: SessionCapacityReservation | undefined;
-    try {
-      creationReservation = await this.beginSessionCreation(sessionConfig);
-      session = await client.createSession(
-        sessionConfig,
-      );
-    } catch (error) {
-      if (creationReservation) this.endSessionCreation(creationReservation);
-      throw error;
-    }
+    const created = await this.createBackendSession(sessionConfig, {
+      kind: "task",
+      expectedSessionId: bridgeSessionId,
+    });
+    const session = created.session;
     const duration = Date.now() - t0;
-    if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
-      }
-      await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
-    }
-
     try {
       await this.cacheSession(session.sessionId, session, null, sessionConfig);
     } catch (error) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
-      }
-      try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
-        console.warn(`[sdk] Failed to delete rejected task session ${session.sessionId}:`, cleanupError);
+      if (
+        created.generation.state === "ready"
+        && this.backendGeneration === created.generation
+      ) {
+        await this.discardGenerationSession(
+          { generation: created.generation, deleteOnDiscard: true },
+          session,
+          `rejected task session ${session.sessionId}`,
+        );
       }
       throw error;
     }
-    if (creationReservation) this.endSessionCreation(creationReservation);
     await this.warmNativeBridgeTools(session.sessionId, session);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
@@ -3221,7 +3787,7 @@ export class SessionManager {
    * Returns a promise that resolves when the session is ready for interaction.
    */
   async warmSession(sessionId: string): Promise<void> {
-    const client = this.getBackend();
+    this.getBackend();
     if (this.sessionObjects.has(sessionId)) {
       this.recordSpan("session.warm.alreadyCached", 0, sessionId);
       return;
@@ -3260,10 +3826,7 @@ export class SessionManager {
       const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
       if (!resumeLease) throw new Error("Session warmup cancelled before admission");
       try {
-        const session = await resumeSessionWithTimeout(
-          client.resumeSession(sessionId, resumeConfig),
-          "warmSession timed out after 60s",
-        );
+        const session = await this.resumeBackendSession(sessionId, resumeConfig, resumeLease);
         const cachedSession = await this.cacheResumedSession(sessionId, session, resumeConfig);
         this.probeMcpStatus(sessionId, cachedSession);
         this.invalidateSessionListCache("session:warm");
@@ -3339,7 +3902,7 @@ export class SessionManager {
   }
 
   async reloadSession(sessionId: string): Promise<McpServerStatus[]> {
-    const client = this.getBackend();
+    this.getBackend();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot reload a busy session");
     }
@@ -3364,10 +3927,7 @@ export class SessionManager {
       this.mcpStatus.delete(sessionId);
 
       console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
-      const session = await resumeSessionWithTimeout(
-        client.resumeSession(sessionId, resumeConfig),
-        "reloadSession timed out after 60s",
-      );
+      const session = await this.resumeBackendSession(sessionId, resumeConfig, resumeLease);
       await this.cacheResumedSession(sessionId, session, resumeConfig);
 
       return this.getMcpStatus(sessionId);
@@ -3530,10 +4090,7 @@ export class SessionManager {
         const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
         if (!resumeLease) throw new Error("Model switch resume cancelled before admission");
         try {
-          session = await resumeSessionWithTimeout(
-            client.resumeSession(sessionId, resumeConfig),
-            "resumeSession timed out after 60s",
-          );
+          session = await this.resumeBackendSession(sessionId, resumeConfig, resumeLease);
           session = await this.cacheResumedSession(sessionId, session, resumeConfig);
           this.probeMcpStatus(sessionId, session);
         } finally {
@@ -3681,6 +4238,7 @@ export class SessionManager {
   async gracefulShutdown(
     deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
   ): Promise<void> {
+    this.shuttingDown = true;
     this.stopSessionCacheSweep();
     const active = this.getActiveSessions();
     if (active.length > 0) {
@@ -3774,6 +4332,7 @@ export class SessionManager {
         }
       }
       this.backend = null;
+      this.backendGeneration = null;
       this.backendCreatedAtMs = null;
     }
     this.agentRegistry.dispose();

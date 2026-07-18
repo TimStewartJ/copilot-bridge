@@ -23,6 +23,7 @@ import {
   ModelRefreshBlockedError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
+  SessionBackendUnavailableError,
   SessionCapacityError,
   SessionHistoryUndoError,
   triggerRestartPendingForExternalRequest,
@@ -532,6 +533,23 @@ function sendSessionCapacityError(res: express.Response, error: unknown): boolea
     },
   });
   return true;
+}
+
+function sendSessionAdmissionError(res: express.Response, error: unknown): boolean {
+  if (error instanceof SessionBackendUnavailableError) {
+    res.set("Retry-After", String(error.retryAfterSeconds));
+    res.status(503).json({
+      error: error.message,
+      code: error.code,
+      details: {
+        reason: error.reason,
+        generation: error.generation,
+        retryAfterSeconds: error.retryAfterSeconds,
+      },
+    });
+    return true;
+  }
+  return sendSessionCapacityError(res, error);
 }
 
 function getSessionDeferSummary(ctx: AppContext, sessionId: string): DeferSummary {
@@ -2309,7 +2327,7 @@ export function createApiRouter(
       await ctx.sessionManager.warmSession(req.params.id);
       res.json({ ready: true });
     } catch (err) {
-      if (sendSessionCapacityError(res, err)) return;
+      if (sendSessionAdmissionError(res, err)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -2323,7 +2341,7 @@ export function createApiRouter(
       const servers = await ctx.sessionManager.reloadSession(req.params.id);
       res.json({ ready: true, servers });
     } catch (err) {
-      if (sendSessionCapacityError(res, err)) return;
+      if (sendSessionAdmissionError(res, err)) return;
       if (err instanceof Error && err.message === "Cannot reload a busy session") {
         return res.status(409).json({ error: err.message });
       }
@@ -2415,7 +2433,7 @@ export function createApiRouter(
       const result = await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort, contextTier);
       res.json(result);
     } catch (err) {
-      if (sendSessionCapacityError(res, err)) return;
+      if (sendSessionAdmissionError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       if (/busy/i.test(message)) return res.status(409).json({ error: message });
       if (/restart/i.test(message)) return res.status(503).json({ error: message });
@@ -2434,7 +2452,7 @@ export function createApiRouter(
       invalidateEnrichedCache("route:session:create");
       res.json(result);
     } catch (err) {
-      if (sendSessionCapacityError(res, err)) return;
+      if (sendSessionAdmissionError(res, err)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -2485,7 +2503,7 @@ export function createApiRouter(
   }
 
   function handleForkError(res: express.Response, err: unknown) {
-    if (sendSessionCapacityError(res, err)) return;
+    if (sendSessionAdmissionError(res, err)) return;
     const message = err instanceof Error ? err.message : String(err);
     if (/not found or has no persisted events/i.test(message) || /no persisted events/i.test(message)) {
       return res.status(400).json({ error: "Cannot fork a session before it has persisted conversation history." });
@@ -2545,7 +2563,7 @@ export function createApiRouter(
       const result = await ctx.sessionManager.undoSessionTurn(sessionId, eventId);
       return res.json(result);
     } catch (error) {
-      if (sendSessionCapacityError(res, error)) return;
+      if (sendSessionAdmissionError(res, error)) return;
       if (error instanceof SessionHistoryUndoError) {
         if (error.code === "unsupported") {
           return res.status(501).json({ error: error.message, code: error.code });
@@ -2607,6 +2625,7 @@ export function createApiRouter(
       }
       res.status(202).json({ status: "accepted" });
     } catch (err) {
+      if (sendSessionAdmissionError(res, err)) return;
       if (isRestartPendingError(err)) {
         res.set("Retry-After", "5");
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
@@ -2818,7 +2837,7 @@ export function createApiRouter(
       const result = await ctx.sessionManager.loginMcpServer(req.params.id, serverName, { forceReauth });
       res.json(result);
     } catch (err) {
-      if (sendSessionCapacityError(res, err)) return;
+      if (sendSessionAdmissionError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       if (/busy session/i.test(message)) return res.status(409).json({ error: message });
       if (/not configured for this session/i.test(message)) return res.status(404).json({ error: message });
@@ -3570,7 +3589,7 @@ export function createApiRouter(
 
       res.json(result);
     } catch (err) {
-      if (sendSessionCapacityError(res, err)) return;
+      if (sendSessionAdmissionError(res, err)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

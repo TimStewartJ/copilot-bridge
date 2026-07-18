@@ -46,6 +46,14 @@ export interface BridgeRuntimeStatus {
       failed: number;
       limit: number;
     };
+    processes: {
+      actualDescendants: number | null;
+      projectedReservations: number;
+      used: number;
+      limit: number;
+      sampleStatus: "never" | "sampled" | "unavailable" | "failed" | "timed-out";
+      sampledAt: string | null;
+    };
     waitingRequests: number;
     localMcpWeight: number;
     waitTimeoutSeconds: number;

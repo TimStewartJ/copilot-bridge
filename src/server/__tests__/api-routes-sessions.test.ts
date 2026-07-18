@@ -14,7 +14,7 @@ import {
   writeFileSync,
   writeRestartState,
 } from "./api-routes-test-helpers.js";
-import { SessionCapacityError } from "../session-manager.js";
+import { SessionBackendUnavailableError, SessionCapacityError } from "../session-manager.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -533,6 +533,27 @@ describe("Session routes (mocked)", () => {
     });
   });
 
+  it("POST /api/sessions reports backend recovery as retryable service unavailability", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createSession = vi.fn().mockRejectedValue(
+      new SessionBackendUnavailableError("create-timeout", 4),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions");
+
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("5");
+    expect(res.body).toMatchObject({
+      code: "session_backend_unavailable",
+      details: {
+        reason: "create-timeout",
+        generation: 4,
+        retryAfterSeconds: 5,
+      },
+    });
+  });
+
   it("POST /api/sessions creates a session when restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
@@ -737,6 +758,27 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("reconnecting");
+  });
+
+  it("POST /api/chat reports a fenced backend as retryable service unavailability", async () => {
+    ctx.sessionManager.startWork = vi.fn(() => {
+      throw new SessionBackendUnavailableError("generation-fenced", 9);
+    });
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello" });
+
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("5");
+    expect(res.body).toMatchObject({
+      code: "session_backend_unavailable",
+      details: {
+        reason: "generation-fenced",
+        generation: 9,
+        retryAfterSeconds: 5,
+      },
+    });
   });
 
   it("POST /api/chat rejects new work while launcher restart cutover is in progress", async () => {
