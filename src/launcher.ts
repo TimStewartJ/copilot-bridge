@@ -102,9 +102,12 @@ import {
   shouldClearRollbackCheckpointAfterHealthyState,
 } from "./launcher-recovery.js";
 import {
+  createServerRestartSafetyState,
   isChildProcessActive,
   resolveServerLaunchDistributionMode,
   spawnLauncherChildIfRunning,
+  spawnServerIfRestartSafe,
+  updateServerRestartSafetyAfterCleanup,
   waitForChildExit,
 } from "./launcher-process.js";
 import {
@@ -205,6 +208,7 @@ let steadyHealthFailures = 0;
 let healthPollInFlight = false;
 let recoveringServer = false;
 let tunnelStatusLogged = false;
+const serverRestartSafety = createServerRestartSafetyState();
 let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
 let currentServerPort = resolveBridgePort();
 let lastCommandFailure:
@@ -499,8 +503,8 @@ function enterStoppedStateAfterFailedRollback() {
 }
 
 function clearFailedRollbackState() {
-  suppressAutoRecovery = false;
   clearPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+  suppressAutoRecovery = serverRestartSafety.unsafeReason !== null;
 }
 
 function clearRollbackCheckpointAfterHealthyState() {
@@ -939,7 +943,8 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const serverArgs = target.mode === "source" ? [TSX_CLI, target.entry] : [target.entry];
-  const child = spawnLauncherChildIfRunning(
+  const child = spawnServerIfRestartSafe(
+    serverRestartSafety,
     () => shuttingDown,
     () => spawn(NODE_PATH, serverArgs, {
       cwd: target.root,
@@ -948,7 +953,12 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
       detached: shouldSpawnDetachedProcessGroup(),
     }),
   );
-  if (!child) return null;
+  if (!child) {
+    if (serverRestartSafety.unsafeReason) {
+      log(`❌ Server replacement blocked after unverified cleanup: ${serverRestartSafety.unsafeReason}`);
+    }
+    return null;
+  }
   trackChildProcessIdentity(child);
   serverLaunchTarget = target;
   steadyHealthFailures = 0;
@@ -1116,7 +1126,18 @@ function terminateServerProcessTree(
     root,
     deadline,
     processTreeTerminationHelperLaunch(),
-  );
+  ).then((result) => {
+    updateServerRestartSafetyAfterCleanup(serverRestartSafety, result);
+    if (!result.ok) {
+      suppressAutoRecovery = true;
+      log(
+        `❌ Server cleanup was not verified; all replacement starts are blocked until verified cleanup or manual launcher recovery: ${serverRestartSafety.unsafeReason}`,
+      );
+    } else {
+      suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+    }
+    return result;
+  });
 }
 
 async function shutdownAndExit(exitCode: number, reason: string): Promise<never> {
