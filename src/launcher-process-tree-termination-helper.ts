@@ -2,6 +2,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   isProcessTreeTerminationRequest,
+  PROCESS_TREE_TERMINATION_ACK,
+  PROCESS_TREE_TERMINATION_HELPER_MODE,
   PROCESS_TREE_TERMINATION_RESULT,
   runProcessTreeTerminationFixpoint,
   type ProcessTreeTerminationResponse,
@@ -42,13 +44,35 @@ function sendResponse(response: ProcessTreeTerminationResponse): void {
     process.exitCode = response.result.ok ? 0 : 1;
     return;
   }
-  process.send(response, () => {
-    process.disconnect?.();
-    process.exit(response.result.ok ? 0 : 1);
+  const finish = () => {
+    process.exitCode = response.result.ok ? 0 : 1;
+    if (process.connected) process.disconnect();
+  };
+  const acknowledgementTimeout = setTimeout(finish, 1_000);
+  const onAcknowledgement = (message: unknown) => {
+    if (
+      !message
+      || typeof message !== "object"
+      || (message as { type?: unknown }).type !== PROCESS_TREE_TERMINATION_ACK
+    ) return;
+    clearTimeout(acknowledgementTimeout);
+    process.off("message", onAcknowledgement);
+    finish();
+  };
+  process.on("message", onAcknowledgement);
+  process.send(response, (error) => {
+    if (error) {
+      clearTimeout(acknowledgementTimeout);
+      process.off("message", onAcknowledgement);
+      finish();
+    }
   });
 }
 
 const entryPath = process.argv[1] ? resolve(process.argv[1]) : "";
-if (entryPath === resolve(fileURLToPath(import.meta.url))) {
+if (
+  process.argv.includes(PROCESS_TREE_TERMINATION_HELPER_MODE)
+  || entryPath === resolve(fileURLToPath(import.meta.url))
+) {
   runProcessTreeTerminationHelper();
 }

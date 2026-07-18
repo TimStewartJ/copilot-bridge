@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeadline } from "./server/deadline.js";
 import type { Deadline } from "./server/deadline.js";
 import {
+  PROCESS_TREE_TERMINATION_ACK,
   PROCESS_TREE_TERMINATION_REQUEST,
   PROCESS_TREE_TERMINATION_RESULT,
   runProcessTreeTerminationFixpoint,
@@ -23,7 +24,7 @@ afterEach(() => {
 });
 
 describe("process tree termination fixpoint", () => {
-  it("retries captured survivors until every identity is verified gone", async () => {
+  it("keeps the stop unverified when a captured survivor exits before a complete snapshot", async () => {
     const root = identity(100);
     const child = identity(101);
     const grandchild = identity(102);
@@ -67,8 +68,8 @@ describe("process tree termination fixpoint", () => {
     );
 
     expect(response.result).toMatchObject({
-      ok: true,
-      status: "terminated",
+      ok: false,
+      status: "unverified",
       snapshot: {
         root,
         descendants: expect.arrayContaining([child, grandchild]),
@@ -81,6 +82,43 @@ describe("process tree termination fixpoint", () => {
       child,
       grandchild,
     ]);
+  });
+
+  it("succeeds internally only after a complete snapshot verifies all captured identities gone", async () => {
+    const root = identity(150);
+    const child = identity(151);
+    const terminate = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: "survivors",
+        root,
+        snapshot: { root, descendants: [child] },
+        survivors: [root, child],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: "terminated",
+        root,
+        snapshot: { root, descendants: [child] },
+      });
+
+    const response = await runProcessTreeTerminationFixpoint(
+      root,
+      createDeadline(5_000),
+      {
+        terminateProcessTree: terminate,
+        waitBeforeRetry: vi.fn(async () => true),
+      },
+    );
+
+    expect(response).toMatchObject({
+      attempts: 2,
+      result: {
+        ok: true,
+        status: "terminated",
+        snapshot: { root, descendants: [child] },
+      },
+    });
   });
 
   it("retries unavailable snapshots and preserves a bounded deadline", async () => {
@@ -111,8 +149,44 @@ describe("process tree termination fixpoint", () => {
       },
     );
 
-    expect(response.result).toMatchObject({ ok: true, status: "terminated" });
+    expect(response.result).toMatchObject({
+      ok: false,
+      status: "unverified",
+      error: expect.stringContaining("snapshot-unavailable"),
+    });
     expect(response.attempts).toBe(3);
+  });
+
+  it("does not turn snapshot uncertainty into success when the root later exits", async () => {
+    const root = identity(250);
+    const terminate = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: "snapshot-unavailable",
+        root,
+        error: "CIM unavailable",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: "already-exited",
+        root,
+      });
+
+    const response = await runProcessTreeTerminationFixpoint(
+      root,
+      createDeadline(5_000),
+      {
+        terminateProcessTree: terminate,
+        waitBeforeRetry: vi.fn(async () => true),
+      },
+    );
+
+    expect(response.result).toMatchObject({
+      ok: false,
+      status: "unverified",
+      root,
+      error: "CIM unavailable",
+    });
   });
 
   it("times out a snapshot operation that never settles", async () => {
@@ -168,7 +242,7 @@ class FakeHelper extends EventEmitter {
 }
 
 describe("external process tree termination helper", () => {
-  it("launches detached and accepts only the helper's explicit verified result", async () => {
+  it("launches detached but does not promote cleanup without OS containment", async () => {
     const root = identity(400);
     const helper = new FakeHelper();
     let spawnOptions: SpawnOptions | undefined;
@@ -183,9 +257,10 @@ describe("external process tree termination helper", () => {
       { command: process.execPath, args: ["helper.js"], cwd: process.cwd() },
       { spawn },
     )).resolves.toEqual({
-      ok: true,
-      status: "terminated",
+      ok: false,
+      status: "unverified",
       root,
+      error: "External process-tree cleanup did not establish OS containment for descendants created during termination.",
     });
 
     expect(spawnOptions).toMatchObject({
@@ -198,6 +273,10 @@ describe("external process tree termination helper", () => {
       root,
       deadlineUnixMs: expect.any(Number),
     }, expect.any(Function));
+    expect(helper.send).toHaveBeenCalledWith(
+      { type: PROCESS_TREE_TERMINATION_ACK },
+      expect.any(Function),
+    );
     expect(helper.disconnect).toHaveBeenCalledOnce();
     expect(helper.unref).toHaveBeenCalledOnce();
   });

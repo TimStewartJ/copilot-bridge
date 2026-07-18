@@ -108,6 +108,7 @@ import {
   waitForChildExit,
 } from "./launcher-process.js";
 import {
+  PROCESS_TREE_TERMINATION_HELPER_MODE,
   terminateProcessTreeWithExternalFixpoint,
   type ProcessTreeTerminationHelperLaunch,
 } from "./launcher-process-tree-termination.js";
@@ -1098,8 +1099,8 @@ function processTreeTerminationHelperLaunch(): ProcessTreeTerminationHelperLaunc
   return {
     command: NODE_PATH,
     args: existsSync(sourceEntry)
-      ? [TSX_CLI, sourceEntry]
-      : [join(ROOT, COMPILED_PROCESS_TREE_TERMINATION_HELPER_ENTRY)],
+      ? [TSX_CLI, sourceEntry, PROCESS_TREE_TERMINATION_HELPER_MODE]
+      : [join(ROOT, COMPILED_PROCESS_TREE_TERMINATION_HELPER_ENTRY), PROCESS_TREE_TERMINATION_HELPER_MODE],
     cwd: ROOT,
   };
 }

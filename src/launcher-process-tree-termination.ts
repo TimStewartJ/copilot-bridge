@@ -14,6 +14,8 @@ import {
 
 export const PROCESS_TREE_TERMINATION_REQUEST = "bridge-process-tree-termination-request";
 export const PROCESS_TREE_TERMINATION_RESULT = "bridge-process-tree-termination-result";
+export const PROCESS_TREE_TERMINATION_ACK = "bridge-process-tree-termination-ack";
+export const PROCESS_TREE_TERMINATION_HELPER_MODE = "--bridge-process-tree-termination-helper";
 
 export type ProcessTreeTerminationRequest = {
   type: typeof PROCESS_TREE_TERMINATION_REQUEST;
@@ -134,6 +136,7 @@ function isProcessTreeTerminationResponse(
         "deadline-exceeded",
         "kill-failed",
         "survivors",
+        "unverified",
       ].includes(result?.status ?? "");
   return candidate.type === PROCESS_TREE_TERMINATION_RESULT
     && Number.isSafeInteger(candidate.attempts)
@@ -160,6 +163,7 @@ export async function runProcessTreeTerminationFixpoint(
   let attempts = 0;
   let firstResult: ProcessTreeTerminationResult | undefined;
   let lastFailure: ProcessTreeTerminationResult | undefined;
+  let uncertainty: string | undefined;
 
   while (pending.size > 0) {
     if (deadlineExpired(deadline)) {
@@ -207,6 +211,9 @@ export async function runProcessTreeTerminationFixpoint(
     firstResult ??= result;
     addSnapshot(tracked, result.snapshot);
     if (result.ok) {
+      if (result.status !== "terminated" || !result.snapshot) {
+        uncertainty ??= `A captured process became ${result.status} before a complete snapshot could be verified.`;
+      }
       if (result.snapshot) {
         pending.delete(identityKey(result.snapshot.root));
         for (const descendant of result.snapshot.descendants) {
@@ -217,6 +224,16 @@ export async function runProcessTreeTerminationFixpoint(
     }
 
     lastFailure = result;
+    if (
+      result.status === "invalid-identity"
+      || result.status === "snapshot-unavailable"
+      || result.status === "identity-unavailable"
+      || result.status === "deadline-exceeded"
+      || result.status === "unverified"
+    ) {
+      uncertainty ??= result.error
+        ?? `Process-tree state became uncertain after ${result.status}.`;
+    }
     for (const survivor of result.survivors ?? []) addIdentity(tracked, survivor);
     const retry = result.survivors?.length
       ? result.survivors
@@ -234,6 +251,20 @@ export async function runProcessTreeTerminationFixpoint(
         result: deadlineFailure(root, tracked, lastFailure),
       };
     }
+  }
+
+  if (uncertainty) {
+    return {
+      type: PROCESS_TREE_TERMINATION_RESULT,
+      attempts,
+      result: {
+        ok: false,
+        status: "unverified",
+        root,
+        snapshot: aggregateSnapshot(root, tracked),
+        error: uncertainty,
+      },
+    };
   }
 
   return {
@@ -292,10 +323,16 @@ export async function terminateProcessTreeWithExternalFixpoint(
       };
       const onMessage = (message: unknown) => {
         if (!isProcessTreeTerminationResponse(message, root)) return;
-        child.off("error", onError);
-        child.off("exit", onExit);
-        child.off("message", onMessage);
-        resolve(message.result);
+        child.send?.({ type: PROCESS_TREE_TERMINATION_ACK }, (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          child.off("error", onError);
+          child.off("exit", onExit);
+          child.off("message", onMessage);
+          resolve(message.result);
+        });
       };
       child.once("error", onError);
       child.once("exit", onExit);
@@ -318,7 +355,19 @@ export async function terminateProcessTreeWithExternalFixpoint(
   if (child.connected) child.disconnect();
   child.unref();
 
-  if (response.status === "fulfilled") return response.value;
+  if (response.status === "fulfilled") {
+    if (!response.value.ok) return response.value;
+    // Repeated snapshots are observation, not containment. Without assigning
+    // the server tree to a Windows Job Object before termination, a child can
+    // escape between snapshots, so cleanup success must not authorize restart.
+    return {
+      ok: false,
+      status: "unverified",
+      root,
+      snapshot: response.value.snapshot,
+      error: "External process-tree cleanup did not establish OS containment for descendants created during termination.",
+    };
+  }
   if (response.status === "timed-out") {
     child.kill();
     return helperFailure(root, "deadline-exceeded", "external termination helper did not report before the deadline");

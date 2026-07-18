@@ -78,7 +78,8 @@ export type ProcessTreeTerminationResult =
         | "identity-unavailable"
         | "deadline-exceeded"
         | "kill-failed"
-        | "survivors";
+        | "survivors"
+        | "unverified";
       root: ProcessIdentity;
       snapshot?: ProcessTreeSnapshot;
       survivors?: ProcessIdentity[];
