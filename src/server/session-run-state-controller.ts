@@ -51,7 +51,6 @@ export interface SessionRunStateControllerDeps {
   isRestartPending(): boolean;
   syncRestartWaitingSessions(activeSessionCount: number): void;
   getActiveSessionCount?(): number;
-  isSessionResuming?(sessionId: string): boolean;
   cancelPendingUserInputRequests(
     sessionId: string,
     reason: UserInputCancelReason,
@@ -294,7 +293,7 @@ export class SessionRunStateController {
   getSessionRunState(sessionId: string): SessionRunState {
     const active = this.sessionRuns.get(sessionId);
     if (active) return active.state;
-    return this.deps.isSessionResuming?.(sessionId) ? "busy" : "idle";
+    return "idle";
   }
 
   isSessionStalled(sessionId: string): boolean {

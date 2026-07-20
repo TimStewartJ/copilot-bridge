@@ -754,6 +754,31 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("keeps passive session warmup out of the user-visible run state", async () => {
+    const { manager } = createManager();
+    const resumedSession = { getEvents: vi.fn().mockResolvedValue([]) };
+    let resolveResume!: (session: typeof resumedSession) => void;
+    manager.backend = {
+      resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
+        resolveResume = resolve;
+      })),
+    };
+
+    const warming = manager.warmSession("session-1");
+    await flushMicrotasks();
+
+    expect(manager.isSessionBusy("session-1")).toBe(true);
+    expect(manager.getActiveSessions()).toContain("session-1");
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+
+    resolveResume(resumedSession);
+    await warming;
+
+    expect(manager.isSessionBusy("session-1")).toBe(false);
+    expect(manager.getActiveSessions()).not.toContain("session-1");
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
   it("blocks startWork when the launcher-owned restart cutover is in progress", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
