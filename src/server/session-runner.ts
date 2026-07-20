@@ -249,6 +249,7 @@ export interface SessionRunnerDeps {
   hasPlan(sessionId: string): boolean;
   getSessionStateDir(sessionId: string): string;
   buildSessionConfig(opts?: SessionConfigOptions): any;
+  awaitPendingSessionCreation(sessionId: string): Promise<any | undefined>;
   beginSessionResume(
     sessionId: string,
     sessionConfig: any,
@@ -598,6 +599,14 @@ export class SessionRunner {
         usedCache = true;
         console.log(`[sdk] [${sid}] Reusing cached session object`);
       } else {
+        s = await this.deps.awaitPendingSessionCreation(sessionId)
+          ?? this.deps.sessionObjects.get(sessionId);
+        if (s) {
+          usedCache = true;
+          console.log(`[sdk] [${sid}] Session creation completed`);
+        }
+      }
+      if (!s) {
         usedCache = false;
         console.log(`[sdk] [${sid}] Resuming session...`);
         const resumeLease = await this.deps.beginSessionResume(

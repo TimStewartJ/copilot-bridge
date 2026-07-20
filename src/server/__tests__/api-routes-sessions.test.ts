@@ -550,7 +550,7 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ sessionId: "new-session" });
-    expect(sessionManager.createSession).toHaveBeenCalledOnce();
+    expect(sessionManager.createSession).toHaveBeenCalledWith({ background: true });
   });
 
   it("POST /api/sessions rejects session creation while launcher restart cutover is in progress", async () => {
@@ -612,6 +612,7 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ sessionId: "task-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
+    expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({ background: true });
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("task-session");
   });
 
@@ -653,6 +654,29 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(202);
     expect(ctx.sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined, { mode: "autopilot" });
+  });
+
+  it("POST /api/chat waits for first-prompt delivery when requested", async () => {
+    ctx.sessionManager.startWork = vi.fn();
+    ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({
+        sessionId: "test-session",
+        prompt: "hello",
+        mode: "autopilot",
+        waitForDelivery: true,
+      });
+
+    expect(res.status).toBe(202);
+    expect(ctx.sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith(
+      "test-session",
+      "hello",
+      undefined,
+      { mode: "autopilot" },
+    );
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
   it("POST /api/chat rejects unsupported send modes", async () => {
