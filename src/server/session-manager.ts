@@ -576,6 +576,7 @@ export class SessionManager {
     DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT,
   );
   private readonly sessionCapacityWaiters = new Set<() => void>();
+  private syncTaskCapacityReap?: Promise<number>;
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly elicitationController: SessionElicitationController;
@@ -1076,6 +1077,20 @@ export class SessionManager {
     });
   }
 
+  private reapFinishedSyncTasksForCapacity(): Promise<number> {
+    if (this.syncTaskCapacityReap) return this.syncTaskCapacityReap;
+    const sessionIds = [...this.sessionObjects.keys()];
+    const reap = Promise.all(
+      sessionIds.map((sessionId) => this.agentRegistry.reapFinishedSyncTasks(sessionId)),
+    )
+      .then((counts) => counts.reduce((total, count) => total + count, 0))
+      .finally(() => {
+        if (this.syncTaskCapacityReap === reap) this.syncTaskCapacityReap = undefined;
+      });
+    this.syncTaskCapacityReap = reap;
+    return reap;
+  }
+
   private async waitForSessionCapacity(
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
     options: {
@@ -1088,6 +1103,7 @@ export class SessionManager {
     const request = this.getCapacityReservation(sessionConfig);
     let lastCapacityError: SessionCapacityError | undefined;
     let waitingLogged = false;
+    let syncTaskReapAttempted = false;
 
     while (!options.isCancelled?.()) {
       try {
@@ -1104,6 +1120,24 @@ export class SessionManager {
       } catch (error) {
         if (!(error instanceof SessionCapacityError)) throw error;
         lastCapacityError = error;
+      }
+
+      if (
+        !syncTaskReapAttempted
+        && (
+          lastCapacityError.reason === "context-limit"
+          || lastCapacityError.reason === "weighted-capacity"
+          || lastCapacityError.reason === "retained-capacity"
+        )
+      ) {
+        syncTaskReapAttempted = true;
+        const reaped = await this.reapFinishedSyncTasksForCapacity();
+        if (reaped > 0) {
+          console.warn(
+            `[sdk] Reaped ${reaped} finished sync agent task${reaped === 1 ? "" : "s"} while relieving session capacity`,
+          );
+        }
+        continue;
       }
 
       const remaining = deadline - Date.now();

@@ -100,7 +100,17 @@ describe("SessionAgentRegistry", () => {
       agentTask({ id: "sync-completed", status: "completed", executionMode: "sync" }),
       agentTask({ id: "background-completed", status: "completed" }),
     ];
+    const cancelTask = vi.fn(async (id: string) => {
+      const task = tasks.find((candidate) => candidate.id === id);
+      if (!task || task.status !== "idle") return { cancelled: false };
+      task.status = "cancelled";
+      return { cancelled: true };
+    });
     const removeTask = vi.fn(async (id: string) => {
+      const task = tasks.find((candidate) => candidate.id === id);
+      if (!task || task.status === "running" || task.status === "idle") {
+        return { removed: false };
+      }
       const previousLength = tasks.length;
       tasks = tasks.filter((task) => task.id !== id);
       return { removed: tasks.length < previousLength };
@@ -108,6 +118,7 @@ describe("SessionAgentRegistry", () => {
     const session = {
       sessionId: "s1",
       listTasks: vi.fn(async () => ({ tasks })),
+      cancelTask,
       removeTask,
     } as unknown as AgentSession;
     const registry = new SessionAgentRegistry({
@@ -118,6 +129,7 @@ describe("SessionAgentRegistry", () => {
     await registry.refresh("s1", "test");
     await expect(registry.reapFinishedSyncTasks("s1")).resolves.toBe(2);
 
+    expect(cancelTask).toHaveBeenCalledWith("sync-idle");
     expect(removeTask.mock.calls.map(([id]) => id)).toEqual([
       "sync-idle",
       "sync-completed",
@@ -128,6 +140,36 @@ describe("SessionAgentRegistry", () => {
       "background-completed",
     ]);
     expect(registry.getTrackedAgentCount("s1")).toBe(3);
+    registry.dispose();
+  });
+
+  it("retries removal when an idle sync agent's cancellation state is slow to refresh", async () => {
+    const { bus } = makeBus();
+    let removed = false;
+    let cancelCalls = 0;
+    let removeCalls = 0;
+    const session = {
+      sessionId: "s1",
+      listTasks: vi.fn(async () => ({
+        tasks: removed ? [] : [agentTask({ id: "sync-idle", status: "idle", executionMode: "sync" })],
+      })),
+      cancelTask: vi.fn(async () => ({ cancelled: ++cancelCalls === 1 })),
+      removeTask: vi.fn(async () => {
+        removeCalls++;
+        removed = removeCalls === 2;
+        return { removed };
+      }),
+    } as unknown as AgentSession;
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: () => session,
+    });
+
+    await expect(registry.reapFinishedSyncTasks("s1")).resolves.toBe(1);
+
+    expect(session.cancelTask).toHaveBeenCalledTimes(2);
+    expect(session.removeTask).toHaveBeenCalledTimes(2);
+    expect(registry.getTrackedAgentCount("s1")).toBe(0);
     registry.dispose();
   });
 
