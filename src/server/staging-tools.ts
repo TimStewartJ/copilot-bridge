@@ -18,7 +18,7 @@ import {
   createDirectoryLink,
   removeDirectoryLink,
 } from "./platform.js";
-import { buildPublicUrl } from "./tunnel.js";
+import { buildPublicUrl } from "./public-url.js";
 import {
   DEPLOY_CHECK_COMMAND,
   DEPLOY_GATE,

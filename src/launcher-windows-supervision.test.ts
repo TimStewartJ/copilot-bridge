@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTestDir } from "./server/__tests__/helpers.js";
 import { LAUNCHER_TERMINAL_EXIT_CODE } from "./launcher-exit.js";
@@ -476,84 +475,4 @@ describeWindows("Windows launcher supervisor decisions", () => {
     });
   });
 
-  it("derives the same per-install release tunnel identity used by the launcher", () => {
-    const stateRoot = join(process.cwd(), `.windows-release-tunnel-${randomUUID()}`);
-    mkdirSync(stateRoot);
-    const commonPath = join(process.cwd(), "scripts", "release-common.ps1");
-    const env = {
-      ...process.env,
-      USERDOMAIN: "ExampleDomain",
-      USERNAME: "ExampleUser",
-      COMPUTERNAME: "ExampleMachine",
-      BRIDGE_TUNNEL_NAME: "",
-    };
-    const identity = [
-      env.USERDOMAIN,
-      env.USERNAME,
-      env.COMPUTERNAME,
-      resolve(stateRoot),
-    ].map((value) => value.trim().toLowerCase()).join("|");
-    const expected = `copilot-bridge-${createHash("sha256").update(identity).digest("hex").slice(0, 8)}`;
-    const command = [
-      `$env:USERDOMAIN = 'ExampleDomain'`,
-      `$env:USERNAME = 'ExampleUser'`,
-      `$env:COMPUTERNAME = 'ExampleMachine'`,
-      `$env:BRIDGE_TUNNEL_NAME = ''`,
-      `. ${quotePowerShell(commonPath)}`,
-      `Get-BridgeReleaseTunnelName ${quotePowerShell(stateRoot)} ${quotePowerShell(join(stateRoot, "data"))}`,
-    ].join("; ");
-
-    let actual: string;
-    try {
-      actual = execFileSync(powerShell, [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        command,
-      ], { encoding: "utf8", env }).trim();
-    } finally {
-      rmSync(stateRoot, { recursive: true, force: true });
-    }
-
-    expect(actual).toBe(expected);
-  });
-
-  it("uses a custom data directory as the release tunnel identity fallback", () => {
-    const customDataDir = join(process.cwd(), `.windows-custom-data-${randomUUID()}`);
-    mkdirSync(customDataDir);
-    const commonPath = join(process.cwd(), "scripts", "release-common.ps1");
-    const identityValue = resolve(customDataDir).toLowerCase();
-    const identity = [
-      "exampledomain",
-      "exampleuser",
-      "examplemachine",
-      identityValue,
-    ].join("|");
-    const expected = `copilot-bridge-${createHash("sha256").update(identity).digest("hex").slice(0, 8)}`;
-    const command = [
-      `$env:USERDOMAIN = 'ExampleDomain'`,
-      `$env:USERNAME = 'ExampleUser'`,
-      `$env:COMPUTERNAME = 'ExampleMachine'`,
-      `$env:BRIDGE_STATE_ROOT = ''`,
-      `$env:BRIDGE_TUNNEL_NAME = ''`,
-      `. ${quotePowerShell(commonPath)}`,
-      `Get-BridgeReleaseTunnelName $env:BRIDGE_STATE_ROOT ${quotePowerShell(customDataDir)}`,
-    ].join("; ");
-
-    try {
-      const actual = execFileSync(powerShell, [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        command,
-      ], { encoding: "utf8" }).trim();
-      expect(actual).toBe(expected);
-    } finally {
-      rmSync(customDataDir, { recursive: true, force: true });
-    }
-  });
 });

@@ -7,8 +7,7 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
-import { gitHash } from "./git-revisions.js";
-import { notifyWebhook, getPublicBaseUrl, discoverTunnelUrl, rememberRequestOrigin, shouldTrustProxyHeaders } from "./tunnel.js";
+import { rememberRequestOrigin, shouldTrustProxyHeaders } from "./public-url.js";
 import {
   pruneOrphanedWorktrees,
   getActivePreviews,
@@ -176,22 +175,6 @@ async function main(): Promise<void> {
     console.error("[web] Staging preview restore/prune failed:", error);
   });
 
-  // Webhook 1: server is up
-  await notifyWebhook(`🤖 Copilot Bridge is online! (${gitHash()}, PID ${process.pid})`);
-
-  // Webhook 2: public URL (explicit config, learned origin, or tunnel URL)
-  const publicUrl = getPublicBaseUrl();
-  if (publicUrl) {
-    await notifyWebhook(`🔗 Public URL ready`, publicUrl);
-  } else {
-    // Retry after a short delay — a tunnel process may still be starting
-    setTimeout(async () => {
-      const url = discoverTunnelUrl();
-      if (url) {
-        await notifyWebhook(`🔗 Public URL ready`, url);
-      }
-    }, 15_000);
-  }
 }
 
 function gracefulExit(signal: string): void {

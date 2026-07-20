@@ -304,6 +304,37 @@ function New-BridgeProcessIdentity($Process) {
   }
 }
 
+function Get-BridgeTunnelRuntimeProcess($DataDir, $Processes) {
+  $statePath = Join-Path $DataDir "tunnel-runtime.json"
+  if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+    return $null
+  }
+  try {
+    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $processId = 0
+    $startTicks = 0L
+    if (
+      -not [int]::TryParse([string]$state.process.pid, [ref]$processId) -or
+      $processId -le 0 -or
+      -not [long]::TryParse([string]$state.process.startMarker, [ref]$startTicks) -or
+      $startTicks -le 0
+    ) {
+      return $null
+    }
+    $process = @($Processes | Where-Object { [int]$_.ProcessId -eq $processId }) | Select-Object -First 1
+    if ($null -eq $process -or (Get-BridgeProcessStartTimeUtcTicks $process) -ne $startTicks) {
+      return $null
+    }
+    return $process
+  } catch {
+    return $null
+  }
+}
+
+function Remove-BridgeTunnelRuntimeState($DataDir) {
+  Remove-Item -LiteralPath (Join-Path $DataDir "tunnel-runtime.json") -Force -ErrorAction SilentlyContinue
+}
+
 function Test-BridgeProcessIdentity($Identity) {
   if ($null -eq $Identity) {
     return $false

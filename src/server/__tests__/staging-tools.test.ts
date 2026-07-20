@@ -256,7 +256,7 @@ vi.mock("../platform.js", () => ({
   terminateProcessTree: terminateProcessTreeMock,
 }));
 
-vi.mock("../tunnel.js", () => ({
+vi.mock("../public-url.js", () => ({
   buildPublicUrl: buildPublicUrlMock,
 }));
 

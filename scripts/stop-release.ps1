@@ -61,9 +61,6 @@ function Invoke-ReleaseProcessCleanup {
   }
   $releaseProcessPattern = "dist[\\/]+launcher\.js|dist[\\/]+server[\\/]+index\.js|dist[\\/]+management-job-runner\.js"
   $updaterProcessPattern = $installRootPattern + 'update\.ps1(?:"|''|\s|$)'
-  $tunnelName = Get-BridgeReleaseTunnelName $env:BRIDGE_STATE_ROOT $effectiveDataDir
-  $tunnelPattern = "(?i)\bdevtunnel(?:\.exe)?\b.*\bhost\b.*(?:^|\s|`")" +
-    [regex]::Escape($tunnelName) + "(?:`"|\s|$)"
 
   $allProcesses = @(Get-CimInstance Win32_Process)
   $processesByParent = @{}
@@ -121,15 +118,13 @@ function Invoke-ReleaseProcessCleanup {
   } | ForEach-Object {
     Add-ProcessTree $_
   }
-  $allProcesses | Where-Object {
-    $_.ProcessId -ne $PID -and
-    $_.CommandLine -and
-    $_.CommandLine -match $tunnelPattern
-  } | ForEach-Object {
-    Add-ProcessTree $_ $false
+  $tunnelProcess = Get-BridgeTunnelRuntimeProcess $effectiveDataDir $allProcesses
+  if ($null -ne $tunnelProcess) {
+    Add-ProcessTree $tunnelProcess $false
   }
 
   Stop-BridgeVerifiedProcessIdentities $processesToStop $orderedProcessIds
+  Remove-BridgeTunnelRuntimeState $effectiveDataDir
 }
 
 $cleanupProcesses = {

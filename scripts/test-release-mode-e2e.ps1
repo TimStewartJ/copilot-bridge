@@ -411,7 +411,6 @@ try {
     "COPILOT_HOME=$(Join-Path $dataDir ".copilot")",
     "BRIDGE_WEBHOOK_URL=",
     "BRIDGE_TUNNEL_NAME=release-e2e-$port",
-    "BRIDGE_TUNNEL_URL=",
     "BRIDGE_PUBLIC_BASE_URL=",
     "COMPUTER_USE=",
     "BRIDGE_TRANSCRIPTION_PROVIDER="
@@ -429,7 +428,6 @@ try {
   Set-Item -Path "Env:BRIDGE_LAUNCHER_LOG_PATH" -Value (Join-Path $logsDir "launcher.log")
   Set-Item -Path "Env:BRIDGE_WEBHOOK_URL" -Value ""
   Set-Item -Path "Env:BRIDGE_TUNNEL_NAME" -Value "release-e2e-$port"
-  Set-Item -Path "Env:BRIDGE_TUNNEL_URL" -Value ""
   Set-Item -Path "Env:BRIDGE_PUBLIC_BASE_URL" -Value ""
   Set-Item -Path "Env:COMPUTER_USE" -Value ""
   Set-Item -Path "Env:BRIDGE_TRANSCRIPTION_PROVIDER" -Value ""
