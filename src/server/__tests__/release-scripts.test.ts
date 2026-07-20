@@ -348,7 +348,7 @@ describe("release scripts", () => {
     expect(script).toContain("Stop-BridgeVerifiedProcessIdentities $processesToStop $orderedProcessIds");
   });
 
-  it("revalidates process creation identity and scopes orphan tunnel cleanup to this release", () => {
+  it("revalidates process creation identity while launcher child cleanup covers the tunnel", () => {
     const stopScript = readScript("stop-bridge.ps1");
     const releaseStopScript = readScript("stop-release.ps1");
     const supervisorHelper = readScript("bridge-supervisor-common.ps1");
@@ -362,10 +362,15 @@ describe("release scripts", () => {
     expect(supervisorHelper).toContain("Test-BridgeProcessIdentity $ProcessesById[$processId]");
     expect(supervisorHelper).toContain("Stop-Process -Id $processId -Force");
     expect(supervisorHelper).toContain("Verified Bridge process IDs survived");
-    expect(releaseStopScript).toContain("Get-BridgeReleaseTunnelName $env:BRIDGE_STATE_ROOT $effectiveDataDir");
-    expect(releaseStopScript).toContain("[regex]::Escape($tunnelName)");
-    expect(releaseStopScript).toContain("Add-ProcessTree $_ $false");
-    expect(releaseStopScript).not.toContain("devtunnel user delete --all");
+    expect(supervisorHelper).toContain("function Get-BridgeTunnelRuntimeProcess");
+    expect(supervisorHelper).toContain('"tunnel-runtime.json"');
+    expect(stopScript).toContain("Get-BridgeTunnelRuntimeProcess $dataDir $allProcesses");
+    expect(releaseStopScript).toContain("Get-BridgeTunnelRuntimeProcess $effectiveDataDir $allProcesses");
+    expect(stopScript).toContain("Remove-BridgeTunnelRuntimeState $dataDir");
+    expect(releaseStopScript).toContain("Remove-BridgeTunnelRuntimeState $effectiveDataDir");
+    expect(stopScript).not.toContain("$tunnelPattern");
+    expect(releaseStopScript).not.toContain("$tunnelPattern");
+    expect(releaseStopScript).not.toContain("Get-BridgeReleaseTunnelName");
   });
 
   it("bootstraps preview installs from a signed manifest and verified package", () => {

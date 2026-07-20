@@ -86,45 +86,6 @@ function Get-ConfiguredStateRoot($InstallRoot) {
   return Join-Path $env:LOCALAPPDATA "CopilotBridge"
 }
 
-function Get-BridgeReleaseTunnelName($StateRoot, $DataDir) {
-  $configured = [string]$env:BRIDGE_TUNNEL_NAME
-  if (-not [string]::IsNullOrWhiteSpace($configured)) {
-    $normalized = $configured.Trim().ToLowerInvariant()
-    if ($normalized -match '^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$') {
-      return $normalized
-    }
-  }
-
-  $identityRoot = if (-not [string]::IsNullOrWhiteSpace($StateRoot)) {
-    Normalize-FullPath $StateRoot
-  } elseif (-not [string]::IsNullOrWhiteSpace($DataDir)) {
-    $normalizedDataDir = Normalize-FullPath $DataDir
-    if ((Split-Path -Leaf $normalizedDataDir).ToLowerInvariant() -eq "data") {
-      Split-Path -Parent $normalizedDataDir
-    } else {
-      $normalizedDataDir
-    }
-  } else {
-    ""
-  }
-  $identity = @(
-    [string]$env:USERDOMAIN,
-    [string]$env:USERNAME,
-    [string]$env:COMPUTERNAME,
-    [string]$identityRoot
-  ) | ForEach-Object { $_.Trim().ToLowerInvariant() }
-  $sha256 = [System.Security.Cryptography.SHA256]::Create()
-  try {
-    $hash = $sha256.ComputeHash(
-      [System.Text.Encoding]::UTF8.GetBytes(($identity -join "|"))
-    )
-  } finally {
-    $sha256.Dispose()
-  }
-  $suffix = ([System.BitConverter]::ToString($hash) -replace "-", "").Substring(0, 8).ToLowerInvariant()
-  return "copilot-bridge-$suffix"
-}
-
 function Assert-StateRootDoesNotSwitch($StoredStateRoot, $InputStateRoot, $StateRootFile) {
   if ([string]::IsNullOrWhiteSpace($StoredStateRoot) -or [string]::IsNullOrWhiteSpace($InputStateRoot)) { return }
   $storedFullPath = Normalize-FullPath $StoredStateRoot

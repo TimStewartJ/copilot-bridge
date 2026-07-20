@@ -31,18 +31,6 @@ function Invoke-BridgeProcessCleanup {
 
   $workDirPattern = [regex]::Escape($workDir) + "[\\/]"
   $bridgeEntryPattern = "(?:src[\\/]+launcher\.ts|src[\\/]+server[\\/]+index\.ts|src[\\/]+management-job-runner\.ts)"
-  $tunnelName = "copilot-bridge"
-  $envFile = Join-Path $workDir ".env"
-  if (Test-Path -LiteralPath $envFile) {
-    $configuredTunnel = Get-Content -LiteralPath $envFile | Where-Object {
-      $_ -match '^\s*BRIDGE_TUNNEL_NAME\s*='
-    } | Select-Object -Last 1
-    if ($configuredTunnel -match '^\s*BRIDGE_TUNNEL_NAME\s*=(.*)$' -and -not [string]::IsNullOrWhiteSpace($Matches[1])) {
-      $tunnelName = $Matches[1].Trim().Trim('"').Trim("'")
-    }
-  }
-  $tunnelPattern = "(?i)\bdevtunnel(?:\.exe)?\b.*\bhost\b.*(?:^|\s|`")" +
-    [regex]::Escape($tunnelName) + "(?:`"|\s|$)"
   $processesToStop = @{}
   $orderedProcessIds = New-Object System.Collections.Generic.List[int]
 
@@ -64,15 +52,19 @@ function Invoke-BridgeProcessCleanup {
 
   $allProcesses | Where-Object {
     $_.ProcessId -ne $PID -and
-    $_.CommandLine -and (
-      ($_.CommandLine -match $workDirPattern -and $_.CommandLine -match $bridgeEntryPattern) -or
-      $_.CommandLine -match $tunnelPattern
-    )
+    $_.CommandLine -and
+    $_.CommandLine -match $workDirPattern -and
+    $_.CommandLine -match $bridgeEntryPattern
   } | ForEach-Object {
     Add-BridgeProcessTree $_
   }
+  $tunnelProcess = Get-BridgeTunnelRuntimeProcess $dataDir $allProcesses
+  if ($null -ne $tunnelProcess) {
+    Add-BridgeProcessTree $tunnelProcess
+  }
 
   Stop-BridgeVerifiedProcessIdentities $processesToStop $orderedProcessIds
+  Remove-BridgeTunnelRuntimeState $dataDir
 }
 
 $cleanupProcesses = {

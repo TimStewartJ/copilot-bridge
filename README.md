@@ -46,7 +46,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 ```
 ┌────────────────────────────────────────────────────┐
 │ Launcher (src/launcher.ts)                         │
-│ - Starts server + optional tunnel/webhook          │
+│ - Supervises server + optional dev tunnel          │
 │ - Handles self_restart / self_update               │
 │ - Performs build, health checks, rollback          │
 ├────────────────────────────────────────────────────┤
@@ -143,7 +143,7 @@ The release boundary is intentional: app files can be replaced during updates, b
 
 Changing launcher-owned release settings after the release launcher is already running requires a full `stop.ps1` then `start.ps1`. This includes `BRIDGE_DATA_DIR`, tunnel/webhook settings such as `BRIDGE_ENABLE_TUNNEL`, `BRIDGE_TUNNEL_NAME`, and `BRIDGE_WEBHOOK_URL`, and launcher log paths. Server-child config values can be reloaded with `self_restart`.
 
-When `BRIDGE_TUNNEL_NAME` is not configured, source/dev mode still uses `copilot-bridge`, while release mode derives a stable per-install name such as `copilot-bridge-a1b2c3d4` from the user, machine, and release state path. Set `BRIDGE_TUNNEL_NAME` in the release `.env` if you want a specific tunnel name.
+The launcher owns one persistent dev tunnel named `copilot-bridge` by default. It keeps that tunnel running across server restarts, publishes its URL for staging links, and restarts it with bounded backoff after process or public-health failures. Set `BRIDGE_TUNNEL_NAME` for a different persistent tunnel, or `BRIDGE_ENABLE_TUNNEL=false` when using your own ingress.
 
 To start the packaged release automatically when you sign in, run this from the extracted release root:
 
@@ -306,7 +306,8 @@ Packaged releases include root-level startup task scripts:
 
 ```
 src/
-├── launcher.ts                    # Parent process: lifecycle, tunnel, restart/update
+├── launcher.ts                    # Parent process: server and restart/update lifecycle
+├── launcher-tunnel-supervisor.ts  # Managed dev tunnel lifecycle
 ├── server/
 │   ├── index.ts                   # Express bootstrap
 │   ├── api-router.ts              # REST API surface

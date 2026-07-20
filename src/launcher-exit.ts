@@ -119,6 +119,18 @@ export function stopLauncherChild(
   if (existing) return existing;
   const operation = runStopStateMachine(child, dependencies, options);
   childStopOperations.set(child.process, operation);
+  void operation.then(
+    (outcome) => {
+      if (!outcome.ok && childStopOperations.get(child.process!) === operation) {
+        childStopOperations.delete(child.process!);
+      }
+    },
+    () => {
+      if (childStopOperations.get(child.process!) === operation) {
+        childStopOperations.delete(child.process!);
+      }
+    },
+  );
   return operation;
 }
 

@@ -153,4 +153,30 @@ describe("launcher managed-child shutdown", () => {
     });
     expect(terminateProcessTree).toHaveBeenCalledTimes(1);
   });
+
+  it("evicts failed stop operations so a later reconciliation can retry", async () => {
+    const tunnel = managed("tunnel", 700);
+    const root = identity(700);
+    const terminateProcessTree = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        status: "snapshot-unavailable" as const,
+        root,
+      })
+      .mockResolvedValueOnce(stopped(root));
+    const deps = dependencies({ terminateProcessTree });
+
+    await expect(stopLauncherChild(
+      tunnel,
+      deps,
+      { deadline: createDeadline(5_000) },
+    )).resolves.toEqual({ ok: false, reason: "snapshot-unavailable" });
+    await expect(stopLauncherChild(
+      tunnel,
+      deps,
+      { deadline: createDeadline(5_000) },
+    )).resolves.toEqual({ ok: true, mode: "forced" });
+
+    expect(terminateProcessTree).toHaveBeenCalledTimes(2);
+  });
 });

@@ -46,7 +46,6 @@ import {
   sweepStaleRestartStateTempFiles,
   writeRestartState,
 } from "./server/restart-state.js";
-import { canUseDevtunnelCli, getDevtunnelCliStatus, resolveBridgeTunnelName } from "./server/tunnel.js";
 import {
   BRIDGE_ACTIVE_RELEASE_ROOT_ENV,
   BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV,
@@ -83,7 +82,6 @@ import {
   evaluateUnexpectedExit,
   shouldIgnoreHealthPollResult,
 } from "./launcher-health.js";
-import { evaluateTunnelHealthPoll } from "./launcher-tunnel-health.js";
 import {
   LAUNCHER_CLEANUP_FAILURE_EXIT_CODE,
   LAUNCHER_TERMINAL_EXIT_CODE,
@@ -106,6 +104,7 @@ import {
   spawnLauncherChildIfRunning,
   waitForChildExit,
 } from "./launcher-process.js";
+import { TunnelSupervisor } from "./launcher-tunnel-supervisor.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { openDatabase } from "./server/db.js";
 import { createManagementJobStore } from "./server/management-job-store.js";
@@ -140,8 +139,6 @@ const HEALTH_POLL_INTERVAL = 30_000;
 const HEALTH_POLL_TIMEOUT = 5_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
 
-// Notification config
-const TUNNEL_NAME = resolveBridgeTunnelName(process.env);
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 const BUSY_CHECK_INTERVAL = 3_000;
@@ -165,38 +162,21 @@ const OPERATIONAL_RESTART_SOURCE_PATHS = [
   "vitest.config.ts",
 ];
 
-// Tunnel resilience config
-const MAX_TUNNEL_RESTARTS = 5;
-const TUNNEL_CRASH_WINDOW = 300_000; // reset crash counter after 5 min of stability
-const TUNNEL_BACKOFF_BASE = 5_000; // 5s initial backoff
-const TUNNEL_BACKOFF_CAP = 60_000; // 60s max backoff
-const TUNNEL_HEALTH_INTERVAL = 60_000;
-const TUNNEL_HEALTH_TIMEOUT = 10_000;
-const TUNNEL_HEALTH_FAILURE_THRESHOLD = 3;
 const DEPENDENCY_INSTALL_TIMEOUT = 600_000;
 
 let serverProcess: ChildProcess | null = null;
 let serverLaunchTarget: ServerLaunchTarget | null = null;
 let managementJobRunnerProcess: ChildProcess | null = null;
 let cyclingManagementJobRunner = false;
-let tunnelProcess: ChildProcess | null = null;
 const childProcessIdentities = new WeakMap<ChildProcess, Promise<ProcessIdentity | null>>();
-const plannedTunnelStops = new WeakSet<ChildProcess>();
-let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
 let shuttingDown = false;
 let crashRestarts = 0;
 let lastCrashTime = 0;
-let tunnelCrashRestarts = 0;
-let tunnelStartedAt = 0;
-let tunnelHealthFailures = 0;
-let tunnelHealthPollInFlight = false;
-let tunnelRecyclePending = false;
 let steadyHealthFailures = 0;
 let healthPollInFlight = false;
 let recoveringServer = false;
-let tunnelStatusLogged = false;
 let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
 let currentServerPort = resolveBridgePort();
 let lastCommandFailure:
@@ -210,6 +190,13 @@ let lastRollbackTarget: string | null = null;
 let pendingReleaseFailure: ReleaseFailureState | null = null;
 let releaseCandidateSha: string | null = null;
 let terminalShutdownPromise: Promise<number> | null = null;
+const tunnelSupervisor = new TunnelSupervisor({
+  dataDir: DATA_DIR,
+  port: currentServerPort,
+  env: process.env,
+  log,
+  onReady: (url) => notifyWebhook("🔗 Copilot Bridge public URL ready", url),
+});
 
 type ServerLaunchTarget = {
   root: string;
@@ -601,7 +588,7 @@ async function noteManualInterventionRequired(
 ): Promise<void> {
   const failure = setPendingReleaseFailure(phase, "launcher-manual-intervention-required", message);
   await safePersistPendingReleaseFailure();
-  await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, currentTunnelUrl ?? undefined);
+  await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, tunnelSupervisor.getUrl());
 }
 
 async function noteRetryBudgetExhausted(
@@ -614,7 +601,7 @@ async function noteRetryBudgetExhausted(
     `Launcher exhausted retry budget after ${MAX_FAILURES} consecutive failures (${reason}).`,
   );
   await safePersistPendingReleaseFailure();
-  await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, currentTunnelUrl ?? undefined);
+  await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, tunnelSupervisor.getUrl());
   return await shutdownAndExit(LAUNCHER_TERMINAL_EXIT_CODE, "retry budget exhausted");
 }
 
@@ -789,7 +776,7 @@ function recoverServer(reason: string, options: { killExisting?: boolean; delayM
         log(`✅ Auto-restart succeeded after ${reason}`);
         await notifyWebhook(
           `⚡ Copilot Bridge auto-restarted after ${reason} (attempt ${attempt}/${MAX_CRASH_RESTARTS}, ${tag()})`,
-          currentTunnelUrl ?? undefined,
+          tunnelSupervisor.getUrl(),
         );
       } else {
         log(`❌ Auto-restart failed health check after ${reason}`);
@@ -871,16 +858,6 @@ async function pollServerHealth(): Promise<void> {
   }
 }
 
-function shouldUseDevtunnel(): boolean {
-  const status = getDevtunnelCliStatus();
-  if (status.enabled && status.available) return true;
-  if (!tunnelStatusLogged) {
-    log(`[tunnel] ${status.reason ?? "Dev tunnel unavailable"}`);
-    tunnelStatusLogged = true;
-  }
-  return false;
-}
-
 function sourceLaunchTarget(): ServerLaunchTarget {
   const mode = DISTRIBUTION.mode === "release" ? "compiled" : "source";
   return {
@@ -927,9 +904,9 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   });
   const port = resolveBridgePort(env);
   currentServerPort = port;
+  tunnelSupervisor.updatePort(port);
   log(`Starting server on port ${port} from ${describeLaunchTarget(target)}...`);
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
-  if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const serverArgs = target.mode === "source" ? [TSX_CLI, target.entry] : [target.entry];
   const child = spawnLauncherChildIfRunning(
     () => shuttingDown,
@@ -986,7 +963,6 @@ function startManagementJobRunner(): ChildProcess | null {
     [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
     BRIDGE_LAUNCHER_LOG_PATH: LAUNCHER_LOG_PATH,
   });
-  if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   log("Starting management job runner...");
   const child = spawnLauncherChildIfRunning(
     () => shuttingDown,
@@ -1090,12 +1066,13 @@ async function shutdownAndExit(exitCode: number, reason: string): Promise<never>
   if (!terminalShutdownPromise) {
     shuttingDown = true;
     log(`Shutting down launcher children (${reason})...`);
+    const tunnelChild = tunnelSupervisor.prepareForShutdown();
     terminalShutdownPromise = resolveLauncherShutdownExitCode(
       exitCode,
       () => [
         asLauncherChild("server", serverProcess),
         asLauncherChild("management job runner", managementJobRunnerProcess),
-        asLauncherChild("tunnel", tunnelProcess),
+        tunnelChild,
       ],
       {
         terminateProcessTree,
@@ -1104,6 +1081,7 @@ async function shutdownAndExit(exitCode: number, reason: string): Promise<never>
       },
       createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
     ).then(({ exitCode: resolvedExitCode, outcome }) => {
+      tunnelSupervisor.finishShutdown(outcome.ok);
       if (!outcome.ok) {
         log(
           `❌ Terminal cleanup incomplete; exiting ${LAUNCHER_CLEANUP_FAILURE_EXIT_CODE} with descendants still active: ${outcome.remaining.join(", ")}`,
@@ -1241,7 +1219,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     log(`Using prepared release candidate ${candidateRelease.id} (${candidateRelease.commitSha.slice(0, 8)}) — skipping production-root build`);
   } else if (!build(validationMode)) {
     log("Build failed — rolling back");
-    await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
+    await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, tunnelSupervisor.getUrl());
     const rollbackSucceeded = rollback();
     if (!rollbackSucceeded) {
       log("Rollback did not complete successfully");
@@ -1287,7 +1265,6 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     }
     consecutiveFailures = 0;
     startManagementJobRunner();
-    await ensureTunnelAfterRollback();
     if (shuttingDown) return "failed";
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
@@ -1341,21 +1318,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     }
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
-
-    // Cycle the tunnel so it gets a fresh connection
-    if (shouldUseDevtunnel()) {
-      try {
-        tunnelCrashRestarts = 0; // reset since this is intentional
-        const url = await startTunnel();
-        if (shuttingDown) return "failed";
-        await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, url);
-      } catch (err) {
-        log(`Tunnel restart failed (non-fatal): ${err}`);
-        await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
-      }
-    } else {
-      await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
-    }
+    await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, tunnelSupervisor.getUrl());
     return "restarted";
   } else {
     log("❌ Health check failed — rolling back");
@@ -1369,7 +1332,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       candidateRelease
         ? `⚠️ Health check failed — restoring previous launch target (${tag()})`
         : `⚠️ Health check failed — rolling back to last checkpoint (${tag()})`,
-      currentTunnelUrl ?? undefined,
+      tunnelSupervisor.getUrl(),
     );
     const stoppedAfterFailure = await forceKillServerAndWait("Stopping failed restart before rollback...");
     if (!stoppedAfterFailure) {
@@ -1396,7 +1359,6 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       }
       consecutiveFailures = 0;
       startManagementJobRunner();
-      await ensureTunnelAfterRollback();
       if (shuttingDown) return "failed";
       log("✅ Previous server restored after failed release candidate");
       return "recovered-via-rollback";
@@ -1433,234 +1395,10 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     }
     consecutiveFailures = 0;
     startManagementJobRunner();
-    await ensureTunnelAfterRollback();
     if (shuttingDown) return "failed";
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
   }
-}
-
-// ── Dev Tunnel ────────────────────────────────────────────────────
-
-async function ensureTunnelAfterRollback(): Promise<void> {
-  if (shuttingDown || !shouldUseDevtunnel()) return;
-  // Start (or cycle) the tunnel so rollback-recovered servers stay reachable.
-  // Mirrors the tunnel cycle in the successful-restart branch.
-  try {
-    tunnelCrashRestarts = 0;
-    const url = await startTunnel();
-    if (shuttingDown) return;
-    log(`Tunnel restored after rollback: ${url}`);
-  } catch (err) {
-    log(`Tunnel restart after rollback failed (non-fatal): ${err}`);
-  }
-}
-
-async function startTunnel(): Promise<string> {
-  if (shuttingDown) {
-    throw new Error("Launcher is shutting down");
-  }
-  if (!canUseDevtunnelCli()) {
-    const status = getDevtunnelCliStatus();
-    throw new Error(status.reason ?? "Dev tunnel unavailable");
-  }
-
-  // Stop and verify any existing tunnel before creating a replacement.
-  if (!(await killTunnel())) {
-    throw new Error("Existing tunnel stop could not be verified");
-  }
-
-  return await new Promise((resolve, reject) => {
-    const port = currentServerPort;
-    log(`Starting dev tunnel for local port ${port}...`);
-    const child = spawnLauncherChildIfRunning(
-      () => shuttingDown,
-      () => spawn("devtunnel", ["host", TUNNEL_NAME], {
-        stdio: ["ignore", "pipe", "pipe"],
-        shell: process.platform === "win32",
-      }),
-    );
-    if (!child) {
-      reject(new Error("Launcher is shutting down"));
-      return;
-    }
-    trackChildProcessIdentity(child);
-    tunnelProcess = child;
-    tunnelStartedAt = Date.now();
-    tunnelRecyclePending = false;
-
-    let stdout = "";
-    let resolved = false;
-    const timeout = setTimeout(() => {
-      if (resolved || tunnelProcess !== child) return;
-      reject(new Error("Tunnel failed to start within 30s"));
-      log(`[tunnel] Startup timed out; terminating tunnel PID ${child.pid ?? "unknown"} so supervision can retry`);
-      void stopTunnelProcess(child, "tunnel startup timeout");
-    }, 30_000);
-
-    child.stderr?.on("data", (data: Buffer) => {
-      const line = data.toString().trim();
-      if (line) log(`[tunnel] ${line}`);
-    });
-
-    child.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
-      const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/)
-        ?? stdout.match(/Hosting port \d+ at\s+(https:\/\/\S+)/);
-      if (match && !resolved) {
-        if (shuttingDown) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(new Error("Launcher began shutting down while tunnel was starting"));
-          void stopTunnelProcess(child, "launcher shutdown during tunnel startup");
-          return;
-        }
-        resolved = true;
-        clearTimeout(timeout);
-        currentTunnelUrl = match[1];
-        tunnelStartedAt = Date.now();
-        tunnelHealthFailures = 0;
-        log(`Tunnel URL: ${currentTunnelUrl}`);
-        resolve(currentTunnelUrl);
-      }
-    });
-
-    child.on("exit", (code) => {
-      log(`Tunnel exited with code ${code}`);
-      const wasActiveChild = tunnelProcess === child;
-      if (!wasActiveChild) return;
-      const plannedStop = plannedTunnelStops.has(child);
-      tunnelProcess = null;
-      currentTunnelUrl = null;
-      tunnelRecyclePending = false;
-
-      if (!resolved) {
-        clearTimeout(timeout);
-        reject(new Error(`Tunnel process exited with code ${code} before producing URL`));
-      }
-
-      // Auto-respawn on unexpected exit
-      if (shuttingDown || restarting || plannedStop) return;
-
-      const now = Date.now();
-      const uptime = now - tunnelStartedAt;
-      if (uptime > TUNNEL_CRASH_WINDOW) {
-        tunnelCrashRestarts = 0; // stable long enough, reset counter
-      }
-      tunnelCrashRestarts++;
-
-      if (tunnelCrashRestarts > MAX_TUNNEL_RESTARTS) {
-        log(`❌ Tunnel crashed ${tunnelCrashRestarts} times in quick succession — not restarting. Manual intervention needed.`);
-        return;
-      }
-
-      const backoff = Math.min(TUNNEL_BACKOFF_BASE * Math.pow(2, tunnelCrashRestarts - 1), TUNNEL_BACKOFF_CAP);
-      log(`⚡ Tunnel crashed (exit code ${code}). Auto-restarting in ${backoff / 1000}s... (attempt ${tunnelCrashRestarts}/${MAX_TUNNEL_RESTARTS})`);
-
-      setTimeout(async () => {
-        if (tunnelProcess || shuttingDown) return; // something else already started it
-        try {
-          const url = await startTunnel();
-          if (shuttingDown) return;
-          log(`✅ Tunnel auto-restarted successfully`);
-          await notifyWebhook(`⚡ Tunnel auto-restarted (attempt ${tunnelCrashRestarts}/${MAX_TUNNEL_RESTARTS}, ${tag()})`, url);
-        } catch (err) {
-          log(`❌ Tunnel auto-restart failed: ${err}`);
-        }
-      }, backoff);
-    });
-  });
-}
-
-async function pollTunnelHealth(): Promise<void> {
-  if (
-    tunnelHealthPollInFlight
-    || tunnelRecyclePending
-    || !tunnelProcess
-    || !currentTunnelUrl
-    || shuttingDown
-    || restarting
-  ) {
-    return;
-  }
-
-  const polledProcess = tunnelProcess;
-  const healthUrl = new URL("/api/busy", currentTunnelUrl).toString();
-  tunnelHealthPollInFlight = true;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TUNNEL_HEALTH_TIMEOUT);
-  let healthy = false;
-  let failureDetail: string | undefined;
-  try {
-    const response = await fetch(healthUrl, { signal: controller.signal });
-    healthy = response.ok;
-    if (!healthy) failureDetail = `HTTP ${response.status}`;
-  } catch (error) {
-    failureDetail = error instanceof Error && error.name === "AbortError"
-      ? `timed out after ${TUNNEL_HEALTH_TIMEOUT}ms`
-      : error instanceof Error ? error.message : String(error);
-  } finally {
-    clearTimeout(timeout);
-    tunnelHealthPollInFlight = false;
-  }
-
-  if (
-    tunnelProcess !== polledProcess
-    || shuttingDown
-    || restarting
-  ) {
-    return;
-  }
-
-  const decision = evaluateTunnelHealthPoll({
-    healthy,
-    consecutiveFailures: tunnelHealthFailures,
-    failureThreshold: TUNNEL_HEALTH_FAILURE_THRESHOLD,
-    failureDetail,
-  });
-  tunnelHealthFailures = decision.nextFailures;
-  if (decision.logMessage) log(`[tunnel] ${decision.logMessage}`);
-  if (!decision.recycle) return;
-
-  tunnelRecyclePending = true;
-  tunnelHealthFailures = 0;
-  log(`[tunnel] Public endpoint remained unhealthy; terminating tunnel PID ${polledProcess.pid ?? "unknown"} for supervised restart`);
-  if (!(await stopTunnelProcess(polledProcess, "unhealthy tunnel recycle"))) {
-    tunnelRecyclePending = false;
-    log("[tunnel] Unable to recycle unhealthy tunnel because its stop could not be verified");
-    return;
-  }
-  try {
-    await startTunnel();
-  } catch (error) {
-    log(`[tunnel] Recycle restart failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-async function stopTunnelProcess(child: ChildProcess, reason: string): Promise<boolean> {
-  plannedTunnelStops.add(child);
-  const outcome = await stopLauncherChild(
-    asLauncherChild("tunnel", child),
-    { terminateProcessTree, waitForChildExit, log },
-    { deadline: createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS) },
-  );
-  if (!outcome.ok) {
-    log(`❌ Tunnel stop failed during ${reason}`);
-    return false;
-  }
-  if (tunnelProcess === child) {
-    tunnelProcess = null;
-    currentTunnelUrl = null;
-    tunnelHealthFailures = 0;
-    tunnelRecyclePending = false;
-  }
-  return true;
-}
-
-async function killTunnel(): Promise<boolean> {
-  if (!tunnelProcess) return true;
-  log("Stopping tunnel...");
-  return await stopTunnelProcess(tunnelProcess, "intentional tunnel stop");
 }
 
 // ── Webhook Notification ──────────────────────────────────────────
@@ -1709,6 +1447,9 @@ async function main() {
     log(startupDecision.logMessage);
   }
 
+  await tunnelSupervisor.start();
+  if (shuttingDown) return;
+
   if (startupDecision.startServer) {
     if (DISTRIBUTION.mode === "development" && DISTRIBUTION.gitAvailable) {
       // Pull latest from origin on startup
@@ -1742,17 +1483,7 @@ async function main() {
     const startupServer = startServer();
     if (!startupServer) return;
     serverProcess = startupServer;
-
-    // Start dev tunnel
-    if (shouldUseDevtunnel()) {
-      try {
-        const url = await startTunnel();
-        if (shuttingDown) return;
-        await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
-      } catch (err) {
-        log(`Tunnel/notification setup failed (non-fatal): ${err}`);
-      }
-    }
+    await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, tunnelSupervisor.getUrl());
   }
 
   if (startupDecision.startServer && !shuttingDown) {
@@ -1771,10 +1502,6 @@ async function main() {
   setInterval(() => {
     void pollServerHealth();
   }, HEALTH_POLL_INTERVAL);
-
-  setInterval(() => {
-    void pollTunnelHealth();
-  }, TUNNEL_HEALTH_INTERVAL);
 
   log("Watching for restart signals...");
 }

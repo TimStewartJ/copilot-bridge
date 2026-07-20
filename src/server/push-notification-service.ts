@@ -4,7 +4,7 @@ import type { GlobalBus, StatusEvent } from "./global-bus.js";
 import type { PushSubscriptionStore, StoredPushSubscription } from "./push-subscription-store.js";
 import { toWebPushSubscription } from "./push-subscription-store.js";
 import { areSessionUnreadBubblesMuted } from "./task-store.js";
-import { buildPublicUrl } from "./tunnel.js";
+import { buildPublicUrl } from "./public-url.js";
 
 const PUSH_TTL_SECONDS = 10 * 60;
 const NOTIFICATION_NAME_MAX_LENGTH = 48;
