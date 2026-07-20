@@ -263,6 +263,7 @@ export function createMockSessionManager() {
     deleteSession: async () => {},
     gracefulShutdown: async () => {},
     evictAllCachedSessions: async () => {},
+    evictIdleCachedSessions: async () => ({ evictedSessions: 0, protectedSessions: 0 }),
     setSessionModel: async (_id: string, model: string, reasoningEffort?: string, contextTier?: string) => ({
       model,
       ...(reasoningEffort ? { reasoningEffort } : {}),

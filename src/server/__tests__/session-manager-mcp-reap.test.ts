@@ -91,6 +91,28 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.cleanupOwnership.size).toBe(0);
   });
 
+  it("forcibly evicts only idle cached session trees", async () => {
+    const { manager } = createManager();
+    const idle = fakeSession("idle");
+    const active = fakeSession("active");
+    const running = fakeSessionWithAgent("running", "running");
+    manager.sessionObjects.set("idle", idle);
+    manager.sessionObjects.set("active", active);
+    manager.sessionObjects.set("running", running);
+    manager.getActiveSessions = () => ["active"];
+    await manager.agentRegistry.refresh("running", "test");
+
+    await expect(manager.evictIdleCachedSessions()).resolves.toEqual({
+      evictedSessions: 1,
+      protectedSessions: 2,
+    });
+
+    expect(idle.disconnect).toHaveBeenCalledTimes(1);
+    expect(active.disconnect).not.toHaveBeenCalled();
+    expect(running.disconnect).not.toHaveBeenCalled();
+    expect([...manager.sessionObjects.keys()]).toEqual(["active", "running"]);
+  });
+
   it("cancels and removes owned agents before disconnecting the parent", async () => {
     const { manager } = createManager();
     const session = fakeSessionWithAgent("s1");

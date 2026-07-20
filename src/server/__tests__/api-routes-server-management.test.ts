@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { request } from "./api-routes-test-helpers.js";
@@ -91,6 +91,32 @@ describe("server management API routes", () => {
       phase: "waiting-for-sessions",
       waitingSessions: 2,
     });
+  });
+
+  it("evicts idle cached sessions from same-origin management requests", async () => {
+    const { app, ctx } = createTestApp();
+    const evictIdleCachedSessions = vi.fn(async () => ({
+      evictedSessions: 7,
+      protectedSessions: 3,
+    }));
+    ctx.sessionManager.evictIdleCachedSessions = evictIdleCachedSessions;
+
+    const response = await request(app).post("/api/server/cache/evict-idle");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      evictedSessions: 7,
+      protectedSessions: 3,
+    });
+    expect(evictIdleCachedSessions).toHaveBeenCalledOnce();
+
+    const crossSiteResponse = await request(app)
+      .post("/api/server/cache/evict-idle")
+      .set("Host", "localhost:3333")
+      .set("Origin", "https://evil.example.test");
+    expect(crossSiteResponse.status).toBe(403);
+    expect(evictIdleCachedSessions).toHaveBeenCalledOnce();
   });
 
   it("rejects restart requests from staging previews and cross-site callers", async () => {

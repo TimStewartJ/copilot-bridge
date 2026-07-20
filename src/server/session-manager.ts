@@ -3510,6 +3510,39 @@ export class SessionManager {
     await Promise.all(cleanups);
   }
 
+  /** Immediately evict cached session trees that have no active turn or running agent. */
+  async evictIdleCachedSessions(): Promise<{
+    evictedSessions: number;
+    protectedSessions: number;
+  }> {
+    const result = await this.enqueueCache("evict-idle", undefined, () => {
+      const protectedIds = this.getProtectedSessionTreeIds();
+      const cleanups: Promise<boolean>[] = [];
+      let evictedSessions = 0;
+      let protectedSessions = 0;
+      for (const [id] of this.sessionObjects) {
+        if (protectedIds.has(id)) {
+          protectedSessions++;
+          continue;
+        }
+        const cleanup = this.evictCachedSessionUnsafe(id, undefined, "manual idle cache eviction");
+        if (cleanup) {
+          cleanups.push(cleanup);
+          evictedSessions++;
+        }
+      }
+      console.log(
+        `[sdk] Manually evicted ${evictedSessions} idle cached session(s) (${protectedSessions} protected)`,
+      );
+      return { cleanups, evictedSessions, protectedSessions };
+    });
+    await Promise.all(result.cleanups);
+    return {
+      evictedSessions: result.evictedSessions,
+      protectedSessions: result.protectedSessions,
+    };
+  }
+
   /**
    * Explicitly switch the model for a single session.
    *

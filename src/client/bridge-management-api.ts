@@ -57,6 +57,12 @@ export interface RestartBridgeResponse {
   waitingSessions: number;
 }
 
+export interface EvictIdleCacheResponse {
+  ok: true;
+  evictedSessions: number;
+  protectedSessions: number;
+}
+
 async function parseApiError(res: Response): Promise<ApiError> {
   const body = await res.json().catch(() => ({ error: res.statusText }));
   const message = body && typeof body === "object" && "error" in body && typeof body.error === "string"
@@ -84,6 +90,13 @@ export async function fetchBridgeRuntimeStatus(
 export async function restartBridge(): Promise<RestartBridgeResponse> {
   return bridgeManagementFetch<RestartBridgeResponse>(
     "/api/server/restart",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
+}
+
+export async function evictIdleCache(): Promise<EvictIdleCacheResponse> {
+  return bridgeManagementFetch<EvictIdleCacheResponse>(
+    "/api/server/cache/evict-idle",
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
   );
 }
