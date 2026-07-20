@@ -670,7 +670,6 @@ export class SessionManager {
       isRestartPending,
       syncRestartWaitingSessions,
       getActiveSessionCount: () => this.getActiveSessions().length,
-      isSessionResuming: (sessionId) => this.isSessionResuming(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -3401,10 +3400,10 @@ export class SessionManager {
       || this.runStateController.isSessionBusy(sessionId);
   }
 
+  /** Returns user-visible agent work state, excluding passive session lifecycle operations such as warmup. */
   getSessionRunState(sessionId: string): SessionRunState {
     if (this.modelSwitchingSessions.has(sessionId)) return "busy";
     if (this.historyUndoingSessions.has(sessionId)) return "busy";
-    if (this.isSessionResuming(sessionId)) return "busy";
     return this.runStateController.getSessionRunState(sessionId);
   }
 
