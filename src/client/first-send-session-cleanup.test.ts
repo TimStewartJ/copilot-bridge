@@ -106,7 +106,13 @@ describe("first-send session cleanup", () => {
       }),
     })).rejects.toBe(sendError);
 
-    expect(sendChatMessage).toHaveBeenCalledWith("session-new", "hello", undefined);
+    expect(sendChatMessage).toHaveBeenCalledWith(
+      "session-new",
+      "hello",
+      undefined,
+      undefined,
+      { waitForDelivery: true },
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session-new", { method: "DELETE" });
     expect(clearPendingPromptSession).toHaveBeenCalledWith("session-new");

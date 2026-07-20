@@ -542,6 +542,10 @@ export class SessionManager {
   private creatingSessions = 0;
   private creatingCapacityUnits = 0;
   private creatingLocalMcpInstances = 0;
+  private readonly pendingSessionCreations = new Map<string, Promise<AgentSession>>();
+  private readonly inFlightSessionCreations = new Set<Promise<void>>();
+  private readonly deletingSessions = new Set<string>();
+  private shuttingDown = false;
   private modelSwitchingSessions = new Set<string>();
   private historyUndoingSessions = new Set<string>();
   private sessionObjects = new Map<string, AgentSession>();
@@ -728,6 +732,7 @@ export class SessionManager {
       hasPlan: (sessionId) => this.hasPlan(sessionId),
       getSessionStateDir: (sessionId) => this.getSessionStateDir(sessionId),
       buildSessionConfig: (opts) => this.buildSessionConfig(opts),
+      awaitPendingSessionCreation: (sessionId) => this.awaitPendingSessionCreation(sessionId),
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
@@ -1145,6 +1150,150 @@ export class SessionManager {
       this.creatingLocalMcpInstances - reservation.localMcpInstances,
     );
     this.notifySessionCapacityChanged();
+  }
+
+  private awaitPendingSessionCreation(sessionId: string): Promise<AgentSession | undefined> {
+    return this.pendingSessionCreations.get(sessionId) ?? Promise.resolve(undefined);
+  }
+
+  private beginSessionCreationLifetime(): () => void {
+    let completed = false;
+    let resolveLifetime!: () => void;
+    const lifetime = new Promise<void>((resolve) => {
+      resolveLifetime = resolve;
+    });
+    this.inFlightSessionCreations.add(lifetime);
+    return () => {
+      if (completed) return;
+      completed = true;
+      this.inFlightSessionCreations.delete(lifetime);
+      resolveLifetime();
+      this.syncRestartWaitingIfPending();
+    };
+  }
+
+  private cleanupFailedPendingSessionCreation(sessionId: string): void {
+    const tasks = typeof this.deps.taskStore.listTasks === "function"
+      ? this.deps.taskStore.listTasks().filter((task) => task.sessionIds.includes(sessionId))
+      : [];
+    for (const task of tasks) {
+      try {
+        this.deps.taskStore.unlinkSession(task.id, sessionId);
+      } catch (error) {
+        console.warn(`[sdk] Failed to unlink rejected session ${sessionId} from task ${task.id}:`, error);
+      }
+    }
+    this.liveSessionModelState.delete(sessionId);
+    this.mcpStatus.delete(sessionId);
+    this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+    this.invalidateSessionListCache("session:create:failed");
+    this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
+  }
+
+  private trackPendingSessionCreation(
+    sessionId: string,
+    creation: Promise<AgentSession>,
+  ): void {
+    const tracked = creation.finally(() => {
+      if (this.pendingSessionCreations.get(sessionId) === tracked) {
+        this.pendingSessionCreations.delete(sessionId);
+      }
+      this.syncRestartWaitingIfPending();
+    });
+    this.pendingSessionCreations.set(sessionId, tracked);
+    void tracked.catch((error) => {
+      console.error(
+        `[sdk] Session ${sessionId} creation failed:`,
+        error instanceof Error ? error.message : error,
+      );
+      const cleanupTimer = setTimeout(() => this.cleanupFailedPendingSessionCreation(sessionId), 0);
+      cleanupTimer.unref?.();
+    });
+  }
+
+  private async finishSessionCreation(options: {
+    client: AgentBackend;
+    expectedSessionId?: string;
+    sessionConfig: any;
+    creationReservation: SessionCapacityReservation;
+    startedAt: number;
+    modelMetadata?: readonly CopilotModelContextMetadata[];
+    cacheReason: string;
+    spanName: string;
+    spanMetadata?: Record<string, unknown>;
+    logMessage: (sessionId: string, duration: number) => string;
+    cleanupLabel: string;
+  }): Promise<AgentSession> {
+    const {
+      client,
+      expectedSessionId,
+      sessionConfig,
+      creationReservation,
+      startedAt,
+      modelMetadata,
+      cacheReason,
+      spanName,
+      spanMetadata,
+      logMessage,
+      cleanupLabel,
+    } = options;
+    let session: AgentSession | undefined;
+    let reservationReleased = false;
+    const releaseReservation = () => {
+      if (reservationReleased) return;
+      reservationReleased = true;
+      this.endSessionCreation(creationReservation);
+    };
+    try {
+      session = await client.createSession(sessionConfig);
+      if (expectedSessionId && session.sessionId !== expectedSessionId) {
+        await this.rejectMismatchedCreatedSession(expectedSessionId, session, client);
+      }
+
+      try {
+        await this.cacheSession(session.sessionId, session, null, sessionConfig);
+      } catch (error) {
+        try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
+          console.warn(`[sdk] Failed to delete rejected ${cleanupLabel} ${session.sessionId}:`, cleanupError);
+        }
+        throw error;
+      }
+      releaseReservation();
+
+      await this.warmNativeBridgeTools(session.sessionId, session);
+      if (this.shuttingDown) {
+        await this.evictCachedSession(
+          session.sessionId,
+          session,
+          "discarding session created during shutdown",
+        );
+        try { await client.deleteSession(session.sessionId); } catch { /* backend shutdown may already own cleanup */ }
+        throw new Error("Session manager shut down before session creation completed");
+      }
+      const settings = this.deps.settingsStore?.getSettings();
+      const model = sessionConfig.model;
+      if (typeof model === "string" && model.trim()) {
+        const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);
+        const state = {
+          model,
+          ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
+          ...(contextTier ? { contextTier } : {}),
+          ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
+        };
+        this.liveSessionModelState.set(session.sessionId, state);
+        this.persistSessionModelState(session.sessionId, state);
+      }
+      this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
+      this.probeMcpStatus(session.sessionId, session);
+      this.invalidateSessionListCache(cacheReason);
+      this.deps.globalBus.emit({ type: "sessions:changed", sessionId: session.sessionId });
+      const duration = Date.now() - startedAt;
+      this.recordSpan(spanName, duration, session.sessionId, spanMetadata);
+      console.log(logMessage(session.sessionId, duration));
+      return session;
+    } finally {
+      releaseReservation();
+    }
   }
 
   private recordSessionCacheState(
@@ -1586,6 +1735,10 @@ export class SessionManager {
             ? this.sessionCapacityProfiles.get(current)
             : undefined;
       this.sessionCapacityProfiles.set(session, capacityProfile ?? { localMcpCount: 0 });
+      if (this.deletingSessions.has(sessionId)) {
+        this.queueSessionCleanupUnsafe(sessionId, session, "discarding session while deletion is in progress");
+        throw new Error("Session is being deleted");
+      }
       const accepted = current === undefined
         || current === session
         || (expectedSession !== null && current === expectedSession);
@@ -2683,70 +2836,49 @@ export class SessionManager {
     };
   }
 
-  async createSession(): Promise<{ sessionId: string }> {
-    const client = this.getBackend();
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
+  async createSession(options: { background?: boolean } = {}): Promise<{ sessionId: string }> {
+    if (this.shuttingDown) {
+      throw new Error("Session manager is shutting down");
     }
-
-    const t0 = Date.now();
-    const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
-    const modelMetadata = await this.loadModelMetadataForContextTiers(client);
-    let session: AgentSession;
-    const sessionConfig = this.buildSessionConfig({
-      ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
-      ...(modelMetadata ? { modelMetadata } : {}),
-    });
-    let creationReservation: SessionCapacityReservation | undefined;
+    const completeLifetime = this.beginSessionCreationLifetime();
+    let backgroundOwnsLifetime = false;
     try {
-      creationReservation = await this.beginSessionCreation(sessionConfig);
-      session = await client.createSession(sessionConfig);
-    } catch (error) {
-      if (creationReservation) this.endSessionCreation(creationReservation);
-      throw error;
-    }
-    const duration = Date.now() - t0;
-    if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
+      const client = this.getBackend();
+      if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+        throw new Error(RESTART_PENDING_MESSAGE);
       }
-      await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
-    }
 
-    try {
-      await this.cacheSession(session.sessionId, session, null, sessionConfig);
-    } catch (error) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
+      const t0 = Date.now();
+      const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
+      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
+      const sessionConfig = this.buildSessionConfig({
+        ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+        ...(modelMetadata ? { modelMetadata } : {}),
+      });
+      const creationReservation = await this.beginSessionCreation(sessionConfig);
+      const creation = this.finishSessionCreation({
+        client,
+        ...(bridgeSessionId ? { expectedSessionId: bridgeSessionId } : {}),
+        sessionConfig,
+        creationReservation,
+        startedAt: t0,
+        ...(modelMetadata ? { modelMetadata } : {}),
+        cacheReason: "session:create",
+        spanName: "session.create",
+        logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
+        cleanupLabel: "session",
+      });
+      if (bridgeSessionId && options.background) {
+        this.trackPendingSessionCreation(bridgeSessionId, creation);
+        backgroundOwnsLifetime = true;
+        void creation.then(completeLifetime, completeLifetime);
+        return { sessionId: bridgeSessionId };
       }
-      try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
-        console.warn(`[sdk] Failed to delete rejected session ${session.sessionId}:`, cleanupError);
-      }
-      throw error;
+      const session = await creation;
+      return { sessionId: session.sessionId };
+    } finally {
+      if (!backgroundOwnsLifetime) completeLifetime();
     }
-    if (creationReservation) this.endSessionCreation(creationReservation);
-    await this.warmNativeBridgeTools(session.sessionId, session);
-    const settings = this.deps.settingsStore?.getSettings();
-    const model = sessionConfig.model;
-    if (typeof model === "string" && model.trim()) {
-      const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);
-      const state = {
-        model,
-        ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
-        ...(contextTier ? { contextTier } : {}),
-        ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
-      };
-      this.liveSessionModelState.set(session.sessionId, state);
-      this.persistSessionModelState(session.sessionId, state);
-    }
-    this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
-    this.probeMcpStatus(session.sessionId, session);
-    this.invalidateSessionListCache("session:create");
-    this.recordSpan("session.create", duration, session.sessionId);
-    console.log(`[sdk] Created session ${session.sessionId} (${duration}ms)`);
-    return { sessionId: session.sessionId };
   }
 
   async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
@@ -2986,104 +3118,93 @@ export class SessionManager {
     }
   }
 
-  async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {
-    const client = this.getBackend();
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
+  async createTaskSession(
+    taskId: string,
+    taskTitle: string,
+    workItems: WorkItemRef[],
+    prDescriptions: string[],
+    notes: string,
+    cwd?: string,
+    scheduleContext?: ScheduleContext,
+    groupNotes?: { groupName: string; notes: string } | null,
+    options: { background?: boolean } = {},
+  ): Promise<{ sessionId: string }> {
+    if (this.shuttingDown) {
+      throw new Error("Session manager is shutting down");
     }
-
-    const isPlaceholder = taskTitle === "New Task";
-
-    // Look up the full task so the initial session context matches later resumes.
-    const fullTask = this.deps.taskStore.getTask(taskId);
-
-    const task = {
-      id: taskId,
-      title: taskTitle,
-      kind: fullTask?.kind ?? "task",
-      muted: fullTask?.muted ?? false,
-      status: fullTask?.status ?? "active" as const,
-      groupId: fullTask?.groupId,
-      cwd: fullTask?.cwd ?? cwd,
-      notes: notes || "",
-      doneWhen: fullTask?.doneWhen,
-      nextAction: fullTask?.nextAction,
-      waitingOn: fullTask?.waitingOn,
-      nextTouchAt: fullTask?.nextTouchAt,
-      priority: 0,
-      order: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sessionIds: [] as string[],
-      workItems,
-      pullRequests: [] as any[],
-    };
-
-    const t0 = Date.now();
-    const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
-    const modelMetadata = await this.loadModelMetadataForContextTiers(client);
-    const sessionConfig = this.buildSessionConfig({
-      ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
-      task,
-      isNewTask: isPlaceholder,
-      prDescriptions,
-      scheduleContext,
-      groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
-      ...(modelMetadata ? { modelMetadata } : {}),
-    });
-    let session: AgentSession;
-    let creationReservation: SessionCapacityReservation | undefined;
+    const completeLifetime = this.beginSessionCreationLifetime();
+    let backgroundOwnsLifetime = false;
     try {
-      creationReservation = await this.beginSessionCreation(sessionConfig);
-      session = await client.createSession(
-        sessionConfig,
-      );
-    } catch (error) {
-      if (creationReservation) this.endSessionCreation(creationReservation);
-      throw error;
-    }
-    const duration = Date.now() - t0;
-    if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
+      const client = this.getBackend();
+      if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+        throw new Error(RESTART_PENDING_MESSAGE);
       }
-      await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
-    }
 
-    try {
-      await this.cacheSession(session.sessionId, session, null, sessionConfig);
-    } catch (error) {
-      if (creationReservation) {
-        this.endSessionCreation(creationReservation);
-        creationReservation = undefined;
-      }
-      try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
-        console.warn(`[sdk] Failed to delete rejected task session ${session.sessionId}:`, cleanupError);
-      }
-      throw error;
-    }
-    if (creationReservation) this.endSessionCreation(creationReservation);
-    await this.warmNativeBridgeTools(session.sessionId, session);
-    const settings = this.deps.settingsStore?.getSettings();
-    const model = sessionConfig.model;
-    if (typeof model === "string" && model.trim()) {
-      const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);
-      const state = {
-        model,
-        ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
-        ...(contextTier ? { contextTier } : {}),
-        ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
+      const isPlaceholder = taskTitle === "New Task";
+
+      // Look up the full task so the initial session context matches later resumes.
+      const fullTask = this.deps.taskStore.getTask(taskId);
+
+      const task = {
+        id: taskId,
+        title: taskTitle,
+        kind: fullTask?.kind ?? "task",
+        muted: fullTask?.muted ?? false,
+        status: fullTask?.status ?? "active" as const,
+        groupId: fullTask?.groupId,
+        cwd: fullTask?.cwd ?? cwd,
+        notes: notes || "",
+        doneWhen: fullTask?.doneWhen,
+        nextAction: fullTask?.nextAction,
+        waitingOn: fullTask?.waitingOn,
+        nextTouchAt: fullTask?.nextTouchAt,
+        priority: 0,
+        order: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        sessionIds: [] as string[],
+        workItems,
+        pullRequests: [] as any[],
       };
-      this.liveSessionModelState.set(session.sessionId, state);
-      this.persistSessionModelState(session.sessionId, state);
+
+      const t0 = Date.now();
+      const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
+      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
+      const sessionConfig = this.buildSessionConfig({
+        ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+        task,
+        isNewTask: isPlaceholder,
+        prDescriptions,
+        scheduleContext,
+        groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
+        ...(modelMetadata ? { modelMetadata } : {}),
+      });
+      const creationReservation = await this.beginSessionCreation(sessionConfig);
+      const creation = this.finishSessionCreation({
+        client,
+        ...(bridgeSessionId ? { expectedSessionId: bridgeSessionId } : {}),
+        sessionConfig,
+        creationReservation,
+        startedAt: t0,
+        ...(modelMetadata ? { modelMetadata } : {}),
+        cacheReason: "session:create-task",
+        spanName: "session.createTask",
+        spanMetadata: { taskId },
+        logMessage: (sessionId, duration) =>
+          `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
+        cleanupLabel: "task session",
+      });
+      if (bridgeSessionId && options.background) {
+        this.trackPendingSessionCreation(bridgeSessionId, creation);
+        backgroundOwnsLifetime = true;
+        void creation.then(completeLifetime, completeLifetime);
+        return { sessionId: bridgeSessionId };
+      }
+      const session = await creation;
+      return { sessionId: session.sessionId };
+    } finally {
+      if (!backgroundOwnsLifetime) completeLifetime();
     }
-    this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
-    this.probeMcpStatus(session.sessionId, session);
-    this.invalidateSessionListCache("session:create-task");
-    this.recordSpan("session.createTask", duration, session.sessionId, { taskId });
-    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" (${duration}ms)`);
-    return { sessionId: session.sessionId };
   }
 
   private completeSessionAbortLocally(sessionId: string, content: string): void {
@@ -3186,6 +3307,9 @@ export class SessionManager {
 
   // Fire and forget — starts work and emits events to the session's EventBus
   startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[], options?: StartWorkOptions): void {
+    if (this.deletingSessions.has(sessionId)) {
+      throw new Error("Session is being deleted");
+    }
     this.sessionRunner.startWork(sessionId, prompt, attachments, options);
   }
 
@@ -3195,6 +3319,9 @@ export class SessionManager {
     attachments?: StartWorkAttachment[],
     options?: StartWorkOptions,
   ): Promise<void> {
+    if (this.deletingSessions.has(sessionId)) {
+      throw new Error("Session is being deleted");
+    }
     await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, options);
   }
 
@@ -3237,6 +3364,9 @@ export class SessionManager {
    * Returns a promise that resolves when the session is ready for interaction.
    */
   async warmSession(sessionId: string): Promise<void> {
+    if (this.deletingSessions.has(sessionId)) {
+      throw new Error("Session is being deleted");
+    }
     const client = this.getBackend();
     if (this.sessionObjects.has(sessionId)) {
       this.recordSpan("session.warm.alreadyCached", 0, sessionId);
@@ -3311,47 +3441,63 @@ export class SessionManager {
 
   async deleteSession(sessionId: string): Promise<void> {
     const client = this.getBackend();
+    if (this.deletingSessions.has(sessionId)) {
+      throw new Error("Session is already being deleted");
+    }
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot delete a busy session");
     }
-    let sdkDeleteError: unknown;
-    this.cancelPendingUserInputRequests(
-      sessionId,
-      "session_ended",
-      "Session was deleted before the user input request was answered",
-    );
-    await this.evictCachedSession(sessionId);
-    this.agentRegistry.forget(sessionId);
-    clearEventLogStatsCache(sessionId);
     try {
-      await client.deleteSession(sessionId);
-    } catch (err: unknown) {
-      if (isMissingSessionError(err)) {
-        console.log(`[sdk] Session ${sessionId} already gone, continuing cleanup`);
-      } else {
-        sdkDeleteError = err;
-        console.warn(`[sdk] Delete session ${sessionId} failed before local cleanup:`, err);
+      this.deletingSessions.add(sessionId);
+      const pendingCreation = this.pendingSessionCreations.get(sessionId);
+      if (pendingCreation) {
+        await pendingCreation.catch(() => undefined);
       }
-    }
-    this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+      const pendingWarm = this.warmSessionPromises.get(sessionId);
+      if (pendingWarm) {
+        await pendingWarm.catch(() => undefined);
+      }
+      let sdkDeleteError: unknown;
+      this.cancelPendingUserInputRequests(
+        sessionId,
+        "session_ended",
+        "Session was deleted before the user input request was answered",
+      );
+      await this.evictCachedSession(sessionId);
+      this.agentRegistry.forget(sessionId);
+      clearEventLogStatsCache(sessionId);
+      try {
+        await client.deleteSession(sessionId);
+      } catch (err: unknown) {
+        if (isMissingSessionError(err)) {
+          console.log(`[sdk] Session ${sessionId} already gone, continuing cleanup`);
+        } else {
+          sdkDeleteError = err;
+          console.warn(`[sdk] Delete session ${sessionId} failed before local cleanup:`, err);
+        }
+      }
+      this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
 
-    // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
-    const copilotHome = this.getCopilotHome();
-    const sessionDir = join(copilotHome, "session-state", sessionId);
-    try {
-      await rm(sessionDir, { recursive: true, force: true });
-    } catch (err) {
-      console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
-    }
-    try {
-      deleteCliSessionStoreRows(copilotHome, sessionId);
-    } catch (err) {
-      console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
-    }
-    this.invalidateSessionListCache("session:delete:removed");
-    if (sdkDeleteError) throw sdkDeleteError;
+      // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
+      const copilotHome = this.getCopilotHome();
+      const sessionDir = join(copilotHome, "session-state", sessionId);
+      try {
+        await rm(sessionDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
+      }
+      try {
+        deleteCliSessionStoreRows(copilotHome, sessionId);
+      } catch (err) {
+        console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
+      }
+      this.invalidateSessionListCache("session:delete:removed");
+      if (sdkDeleteError) throw sdkDeleteError;
 
-    console.log(`[sdk] Deleted session ${sessionId}`);
+      console.log(`[sdk] Deleted session ${sessionId}`);
+    } finally {
+      this.deletingSessions.delete(sessionId);
+    }
   }
 
   async reloadSession(sessionId: string): Promise<McpServerStatus[]> {
@@ -3730,6 +3876,7 @@ export class SessionManager {
   async gracefulShutdown(
     deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
   ): Promise<void> {
+    this.shuttingDown = true;
     this.stopSessionCacheSweep();
     const active = this.getActiveSessions();
     if (active.length > 0) {
@@ -3760,6 +3907,17 @@ export class SessionManager {
         console.log(`[sdk] ${activeCount} session(s) did not drain in time`);
       } else {
         console.log("[sdk] All sessions drained cleanly");
+      }
+    }
+
+    const inFlightCreations = [...this.inFlightSessionCreations];
+    if (inFlightCreations.length > 0) {
+      const outcome = await settleByDeadline(
+        () => Promise.allSettled(inFlightCreations),
+        capDeadline(deadline, SESSION_DRAIN_TIMEOUT_MS),
+      );
+      if (outcome.status === "timed-out") {
+        console.error(`[sdk] ${inFlightCreations.length} session creation(s) did not drain before shutdown`);
       }
     }
 

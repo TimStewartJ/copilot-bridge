@@ -15,6 +15,7 @@ type SendChatMessage = (
   prompt: string,
   attachments?: Attachment[],
   mode?: SendMode,
+  options?: { waitForDelivery?: boolean },
 ) => Promise<unknown>;
 type QueryInvalidator = () => Promise<unknown>;
 type SelectedTaskUpdater = (updater: (task: Task | null) => Task | null) => void;
@@ -121,11 +122,7 @@ export async function sendMaterializedFirstPrompt({
   logger = console,
 }: SendMaterializedFirstPromptOptions): Promise<void> {
   try {
-    if (mode) {
-      await sendChatMessage(sessionId, prompt, attachments, mode);
-    } else {
-      await sendChatMessage(sessionId, prompt, attachments);
-    }
+    await sendChatMessage(sessionId, prompt, attachments, mode, { waitForDelivery: true });
   } catch (error) {
     try {
       await onRejected?.(error);

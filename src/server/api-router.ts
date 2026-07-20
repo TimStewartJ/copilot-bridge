@@ -2441,7 +2441,7 @@ export function createApiRouter(
     }
     try {
       const { name } = req.body ?? {};
-      const result = await ctx.sessionManager.createSession();
+      const result = await ctx.sessionManager.createSession({ background: true });
       invalidateEnrichedCache("route:session:create");
       res.json(result);
     } catch (err) {
@@ -2575,15 +2575,18 @@ export function createApiRouter(
     }
   });
 
-  // POST /chat — fire and forget, starts work in background
+  // POST /chat — starts work, optionally waiting until the prompt reaches the SDK session
   router.post("/chat", async (req, res) => {
-    const { sessionId, prompt, attachments, mode } = req.body;
+    const { sessionId, prompt, attachments, mode, waitForDelivery } = req.body;
 
     if (!sessionId || !prompt) {
       return res.status(400).json({ error: "sessionId and prompt are required" });
     }
     if (mode !== undefined && !isSendMode(mode)) {
       return res.status(400).json({ error: "mode must be one of: interactive, autopilot" });
+    }
+    if (waitForDelivery !== undefined && typeof waitForDelivery !== "boolean") {
+      return res.status(400).json({ error: "waitForDelivery must be a boolean" });
     }
 
     if (isRestartCutoverInProgress(await refreshRestartState())) {
@@ -2611,7 +2614,14 @@ export function createApiRouter(
         return;
       }
 
-      if (mode) {
+      if (waitForDelivery) {
+        await ctx.sessionManager.startWorkAndWaitForDelivery(
+          sessionId,
+          prompt,
+          attachments,
+          mode ? { mode } : undefined,
+        );
+      } else if (mode) {
         ctx.sessionManager.startWork(sessionId, prompt, attachments, { mode });
       } else {
         ctx.sessionManager.startWork(sessionId, prompt, attachments);
@@ -3573,6 +3583,7 @@ export function createApiRouter(
         task.cwd,
         undefined,
         groupNotes,
+        { background: true },
       );
       invalidateEnrichedCache("route:task-session:create");
 

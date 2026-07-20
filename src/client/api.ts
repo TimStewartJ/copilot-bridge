@@ -742,12 +742,14 @@ export async function sendChatMessage(
   prompt: string,
   attachments?: Attachment[],
   mode?: SendMode,
+  options?: { waitForDelivery?: boolean },
 ): Promise<ChatMessageAcceptedResponse> {
   return apiFetch<ChatMessageAcceptedResponse>("/api/chat", {
     sessionId,
     prompt,
     ...(attachments?.length ? { attachments } : {}),
     ...(mode ? { mode } : {}),
+    ...(options?.waitForDelivery ? { waitForDelivery: true } : {}),
   });
 }
 

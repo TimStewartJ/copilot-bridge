@@ -976,18 +976,17 @@ export default function App() {
       sessionId: newSessionId,
       prompt,
       onRejected: async () => {
+        await cleanupRejectedFirstSendSession(newSessionId, taskId);
         if (options?.navigateOnError === false) {
-          await cleanupRejectedFirstSendSession(newSessionId, taskId);
           return;
         }
 
-        clearPendingPromptSession(newSessionId);
-        setDraftImmediate(newSessionId, prompt);
-        navigateToSession(newSessionId, taskId);
+        setDraftImmediate(getDraftComposerKey(taskId), prompt);
+        navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new");
       },
     });
     return newSessionId;
-  }, [cleanupRejectedFirstSendSession, clearPendingPromptSession, materializeSession, navigateToSession, setDraftImmediate]);
+  }, [cleanupRejectedFirstSendSession, materializeSession, navigate, setDraftImmediate]);
 
   const isSessionBusy = useCallback((sessionId: string) => {
     const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
@@ -2204,23 +2203,33 @@ function SessionRoute({
     mode?: SendMode,
   ) => {
     const newSessionId = await materializeSession(taskId);
-    // Send the message BEFORE navigating so the session is busy when
-    // ChatView's effect reconnects the stream (avoids idle-close race).
-    await sendMaterializedFirstPrompt({
+    const path = taskId
+      ? `/tasks/${taskId}/sessions/${newSessionId}`
+      : `/sessions/${newSessionId}`;
+    const delivery = sendMaterializedFirstPrompt({
       sessionId: newSessionId,
       prompt,
       attachments,
       mode,
-      // Retry stays on the draft route and materializes a fresh session.
-      onRejected: () => cleanupFailedFirstSendSession(newSessionId, taskId),
+      onRejected: async () => {
+        await cleanupFailedFirstSendSession(newSessionId, taskId);
+        setDraft(draftRouteKey, prompt, attachments);
+        navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new", { replace: true });
+      },
     });
     clearDraft(composerKey);
-    // Navigate to real session URL (replace draft URL in history)
-    const path = taskId
-      ? `/tasks/${taskId}/sessions/${newSessionId}`
-      : `/sessions/${newSessionId}`;
     navigate(path, { replace: true });
-  }, [cleanupFailedFirstSendSession, clearDraft, composerKey, materializeSession, navigate, taskId]);
+    await delivery;
+  }, [
+    cleanupFailedFirstSendSession,
+    clearDraft,
+    composerKey,
+    draftRouteKey,
+    materializeSession,
+    navigate,
+    setDraft,
+    taskId,
+  ]);
 
   return (
     <ChatView
