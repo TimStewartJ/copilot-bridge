@@ -363,8 +363,13 @@ describe("SessionManager run state", () => {
             agentType: "task",
           }],
     }));
+    (session as any).cancelTask = vi.fn(async (id: string) => {
+      if (id !== "sync-check" || status !== "idle") return { cancelled: false };
+      status = "cancelled";
+      return { cancelled: true };
+    });
     (session as any).removeTask = vi.fn(async (id: string) => {
-      removed = id === "sync-check";
+      removed = id === "sync-check" && status === "cancelled";
       return { removed };
     });
     manager.backend = {
@@ -393,6 +398,7 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
+    expect((session as any).cancelTask).toHaveBeenCalledWith("sync-check");
     expect((session as any).removeTask).toHaveBeenCalledWith("sync-check");
     expect(manager.agentRegistry.getTrackedAgentCount("session-sync-agent")).toBe(0);
 

@@ -192,44 +192,52 @@ export class SessionAgentRegistry {
       }
 
       try {
-        const result = await session.listTasks();
-        if (this.deps.getLiveSession(sessionId) !== session) return 0;
-        const tasks = (Array.isArray(result?.tasks) ? result.tasks : [])
-          .filter((task) => task.kind === "agent")
-          .map((task) => this.normalizeTask(task));
-        this.commitTasks(sessionId, entry, session, tasks);
-
-        const candidates = tasks
-          .filter((task) =>
-            task.executionMode === "sync"
-            && task.status !== "running"
-            && (!toolCallId || task.toolCallId === toolCallId));
         const removedIds = new Set<string>();
-        for (const task of candidates) {
-          try {
-            const removeResult = await session.removeTask(task.id);
-            if (removeResult?.removed) removedIds.add(task.id);
-          } catch (err) {
-            this.logger.warn(
-              `[agents] [${sessionId.slice(0, 8)}] failed to remove finished sync task ${task.id}: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
+        const readTasks = async (): Promise<SessionAgentTask[] | undefined> => {
+          const result = await session.listTasks!();
+          if (this.deps.getLiveSession(sessionId) !== session) return undefined;
+          const tasks = (Array.isArray(result?.tasks) ? result.tasks : [])
+            .filter((task) => task.kind === "agent")
+            .map((task) => this.normalizeTask(task));
+          this.commitTasks(sessionId, entry, session, tasks);
+          return tasks;
+        };
+        let tasks = await readTasks();
+        if (!tasks) return 0;
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const candidates = tasks
+            .filter((task) =>
+              task.executionMode === "sync"
+              && task.status !== "running"
+              && (!toolCallId || task.toolCallId === toolCallId));
+          if (candidates.length === 0) break;
+
+          let changed = false;
+          for (const task of candidates) {
+            try {
+              if (task.status === "idle") {
+                const cancelResult = await session.cancelTask?.(task.id);
+                if (cancelResult?.cancelled) changed = true;
+              }
+              const removeResult = await session.removeTask(task.id);
+              if (removeResult?.removed) {
+                removedIds.add(task.id);
+                changed = true;
+              }
+            } catch (err) {
+              this.logger.warn(
+                `[agents] [${sessionId.slice(0, 8)}] failed to reap finished sync task ${task.id}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
           }
+          if (!changed) break;
+          tasks = await readTasks();
+          if (!tasks) return removedIds.size;
         }
 
-        if (
-          removedIds.size > 0
-          && this.deps.getLiveSession(sessionId) === session
-          && entry.ownerSession === session
-        ) {
-          this.commitTasks(
-            sessionId,
-            entry,
-            session,
-            tasks.filter((task) => !removedIds.has(task.id)),
-          );
-        }
         return removedIds.size;
       } catch (err) {
         this.logger.warn(

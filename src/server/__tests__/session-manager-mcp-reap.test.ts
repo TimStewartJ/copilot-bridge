@@ -573,6 +573,88 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager._drainCacheQueue();
   });
 
+  it("reaps idle sync agents before rejecting a new resume for context pressure", async () => {
+    const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
+    manager.maxCachedContexts = 2;
+    let status: "idle" | "cancelled" | "removed" = "idle";
+    const parent = {
+      sessionId: "parent",
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      listTasks: vi.fn(async () => ({
+        tasks: status === "removed"
+          ? []
+          : [{
+              kind: "agent",
+              id: "sync-agent",
+              status,
+              executionMode: "sync",
+            }],
+      })),
+      cancelTask: vi.fn(async () => {
+        status = "cancelled";
+        return { cancelled: true };
+      }),
+      removeTask: vi.fn(async () => {
+        if (status !== "cancelled") return { removed: false };
+        status = "removed";
+        return { removed: true };
+      }),
+    };
+    await manager.cacheResumedSession("parent", parent);
+    await manager.agentRegistry.refresh("parent", "test");
+    manager.getActiveSessions = () => ["parent"];
+
+    const lease = await manager.beginSessionResume("next", { mcpServers: {} });
+
+    expect(parent.cancelTask).toHaveBeenCalledWith("sync-agent");
+    expect(parent.removeTask).toHaveBeenCalledWith("sync-agent");
+    expect(manager.getSessionCacheState()).toMatchObject({
+      trackedAgents: 0,
+      readyContextWeight: 1,
+      reservedContexts: 1,
+    });
+    manager.endSessionResume(lease);
+  });
+
+  it("rechecks admission after a capacity sweep refreshes stale sync-agent accounting", async () => {
+    const { manager } = createManager();
+    manager.sessionCapacityWaitTimeoutMs = 0;
+    manager.maxCachedContexts = 2;
+    let taskPresent = true;
+    const parent = {
+      sessionId: "parent",
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      listTasks: vi.fn(async () => ({
+        tasks: taskPresent
+          ? [{
+              kind: "agent",
+              id: "already-removed",
+              status: "idle",
+              executionMode: "sync",
+            }]
+          : [],
+      })),
+      cancelTask: vi.fn().mockResolvedValue({ cancelled: false }),
+      removeTask: vi.fn().mockResolvedValue({ removed: false }),
+    };
+    await manager.cacheResumedSession("parent", parent);
+    await manager.agentRegistry.refresh("parent", "test");
+    manager.getActiveSessions = () => ["parent"];
+    taskPresent = false;
+
+    const lease = await manager.beginSessionResume("next", { mcpServers: {} });
+
+    expect(parent.cancelTask).not.toHaveBeenCalled();
+    expect(parent.removeTask).not.toHaveBeenCalled();
+    expect(manager.getSessionCacheState()).toMatchObject({
+      trackedAgents: 0,
+      readyContextWeight: 1,
+      reservedContexts: 1,
+    });
+    manager.endSessionResume(lease);
+  });
+
   it("counts uncached resume reservations against the hard context limit", async () => {
     const { manager } = createManager();
     manager.sessionCapacityWaitTimeoutMs = 0;
