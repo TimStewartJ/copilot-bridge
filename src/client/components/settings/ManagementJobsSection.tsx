@@ -9,6 +9,7 @@ import {
   RotateCcw,
   RotateCw,
   Terminal,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import type { BridgeRuntimeStatus } from "../../bridge-management-api";
@@ -31,6 +32,7 @@ import {
 } from "../../hooks/queries/useManagementJobs";
 import {
   useBridgeRuntimeStatusQuery,
+  useEvictIdleCacheMutation,
   useRestartBridgeMutation,
 } from "../../hooks/queries/useBridgeRuntimeStatus";
 import { useRestartStatusQuery } from "../../hooks/queries/useRestartStatus";
@@ -72,6 +74,7 @@ export function ManagementJobsSection() {
   const enqueueMutation = useEnqueueManagementJobMutation();
   const retryMutation = useRetryManagementJobMutation();
   const restartMutation = useRestartBridgeMutation();
+  const evictIdleCacheMutation = useEvictIdleCacheMutation();
 
   const activeList = activeJobsQuery.data ?? null;
   const list = activeList ?? jobsQuery.data ?? null;
@@ -97,7 +100,9 @@ export function ManagementJobsSection() {
     || runtimeQuery.isLoading
     || restartStatusQuery.isLoading;
   const jobActionBusy = cancelMutation.isPending || retryMutation.isPending;
-  const controlBusy = enqueueMutation.isPending || restartMutation.isPending;
+  const controlBusy = enqueueMutation.isPending
+    || restartMutation.isPending
+    || evictIdleCacheMutation.isPending;
 
   useEffect(() => {
     if (selectedJobId || jobs.length === 0) return;
@@ -202,6 +207,35 @@ export function ManagementJobsSection() {
     }
   }, [restartMutation, restartStatusQuery, runtimeQuery]);
 
+  const handleEvictIdleCache = useCallback(async () => {
+    const capacity = runtimeQuery.data?.capacity;
+    const idleCachedSessions = capacity
+      ? Math.max(0, capacity.cache.readyParents - capacity.cache.protectedParents)
+      : 0;
+    const confirmed = window.confirm(
+      `Evict ${idleCachedSessions} idle cached session${idleCachedSessions === 1 ? "" : "s"}?\n\n`
+      + "Active sessions and sessions with running agents are protected. Evicted sessions will resume from disk when used again.",
+    );
+    if (!confirmed) return;
+
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const result = await evictIdleCacheMutation.mutateAsync();
+      const protectedSummary = result.protectedSessions > 0
+        ? ` ${result.protectedSessions} protected session${result.protectedSessions === 1 ? " was" : "s were"} kept warm.`
+        : "";
+      setActionMessage(
+        result.evictedSessions > 0
+          ? `Evicted ${result.evictedSessions} idle cached session${result.evictedSessions === 1 ? "" : "s"}.${protectedSummary}`
+          : `No idle cached sessions were evicted.${protectedSummary}`,
+      );
+      await runtimeQuery.refetch();
+    } catch (error) {
+      setActionError(`Idle cache eviction failed: ${formatError(error)}`);
+    }
+  }, [evictIdleCacheMutation, runtimeQuery]);
+
   const restartPending = restartStatusQuery.data?.pending === true;
   const selfUpdateDisabledReason = getSelfUpdateDisabledReason({
     runtime: runtimeQuery.data,
@@ -217,6 +251,17 @@ export function ManagementJobsSection() {
     activeExclusiveJob,
     busy: controlBusy,
   });
+  const cacheCapacity = runtimeQuery.data?.capacity.cache;
+  const idleCachedSessions = cacheCapacity
+    ? Math.max(0, cacheCapacity.readyParents - cacheCapacity.protectedParents)
+    : 0;
+  const evictIdleCacheDisabledReason = controlBusy
+    ? "Another management control is in progress."
+    : !runtimeQuery.data
+      ? "Runtime cache status is unavailable."
+      : idleCachedSessions === 0
+        ? "No idle cached sessions to evict."
+        : null;
 
   return (
     <SettingsSection
@@ -252,8 +297,12 @@ export function ManagementJobsSection() {
           restartDisabledReason={restartDisabledReason}
           queueingUpdate={enqueueMutation.isPending}
           restarting={restartMutation.isPending}
+          evictingIdleCache={evictIdleCacheMutation.isPending}
+          idleCachedSessions={idleCachedSessions}
+          evictIdleCacheDisabledReason={evictIdleCacheDisabledReason}
           onQueueSelfUpdate={() => void handleSelfUpdate()}
           onRestart={() => void handleRestart()}
+          onEvictIdleCache={() => void handleEvictIdleCache()}
         />
 
         {(activeJobsQuery.error || jobsQuery.error || actionError || actionMessage) && (
@@ -542,17 +591,25 @@ function CapacityBar({
 function BridgeControlsCard({
   selfUpdateDisabledReason,
   restartDisabledReason,
+  evictIdleCacheDisabledReason,
   queueingUpdate,
   restarting,
+  evictingIdleCache,
+  idleCachedSessions,
   onQueueSelfUpdate,
   onRestart,
+  onEvictIdleCache,
 }: {
   selfUpdateDisabledReason: string | null;
   restartDisabledReason: string | null;
+  evictIdleCacheDisabledReason: string | null;
   queueingUpdate: boolean;
   restarting: boolean;
+  evictingIdleCache: boolean;
+  idleCachedSessions: number;
   onQueueSelfUpdate: () => void;
   onRestart: () => void;
+  onEvictIdleCache: () => void;
 }) {
   return (
     <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
@@ -562,10 +619,10 @@ function BridgeControlsCard({
           Bridge controls
         </div>
         <p className="mt-1 text-xs text-text-muted">
-          These operations are launcher-supervised. Restart waits for active sessions; self-update records durable progress below.
+          Restart and self-update are launcher-supervised. Idle cache eviction only disconnects session trees that are safe to resume later.
         </p>
       </div>
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-3">
         <div className="rounded-md border border-border bg-bg-primary p-3">
           <div className="text-sm font-medium text-text-secondary">Self-update</div>
           <p className="mt-1 text-xs text-text-muted">
@@ -601,6 +658,26 @@ function BridgeControlsCard({
           </button>
           <p className="mt-2 text-[11px] text-text-faint">
             {restartDisabledReason ?? "The launcher will wait for current sessions before cutover."}
+          </p>
+        </div>
+
+        <div className="rounded-md border border-border bg-bg-primary p-3">
+          <div className="text-sm font-medium text-text-secondary">Idle session cache</div>
+          <p className="mt-1 text-xs text-text-muted">
+            Disconnect every cached session tree that has no active turn or running background agent.
+          </p>
+          <button
+            type="button"
+            onClick={onEvictIdleCache}
+            disabled={Boolean(evictIdleCacheDisabledReason)}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {evictingIdleCache ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+            {evictingIdleCache ? "Evicting…" : "Evict idle cache"}
+          </button>
+          <p className="mt-2 text-[11px] text-text-faint">
+            {evictIdleCacheDisabledReason
+              ?? `${idleCachedSessions} idle cached session${idleCachedSessions === 1 ? "" : "s"} can be evicted now.`}
           </p>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import {
+  evictIdleCache,
   fetchBridgeRuntimeStatus,
   restartBridge,
   type BridgeRuntimeStatus,
@@ -53,6 +54,17 @@ describe("bridge management client API", () => {
 
     await expect(fetchBridgeRuntimeStatus()).resolves.toEqual(runtime);
     expect(fetch).toHaveBeenLastCalledWith("/api/server/runtime-status", { signal: undefined });
+
+    stubJsonResponse({ ok: true, evictedSessions: 7, protectedSessions: 3 });
+    await expect(evictIdleCache()).resolves.toEqual({
+      ok: true,
+      evictedSessions: 7,
+      protectedSessions: 3,
+    });
+    expect(fetch).toHaveBeenLastCalledWith(
+      "/api/server/cache/evict-idle",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    );
 
     stubJsonResponse({ ok: true, waitingSessions: 2 }, { status: 202 });
     await expect(restartBridge()).resolves.toEqual({ ok: true, waitingSessions: 2 });

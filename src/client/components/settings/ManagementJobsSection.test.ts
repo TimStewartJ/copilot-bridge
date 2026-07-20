@@ -23,6 +23,7 @@ const hookMocks = vi.hoisted(() => ({
   useRetryManagementJobMutation: vi.fn(),
   useBridgeRuntimeStatusQuery: vi.fn(),
   useRestartBridgeMutation: vi.fn(),
+  useEvictIdleCacheMutation: vi.fn(),
   useRestartStatusQuery: vi.fn(),
 }));
 
@@ -30,6 +31,7 @@ vi.mock("../../hooks/queries/useManagementJobs", () => hookMocks);
 vi.mock("../../hooks/queries/useBridgeRuntimeStatus", () => ({
   useBridgeRuntimeStatusQuery: hookMocks.useBridgeRuntimeStatusQuery,
   useRestartBridgeMutation: hookMocks.useRestartBridgeMutation,
+  useEvictIdleCacheMutation: hookMocks.useEvictIdleCacheMutation,
 }));
 vi.mock("../../hooks/queries/useRestartStatus", () => ({
   useRestartStatusQuery: hookMocks.useRestartStatusQuery,
@@ -116,6 +118,11 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
     reused: false,
   }));
   const restartMutateAsync = vi.fn(async () => ({ ok: true, waitingSessions: 2 }));
+  const evictIdleCacheMutateAsync = vi.fn(async () => ({
+    ok: true,
+    evictedSessions: 7,
+    protectedSessions: 3,
+  }));
   const runtimeRefetch = vi.fn(async () => undefined);
   const restartStatusRefetch = vi.fn(async () => undefined);
 
@@ -174,6 +181,10 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
     isPending: false,
     mutateAsync: restartMutateAsync,
   }));
+  hookMocks.useEvictIdleCacheMutation.mockImplementation(() => ({
+    isPending: false,
+    mutateAsync: evictIdleCacheMutateAsync,
+  }));
   hookMocks.useRestartStatusQuery.mockImplementation(() => ({
     data: {
       pending: false,
@@ -188,7 +199,13 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
     refetch: restartStatusRefetch,
   }));
 
-  return { cancelMutateAsync, enqueueMutateAsync, retryMutateAsync, restartMutateAsync };
+  return {
+    cancelMutateAsync,
+    enqueueMutateAsync,
+    retryMutateAsync,
+    restartMutateAsync,
+    evictIdleCacheMutateAsync,
+  };
 }
 
 function installSelectAwareDomShim() {
@@ -304,7 +321,11 @@ describe("ManagementJobsSection", () => {
   });
 
   it("shows live activity and queues self-update and restart controls with confirmation", async () => {
-    const { enqueueMutateAsync, restartMutateAsync } = mockManagementJobs([]);
+    const {
+      enqueueMutateAsync,
+      restartMutateAsync,
+      evictIdleCacheMutateAsync,
+    } = mockManagementJobs([]);
     const confirm = vi.fn(() => true);
     const harness = await renderSection();
     try {
@@ -323,6 +344,14 @@ describe("ManagementJobsSection", () => {
       expect(text).toContain("Parent cache 10/16, 3 protected");
       expect(text).toContain("Local MCP weight +0.25 per context");
       expect(text).toContain("2 requests are waiting for live capacity");
+      expect(text).toContain("7 idle cached sessions can be evicted now.");
+
+      await clickButton(harness, "Evict idle cache");
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Evict 7 idle cached sessions?"));
+      expect(evictIdleCacheMutateAsync).toHaveBeenCalledOnce();
+      await waitUntilAct(harness.act, () =>
+        (harness.dom.container.textContent ?? "").includes("Evicted 7 idle cached sessions. 3 protected sessions were kept warm."),
+      );
 
       await clickButton(harness, "Queue self-update");
       expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Queue a Bridge self-update job?"));
@@ -382,9 +411,12 @@ describe("ManagementJobsSection", () => {
     try {
       const updateButton = findButtonByText(harness.dom.container, "Queue self-update");
       const restartButton = findButtonByText(harness.dom.container, "Restart Bridge");
+      const evictIdleCacheButton = findButtonByText(harness.dom.container, "Evict idle cache");
       expect(getReactProps(updateButton)?.disabled).toBe(true);
       expect(getReactProps(restartButton)?.disabled).toBe(true);
+      expect(getReactProps(evictIdleCacheButton)?.disabled).toBe(true);
       expect(harness.dom.container.textContent ?? "").toContain("Unavailable from staging previews.");
+      expect(harness.dom.container.textContent ?? "").toContain("No idle cached sessions to evict.");
     } finally {
       await harness.cleanup();
     }

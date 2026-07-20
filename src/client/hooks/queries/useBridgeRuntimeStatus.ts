@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  evictIdleCache,
   fetchBridgeRuntimeStatus,
   restartBridge,
 } from "../../bridge-management-api";
@@ -25,6 +26,17 @@ export function useRestartBridgeMutation() {
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.bridgeRuntimeStatus });
       void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
+    },
+  });
+}
+
+export function useEvictIdleCacheMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: evictIdleCache,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.bridgeRuntimeStatus });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
   });
 }

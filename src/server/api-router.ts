@@ -2018,6 +2018,17 @@ export function createApiRouter(
     });
   });
 
+  router.post("/server/cache/evict-idle", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Idle cache eviction")) return;
+    try {
+      const result = await ctx.sessionManager.evictIdleCachedSessions();
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      console.error("[management] Idle cache eviction failed:", error);
+      res.status(500).json({ error: "Failed to evict idle cached sessions." });
+    }
+  });
+
   router.post("/server/restart", async (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Bridge restart")) return;
     if (ctx.isStaging) return res.status(404).json({ error: "Bridge restart is not available in staging previews." });
