@@ -395,6 +395,81 @@ describe("useSessionStream EventSource lifecycle", () => {
 });
 
 describe("useSessionStream projection events", () => {
+  it("hydrates, appends, and commits server-owned user messages", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        complete: false,
+        accumulatedContent: "",
+        userMessages: [
+          {
+            id: "user-1",
+            content: "yes",
+            pending: false,
+            sourceEventId: "user-event-1",
+          },
+          {
+            id: "user-2",
+            content: "yes",
+            pending: true,
+            attachments: [{
+              type: "uploaded",
+              displayName: "example.png",
+              mimeType: "image/png",
+              size: 10,
+            }],
+          },
+        ],
+        assistantSegments: [],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: ["user:user-1", "user:user-2"],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      }, () => getState().liveEntries.length === 2);
+
+      expect(getState().liveEntries).toMatchObject([
+        {
+          id: "live-user-user-1",
+          role: "user",
+          content: "yes",
+          sourceEventId: "user-event-1",
+        },
+        {
+          id: "live-user-user-2",
+          role: "user",
+          content: "yes",
+          attachments: [{ displayName: "example.png" }],
+        },
+      ]);
+
+      await emitAndWait(act, source, {
+        type: "user_message",
+        userMessage: {
+          id: "user-3",
+          content: "next",
+          pending: true,
+        },
+      }, () => getState().liveEntries.length === 3);
+      await emitAndWait(act, source, {
+        type: "user_message_committed",
+        id: "user-3",
+        sourceEventId: "user-event-3",
+        timestamp: "2026-07-21T22:00:00.000Z",
+      }, () => getState().liveEntries[2]?.sourceEventId === "user-event-3");
+
+      expect(getState().liveEntries[2]).toMatchObject({
+        id: "live-user-user-3",
+        content: "next",
+        sourceEventId: "user-event-3",
+        timestamp: "2026-07-21T22:00:00.000Z",
+      });
+    });
+  });
+
   it("hydrates and resolves pending interactions", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));

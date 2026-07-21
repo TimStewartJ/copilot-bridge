@@ -4,7 +4,7 @@ import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
 const recentSessionIds: string[] = [];
-const CLIENT_GENERATED_ID_PREFIXES = ["local-", "err-", "draft-"] as const;
+const CLIENT_GENERATED_ID_PREFIXES = ["err-", "draft-"] as const;
 
 export interface ChatHistorySnapshot {
   sessionId: string;

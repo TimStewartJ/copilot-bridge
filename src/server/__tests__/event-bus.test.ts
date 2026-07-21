@@ -125,28 +125,82 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().terminalCompletion).toBeUndefined();
     });
 
-    it("can clear pendingPrompt after the user message is persisted", () => {
+    it("commits a projected user message after it is persisted", () => {
       const bus = getOrCreateBus("test-pending-prompt-1");
       bus.setPendingPrompt("recover me");
 
-      expect(bus.getSnapshot().pendingPrompt).toBe("recover me");
+      expect(bus.getSnapshot()).toMatchObject({
+        pendingPrompt: "recover me",
+        userMessages: [{
+          content: "recover me",
+          pending: true,
+        }],
+      });
 
-      bus.clearPendingPrompt();
+      bus.commitPendingPrompt("recover me", "user-event-1", "2026-07-21T22:00:00.000Z");
 
-      expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
+      expect(bus.getSnapshot()).toMatchObject({
+        pendingPrompt: undefined,
+        userMessages: [{
+          content: "recover me",
+          pending: false,
+          sourceEventId: "user-event-1",
+          timestamp: "2026-07-21T22:00:00.000Z",
+        }],
+      });
     });
 
-    it("only clears pendingPrompt for the matching persisted user message", () => {
+    it("only commits the matching projected user message", () => {
       const bus = getOrCreateBus("test-pending-prompt-match-1");
       bus.setPendingPrompt("steer me");
 
-      bus.clearPendingPrompt("original prompt");
+      bus.commitPendingPrompt("original prompt", "wrong-event");
 
       expect(bus.getSnapshot().pendingPrompt).toBe("steer me");
 
-      bus.clearPendingPrompt("steer me");
+      bus.commitPendingPrompt("steer me", "steer-event");
 
       expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
+      expect(bus.getSnapshot().userMessages[0]).toMatchObject({
+        pending: false,
+        sourceEventId: "steer-event",
+      });
+    });
+
+    it("commits identical projected prompts in FIFO order", () => {
+      const bus = getOrCreateBus("test-pending-prompt-fifo-1");
+      const firstId = bus.setPendingPrompt("yes");
+      const secondId = bus.setPendingPrompt("yes");
+
+      bus.commitPendingPrompt("yes", "event-1");
+
+      expect(bus.getSnapshot().userMessages).toMatchObject([
+        { id: firstId, pending: false, sourceEventId: "event-1" },
+        { id: secondId, pending: true },
+      ]);
+    });
+
+    it("broadcasts steering user message updates and discards failed delivery", () => {
+      const bus = getOrCreateBus("test-user-message-broadcast-1");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+
+      const id = bus.setPendingPrompt("original");
+      bus.replacePendingPrompt("updated");
+      bus.discardPendingPrompt("updated");
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "user_message",
+          userMessage: expect.objectContaining({ id, content: "original" }),
+        }),
+        expect.objectContaining({
+          type: "user_message_updated",
+          userMessage: expect.objectContaining({ id, content: "updated" }),
+        }),
+        { type: "user_message_discarded", id },
+      ]));
+      expect(bus.getSnapshot().userMessages).toEqual([]);
     });
 
     it("starts a fresh turn while retaining completed run entries", () => {

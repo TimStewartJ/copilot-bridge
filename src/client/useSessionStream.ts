@@ -508,9 +508,31 @@ function createAssistantEntry(
   };
 }
 
+function createUserEntry(value: unknown): ChatEntry | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
+    return null;
+  }
+  return {
+    id: `live-user-${value.id}`,
+    type: "message",
+    role: "user",
+    content: value.content,
+    ...(Array.isArray(value.attachments) ? { attachments: value.attachments as Attachment[] } : {}),
+    ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
+    ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
+  };
+}
+
 function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: string): ChatEntry[] {
   const turnId = getEventTurnId(event);
   const entriesByKey = new Map<string, ChatEntry>();
+  if (Array.isArray(event.userMessages)) {
+    for (const rawMessage of event.userMessages) {
+      if (!isRecord(rawMessage) || typeof rawMessage.id !== "string") continue;
+      const entry = createUserEntry(rawMessage);
+      if (entry) entriesByKey.set(`user:${rawMessage.id}`, entry);
+    }
+  }
   if (Array.isArray(event.assistantSegments)) {
     for (const rawSegment of event.assistantSegments) {
       if (!isRecord(rawSegment) || typeof rawSegment.id !== "string" || typeof rawSegment.content !== "string") continue;
@@ -614,6 +636,13 @@ function upsertLiveToolEntry(entries: ChatEntry[], tool: ToolCall): ChatEntry[] 
 function appendUniqueEntry(entries: ChatEntry[], entry: ChatEntry): ChatEntry[] {
   if (entry.id && entries.some((candidate) => candidate.id === entry.id)) return entries;
   return [...entries, entry];
+}
+
+function upsertLiveEntry(entries: ChatEntry[], next: ChatEntry): ChatEntry[] {
+  if (!next.id) return [...entries, next];
+  const index = entries.findIndex((entry) => entry.id === next.id);
+  if (index < 0) return [...entries, next];
+  return entries.map((entry, entryIndex) => entryIndex === index ? next : entry);
 }
 
 export function useSessionStream(
@@ -776,6 +805,44 @@ export function useSessionStream(
           isStreaming: true,
           activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
         }));
+        return;
+      }
+      if (eventType === "user_message" || eventType === "user_message_updated") {
+        const entry = createUserEntry(event.userMessage);
+        if (entry) {
+          setStreamState((current) => ({
+            ...current,
+            liveEntries: upsertLiveEntry(current.liveEntries, entry),
+            hadVisibleOutput: true,
+          }));
+        }
+        return;
+      }
+      if (eventType === "user_message_committed") {
+        const id = optionalString(event.id);
+        if (!id) return;
+        setStreamState((current) => ({
+          ...current,
+          liveEntries: current.liveEntries.map((entry) => entry.id === `live-user-${id}`
+            ? {
+                ...entry,
+                ...(optionalString(event.sourceEventId)
+                  ? { sourceEventId: optionalString(event.sourceEventId) }
+                  : {}),
+                ...(optionalString(event.timestamp) ? { timestamp: optionalString(event.timestamp) } : {}),
+              }
+            : entry),
+        }));
+        return;
+      }
+      if (eventType === "user_message_discarded") {
+        const id = optionalString(event.id);
+        if (id) {
+          setStreamState((current) => ({
+            ...current,
+            liveEntries: current.liveEntries.filter((entry) => entry.id !== `live-user-${id}`),
+          }));
+        }
         return;
       }
       if (eventType === "intent") {

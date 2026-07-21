@@ -42,6 +42,7 @@ describe("SessionManager pendingPrompt lifecycle", () => {
       }),
       send: vi.fn(async () => {
         handler?.({
+          id: "user-event-1",
           type: "user.message",
           data: { content: "hello there" },
           timestamp: "2026-04-11T00:00:00.000Z",
@@ -63,6 +64,14 @@ describe("SessionManager pendingPrompt lifecycle", () => {
       expect(session.send).toHaveBeenCalledTimes(1);
     });
     expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
+    expect(bus?.getSnapshot().userMessages).toMatchObject([
+      {
+        content: "hello there",
+        pending: false,
+        sourceEventId: "user-event-1",
+        timestamp: "2026-04-11T00:00:00.000Z",
+      },
+    ]);
 
     releaseSend?.();
     await Promise.resolve();

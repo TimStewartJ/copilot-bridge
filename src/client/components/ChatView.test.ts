@@ -1300,9 +1300,9 @@ describe("ChatView history pagination", () => {
 });
 
 describe("ChatView steering sends", () => {
-  it("marks an optimistic user message pending until the server accepts it", async () => {
+  it("waits for the authoritative stream before rendering a sent user message", async () => {
     const sendAccepted = createDeferred<void>();
-    const { dom, act, cleanup, sendMessageMock } = await renderChatView({
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
       streamOverrides: {
         isStreaming: false,
         streamStatus: "idle",
@@ -1319,19 +1319,33 @@ describe("ChatView steering sends", () => {
         await waitTick();
       });
 
-      const pendingBubble = findAllByTag(dom.container, "DIV").find((candidate) => (
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent?.includes("waiting for server")
-      ));
-      expect(pendingBubble?.getAttribute("data-pending")).toBe("true");
+      ))).toHaveLength(0);
 
       await act(async () => {
         sendAccepted.resolve();
         await sendPromise;
         await waitTick();
       });
+      await render({
+        streamOverrides: {
+          liveEntries: [{
+            id: "live-user-1",
+            role: "user",
+            content: "waiting for server",
+          }],
+          isStreaming: true,
+          streamStatus: "thinking",
+        },
+      });
 
-      expect(pendingBubble?.getAttribute("data-pending")).toBe("false");
+      const streamedBubble = findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("waiting for server")
+      ));
+      expect(streamedBubble?.getAttribute("data-pending")).toBe("false");
     } finally {
       sendAccepted.resolve();
       await cleanup();
@@ -1357,6 +1371,93 @@ describe("ChatView steering sends", () => {
       });
 
       expect(sendMessageMock).toHaveBeenCalledWith("please adjust", undefined);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("replaces a streamed user bubble with its canonical message without duplication", async () => {
+    const { dom, act, cleanup, render } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        busy: true,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        await props.onSend("please adjust");
+        await waitTick();
+      });
+
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent === "please adjust"
+      ))).toHaveLength(0);
+
+      const streamedUser = {
+        id: "live-user-1",
+        role: "user" as const,
+        content: "please adjust",
+        sourceEventId: "canonical-user-event-1",
+      };
+      await render({
+        streamOverrides: {
+          liveEntries: [streamedUser],
+          isStreaming: true,
+          streamStatus: "streaming",
+        },
+      });
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent === "please adjust"
+      ))).toHaveLength(1);
+
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [
+          createMessage("entry-1"),
+          {
+            id: "canonical-user-1",
+            role: "user",
+            content: "please adjust",
+            sourceEventId: "canonical-user-event-1",
+          },
+        ],
+        busy: false,
+        total: 2,
+        warm: true,
+        hasMore: false,
+        coverage: {},
+      });
+      await render({
+        streamOverrides: {
+          liveEntries: [streamedUser],
+          isStreaming: false,
+          streamStatus: "idle",
+        },
+      });
+      await waitUntilAct(act, () => {
+        try {
+          findMessageWrapperByAnchorKey(dom.container, "canonical-user-1");
+          return true;
+        } catch {
+          return false;
+        }
+      });
+
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent === "please adjust"
+      ))).toHaveLength(1);
+      expect(findMessageWrapperByAnchorKey(dom.container, "canonical-user-1")).toBeDefined();
     } finally {
       await cleanup();
     }

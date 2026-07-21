@@ -21,6 +21,7 @@ import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
+import type { StartWorkAttachment } from "./session-attachment-routing.js";
 
 export type {
   NativeUserInputRequest,
@@ -86,6 +87,7 @@ export interface BusSnapshot {
   type: "snapshot";
   runId: string;
   accumulatedContent: string;
+  userMessages: ProjectedUserMessage[];
   assistantSegments: AssistantSegment[];
   activeTools: ActiveTool[];
   currentTurnTools: CurrentTurnTool[];
@@ -114,6 +116,15 @@ export interface AssistantSegment {
   id: string;
   content: string;
   turnId?: string;
+  sourceEventId?: string;
+  timestamp?: string;
+}
+
+export interface ProjectedUserMessage {
+  id: string;
+  content: string;
+  attachments?: StartWorkAttachment[];
+  pending: boolean;
   sourceEventId?: string;
   timestamp?: string;
 }
@@ -240,6 +251,7 @@ export class SessionEventBus {
   // Snapshot state — tracks the current in-flight turn
   private runId = randomUUID();
   private accumulatedContent = "";
+  private userMessages: ProjectedUserMessage[] = [];
   private assistantSegments: AssistantSegment[] = [];
   private activeTools: ActiveTool[] = [];
   private currentTurnTools: CurrentTurnTool[] = [];
@@ -276,15 +288,75 @@ export class SessionEventBus {
     return this.intentText;
   }
 
-  /** Store the user prompt so late-connecting clients can recover it */
-  setPendingPrompt(prompt: string): void {
+  /** Add a server-owned user entry before the SDK persists it. */
+  setPendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): string {
+    const userMessage: ProjectedUserMessage = {
+      id: randomUUID(),
+      content: prompt,
+      pending: true,
+      ...(attachments?.length ? { attachments: structuredClone(attachments) } : {}),
+    };
+    this.userMessages = [...this.userMessages, userMessage];
+    this.entryOrder = [...this.entryOrder, `user:${userMessage.id}`];
     this.pendingPrompt = prompt;
+    this.broadcast({ type: "user_message", userMessage: structuredClone(userMessage) });
+    return userMessage.id;
   }
 
-  /** Stop advertising reconnect recovery once the prompt is durably persisted. */
-  clearPendingPrompt(expectedPrompt?: string): void {
-    if (expectedPrompt !== undefined && this.pendingPrompt !== expectedPrompt) return;
-    this.pendingPrompt = undefined;
+  /** Replace the newest uncommitted prompt while preserving its stable live identity. */
+  replacePendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): void {
+    const index = this.findPendingPromptIndex(undefined, true);
+    if (index < 0) {
+      this.setPendingPrompt(prompt, attachments);
+      return;
+    }
+    const current = this.userMessages[index]!;
+    const next: ProjectedUserMessage = {
+      ...current,
+      content: prompt,
+      ...(attachments?.length
+        ? { attachments: structuredClone(attachments) }
+        : current.attachments
+          ? { attachments: current.attachments }
+          : {}),
+    };
+    this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
+    this.pendingPrompt = prompt;
+    this.broadcast({ type: "user_message_updated", userMessage: structuredClone(next) });
+  }
+
+  /** Commit the oldest matching pending prompt in FIFO order. */
+  commitPendingPrompt(expectedPrompt?: string, sourceEventId?: string, timestamp?: string): void {
+    const index = this.findPendingPromptIndex(expectedPrompt, false);
+    if (index < 0) return;
+    const current = this.userMessages[index]!;
+    const next: ProjectedUserMessage = {
+      ...current,
+      pending: false,
+      ...(sourceEventId ? { sourceEventId } : {}),
+      ...(timestamp ? { timestamp } : {}),
+    };
+    this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
+    this.refreshPendingPrompt();
+    this.broadcast({
+      type: "user_message_committed",
+      id: next.id,
+      pending: false,
+      sourceEventId,
+      timestamp,
+    });
+  }
+
+  /** Remove the newest matching pending prompt when delivery fails. */
+  discardPendingPrompt(expectedPrompt?: string): void {
+    const index = this.findPendingPromptIndex(expectedPrompt, true);
+    if (index < 0) return;
+    const removed = this.userMessages[index];
+    if (!removed) return;
+    this.userMessages = this.userMessages.filter((_, entryIndex) => entryIndex !== index);
+    this.entryOrder = this.entryOrder.filter((key) => key !== `user:${removed.id}`);
+    this.refreshPendingPrompt();
+    this.broadcast({ type: "user_message_discarded", id: removed.id });
   }
 
   setContextSummary(summary: SessionContextSummary | null): void {
@@ -367,6 +439,14 @@ export class SessionEventBus {
       event = { ...event, turnId };
     } else if (this.currentTurnId && isTurnScopedStreamEvent(event) && !getStreamTurnId(event)) {
       event = { ...event, turnId: this.currentTurnId };
+    }
+    if (
+      event.type === "done"
+      || event.type === "error"
+      || event.type === "aborted"
+      || event.type === "shutdown"
+    ) {
+      this.finalizePendingUserMessages();
     }
 
     // Update snapshot state based on event type
@@ -650,7 +730,10 @@ export class SessionEventBus {
         break;
     }
 
-    // Broadcast to live listeners
+    this.broadcast(event);
+  }
+
+  private broadcast(event: StreamEvent): void {
     for (const listener of this.listeners) {
       try {
         listener(event);
@@ -664,6 +747,7 @@ export class SessionEventBus {
       type: "snapshot",
       runId: this.runId,
       accumulatedContent: this.accumulatedContent,
+      userMessages: this.userMessages.map((message) => structuredClone(message)),
       assistantSegments: this.assistantSegments.map((segment) => ({ ...segment })),
       activeTools: [...this.activeTools],
       currentTurnTools: [...this.currentTurnTools],
@@ -715,6 +799,7 @@ export class SessionEventBus {
   reset(): void {
     this.runId = randomUUID();
     this.resetLiveTurnState();
+    this.userMessages = [];
     this.assistantSegments = [];
     this.visuals = [];
     this.entryOrder = [];
@@ -756,6 +841,30 @@ export class SessionEventBus {
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;
     this.cancelCleanup();
+  }
+
+  private findPendingPromptIndex(expectedPrompt: string | undefined, reverse: boolean): number {
+    if (reverse) {
+      for (let index = this.userMessages.length - 1; index >= 0; index -= 1) {
+        const message = this.userMessages[index]!;
+        if (message.pending && (expectedPrompt === undefined || message.content === expectedPrompt)) return index;
+      }
+      return -1;
+    }
+    return this.userMessages.findIndex((message) => (
+      message.pending && (expectedPrompt === undefined || message.content === expectedPrompt)
+    ));
+  }
+
+  private refreshPendingPrompt(): void {
+    this.pendingPrompt = [...this.userMessages].reverse().find((message) => message.pending)?.content;
+  }
+
+  private finalizePendingUserMessages(): void {
+    this.userMessages = this.userMessages.map((message) => (
+      message.pending ? { ...message, pending: false } : message
+    ));
+    this.pendingPrompt = undefined;
   }
 
   cancelCleanup(): void {
