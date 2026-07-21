@@ -111,6 +111,29 @@ describe("session-meta-store", () => {
     expect(store.listMeta()["session-1"]?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
   });
 
+  it("persists and clears bridge-synthesized terminal overlays", () => {
+    store.setTerminalOverlay("session-1", {
+      type: "aborted",
+      runId: "run-1",
+      turnId: "turn-1",
+      content: "Partial answer",
+      timestamp: "2026-07-21T17:00:00.000Z",
+    });
+
+    expect(store.getTerminalOverlay("session-1")).toEqual({
+      type: "aborted",
+      runId: "run-1",
+      turnId: "turn-1",
+      content: "Partial answer",
+      timestamp: "2026-07-21T17:00:00.000Z",
+    });
+    expect(store.getMeta("session-1")?.terminalOverlay?.type).toBe("aborted");
+
+    store.clearTerminalOverlay("session-1");
+    expect(store.getTerminalOverlay("session-1")).toBeUndefined();
+    expect(store.getMeta("session-1")).toBeUndefined();
+  });
+
   it("listSessionIdsBySchedule returns sessions for a schedule", () => {
     store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
     store.recordScheduleRun("sched-a", "s2", "2026-01-02T00:00:00.000Z");

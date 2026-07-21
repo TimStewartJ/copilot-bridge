@@ -1,5 +1,5 @@
-import { createElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createElement, useState } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const telemetryBatcherMock = vi.hoisted(() => ({
   enqueue: vi.fn(),
@@ -13,88 +13,120 @@ vi.mock("./telemetry-batcher", () => ({
   createTelemetryBatcher: () => telemetryBatcherMock,
 }));
 
+import type { ChatEntry } from "./api";
+import type { SessionHistoryCoverage } from "../shared/session-stream.js";
+import {
+  buildSnapshotToolState,
+  buildTerminalToolEntries,
+  bufferPendingToolPrelude,
+  createVisualEntryFromPublishedEvent,
+  getKnownToolName,
+  materializePendingTool,
+  resolvePendingToolName,
+  useSessionStream,
+  type PendingTool,
+} from "./useSessionStream";
 import {
   createReactDomHarness,
   waitTick,
   waitUntilAct,
   type Act,
 } from "./test-react-harness";
-import type { Attachment, ChatEntry, PendingUserInputRequestView } from "./api";
-import type { PendingTool } from "./useSessionStream";
-import {
-  buildSnapshotToolState,
-  buildTerminalToolEntries,
-  bufferPendingToolPrelude,
-  collectTerminalPendingTools,
-  createVisualEntryFromPublishedEvent,
-  getKnownToolName,
-  materializePendingTool,
-  resolvePendingToolName,
-  useSessionStream,
-} from "./useSessionStream";
 
-function createPendingTool(toolCallId: string, partial: Partial<PendingTool> = {}): PendingTool {
-  return {
-    toolCallId,
-    name: partial.name ?? "bash",
-    ...partial,
-  };
-}
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
 
-type SessionStreamState = ReturnType<typeof useSessionStream>;
-
-function createControlledSseResponse() {
-  const encoder = new TextEncoder();
-  let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const body = new ReadableStream<Uint8Array>({
-    start(nextController) {
-      controller = nextController;
-    },
+  readonly url: string;
+  readyState = MockEventSource.CONNECTING;
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  close = vi.fn(() => {
+    this.readyState = MockEventSource.CLOSED;
   });
 
-  return {
-    response: { ok: true, body } as unknown as Response,
-    emit(event: unknown) {
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-    },
-    close() {
-      controller.close();
-    },
-  };
+  constructor(url: string | URL) {
+    this.url = String(url);
+    MockEventSource.instances.push(this);
+  }
+
+  open() {
+    this.readyState = MockEventSource.OPEN;
+    this.onopen?.(new Event("open"));
+  }
+
+  emit(event: unknown) {
+    this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+  }
+
+  fail() {
+    this.readyState = MockEventSource.CONNECTING;
+    this.onerror?.(new Event("error"));
+  }
+
+  failClosed() {
+    this.readyState = MockEventSource.CLOSED;
+    this.onerror?.(new Event("error"));
+  }
 }
 
-function jsonResponse(body: unknown): Response {
-  return {
-    ok: true,
-    json: async () => body,
-  } as Response;
-}
+type HookState = ReturnType<typeof useSessionStream>;
 
-async function withSessionStreamHarness(
+async function withHarness(
   run: (helpers: {
-    getState: () => SessionStreamState;
-    entriesAppended: ReturnType<typeof vi.fn<(entries: ChatEntry[]) => void>>;
+    getState: () => HookState;
+    getSource: () => MockEventSource;
+    settled: ReturnType<typeof vi.fn<() => void>>;
+    titleChanged: ReturnType<typeof vi.fn<() => void>>;
+    setCoverage: (coverage: SessionHistoryCoverage) => void;
+    setSessionId: (sessionId: string | null) => void;
     act: Act;
   }) => Promise<void>,
-): Promise<void> {
+) {
   const harness = await createReactDomHarness();
-  let currentState: SessionStreamState | null = null;
-  const getState = () => {
-    if (!currentState) throw new Error("Stream harness has not rendered");
-    return currentState;
-  };
+  let state: HookState | null = null;
+  let updateCoverage: ((coverage: SessionHistoryCoverage) => void) | null = null;
+  let updateSessionId: ((sessionId: string | null) => void) | null = null;
+  const settled = vi.fn<() => void>();
+  const titleChanged = vi.fn<() => void>();
 
-  const entriesAppended = vi.fn<(entries: ChatEntry[]) => void>();
-
-  function StreamHarness() {
-    currentState = useSessionStream("session-1", entriesAppended, vi.fn());
+  function TestComponent() {
+    const [coverage, setCoverage] = useState<SessionHistoryCoverage>({});
+    const [sessionId, setSessionId] = useState<string | null>("session-1");
+    updateCoverage = setCoverage;
+    updateSessionId = setSessionId;
+    state = useSessionStream(sessionId, settled, titleChanged, coverage);
     return null;
   }
 
   try {
-    await harness.render(createElement(StreamHarness));
-    await waitUntilAct(harness.act, () => currentState !== null);
-    await run({ getState, entriesAppended, act: harness.act });
+    await harness.render(createElement(TestComponent));
+    await waitUntilAct(harness.act, () => state !== null);
+    await run({
+      getState: () => {
+        if (!state) throw new Error("Hook is not rendered");
+        return state;
+      },
+      getSource: () => {
+        const source = MockEventSource.instances.at(-1);
+        if (!source) throw new Error("No EventSource was created");
+        return source;
+      },
+      settled,
+      titleChanged,
+      setCoverage: (coverage) => {
+        if (!updateCoverage) throw new Error("Coverage setter is unavailable");
+        updateCoverage(coverage);
+      },
+      setSessionId: (sessionId) => {
+        if (!updateSessionId) throw new Error("Session setter is unavailable");
+        updateSessionId(sessionId);
+      },
+      act: harness.act,
+    });
   } finally {
     await harness.cleanup();
   }
@@ -102,894 +134,422 @@ async function withSessionStreamHarness(
 
 async function emitAndWait(
   act: Act,
-  sse: ReturnType<typeof createControlledSseResponse>,
+  source: MockEventSource,
   event: unknown,
   predicate: () => boolean,
 ) {
   await act(async () => {
-    sse.emit(event);
+    source.emit(event);
   });
   await waitUntilAct(act, predicate);
 }
 
+beforeEach(() => {
+  MockEventSource.instances = [];
+  vi.stubGlobal("EventSource", MockEventSource);
+  telemetryBatcherMock.enqueue.mockClear();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  if (vi.isFakeTimers()) {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  }
 });
 
-describe("useSessionStream send modes", () => {
-  it("posts autopilot mode and tracks it while opening the live stream", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.fn()
-        .mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response)
-        .mockResolvedValueOnce(sse.response);
-      vi.stubGlobal("fetch", fetchMock);
+describe("useSessionStream EventSource lifecycle", () => {
+  it("sends a message and opens the session EventSource", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "accepted" }),
+      } as Response);
 
       await act(async () => {
-        await getState().sendMessage("keep going", undefined, "autopilot");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 2);
-
-      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/chat");
-      expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
-        sessionId: "session-1",
-        prompt: "keep going",
-        mode: "autopilot",
-      });
-      expect(getState().pendingOrigin).toBe("message");
-      expect(getState().runMode).toBe("autopilot");
-    });
-  });
-});
-
-describe("useSessionStream terminal completions", () => {
-  it("renders terminal completion metadata as a completion entry instead of an assistant bubble", async () => {
-    await withSessionStreamHarness(async ({ getState, entriesAppended, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      await emitAndWait(act, sse, {
-        type: "done",
-        content: "Task summary",
-        timestamp: "2026-04-30T12:00:00.000Z",
-        turnId: "turn-1",
-        terminalCompletion: {
-          content: "Task summary",
-          title: "Task complete",
-          status: "success",
-          sourceEventType: "session.task_complete",
-        },
-      }, () => entriesAppended.mock.calls.some(([entries]) => entries.some((entry) => entry.type === "completion")));
-
-      const appendedEntries = entriesAppended.mock.calls.flatMap(([entries]) => entries);
-      expect(appendedEntries).toMatchObject([
-        {
-          type: "completion",
-          content: "Task summary",
-          turnId: "turn-1",
-          timestamp: "2026-04-30T12:00:00.000Z",
-          completion: {
-            title: "Task complete",
-            status: "success",
-            sourceEventType: "session.task_complete",
-          },
-        },
-      ]);
-      expect(appendedEntries.some((entry) =>
-        entry.type !== "completion"
-        && entry.type !== "tool"
-        && entry.type !== "visual"
-        && entry.content === "Task summary")).toBe(false);
-
-      await act(async () => {
-        sse.close();
-        await waitTick();
-      });
-    });
-  });
-
-  it("renders a terminal completion carried by an aborted terminal instead of stopped text", async () => {
-    await withSessionStreamHarness(async ({ getState, entriesAppended, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      await emitAndWait(act, sse, {
-        type: "aborted",
-        content: "stopped midway",
-        timestamp: "2026-04-30T12:00:00.000Z",
-        turnId: "turn-1",
-        terminalCompletion: {
-          content: "All wrapped up",
-          title: "Task complete",
-          status: "success",
-          sourceEventType: "tool.execution_complete",
-        },
-      }, () => entriesAppended.mock.calls.some(([entries]) => entries.some((entry) => entry.type === "completion")));
-
-      const appendedEntries = entriesAppended.mock.calls.flatMap(([entries]) => entries);
-      expect(appendedEntries).toMatchObject([
-        {
-          type: "completion",
-          content: "All wrapped up",
-          turnId: "turn-1",
-          liveSource: "event",
-          completion: { sourceEventType: "tool.execution_complete" },
-        },
-      ]);
-      expect(appendedEntries.some((entry) =>
-        entry.type !== "completion"
-        && entry.type !== "tool"
-        && entry.type !== "visual"
-        && typeof entry.content === "string"
-        && entry.content.includes("stopped midway"))).toBe(false);
-
-      await act(async () => {
-        sse.close();
-        await waitTick();
-      });
-    });
-  });
-
-  it("renders a terminal completion forwarded by a reconnect snapshot as a snapshot-sourced entry", async () => {
-    await withSessionStreamHarness(async ({ getState, entriesAppended, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      await emitAndWait(act, sse, {
-        type: "error",
-        message: "boom",
-        timestamp: "2026-04-30T12:00:00.000Z",
-        turnId: "turn-7",
-        fromSnapshot: true,
-        terminalCompletion: {
-          content: "Completed before failure",
-          title: "Task complete",
-          status: "success",
-          sourceEventType: "tool.execution_complete",
-        },
-      }, () => entriesAppended.mock.calls.some(([entries]) => entries.some((entry) => entry.type === "completion")));
-
-      const appendedEntries = entriesAppended.mock.calls.flatMap(([entries]) => entries);
-      expect(appendedEntries).toMatchObject([
-        {
-          type: "completion",
-          content: "Completed before failure",
-          turnId: "turn-7",
-          liveSource: "snapshot",
-        },
-      ]);
-      expect(appendedEntries.some((entry) =>
-        entry.type !== "completion"
-        && entry.type !== "tool"
-        && entry.type !== "visual"
-        && typeof entry.content === "string"
-        && entry.content.includes("Error"))).toBe(false);
-
-      await act(async () => {
-        sse.close();
-        await waitTick();
-      });
-    });
-  });
-});
-
-describe("buildTerminalToolEntries", () => {
-  it("marks terminal tool rows done on successful turn completion", () => {
-    const entries = buildTerminalToolEntries([
-      createPendingTool("tool-1", { turnId: "turn-1", progressText: "Finishing up" }),
-    ], "done", "2026-04-24T00:00:00.000Z");
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        turnId: "turn-1",
-        liveSource: "event",
-        toolCall: {
-          toolCallId: "tool-1",
-          progressText: "Finishing up",
-          success: true,
-          completedAt: "2026-04-24T00:00:00.000Z",
-        },
-      },
-    ]);
-  });
-
-  it("marks terminal tool rows failed on interrupted turns", () => {
-    const entries = buildTerminalToolEntries([
-      createPendingTool("tool-2", { progressText: "Still running" }),
-    ], "shutdown", "2026-04-24T00:00:01.000Z");
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        liveSource: "event",
-        toolCall: {
-          toolCallId: "tool-2",
-          progressText: "Still running",
-          success: false,
-          completedAt: "2026-04-24T00:00:01.000Z",
-        },
-      },
-    ]);
-  });
-});
-
-describe("buffered pending tool helpers", () => {
-  it("applies pre-start progress once tool_start metadata arrives later", () => {
-    const prelude = bufferPendingToolPrelude(undefined, {
-      toolCallId: "tool-1",
-      name: getKnownToolName("unknown"),
-      progressText: "Running tests...",
-    });
-
-    const started = materializePendingTool({
-      toolCallId: "tool-1",
-      name: resolvePendingToolName("bash", prelude),
-    }, prelude);
-
-    expect(started).toMatchObject({
-      toolCallId: "tool-1",
-      name: "bash",
-      progressText: "Running tests...",
-    });
-  });
-
-  it("keeps a meaningful pre-start name when earlier updates already identified the tool", () => {
-    const prelude = bufferPendingToolPrelude(undefined, {
-      toolCallId: "tool-2",
-      name: getKnownToolName("🤖 Explore agent"),
-      progressText: "Searching files...",
-      isSubAgent: true,
-    });
-
-    const started = materializePendingTool({
-      toolCallId: "tool-2",
-      name: resolvePendingToolName(undefined, prelude),
-      isSubAgent: undefined,
-    }, prelude);
-
-    expect(started).toMatchObject({
-      toolCallId: "tool-2",
-      name: "🤖 Explore agent",
-      progressText: "Searching files...",
-      isSubAgent: true,
-    });
-  });
-
-  it("keeps buffered pre-start tools when terminalizing alongside started tools", () => {
-    const tools = collectTerminalPendingTools(
-      [createPendingTool("tool-2", { name: "bash", progressText: "Running" })],
-      [createPendingTool("tool-2", { name: "bash", progressText: "Running" })],
-      [bufferPendingToolPrelude(undefined, {
-        toolCallId: "tool-1",
-        progressText: "Waiting for start",
-      })],
-    );
-
-    expect(tools).toMatchObject([
-      {
-        toolCallId: "tool-2",
-        name: "bash",
-        progressText: "Running",
-      },
-      {
-        toolCallId: "tool-1",
-        name: "unknown",
-        progressText: "Waiting for start",
-      },
-    ]);
-  });
-});
-
-describe("createVisualEntryFromPublishedEvent", () => {
-  it("preserves live Vega-Lite visual kind and source", () => {
-    const entry = createVisualEntryFromPublishedEvent({
-      artifactId: "artifact-1",
-      kind: "vega-lite",
-      title: "Chart",
-      displayName: "chart.vl.json",
-      mimeType: "application/vnd.vegalite+json",
-      size: 128,
-      url: "/api/sessions/s/visuals/artifact-1",
-      downloadUrl: "/api/sessions/s/visuals/artifact-1/download",
-      source: "{\"mark\":\"bar\"}",
-      timestamp: "2026-04-28T00:00:00.000Z",
-    });
-
-    expect(entry).toMatchObject({
-      id: "stream-visual-artifact-1",
-      type: "visual",
-      timestamp: "2026-04-28T00:00:00.000Z",
-      visual: {
-        artifactId: "artifact-1",
-        kind: "vega-lite",
-        title: "Chart",
-        source: "{\"mark\":\"bar\"}",
-      },
-    });
-  });
-
-  it("preserves live HTML visual kind and source", () => {
-    const entry = createVisualEntryFromPublishedEvent({
-      artifactId: "artifact-2",
-      kind: "html",
-      title: "Mockup",
-      url: "/api/sessions/s/visuals/artifact-2",
-      source: "<h1>Hello</h1>",
-    });
-
-    expect(entry?.visual).toMatchObject({
-      artifactId: "artifact-2",
-      kind: "html",
-      mimeType: "text/html",
-      source: "<h1>Hello</h1>",
-    });
-  });
-
-  it("returns null for malformed live visual events", () => {
-    expect(createVisualEntryFromPublishedEvent({ artifactId: "artifact-3" })).toBeNull();
-    expect(createVisualEntryFromPublishedEvent({ url: "/missing-id" })).toBeNull();
-  });
-});
-
-describe("useSessionStream user input state", () => {
-  it("tracks summary-only context updates from the live stream", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      await emitAndWait(act, sse, {
-        type: "context_update",
-        summary: { tokensUsed: 12_000, contextWindow: 100_000, usageRatio: 0.12 },
-      }, () => getState().contextSummary?.tokensUsed === 12_000);
-
-      expect(getState().contextSummary).toMatchObject({
-        tokensUsed: 12_000,
-        contextWindow: 100_000,
-        usageRatio: 0.12,
-      });
-      await act(async () => {
-        sse.close();
-        await waitTick();
-      });
-    });
-  });
-
-  it("hydrates context summary from reconnect snapshots", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      await emitAndWait(act, sse, {
-        type: "snapshot",
-        accumulatedContent: "",
-        activeTools: [],
-        intentText: "",
-        complete: false,
-        contextSummary: { tokensUsed: 24_000, contextWindow: 120_000, usageRatio: 0.2 },
-      }, () => getState().contextSummary?.tokensUsed === 24_000);
-
-      expect(getState().contextSummary).toMatchObject({
-        tokensUsed: 24_000,
-        contextWindow: 120_000,
-        usageRatio: 0.2,
-      });
-      await act(async () => {
-        sse.close();
-        await waitTick();
-      });
-    });
-  });
-
-  it("hydrates pending requests from snapshots and removes answered or canceled requests", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      const firstRequest: PendingUserInputRequestView = {
-        requestId: "request-1",
-        question: "Pick a lane",
-        choices: ["fast", "safe"],
-        allowFreeform: false,
-        requestedAt: "2026-04-29T12:00:00.000Z",
-      };
-      await emitAndWait(act, sse, {
-        type: "snapshot",
-        accumulatedContent: "",
-        activeTools: [],
-        intentText: "",
-        complete: false,
-        pendingUserInputs: [firstRequest],
-      }, () => getState().pendingUserInputs.length === 1);
-
-      expect(getState().pendingUserInputs).toEqual([firstRequest]);
-
-      await emitAndWait(act, sse, {
-        type: "user_input_requested",
-        requestId: "request-2",
-        question: "Explain why",
-        allowFreeform: true,
-        timestamp: "2026-04-29T12:00:01.000Z",
-      }, () => getState().pendingUserInputs.length === 2);
-
-      expect(getState().pendingUserInputs).toMatchObject([
-        firstRequest,
-        {
-          requestId: "request-2",
-          question: "Explain why",
-          allowFreeform: true,
-          requestedAt: "2026-04-29T12:00:01.000Z",
-        },
-      ]);
-
-      await emitAndWait(act, sse, {
-        type: "user_input_answered",
-        requestId: "request-1",
-        answer: "fast",
-        wasFreeform: false,
-      }, () => getState().pendingUserInputs.length === 1);
-
-      expect(getState().pendingUserInputs.map((request) => request.requestId)).toEqual(["request-2"]);
-
-      await emitAndWait(act, sse, {
-        type: "user_input_canceled",
-        requestId: "request-2",
-        reason: "session_ended",
-      }, () => getState().pendingUserInputs.length === 0);
-
-      expect(getState().pendingUserInputs).toEqual([]);
-      await act(async () => {
-        sse.close();
-        await waitTick();
+        await getState().sendMessage("hello", undefined, "autopilot");
       });
 
-    });
-  });
-
-  it("hydrates elicitation requests and preserves a visible cancellation notice", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      const reconnectSse = createControlledSseResponse();
-      const fetchMock = vi.spyOn(globalThis, "fetch")
-        .mockResolvedValueOnce(sse.response)
-        .mockResolvedValueOnce(reconnectSse.response);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      const pending = {
-        requestId: "el-1",
-        message: "Configure deployment",
-        mode: "form",
-        elicitationSource: "deployment-mcp",
-        requestedAt: "2026-07-13T12:00:00.000Z",
-        requestedSchema: {
-          type: "object",
-          properties: {
-            target: {
-              type: "string",
-              enum: ["staging", "production"],
-            },
-          },
-          required: ["target"],
-        },
-      };
-      await emitAndWait(act, sse, {
-        type: "snapshot",
-        accumulatedContent: "",
-        activeTools: [],
-        intentText: "",
-        complete: false,
-        pendingElicitations: [pending],
-      }, () => getState().pendingElicitations.length === 1);
-
-      expect(getState().pendingElicitations).toEqual([pending]);
-
-      await emitAndWait(act, sse, {
-        type: "elicitation_requested",
-        requestId: "el-url",
-        message: "Authorize provider",
-        mode: "url",
-        url: "https://example.com/authorize",
-        timestamp: "2026-07-13T12:00:01.000Z",
-      }, () => getState().pendingElicitations.length === 2);
-
-      expect(getState().pendingElicitations[1]).toEqual({
-        requestId: "el-url",
-        message: "Authorize provider",
-        mode: "url",
-        url: "https://example.com/authorize",
-        requestedAt: "2026-07-13T12:00:01.000Z",
-      });
-
-      await emitAndWait(act, sse, {
-        type: "elicitation_resolved",
-        requestId: "el-1",
-        action: "accept",
-      }, () => getState().pendingElicitations.length === 1);
-      await emitAndWait(act, sse, {
-        type: "elicitation_canceled",
-        requestId: "el-url",
-        reason: "session_ended",
-        timestamp: "2026-07-13T12:00:02.000Z",
-      }, () => getState().pendingElicitations.length === 0);
-
-      expect(getState().pendingElicitations).toEqual([]);
-      expect(getState().elicitationCancellation).toEqual({
-        requestId: "el-url",
-        question: "Authorize provider",
-        detail: "The run ended before this question was answered.",
-        timestamp: "2026-07-13T12:00:02.000Z",
-      });
-      await emitAndWait(act, sse, {
-        type: "done",
-      }, () => getState().streamStatus === "idle");
-      expect(getState().elicitationCancellation).toMatchObject({
-        requestId: "el-url",
-        detail: "The run ended before this question was answered.",
-      });
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 2);
-      await act(async () => {
-        reconnectSse.emit({
-          type: "snapshot",
-          complete: true,
-          terminalType: "done",
-        });
-        await waitTick();
-      });
-      expect(getState().elicitationCancellation).toMatchObject({
-        requestId: "el-url",
-        question: "Authorize provider",
-      });
-      await act(async () => {
-        sse.close();
-        reconnectSse.close();
-        await waitTick();
-      });
-    });
-  });
-});
-
-describe("useSessionStream chat sends", () => {
-  it("uses the chat wrapper and connects the stream for ordinary accepted sends", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-        const url = String(input);
-        if (url === "/api/chat") {
-          return jsonResponse({ status: "accepted" });
-        }
-        if (url === "/api/sessions/session-1/stream") {
-          return sse.response;
-        }
-        throw new Error(`Unexpected fetch URL: ${url}`);
-      });
-      vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
-
-      await act(async () => {
-        await getState().sendMessage("hello");
-      });
-
+      expect(fetchMock).toHaveBeenCalledOnce();
       expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
         sessionId: "session-1",
         prompt: "hello",
+        mode: "autopilot",
       });
-      expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
-        "/api/chat",
-        "/api/sessions/session-1/stream",
-      ]);
-      expect(getState().pendingOrigin).toBe("message");
-
-      await act(async () => {
-        sse.close();
-        await waitTick();
+      expect(getSource().url).toBe("/api/sessions/session-1/stream");
+      expect(getState()).toMatchObject({
+        pendingOrigin: "message",
+        runMode: "autopilot",
+        streamStatus: "sending",
       });
     });
   });
 
-  it("does not reconnect or clear live stream state for steered sends", async () => {
-    await withSessionStreamHarness(async ({ getState, act }) => {
-      const sse = createControlledSseResponse();
-      let streamSignal: AbortSignal | undefined;
-      const attachments: Attachment[] = [
-        {
-          type: "file",
-          path: "attachments/screenshot.png",
-          displayName: "screenshot.png",
-        },
-      ];
-      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url === "/api/sessions/session-1/stream") {
-          streamSignal = init?.signal ?? undefined;
-          return sse.response;
-        }
-        if (url === "/api/chat") {
-          return jsonResponse({ status: "accepted", mode: "steered" });
-        }
-        throw new Error(`Unexpected fetch URL: ${url}`);
-      });
-      vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
-
-      await act(async () => {
-        getState().reconnect("session-1");
-      });
-      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
-
-      const pendingRequest: PendingUserInputRequestView = {
-        requestId: "request-1",
-        question: "Pick a lane",
-        allowFreeform: true,
-      };
-      await emitAndWait(act, sse, {
+  it("keeps live state while EventSource reconnects after a transport error", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
         type: "snapshot",
-        accumulatedContent: "Working",
-        activeTools: [
-          {
-            toolCallId: "tool-1",
-            name: "bash",
-            progressText: "Running",
-          },
-        ],
-        intentText: "Investigating",
+        runId: "run-1",
         complete: false,
-        pendingUserInputs: [pendingRequest],
-      }, () => getState().streamingContent === "Working");
+        turnId: "provider-turn-1",
+        accumulatedContent: "working",
+        assistantSegments: [],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: [],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      }, () => getState().streamingContent === "working");
 
-      await act(async () => {
-        await getState().sendMessage("please adjust", attachments);
-      });
+      await act(async () => source.fail());
 
-      expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
-        sessionId: "session-1",
-        prompt: "please adjust",
-        attachments,
-      });
-      expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
-        "/api/sessions/session-1/stream",
-        "/api/chat",
-      ]);
-      expect(streamSignal?.aborted).toBe(false);
+      expect(source.close).not.toHaveBeenCalled();
+      expect(MockEventSource.instances).toHaveLength(1);
       expect(getState()).toMatchObject({
-        streamingContent: "Working",
-        streamStatus: "streaming",
         isStreaming: true,
-        intentText: "Investigating",
-        pendingUserInputs: [pendingRequest],
-        activeTools: [
+        streamingContent: "working",
+      });
+    });
+  });
+
+  it("settles instead of sticking when EventSource reports a fatal close", async () => {
+    await withHarness(async ({ getState, getSource, settled, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await act(async () => source.failClosed());
+      await waitUntilAct(act, () => getState().streamStatus === "idle");
+
+      expect(source.close).toHaveBeenCalledOnce();
+      expect(settled).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("closes on terminal events and retains the overlay until disk coverage arrives", async () => {
+    await withHarness(async ({ getState, getSource, settled, titleChanged, setCoverage, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "thinking",
+        turnId: "provider-turn-1",
+      }, () => getState().streamStatus === "thinking");
+      await emitAndWait(act, source, {
+        type: "delta",
+        turnId: "provider-turn-1",
+        content: "Final answer",
+      }, () => getState().streamingContent === "Final answer");
+      await emitAndWait(act, source, {
+        type: "done",
+        turnId: "provider-turn-1",
+        sourceEventId: "terminal-event-1",
+        content: "Final answer",
+        timestamp: "2026-07-21T17:00:00.000Z",
+      }, () => getState().streamStatus === "idle");
+
+      expect(source.close).toHaveBeenCalledOnce();
+      expect(getState().terminalEventId).toBe("terminal-event-1");
+      expect(getState().liveEntries).toMatchObject([
+        {
+          role: "assistant",
+          content: "Final answer",
+          turnId: "provider-turn-1",
+          sourceEventId: "terminal-event-1",
+        },
+      ]);
+      expect(settled).toHaveBeenCalledOnce();
+      expect(titleChanged).toHaveBeenCalledOnce();
+
+      await act(async () => setCoverage({ latestTerminalEventId: "terminal-event-1" }));
+      await waitUntilAct(act, () => getState().liveEntries.length === 0);
+      expect(getState().terminalEventId).toBeUndefined();
+    });
+  });
+
+  it("replaces the whole live overlay from reconnect snapshots", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        runId: "run-1",
+        turnId: "provider-turn-1",
+        complete: false,
+        accumulatedContent: "",
+        assistantSegments: [
+          {
+            id: "assistant-event-1",
+            sourceEventId: "assistant-event-1",
+            turnId: "provider-turn-1",
+            content: "Before tool",
+          },
+        ],
+        activeTools: [],
+        currentTurnTools: [
           {
             toolCallId: "tool-1",
             name: "bash",
-            progressText: "Running",
+            turnId: "provider-turn-1",
+            success: true,
           },
         ],
-      });
+        visuals: [],
+        entryOrder: ["assistant:assistant-event-1", "tool:tool-1"],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      }, () => getState().liveEntries.length === 2);
 
-      await emitAndWait(act, sse, {
-        type: "delta",
-        content: " more",
-      }, () => getState().streamingContent === "Working more");
+      expect(getState().liveEntries.map((entry) => entry.type ?? "message")).toEqual(["message", "tool"]);
+
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        runId: "run-1",
+        turnId: "provider-turn-1",
+        complete: false,
+        accumulatedContent: "replacement",
+        assistantSegments: [],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: [],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      }, () => getState().streamingContent === "replacement");
+
+      expect(getState().liveEntries).toEqual([]);
+    });
+  });
+
+  it("settles deterministically when no live projection exists", async () => {
+    await withHarness(async ({ getState, getSource, settled, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, { type: "resync_required" }, () => getState().streamStatus === "idle");
+
+      expect(source.close).toHaveBeenCalledOnce();
+      expect(settled).toHaveBeenCalledOnce();
+      expect(getState().liveEntries).toEqual([]);
+    });
+  });
+
+  it("does not replace the active EventSource for steered sends", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "accepted", mode: "steered" }),
+      } as Response);
+
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        complete: false,
+        accumulatedContent: "working",
+        assistantSegments: [],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: [],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      }, () => getState().streamingContent === "working");
 
       await act(async () => {
-        sse.close();
+        await getState().sendMessage("adjust");
+      });
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(MockEventSource.instances).toHaveLength(1);
+      expect(source.close).not.toHaveBeenCalled();
+      expect(getState().streamingContent).toBe("working");
+    });
+  });
+
+  it("does not open an old session stream when navigation wins the send race", async () => {
+    await withHarness(async ({ getState, setSessionId, act }) => {
+      let resolveSend!: (response: Response) => void;
+      vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>((resolve) => {
+        resolveSend = resolve;
+      }));
+
+      let sendPromise!: Promise<void>;
+      await act(async () => {
+        sendPromise = getState().sendMessage("hello");
         await waitTick();
       });
+      await act(async () => {
+        setSessionId("session-2");
+        await waitTick();
+      });
+      resolveSend({
+        ok: true,
+        json: async () => ({ status: "accepted" }),
+      } as Response);
+      await act(async () => {
+        await sendPromise;
+      });
+
+      expect(MockEventSource.instances).toHaveLength(0);
+      expect(getState().streamStatus).toBe("idle");
     });
   });
 });
 
-describe("snapshot tool helpers", () => {
-  it("emits current-turn snapshot tools while activeTools drives active state", () => {
-    const state = buildSnapshotToolState({
-      turnId: "turn-1",
-      activeTools: [
-        {
-          toolCallId: "tool-active",
-          name: "bash",
-          progressText: "Running tests",
-        },
-      ],
-      currentTurnTools: [
-        {
-          toolCallId: "tool-done",
-          name: "view",
-          progressText: "Read file",
-          result: "contents",
-          success: true,
-          completedAt: "2026-04-24T00:00:00.000Z",
-          turnId: "turn-1",
-        },
-        {
-          toolCallId: "tool-active",
-          name: "bash",
-          progressText: "Running tests",
-        },
-      ],
-    }, "session-1");
+describe("useSessionStream projection events", () => {
+  it("hydrates and resolves pending interactions", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        complete: false,
+        accumulatedContent: "",
+        assistantSegments: [],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: [],
+        pendingUserInputs: [{
+          requestId: "input-1",
+          question: "Continue?",
+          allowFreeform: true,
+        }],
+        pendingElicitations: [{
+          requestId: "el-1",
+          message: "Choose",
+          mode: "url",
+          url: "https://example.com",
+        }],
+      }, () => getState().pendingUserInputs.length === 1);
 
-    expect(state.activeTools).toMatchObject([
-      {
-        toolCallId: "tool-active",
-        name: "bash",
-        progressText: "Running tests",
-      },
-    ]);
-    expect(state.currentTurnTools).toMatchObject([
-      {
-        toolCallId: "tool-done",
-        name: "view",
-        progressText: "Read file",
-        result: "contents",
-        success: true,
-        completedAt: "2026-04-24T00:00:00.000Z",
-      },
-      {
-        toolCallId: "tool-active",
-        name: "bash",
-        progressText: "Running tests",
-      },
-    ]);
-    expect(state.toolEntries).toMatchObject([
-      {
-        type: "tool",
-        liveSource: "snapshot",
-        turnId: "turn-1",
-        toolCall: {
-          toolCallId: "tool-done",
-          name: "view",
-          progressText: "Read file",
-          result: "contents",
-          success: true,
-          completedAt: "2026-04-24T00:00:00.000Z",
-        },
-      },
-      {
-        type: "tool",
-        liveSource: "snapshot",
-        turnId: "turn-1",
-        toolCall: {
-          toolCallId: "tool-active",
-          name: "bash",
-          progressText: "Running tests",
-        },
-      },
-    ]);
-  });
-
-  it("deduplicates repeated reconnect snapshot tools by tool call id", () => {
-    const state = buildSnapshotToolState({
-      turnId: "turn-1",
-      currentTurnTools: [
-        {
-          toolCallId: "tool-1",
-          name: "unknown",
-          progressText: "Starting",
-        },
-        {
-          toolCallId: "tool-1",
-          name: "bash",
-          progressText: "Still running",
-          result: "ok",
-          success: true,
-          completedAt: "2026-04-24T00:00:00.000Z",
-        },
-      ],
-    }, "session-1");
-
-    expect(state.currentTurnTools).toHaveLength(1);
-    expect(state.toolEntries).toHaveLength(1);
-    expect(state.currentTurnTools[0]).toMatchObject({
-      toolCallId: "tool-1",
-      name: "bash",
-      progressText: "Still running",
-      result: "ok",
-      success: true,
-      completedAt: "2026-04-24T00:00:00.000Z",
+      expect(getState().pendingElicitations).toHaveLength(1);
+      await emitAndWait(act, source, {
+        type: "user_input_answered",
+        requestId: "input-1",
+      }, () => getState().pendingUserInputs.length === 0);
+      await emitAndWait(act, source, {
+        type: "elicitation_canceled",
+        requestId: "el-1",
+        reason: "session_ended",
+      }, () => getState().pendingElicitations.length === 0);
+      expect(getState().elicitationCancellation).toMatchObject({
+        requestId: "el-1",
+        question: "Choose",
+      });
     });
   });
 
-  it("falls back to activeTools for older snapshots without currentTurnTools", () => {
+  it("keeps tool, assistant, and visual entries in event order", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "thinking",
+        turnId: "provider-turn-1",
+      }, () => getState().streamStatus === "thinking");
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        turnId: "provider-turn-1",
+        sourceEventId: "assistant-1",
+        content: "Checking",
+      }, () => getState().liveEntries.length === 1);
+      await emitAndWait(act, source, {
+        type: "tool_start",
+        turnId: "provider-turn-1",
+        sourceEventId: "tool-start-1",
+        toolCallId: "tool-1",
+        name: "bash",
+      }, () => getState().currentTurnTools.length === 1);
+      await emitAndWait(act, source, {
+        type: "tool_done",
+        turnId: "provider-turn-1",
+        sourceEventId: "tool-done-1",
+        toolCallId: "tool-1",
+        name: "bash",
+        success: true,
+        result: "ok",
+      }, () => getState().currentTurnTools[0]?.success === true);
+      await emitAndWait(act, source, {
+        type: "visual_published",
+        artifactId: "visual-1",
+        kind: "html",
+        title: "Preview",
+        displayName: "preview.html",
+        mimeType: "text/html",
+        size: 10,
+        url: "/visual-1",
+        downloadUrl: "/visual-1/download",
+      }, () => getState().liveEntries.length === 3);
+
+      expect(getState().liveEntries.map((entry) => entry.type ?? "message")).toEqual([
+        "message",
+        "tool",
+        "visual",
+      ]);
+    });
+  });
+});
+
+describe("stream projection helpers", () => {
+  it("preserves pre-start tool progress", () => {
+    const prelude = bufferPendingToolPrelude(undefined, {
+      toolCallId: "tool-1",
+      progressText: "Running",
+    });
+    expect(materializePendingTool({
+      toolCallId: "tool-1",
+      name: resolvePendingToolName("bash", prelude),
+    }, prelude)).toMatchObject({
+      name: "bash",
+      progressText: "Running",
+    });
+    expect(getKnownToolName("unknown")).toBeUndefined();
+  });
+
+  it("builds snapshot tools without hidden tools", () => {
     const state = buildSnapshotToolState({
-      turnId: "turn-1",
+      turnId: "provider-turn-1",
       activeTools: [
-        {
-          toolCallId: "tool-active",
-          name: "bash",
-          progressText: "Running",
-        },
+        { toolCallId: "visible", name: "bash" },
+        { toolCallId: "hidden", name: "report_intent" },
+      ],
+      currentTurnTools: [
+        { toolCallId: "visible", name: "bash", success: true },
+        { toolCallId: "hidden", name: "report_intent", success: true },
       ],
     }, "session-1");
+    expect(state.activeTools.map((tool) => tool.toolCallId)).toEqual(["visible"]);
+    expect(state.currentTurnTools).toMatchObject([{ toolCallId: "visible", success: true }]);
+  });
 
-    expect(state.activeTools).toHaveLength(1);
-    expect(state.currentTurnTools).toMatchObject([
-      {
-        toolCallId: "tool-active",
-        name: "bash",
-        progressText: "Running",
-      },
-    ]);
-    expect(state.toolEntries).toMatchObject([
+  it("marks incomplete tools at terminal boundaries", () => {
+    const tools: PendingTool[] = [{ toolCallId: "tool-1", name: "bash" }];
+    expect(buildTerminalToolEntries(tools, "shutdown", "2026-07-21T17:00:00.000Z")).toMatchObject([
       {
         type: "tool",
-        liveSource: "snapshot",
-        turnId: "turn-1",
         toolCall: {
-          toolCallId: "tool-active",
-          name: "bash",
-          progressText: "Running",
+          toolCallId: "tool-1",
+          success: false,
+          completedAt: "2026-07-21T17:00:00.000Z",
         },
       },
     ]);
   });
 
-  it("filters hidden tools from snapshot current-turn entries and active state", () => {
-    const state = buildSnapshotToolState({
-      activeTools: [
-        { toolCallId: "visible-active", name: "bash" },
-        { toolCallId: "intent-active", name: "report_intent" },
-      ],
-      currentTurnTools: [
-        { toolCallId: "intent", name: "report_intent" },
-        { toolCallId: "rename-local", name: "session_rename", args: { sessionId: "session-1" } },
-        { toolCallId: "visible", name: "bash" },
-      ],
-    }, "session-1");
-
-    expect(state.activeTools).toMatchObject([
-      { toolCallId: "visible-active", name: "bash" },
-    ]);
-    expect(state.currentTurnTools).toMatchObject([
-      { toolCallId: "visible", name: "bash" },
-    ]);
-    expect(state.toolEntries).toMatchObject([
-      {
-        type: "tool",
-        liveSource: "snapshot",
-        toolCall: {
-          toolCallId: "visible",
-          name: "bash",
-        },
+  it("normalizes live visual events", () => {
+    expect(createVisualEntryFromPublishedEvent({
+      artifactId: "visual-1",
+      kind: "vega-lite",
+      title: "Chart",
+      displayName: "chart.json",
+      url: "/visual-1",
+      source: "{\"mark\":\"bar\"}",
+    })).toMatchObject({
+      id: "live-visual-visual-1",
+      type: "visual",
+      visual: {
+        kind: "vega-lite",
+        source: "{\"mark\":\"bar\"}",
       },
-    ]);
+    });
   });
 });

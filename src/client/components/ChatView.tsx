@@ -23,7 +23,7 @@ import {
   type ToolCall,
   type UserInputAnswerEndpointPayload,
 } from "../api";
-import { appendLiveEntries, getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
+import { getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
@@ -35,6 +35,7 @@ import useLongPressMenu from "../hooks/useLongPressMenu";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
+import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
 import ElicitationCard from "./ElicitationCard";
@@ -490,6 +491,7 @@ export default function ChatView({
   const [pendingMessageIds, setPendingMessageIds] = useState<Set<string>>(() => new Set());
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsSupported, setSlashCommandsSupported] = useState(false);
+  const [historyCoverage, setHistoryCoverage] = useState<SessionHistoryCoverage>({});
   const slashCommandFetchKeyRef = useRef<string | null>(null);
   const {
     bind: bindMessageMenu,
@@ -606,23 +608,13 @@ export default function ChatView({
     autoLoadTimeoutRef.current = null;
   }, []);
 
-  const handleNewEntries = useCallback((newEntries: ChatEntry[]) => {
-    invalidateHistoryRefresh();
-    const withIds = newEntries.map((e, i) => ({
-      ...e,
-      id: e.id ?? `stream-${Date.now()}-${i}`,
-    }));
-    const previousEntries = entriesRef.current;
-    const nextEntries = appendLiveEntries(previousEntries, withIds);
-    if (nextEntries === previousEntries) return;
-    applyHistory(nextEntries, {
-      total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntries.length),
-      hasMore: firstItemIndex.current > 0,
-      isCanonical: false,
-    });
-  }, [applyHistory, invalidateHistoryRefresh]);
+  const handleStreamSettled = useCallback(() => {
+    onMessageSent();
+    loadAndReconnectRef.current({ background: true, replace: true });
+  }, [onMessageSent]);
 
   const {
+    liveEntries: streamLiveEntries = [],
     streamingContent,
     intentText,
     activeTools = [],
@@ -640,8 +632,15 @@ export default function ChatView({
     sendMessage,
     abortSession,
     reconnect,
-  } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
+    activeTurnId,
+  } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, historyCoverage);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
+
+  useLayoutEffect(() => {
+    if (!sessionId) return;
+    const liveReadThrough = getLatestEntryActivityTimestamp(streamLiveEntries);
+    if (liveReadThrough) onRenderedReadThrough?.(sessionId, liveReadThrough);
+  }, [onRenderedReadThrough, sessionId, streamLiveEntries]);
 
   useEffect(() => {
     if (!sessionId || loading || creating) {
@@ -903,6 +902,7 @@ export default function ChatView({
       setLoadMoreError(null);
       setShowJumpToLatest(false);
       setMcpStatus([]);
+      setHistoryCoverage({});
       setManualMcpOverride(null);
       cancelFollowScroll();
       clearProgrammaticScroll();
@@ -966,7 +966,7 @@ export default function ChatView({
 
       // Phase 1: Fast load messages from disk — don't wait for MCP status
       fetchMessagesFast(sessionId, { limit: INITIAL_PAGE_SIZE })
-        .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt }) => {
+        .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt, coverage }) => {
           if (controller.signal.aborted) return;
           if (requestId !== loadRequestIdRef.current) {
             return;
@@ -1024,6 +1024,7 @@ export default function ChatView({
               return;
             }
           }
+          setHistoryCoverage(coverage ?? {});
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
@@ -1539,33 +1540,34 @@ export default function ChatView({
   );
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
+  const liveTurnIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (activeTurnId) ids.add(activeTurnId);
+    for (const entry of streamLiveEntries) {
+      if (entry.turnId) ids.add(entry.turnId);
+    }
+    return ids;
+  }, [activeTurnId, streamLiveEntries]);
   const historicalEntries = useMemo(() => {
-    if ((!isStreaming && !creating) || liveToolCallIds.size === 0) return entries;
+    if (streamLiveEntries.length === 0 && !hasStreamingText && liveToolCallIds.size === 0) return entries;
     return entries.filter((entry) => (
-      entry.type !== "tool"
-      || !entry.toolCall
-      || !liveToolCallIds.has(entry.toolCall.toolCallId)
+      !entry.turnId
+      || !liveTurnIds.has(entry.turnId)
     ));
-  }, [creating, entries, isStreaming, liveToolCallIds]);
+  }, [entries, hasStreamingText, liveToolCallIds.size, liveTurnIds, streamLiveEntries.length]);
   const liveEntries = useMemo<ChatEntry[]>(() => {
-    const nextEntries: ChatEntry[] = liveToolCalls.map((tool, index) => ({
-      id: `live-tool-${tool.toolCallId}-${index}`,
-      type: "tool",
-      turnId: tool.turnId,
-      toolCall: tool,
-      liveSource: "snapshot",
-    }));
+    const nextEntries = [...streamLiveEntries];
     if (isStreaming && hasStreamingText) {
       nextEntries.push({
         id: LIVE_STREAMING_MESSAGE_ID,
         type: "message",
         role: "assistant",
         content: displayedStreamingContent,
-        turnId: liveToolCalls.find((tool) => tool.turnId)?.turnId,
+        turnId: activeTurnId,
       });
     }
     return nextEntries;
-  }, [displayedStreamingContent, hasStreamingText, isStreaming, liveToolCalls]);
+  }, [activeTurnId, displayedStreamingContent, hasStreamingText, isStreaming, streamLiveEntries]);
   const displayEntries = useMemo(
     () => liveEntries.length > 0 ? [...historicalEntries, ...liveEntries] : historicalEntries,
     [historicalEntries, liveEntries],

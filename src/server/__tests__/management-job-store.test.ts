@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openMemoryDatabase } from "../db.js";
@@ -14,7 +14,7 @@ import {
   runClaimedManagementJob,
   runManagementJobRunnerLoop,
 } from "../../management-job-runner.js";
-import { isRestartAlreadyInFlight } from "../restart-state.js";
+import * as restartState from "../restart-state.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { createStagingToolDefinitions } from "../staging-tools.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
@@ -245,7 +245,7 @@ describe("management job runner", () => {
           }
           return { success: true };
         },
-        shouldStopAfterJob: () => isRestartAlreadyInFlight(dataDir),
+        shouldStopAfterJob: () => restartState.isRestartAlreadyInFlight(dataDir),
       });
 
       const preview = store.list().find((j) => j.type === "staging_preview");
@@ -299,6 +299,7 @@ describe("staging management tool enqueue", () => {
     const { db, store, dataDir } = createStore("staging-tools");
     const stagingDir = join(dataDir, "worktree");
     mkdirSync(stagingDir, { recursive: true });
+    const restartSpy = vi.spyOn(restartState, "isRestartAlreadyInFlight").mockReturnValue(false);
     try {
       const ctx = { managementJobStore: store } as any;
       const tools = createStagingToolDefinitions(ctx);
@@ -328,6 +329,7 @@ describe("staging management tool enqueue", () => {
         input: { stagingDir, message: "Ship it" },
       });
     } finally {
+      restartSpy.mockRestore();
       db.close();
       rmSync(dataDir, { recursive: true, force: true });
     }

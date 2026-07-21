@@ -31,6 +31,7 @@ describe("Session manager routes", () => {
     expect(res.body).toHaveProperty("runState");
     expect(res.body).toHaveProperty("busy");
     expect(res.body).toHaveProperty("warm");
+    expect(res.body).toHaveProperty("coverage");
   });
 
   it("GET /api/sessions/:id/messages-fast returns runState for stalled sessions", async () => {
@@ -49,6 +50,7 @@ describe("Session manager routes", () => {
       total: 0,
       hasMore: false,
       lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      coverage: { latestEventId: "event-1" },
     });
 
     const res = await request(app).get("/api/sessions/test-id/messages-fast");
@@ -56,8 +58,39 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      coverage: { latestEventId: "event-1" },
       warm: false,
     });
+  });
+
+  it("GET /api/sessions/:id/stream returns a complete authoritative snapshot", async () => {
+    const bus = ctx.eventBusRegistry.getOrCreateBus("stream-complete");
+    bus.reset();
+    bus.emit({ type: "thinking", turnId: "provider-turn-1" });
+    bus.emit({ type: "done", content: "Done", sourceEventId: "terminal-1" });
+
+    const res = await request(app).get("/api/sessions/stream-complete/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    expect(res.text).toContain("\"type\":\"snapshot\"");
+    expect(res.text).toContain("\"terminalEventId\":\"terminal-1\"");
+  });
+
+  it("GET /api/sessions/:id/stream restores a persisted synthetic terminal overlay", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("synthetic-terminal", {
+      type: "aborted",
+      runId: "run-synthetic",
+      content: "Partial",
+      timestamp: "2026-07-21T17:00:00.000Z",
+    });
+
+    const res = await request(app).get("/api/sessions/synthetic-terminal/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("\"runId\":\"run-synthetic\"");
+    expect(res.text).toContain("\"terminalType\":\"aborted\"");
+    expect(res.text).toContain("\"finalContent\":\"Partial\"");
   });
 
   it("POST /api/sessions/:id/fork passes safe event boundaries to the session manager", async () => {

@@ -340,6 +340,13 @@ function addBridgeSessionStateLastAttention(db: DatabaseSync): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt ON bridge_session_state(lastAttentionAt)");
 }
 
+function addBridgeSessionStateTerminalOverlay(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(bridge_session_state)").all() as any[];
+  if (!columns.some((column: any) => column.name === "terminalOverlayJson")) {
+    db.exec("ALTER TABLE bridge_session_state ADD COLUMN terminalOverlayJson TEXT");
+  }
+}
+
 function backfillBridgeSessionState(db: DatabaseSync): void {
   if (sqliteTableExists(db, "session_meta")) {
     db.exec(`
@@ -1087,6 +1094,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Add lastAttentionAt to bridge_session_state rows.",
     apply: addBridgeSessionStateLastAttention,
+  },
+  {
+    id: "bridge-session-state-terminal-overlay-column",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Persist bridge-synthesized terminal overlays across reloads.",
+    apply: addBridgeSessionStateTerminalOverlay,
   },
   {
     id: BRIDGE_SESSION_STATE_LEGACY_BACKFILL,

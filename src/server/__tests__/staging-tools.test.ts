@@ -1064,6 +1064,7 @@ describe("staging tools", () => {
       const normalized = String(path);
       if (isStagingValidationStampPath(normalized)) return true;
       if (isDataFilePath(normalized, "restart.signal")) return false;
+      if (isDataFilePath(normalized, "restart-in-progress.json")) return false;
       if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
       return undefined;
     });

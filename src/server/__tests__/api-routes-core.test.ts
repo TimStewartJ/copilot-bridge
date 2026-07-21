@@ -86,7 +86,7 @@ describe("Shutdown route", () => {
 });
 
 describe("Session stream route", () => {
-  it("GET /api/sessions/:id/stream replays completed runs as terminal SSE events", async () => {
+  it("GET /api/sessions/:id/stream replays completed runs as authoritative snapshots", async () => {
     const bus = ctx.eventBusRegistry.getOrCreateBus("session-123");
     bus.emit({ type: "done", content: "Run finished" });
 
@@ -94,8 +94,9 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('data: {"type":"done","content":"Run finished","fromSnapshot":true}');
-    expect(res.text).not.toContain('"type":"snapshot"');
+    expect(res.text).toContain('"type":"snapshot"');
+    expect(res.text).toContain('"terminalType":"done"');
+    expect(res.text).toContain('"finalContent":"Run finished"');
   });
 
   it("GET /api/sessions/:id/stream preserves terminal completion metadata on replay", async () => {
@@ -115,12 +116,12 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('"type":"done"');
+    expect(res.text).toContain('"type":"snapshot"');
     expect(res.text).toContain('"terminalCompletion"');
     expect(res.text).toContain('"sourceEventType":"session.task_complete"');
   });
 
-  it("GET /api/sessions/:id/stream normalizes completed snapshots emitted during subscribe", async () => {
+  it("GET /api/sessions/:id/stream forwards completed snapshots without transport normalization", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribe(listener: (event: unknown) => void) {
         listener({
@@ -137,11 +138,11 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('data: {"type":"done","content":"Run finished","fromSnapshot":true}');
-    expect(res.text).not.toContain('"type":"snapshot"');
+    expect(res.text).toContain('"type":"snapshot"');
+    expect(res.text).toContain('"finalContent":"Run finished"');
   });
 
-  it("GET /api/sessions/:id/stream normalizes shutdown snapshots emitted during subscribe", async () => {
+  it("GET /api/sessions/:id/stream forwards shutdown snapshots", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribe(listener: (event: unknown) => void) {
         listener({
@@ -158,8 +159,9 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('data: {"type":"shutdown","content":"Partial answer","fromSnapshot":true}');
-    expect(res.text).not.toContain('"type":"snapshot"');
+    expect(res.text).toContain('"type":"snapshot"');
+    expect(res.text).toContain('"terminalType":"shutdown"');
+    expect(res.text).toContain('"finalContent":"Partial answer"');
   });
 
   it("GET /api/sessions/:id/stream forwards a pending terminal completion on an aborted snapshot replay", async () => {
@@ -185,11 +187,10 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('"type":"aborted"');
-    expect(res.text).toContain('"fromSnapshot":true');
+    expect(res.text).toContain('"type":"snapshot"');
+    expect(res.text).toContain('"terminalType":"aborted"');
     expect(res.text).toContain('"terminalCompletion"');
     expect(res.text).toContain('"content":"Wrapped up before abort"');
-    expect(res.text).not.toContain('"type":"snapshot"');
   });
 
   it("GET /api/sessions/:id/stream includes pending user input requests in live snapshots", async () => {

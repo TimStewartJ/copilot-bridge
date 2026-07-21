@@ -495,6 +495,7 @@ function initSchema(db: DatabaseSync): void {
       lastAttentionAt TEXT,
       hiddenReason TEXT,
       hiddenAt TEXT,
+      terminalOverlayJson TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );

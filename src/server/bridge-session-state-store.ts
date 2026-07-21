@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
 export interface BridgeSessionState {
   sessionId: string;
@@ -15,6 +16,7 @@ export interface BridgeSessionState {
   lastAttentionAt?: string;
   hiddenReason?: string;
   hiddenAt?: string;
+  terminalOverlay?: SyntheticTerminalOverlay;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,6 +44,9 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       lastAttentionAt: row.lastAttentionAt ?? undefined,
       hiddenReason: row.hiddenReason ?? undefined,
       hiddenAt: row.hiddenAt ?? undefined,
+      terminalOverlay: row.terminalOverlayJson
+        ? JSON.parse(row.terminalOverlayJson) as SyntheticTerminalOverlay
+        : undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -76,6 +81,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND lastAttentionAt IS NULL
         AND hiddenReason IS NULL
         AND hiddenAt IS NULL
+        AND terminalOverlayJson IS NULL
     `).run(sessionId);
   }
 
@@ -153,6 +159,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND lastAttentionAt IS NULL
         AND hiddenReason IS NULL
         AND hiddenAt IS NULL
+        AND terminalOverlayJson IS NULL
     `).run();
   }
 
@@ -314,6 +321,32 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     pruneIfDefault(sessionId);
   }
 
+  function setTerminalOverlay(
+    sessionId: string,
+    terminalOverlay: SyntheticTerminalOverlay,
+  ): BridgeSessionState {
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO bridge_session_state (sessionId, terminalOverlayJson, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(sessionId) DO UPDATE SET
+        terminalOverlayJson = excluded.terminalOverlayJson,
+        updatedAt = excluded.updatedAt
+    `).run(sessionId, JSON.stringify(terminalOverlay), now, now);
+    return getState(sessionId)!;
+  }
+
+  function clearTerminalOverlay(sessionId: string): void {
+    const now = nowIso();
+    db.prepare(`
+      UPDATE bridge_session_state
+      SET terminalOverlayJson = NULL,
+          updatedAt = ?
+      WHERE sessionId = ?
+    `).run(now, sessionId);
+    pruneIfDefault(sessionId);
+  }
+
   function deleteState(sessionId: string): void {
     db.prepare("DELETE FROM bridge_session_state WHERE sessionId = ?").run(sessionId);
   }
@@ -334,6 +367,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     replaceLastAttentionAt,
     setHidden,
     clearHidden,
+    setTerminalOverlay,
+    clearTerminalOverlay,
     deleteState,
     pruneIfDefault,
   };

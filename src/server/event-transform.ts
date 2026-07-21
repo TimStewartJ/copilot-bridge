@@ -7,6 +7,7 @@ import {
   isTerminalTurnEventType,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
+import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
@@ -31,6 +32,7 @@ export interface TransformedEntry {
   id: string;
   type: "message" | "tool" | "visual" | "completion" | "skill";
   turnId?: string;
+  sourceEventId?: string;
   // Message fields (when type === "message")
   role?: string;
   content?: string;
@@ -66,8 +68,7 @@ function isTurnTerminalEvent(event: any): boolean {
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
 
 function getRawEventId(event: any): string | undefined {
-  const id = event?.id ?? event?.eventId;
-  return typeof id === "string" && id.trim() ? id : undefined;
+  return getSdkEventId(event);
 }
 
 function getNextForkBoundaryEventId(events: any[], startIndex: number): string | undefined {
@@ -398,7 +399,7 @@ export function transformEventsToMessages(
   let pendingTerminalCompletion: TerminalCompletion | undefined;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
-  const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string }>();
+  const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string; eventId?: string }>();
   const toolProgress = new Map<string, string>();
   const openToolCallIds = new Set<string>();
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
@@ -418,6 +419,7 @@ export function transformEventsToMessages(
         success: data.success,
         result: getToolExecutionDisplayText(data),
         timestamp: (event as any).timestamp,
+        eventId: getSdkEventId(event),
       });
       openToolCallIds.delete(data.toolCallId);
       const visual = getVisualArtifactFromToolCompletion(event, toolNames.get(data.toolCallId), sessionId);
@@ -450,12 +452,14 @@ export function transformEventsToMessages(
     const data = (event as any).data;
 
     if (event.type === "assistant.turn_start") {
-      activeTurnId = `turn-${++turnIndex}`;
+      turnIndex += 1;
+      activeTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
     } else if (extractTerminalCompletion(event)) {
       const completion = extractTerminalCompletion(event)!;
       entries.push({
         id: `entry-${idx++}`,
         type: "completion",
+        ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
         completion,
         content: completion.content,
         timestamp: (event as any).timestamp,
@@ -468,6 +472,7 @@ export function transformEventsToMessages(
         entries.push({
           id: `entry-${idx++}`,
           type: "completion",
+          ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           completion: pendingTerminalCompletion,
           content: pendingTerminalCompletion.content,
           timestamp: data?.timestamp ?? (event as any).timestamp,
@@ -484,6 +489,7 @@ export function transformEventsToMessages(
         entries.push({
           id: `entry-${idx++}`,
           type: "skill",
+          ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           skill: { id: skillSource, label: getSkillLabel(skillSource, content) },
           content,
           timestamp: data.timestamp ?? (event as any).timestamp,
@@ -503,6 +509,7 @@ export function transformEventsToMessages(
       entries.push({
         id: `entry-${idx++}`,
         type: "message",
+        ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
         role: "user",
         content,
         timestamp: data.timestamp ?? (event as any).timestamp,
@@ -518,6 +525,7 @@ export function transformEventsToMessages(
         entries.push({
           id: `entry-${idx++}`,
           type: "message",
+          ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           role: "assistant",
           content,
           timestamp: data.timestamp ?? (event as any).timestamp,
@@ -541,6 +549,7 @@ export function transformEventsToMessages(
       entries.push({
         id: `entry-${idx++}`,
         type: "tool",
+        ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
         ...(activeTurnId ? { turnId: activeTurnId } : {}),
         toolCall: {
           toolCallId: data.toolCallId,
@@ -563,6 +572,7 @@ export function transformEventsToMessages(
         entries.push({
           id: `entry-${idx++}`,
           type: "visual",
+          ...(complete?.eventId ? { sourceEventId: complete.eventId } : {}),
           visual,
           timestamp: complete?.timestamp ?? (event as any).timestamp,
         });

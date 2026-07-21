@@ -17,6 +17,8 @@ import {
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
+import type { SessionHistoryCoverage } from "../shared/session-stream.js";
+import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
@@ -63,6 +65,7 @@ export interface ReadMessagesFromDiskResult {
   total: number;
   hasMore: boolean;
   lastVisibleActivityAt?: string;
+  coverage: SessionHistoryCoverage;
 }
 
 interface WorkspaceSessionRead {
@@ -78,6 +81,7 @@ interface EventLogStats {
   totalEntries: number;
   lastVisibleActivityAt?: string;
   turnState: TailTurnState;
+  coverage: SessionHistoryCoverage;
 }
 
 interface TailCandidateEvents {
@@ -333,6 +337,10 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
   let initialTurnIndex = 0;
   let initialActiveTurnId: string | undefined;
   let pendingTerminalCompletionEntry = false;
+  let latestEventId: string | undefined;
+  let latestTurnId: string | undefined;
+  let latestTerminalEventId: string | undefined;
+  let turnIndex = 0;
 
   const processLine = (lineBuffer: Buffer, lineStartOffset: number): void => {
     const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
@@ -354,6 +362,15 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
     }
 
     visibleActivityTracker.observe(event);
+    const eventId = getSdkEventId(event);
+    if (eventId) latestEventId = eventId;
+    if (event.type === "assistant.turn_start") {
+      turnIndex += 1;
+      latestTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
+    }
+    if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && eventId) {
+      latestTerminalEventId = eventId;
+    }
     if (
       event.type === "tool.execution_start"
       && extractTerminalCompletionFromToolCall(getToolName(event), event?.data?.arguments)
@@ -364,7 +381,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
     if (lineStartsBeforeTail) {
       if (event.type === "assistant.turn_start") {
         initialTurnIndex += 1;
-        initialActiveTurnId = `turn-${initialTurnIndex}`;
+        initialActiveTurnId = getSdkTurnId(event) ?? `turn-${initialTurnIndex}`;
       } else if (TURN_TERMINAL_EVENT_TYPES.has(event.type)) {
         initialActiveTurnId = undefined;
       }
@@ -423,6 +440,11 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
         turnState: {
           initialTurnIndex,
           ...(initialActiveTurnId ? { initialActiveTurnId } : {}),
+        },
+        coverage: {
+          ...(latestEventId ? { latestEventId } : {}),
+          ...(latestTurnId ? { latestTurnId } : {}),
+          ...(latestTerminalEventId ? { latestTerminalEventId } : {}),
         },
       };
     },
@@ -515,7 +537,7 @@ async function readMessagesFromDiskFull(
   try {
     raw = await readFile(eventsPath, "utf-8");
   } catch {
-    return { messages: [], total: 0, hasMore: false };
+    return { messages: [], total: 0, hasMore: false, coverage: {} };
   }
   deps.recordSpan("session.readFromDisk.fullRead", Date.now() - tRead, sessionId, {
     bytes: Buffer.byteLength(raw),
@@ -539,6 +561,7 @@ async function readMessagesFromDiskFull(
   const messages = transformEventsToMessages(events, sessionId);
   const transformMs = Date.now() - tTransform;
   const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
+  const coverage = getSessionHistoryCoverage(events);
   deps.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
 
   const total = messages.length;
@@ -556,7 +579,7 @@ async function readMessagesFromDiskFull(
       transformMs,
       ...metadata,
     });
-    return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt };
+    return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt, coverage };
   }
 
   deps.recordSpan("session.readFromDisk", Date.now() - startedAt, sessionId, {
@@ -569,7 +592,35 @@ async function readMessagesFromDiskFull(
     transformMs,
     ...metadata,
   });
-  return { messages, total, hasMore: false, lastVisibleActivityAt };
+  return { messages, total, hasMore: false, lastVisibleActivityAt, coverage };
+}
+
+export function getSessionHistoryCoverage(events: readonly unknown[]): SessionHistoryCoverage {
+  let latestEventId: string | undefined;
+  let latestTurnId: string | undefined;
+  let latestTerminalEventId: string | undefined;
+  let fallbackTurnIndex = 0;
+
+  for (const event of events) {
+    const eventId = getSdkEventId(event);
+    if (eventId) latestEventId = eventId;
+    if (event && typeof event === "object") {
+      const type = (event as { type?: unknown }).type;
+      if (type === "assistant.turn_start") {
+        fallbackTurnIndex += 1;
+        latestTurnId = getSdkTurnId(event) ?? `turn-${fallbackTurnIndex}`;
+      }
+      if (typeof type === "string" && TURN_TERMINAL_EVENT_TYPES.has(type) && eventId) {
+        latestTerminalEventId = eventId;
+      }
+    }
+  }
+
+  return {
+    ...(latestEventId ? { latestEventId } : {}),
+    ...(latestTurnId ? { latestTurnId } : {}),
+    ...(latestTerminalEventId ? { latestTerminalEventId } : {}),
+  };
 }
 
 /**
@@ -722,7 +773,7 @@ export async function readMessagesFromDisk(
   try {
     tail = await tailPromise;
   } catch (err) {
-    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false };
+    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
     throw err;
   }
 
@@ -780,7 +831,7 @@ export async function readMessagesFromDisk(
       }
     }
   } catch (err) {
-    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false };
+    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
     throw err;
   }
 
@@ -788,7 +839,7 @@ export async function readMessagesFromDisk(
   try {
     currentFileStat = await stat(eventsPath);
   } catch (err) {
-    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false };
+    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
     throw err;
   }
   if (currentFileStat.size !== tail.fileSize || currentFileStat.mtimeMs !== tail.mtimeMs) {
@@ -843,5 +894,11 @@ export async function readMessagesFromDisk(
     readFullFile: tail.readFullFile,
   });
 
-  return { messages, total, hasMore: start > 0, lastVisibleActivityAt: stats.lastVisibleActivityAt };
+  return {
+    messages,
+    total,
+    hasMore: start > 0,
+    lastVisibleActivityAt: stats.lastVisibleActivityAt,
+    coverage: stats.coverage,
+  };
 }

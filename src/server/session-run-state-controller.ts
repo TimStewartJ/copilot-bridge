@@ -2,6 +2,7 @@ import type { getOrCreateBus } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
+import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
 export type SessionRunState = "busy" | "stalled" | "idle";
 
@@ -23,12 +24,17 @@ export interface SessionRunController {
   promptDelivery: Promise<PromptDeliveryResult>;
   isCompleted(): boolean;
   markPromptAccepted(): void;
-  completeDone(content: string, options?: { terminalCompletion?: TerminalCompletion }): void;
-  completeError(message: string): void;
-  completeAborted(content: string): void;
-  completeShutdown(content: string): void;
+  completeDone(content: string, options?: SessionTerminalOptions): void;
+  completeError(message: string, options?: SessionTerminalOptions): void;
+  completeAborted(content: string, options?: SessionTerminalOptions): void;
+  completeShutdown(content: string, options?: SessionTerminalOptions): void;
   awaitAbortConfirmation(delayMs: number, getContent: () => string): Promise<boolean>;
   clearAbortWait(): void;
+}
+
+export interface SessionTerminalOptions {
+  terminalCompletion?: TerminalCompletion;
+  sourceEventId?: string;
 }
 
 export interface SessionActivity {
@@ -58,6 +64,8 @@ export interface SessionRunStateControllerDeps {
   ): void;
   promptDeliveryAbortedMessage: string;
   promptDeliveryShutdownMessage: string;
+  persistTerminalOverlay(sessionId: string, overlay: SyntheticTerminalOverlay): void;
+  clearTerminalOverlay(sessionId: string): void;
   logger?: Pick<Console, "warn">;
 }
 
@@ -112,6 +120,23 @@ export class SessionRunStateController {
       promptDeliverySettled = true;
       resolvePromptDelivery(result);
     };
+    const persistTerminalSnapshot = (sourceEventId?: string) => {
+      if (sourceEventId) {
+        this.deps.clearTerminalOverlay(sessionId);
+        return;
+      }
+      const snapshot = bus.getSnapshot();
+      if (!snapshot.terminalType) return;
+      this.deps.persistTerminalOverlay(sessionId, {
+        type: snapshot.terminalType,
+        runId: snapshot.runId,
+        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+        ...(snapshot.finalContent ? { content: snapshot.finalContent } : {}),
+        ...(snapshot.errorMessage ? { message: snapshot.errorMessage } : {}),
+        ...(snapshot.terminalTimestamp ? { timestamp: snapshot.terminalTimestamp } : {}),
+        ...(snapshot.terminalCompletion ? { terminalCompletion: snapshot.terminalCompletion } : {}),
+      });
+    };
 
     const finish = (emitTerminal?: (timestamp: string) => void): boolean => {
       if (completed) return false;
@@ -146,31 +171,51 @@ export class SessionRunStateController {
             content,
             timestamp,
             ...(options?.terminalCompletion ? { terminalCompletion: options.terminalCompletion } : {}),
+            ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
           });
+          persistTerminalSnapshot(options?.sourceEventId);
         });
       },
-      completeError: (message) => {
+      completeError: (message, options) => {
         this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(sessionId, "error", message);
-          bus.emit({ type: "error", message, timestamp });
+          bus.emit({
+            type: "error",
+            message,
+            timestamp,
+            ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
+          });
+          persistTerminalSnapshot(options?.sourceEventId);
         });
       },
-      completeAborted: (content) => {
+      completeAborted: (content, options) => {
         this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryAbortedMessage });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryAbortedMessage);
-          bus.emit({ type: "aborted", content, timestamp });
+          bus.emit({
+            type: "aborted",
+            content,
+            timestamp,
+            ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
+          });
+          persistTerminalSnapshot(options?.sourceEventId);
         });
       },
-      completeShutdown: (content) => {
+      completeShutdown: (content, options) => {
         this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryShutdownMessage });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryShutdownMessage);
-          bus.emit({ type: "shutdown", content, timestamp });
+          bus.emit({
+            type: "shutdown",
+            content,
+            timestamp,
+            ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
+          });
+          persistTerminalSnapshot(options?.sourceEventId);
         });
       },
       awaitAbortConfirmation: (delayMs, getContent) => {
@@ -190,6 +235,7 @@ export class SessionRunStateController {
             resolve(finish((timestamp) => {
               this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryAbortedMessage);
               bus.emit({ type: "aborted", content: getContent(), timestamp });
+              persistTerminalSnapshot();
             }));
           }, delayMs);
         });

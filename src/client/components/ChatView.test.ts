@@ -352,6 +352,7 @@ async function renderChatView(
     wasFreeform: false,
   });
   const buildStreamState = (nextOptions: RenderChatViewOptions) => ({
+    liveEntries: [],
     streamingContent: "",
     intentText: "",
     activeTools: [],
@@ -361,6 +362,8 @@ async function renderChatView(
     hadVisibleOutput: false,
     pendingOrigin: "message",
     pendingUserInputs: nextOptions.pendingUserInputs ?? pendingUserInputs,
+    pendingElicitations: [],
+    elicitationCancellation: null,
     mcpServers: [],
     contextSummary: null,
     sendMessage: sendMessageMock,
@@ -474,7 +477,7 @@ describe("ChatView cached resume loading state", () => {
 
   it("reports the rendered read-through cursor from loaded history", async () => {
     const onRenderedReadThrough = vi.fn();
-    const { act, cleanup } = await renderChatView({
+    const { act, cleanup, render } = await renderChatView({
       onRenderedReadThrough,
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
@@ -500,7 +503,7 @@ describe("ChatView cached resume loading state", () => {
   it("does not report newer session-list activity until the rendered tail covers it", async () => {
     const onRenderedReadThrough = vi.fn();
     const deferred = createDeferred<FetchMessagesFastResult>();
-    const { act, cleanup } = await renderChatView({
+    const { act, cleanup, render } = await renderChatView({
       activeSessionActivityAt: "2026-05-07T21:05:00.000Z",
       onRenderedReadThrough,
       fetchMessagesFastResult: deferred.promise,
@@ -535,7 +538,7 @@ describe("ChatView cached resume loading state", () => {
 
   it("reports live assistant message timestamps as rendered read-through cursors", async () => {
     const onRenderedReadThrough = vi.fn();
-    const { act, cleanup } = await renderChatView({
+    const { act, cleanup, render } = await renderChatView({
       onRenderedReadThrough,
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
@@ -549,13 +552,22 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
-      const appendEntries = useSessionStreamMock.mock.calls[0][1] as (entries: ChatEntry[]) => void;
+      await render({
+        streamOverrides: {
+          liveEntries: [{
+            id: "live-terminal-1",
+            type: "message",
+            turnId: "provider-turn-1",
+            sourceEventId: "terminal-1",
+            role: "assistant",
+            content: "Done",
+            timestamp: "2026-05-07T21:05:00.000Z",
+          } satisfies ChatEntry],
+          isStreaming: false,
+          streamStatus: "idle",
+        },
+      });
       await act(async () => {
-        appendEntries([{
-          role: "assistant",
-          content: "Done",
-          timestamp: "2026-05-07T21:05:00.000Z",
-        }]);
         await waitTick();
       });
       await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.some((call) => (

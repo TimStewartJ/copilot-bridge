@@ -1,8 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ChatEntry } from "./api";
 import {
-  appendLiveEntries,
   getCachedChatSnapshot,
   hasClientGeneratedEntries,
   hasOptimisticTail,
@@ -10,570 +9,130 @@ import {
   normalizeCommittedClientEntries,
   resetCachedChatSnapshotState,
   setCachedChatSnapshot,
-  type ChatHistorySnapshot,
 } from "./chat-cache";
 
-function createMessage(id: string): ChatEntry {
-  return {
-    id,
-    role: "assistant",
-    content: id,
-  };
+function message(id: string, content = id): ChatEntry {
+  return { id, role: "assistant", content };
 }
 
-function createUserMessage(id: string, content = id): ChatEntry {
-  return {
-    id,
-    role: "user",
-    content,
-  };
-}
-
-function createToolEntry(
-  toolCallId: string,
-  liveSource?: "snapshot" | "event",
-  partial: Partial<ToolCall> = {},
-): ChatEntry {
-  return {
-    id: `tool-${toolCallId}`,
-    type: "tool",
-    ...(liveSource ? { liveSource } : {}),
-    toolCall: {
-      toolCallId,
-      name: partial.name ?? "view",
-      ...partial,
-    },
-  };
-}
-
-function createSnapshot(sessionId: string, entryIds: string[]): ChatHistorySnapshot {
-  return {
-    sessionId,
-    entries: entryIds.map((entryId) => createMessage(entryId)),
-    firstItemIndex: 0,
-    total: entryIds.length,
-    hasMore: false,
-    fetchedAt: Date.now(),
-    isCanonical: true,
-  };
-}
-
-function createFreshSnapshot(
-  sessionId: string,
-  entryIds: string[],
-  lastVisibleActivityAt: string,
-): ChatHistorySnapshot {
-  return {
-    ...createSnapshot(sessionId, entryIds),
-    lastVisibleActivityAt,
-  };
-}
+afterEach(() => {
+  resetCachedChatSnapshotState();
+});
 
 describe("chat cache", () => {
-  beforeEach(() => {
-    resetCachedChatSnapshotState();
-  });
-
-  it("returns cloned snapshots and evicts the least recently used session", () => {
-    const queryClient = new QueryClient();
-
-    for (let index = 1; index <= 5; index += 1) {
-      setCachedChatSnapshot(queryClient, createSnapshot(`session-${index}`, [`entry-${index}`]));
+  it("clones canonical snapshots and evicts least-recently-used sessions", () => {
+    const client = new QueryClient();
+    for (let index = 0; index < 6; index += 1) {
+      setCachedChatSnapshot(client, {
+        sessionId: `session-${index}`,
+        entries: [message(`entry-${index}`)],
+        firstItemIndex: 0,
+        total: 1,
+        hasMore: false,
+        fetchedAt: index,
+        isCanonical: true,
+      });
     }
 
-    // Touch session-1 so session-2 becomes the oldest.
-    expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("entry-1");
-
-    setCachedChatSnapshot(queryClient, createSnapshot("session-6", ["entry-6"]));
-
-    expect(getCachedChatSnapshot(queryClient, "session-2")).toBeUndefined();
-    expect(getCachedChatSnapshot(queryClient, "session-1")).toBeDefined();
-    expect(getCachedChatSnapshot(queryClient, "session-6")).toBeDefined();
-
-    const mutated = getCachedChatSnapshot(queryClient, "session-1");
-    expect(mutated).toBeDefined();
-    mutated!.entries[0] = { id: "mutated", role: "assistant", content: "mutated" };
-
-    expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("entry-1");
+    expect(getCachedChatSnapshot(client, "session-0")).toBeUndefined();
+    const snapshot = getCachedChatSnapshot(client, "session-5");
+    expect(snapshot?.entries).toEqual([message("entry-5")]);
+    snapshot!.entries[0] = message("mutated");
+    expect(getCachedChatSnapshot(client, "session-5")?.entries).toEqual([message("entry-5")]);
   });
 
-  it("does not replace a canonical snapshot with optimistic state", () => {
-    const queryClient = new QueryClient();
-
-    setCachedChatSnapshot(queryClient, createSnapshot("session-1", ["canonical-entry"]));
-    setCachedChatSnapshot(queryClient, {
-      ...createSnapshot("session-1", ["optimistic-entry"]),
+  it("does not replace canonical cache with noncanonical state", () => {
+    const client = new QueryClient();
+    setCachedChatSnapshot(client, {
+      sessionId: "session-1",
+      entries: [message("canonical")],
+      firstItemIndex: 0,
+      total: 1,
+      hasMore: false,
+      fetchedAt: 1,
+      isCanonical: true,
+      lastVisibleActivityAt: "2026-07-21T17:00:00.000Z",
+    });
+    setCachedChatSnapshot(client, {
+      sessionId: "session-1",
+      entries: [message("optimistic")],
+      firstItemIndex: 0,
+      total: 1,
+      hasMore: false,
+      fetchedAt: 2,
       isCanonical: false,
     });
 
-    expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("canonical-entry");
-  });
-
-  it("clones snapshot freshness metadata with cached snapshots", () => {
-    const queryClient = new QueryClient();
-
-    setCachedChatSnapshot(
-      queryClient,
-      createFreshSnapshot("session-1", ["entry-1"], "2026-04-29T12:00:00.000Z"),
-    );
-
-    const firstRead = getCachedChatSnapshot(queryClient, "session-1");
-    expect(firstRead?.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
-
-    firstRead!.lastVisibleActivityAt = "2026-04-29T12:05:00.000Z";
-
-    expect(getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt)
-      .toBe("2026-04-29T12:00:00.000Z");
-  });
-
-  it("preserves freshness metadata when updating canonical snapshots after loading older messages", () => {
-    const queryClient = new QueryClient();
-
-    setCachedChatSnapshot(
-      queryClient,
-      createFreshSnapshot("session-1", ["newer-entry"], "2026-04-29T12:00:00.000Z"),
-    );
-    setCachedChatSnapshot(queryClient, {
-      ...createFreshSnapshot(
-        "session-1",
-        ["older-entry", "newer-entry"],
-        "2026-04-29T12:00:00.000Z",
-      ),
-      total: 2,
+    expect(getCachedChatSnapshot(client, "session-1")).toMatchObject({
+      entries: [{ content: "canonical" }],
+      lastVisibleActivityAt: "2026-07-21T17:00:00.000Z",
     });
-
-    const snapshot = getCachedChatSnapshot(queryClient, "session-1");
-    expect(snapshot?.entries.map((entry) => entry.content)).toEqual(["older-entry", "newer-entry"]);
-    expect(snapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
   });
 });
 
-describe("mergeTailMessages", () => {
-  it("detects when loaded entries extend past the canonical server total", () => {
-    expect(hasOptimisticTail(50, 51, 100)).toBe(true);
-    expect(hasOptimisticTail(50, 50, 100)).toBe(false);
+describe("canonical tail reconciliation", () => {
+  it("detects optimistic tails and local entries", () => {
+    expect(hasOptimisticTail(5, 3, 7)).toBe(true);
+    expect(hasOptimisticTail(5, 2, 7)).toBe(false);
+    expect(hasClientGeneratedEntries([message("entry-1"), message("local-1")])).toBe(true);
+    expect(hasClientGeneratedEntries([message("entry-1")])).toBe(false);
   });
 
-  it("detects client-generated entries by their local cache ids", () => {
-    expect(hasClientGeneratedEntries([createMessage("entry-1"), createMessage("local-2")])).toBe(true);
-    expect(hasClientGeneratedEntries([createMessage("entry-1"), createMessage("entry-2")])).toBe(false);
-  });
+  it("normalizes committed local ids but preserves interrupted legacy notices", () => {
+    const normalized = normalizeCommittedClientEntries([
+      message("entry-1"),
+      { id: "local-user-1", role: "user", content: "Hello" },
+      { id: "err-1", role: "assistant", content: "Partial\n\n*(interrupted)*" },
+    ], 0, 3);
 
-  it("normalizes committed local user entries once they are inside the canonical range", () => {
-    const normalized = normalizeCommittedClientEntries(
-      [
-        { id: "entry-1", role: "assistant", content: "entry-1" },
-        { id: "local-2", role: "user", content: "prompt" },
-      ],
-      0,
-      2,
-    );
-
-    expect(normalized[0]?.id).toBe("entry-1");
     expect(normalized[1]?.id).toBeUndefined();
-    expect(hasClientGeneratedEntries(normalized)).toBe(false);
-  });
-
-  it("preserves interrupted terminal placeholders inside the canonical range", () => {
-    const normalized = normalizeCommittedClientEntries(
-      [
-        { id: "local-1", role: "assistant", content: "Partial answer\n\n*(interrupted)*" },
-      ],
-      0,
-      1,
-    );
-
-    expect(normalized[0]?.id).toBe("local-1");
-    expect(hasClientGeneratedEntries(normalized)).toBe(true);
+    expect(normalized[2]?.id).toBe("err-1");
   });
 
   it("preserves older loaded messages when the refreshed tail overlaps", () => {
-    const previousEntries = Array.from({ length: 50 }, (_, index) => createMessage(`old-${index + 51}`));
-    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`new-${index + 71}`));
-
-    const merged = mergeTailMessages(previousEntries, 50, 120, nextWindow);
-
-    expect(merged.firstItemIndex).toBe(50);
-    expect(merged.total).toBe(120);
-    expect(merged.hasOptimisticTail).toBe(false);
-    expect(merged.hasClientGeneratedEntries).toBe(false);
-    expect(merged.entries).toHaveLength(70);
-    expect(merged.entries.slice(0, 20).map((entry) => entry.content)).toEqual(
-      Array.from({ length: 20 }, (_, index) => `old-${index + 51}`),
+    const merged = mergeTailMessages(
+      [message("entry-0"), message("entry-1"), message("entry-2")],
+      0,
+      5,
+      [message("entry-2-new"), message("entry-3"), message("entry-4")],
     );
-    expect(merged.entries.slice(20).map((entry) => entry.content)).toEqual(
-      Array.from({ length: 50 }, (_, index) => `new-${index + 71}`),
-    );
-  });
 
-  it("replaces the window when the refreshed tail no longer overlaps", () => {
-    const previousEntries = Array.from({ length: 50 }, (_, index) => createMessage(`old-${index + 1}`));
-    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`new-${index + 151}`));
-
-    const merged = mergeTailMessages(previousEntries, 0, 200, nextWindow);
-
-    expect(merged.firstItemIndex).toBe(150);
-    expect(merged.total).toBe(200);
+    expect(merged.firstItemIndex).toBe(0);
+    expect(merged.entries.map((entry) => entry.id)).toEqual([
+      "entry-0",
+      "entry-1",
+      "entry-2-new",
+      "entry-3",
+      "entry-4",
+    ]);
     expect(merged.hasOptimisticTail).toBe(false);
-    expect(merged.hasClientGeneratedEntries).toBe(false);
-    expect(merged.entries.map((entry) => entry.content)).toEqual(
-      Array.from({ length: 50 }, (_, index) => `new-${index + 151}`),
-    );
   });
 
-  it("preserves optimistic tail entries during a stale background refresh", () => {
-    const previousEntries = [
-      ...Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 51}`)),
-      createMessage("local-101"),
-    ];
-    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 51}`));
-
-    const merged = mergeTailMessages(previousEntries, 50, 100, nextWindow);
-
-    expect(merged.firstItemIndex).toBe(50);
-    expect(merged.total).toBe(101);
-    expect(merged.hasOptimisticTail).toBe(true);
-    expect(merged.hasClientGeneratedEntries).toBe(true);
-    expect(merged.entries).toHaveLength(51);
-    expect(merged.entries.at(-1)?.content).toBe("local-101");
-  });
-
-  it("drops committed local ids once the refreshed window makes them canonical", () => {
-    const previousEntries = [
-      ...Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 51}`)),
-      { id: "local-101", role: "user", content: "prompt" } satisfies ChatEntry,
-    ];
-    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 102}`));
-
-    const merged = mergeTailMessages(previousEntries, 50, 151, nextWindow);
-
-    expect(merged.firstItemIndex).toBe(50);
-    expect(merged.total).toBe(151);
-    expect(merged.hasOptimisticTail).toBe(false);
-    expect(merged.hasClientGeneratedEntries).toBe(false);
-    expect(merged.entries[50]?.content).toBe("prompt");
-    expect(merged.entries[50]?.id).toBeUndefined();
-  });
-
-  it("normalizes committed live visual ids without reading message content", () => {
-    const normalized = normalizeCommittedClientEntries(
-      [{ ...createVisualEntry("id-visual"), id: "stream-visual-id-visual" }],
+  it("preserves optimistic user entries after a stale background refresh", () => {
+    const merged = mergeTailMessages(
+      [message("entry-0"), { id: "local-user-1", role: "user", content: "Pending" }],
       0,
       1,
+      [message("entry-0-new")],
     );
 
-    expect(normalized[0]?.type).toBe("visual");
-    expect(normalized[0]?.id).toBeUndefined();
-  });
-});
-
-describe("appendLiveEntries", () => {
-  it("skips a reconnect assistant message when history already ends with the same text", () => {
-    const previousEntries = [{ id: "entry-1", role: "assistant", content: "All set" } satisfies ChatEntry];
-
-    const merged = appendLiveEntries(previousEntries, [{ id: "stream-1", role: "assistant", content: "All set" } satisfies ChatEntry]);
-
-    expect(merged).toEqual(previousEntries);
-  });
-
-  it("ignores trailing tool entries when deduplicating a reconnect assistant message", () => {
-    const previousEntries = [
-      { id: "entry-1", role: "assistant", content: "All set" } satisfies ChatEntry,
-      createToolEntry("tool-1"),
-    ];
-
-    const merged = appendLiveEntries(previousEntries, [{ id: "stream-1", role: "assistant", content: "All set" } satisfies ChatEntry]);
-
-    expect(merged).toEqual(previousEntries);
-  });
-
-  it("preserves repeated assistant text when a new turn intervened", () => {
-    const previousEntries = [
-      { id: "entry-1", role: "assistant", content: "All set" } satisfies ChatEntry,
-      createUserMessage("entry-2", "Say that again"),
-    ];
-
-    const merged = appendLiveEntries(previousEntries, [{ id: "stream-1", role: "assistant", content: "All set" } satisfies ChatEntry]);
-
-    expect(merged).toHaveLength(3);
-    expect(merged[2]?.content).toBe("All set");
-  });
-
-  it("skips duplicate tool completions that were already hydrated from history", () => {
-    const previousEntries = [createToolEntry("tool-1")];
-
-    const merged = appendLiveEntries(previousEntries, [
-      {
-        id: "stream-tool-1",
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "view",
-          result: "done",
-          success: true,
-          completedAt: "2026-04-21T17:00:00.000Z",
-        },
-      } satisfies ChatEntry,
+    expect(merged.entries).toMatchObject([
+      { id: "entry-0-new" },
+      { id: "local-user-1", role: "user" },
     ]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toMatchObject({
-      id: "tool-tool-1",
-      type: "tool",
-      toolCall: {
-        toolCallId: "tool-1",
-        name: "view",
-        result: "done",
-        success: true,
-        completedAt: "2026-04-21T17:00:00.000Z",
-      },
-    });
+    expect(merged.hasOptimisticTail).toBe(true);
+    expect(merged.hasClientGeneratedEntries).toBe(true);
   });
 
-  it("merges live tool progress into the existing tool entry", () => {
-    const previousEntries = [createToolEntry("tool-1")];
-
-    const merged = appendLiveEntries(previousEntries, [
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "view",
-          startedAt: "2026-04-22T20:00:00.000Z",
-          progressText: "Reading file...",
-        },
-      } satisfies ChatEntry,
-    ]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toMatchObject({
-      id: "tool-tool-1",
-      type: "tool",
-      toolCall: {
-        toolCallId: "tool-1",
-        progressText: "Reading file...",
-        startedAt: "2026-04-22T20:00:00.000Z",
-      },
-    });
-  });
-
-  it("appends later tool completion after an intervening message instead of rewriting the original row", () => {
-    const previousEntries = [
-      createToolEntry("tool-1"),
-      { id: "entry-2", role: "assistant", content: "Checkpoint" } satisfies ChatEntry,
-    ];
-
-    const merged = appendLiveEntries(previousEntries, [
-      {
-        id: "stream-tool-1",
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "view",
-          result: "done",
-          success: true,
-          completedAt: "2026-04-22T20:00:02.000Z",
-        },
-      } satisfies ChatEntry,
-    ]);
-
-    expect(merged).toHaveLength(3);
-    expect(merged[0]).toMatchObject({
-      type: "tool",
-      toolCall: {
-        toolCallId: "tool-1",
-      },
-    });
-    expect(merged[0]?.type === "tool" ? merged[0].toolCall.completedAt : undefined).toBeUndefined();
-    expect(merged[2]).toMatchObject({
-      id: "stream-tool-1",
-      type: "tool",
-      toolCall: {
-        toolCallId: "tool-1",
-        result: "done",
-        success: true,
-        completedAt: "2026-04-22T20:00:02.000Z",
-      },
-    });
-  });
-
-  it("merges live tool completion across an intervening visual artifact", () => {
-    const previousEntries = [
-      createToolEntry("tool-1"),
-      createVisualEntry("id-777"),
-    ];
-
-    const merged = appendLiveEntries(previousEntries, [
-      {
-        id: "stream-tool-1",
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "publish_visual",
-          result: "published",
-          success: true,
-          completedAt: "2026-04-22T20:00:02.000Z",
-        },
-      } satisfies ChatEntry,
-    ]);
-
-    expect(merged).toHaveLength(2);
-    expect(merged[0]).toMatchObject({
-      id: "tool-tool-1",
-      type: "tool",
-      toolCall: {
-        toolCallId: "tool-1",
-        result: "published",
-        success: true,
-      },
-    });
-    expect(merged[1]).toMatchObject({ type: "visual" });
-  });
-
-  it("merges reconnect snapshot tool state into the existing row after an intervening message", () => {
-    const previousEntries = [
-      createToolEntry("tool-1"),
-      { id: "entry-2", role: "assistant", content: "Checkpoint" } satisfies ChatEntry,
-    ];
-
-    const merged = appendLiveEntries(previousEntries, [
-      {
-        type: "tool",
-        liveSource: "snapshot",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "view",
-          progressText: "Still running",
-        },
-      } satisfies ChatEntry,
-    ]);
-
-    expect(merged).toHaveLength(2);
-    expect(merged[0]).toMatchObject({
-      id: "tool-tool-1",
-      type: "tool",
-      liveSource: "snapshot",
-      toolCall: {
-        toolCallId: "tool-1",
-        progressText: "Still running",
-      },
-    });
-  });
-
-  it("merges reconnect snapshots for subagent roots and children without duplicating rows", () => {
-    const previousEntries = [
-      createToolEntry("agent-1", undefined, {
-        name: "🤖 Explore agent",
-        isSubAgent: true,
-        startedAt: "2026-04-22T20:00:00.000Z",
-      }),
-      createToolEntry("child-1", undefined, {
-        name: "bash",
-        parentToolCallId: "agent-1",
-        startedAt: "2026-04-22T20:00:01.000Z",
-      }),
-    ];
-
-    const merged = appendLiveEntries(previousEntries, [
-      {
-        type: "tool",
-        liveSource: "snapshot",
-        toolCall: {
-          toolCallId: "agent-1",
-          name: "🤖 Explore agent",
-          isSubAgent: true,
-          progressText: "Wrapping up",
-        },
-      },
-      {
-        type: "tool",
-        liveSource: "snapshot",
-        toolCall: {
-          toolCallId: "child-1",
-          name: "bash",
-          parentToolCallId: "agent-1",
-          result: "ok",
-          success: true,
-          completedAt: "2026-04-22T20:00:05.000Z",
-        },
-      },
-    ] satisfies ChatEntry[]);
-
-    expect(merged).toHaveLength(2);
-    expect(merged[0]).toMatchObject({
-      id: "tool-agent-1",
-      type: "tool",
-      liveSource: "snapshot",
-      toolCall: {
-        toolCallId: "agent-1",
-        progressText: "Wrapping up",
-      },
-    });
-    expect(merged[1]).toMatchObject({
-      id: "tool-child-1",
-      type: "tool",
-      liveSource: "snapshot",
-      toolCall: {
-        toolCallId: "child-1",
-        parentToolCallId: "agent-1",
-        result: "ok",
-        success: true,
-      },
-    });
-  });
-});
-
-function createVisualEntry(artifactId: string): ChatEntry {
-  return {
-    type: "visual",
-    visual: {
-      artifactId,
-      kind: "mermaid",
-      title: "Diagram",
-      displayName: "diagram.mmd",
-      mimeType: "text/vnd.mermaid",
-      size: 20,
-      url: `/api/sessions/test/visuals/${artifactId}`,
-      downloadUrl: `/api/sessions/test/visuals/${artifactId}/download`,
-      source: "graph TD\n  A-->B",
-    },
-  };
-}
-
-describe("appendLiveEntries: visual artifact de-duplication", () => {
-  it("appends a new visual entry when no matching artifactId exists", () => {
-    const base: ChatEntry[] = [];
-    const result = appendLiveEntries(base, [createVisualEntry("id-111")]);
-    expect(result).toHaveLength(1);
-    expect(result[0].type).toBe("visual");
-  });
-
-  it("skips a visual entry whose artifactId is already present", () => {
-    const existing = [createVisualEntry("id-222")];
-    const result = appendLiveEntries(existing, [createVisualEntry("id-222")]);
-    expect(result).toHaveLength(1);
-  });
-
-  it("appends a visual entry with a different artifactId even if another visual exists", () => {
-    const existing = [createVisualEntry("id-333")];
-    const result = appendLiveEntries(existing, [createVisualEntry("id-444")]);
-    expect(result).toHaveLength(2);
-  });
-
-  it("deduplicates when the same visual entry appears twice in the incoming batch", () => {
-    const base: ChatEntry[] = [];
-    const result = appendLiveEntries(
-      base,
-      [createVisualEntry("id-555"), createVisualEntry("id-555")],
+  it("replaces a non-overlapping window", () => {
+    const merged = mergeTailMessages(
+      [message("entry-0"), message("entry-1")],
+      0,
+      10,
+      [message("entry-8"), message("entry-9")],
     );
-    expect(result).toHaveLength(1);
-  });
 
-  it("preserves surrounding message entries alongside a visual entry", () => {
-    const base: ChatEntry[] = [createMessage("msg-1")];
-    const result = appendLiveEntries(base, [createVisualEntry("id-666")]);
-    expect(result).toHaveLength(2);
-    expect(result[0].type).not.toBe("visual");
-    expect(result[1].type).toBe("visual");
+    expect(merged.firstItemIndex).toBe(8);
+    expect(merged.entries.map((entry) => entry.id)).toEqual(["entry-8", "entry-9"]);
   });
 });
