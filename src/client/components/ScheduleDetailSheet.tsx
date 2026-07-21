@@ -129,13 +129,25 @@ function ViewMode({
   onSelectSession?: (sessionId: string) => void;
   onSelectTask?: (taskId: string) => void;
 }) {
-  const { data: sessionData } = useScheduleSessionsQuery(schedule.id);
+  const {
+    data: sessionData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useScheduleSessionsQuery(schedule.id);
   const [showOverflow, setShowOverflow] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
 
-  const sessions = sessionData?.sessions ?? [];
-  const totalRuns = sessionData?.total ?? 0;
+  const seenRunIds = new Set<number>();
+  const sessions = (sessionData?.pages ?? [])
+    .flatMap((page) => page.sessions)
+    .filter((session) => {
+      if (seenRunIds.has(session.runId)) return false;
+      seenRunIds.add(session.runId);
+      return true;
+    });
+  const totalRuns = sessionData?.pages[0]?.total ?? 0;
 
   return (
     <>
@@ -302,9 +314,19 @@ function ViewMode({
                   onSelect={session.missing ? undefined : () => onSelectSession?.(session.sessionId)}
                 />
               ))}
-              {totalRuns > sessions.length && (
-                <div className="text-[10px] text-text-faint text-center py-2">
-                  Showing {sessions.length} of {totalRuns} runs
+              {hasNextPage && (
+                <div className="text-center py-2">
+                  <button
+                    type="button"
+                    onClick={() => { void fetchNextPage(); }}
+                    disabled={isFetchingNextPage}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-bg-surface text-text-primary hover:bg-bg-hover border border-border transition-colors disabled:opacity-50"
+                  >
+                    {isFetchingNextPage ? "Loading..." : "Load more"}
+                  </button>
+                  <div className="text-[10px] text-text-faint mt-1.5">
+                    Showing {sessions.length} of {totalRuns} runs
+                  </div>
                 </div>
               )}
             </div>
