@@ -20,7 +20,7 @@ Use this skill when you need browser control beyond a single page read:
 - **Form interactions**: filling forms, clicking buttons, selecting dropdowns
 - **Screenshots and PDFs**: visual capture of pages
 - **Complex browsing**: paginated results, infinite scroll, tab workflows, dynamic content
-- **Stateful browsing**: flows that benefit from the bridge's persistent browser state
+- **Stateful browsing**: flows that need continuity within a raw `agent-browser` session; do not assume continuity with the bridge-managed session/profile
 - **JavaScript evaluation**: running custom JS on the page
 
 For **simple reads of one URL**, prefer `browser_fetch` first. For hardened multi-step automation that should stay on the bridge-managed browser session/profile, prefer `browser_exec`. For workflows that must continue across turns, prefer `browser_session_*`. For raw HTML/API calls or simple static pages, prefer `web_fetch`.
