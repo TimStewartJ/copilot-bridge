@@ -3407,6 +3407,10 @@ export class SessionManager {
     return this.sessionRunner.waitForRecoveryIdle(sessionId);
   }
 
+  waitForSessionRecoveryResumeStarted(sessionId: string): Promise<void> {
+    return this.sessionRunner.waitForRecoveryResumeStarted(sessionId);
+  }
+
   /**
    * Warm a session by resuming it in the background.
    * Returns a promise that resolves when the session is ready for interaction.
