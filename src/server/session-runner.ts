@@ -360,7 +360,7 @@ export class SessionRunner {
     });
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
-    bus.setPendingPrompt(prompt);
+    bus.setPendingPrompt(prompt, attachments);
     return this.startBackgroundRun(
       sessionId,
       bus,
@@ -435,7 +435,7 @@ export class SessionRunner {
     const t0 = Date.now();
     console.log(`[sdk] [${sid}] Steering prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
 
-    bus.setPendingPrompt(prompt);
+    bus.setPendingPrompt(prompt, attachments);
     this.touchSessionRun(sessionId);
     try {
       await session.send({
@@ -444,7 +444,7 @@ export class SessionRunner {
         mode: "immediate",
       });
       if (runController.isCompleted()) {
-        bus.clearPendingPrompt(prompt);
+        bus.discardPendingPrompt(prompt);
         throw new Error("Session ended before steering could attach; send a normal message instead");
       }
       this.touchSessionRun(sessionId);
@@ -453,7 +453,7 @@ export class SessionRunner {
         attachments: attachCount,
       });
     } catch (error) {
-      bus.clearPendingPrompt(prompt);
+      bus.discardPendingPrompt(prompt);
       throw error;
     }
   }
@@ -480,6 +480,7 @@ export class SessionRunner {
       runController.completeError(err instanceof Error ? err.message : String(err));
     }).finally(() => {
       runController.clearAbortWait();
+      this.recoveryResumeSignals.delete(sessionId);
       this.deps.cancelPendingUserInputRequests(
         sessionId,
         "session_ended",
@@ -526,7 +527,7 @@ export class SessionRunner {
         if (parsedCommand) {
           commandResult = await invokeSlashCommand(session, parsedCommand);
           if (commandResult.kind !== "send") {
-            bus.clearPendingPrompt();
+            bus.commitPendingPrompt();
             activeRunController.markPromptAccepted();
             activeRunController.completeDone(slashCommandResultToText(commandResult));
             return;
@@ -534,7 +535,7 @@ export class SessionRunner {
           sendPrompt = commandResult.prompt;
           displayPrompt = commandResult.displayPrompt;
           mode = commandResult.mode ?? mode;
-          bus.setPendingPrompt(displayPrompt ?? sendPrompt);
+          bus.replacePendingPrompt(displayPrompt ?? sendPrompt);
           this.deps.runStateController.setSessionRunMetadata(sessionId, {
             pendingPrompt: displayPrompt ?? sendPrompt,
           });
@@ -1013,12 +1014,14 @@ export class SessionRunner {
       }
       switch (event.type) {
         case "user.message":
-          bus.clearPendingPrompt(
+          bus.commitPendingPrompt(
             typeof data?.content === "string"
               ? data.content
               : typeof data?.prompt === "string"
                 ? data.prompt
                 : undefined,
+            getSdkEventId(event),
+            getEventTimestampIso(event),
           );
           runController.markPromptAccepted();
           if (typeof data?.content === "string" && !("source" in (data ?? {}))) {

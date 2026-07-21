@@ -488,7 +488,6 @@ export default function ChatView({
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
-  const [pendingMessageIds, setPendingMessageIds] = useState<Set<string>>(() => new Set());
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsSupported, setSlashCommandsSupported] = useState(false);
   const [historyCoverage, setHistoryCoverage] = useState<SessionHistoryCoverage>({});
@@ -635,12 +634,23 @@ export default function ChatView({
     activeTurnId,
   } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, historyCoverage);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
+  const canonicalUserEventIds = useMemo(() => new Set(entries.flatMap((entry) => (
+    isChatMessageEntry(entry) && entry.role === "user" && entry.sourceEventId
+      ? [entry.sourceEventId]
+      : []
+  ))), [entries]);
+  const visibleStreamLiveEntries = useMemo(() => streamLiveEntries.filter((entry) => (
+    !isChatMessageEntry(entry)
+    || entry.role !== "user"
+    || !entry.sourceEventId
+    || !canonicalUserEventIds.has(entry.sourceEventId)
+  )), [canonicalUserEventIds, streamLiveEntries]);
 
   useLayoutEffect(() => {
     if (!sessionId) return;
-    const liveReadThrough = getLatestEntryActivityTimestamp(streamLiveEntries);
+    const liveReadThrough = getLatestEntryActivityTimestamp(visibleStreamLiveEntries);
     if (liveReadThrough) onRenderedReadThrough?.(sessionId, liveReadThrough);
-  }, [onRenderedReadThrough, sessionId, streamLiveEntries]);
+  }, [onRenderedReadThrough, sessionId, visibleStreamLiveEntries]);
 
   useEffect(() => {
     if (!sessionId || loading || creating) {
@@ -876,8 +886,6 @@ export default function ChatView({
     setUndoError(null);
     setUndoingEventId(null);
     setLoadMoreError(null);
-    setPendingMessageIds(new Set());
-
     if (!sessionId) {
       // Clear draft-only state when entering draft mode from an existing
       // session or when switching between distinct draft composers.
@@ -923,12 +931,12 @@ export default function ChatView({
       return;
     }
 
-    // Transitioning from draft → real session: keep messages, just connect stream
+    // Transitioning from draft → real session: the authoritative stream now owns the user entry.
     if (wasDraft) {
-      applyHistory(entriesRef.current, {
+      applyHistory([], {
         ownerSessionId: sessionId,
         firstItemIndex: 0,
-        total: entriesRef.current.length,
+        total: 0,
         hasMore: false,
         isCanonical: false,
       });
@@ -1438,19 +1446,6 @@ export default function ChatView({
     if (!sessionId) return;
     onDraftClear?.();
     invalidateHistoryRefresh();
-    const localMessageId = `local-${Date.now()}`;
-    const nextEntries = [...entriesRef.current, { role: "user", content: prompt, id: localMessageId, ...(attachments?.length ? { attachments } : {}) } satisfies ChatEntry];
-    setPendingMessageIds((current) => {
-      const next = new Set(current);
-      next.add(localMessageId);
-      return next;
-    });
-    applyHistory(nextEntries, {
-      ownerSessionId: sessionId,
-      total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntries.length),
-      hasMore: firstItemIndex.current > 0,
-      isCanonical: false,
-    });
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
     try {
@@ -1467,13 +1462,6 @@ export default function ChatView({
         total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntriesWithError.length),
         hasMore: firstItemIndex.current > 0,
         isCanonical: false,
-      });
-    } finally {
-      setPendingMessageIds((current) => {
-        if (!current.has(localMessageId)) return current;
-        const next = new Set(current);
-        next.delete(localMessageId);
-        return next;
       });
     }
   }, [sessionId, composerKey, loading, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, applyHistory]);
@@ -1543,20 +1531,20 @@ export default function ChatView({
   const liveTurnIds = useMemo(() => {
     const ids = new Set<string>();
     if (activeTurnId) ids.add(activeTurnId);
-    for (const entry of streamLiveEntries) {
+    for (const entry of visibleStreamLiveEntries) {
       if (entry.turnId) ids.add(entry.turnId);
     }
     return ids;
-  }, [activeTurnId, streamLiveEntries]);
+  }, [activeTurnId, visibleStreamLiveEntries]);
   const historicalEntries = useMemo(() => {
-    if (streamLiveEntries.length === 0 && !hasStreamingText && liveToolCallIds.size === 0) return entries;
+    if (visibleStreamLiveEntries.length === 0 && !hasStreamingText && liveToolCallIds.size === 0) return entries;
     return entries.filter((entry) => (
       !entry.turnId
       || !liveTurnIds.has(entry.turnId)
     ));
-  }, [entries, hasStreamingText, liveToolCallIds.size, liveTurnIds, streamLiveEntries.length]);
+  }, [entries, hasStreamingText, liveToolCallIds.size, liveTurnIds, visibleStreamLiveEntries.length]);
   const liveEntries = useMemo<ChatEntry[]>(() => {
-    const nextEntries = [...streamLiveEntries];
+    const nextEntries = [...visibleStreamLiveEntries];
     if (isStreaming && hasStreamingText) {
       nextEntries.push({
         id: LIVE_STREAMING_MESSAGE_ID,
@@ -1567,7 +1555,7 @@ export default function ChatView({
       });
     }
     return nextEntries;
-  }, [activeTurnId, displayedStreamingContent, hasStreamingText, isStreaming, streamLiveEntries]);
+  }, [activeTurnId, displayedStreamingContent, hasStreamingText, isStreaming, visibleStreamLiveEntries]);
   const displayEntries = useMemo(
     () => liveEntries.length > 0 ? [...historicalEntries, ...liveEntries] : historicalEntries,
     [historicalEntries, liveEntries],
@@ -1902,10 +1890,7 @@ export default function ChatView({
       const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
       const messageAnchorKey = messageAnchorKeys.get(msg) ?? getMessageAnchorKey(msg, index);
       const isLiveStreamingMessage = msg.id === LIVE_STREAMING_MESSAGE_ID;
-      const isPendingUserMessage = msg.role === "user" && (
-        (msg.id ? pendingMessageIds.has(msg.id) : false)
-        || (creating && msg.id?.startsWith("draft-user-"))
-      );
+      const isPendingUserMessage = msg.role === "user" && creating && msg.id?.startsWith("draft-user-");
       const menuBindings = isLiveStreamingMessage ? null : bindMessageMenu(messageKey, () => {});
       const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageKey);
       const actionSlot = isLiveStreamingMessage ? undefined : (
@@ -1963,7 +1948,6 @@ export default function ChatView({
     handleCopySpecificMessage,
     isMessageLongPressTarget,
     openMessageActionsMenu,
-    pendingMessageIds,
     creating,
     toolForest,
   ]);

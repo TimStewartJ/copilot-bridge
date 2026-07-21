@@ -71,17 +71,18 @@ describe("chat cache", () => {
 });
 
 describe("canonical tail reconciliation", () => {
-  it("detects optimistic tails and local entries", () => {
+  it("detects optimistic tails and remaining client-generated entries", () => {
     expect(hasOptimisticTail(5, 3, 7)).toBe(true);
     expect(hasOptimisticTail(5, 2, 7)).toBe(false);
-    expect(hasClientGeneratedEntries([message("entry-1"), message("local-1")])).toBe(true);
+    expect(hasClientGeneratedEntries([message("entry-1"), message("draft-user-1")])).toBe(true);
+    expect(hasClientGeneratedEntries([message("entry-1"), message("local-1")])).toBe(false);
     expect(hasClientGeneratedEntries([message("entry-1")])).toBe(false);
   });
 
-  it("normalizes committed local ids but preserves interrupted legacy notices", () => {
+  it("normalizes committed draft ids but preserves interrupted legacy notices", () => {
     const normalized = normalizeCommittedClientEntries([
       message("entry-1"),
-      { id: "local-user-1", role: "user", content: "Hello" },
+      { id: "draft-user-1", role: "user", content: "Hello" },
       { id: "err-1", role: "assistant", content: "Partial\n\n*(interrupted)*" },
     ], 0, 3);
 
@@ -108,9 +109,9 @@ describe("canonical tail reconciliation", () => {
     expect(merged.hasOptimisticTail).toBe(false);
   });
 
-  it("preserves optimistic user entries after a stale background refresh", () => {
+  it("preserves local error entries after a stale background refresh", () => {
     const merged = mergeTailMessages(
-      [message("entry-0"), { id: "local-user-1", role: "user", content: "Pending" }],
+      [message("entry-0"), { id: "err-1", role: "assistant", content: "⚠️ Error: failed" }],
       0,
       1,
       [message("entry-0-new")],
@@ -118,7 +119,7 @@ describe("canonical tail reconciliation", () => {
 
     expect(merged.entries).toMatchObject([
       { id: "entry-0-new" },
-      { id: "local-user-1", role: "user" },
+      { id: "err-1", role: "assistant" },
     ]);
     expect(merged.hasOptimisticTail).toBe(true);
     expect(merged.hasClientGeneratedEntries).toBe(true);
