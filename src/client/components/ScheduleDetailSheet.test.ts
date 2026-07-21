@@ -9,7 +9,7 @@ import {
 } from "../test-react-harness";
 import { installDomShim } from "../test-dom-shim";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
-import type { Schedule } from "../api";
+import type { Schedule, ScheduleRun } from "../api";
 
 const apiMocks = vi.hoisted(() => ({
   createSchedule: vi.fn(),
@@ -18,11 +18,13 @@ const apiMocks = vi.hoisted(() => ({
   getSessionRunState: vi.fn(),
 }));
 
+const queryMocks = vi.hoisted(() => ({
+  useScheduleSessionsQuery: vi.fn(),
+}));
+
 vi.mock("../api", () => apiMocks);
 
-vi.mock("../hooks/queries/useScheduleSessions", () => ({
-  useScheduleSessionsQuery: () => ({ data: [], isLoading: false, refetch: vi.fn() }),
-}));
+vi.mock("../hooks/queries/useScheduleSessions", () => queryMocks);
 
 const NOW = new Date("2026-06-15T17:40:30.000Z");
 
@@ -167,6 +169,58 @@ async function renderEditSheet(schedule: Schedule) {
   return { harness, onSaved };
 }
 
+function makeRecurringSchedule(): Schedule {
+  return {
+    id: "sched-1",
+    taskId: "task-1",
+    name: "Daily sync",
+    prompt: "Sync the task",
+    type: "cron",
+    cron: "0 8 * * *",
+    enabled: true,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+    runCount: 21,
+  };
+}
+
+function makeScheduleRun(runId: number, summary: string, runState: ScheduleRun["runState"] = "idle"): ScheduleRun {
+  return {
+    runId,
+    sessionId: `session-${runId}`,
+    summary,
+    recordedAt: new Date(NOW.getTime() - runId * 60_000).toISOString(),
+    recordedAtKnown: true,
+    runState,
+    busy: false,
+    deferSummary: { count: 0, nextRunAt: null },
+  };
+}
+
+async function renderViewSheet() {
+  const noop = vi.fn();
+  const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+  const render = () => harness.render(
+    createElement(ScheduleDetailSheet, {
+      schedule: makeRecurringSchedule(),
+      taskId: "task-1",
+      mode: "view" as const,
+      onClose: noop,
+      onSwitchToEdit: noop,
+      onSwitchToView: noop,
+      onTrigger: noop,
+      onToggle: noop,
+      onDelete: noop,
+      onSaved: noop,
+    }),
+  );
+  await render();
+  return {
+    harness,
+    rerender: render,
+  };
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ now: NOW });
   apiMocks.createSchedule.mockReset();
@@ -176,6 +230,14 @@ beforeEach(() => {
   apiMocks.fetchServerTimezone.mockReset();
   apiMocks.fetchServerTimezone.mockResolvedValue("UTC");
   apiMocks.getSessionRunState.mockReset();
+  apiMocks.getSessionRunState.mockReturnValue("idle");
+  queryMocks.useScheduleSessionsQuery.mockReset();
+  queryMocks.useScheduleSessionsQuery.mockReturnValue({
+    data: undefined,
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  });
 });
 
 afterEach(() => {
@@ -274,6 +336,97 @@ describe("ScheduleDetailSheet one-time run-at editing", () => {
       expect(patch.runAt).toBe(runAt);
       await waitUntilAct(harness.act, () => onSaved.mock.calls.length > 0);
       expect(onSaved).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
+describe("ScheduleDetailSheet run history pagination", () => {
+  it("loads more runs and disables the control while the next page is loading", async () => {
+    const fetchNextPage = vi.fn();
+    queryMocks.useScheduleSessionsQuery.mockReturnValue({
+      data: {
+        pages: [{
+          sessions: [makeScheduleRun(21, "Newest run")],
+          total: 21,
+          offset: 0,
+          limit: 20,
+        }],
+        pageParams: [0],
+      },
+      fetchNextPage,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+    });
+
+    const { harness, rerender } = await renderViewSheet();
+    try {
+      await clickButton(harness, "Load more");
+      expect(fetchNextPage).toHaveBeenCalledOnce();
+
+      queryMocks.useScheduleSessionsQuery.mockReturnValue({
+        data: {
+          pages: [{
+            sessions: [makeScheduleRun(21, "Newest run")],
+            total: 21,
+            offset: 0,
+            limit: 20,
+          }],
+          pageParams: [0],
+        },
+        fetchNextPage,
+        hasNextPage: true,
+        isFetchingNextPage: true,
+      });
+      await rerender();
+
+      const loadingButton = findButtonByText(harness, "Loading...");
+      expect(getReactProps(loadingButton)?.disabled).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("appends older pages in order without changing run status rendering", async () => {
+    const newestRun = makeScheduleRun(21, "Newest run", "stalled");
+    const olderRun = makeScheduleRun(1, "Older run");
+    apiMocks.getSessionRunState.mockImplementation((session: ScheduleRun) => session.runState ?? "idle");
+    queryMocks.useScheduleSessionsQuery.mockReturnValue({
+      data: {
+        pages: [
+          {
+            sessions: [newestRun],
+            total: 2,
+            offset: 0,
+            limit: 20,
+          },
+          {
+            sessions: [newestRun, olderRun],
+            total: 2,
+            offset: 1,
+            limit: 20,
+          },
+        ],
+        pageParams: [0, 1],
+      },
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    const { harness } = await renderViewSheet();
+    try {
+      const text = harness.dom.container.textContent ?? "";
+      expect(text.indexOf("Newest run")).toBeLessThan(text.indexOf("Older run"));
+      expect(text.match(/Newest run/g)).toHaveLength(1);
+      expect(text).not.toContain("Load more");
+
+      const newestButton = findAllByTag(harness.dom.container, "BUTTON").find(
+        (button) => button.textContent?.includes("Newest run"),
+      );
+      const statusDot = findAllByTag(newestButton, "SPAN")[0];
+      expect(getReactProps(statusDot)?.className).toContain("bg-warning animate-pulse");
     } finally {
       await harness.cleanup();
     }
