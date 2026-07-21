@@ -247,7 +247,7 @@ describe("SessionManager run state", () => {
   });
 
   it("emits a tool_loop_candidate telemetry span when an obvious no-op shell tool starts (observe only)", async () => {
-    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { manager, telemetryStore, sessionMetaStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -281,6 +281,7 @@ describe("SessionManager run state", () => {
     getReleaseSend()?.();
     await flushMicrotasks();
     getHandler()?.({
+      id: "terminal-event-live-idle",
       type: "session.idle",
       data: {},
       timestamp: "2026-04-24T12:00:02.000Z",
@@ -1360,7 +1361,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     const row = db.prepare("SELECT lastAttentionAt FROM bridge_session_state WHERE sessionId = ?").get("session-1") as any;
-    expect(row?.lastAttentionAt).toBeUndefined();
+    expect(row?.lastAttentionAt).toBeNull();
   });
 
   it("startWorkAndWaitForDelivery rejects when send fails before acceptance", async () => {
@@ -1614,6 +1615,7 @@ describe("SessionManager run state", () => {
 
     // Watchdog fires every 60s; stall threshold is 300s — first trigger at exactly 300s
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
@@ -1761,6 +1763,7 @@ describe("SessionManager run state", () => {
 
     // Advance to exactly the stall threshold
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
@@ -1795,6 +1798,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
@@ -1819,6 +1823,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("stalled");
@@ -1852,6 +1857,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
     expect(resumeSession).toHaveBeenCalledTimes(1);
@@ -1868,6 +1874,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("stalled");
@@ -1885,11 +1892,13 @@ describe("SessionManager run state", () => {
 
     // First stall + first recovery at 300s (first eligible watchdog tick)
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(resumeSession).toHaveBeenCalledTimes(2);
 
     // Second recovery after exactly RECOVERY_INTERVAL (300s) while still stalled
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(resumeSession).toHaveBeenCalledTimes(3);
   });
@@ -1914,6 +1923,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
     expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
@@ -1964,6 +1974,7 @@ describe("SessionManager run state", () => {
 
     manager.sessionObjects.set("session-1", current.session);
     resolveRecovery(recovered.session);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.sessionObjects.get("session-1")).toBe(current.session);
@@ -1994,7 +2005,7 @@ describe("SessionManager run state", () => {
 
   it("records completion telemetry for live session.idle", async () => {
     const sessionId = "session-live-idle-telemetry";
-    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { manager, telemetryStore, sessionMetaStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -2017,6 +2028,7 @@ describe("SessionManager run state", () => {
       data: { turnId: "1" },
     });
     getHandler()?.({
+      id: "terminal-event-live-idle",
       type: "session.idle",
       timestamp: new Date(baseTime + 3_000).toISOString(),
       data: {},
@@ -2024,6 +2036,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(sessionMetaStore.getTerminalOverlay(sessionId)).toBeUndefined();
     expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
       completionSource: "live_session_idle",
       completionStatus: "done",
@@ -2157,6 +2170,7 @@ describe("SessionManager run state", () => {
     ].join("\n") + "\n");
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle(sessionId);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2224,6 +2238,7 @@ describe("SessionManager run state", () => {
       ].join("\n") + "\n");
 
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2260,6 +2275,7 @@ describe("SessionManager run state", () => {
       ].join("\n") + "\n");
 
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2274,7 +2290,7 @@ describe("SessionManager run state", () => {
   });
 
   it("treats routine session.shutdown as a shutdown terminal event", async () => {
-    const { manager, eventBusRegistry } = createManager();
+    const { manager, eventBusRegistry, sessionMetaStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -2337,7 +2353,7 @@ describe("SessionManager run state", () => {
   });
 
   it("resolves abort locally when the runtime never confirms it", async () => {
-    const { manager, eventBusRegistry } = createManager();
+    const { manager, eventBusRegistry, sessionMetaStore } = createManager();
     const { session, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -2360,6 +2376,9 @@ describe("SessionManager run state", () => {
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(bus.getSnapshot().terminalType).toBe("aborted");
+    expect(sessionMetaStore.getTerminalOverlay("session-1")).toMatchObject({
+      type: "aborted",
+    });
   });
 
   it("clears run state when an abort event arrives while send is still pending", async () => {
@@ -2460,6 +2479,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
@@ -2548,6 +2568,7 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("busy");
 
     resolveRecovery(recovered.session);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(recovered.session.on).not.toHaveBeenCalled();
@@ -2578,6 +2599,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
 
@@ -2620,6 +2642,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
@@ -2656,6 +2679,7 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("busy");
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
 
@@ -2699,6 +2723,7 @@ describe("SessionManager run state", () => {
     expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dup");
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
     expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dup");
@@ -2743,6 +2768,7 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("busy");
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
@@ -2765,6 +2791,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
 
@@ -2812,6 +2839,9 @@ describe("SessionManager run state", () => {
 
       await vi.advanceTimersByTimeAsync(300_000);
       await flushMicrotasks();
+      await vi.waitFor(() => {
+        expect(manager.backend!.resumeSession).toHaveBeenCalledTimes(2);
+      }, { timeout: 5_000 });
 
       const baseTime = Date.now();
       writeFileSync(join(sessionStateDir, "events.jsonl"), [
@@ -2821,6 +2851,7 @@ describe("SessionManager run state", () => {
       ].join("\n") + "\n");
 
       resolveRecovery(recovered.session);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2866,6 +2897,7 @@ describe("SessionManager run state", () => {
       ].join("\n") + "\n");
 
       rejectRecovery(new Error("resume failed"));
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2896,6 +2928,7 @@ describe("SessionManager run state", () => {
 
       // Advance past the stall threshold so the watchdog fires
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       // The file's real mtime is close to wall-clock time so it will be
@@ -2936,6 +2969,7 @@ describe("SessionManager run state", () => {
       // Even though events.jsonl mtime is fresh relative to real wall-clock time, it must
       // NOT suppress stall detection — lastEventTime is only updated by live SDK events.
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("stalled");
@@ -2943,6 +2977,7 @@ describe("SessionManager run state", () => {
 
       // Recovery retries must still fire on schedule while stalled, regardless of disk activity.
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("stalled");
@@ -3040,6 +3075,7 @@ describe("SessionManager run state", () => {
       ].join("\n") + "\n");
 
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");

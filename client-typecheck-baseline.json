@@ -53,84 +53,7 @@
     "file": "src/client/App.tsx",
     "line": 542,
     "character": 55,
-    "message": "Argument of type '\"archived\" | \"active\" | \"done\"' is not assignable to parameter of type '\"archived\" | \"active\"'.\n  Type '\"done\"' is not assignable to type '\"archived\" | \"active\"'."
-  },
-  {
-    "code": 2304,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 35,
-    "character": 20,
-    "message": "Cannot find name 'ToolCall'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 85,
-    "character": 73,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 97,
-    "character": 73,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 109,
-    "character": 73,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 146,
-    "character": 51,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 201,
-    "character": 61,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 204,
-    "character": 58,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 219,
-    "character": 48,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 238,
-    "character": 35,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 254,
-    "character": 32,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/chat-cache.test.ts",
-    "line": 299,
-    "character": 23,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
+    "message": "Argument of type '\"done\" | \"archived\" | \"active\"' is not assignable to parameter of type '\"archived\" | \"active\"'.\n  Type '\"done\"' is not assignable to type '\"archived\" | \"active\"'."
   },
   {
     "code": 2345,
@@ -200,7 +123,7 @@
     "file": "src/client/components/task-momentum-alerts.ts",
     "line": 75,
     "character": 14,
-    "message": "This comparison appears to be unintentional because the types '\"archived\" | \"active\" | \"done\"' and '\"paused\"' have no overlap."
+    "message": "This comparison appears to be unintentional because the types '\"done\" | \"archived\" | \"active\"' and '\"paused\"' have no overlap."
   },
   {
     "code": 2322,
@@ -347,21 +270,21 @@
     "file": "src/client/components/TaskRail.tsx",
     "line": 288,
     "character": 164,
-    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
+    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'."
   },
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
     "line": 318,
     "character": 158,
-    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
+    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'."
   },
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
     "line": 351,
     "character": 160,
-    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
+    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'."
   },
   {
     "code": 2322,
@@ -480,7 +403,7 @@
     "file": "src/client/task-completion-helpers.test.ts",
     "line": 71,
     "character": 9,
-    "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\" | \"done\"'."
+    "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'."
   },
   {
     "code": 2307,
@@ -501,6 +424,6 @@
     "file": "src/client/task-momentum-alerts.test.ts",
     "line": 99,
     "character": 9,
-    "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\" | \"done\"'."
+    "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'."
   }
 ]

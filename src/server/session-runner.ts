@@ -4,7 +4,7 @@
 // and delegates the run-loop concerns here.
 
 import type { AgentBackend, AgentSession, AgentSlashCommandResult } from "./agent-backend/index.js";
-import { readFileSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
@@ -52,48 +52,16 @@ import {
 } from "./session-context-normalizer.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
+import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
+import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
 const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
 const EXTERNAL_TOOL_WAIT_SPAN_INTERVAL_MS = 5 * 60_000;
-const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
-  "assistant.turn_end",
-  "session.task_complete",
-  "session.idle",
-  "session.error",
-  "abort",
-]);
-const PERSISTED_RUN_DIAGNOSTIC_TERMINAL_EVENT_TYPES = new Set([
-  ...PERSISTED_RUN_TERMINAL_EVENT_TYPES,
-  "session.shutdown",
-]);
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
   "session.idle",
   "session.task_complete",
-  "session.error",
-  "abort",
-  "session.shutdown",
-]);
-const PERSISTED_RUN_RELEVANT_EVENT_TYPES = new Set([
-  "user.message",
-  "assistant.turn_start",
-  "assistant.message",
-  "assistant.message_delta",
-  "assistant.streaming_delta",
-  "assistant.intent",
-  "assistant.turn_end",
-  "session.task_complete",
-  "tool.execution_start",
-  "tool.execution_progress",
-  "tool.execution_partial_result",
-  "tool.execution_complete",
-  "external_tool.requested",
-  "external_tool.completed",
-  "subagent.started",
-  "subagent.completed",
-  "subagent.failed",
-  "session.idle",
   "session.error",
   "abort",
   "session.shutdown",
@@ -116,13 +84,6 @@ type SessionEventOrigin = "live" | "live_recovered" | "persisted_recovery";
 interface SessionEventHandlingContext {
   origin: SessionEventOrigin;
   recoveryReason?: string;
-}
-
-interface PersistedRunEventInfo {
-  latestPersistedEventType?: string;
-  latestPersistedEventAgeMs?: number;
-  latestPersistedTerminalEventType?: string;
-  latestPersistedTerminalEventAgeMs?: number;
 }
 
 interface ActiveExternalToolCall {
@@ -294,7 +255,17 @@ export interface SessionRunnerDeps {
 }
 
 export class SessionRunner {
+  private readonly recoveryPromises = new Map<string, Promise<void>>();
+
   constructor(private readonly deps: SessionRunnerDeps) {}
+
+  async waitForRecoveryIdle(sessionId: string): Promise<void> {
+    while (true) {
+      const pending = this.recoveryPromises.get(sessionId);
+      if (!pending) return;
+      await pending;
+    }
+  }
 
   private get client(): AgentBackend | null {
     return this.deps.getBackend();
@@ -367,6 +338,7 @@ export class SessionRunner {
     }
 
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
+    this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
     bus.setPendingPrompt(prompt);
     return this.startBackgroundRun(
@@ -992,7 +964,9 @@ export class SessionRunner {
           },
         );
         recordCompletionAttention("done", persistedTerminal.event);
-        runController.completeDone(content);
+        runController.completeDone(content, {
+          sourceEventId: getSdkEventId(persistedTerminal.event),
+        });
         return true;
       }
       handleEvent(persistedTerminal.event, { origin: "persisted_recovery", recoveryReason: reason });
@@ -1033,7 +1007,7 @@ export class SessionRunner {
           break;
         case "assistant.turn_start":
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
-          currentBridgeTurnId = `turn-${randomUUID()}`;
+          currentBridgeTurnId = getSdkTurnId(event) ?? `turn-${randomUUID()}`;
           this.deps.sessionContextStore?.recordTurnStart({
             sessionId,
             provider: contextTelemetryProvider,
@@ -1044,17 +1018,29 @@ export class SessionRunner {
             startedAt: getEventTimestampIso(event),
             model: typeof data?.model === "string" ? data.model : undefined,
           });
-          bus.emit({ type: "thinking", turnId: currentBridgeTurnId });
+          bus.emit({
+            type: "thinking",
+            turnId: currentBridgeTurnId,
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+          });
           break;
         case "assistant.message_delta":
           if (data?.parentToolCallId) break;
           if (data?.deltaContent) {
-            bus.emit({ type: "delta", content: data.deltaContent });
+            bus.emit({
+              type: "delta",
+              content: data.deltaContent,
+              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+            });
           }
           break;
         case "assistant.intent":
           console.log(`[sdk] [${sid}] 🎯 Intent: ${data?.intent}`);
-          bus.emit({ type: "intent", intent: data?.intent ?? "" });
+          bus.emit({
+            type: "intent",
+            intent: data?.intent ?? "",
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+          });
           this.deps.globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
@@ -1067,7 +1053,12 @@ export class SessionRunner {
             lastAssistantContent = data.content;
           }
           if (data?.toolRequests?.length) {
-            bus.emit({ type: "assistant_partial", content: data.content ?? "" });
+            bus.emit({
+              type: "assistant_partial",
+              content: data.content ?? "",
+              timestamp: event.timestamp,
+              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+            });
           }
           break;
         case "external_tool.requested": {
@@ -1120,6 +1111,7 @@ export class SessionRunner {
             parentToolCallId: data?.parentToolCallId,
             isSubAgent: pendingAgent ? true : undefined,
             timestamp: event.timestamp,
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           break;
         }
@@ -1132,6 +1124,7 @@ export class SessionRunner {
               rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
             ),
             message: data?.progressMessage ?? "",
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           break;
         case "tool.execution_partial_result":
@@ -1143,6 +1136,7 @@ export class SessionRunner {
               rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
             ),
             content: data?.partialOutput ?? "",
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           break;
         case "tool.execution_complete": {
@@ -1172,6 +1166,7 @@ export class SessionRunner {
             success: data?.success,
             isSubAgent: isAgent || undefined,
             timestamp: event.timestamp,
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           if (
             typeof data?.toolCallId === "string"
@@ -1205,6 +1200,7 @@ export class SessionRunner {
             toolCallId: data?.toolCallId,
             name: displayName,
             isSubAgent: true,
+            ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           this.refreshSessionAgents(sessionId, "subagent.started");
           break;
@@ -1254,7 +1250,9 @@ export class SessionRunner {
             errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
           });
           recordCompletionAttention("error", event);
-          runController.completeError(data?.message ?? "unknown");
+          runController.completeError(data?.message ?? "unknown", {
+            sourceEventId: getSdkEventId(event),
+          });
           break;
         case "abort": {
           const reason = data?.reason ?? "user initiated";
@@ -1265,7 +1263,9 @@ export class SessionRunner {
             partialContentLength: partialContent.length,
             abortReasonPresent: typeof data?.reason === "string",
           });
-          runController.completeAborted(partialContent);
+          runController.completeAborted(partialContent, {
+            sourceEventId: getSdkEventId(event),
+          });
           break;
         }
         case "session.shutdown": {
@@ -1279,7 +1279,9 @@ export class SessionRunner {
               errorMessagePresent: typeof data?.message === "string" || typeof data?.reason === "string",
               errorMessageLength: typeof message === "string" ? message.length : undefined,
             });
-            runController.completeError(message);
+            runController.completeError(message, {
+              sourceEventId: getSdkEventId(event),
+            });
           } else {
             console.log(`[sdk] [${sid}] 🛑 Shutdown${shutdownType ? ` (${shutdownType})` : ""}`);
             const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
@@ -1287,7 +1289,9 @@ export class SessionRunner {
               shutdownType,
               partialContentLength: partialContent.length,
             });
-            runController.completeShutdown(partialContent);
+            runController.completeShutdown(partialContent, {
+              sourceEventId: getSdkEventId(event),
+            });
           }
           break;
         }
@@ -1326,7 +1330,10 @@ export class SessionRunner {
           recordCompletionAttention("done", event);
           runController.completeDone(
             content,
-            resolvedTerminalCompletion ? { terminalCompletion: resolvedTerminalCompletion } : undefined,
+            {
+              ...(resolvedTerminalCompletion ? { terminalCompletion: resolvedTerminalCompletion } : {}),
+              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+            },
           );
           pendingTerminalCompletion = undefined;
           break;
@@ -1426,151 +1433,6 @@ export class SessionRunner {
     let recoveryInProgress = false;
     let lastRecoveryAttempt = 0;
 
-    const readLatestPersistedRunEventInfo = (now = Date.now()): PersistedRunEventInfo => {
-      let raw: string;
-      try {
-        raw = readFileSync(eventsJsonlPath, "utf-8");
-      } catch {
-        return {};
-      }
-
-      let latestEventType: string | undefined;
-      let latestEventAt: number | undefined;
-      let latestTerminalEventType: string | undefined;
-      let latestTerminalEventAt: number | undefined;
-
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-
-        let event: any;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const eventType = event?.type;
-        if (typeof eventType !== "string" || !PERSISTED_RUN_RELEVANT_EVENT_TYPES.has(eventType)) continue;
-        const eventTime = getEventTimestampMs(event);
-        const minimumEventTime = sendStart;
-        if (eventTime === undefined || eventTime < minimumEventTime) continue;
-
-        latestEventType = eventType;
-        latestEventAt = eventTime;
-        if (PERSISTED_RUN_DIAGNOSTIC_TERMINAL_EVENT_TYPES.has(eventType)) {
-          latestTerminalEventType = eventType;
-          latestTerminalEventAt = eventTime;
-        }
-      }
-
-      return {
-        latestPersistedEventType: latestEventType,
-        latestPersistedEventAgeMs: getAgeMs(now, latestEventAt),
-        latestPersistedTerminalEventType: latestTerminalEventType,
-        latestPersistedTerminalEventAgeMs: getAgeMs(now, latestTerminalEventAt),
-      };
-    };
-
-    const readPersistedTerminalEvent = (
-      options: { treatSessionShutdownAsTerminal?: boolean } = {},
-    ): { event: any; assistantContent?: string } | null => {
-      let raw: string;
-      try {
-        raw = readFileSync(eventsJsonlPath, "utf-8");
-      } catch {
-        return null;
-      }
-
-      let assistantContentFromDisk = lastAssistantContent;
-      let latestRelevantState: "active" | "terminal" | undefined;
-      let terminalEvent: any | null = null;
-      let hasTurnEnd = false;
-      let activeEventsAfterTurnEnd = 0;
-
-      const markActive = (eventType: string) => {
-        if (hasTurnEnd && LIVE_TURN_END_FOLLOWUP_EVENT_TYPES.has(eventType)) {
-          activeEventsAfterTurnEnd += 1;
-        }
-        latestRelevantState = "active";
-        terminalEvent = null;
-      };
-
-      const markTerminal = (event: any) => {
-        latestRelevantState = "terminal";
-        terminalEvent = event;
-      };
-
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-
-        let event: any;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
-        const eventTime = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
-        const minimumEventTime = sendStart;
-        if (!Number.isFinite(eventTime) || eventTime < minimumEventTime) continue;
-
-        const data = event?.data;
-        switch (event?.type) {
-          case "assistant.message":
-            if (data?.parentToolCallId) break;
-            if (typeof data?.content === "string") {
-              assistantContentFromDisk = data.content;
-            }
-            markActive(event.type);
-            break;
-          case "user.message":
-          case "assistant.turn_start":
-          case "assistant.message_delta":
-          case "assistant.streaming_delta":
-          case "assistant.intent":
-          case "tool.execution_start":
-          case "tool.execution_progress":
-          case "tool.execution_partial_result":
-          case "tool.execution_complete":
-          case "external_tool.requested":
-          case "external_tool.completed":
-          case "subagent.started":
-          case "subagent.completed":
-          case "subagent.failed":
-            markActive(event.type);
-            break;
-          case "session.idle":
-          case "session.task_complete":
-            if (hasTurnEnd && activeEventsAfterTurnEnd > 0) {
-              markActive(event.type);
-              break;
-            }
-            markTerminal(event);
-            break;
-          case "assistant.turn_end":
-            hasTurnEnd = true;
-            activeEventsAfterTurnEnd = 0;
-            markTerminal(event);
-            break;
-          case "session.error":
-          case "abort":
-            markTerminal(event);
-            break;
-          case "session.shutdown":
-            if (options.treatSessionShutdownAsTerminal !== false) {
-              markTerminal(event);
-            }
-            break;
-          default:
-            break;
-        }
-      }
-
-      if (latestRelevantState !== "terminal" || !terminalEvent) return null;
-      return { event: terminalEvent, assistantContent: assistantContentFromDisk };
-    };
-
     const resumeFreshRecoverySession = async (): Promise<any> => {
       const resumeStart = Date.now();
       console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
@@ -1584,31 +1446,35 @@ export class SessionRunner {
       return recoveredSession;
     };
 
-    const readStalledRecoveryPersistedTerminalEvent = () => readPersistedTerminalEvent();
-
     const attemptStalledRecovery = async () => {
       if (recoveryInProgress) return;
       recoveryInProgress = true;
       const recoveryStartedAt = Date.now();
       const attemptIndex = ++recoveryAttemptIndex;
       lastRecoveryAttempt = recoveryStartedAt;
-      const recordRecoveryOutcome = (
+      const recordRecoveryOutcome = async (
         outcome: string,
         metadata: Record<string, unknown> = {},
         now = Date.now(),
       ) => {
+        const inspection = await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
+          now,
+          lastAssistantContent,
+        });
         recordRunSpan("session.run.recovery", now - recoveryStartedAt, {
           outcome,
           attemptIndex,
-          ...readLatestPersistedRunEventInfo(now),
+          ...inspection.info,
           ...metadata,
         }, now);
       };
       try {
-        const persistedTerminalBeforeResume = readStalledRecoveryPersistedTerminalEvent();
+        const persistedTerminalBeforeResume = (
+          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, { lastAssistantContent })
+        ).terminal;
         if (persistedTerminalBeforeResume) {
           if (resolvePersistedTerminalEvent(persistedTerminalBeforeResume, "before resume")) {
-            recordRecoveryOutcome("resolved_persisted_terminal", {
+            await recordRecoveryOutcome("resolved_persisted_terminal", {
               when: "before_resume",
               terminalEventType: persistedTerminalBeforeResume.event?.type,
             });
@@ -1628,14 +1494,16 @@ export class SessionRunner {
             recoveredSession,
             "discarding completed stall-recovery session",
           );
-          recordRecoveryOutcome("skipped_not_stalled_or_completed", {
+          await recordRecoveryOutcome("skipped_not_stalled_or_completed", {
             completed: runController.isCompleted(),
             runState: this.deps.runStateController.getSessionRunState(sessionId),
           });
           return;
         }
 
-        const persistedTerminalAfterResume = readStalledRecoveryPersistedTerminalEvent();
+        const persistedTerminalAfterResume = (
+          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, { lastAssistantContent })
+        ).terminal;
         if (persistedTerminalAfterResume) {
           await this.deps.disposeSession(
             sessionId,
@@ -1643,7 +1511,7 @@ export class SessionRunner {
             "discarding redundant stall-recovery session",
           );
           resolvePersistedTerminalEvent(persistedTerminalAfterResume, "after resume");
-          recordRecoveryOutcome("resolved_persisted_terminal", {
+          await recordRecoveryOutcome("resolved_persisted_terminal", {
             when: "after_resume",
             terminalEventType: persistedTerminalAfterResume.event?.type,
           });
@@ -1684,41 +1552,54 @@ export class SessionRunner {
         }
 
         console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
-        recordRecoveryOutcome("reattached", {
+        await recordRecoveryOutcome("reattached", {
           bufferedEventCount: bufferedRecoveredEvents.length,
         });
       } catch (err) {
-        const persistedTerminalAfterFailedResume = readStalledRecoveryPersistedTerminalEvent();
+        const persistedTerminalAfterFailedResume = (
+          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, { lastAssistantContent })
+        ).terminal;
         if (persistedTerminalAfterFailedResume && resolvePersistedTerminalEvent(persistedTerminalAfterFailedResume, "after failed resume")) {
           const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
-          recordRecoveryOutcome("resolved_persisted_terminal", {
+          await recordRecoveryOutcome("resolved_persisted_terminal", {
             when: "after_failed_resume",
             terminalEventType: persistedTerminalAfterFailedResume.event?.type,
             errorName,
           });
         } else {
           const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
-          recordRecoveryOutcome("failed", { errorName });
+          await recordRecoveryOutcome("failed", { errorName });
           console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
         }
       } finally {
         recoveryInProgress = false;
       }
     };
+    const startStalledRecovery = (relatedWork?: Promise<unknown>) => {
+      const existing = this.recoveryPromises.get(sessionId);
+      if (existing) return;
+      const recovery = attemptStalledRecovery();
+      const tracked = Promise.all([recovery, relatedWork]).then(() => undefined);
+      this.recoveryPromises.set(sessionId, tracked);
+      void tracked.finally(() => {
+        if (this.recoveryPromises.get(sessionId) === tracked) {
+          this.recoveryPromises.delete(sessionId);
+        }
+      });
+    };
 
     const WATCHDOG_INTERVAL = 60_000;
     const WATCHDOG_TIMEOUT = 300_000;
     const RECOVERY_INTERVAL = 300_000;
-    const watchdog = setInterval(() => {
+    const runWatchdogTick = () => {
       const now = Date.now();
 
-      try {
-        const fileStat = statSync(eventsJsonlPath);
+      void stat(eventsJsonlPath).then((fileStat) => {
         lastDiskMtime = fileStat.mtimeMs;
         if (fileStat.mtimeMs > lastEventTime) {
           this.deps.runStateController.touchSessionRunIfNewer(sessionId, fileStat.mtimeMs);
         }
-      } catch { /* events.jsonl may not exist yet */ }
+      }).catch(() => { /* events.jsonl may not exist yet */ });
 
       let syncShellWaitUntil = 0;
       for (const waitUntil of syncShellWaits.values()) {
@@ -1753,19 +1634,29 @@ export class SessionRunner {
 
       if (currentState !== "stalled") {
         console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — marking stalled (${elapsed}s total)`);
-        recordRunSpan("session.run.stalled", 0, {
-          watchdogTimeoutMs: WATCHDOG_TIMEOUT,
-          previousRunState: currentState,
-          ...readLatestPersistedRunEventInfo(now),
-        }, now);
         this.setSessionRunState(sessionId, "stalled");
-        void attemptStalledRecovery();
+        const telemetryInspection = inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
+          now,
+          lastAssistantContent,
+        }).then((inspection) => {
+          recordRunSpan("session.run.stalled", 0, {
+            watchdogTimeoutMs: WATCHDOG_TIMEOUT,
+            previousRunState: currentState,
+            ...inspection.info,
+          }, now);
+        }).catch((error) => {
+          console.warn(`[sdk] [${sid}] Failed to inspect persisted events for stall telemetry:`, error);
+        });
+        startStalledRecovery(telemetryInspection);
       } else if (forceReleaseStalledRun(now, "stalled_watchdog_timeout")) {
         return;
       } else if (now - lastRecoveryAttempt >= RECOVERY_INTERVAL) {
         console.warn(`[sdk] [${sid}] ⚠️ Session still stalled — retrying recovery (${elapsed}s total)`);
-        void attemptStalledRecovery();
+        startStalledRecovery();
       }
+    };
+    const watchdog = setInterval(() => {
+      runWatchdogTick();
     }, WATCHDOG_INTERVAL);
 
     try {

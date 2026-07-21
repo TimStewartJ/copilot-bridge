@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getOrCreateBus, getBus, hasBus } from "../event-bus.js";
+import { createEventBusRegistry, getOrCreateBus, getBus, hasBus } from "../event-bus.js";
 import type { StreamEvent } from "../event-bus.js";
 
 describe("event-bus", () => {
@@ -36,6 +36,18 @@ describe("event-bus", () => {
       bus.emit({ type: "delta", content: "world" });
       const snap = bus.getSnapshot();
       expect(snap.accumulatedContent).toBe("Hello world");
+    });
+
+    it("notifies subscribers to resync when a bus is deleted", () => {
+      const registry = createEventBusRegistry();
+      const bus = registry.getOrCreateBus("deleted-session");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+
+      registry.deleteBus("deleted-session");
+
+      expect(events.at(-1)).toEqual({ type: "resync_required" });
+      expect(registry.getBus("deleted-session")).toBeUndefined();
     });
 
     it("tracks intent", () => {
@@ -137,7 +149,7 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
     });
 
-    it("starts a fresh live turn snapshot on thinking events", () => {
+    it("starts a fresh turn while retaining completed run entries", () => {
       const bus = getOrCreateBus("test-thinking-reset-1");
       bus.setPendingPrompt("steer me");
       bus.emit({ type: "thinking", turnId: "turn-1" });
@@ -150,7 +162,9 @@ describe("event-bus", () => {
       expect(bus.getSnapshot()).toMatchObject({
         accumulatedContent: "",
         activeTools: [],
-        currentTurnTools: [],
+        currentTurnTools: [
+          expect.objectContaining({ toolCallId: "tc-old", turnId: "turn-1" }),
+        ],
         intentText: "",
         pendingPrompt: "steer me",
         turnId: "turn-2",
@@ -356,7 +370,7 @@ describe("event-bus", () => {
       ]);
     });
 
-    it("clears current-turn tools on terminal events", () => {
+    it("retains run tools in terminal snapshots for reconnects", () => {
       const terminalEvents: StreamEvent[] = [
         { type: "done", content: "Done" },
         { type: "aborted", content: "Stopped" },
@@ -372,7 +386,9 @@ describe("event-bus", () => {
 
         bus.emit(event);
 
-        expect(bus.getSnapshot().currentTurnTools).toEqual([]);
+        expect(bus.getSnapshot().currentTurnTools).toEqual([
+          expect.objectContaining({ toolCallId: "tc1", success: true }),
+        ]);
       });
     });
 

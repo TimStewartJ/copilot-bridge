@@ -246,7 +246,7 @@ export function createMockSessionManager() {
     steerSession: async () => {},
     markSessionAttention: () => {},
     abortSession: async () => true,
-    readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false }),
+    readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false, coverage: {} }),
     undoSessionTurn: async () => ({ eventsRemoved: 1 }),
     warmSession: async () => {},
     reloadSession: async () => [],

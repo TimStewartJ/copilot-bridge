@@ -8,6 +8,7 @@ import type {
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
+import type { SessionHistoryCoverage } from "../shared/session-stream.js";
 import type {
   AgentCountsSource,
   AgentExecutionMode,
@@ -199,6 +200,7 @@ export interface ToolCall {
   toolCallId: string;
   name: string;
   turnId?: string;
+  sourceEventId?: string;
   args?: ToolArgs;
   result?: string;
   /** Latest non-final progress or partial output surfaced while the tool is running */
@@ -251,6 +253,7 @@ export type Attachment = BlobAttachment | UploadedAttachment | FileRefAttachment
 export interface ChatMessage {
   id?: string;
   turnId?: string;
+  sourceEventId?: string;
   /** Raw exclusive SDK event boundary for safe "fork from here" actions. */
   forkBoundaryEventId?: string;
   /** Raw user-message event that starts this turn and can be used to rewind history. */
@@ -267,8 +270,8 @@ export interface ChatToolEntry {
   id?: string;
   type: "tool";
   turnId?: string;
+  sourceEventId?: string;
   toolCall: ToolCall;
-  liveSource?: "snapshot" | "event";
 }
 
 /** A published visual artifact rendered as an inline card */
@@ -292,6 +295,8 @@ export interface VisualArtifact {
 export interface ChatVisualEntry {
   id?: string;
   type: "visual";
+  turnId?: string;
+  sourceEventId?: string;
   visual: VisualArtifact;
   timestamp?: string;
 }
@@ -301,11 +306,10 @@ export interface ChatCompletionEntry {
   id?: string;
   type: "completion";
   turnId?: string;
+  sourceEventId?: string;
   content: string;
   timestamp?: string;
   completion: TerminalCompletion;
-  /** Whether this completion came from a reconnect/snapshot replay vs a live stream event. */
-  liveSource?: "snapshot" | "event";
 }
 
 /** An agent-injected skill context, rendered as a collapsed/labeled card */
@@ -313,6 +317,7 @@ export interface ChatSkillEntry {
   id?: string;
   type: "skill";
   turnId?: string;
+  sourceEventId?: string;
   skill: { id: string; label: string };
   content: string;
   timestamp?: string;
@@ -761,12 +766,12 @@ export async function fetchSlashCommands(sessionId: string): Promise<SlashComman
 export async function fetchMessagesFast(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string }> {
+): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string; coverage: SessionHistoryCoverage }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string }>(
+  return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string; coverage: SessionHistoryCoverage }>(
     `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
   );
 }

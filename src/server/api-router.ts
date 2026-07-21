@@ -126,6 +126,7 @@ import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
 import { writeRestartSignalFile } from "./restart-signal.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
+import { openSseConnection } from "./sse-response.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 
@@ -2237,7 +2238,7 @@ export function createApiRouter(
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore, lastVisibleActivityAt } = await timeRequestOperation(
+      const { messages, total, hasMore, lastVisibleActivityAt, coverage } = await timeRequestOperation(
         res,
         "sessions.messagesFast.diskRead",
         () => ctx.sessionManager.readMessagesFromDisk(
@@ -2248,7 +2249,7 @@ export function createApiRouter(
       );
       const status = getSessionStatus(ctx, req.params.id);
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-      res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, warm });
+      res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, coverage, warm });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -2689,108 +2690,74 @@ export function createApiRouter(
     const sessionId = req.params.id;
     const streamStart = Date.now();
     let firstEventSent = false;
-
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+    let unsub: (() => void) | null = null;
+    const connection = openSseConnection(req, res, () => {
+      unsub?.();
+      unsub = null;
     });
 
-    let closed = false;
-    let unsub: (() => void) | null = null;
-
-    // SSE heartbeat — keeps connection alive through proxies/tunnels
-    const heartbeat = setInterval(() => {
-      if (closed || res.writableEnded) return;
-      try {
-        res.write(`: heartbeat\n\n`);
-      } catch {
-        close();
-      }
-    }, 15_000);
-
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      clearInterval(heartbeat);
-      if (unsub) unsub();
-      if (!res.writableEnded) res.end();
-    };
-
     const sendEvent = (event: any) => {
-      if (closed || res.writableEnded) return;
-      const normalized = event.type === "snapshot" && event.complete
-        ? event.terminalType === "error" || event.errorMessage
-          ? { type: "error", message: event.errorMessage ?? "Unknown session error", timestamp: event.terminalTimestamp, turnId: event.turnId, fromSnapshot: true, ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}) }
-          : event.terminalType === "aborted"
-            ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId, fromSnapshot: true, ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}) }
-            : event.terminalType === "shutdown"
-              ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId, fromSnapshot: true, ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}) }
-            : {
-                type: "done",
-                content: event.finalContent,
-                timestamp: event.terminalTimestamp,
-                turnId: event.turnId,
-                fromSnapshot: true,
-                ...(event.terminalCompletion ? { terminalCompletion: event.terminalCompletion } : {}),
-              }
-        : event;
+      if (connection.closed) return;
       if (!firstEventSent) {
         firstEventSent = true;
         ctx.telemetryStore?.recordSpan({
           name: "sse.firstEvent",
           sessionId,
           duration: Date.now() - streamStart,
-          metadata: { eventType: normalized.type },
+          metadata: { eventType: event.type },
           source: "server",
         });
       }
-      try {
-        res.write(`data: ${JSON.stringify(normalized)}\n\n`);
-      } catch {
-        close();
-        return;
-      }
-      if (normalized.type === "done" || normalized.type === "error" || normalized.type === "aborted" || normalized.type === "shutdown") {
-        close();
-      }
+      const terminal = event.type === "done"
+        || event.type === "error"
+        || event.type === "aborted"
+        || event.type === "shutdown"
+        || (event.type === "snapshot" && event.complete)
+        || event.type === "resync_required";
+      connection.send(
+        event,
+        typeof event.sourceEventId === "string"
+          ? event.sourceEventId
+          : typeof event.terminalEventId === "string"
+            ? event.terminalEventId
+            : undefined,
+        terminal,
+      );
     };
-
-    const attachToBus = (targetBus: NonNullable<typeof bus>) => {
-      unsub = targetBus.subscribe(sendEvent);
-    };
-
-    // Prevent unhandled 'error' events on the response from crashing the process
-    res.on("error", () => { close(); });
-    req.on("close", () => { close(); });
 
     const bus = ctx.eventBusRegistry.getBus(sessionId);
 
     if (!bus) {
-      if (ctx.sessionManager.isSessionBusy(sessionId)) {
-        sendEvent({ type: "thinking" });
-        // Poll for bus — it should appear shortly after POST /api/chat
-        const pollStart = Date.now();
-        const waitForBus = setInterval(() => {
-          if (closed) { clearInterval(waitForBus); return; }
-          const newBus = ctx.eventBusRegistry.getBus(sessionId);
-          if (newBus) {
-            clearInterval(waitForBus);
-            attachToBus(newBus);
-          } else if (Date.now() - pollStart > 10_000) {
-            clearInterval(waitForBus);
-            sendEvent({ type: "error", message: "Timed out waiting for session to start" });
-          }
-        }, 500);
-      } else {
-        sendEvent({ type: "idle" });
-        close();
+      const terminalOverlay = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
+      if (terminalOverlay) {
+        sendEvent({
+          type: "snapshot",
+          runId: terminalOverlay.runId,
+          complete: true,
+          turnId: terminalOverlay.turnId,
+          accumulatedContent: "",
+          assistantSegments: [],
+          activeTools: [],
+          currentTurnTools: [],
+          visuals: [],
+          entryOrder: [],
+          pendingUserInputs: [],
+          pendingElicitations: [],
+          intentText: "",
+          contextSummary: null,
+          terminalType: terminalOverlay.type,
+          terminalTimestamp: terminalOverlay.timestamp,
+          finalContent: terminalOverlay.content,
+          errorMessage: terminalOverlay.message,
+          terminalCompletion: terminalOverlay.terminalCompletion,
+        });
+        return;
       }
+      sendEvent({ type: "resync_required" });
       return;
     }
 
-    // Subscribe — sends snapshot then streams live events
-    attachToBus(bus);
+    unsub = bus.subscribe(sendEvent);
   });
 
   // GET /sessions/:id/plan — read plan.md from session state directory

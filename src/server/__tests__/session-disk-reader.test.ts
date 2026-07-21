@@ -589,7 +589,50 @@ describe("readMessagesFromDisk latest-page path", () => {
 
     const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
 
-    expect(result).toEqual({ messages: [], total: 0, hasMore: false });
+    expect(result).toEqual({ messages: [], total: 0, hasMore: false, coverage: {} });
+  });
+
+  it("returns provider turn and terminal coverage for overlay reconciliation", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-coverage");
+    const sessionId = "coverage-session";
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        {
+          id: "turn-start-event",
+          type: "assistant.turn_start",
+          timestamp: "2026-07-21T17:00:00.000Z",
+          data: { turnId: "provider-turn-1" },
+        },
+        {
+          id: "assistant-event",
+          type: "assistant.message",
+          timestamp: "2026-07-21T17:00:01.000Z",
+          data: { content: "Done" },
+        },
+        {
+          id: "terminal-event",
+          type: "session.idle",
+          timestamp: "2026-07-21T17:00:02.000Z",
+          data: {},
+        },
+      ],
+    });
+    const { deps } = createDeps(copilotHome);
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 10 });
+
+    expect(result.messages).toMatchObject([
+      {
+        content: "Done",
+        turnId: "provider-turn-1",
+        sourceEventId: "assistant-event",
+      },
+    ]);
+    expect(result.coverage).toEqual({
+      latestEventId: "terminal-event",
+      latestTurnId: "provider-turn-1",
+      latestTerminalEventId: "terminal-event",
+    });
   });
 });
 

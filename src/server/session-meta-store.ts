@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import { createBridgeSessionStateStore, type BridgeSessionState } from "./bridge-session-state-store.js";
+import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
 // ── Schedule run retention ────────────────────────────────────────
 
@@ -45,6 +46,7 @@ export interface SessionMeta {
   scheduleName?: string;
   lastVisibleActivityAt?: string;
   lastAttentionAt?: string;
+  terminalOverlay?: SyntheticTerminalOverlay;
 }
 
 export interface ScheduleRunRecord {
@@ -67,7 +69,8 @@ export function createSessionMetaStore(db: DatabaseSync) {
       || state.scheduleId !== undefined
       || state.scheduleName !== undefined
       || state.lastVisibleActivityAt !== undefined
-      || state.lastAttentionAt !== undefined;
+      || state.lastAttentionAt !== undefined
+      || state.terminalOverlay !== undefined;
   }
 
   function hydrate(state: BridgeSessionState): SessionMeta {
@@ -79,6 +82,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
       scheduleName: state.scheduleName,
       lastVisibleActivityAt: state.lastVisibleActivityAt,
       lastAttentionAt: state.lastAttentionAt,
+      terminalOverlay: state.terminalOverlay,
     };
   }
 
@@ -118,6 +122,18 @@ export function createSessionMetaStore(db: DatabaseSync) {
 
   function replaceLastAttentionAt(sessionId: string, lastAttentionAt?: string): void {
     bridgeSessionStateStore.replaceLastAttentionAt(sessionId, lastAttentionAt);
+  }
+
+  function getTerminalOverlay(sessionId: string): SyntheticTerminalOverlay | undefined {
+    return bridgeSessionStateStore.getState(sessionId)?.terminalOverlay;
+  }
+
+  function setTerminalOverlay(sessionId: string, overlay: SyntheticTerminalOverlay): void {
+    bridgeSessionStateStore.setTerminalOverlay(sessionId, overlay);
+  }
+
+  function clearTerminalOverlay(sessionId: string): void {
+    bridgeSessionStateStore.clearTerminalOverlay(sessionId);
   }
 
   function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {
@@ -192,6 +208,9 @@ export function createSessionMetaStore(db: DatabaseSync) {
     replaceLastVisibleActivityAt,
     setLastAttentionAt,
     replaceLastAttentionAt,
+    getTerminalOverlay,
+    setTerminalOverlay,
+    clearTerminalOverlay,
     recordScheduleRun,
     pruneScheduleRuns,
     listMeta,

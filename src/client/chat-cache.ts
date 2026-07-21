@@ -1,10 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Attachment, ChatCompletionEntry, ChatEntry, ChatMessage, ToolCall } from "./api";
+import type { Attachment, ChatEntry, ToolCall } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
 const recentSessionIds: string[] = [];
-const CLIENT_GENERATED_ID_PREFIXES = ["stream-", "local-", "err-", "draft-"] as const;
+const CLIENT_GENERATED_ID_PREFIXES = ["local-", "err-", "draft-"] as const;
 
 export interface ChatHistorySnapshot {
   sessionId: string;
@@ -140,123 +140,6 @@ export function normalizeCommittedClientEntries(
     if (!isClientGeneratedEntry(entry) || isUnsafeCommittedClientEntry(entry)) return entry;
     return { ...entry, id: undefined };
   });
-}
-
-function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.type === "visual" || entry?.type === "tool" || entry?.type === "completion" || entry?.type === "skill") continue;
-    return entry;
-  }
-  return undefined;
-}
-
-function findLastToolEntryIndex(entries: ChatEntry[], toolCallId: string): number {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.type === "tool" && entry.toolCall?.toolCallId === toolCallId) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function hasMessageAfterIndex(entries: ChatEntry[], index: number): boolean {
-  for (let currentIndex = index + 1; currentIndex < entries.length; currentIndex += 1) {
-    const entry = entries[currentIndex];
-    if (entry?.type === "visual" || entry?.type === "skill") continue;
-    if (entry?.type !== "tool") return true;
-  }
-  return false;
-}
-
-function mergeLiveToolEntry(existingEntry: Extract<ChatEntry, { type: "tool" }>, incomingEntry: Extract<ChatEntry, { type: "tool" }>): Extract<ChatEntry, { type: "tool" }> {
-  return {
-    ...existingEntry,
-    ...incomingEntry,
-    id: existingEntry.id ?? incomingEntry.id,
-    toolCall: {
-      ...existingEntry.toolCall,
-      ...incomingEntry.toolCall,
-      toolCallId: incomingEntry.toolCall.toolCallId,
-      name: incomingEntry.toolCall.name ?? existingEntry.toolCall.name,
-      args: incomingEntry.toolCall.args ?? existingEntry.toolCall.args,
-      result: incomingEntry.toolCall.result ?? existingEntry.toolCall.result,
-      progressText: incomingEntry.toolCall.progressText ?? existingEntry.toolCall.progressText,
-      success: incomingEntry.toolCall.success ?? existingEntry.toolCall.success,
-      parentToolCallId: incomingEntry.toolCall.parentToolCallId ?? existingEntry.toolCall.parentToolCallId,
-      isSubAgent: incomingEntry.toolCall.isSubAgent ?? existingEntry.toolCall.isSubAgent,
-      childToolCalls: incomingEntry.toolCall.childToolCalls ?? existingEntry.toolCall.childToolCalls,
-      startedAt: incomingEntry.toolCall.startedAt ?? existingEntry.toolCall.startedAt,
-      completedAt: incomingEntry.toolCall.completedAt ?? existingEntry.toolCall.completedAt,
-    },
-  };
-}
-
-function isDuplicateLiveMessageEntry(previousEntries: ChatEntry[], incomingEntry: ChatEntry): boolean {
-  if (incomingEntry.type === "tool" || incomingEntry.type === "visual" || incomingEntry.type === "completion" || incomingEntry.type === "skill") return false;
-  const lastMessage = findLastMessage(previousEntries);
-  return lastMessage?.role === incomingEntry.role && lastMessage?.content === incomingEntry.content;
-}
-
-function isDuplicateLiveCompletionEntry(previousEntries: ChatEntry[], incomingEntry: ChatCompletionEntry): boolean {
-  // Only a completion currently at the tail of the transcript can be a reconnect/replay duplicate.
-  // A genuinely distinct later turn appends its completion after new message/tool/visual entries, so
-  // its trailing entry won't be the matching completion — which keeps identical-summary turns intact.
-  const lastEntry = previousEntries[previousEntries.length - 1];
-  if (!lastEntry || lastEntry.type !== "completion") return false;
-
-  // Same turn re-delivered: a live stream drop + reconnect replays the same turn id.
-  if (incomingEntry.turnId && lastEntry.turnId && incomingEntry.turnId === lastEntry.turnId) {
-    return true;
-  }
-
-  // A reconnect/snapshot replay of an already-rendered terminal completion can carry a different
-  // turn id than the canonical disk entry (disk `turn-N` vs live `turn-<uuid>`), so fall back to
-  // content + source identity — but only for snapshot-derived completions, so distinct live turns
-  // with identical summaries are never collapsed.
-  if (incomingEntry.liveSource === "snapshot") {
-    return lastEntry.content === incomingEntry.content
-      && lastEntry.completion.sourceEventType === incomingEntry.completion.sourceEventType;
-  }
-
-  return false;
-}
-
-export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries: ChatEntry[]): ChatEntry[] {
-  let nextEntries = previousEntries;
-
-  for (const incomingEntry of incomingEntries) {
-    if (incomingEntry.type === "tool") {
-      const toolCallId = incomingEntry.toolCall?.toolCallId;
-      if (toolCallId) {
-        const existingToolIndex = findLastToolEntryIndex(nextEntries, toolCallId);
-        const shouldMergeIntoExistingEntry = existingToolIndex >= 0
-          && (incomingEntry.liveSource === "snapshot" || !hasMessageAfterIndex(nextEntries, existingToolIndex));
-        if (shouldMergeIntoExistingEntry) {
-          if (nextEntries === previousEntries) nextEntries = [...previousEntries];
-          const existingToolEntry = nextEntries[existingToolIndex] as Extract<ChatEntry, { type: "tool" }>;
-          nextEntries[existingToolIndex] = mergeLiveToolEntry(existingToolEntry, incomingEntry);
-          continue;
-        }
-      }
-    }
-    if (incomingEntry.type === "visual") {
-      const artifactId = incomingEntry.visual?.artifactId;
-      if (artifactId) {
-        const alreadyPresent = nextEntries.some(
-          (e) => e.type === "visual" && e.visual?.artifactId === artifactId,
-        );
-        if (alreadyPresent) continue;
-      }
-    }
-    if (incomingEntry.type === "completion" && isDuplicateLiveCompletionEntry(nextEntries, incomingEntry)) continue;
-    if (isDuplicateLiveMessageEntry(nextEntries, incomingEntry)) continue;
-    if (nextEntries === previousEntries) nextEntries = [...previousEntries];
-    nextEntries.push(incomingEntry);
-  }
-
-  return nextEntries;
 }
 
 export function mergeTailMessages(

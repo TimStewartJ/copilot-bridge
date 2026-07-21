@@ -242,6 +242,37 @@ describe("event-transform visible activity", () => {
   });
 });
 
+describe("event-transform stable identity", () => {
+  it("preserves provider turn and event identities", () => {
+    const entries = transformEventsToMessages([
+      {
+        id: "turn-start-event",
+        type: "assistant.turn_start",
+        data: { turnId: "provider-turn-1" },
+      },
+      {
+        id: "assistant-event",
+        type: "assistant.message",
+        data: { content: "Hello" },
+      },
+      {
+        id: "terminal-event",
+        type: "session.idle",
+        data: {},
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "message",
+        content: "Hello",
+        turnId: "provider-turn-1",
+        sourceEventId: "assistant-event",
+      },
+    ]);
+  });
+});
+
 describe("event-transform skill injection", () => {
   it("renders agent-injected skill context as a skill entry, not a user message", () => {
     const events = [

@@ -92,6 +92,7 @@ import {
   clearEventLogStatsCache,
   listSessionsFromDisk as listSessionsFromDiskWithDeps,
   readMessagesFromDisk as readMessagesFromDiskWithDeps,
+  type ReadMessagesFromDiskResult,
 } from "./session-disk-reader.js";
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -679,6 +680,12 @@ export class SessionManager {
         this.cancelPendingUserInputRequests(sessionId, reason, message),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
       promptDeliveryShutdownMessage: PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
+      persistTerminalOverlay: (sessionId, overlay) => {
+        this.deps.sessionMetaStore?.setTerminalOverlay(sessionId, overlay);
+      },
+      clearTerminalOverlay: (sessionId) => {
+        this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
+      },
       logger: console,
     });
     this.sessionRuns = this.runStateController.getRunRecords();
@@ -3380,7 +3387,10 @@ export class SessionManager {
    * Returns messages instantly for the fast-load path.
    * Async to avoid blocking the event loop.
    */
-  async readMessagesFromDisk(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: any[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
+  async readMessagesFromDisk(
+    sessionId: string,
+    opts?: { limit?: number; before?: number },
+  ): Promise<ReadMessagesFromDiskResult> {
     return readMessagesFromDiskWithDeps({
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
@@ -3391,6 +3401,10 @@ export class SessionManager {
       persistLastVisibleActivityAt: (sessionId, lastVisibleActivityAt) =>
         this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt),
     }, sessionId, opts);
+  }
+
+  waitForSessionRecoveryIdle(sessionId: string): Promise<void> {
+    return this.sessionRunner.waitForRecoveryIdle(sessionId);
   }
 
   /**
@@ -3498,6 +3512,7 @@ export class SessionManager {
         "Session was deleted before the user input request was answered",
       );
       await this.evictCachedSession(sessionId);
+      this.deps.eventBusRegistry.deleteBus(sessionId);
       this.agentRegistry.forget(sessionId);
       clearEventLogStatsCache(sessionId);
       try {
