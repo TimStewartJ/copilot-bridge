@@ -362,7 +362,10 @@ export async function prepareReleaseSlot(options: PrepareReleaseSlotOptions): Pr
       throw error;
     }
 
-    const buildResult = await options.run(buildCommand, tempRoot, { timeoutMs: buildTimeoutMs });
+    const buildResult = await options.run(buildCommand, tempRoot, {
+      timeoutMs: buildTimeoutMs,
+      isolateRuntimeEnv: true,
+    });
     if (!buildResult.ok) {
       return {
         ok: false,

@@ -127,7 +127,11 @@ async function prepareOrReuseReleaseCandidate(options: {
     source: "self_update",
     validationMode: "deploy",
     run: async (command, cwd, runOptions) =>
-      options.run(command, { cwd, timeoutMs: runOptions?.timeoutMs }),
+      options.run(command, {
+        cwd,
+        timeoutMs: runOptions?.timeoutMs,
+        isolateRuntimeEnv: runOptions?.isolateRuntimeEnv,
+      }),
     log: options.log,
     installCommand: SELF_UPDATE_INSTALL_COMMAND,
     installTimeoutMs: SELF_UPDATE_INSTALL_TIMEOUT_MS,

@@ -10,6 +10,7 @@ import {
   resolveReleaseCandidate,
   writeActiveRelease,
 } from "../release-slots.js";
+import type { ValidationCommandOptions } from "../validation-pipeline.js";
 import { makeTestDir } from "./helpers.js";
 
 function writeSourceFixture(sourceDir: string): void {
@@ -40,7 +41,7 @@ describe("release slots", () => {
     const sourceDir = makeTestDir("release-slot-source");
     const dataDir = makeTestDir("release-slot-data");
     writeSourceFixture(sourceDir);
-    const commands: Array<{ command: string; cwd: string }> = [];
+    const commands: Array<{ command: string; cwd: string; options?: ValidationCommandOptions }> = [];
 
     const result = await prepareReleaseSlot({
       sourceDir,
@@ -51,8 +52,8 @@ describe("release slots", () => {
       installCommand: "npm install --test",
       installTimeoutMs: 30_000,
       now: new Date("2026-05-18T20:00:00.000Z"),
-      run: async (command, cwd) => {
-        commands.push({ command, cwd });
+      run: async (command, cwd, options) => {
+        commands.push({ command, cwd, options });
         if (command === "npm install --test") {
           mkdirSync(join(cwd, "node_modules", "installed"), { recursive: true });
           writeFileSync(join(cwd, "node_modules", "installed", "index.js"), "installed");
@@ -68,6 +69,7 @@ describe("release slots", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.output);
     expect(commands.map((entry) => entry.command)).toEqual(["npm install --test", "npm run build"]);
+    expect(commands[1]?.options).toMatchObject({ isolateRuntimeEnv: true });
     expect(existsSync(join(result.manifest.root, "src", "server", "index.ts"))).toBe(true);
     expect(existsSync(join(result.manifest.root, "src", "data", "fixture.ts"))).toBe(true);
     expect(existsSync(join(result.manifest.root, ".github", "workflows", "ci.yml"))).toBe(true);
