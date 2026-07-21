@@ -1798,7 +1798,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
+    await manager.waitForSessionRecoveryIdle(sessionId);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
@@ -1823,7 +1823,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
+    await manager.waitForSessionRecoveryIdle(sessionId);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("stalled");
@@ -1857,7 +1857,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
+    await manager.waitForSessionRecoveryIdle(sessionId);
     await flushMicrotasks();
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
     expect(resumeSession).toHaveBeenCalledTimes(1);
@@ -1874,7 +1874,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
+    await manager.waitForSessionRecoveryIdle(sessionId);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("stalled");
@@ -1969,6 +1969,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryResumeStarted("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
 
@@ -2454,6 +2455,7 @@ describe("SessionManager run state", () => {
 
     // Trigger first stall + recovery
     await vi.advanceTimersByTimeAsync(300_000);
+    await manager.waitForSessionRecoveryResumeStarted("session-1");
     await flushMicrotasks();
     expect(resumeSession).toHaveBeenCalledTimes(2);
     // Recovery is still in progress — advance another watchdog interval
@@ -2531,6 +2533,7 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("idle");
 
     resolveRecovery(recovered.session);
+    await manager.waitForSessionRecoveryIdle("session-1");
     await flushMicrotasks();
 
     expect(recovered.session.on).not.toHaveBeenCalled();
@@ -2838,10 +2841,8 @@ describe("SessionManager run state", () => {
       await flushMicrotasks();
 
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryResumeStarted(sessionId);
       await flushMicrotasks();
-      await vi.waitFor(() => {
-        expect(manager.backend!.resumeSession).toHaveBeenCalledTimes(2);
-      }, { timeout: 5_000 });
 
       const baseTime = Date.now();
       writeFileSync(join(sessionStateDir, "events.jsonl"), [
@@ -2887,6 +2888,7 @@ describe("SessionManager run state", () => {
       await flushMicrotasks();
 
       await vi.advanceTimersByTimeAsync(300_000);
+      await manager.waitForSessionRecoveryResumeStarted(sessionId);
       await flushMicrotasks();
 
       const baseTime = Date.now();
@@ -3044,6 +3046,7 @@ describe("SessionManager run state", () => {
     expect(resumeSession).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(240_000);
+    await manager.waitForSessionRecoveryResumeStarted("session-1");
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
     expect(resumeSession).toHaveBeenCalledTimes(2);

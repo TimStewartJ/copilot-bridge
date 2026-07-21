@@ -256,6 +256,10 @@ export interface SessionRunnerDeps {
 
 export class SessionRunner {
   private readonly recoveryPromises = new Map<string, Promise<void>>();
+  private readonly recoveryResumeSignals = new Map<string, {
+    promise: Promise<void>;
+    resolve: () => void;
+  }>();
 
   constructor(private readonly deps: SessionRunnerDeps) {}
 
@@ -265,6 +269,14 @@ export class SessionRunner {
       if (!pending) return;
       await pending;
     }
+  }
+
+  waitForRecoveryResumeStarted(sessionId: string): Promise<void> {
+    const signal = this.recoveryResumeSignals.get(sessionId);
+    if (!signal) {
+      return Promise.reject(new Error(`No recovery resume signal exists for session ${sessionId}`));
+    }
+    return signal.promise;
   }
 
   private get client(): AgentBackend | null {
@@ -338,6 +350,14 @@ export class SessionRunner {
     }
 
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
+    let resolveRecoveryResume!: () => void;
+    const recoveryResumePromise = new Promise<void>((resolve) => {
+      resolveRecoveryResume = resolve;
+    });
+    this.recoveryResumeSignals.set(sessionId, {
+      promise: recoveryResumePromise,
+      resolve: resolveRecoveryResume,
+    });
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
     bus.setPendingPrompt(prompt);
@@ -1436,8 +1456,10 @@ export class SessionRunner {
     const resumeFreshRecoverySession = async (): Promise<any> => {
       const resumeStart = Date.now();
       console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
+      const resumePromise = this.client!.resumeSession(sessionId, resumeConfig);
+      this.recoveryResumeSignals.get(sessionId)?.resolve();
       const recoveredSession = await resumeSessionWithTimeout(
-        this.client!.resumeSession(sessionId, resumeConfig),
+        resumePromise,
         "resumeSession timed out after 60s",
       );
       const resumeDuration = Date.now() - resumeStart;
