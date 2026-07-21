@@ -71,7 +71,7 @@ export default function ScheduleRow({
               className={`${isCompact ? "p-0.5" : "p-1"} text-text-muted hover:text-warning transition-colors`}
               title={schedule.enabled ? "Pause" : "Resume"}
             >
-              <Pause size={buttonSize} />
+              {schedule.enabled ? <Pause size={buttonSize} /> : <Play size={buttonSize} />}
             </button>
           )}
           {onEdit && (
