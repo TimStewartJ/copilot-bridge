@@ -21,6 +21,7 @@ import {
   validateSupportedCronExpression,
 } from "../scheduler.js";
 import { createTestApp } from "./helpers.js";
+import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {
   clearRestartPending();
@@ -561,6 +562,99 @@ describe("scheduler restart gating", () => {
     expect(result).toEqual({ sessionId: "new-session" });
     expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
     expect(ctx.sessionMetaStore.isArchived("old-session")).toBe(true);
+  });
+
+  it("prunes run history after retention, preserving retryable sessions", async () => {
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn((id: string) => id === "busy-old"),
+      listSessionsFromDisk: vi.fn().mockResolvedValue([
+        { sessionId: "new-session" },
+        { sessionId: "busy-old" },
+        { sessionId: "archivable-old" },
+      ]),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Retained schedule",
+      prompt: "run now",
+      type: "cron",
+      cron: "0 0 * * *",
+      autoArchiveKeep: 1,
+    });
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "busy-old", "2026-01-02T00:00:00.000Z");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "archivable-old", "2026-01-01T00:00:00.000Z");
+
+    const pruneSpy = vi.spyOn(ctx.sessionMetaStore, "pruneScheduleRuns");
+
+    const result = await scheduler.triggerSchedule(schedule.id);
+
+    expect(result).toEqual({ sessionId: "new-session" });
+    // Retention behavior unchanged: the idle older session is archived, the busy one is not.
+    expect(ctx.sessionMetaStore.isArchived("archivable-old")).toBe(true);
+    expect(ctx.sessionMetaStore.isArchived("busy-old")).toBe(false);
+    // Prune runs after retention with the resolved cap and protects retryable sessions.
+    expect(pruneSpy).toHaveBeenCalledWith(schedule.id, resolveScheduleRunsKeep(1), ["busy-old"]);
+  });
+
+  it("bounds run history to the configured cap on trigger", async () => {
+    vi.stubEnv("BRIDGE_SCHEDULE_RUNS_KEEP", "3");
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      listSessionsFromDisk: vi.fn().mockResolvedValue([]),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    // No autoArchiveKeep → retention is a no-op, cap resolves to the env value (3).
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Frequent schedule",
+      prompt: "run now",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    for (let i = 0; i < 4; i++) {
+      ctx.sessionMetaStore.recordScheduleRun(
+        schedule.id,
+        `old-${i}`,
+        new Date(Date.UTC(2026, 0, 1, 0, i, 0)).toISOString(),
+      );
+    }
+
+    const result = await scheduler.triggerSchedule(schedule.id);
+    expect(result).toEqual({ sessionId: "new-session" });
+
+    const remaining = ctx.sessionMetaStore.listSessionIdsBySchedule(schedule.id);
+    expect(remaining).toHaveLength(3);
+    expect(remaining[0]).toBe("new-session"); // newest first
+    expect(remaining).toEqual(["new-session", "old-3", "old-2"]);
   });
 
   it("allows manual triggers even when the last run was recent", async () => {

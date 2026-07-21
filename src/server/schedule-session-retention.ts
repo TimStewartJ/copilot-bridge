@@ -19,6 +19,13 @@ export interface ScheduleSessionRetentionDeps {
 export interface ScheduleSessionRetentionResult {
   archivedSessionIds: string[];
   skippedSessionIds: string[];
+  /**
+   * Candidate sessions that still exist but were not archived this pass because
+   * they are busy or have active deferred work. Their run-history rows should be
+   * preserved so retention can retry them on a later fire. Excludes sessions
+   * that are missing from disk (those should be pruned as orphans).
+   */
+  retainableSessionIds: string[];
 }
 
 function hasActiveDeferredWork(
@@ -42,7 +49,7 @@ export async function enforceScheduleSessionRetention(
 ): Promise<ScheduleSessionRetentionResult> {
   const keepCount = deps.schedule.autoArchiveKeep;
   if (typeof keepCount !== "number" || !Number.isInteger(keepCount) || keepCount <= 0) {
-    return { archivedSessionIds: [], skippedSessionIds: [] };
+    return { archivedSessionIds: [], skippedSessionIds: [], retainableSessionIds: [] };
   }
 
   const runs = deps.sessionMetaStore.listScheduleRuns(deps.schedule.id);
@@ -58,19 +65,22 @@ export async function enforceScheduleSessionRetention(
   }
 
   if (candidates.size === 0) {
-    return { archivedSessionIds: [], skippedSessionIds: [] };
+    return { archivedSessionIds: [], skippedSessionIds: [], retainableSessionIds: [] };
   }
 
   const sessions = await deps.sessionManager.listSessionsFromDisk({ includeArchived: true });
   const existingSessionIds = new Set(sessions.map((session: { sessionId: string }) => session.sessionId));
   const archivedSessionIds: string[] = [];
   const skippedSessionIds: string[] = [];
+  const retainableSessionIds: string[] = [];
 
   for (const sessionId of candidates) {
-    if (!existingSessionIds.has(sessionId)
-      || deps.sessionManager.isSessionBusy(sessionId)
-      || hasActiveDeferredWork(sessionId, deps)) {
+    const exists = existingSessionIds.has(sessionId);
+    const blocked = exists
+      && (deps.sessionManager.isSessionBusy(sessionId) || hasActiveDeferredWork(sessionId, deps));
+    if (!exists || blocked) {
       skippedSessionIds.push(sessionId);
+      if (blocked) retainableSessionIds.push(sessionId);
       continue;
     }
 
@@ -80,5 +90,5 @@ export async function enforceScheduleSessionRetention(
     archivedSessionIds.push(sessionId);
   }
 
-  return { archivedSessionIds, skippedSessionIds };
+  return { archivedSessionIds, skippedSessionIds, retainableSessionIds };
 }

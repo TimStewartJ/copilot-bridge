@@ -50,7 +50,7 @@ describe("schedule session retention", () => {
       globalBus: bus,
     });
 
-    expect(result).toEqual({ archivedSessionIds: [], skippedSessionIds: [] });
+    expect(result).toEqual({ archivedSessionIds: [], skippedSessionIds: [], retainableSessionIds: [] });
     expect(sessionMetaStore.isArchived("older")).toBe(false);
   });
 
@@ -87,6 +87,7 @@ describe("schedule session retention", () => {
 
     expect(result.archivedSessionIds).toEqual(["old"]);
     expect(result.skippedSessionIds).toEqual(["busy", "deferred", "missing"]);
+    expect(result.retainableSessionIds).toEqual(["busy", "deferred"]);
     expect(sessionMetaStore.isArchived("latest")).toBe(false);
     expect(sessionMetaStore.isArchived("busy")).toBe(false);
     expect(sessionMetaStore.isArchived("deferred")).toBe(false);
@@ -115,7 +116,7 @@ describe("schedule session retention", () => {
       globalBus: createGlobalBus(),
     });
 
-    expect(result).toEqual({ archivedSessionIds: [], skippedSessionIds: ["older"] });
+    expect(result).toEqual({ archivedSessionIds: [], skippedSessionIds: ["older"], retainableSessionIds: ["older"] });
     expect(sessionMetaStore.isArchived("older")).toBe(false);
   });
 });
