@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
+import type { PrepareReleaseSlotOptions } from "../release-slots.js";
 import { makeTestDir } from "./helpers.js";
 
 const activeReleaseMock = vi.hoisted(() => ({
@@ -156,5 +157,64 @@ describe("runSelfUpdateJob active-release drift", () => {
     expect(result.resultType).toBe("failure");
     expect(result.textResultForLlm).toContain("Manual recovery is required");
     expect(writeRestartSignalFileMock).not.toHaveBeenCalled();
+  });
+
+  it("isolates release-slot validation from the running Bridge environment", async () => {
+    const oldSha = "1111111111111111111111111111111111111111";
+    const headSha = "2222222222222222222222222222222222222222";
+    const dataDir = makeTestDir("self-update-isolation");
+    const liveDataDir = makeTestDir("self-update-live-data");
+    activeReleaseMock.value = manifest(oldSha, dataDir);
+    vi.stubEnv("BRIDGE_DATA_DIR", liveDataDir);
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
+    prepareReleaseSlotMock.mockImplementation(async (options: PrepareReleaseSlotOptions) => {
+      const result = await options.run("npm run check:deploy", options.sourceDir, {
+        timeoutMs: 600_000,
+        isolateRuntimeEnv: true,
+      });
+      expect(result.ok).toBe(true);
+      return { ok: true, manifest: manifest(headSha, dataDir) };
+    });
+    runValidationCommandMock.mockImplementation(async (options: {
+      command: string;
+      env?: NodeJS.ProcessEnv;
+    }) => {
+      if (options.command === "npm run check:deploy") {
+        expect(options.env?.BRIDGE_DATA_DIR).toBeTruthy();
+        expect(options.env?.BRIDGE_DATA_DIR).not.toBe(liveDataDir);
+        return { ok: true, output: "" };
+      }
+      if (options.command.startsWith("git merge-base --is-ancestor")) {
+        return { ok: true, output: "" };
+      }
+      return {
+        ok: true,
+        output: options.command === "git rev-parse --short HEAD"
+          ? "22222222\n"
+          : options.command === "git rev-parse --abbrev-ref HEAD"
+            ? "main\n"
+            : options.command === "git pull --rebase origin main"
+              ? "Already up to date.\n"
+              : `${headSha}\n`,
+      };
+    });
+
+    const { runSelfUpdateJob } = await import("../self-update-job.js");
+    const result = await runSelfUpdateJob({}, {
+      controlRoot: process.cwd(),
+      runtimePaths: {
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: sourceManagedEnv(),
+      },
+      log: () => {},
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(prepareReleaseSlotMock).toHaveBeenCalledOnce();
+    expect(runValidationCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "npm run check:deploy" }),
+    );
   });
 });

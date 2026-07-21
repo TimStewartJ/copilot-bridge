@@ -13,8 +13,12 @@ async function loadPublicUrl(
   env: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {},
 ) {
   vi.resetModules();
+  const isolatedEnv = {
+    BRIDGE_DATA_DIR: makeTestDir("public-url"),
+    ...env,
+  };
   for (const key of ENV_KEYS) {
-    vi.stubEnv(key, env[key]);
+    vi.stubEnv(key, isolatedEnv[key]);
   }
   return import("../public-url.js");
 }
