@@ -4,7 +4,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import type { AutomaticRunClaim, Schedule, ScheduleStore, ScheduleTriggerSource } from "./schedule-store.js";
 import type { TaskStore } from "./task-store.js";
-import type { SessionMetaStore } from "./session-meta-store.js";
+import { resolveScheduleRunsKeep, type SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
 import type { DeferredPromptStore } from "./deferred-prompt-store.js";
@@ -575,7 +575,7 @@ export async function triggerSchedule(
     sessionMetaStore.setScheduleMeta(sessionId, scheduleId, schedule.name);
     sessionMetaStore.recordScheduleRun(scheduleId, sessionId);
     try {
-      await enforceScheduleSessionRetention({
+      const retention = await enforceScheduleSessionRetention({
         schedule,
         sessionMetaStore,
         sessionManager: sessionMgr,
@@ -583,8 +583,16 @@ export async function triggerSchedule(
         deferredPromptStore,
         deferLoopStore,
       });
+      // Bound per-schedule run history so it can't grow without limit. Runs after
+      // retention (and only if it succeeded) so retention always sees the full row
+      // set; rows for sessions retention still wants to retry are preserved.
+      sessionMetaStore.pruneScheduleRuns(
+        scheduleId,
+        resolveScheduleRunsKeep(schedule.autoArchiveKeep),
+        retention.retainableSessionIds,
+      );
     } catch (err) {
-      console.warn(`[scheduler] Failed to apply retention for "${schedule.name}" (${schedule.id}):`, err);
+      console.warn(`[scheduler] Failed to apply retention/prune for "${schedule.name}" (${schedule.id}):`, err);
     }
     releaseScheduleRunClaim();
 

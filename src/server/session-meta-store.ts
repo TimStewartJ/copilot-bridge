@@ -1,6 +1,40 @@
 import type { DatabaseSync } from "./db.js";
 import { createBridgeSessionStateStore, type BridgeSessionState } from "./bridge-session-state-store.js";
 
+// ── Schedule run retention ────────────────────────────────────────
+
+/** Default number of schedule_runs rows retained per schedule. */
+export const DEFAULT_SCHEDULE_RUNS_KEEP = 500;
+/** Extra rows kept above a schedule's autoArchiveKeep so retention has headroom. */
+export const SCHEDULE_RUNS_KEEP_HEADROOM = 50;
+
+function readScheduleRunsKeepEnv(): number {
+  const raw = process.env.BRIDGE_SCHEDULE_RUNS_KEEP;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      if (Number.isInteger(parsed) && parsed >= 1) return parsed;
+    }
+  }
+  return DEFAULT_SCHEDULE_RUNS_KEEP;
+}
+
+/**
+ * Resolve how many schedule_runs rows to retain for a schedule. Defaults to
+ * BRIDGE_SCHEDULE_RUNS_KEEP (or {@link DEFAULT_SCHEDULE_RUNS_KEEP}). When a
+ * schedule configures autoArchiveKeep, keep at least that many rows plus
+ * {@link SCHEDULE_RUNS_KEEP_HEADROOM} so session retention still sees the full
+ * keep window plus a buffer of candidates.
+ */
+export function resolveScheduleRunsKeep(autoArchiveKeep?: number | null): number {
+  const base = readScheduleRunsKeepEnv();
+  if (typeof autoArchiveKeep === "number" && Number.isInteger(autoArchiveKeep) && autoArchiveKeep > 0) {
+    return Math.max(base, autoArchiveKeep + SCHEDULE_RUNS_KEEP_HEADROOM);
+  }
+  return base;
+}
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface SessionMeta {
@@ -93,6 +127,32 @@ export function createSessionMetaStore(db: DatabaseSync) {
     `).run(scheduleId, sessionId, recordedAt);
   }
 
+  /**
+   * Bound per-schedule run history to the newest `keep` rows. Idempotent: a
+   * no-op when at or below the bound. `retainSessionIds` rows are never pruned
+   * (used to preserve sessions retention still wants to retry, e.g. busy or
+   * sessions with active deferred work). Ordering matches listScheduleRuns; the
+   * idx_schedule_runs_schedule index serves the scheduleId filter.
+   */
+  function pruneScheduleRuns(scheduleId: string, keep: number, retainSessionIds: string[] = []): number {
+    if (!Number.isInteger(keep) || keep <= 0) return 0;
+    const retained = [...new Set(retainSessionIds)];
+    const exclusion = retained.length > 0
+      ? `AND sessionId NOT IN (${retained.map(() => "?").join(", ")})`
+      : "";
+    const result = db.prepare(`
+      DELETE FROM schedule_runs
+      WHERE id IN (
+        SELECT id FROM schedule_runs
+        WHERE scheduleId = ?
+        ORDER BY datetime(recordedAt) DESC, id DESC
+        LIMIT -1 OFFSET ?
+      )
+      ${exclusion}
+    `).run(scheduleId, keep, ...retained) as { changes?: number };
+    return result.changes ?? 0;
+  }
+
   function listMeta(): MetaMap {
     const states = bridgeSessionStateStore.listStates();
     const result: MetaMap = {};
@@ -133,6 +193,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
     setLastAttentionAt,
     replaceLastAttentionAt,
     recordScheduleRun,
+    pruneScheduleRuns,
     listMeta,
     listScheduleRuns,
     listSessionIdsBySchedule,

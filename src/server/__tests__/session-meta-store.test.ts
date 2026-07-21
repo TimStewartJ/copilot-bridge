@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers.js";
-import { createSessionMetaStore } from "../session-meta-store.js";
+import { createSessionMetaStore, resolveScheduleRunsKeep, DEFAULT_SCHEDULE_RUNS_KEEP } from "../session-meta-store.js";
 import type { SessionMetaStore } from "../session-meta-store.js";
 import type { DatabaseSync } from "../db.js";
 import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
@@ -158,5 +158,120 @@ describe("session-meta-store", () => {
     expect(store.listSessionIdsBySchedule("sched-a")).toEqual(["shared"]);
     expect(store.listSessionIdsBySchedule("sched-b")).toEqual(["shared"]);
     expect(store.getMeta("shared")?.scheduleId).toBe("sched-b");
+  });
+});
+
+// Record `count` runs for a schedule with strictly increasing timestamps so the
+// newest-first ordering is deterministic. Returns sessionIds oldest-first.
+function seedRuns(store: SessionMetaStore, scheduleId: string, count: number): string[] {
+  const sessionIds: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const sessionId = `${scheduleId}-s${i}`;
+    const recordedAt = new Date(Date.UTC(2026, 0, 1, 0, 0, 0) + i * 60_000).toISOString();
+    store.recordScheduleRun(scheduleId, sessionId, recordedAt);
+    sessionIds.push(sessionId);
+  }
+  return sessionIds;
+}
+
+describe("pruneScheduleRuns", () => {
+  it("keeps the newest N rows, prunes older ones, and preserves ordering", () => {
+    const ids = seedRuns(store, "sched-a", 6); // s0 (oldest) … s5 (newest)
+    store.recordScheduleRun("other", "other-1");
+
+    const deleted = store.pruneScheduleRuns("sched-a", 3);
+
+    expect(deleted).toBe(3);
+    expect(store.listSessionIdsBySchedule("sched-a")).toEqual([ids[5], ids[4], ids[3]]);
+    // Unrelated schedules are untouched.
+    expect(store.listSessionIdsBySchedule("other")).toEqual(["other-1"]);
+  });
+
+  it("is idempotent and a no-op at or below the cap", () => {
+    seedRuns(store, "sched-a", 3);
+
+    expect(store.pruneScheduleRuns("sched-a", 5)).toBe(0);
+    expect(store.pruneScheduleRuns("sched-a", 3)).toBe(0);
+    expect(store.listScheduleRuns("sched-a")).toHaveLength(3);
+
+    // First prune trims, second prune is a no-op.
+    seedRuns(store, "sched-b", 5);
+    expect(store.pruneScheduleRuns("sched-b", 2)).toBe(3);
+    expect(store.pruneScheduleRuns("sched-b", 2)).toBe(0);
+    expect(store.listScheduleRuns("sched-b")).toHaveLength(2);
+  });
+
+  it("never prunes rows for retained session ids even when older than the cap", () => {
+    const ids = seedRuns(store, "sched-a", 6); // s0 … s5
+
+    // Keep newest 2 (s5, s4) but also protect an old session (s0).
+    const deleted = store.pruneScheduleRuns("sched-a", 2, [ids[0]]);
+
+    expect(deleted).toBe(3); // s1, s2, s3 removed; s0 protected, s4/s5 kept
+    expect(store.listSessionIdsBySchedule("sched-a")).toEqual([ids[5], ids[4], ids[0]]);
+  });
+
+  it("guards against non-positive keep values without deleting everything", () => {
+    seedRuns(store, "sched-a", 4);
+
+    expect(store.pruneScheduleRuns("sched-a", 0)).toBe(0);
+    expect(store.pruneScheduleRuns("sched-a", -5)).toBe(0);
+    expect(store.pruneScheduleRuns("sched-a", 1.5)).toBe(0);
+    expect(store.listScheduleRuns("sched-a")).toHaveLength(4);
+  });
+
+  it("bounds growth when recording more runs than the resolved cap", () => {
+    const cap = resolveScheduleRunsKeep(undefined); // default 500
+    const ids = seedRuns(store, "sched-a", cap + 25);
+
+    store.pruneScheduleRuns("sched-a", cap);
+
+    const remaining = store.listSessionIdsBySchedule("sched-a");
+    expect(remaining).toHaveLength(cap);
+    // Newest `cap` sessions remain, newest-first; the 25 oldest were pruned.
+    expect(remaining[0]).toBe(ids[ids.length - 1]);
+    expect(remaining[remaining.length - 1]).toBe(ids[25]);
+    expect(remaining).not.toContain(ids[24]);
+  });
+});
+
+describe("resolveScheduleRunsKeep", () => {
+  const ENV_KEY = "BRIDGE_SCHEDULE_RUNS_KEEP";
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to DEFAULT_SCHEDULE_RUNS_KEEP", () => {
+    vi.stubEnv(ENV_KEY, undefined);
+    expect(resolveScheduleRunsKeep(undefined)).toBe(DEFAULT_SCHEDULE_RUNS_KEEP);
+    expect(resolveScheduleRunsKeep(null)).toBe(DEFAULT_SCHEDULE_RUNS_KEEP);
+  });
+
+  it("honors a valid BRIDGE_SCHEDULE_RUNS_KEEP override", () => {
+    vi.stubEnv(ENV_KEY, "10");
+    expect(resolveScheduleRunsKeep(undefined)).toBe(10);
+  });
+
+  it("ignores an invalid BRIDGE_SCHEDULE_RUNS_KEEP and falls back to the default", () => {
+    for (const bad of ["0", "-3", "abc", "12.5", " ", ""]) {
+      vi.stubEnv(ENV_KEY, bad);
+      expect(resolveScheduleRunsKeep(undefined)).toBe(DEFAULT_SCHEDULE_RUNS_KEEP);
+    }
+  });
+
+  it("keeps autoArchiveKeep plus headroom when it exceeds the base", () => {
+    vi.stubEnv(ENV_KEY, "100");
+    // autoArchiveKeep below base → base wins.
+    expect(resolveScheduleRunsKeep(20)).toBe(100);
+    // autoArchiveKeep above base → autoArchiveKeep + headroom (50) wins.
+    expect(resolveScheduleRunsKeep(200)).toBe(250);
+  });
+
+  it("ignores non-positive or non-integer autoArchiveKeep", () => {
+    vi.stubEnv(ENV_KEY, "100");
+    expect(resolveScheduleRunsKeep(0)).toBe(100);
+    expect(resolveScheduleRunsKeep(-5)).toBe(100);
+    expect(resolveScheduleRunsKeep(3.5)).toBe(100);
   });
 });
