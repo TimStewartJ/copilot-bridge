@@ -4321,20 +4321,6 @@ export function createApiRouter(
     }
   });
 
-  router.get("/schedules/status", (_req, res) => {
-    res.json({
-      globalPause: schedulerModule().isGlobalPaused(),
-      scheduleCount: ctx.scheduleStore.listSchedules().length,
-      enabledCount: ctx.scheduleStore.getEnabledSchedules().length,
-    });
-  });
-
-  router.post("/schedules/pause", (req, res) => {
-    const { paused } = req.body;
-    schedulerModule().setGlobalPause(paused !== false);
-    res.json({ globalPause: schedulerModule().isGlobalPaused() });
-  });
-
   // ── Server info ─────────────────────────────────────────────────
 
   router.get("/server/timezone", (_req, res) => {
