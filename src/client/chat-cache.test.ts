@@ -75,7 +75,7 @@ describe("canonical tail reconciliation", () => {
     expect(hasOptimisticTail(5, 3, 7)).toBe(true);
     expect(hasOptimisticTail(5, 2, 7)).toBe(false);
     expect(hasClientGeneratedEntries([message("entry-1"), message("draft-user-1")])).toBe(true);
-    expect(hasClientGeneratedEntries([message("entry-1"), message("local-1")])).toBe(false);
+    expect(hasClientGeneratedEntries([message("entry-1"), message("local-1")])).toBe(true);
     expect(hasClientGeneratedEntries([message("entry-1")])).toBe(false);
   });
 
@@ -121,6 +121,25 @@ describe("canonical tail reconciliation", () => {
       { id: "entry-0-new" },
       { id: "err-1", role: "assistant" },
     ]);
+    expect(merged.hasOptimisticTail).toBe(true);
+    expect(merged.hasClientGeneratedEntries).toBe(true);
+  });
+
+  it("preserves a failed local user message as an optimistic tail", () => {
+    const failedMessage = {
+      id: "local-1",
+      role: "user" as const,
+      content: "Retry me",
+      delivery: { failed: true, mode: "interactive" as const, error: "offline" },
+    };
+    const merged = mergeTailMessages(
+      [message("entry-0"), failedMessage],
+      0,
+      1,
+      [message("entry-0-new")],
+    );
+
+    expect(merged.entries).toEqual([message("entry-0-new"), failedMessage]);
     expect(merged.hasOptimisticTail).toBe(true);
     expect(merged.hasClientGeneratedEntries).toBe(true);
   });

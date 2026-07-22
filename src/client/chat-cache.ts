@@ -4,7 +4,7 @@ import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
 const recentSessionIds: string[] = [];
-const CLIENT_GENERATED_ID_PREFIXES = ["err-", "draft-"] as const;
+const CLIENT_GENERATED_ID_PREFIXES = ["err-", "draft-", "local-"] as const;
 
 export interface ChatHistorySnapshot {
   sessionId: string;
@@ -55,6 +55,7 @@ function cloneChatEntry(entry: ChatEntry): ChatEntry {
     ...entry,
     attachments: entry.attachments?.map((attachment) => cloneAttachment(attachment)),
     toolCalls: entry.toolCalls?.map((toolCall) => cloneToolCall(toolCall)),
+    delivery: entry.delivery ? { ...entry.delivery } : undefined,
   };
 }
 
@@ -123,7 +124,7 @@ function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
   if (entry.type === "visual") return false;
   if (entry.type === "completion") return false;
   if (entry.type === "skill") return false;
-  if (entry.role === "user") return false;
+  if (entry.role === "user") return entry.delivery !== undefined;
   if (typeof entry.content !== "string") return false;
   return entry.content.startsWith("⚠️ Error:")
     || entry.content.includes("*(stopped)*")
@@ -138,6 +139,7 @@ export function normalizeCommittedClientEntries(
   return entries.map((entry, index) => {
     if (firstItemIndex + index >= total) return entry;
     if (!isClientGeneratedEntry(entry) || isUnsafeCommittedClientEntry(entry)) return entry;
+    if ("role" in entry) return { ...entry, id: undefined, delivery: undefined };
     return { ...entry, id: undefined };
   });
 }
