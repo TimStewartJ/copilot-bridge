@@ -127,6 +127,13 @@ export function CopilotUsageSection() {
           </div>
         )}
 
+        {data?.index.warning && (
+          <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-3 text-xs text-text-secondary">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
+            <span>{data.index.warning}</span>
+          </div>
+        )}
+
         {isLoading && !data && (
           <LoadingSkeletonRegion
             isLoading

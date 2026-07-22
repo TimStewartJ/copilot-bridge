@@ -65,7 +65,9 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
       sessionsTotal: 1,
       sessionsProcessed: 1,
       sessionsUpdated: 1,
+      sessionsFailed: 0,
       cachedSessions: 1,
+      warning: null,
       error: null,
     },
     totals: {

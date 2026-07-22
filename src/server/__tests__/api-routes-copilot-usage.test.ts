@@ -259,7 +259,9 @@ describe("Copilot usage routes", () => {
         sessionsTotal: 1,
         sessionsProcessed: 1,
         sessionsUpdated: 1,
+        sessionsFailed: 0,
         cachedSessions: 1,
+        warning: null,
         error: null,
       },
       totals: {

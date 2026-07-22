@@ -55,7 +55,9 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
       sessionsTotal: 0,
       sessionsProcessed: 0,
       sessionsUpdated: 0,
+      sessionsFailed: 0,
       cachedSessions: 0,
+      warning: null,
       error: null,
     },
     totals: {
@@ -112,7 +114,9 @@ describe("CopilotUsageSection", () => {
         sessionsTotal: 100,
         sessionsProcessed: 25,
         sessionsUpdated: 20,
+        sessionsFailed: 0,
         cachedSessions: 20,
+        warning: null,
         error: null,
       },
     }));
@@ -120,6 +124,27 @@ describe("CopilotUsageSection", () => {
     expect(html).toContain("Indexing local usage in the background");
     expect(html).toContain("Checked 25 of 100 sessions");
     expect(vi.mocked(useCopilotUsageQuery)).toHaveBeenCalledWith({ includeSessions: false });
+  });
+
+  it("shows a partial indexing warning while keeping cached usage visible", () => {
+    const warning = "1 local Copilot usage session failed to index. Cached results were retained when available.";
+    const html = renderSection(createUsageSummary({
+      index: {
+        state: "idle",
+        startedAt: NOW,
+        completedAt: NOW,
+        sessionsTotal: 3,
+        sessionsProcessed: 3,
+        sessionsUpdated: 2,
+        sessionsFailed: 1,
+        cachedSessions: 2,
+        warning,
+        error: null,
+      },
+    }));
+
+    expect(html).toContain(warning);
+    expect(html).toContain("Total tokens");
   });
 
   it("renders estimated cost and unpriced model diagnostics", () => {
