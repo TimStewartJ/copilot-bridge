@@ -151,6 +151,32 @@ describe("tool call tree helpers", () => {
     expect(segments[3]).toMatchObject({ type: "message", entry: { content: "Finished" } });
   });
 
+  it("does not merge reused turn IDs across user-message boundaries", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "Previous reply", turnId: "turn-1" },
+      { id: "old-tool", type: "tool", turnId: "turn-1", toolCall: createToolCall("old-tool") },
+      { role: "user", content: "Next question" },
+      { id: "new-tool", type: "tool", turnId: "turn-1", toolCall: createToolCall("new-tool") },
+      { role: "assistant", content: "Current reply", turnId: "turn-1" },
+    ];
+
+    const segments = segmentChatEntries(entries);
+
+    expect(segments).toMatchObject([
+      { type: "message", entry: { content: "Previous reply" } },
+      {
+        type: "tool-segment",
+        entries: [{ toolCall: { toolCallId: "old-tool" } }],
+      },
+      { type: "message", entry: { content: "Next question" } },
+      {
+        type: "tool-segment",
+        entries: [{ toolCall: { toolCallId: "new-tool" } }],
+      },
+      { type: "message", entry: { content: "Current reply" } },
+    ]);
+  });
+
   it("merges root-only subagent launch turns with later descendant tool turns", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "Delegating work", turnId: "turn-1" },

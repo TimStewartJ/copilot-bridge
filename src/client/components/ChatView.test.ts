@@ -1462,6 +1462,142 @@ describe("ChatView steering sends", () => {
       await cleanup();
     }
   });
+
+  it("reconciles canonical and live entries by exact identity", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          {
+            id: "canonical-assistant",
+            role: "assistant",
+            content: "canonical assistant",
+            sourceEventId: "assistant-event-1",
+          },
+          {
+            id: "canonical-tool",
+            type: "tool",
+            sourceEventId: "tool-event-1",
+            toolCall: {
+              toolCallId: "tool-call-1",
+              name: "canonical_tool",
+              result: "done",
+              success: true,
+            },
+          },
+        ],
+        busy: true,
+        total: 2,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveEntries: [
+          {
+            id: "live-assistant",
+            role: "assistant",
+            content: "duplicate live assistant",
+            sourceEventId: "assistant-event-1",
+          },
+          {
+            id: "live-tool",
+            type: "tool",
+            toolCall: {
+              toolCallId: "tool-call-1",
+              name: "duplicate_live_tool",
+            },
+          },
+        ],
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("canonical assistant") ?? false);
+      expect(dom.container.textContent).not.toContain("duplicate live assistant");
+      expect(dom.container.textContent).toContain("canonical_tool");
+      expect(dom.container.textContent).not.toContain("duplicate_live_tool");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps prior history visible when provider turn IDs restart", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          {
+            id: "historical-assistant",
+            role: "assistant",
+            content: "previous reply",
+            turnId: "1",
+            sourceEventId: "old-assistant-event",
+          },
+          {
+            id: "historical-tool",
+            type: "tool",
+            turnId: "1",
+            sourceEventId: "old-tool-event",
+            toolCall: {
+              toolCallId: "old-tool-call",
+              name: "old_tool",
+              result: "done",
+              success: true,
+            },
+          },
+        ],
+        busy: true,
+        total: 2,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveEntries: [
+          {
+            id: "live-user-current",
+            role: "user",
+            content: "current question",
+            sourceEventId: "current-user-event",
+          },
+          {
+            id: "live-tool-current",
+            type: "tool",
+            turnId: "1",
+            sourceEventId: "current-tool-event",
+            toolCall: {
+              toolCallId: "current-tool-call",
+              name: "current_tool",
+            },
+          },
+        ],
+        streamingContent: "current reply",
+        activeTurnId: "1",
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("current reply") ?? false);
+      expect(dom.container.textContent).toContain("previous reply");
+      expect(dom.container.textContent).toContain("old_tool");
+      expect(dom.container.textContent).toContain("current question");
+      expect(dom.container.textContent).toContain("current_tool");
+
+      const renderedText = dom.container.textContent ?? "";
+      expect(renderedText.indexOf("old_tool")).toBeGreaterThan(renderedText.indexOf("previous reply"));
+      expect(renderedText.indexOf("current question")).toBeGreaterThan(renderedText.indexOf("old_tool"));
+      expect(renderedText.indexOf("current_tool")).toBeGreaterThan(renderedText.indexOf("current question"));
+      expect(renderedText.indexOf("current reply")).toBeGreaterThan(renderedText.indexOf("current_tool"));
+
+      const historicalMessage = findMessageWrapperByAnchorKey(dom.container, "historical-assistant");
+      const currentMessage = findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream");
+      expect(historicalMessage.getAttribute("data-latest-chat-message")).not.toBe("true");
+      expect(currentMessage.getAttribute("data-latest-chat-message")).toBe("true");
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("ChatView live streaming UX", () => {
