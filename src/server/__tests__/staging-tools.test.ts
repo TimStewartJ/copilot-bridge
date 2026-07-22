@@ -1009,7 +1009,7 @@ describe("staging tools", () => {
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') {
         return "package-lock.json\n";
       }
-      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
@@ -1035,7 +1035,7 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       success: true,
-      commitSha: "2222222",
+      commitSha: "1111111",
     });
     expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
     expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
@@ -1094,7 +1094,7 @@ describe("staging tools", () => {
       }
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
       if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
-      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
@@ -1114,7 +1114,7 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       success: true,
-      commitSha: "2222222",
+      commitSha: "1111111",
     });
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).toContain(DEPLOY_SMOKE_COMMAND);
@@ -1124,7 +1124,58 @@ describe("staging tools", () => {
     expect(String(deployStampWrite?.[1])).toContain('"command": "npm run check:deploy"');
   });
 
-  it("skips the deploy validation stamp if the pushed production HEAD differs from the validated staging commit", async () => {
+  it("resets production and blocks push when the merged commit differs from the validated candidate", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    const preDeploySha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const validatedSha = "1111111111111111111111111111111111111111";
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD" && cwd === stagingDir) return `${validatedSha}\n`;
+      if (cmd === "git rev-parse HEAD") return `${preDeploySha}\n`;
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === `git reset --hard ${preDeploySha}`) return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy raced commit" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Production commit changed after validation; restart blocked.");
+    expect(result.textResultForLlm).toContain(`reset to ${preDeploySha}`);
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).toContain(`git reset --hard ${preDeploySha}`);
+    expect(commands).not.toContain("git push origin main");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+  });
+
+  it("blocks restart if pushed production HEAD differs from the validated release candidate", async () => {
     const mod = await loadStagingToolsModule();
     const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
@@ -1155,7 +1206,7 @@ describe("staging tools", () => {
       }
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
       if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
-      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
@@ -1171,17 +1222,15 @@ describe("staging tools", () => {
         toolName: "staging_deploy",
         arguments: {},
       } satisfies ToolInvocation,
-    ) as {
-      success: boolean;
-      commitSha: string;
-    };
+    ) as any;
 
-    expect(result).toMatchObject({
-      success: true,
-      commitSha: "2222222",
-    });
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Pushed production commit does not match the validated release candidate.");
+    expect(result.textResultForLlm).toContain("Restart signaling was blocked");
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
-    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(`git worktree remove "${stagingDir}" --force`);
   });
 
   it("blocks restart when deploy validation fails on the rebased staging tree", async () => {
@@ -1271,7 +1320,7 @@ describe("staging tools", () => {
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
-      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") {
         pushAttempts += 1;
         const error = new Error("push failed") as Error & { stderr: string };
@@ -1300,7 +1349,7 @@ describe("staging tools", () => {
           command: "git push origin main",
           stagingDir,
           prodBranch: "main",
-          commitSha: "2222222",
+          commitSha: "1111111",
           revertedTo: "1111111111111111111111111111111111111111",
           validationLogPath: expect.stringContaining("validation-logs"),
         },
@@ -1318,7 +1367,7 @@ describe("staging tools", () => {
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(`git worktree remove "${stagingDir}" --force`);
   });
 
-  it("aborts a failed push-retry rebase before resetting production", async () => {
+  it("does not rebase the validated production commit after a push rejection", async () => {
     const mod = await loadStagingToolsModule();
     const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
@@ -1330,6 +1379,7 @@ describe("staging tools", () => {
     mockDataFilePresence();
 
     let pullAttempts = 0;
+    let pushAttempts = 0;
     execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
       const cwd = options?.cwd;
       if (cmd === "git add -A") return "";
@@ -1339,23 +1389,20 @@ describe("staging tools", () => {
       if (cmd === "git stash --include-untracked") return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") {
         pullAttempts += 1;
-        if (pullAttempts === 1) return "Already up to date.\n";
-        const error = new Error("rebase conflict") as Error & { stderr: string };
-        error.stderr = "CONFLICT (content): rebase stopped\n";
-        throw error;
+        return "Already up to date.\n";
       }
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
-      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") {
+        pushAttempts += 1;
         const error = new Error("push failed") as Error & { stderr: string };
         error.stderr = "push rejected\n";
         throw error;
       }
-      if (cmd === "git rebase --abort") return "";
       if (cmd === "git reset --hard 1111111111111111111111111111111111111111") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
     });
@@ -1373,10 +1420,11 @@ describe("staging tools", () => {
     expect(result).toMatchObject({ resultType: "failure" });
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
-    const abortIndex = commands.indexOf("git rebase --abort");
     const resetIndex = commands.indexOf("git reset --hard 1111111111111111111111111111111111111111");
-    expect(abortIndex).toBeGreaterThan(-1);
-    expect(resetIndex).toBeGreaterThan(abortIndex);
+    expect(pullAttempts).toBe(1);
+    expect(pushAttempts).toBe(2);
+    expect(commands).not.toContain("git rebase --abort");
+    expect(resetIndex).toBeGreaterThan(-1);
     expect(commands).not.toContain(`git worktree remove "${stagingDir}" --force`);
   });
 
@@ -1449,7 +1497,7 @@ describe("staging tools", () => {
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
-      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
