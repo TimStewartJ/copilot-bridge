@@ -139,8 +139,24 @@ function isChatMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "
 }
 
 function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): string {
+  if (message.id) return message.id;
   if (message.turnId) return `turn:${message.turnId}:${message.role}`;
-  return message.id ?? `${message.role}:${fallbackIndex}`;
+  return `${message.role}:${fallbackIndex}`;
+}
+
+function getCanonicalEntryReconciliationKeys(entry: ChatEntry): string[] {
+  const keys: string[] = [];
+  if (entry.sourceEventId) keys.push(`event:${entry.sourceEventId}`);
+  if (entry.type === "tool") keys.push(`tool:${entry.toolCall.toolCallId}`);
+  if (entry.type === "visual") keys.push(`visual:${entry.visual.artifactId}`);
+  return keys;
+}
+
+function getLiveEntryReconciliationKey(entry: ChatEntry): string | null {
+  if (entry.sourceEventId) return `event:${entry.sourceEventId}`;
+  if (entry.type === "tool") return `tool:${entry.toolCall.toolCallId}`;
+  if (entry.type === "visual") return `visual:${entry.visual.artifactId}`;
+  return null;
 }
 
 function getLatestMessageAnchorKey(entries: ChatEntry[]): string | null {
@@ -634,17 +650,14 @@ export default function ChatView({
     activeTurnId,
   } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, historyCoverage);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
-  const canonicalUserEventIds = useMemo(() => new Set(entries.flatMap((entry) => (
-    isChatMessageEntry(entry) && entry.role === "user" && entry.sourceEventId
-      ? [entry.sourceEventId]
-      : []
-  ))), [entries]);
-  const visibleStreamLiveEntries = useMemo(() => streamLiveEntries.filter((entry) => (
-    !isChatMessageEntry(entry)
-    || entry.role !== "user"
-    || !entry.sourceEventId
-    || !canonicalUserEventIds.has(entry.sourceEventId)
-  )), [canonicalUserEventIds, streamLiveEntries]);
+  const canonicalEntryKeys = useMemo(
+    () => new Set(entries.flatMap(getCanonicalEntryReconciliationKeys)),
+    [entries],
+  );
+  const visibleStreamLiveEntries = useMemo(() => streamLiveEntries.filter((entry) => {
+    const key = getLiveEntryReconciliationKey(entry);
+    return !key || !canonicalEntryKeys.has(key);
+  }), [canonicalEntryKeys, streamLiveEntries]);
 
   useLayoutEffect(() => {
     if (!sessionId) return;
@@ -1521,28 +1534,8 @@ export default function ChatView({
     () => new Set(activeTools.map((tool) => tool.toolCallId)),
     [activeTools],
   );
-  const liveToolCalls = currentTurnTools.length > 0 ? currentTurnTools : activeToolCalls;
-  const liveToolCallIds = useMemo(
-    () => new Set(liveToolCalls.map((tool) => tool.toolCallId)),
-    [liveToolCalls],
-  );
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
-  const liveTurnIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (activeTurnId) ids.add(activeTurnId);
-    for (const entry of visibleStreamLiveEntries) {
-      if (entry.turnId) ids.add(entry.turnId);
-    }
-    return ids;
-  }, [activeTurnId, visibleStreamLiveEntries]);
-  const historicalEntries = useMemo(() => {
-    if (visibleStreamLiveEntries.length === 0 && !hasStreamingText && liveToolCallIds.size === 0) return entries;
-    return entries.filter((entry) => (
-      !entry.turnId
-      || !liveTurnIds.has(entry.turnId)
-    ));
-  }, [entries, hasStreamingText, liveToolCallIds.size, liveTurnIds, visibleStreamLiveEntries.length]);
   const liveEntries = useMemo<ChatEntry[]>(() => {
     const nextEntries = [...visibleStreamLiveEntries];
     if (isStreaming && hasStreamingText) {
@@ -1557,8 +1550,8 @@ export default function ChatView({
     return nextEntries;
   }, [activeTurnId, displayedStreamingContent, hasStreamingText, isStreaming, visibleStreamLiveEntries]);
   const displayEntries = useMemo(
-    () => liveEntries.length > 0 ? [...historicalEntries, ...liveEntries] : historicalEntries,
-    [historicalEntries, liveEntries],
+    () => liveEntries.length > 0 ? [...entries, ...liveEntries] : entries,
+    [entries, liveEntries],
   );
   const messageAnchorKeys = useMemo(() => {
     const keys = new WeakMap<object, string>();
@@ -1841,9 +1834,9 @@ export default function ChatView({
       if (segment.type === "tool-segment") {
         const roots = buildRenderableSegmentRoots(segment.entries, toolForest);
         if (roots.length === 0) return;
-        const segmentKey = segment.turnId
-          ? `tool-turn-${segment.turnId}`
-          : segment.entries[0]?.id ?? `tool-segment-${index}`;
+        const firstEntry = segment.entries[0];
+        const segmentKey = firstEntry?.id
+          ?? (firstEntry?.type === "tool" ? `tool-${firstEntry.toolCall.toolCallId}` : `tool-segment-${index}`);
         result.push(
           <div key={segmentKey} className={`${CHAT_RAIL_CLASS} pt-2`}>
             <ToolCallNodeGroup

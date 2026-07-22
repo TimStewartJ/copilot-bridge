@@ -214,6 +214,29 @@ export function buildRenderableSegmentRoots(
 
 export function segmentChatEntries(entries: ChatEntry[]): ChatRenderSegment[] {
   const segments: ChatRenderSegment[] = [];
+  let interactionEntries: ChatEntry[] = [];
+
+  const flushInteraction = () => {
+    if (interactionEntries.length === 0) return;
+    segments.push(...segmentInteractionEntries(interactionEntries));
+    interactionEntries = [];
+  };
+
+  for (const entry of entries) {
+    if ((!entry.type || entry.type === "message") && entry.role === "user") {
+      flushInteraction();
+      segments.push({ type: "message", entry });
+      continue;
+    }
+    interactionEntries.push(entry);
+  }
+
+  flushInteraction();
+  return segments;
+}
+
+function segmentInteractionEntries(entries: ChatEntry[]): ChatRenderSegment[] {
+  const segments: ChatRenderSegment[] = [];
   const toolEntriesByTurnId = new Map<string, ChatToolEntry[]>();
   const suppressedTurnIds = new Set<string>();
   const renderedTurnIds = new Set<string>();
