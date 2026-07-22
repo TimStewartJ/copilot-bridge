@@ -130,16 +130,11 @@ export interface ReadCopilotUsageSummaryOptions {
 
 export type CopilotUsageModelMetadataProvider = () => Promise<readonly CopilotModelMetadataForPricing[]>;
 
-export interface CopilotUsageReaderOptions extends ReadCopilotUsageSummaryOptions {
-  ttlMs?: number;
-  loadSummary?: (options: ReadCopilotUsageSummaryOptions) => Promise<CopilotUsageSummary>;
-  modelMetadataProvider?: CopilotUsageModelMetadataProvider;
-}
-
 export interface CopilotUsageReader {
   readSummary(options?: { refresh?: boolean; sessionIds?: readonly string[] }): Promise<CopilotUsageSummary>;
   invalidate(): void;
   startBackgroundRefresh?(): void;
+  shutdown(): Promise<void>;
 }
 
 export interface CopilotUsageSessionScanResult {
@@ -161,7 +156,6 @@ interface AssistantUsageAccumulator {
 }
 
 const DEFAULT_SCAN_CONCURRENCY = 8;
-const DEFAULT_CACHE_TTL_MS = 30_000;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
 export const COPILOT_USAGE_PARSER_VERSION = 1;
@@ -212,70 +206,6 @@ export async function readCopilotUsageSummary({
     }
     throw new CopilotUsageReadError();
   }
-}
-
-export function createCopilotUsageReader({
-  copilotHome,
-  now = Date.now,
-  concurrency = DEFAULT_SCAN_CONCURRENCY,
-  sdkModels: staticSdkModels,
-  ttlMs = DEFAULT_CACHE_TTL_MS,
-  loadSummary: loadSummaryImpl = readCopilotUsageSummary,
-  modelMetadataProvider,
-}: CopilotUsageReaderOptions): CopilotUsageReader {
-  let cached: { summary: CopilotUsageSummary; expiresAt: number } | null = null;
-  let inflight: { generation: number; promise: Promise<CopilotUsageSummary> } | null = null;
-  let latestGeneration = 0;
-
-  async function loadCachedSummary(refresh = false): Promise<CopilotUsageSummary> {
-    const currentTime = now();
-    if (!refresh && cached && currentTime < cached.expiresAt) {
-      return cached.summary;
-    }
-    if (!refresh && inflight) {
-      return inflight.promise;
-    }
-
-    const generation = latestGeneration + 1;
-    latestGeneration = generation;
-    const createLoadOptions = (
-      sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
-    ): ReadCopilotUsageSummaryOptions => ({
-      copilotHome,
-      now,
-      concurrency,
-      ...(sdkModels ? { sdkModels } : {}),
-    });
-    const sdkModelsResult = loadModelMetadataForPricing(modelMetadataProvider, staticSdkModels);
-    const loadPromise = isPromiseLike(sdkModelsResult)
-      ? sdkModelsResult.then((sdkModels) => loadSummaryImpl(createLoadOptions(sdkModels)))
-      : loadSummaryImpl(createLoadOptions(sdkModelsResult));
-    const promise = loadPromise
-      .then((summary) => {
-        if (generation === latestGeneration) {
-          cached = { summary, expiresAt: now() + Math.max(0, ttlMs) };
-        }
-        return summary;
-      })
-      .finally(() => {
-        if (inflight?.generation === generation) {
-          inflight = null;
-        }
-      });
-    inflight = { generation, promise };
-
-    return promise;
-  }
-
-  return {
-    readSummary: async (options) => filterCopilotUsageSummarySessions(
-      await loadCachedSummary(options?.refresh === true),
-      options?.sessionIds,
-    ),
-    invalidate: () => {
-      cached = null;
-    },
-  };
 }
 
 export function buildCopilotUsageSummaryFromSessionResults({
@@ -347,41 +277,6 @@ export function buildCopilotUsageSummaryFromSessionResults({
   applyCopilotUsageCostEstimates(summary, sdkModels);
   if (index) summary.index = index;
   return summary;
-}
-
-function filterCopilotUsageSummarySessions(
-  summary: CopilotUsageSummary,
-  sessionIds: readonly string[] | undefined,
-): CopilotUsageSummary {
-  if (!sessionIds) return summary;
-  const requestedSessionIds = new Set(sessionIds);
-  return {
-    ...summary,
-    sessions: summary.sessions.filter((row) => requestedSessionIds.has(row.sessionId)),
-  };
-}
-
-function loadModelMetadataForPricing(
-  provider: CopilotUsageModelMetadataProvider | undefined,
-  fallback: readonly CopilotModelMetadataForPricing[] | undefined,
-): readonly CopilotModelMetadataForPricing[] | undefined | Promise<readonly CopilotModelMetadataForPricing[] | undefined> {
-  if (!provider) return fallback;
-  try {
-    return Promise.resolve(provider()).catch((error) => {
-      console.warn("[copilot-usage] Failed to load Copilot model metadata; pricing may be incomplete.", error);
-      return fallback;
-    });
-  } catch (error) {
-    console.warn("[copilot-usage] Failed to load Copilot model metadata; pricing may be incomplete.", error);
-    return fallback;
-  }
-}
-
-function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-  return typeof value === "object"
-    && value !== null
-    && "then" in value
-    && typeof (value as { then?: unknown }).then === "function";
 }
 
 export async function scanCopilotUsageSession(

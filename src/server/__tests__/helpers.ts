@@ -24,6 +24,7 @@ import { createFeedStore } from "../feed-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createCopilotModelPriceStore } from "../copilot-model-price-store.js";
+import { createCopilotUsageStore } from "../copilot-usage-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
@@ -373,6 +374,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
     copilotModelPriceStore: createCopilotModelPriceStore(db),
+    copilotUsageStore: createCopilotUsageStore(db),
     telemetryStore: createTelemetryStore(db),
     sessionContextStore: createSessionContextStore(db),
     docsStore,
@@ -411,6 +413,13 @@ export function createTestApp(overrides?: Partial<AppContext>) {
 
   const cleanup = registerTestAppCleanup(async () => {
     const cleanupErrors: unknown[] = [];
+    if (hasNoArgFunction(ctx.copilotUsageReader, "shutdown")) {
+      try {
+        await ctx.copilotUsageReader.shutdown();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
     if (hasNoArgFunction(ctx.voiceJobManager, "shutdown")) {
       try {
         await ctx.voiceJobManager.shutdown();

@@ -1,5 +1,6 @@
 import type { CopilotUsageSummary } from "./copilot-usage.js";
 
+/** Serialize summaries produced by the incremental reader, which always include index status. */
 export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
   type TokenTotalsLike = Pick<
     CopilotUsageSummary["totals"],
@@ -58,16 +59,10 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     ...serializeCostEstimate(row),
     ...serializePricingMetadata(row),
   });
-  const index = summary.index ?? {
-    state: "idle" as const,
-    startedAt: summary.generatedAt,
-    completedAt: summary.generatedAt,
-    sessionsTotal: summary.coverage.sessionsSeen,
-    sessionsProcessed: summary.coverage.sessionsSeen,
-    sessionsUpdated: summary.coverage.sessionsSeen,
-    cachedSessions: summary.coverage.sessionsSeen,
-    error: null,
-  };
+  const index = summary.index;
+  if (!index) {
+    throw new Error("Copilot usage index status is required for API serialization.");
+  }
 
   return {
     generatedAt: summary.generatedAt,

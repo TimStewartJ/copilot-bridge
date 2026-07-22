@@ -98,7 +98,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const tagStore = createTagStore(db);
   const mcpServerStore = createMcpServerStore(db);
   const copilotModelPriceStore = createCopilotModelPriceStore(db);
-  const copilotUsageStore = options.isStaging ? undefined : createCopilotUsageStore(db);
+  const copilotUsageStore = createCopilotUsageStore(db);
   const telemetryStore = createTelemetryStore(db);
   const sessionContextStore = createSessionContextStore(db);
   const cliSessionCatalog = createCopilotCliSessionCatalog({
@@ -249,6 +249,12 @@ export function shutdownAppContextServices(
     ctx.scheduler?.setGlobalPause(true);
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
+
+    try {
+      await ctx.copilotUsageReader?.shutdown();
+    } catch (error) {
+      console.error("[web] Copilot usage index shutdown failed:", error);
+    }
 
     try {
       await ctx.sessionManager.gracefulShutdown(deadline);

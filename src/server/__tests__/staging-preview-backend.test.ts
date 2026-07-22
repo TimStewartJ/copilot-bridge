@@ -1,12 +1,14 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createApiRouter } from "../api-router.js";
+import { createAppContext } from "../app-context-factory.js";
 import { __testing } from "../staging-tools.js";
 import type { RuntimePaths } from "../runtime-paths.js";
-import { makeTestDir } from "./helpers.js";
+import { makeTestDir, withTestEnv } from "./helpers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -116,7 +118,75 @@ function runtimePathsFor(stagingDir: string): RuntimePaths {
   };
 }
 
+function writeUsage(runtimePaths: RuntimePaths, inputTokens: number): void {
+  const sessionDir = join(runtimePaths.copilotHome!, "session-state", "staging-usage-session");
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(join(sessionDir, "events.jsonl"), `${JSON.stringify({
+    type: "session.shutdown",
+    timestamp: "2026-07-21T12:00:00.000Z",
+    data: {
+      modelMetrics: {
+        "gpt-5.4": {
+          requests: { count: 1 },
+          usage: { inputTokens },
+        },
+      },
+    },
+  })}\n`);
+}
+
 describe("staging preview backend child process", () => {
+  it("uses the isolated incremental usage index and returns refresh progress without blocking", async () => {
+    const stagingDir = makeTestDir("stage-usage-index");
+    const runtimePaths = runtimePathsFor(stagingDir);
+    writeUsage(runtimePaths, 5);
+
+    await withTestEnv({ COMPUTER_USE: "false" }, async () => {
+      const { ctx, db } = createAppContext({
+        runtimePaths,
+        apiBasePath: "/staging/usage-index/api",
+        isStaging: true,
+        enableStartupDocsSnapshot: false,
+      });
+      ctx.sessionManager.listModels = vi.fn(async () => []);
+      const app = express();
+      app.use("/api", createApiRouter(ctx));
+
+      try {
+        expect(ctx.copilotUsageStore).toBeDefined();
+
+        await vi.waitFor(async () => {
+          const initial = await request(app).get("/api/copilot-usage");
+          expect(initial.status).toBe(200);
+          expect(initial.body.index.state).toBe("idle");
+          expect(initial.body.totals.inputTokens).toBe(5);
+        }, { timeout: 5_000 });
+
+        expect(ctx.copilotUsageStore.getLastCompletedAt()).toEqual(expect.any(String));
+        expect(db.prepare("SELECT COUNT(*) AS count FROM copilot_usage_sessions").get())
+          .toMatchObject({ count: 1 });
+
+        writeUsage(runtimePaths, 20);
+        const refreshing = await request(app).get("/api/copilot-usage?refresh=1");
+        expect(refreshing.status).toBe(200);
+        expect(refreshing.body.index.state).toBe("scanning");
+        expect(refreshing.body.totals.inputTokens).toBe(5);
+
+        await vi.waitFor(async () => {
+          const completed = await request(app).get("/api/copilot-usage");
+          expect(completed.status).toBe(200);
+          expect(completed.body.index.state).toBe("idle");
+          expect(completed.body.totals.inputTokens).toBe(20);
+        }, { timeout: 5_000 });
+      } finally {
+        await ctx.copilotUsageReader?.shutdown();
+        await ctx.sessionManager.gracefulShutdown();
+        await ctx.voiceJobManager.shutdown();
+        db.close();
+      }
+    });
+  });
+
   it("proxies opaque staged backend dependencies and reloads nested imports per child process", async () => {
     const stagingDir = createTempStagingDir();
     writePreviewBackend(stagingDir);

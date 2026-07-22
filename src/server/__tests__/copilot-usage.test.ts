@@ -1,13 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CopilotUsageReadError,
-  createCopilotUsageReader,
   readCopilotUsageSummary,
   type CopilotUsageSummary,
   type CopilotUsageTotals,
-  type ReadCopilotUsageSummaryOptions,
 } from "../copilot-usage.js";
 import { makeTestDir } from "./helpers.js";
 
@@ -86,32 +84,6 @@ function summaryTotals(totals: CopilotUsageTotals): CopilotUsageSummary["totals"
     reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
     unpricedModelCount: 0,
     unpricedTokens: zeroTotals(),
-  };
-}
-
-function emptySummary(generatedAt = "2026-05-02T00:00:00.000Z"): CopilotUsageSummary {
-  return {
-    generatedAt,
-    totals: summaryTotals(zeroTotals()),
-    coverage: {
-      sessionsSeen: 0,
-      sessionsWithEvents: 0,
-      sessionsIncluded: 0,
-      sessionsSkipped: 0,
-      skippedByReason: {
-        no_events: 0,
-        no_shutdown: 0,
-        empty_model_metrics: 0,
-        parse_error: 0,
-      },
-      earliestIncludedAt: null,
-      latestIncludedAt: null,
-      earliestSkippedAt: null,
-      latestSkippedAt: null,
-    },
-    models: [],
-    sessions: [],
-    unpricedModels: [],
   };
 }
 
@@ -1139,165 +1111,5 @@ describe("readCopilotUsageSummary", () => {
       .rejects.toThrow(CopilotUsageReadError);
     await expect(readCopilotUsageSummary({ copilotHome: unreadableHome }))
       .rejects.toThrow("Unable to read local Copilot usage history.");
-  });
-});
-
-describe("createCopilotUsageReader", () => {
-  it("reuses cached summaries until refreshed", async () => {
-    const copilotHome = createCopilotHome();
-    let currentTime = Date.parse("2026-05-01T00:00:00.000Z");
-    writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 1 },
-              usage: { inputTokens: 10 },
-            },
-          },
-        },
-      },
-    ]);
-
-    const reader = createCopilotUsageReader({
-      copilotHome,
-      ttlMs: 60_000,
-      now: () => currentTime,
-    });
-
-    const initial = await reader.readSummary();
-    writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T11:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 20 },
-            },
-          },
-        },
-      },
-    ]);
-
-    const cached = await reader.readSummary();
-    expect(cached).toBe(initial);
-    expect(cached.totals.inputTokens).toBe(10);
-
-    const refreshed = await reader.readSummary({ refresh: true });
-    expect(refreshed).not.toBe(initial);
-    expect(refreshed.totals.inputTokens).toBe(20);
-
-    currentTime += 61_000;
-    const expired = await reader.readSummary();
-    expect(expired.totals.inputTokens).toBe(20);
-  });
-
-  it("loads SDK metadata on uncached reads and refreshes", async () => {
-    const sdkModels = [{ id: "opaque-sdk-id", name: "Claude Opus 4.7" }] as const;
-    const loadOptions: ReadCopilotUsageSummaryOptions[] = [];
-    const initialSummary = emptySummary("2026-05-01T00:00:01.000Z");
-    const refreshedSummary = emptySummary("2026-05-01T00:00:02.000Z");
-    const loader = vi.fn((options: ReadCopilotUsageSummaryOptions): Promise<CopilotUsageSummary> => {
-      loadOptions.push(options);
-      return Promise.resolve(loadOptions.length === 1 ? initialSummary : refreshedSummary);
-    });
-    const provider = vi.fn(async () => sdkModels);
-    const reader = createCopilotUsageReader({
-      copilotHome: createCopilotHome(),
-      ttlMs: 60_000,
-      now: () => Date.parse("2026-05-01T00:00:00.000Z"),
-      loadSummary: loader,
-      modelMetadataProvider: provider,
-    });
-
-    await expect(reader.readSummary()).resolves.toBe(initialSummary);
-    await expect(reader.readSummary()).resolves.toBe(initialSummary);
-
-    expect(provider).toHaveBeenCalledTimes(1);
-    expect(loader).toHaveBeenCalledTimes(1);
-    expect(loadOptions[0]?.sdkModels).toEqual(sdkModels);
-
-    await expect(reader.readSummary({ refresh: true })).resolves.toBe(refreshedSummary);
-
-    expect(provider).toHaveBeenCalledTimes(2);
-    expect(loader).toHaveBeenCalledTimes(2);
-    expect(loadOptions[1]?.sdkModels).toEqual(sdkModels);
-  });
-
-  it("keeps the newest load cached when an older inflight request resolves later", async () => {
-    let currentTime = Date.parse("2026-05-02T00:00:00.000Z");
-    const pending: Array<{ resolve: (summary: CopilotUsageSummary) => void }> = [];
-    const loader = vi.fn((_options) => new Promise<CopilotUsageSummary>((resolve) => {
-      pending.push({ resolve });
-    }));
-    const reader = createCopilotUsageReader({
-      copilotHome: createCopilotHome(),
-      ttlMs: 60_000,
-      now: () => currentTime,
-      loadSummary: loader,
-    });
-
-    const stalePromise = reader.readSummary();
-    const refreshedPromise = reader.readSummary({ refresh: true });
-
-    expect(loader).toHaveBeenCalledTimes(2);
-
-    const staleSummary: CopilotUsageSummary = {
-      generatedAt: "2026-05-02T00:00:01.000Z",
-      totals: summaryTotals({
-        requests: 1,
-        inputTokens: 10,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 10,
-      }),
-      coverage: {
-        sessionsSeen: 1,
-        sessionsWithEvents: 1,
-        sessionsIncluded: 1,
-        sessionsSkipped: 0,
-        skippedByReason: {
-          no_events: 0,
-          no_shutdown: 0,
-          empty_model_metrics: 0,
-          parse_error: 0,
-        },
-        earliestIncludedAt: "2026-05-02T00:00:00.000Z",
-        latestIncludedAt: "2026-05-02T00:00:00.000Z",
-        earliestSkippedAt: null,
-        latestSkippedAt: null,
-      },
-      models: [],
-      sessions: [],
-      unpricedModels: [],
-    };
-    const refreshedSummary: CopilotUsageSummary = {
-      ...staleSummary,
-      generatedAt: "2026-05-02T00:00:02.000Z",
-      totals: summaryTotals({
-        requests: 2,
-        inputTokens: 20,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 20,
-      }),
-    };
-
-    pending[1].resolve(refreshedSummary);
-    await expect(refreshedPromise).resolves.toBe(refreshedSummary);
-
-    pending[0].resolve(staleSummary);
-    await expect(stalePromise).resolves.toBe(staleSummary);
-
-    currentTime += 1_000;
-    await expect(reader.readSummary()).resolves.toBe(refreshedSummary);
   });
 });

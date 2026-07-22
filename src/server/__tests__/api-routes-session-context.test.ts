@@ -8,6 +8,7 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
+import { createCopilotUsageStore } from "../copilot-usage-store.js";
 import { setupTestDb } from "./helpers.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -19,11 +20,13 @@ function createContextApp() {
   const ctx = {
     sessionContextStore,
     telemetryStore: createTelemetryStore(db),
+    copilotUsageStore: createCopilotUsageStore(db),
     globalBus: createGlobalBus(),
     eventBusRegistry: createEventBusRegistry(),
     sessionManager: {
       getSessionRunState: () => "idle",
       getPendingUserInputCount: () => 0,
+      listModels: async () => [],
     },
     voiceJobManager: {},
     copilotHome: join(root, "copilot-home"),
