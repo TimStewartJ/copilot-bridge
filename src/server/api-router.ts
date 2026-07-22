@@ -2747,6 +2747,7 @@ export function createApiRouter(
           contextSummary: null,
           terminalType: terminalOverlay.type,
           terminalTimestamp: terminalOverlay.timestamp,
+          terminalAssistantEventId: terminalOverlay.assistantSourceEventId,
           finalContent: terminalOverlay.content,
           errorMessage: terminalOverlay.message,
           terminalCompletion: terminalOverlay.terminalCompletion,

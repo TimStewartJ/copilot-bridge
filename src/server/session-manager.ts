@@ -3250,13 +3250,20 @@ export class SessionManager {
 
   private completeSessionAbortLocally(sessionId: string, content: string): void {
     this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    const assistantSourceEventId = bus?.getSnapshot().assistantSegments.at(-1)?.sourceEventId;
     const runController = this.activeRunControllers.get(sessionId);
     if (runController) {
-      runController.completeAborted(content);
+      runController.completeAborted(content, {
+        ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
+      });
       return;
     }
-    const bus = this.deps.eventBusRegistry.getBus(sessionId);
-    bus?.emit({ type: "aborted", content });
+    bus?.emit({
+      type: "aborted",
+      content,
+      ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
+    });
     this.setSessionRunState(sessionId, "idle");
     this.flushPendingSessionEviction(sessionId);
   }
@@ -3271,8 +3278,12 @@ export class SessionManager {
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
     const getAbortContent = () => {
       const snapshot = bus?.getSnapshot();
-      return snapshot?.finalContent ?? snapshot?.accumulatedContent ?? "";
+      return snapshot?.finalContent
+        ?? snapshot?.assistantSegments.at(-1)?.content
+        ?? snapshot?.accumulatedContent
+        ?? "";
     };
+    const getAbortAssistantSourceEventId = () => bus?.getSnapshot().assistantSegments.at(-1)?.sourceEventId;
     if (!runController) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Missing run controller during abort — resolving locally`);
       this.completeSessionAbortLocally(sessionId, getAbortContent());
@@ -3282,7 +3293,10 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (!session) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 No session object during abort — resolving locally`);
-      runController.completeAborted(getAbortContent());
+      const assistantSourceEventId = getAbortAssistantSourceEventId();
+      runController.completeAborted(getAbortContent(), {
+        ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
+      });
       return true;
     }
 
@@ -3310,6 +3324,7 @@ export class SessionManager {
           () => runController.awaitAbortConfirmation(
             Math.max(1, remainingMs(confirmationDeadline)),
             getAbortContent,
+            getAbortAssistantSourceEventId,
           ),
           confirmationDeadline,
         );
@@ -3317,7 +3332,11 @@ export class SessionManager {
           this.completeSessionAbortLocally(sessionId, getAbortContent());
         }
       } else {
-        await runController.awaitAbortConfirmation(ABORT_CONFIRMATION_TIMEOUT_MS, getAbortContent);
+        await runController.awaitAbortConfirmation(
+          ABORT_CONFIRMATION_TIMEOUT_MS,
+          getAbortContent,
+          getAbortAssistantSourceEventId,
+        );
       }
     } catch (err) {
       console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);

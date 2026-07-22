@@ -28,13 +28,18 @@ export interface SessionRunController {
   completeError(message: string, options?: SessionTerminalOptions): void;
   completeAborted(content: string, options?: SessionTerminalOptions): void;
   completeShutdown(content: string, options?: SessionTerminalOptions): void;
-  awaitAbortConfirmation(delayMs: number, getContent: () => string): Promise<boolean>;
+  awaitAbortConfirmation(
+    delayMs: number,
+    getContent: () => string,
+    getAssistantSourceEventId?: () => string | undefined,
+  ): Promise<boolean>;
   clearAbortWait(): void;
 }
 
 export interface SessionTerminalOptions {
   terminalCompletion?: TerminalCompletion;
   sourceEventId?: string;
+  assistantSourceEventId?: string;
 }
 
 export interface SessionActivity {
@@ -131,6 +136,9 @@ export class SessionRunStateController {
         type: snapshot.terminalType,
         runId: snapshot.runId,
         ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+        ...(snapshot.terminalAssistantEventId
+          ? { assistantSourceEventId: snapshot.terminalAssistantEventId }
+          : {}),
         ...(snapshot.finalContent ? { content: snapshot.finalContent } : {}),
         ...(snapshot.errorMessage ? { message: snapshot.errorMessage } : {}),
         ...(snapshot.terminalTimestamp ? { timestamp: snapshot.terminalTimestamp } : {}),
@@ -172,6 +180,9 @@ export class SessionRunStateController {
             timestamp,
             ...(options?.terminalCompletion ? { terminalCompletion: options.terminalCompletion } : {}),
             ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
+            ...(options?.assistantSourceEventId
+              ? { assistantSourceEventId: options.assistantSourceEventId }
+              : {}),
           });
           persistTerminalSnapshot(options?.sourceEventId);
         });
@@ -200,6 +211,9 @@ export class SessionRunStateController {
             content,
             timestamp,
             ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
+            ...(options?.assistantSourceEventId
+              ? { assistantSourceEventId: options.assistantSourceEventId }
+              : {}),
           });
           persistTerminalSnapshot(options?.sourceEventId);
         });
@@ -214,11 +228,14 @@ export class SessionRunStateController {
             content,
             timestamp,
             ...(options?.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
+            ...(options?.assistantSourceEventId
+              ? { assistantSourceEventId: options.assistantSourceEventId }
+              : {}),
           });
           persistTerminalSnapshot(options?.sourceEventId);
         });
       },
-      awaitAbortConfirmation: (delayMs, getContent) => {
+      awaitAbortConfirmation: (delayMs, getContent, getAssistantSourceEventId) => {
         if (completed) return Promise.resolve(false);
         if (abortFallbackPromise) return abortFallbackPromise;
         abortFallbackPromise = new Promise<boolean>((resolve) => {
@@ -234,7 +251,13 @@ export class SessionRunStateController {
             this.logger.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
             resolve(finish((timestamp) => {
               this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryAbortedMessage);
-              bus.emit({ type: "aborted", content: getContent(), timestamp });
+              const assistantSourceEventId = getAssistantSourceEventId?.();
+              bus.emit({
+                type: "aborted",
+                content: getContent(),
+                timestamp,
+                ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
+              });
               persistTerminalSnapshot();
             }));
           }, delayMs);

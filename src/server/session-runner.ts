@@ -743,6 +743,7 @@ export class SessionRunner {
     const syncShellWaits = new Map<string, number>();
     const handledCurrentTurnEventKeys = new Set<string>();
     let lastAssistantContent: string | undefined;
+    let lastAssistantSourceEventId: string | undefined;
     let lastEventTime = Date.now();
     let sendStart = lastEventTime;
     let lastDiskMtime: number | undefined;
@@ -771,6 +772,7 @@ export class SessionRunner {
       lastEventTime = sendStart;
       handledCurrentTurnEventKeys.clear();
       lastAssistantContent = undefined;
+      lastAssistantSourceEventId = undefined;
       pendingTerminalCompletion = undefined;
       activeExternalTools.clear();
       lastExternalToolWaitSpanAt = 0;
@@ -1074,8 +1076,9 @@ export class SessionRunner {
           if (data?.content) {
             console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
             lastAssistantContent = data.content;
+            lastAssistantSourceEventId = getSdkEventId(event);
           }
-          if (data?.toolRequests?.length) {
+          if (data?.content || data?.toolRequests?.length) {
             bus.emit({
               type: "assistant_partial",
               content: data.content ?? "",
@@ -1288,6 +1291,7 @@ export class SessionRunner {
           });
           runController.completeAborted(partialContent, {
             sourceEventId: getSdkEventId(event),
+            ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
           });
           break;
         }
@@ -1314,6 +1318,7 @@ export class SessionRunner {
             });
             runController.completeShutdown(partialContent, {
               sourceEventId: getSdkEventId(event),
+              ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
             });
           }
           break;
@@ -1356,6 +1361,7 @@ export class SessionRunner {
             {
               ...(resolvedTerminalCompletion ? { terminalCompletion: resolvedTerminalCompletion } : {}),
               ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+              ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
             },
           );
           pendingTerminalCompletion = undefined;

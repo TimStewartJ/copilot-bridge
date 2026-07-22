@@ -508,6 +508,50 @@ function createAssistantEntry(
   };
 }
 
+function reconcileTerminalAssistantEntry(
+  entries: ChatEntry[],
+  content: string,
+  options: {
+    assistantSourceEventId?: string;
+    fallbackId: string;
+    turnId?: string;
+    terminalSourceEventId?: string;
+    timestamp?: string;
+    terminalType?: string;
+  },
+): ChatEntry[] {
+  if (options.assistantSourceEventId) {
+    const index = entries.findIndex((entry) => (
+      entry.type !== "tool"
+      && entry.type !== "visual"
+      && entry.type !== "completion"
+      && entry.type !== "skill"
+      && entry.role === "assistant"
+      && entry.sourceEventId === options.assistantSourceEventId
+    ));
+    if (index >= 0) {
+      return entries.map((entry, entryIndex) => entryIndex === index
+        ? {
+            ...entry,
+            content: formatTerminalContent(content, options.terminalType),
+            turnId: entry.turnId ?? options.turnId,
+          }
+        : entry);
+    }
+  }
+
+  const fallbackSourceEventId = options.assistantSourceEventId ?? options.terminalSourceEventId;
+  return appendUniqueEntry(entries, createAssistantEntry(content, {
+    id: options.assistantSourceEventId
+      ? `live-assistant-${options.assistantSourceEventId}`
+      : options.fallbackId,
+    turnId: options.turnId,
+    sourceEventId: fallbackSourceEventId,
+    timestamp: options.timestamp,
+    terminalType: options.terminalType,
+  }));
+}
+
 function createUserEntry(value: unknown): ChatEntry | null {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
     return null;
@@ -575,18 +619,22 @@ function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: str
 
   if (!event.complete) return result;
   const sourceEventId = optionalString(event.terminalEventId);
+  const assistantSourceEventId = optionalString(event.terminalAssistantEventId);
   const timestamp = optionalString(event.terminalTimestamp);
   const completion = normalizeTerminalCompletion(event.terminalCompletion);
   if (completion) {
     result.push(createCompletionEntry(completion, timestamp, turnId, sourceEventId));
   } else if (typeof event.finalContent === "string" && event.finalContent) {
-    result.push(createAssistantEntry(event.finalContent, {
-      id: sourceEventId ? `live-terminal-${sourceEventId}` : `live-terminal-${optionalString(event.runId) ?? "synthetic"}`,
+    return reconcileTerminalAssistantEntry(result, event.finalContent, {
+      assistantSourceEventId,
+      fallbackId: sourceEventId
+        ? `live-terminal-${sourceEventId}`
+        : `live-terminal-${optionalString(event.runId) ?? "synthetic"}`,
       turnId,
-      sourceEventId,
+      terminalSourceEventId: sourceEventId,
       timestamp,
       terminalType: optionalString(event.terminalType),
-    }));
+    });
   } else if (typeof event.errorMessage === "string" && event.errorMessage) {
     result.push(createAssistantEntry(`⚠️ Error: ${event.errorMessage}`, {
       id: sourceEventId ? `live-terminal-${sourceEventId}` : `live-terminal-${optionalString(event.runId) ?? "synthetic"}`,
@@ -1073,6 +1121,7 @@ export function useSessionStream(
       if (eventType === "done" || eventType === "error" || eventType === "aborted" || eventType === "shutdown") {
         closeCurrent();
         const sourceEventId = optionalString(event.sourceEventId);
+        const assistantSourceEventId = optionalString(event.assistantSourceEventId);
         setStreamState((current) => {
           let liveEntries = current.liveEntries;
           const completedAt = optionalString(event.timestamp);
@@ -1095,15 +1144,16 @@ export function useSessionStream(
               ? `⚠️ Error: ${optionalString(event.message) ?? "Unknown session error"}`
               : optionalString(event.content) ?? current.streamingContent;
             if (content) {
-              liveEntries = appendUniqueEntry(liveEntries, createAssistantEntry(content, {
-                id: sourceEventId
+              liveEntries = reconcileTerminalAssistantEntry(liveEntries, content, {
+                assistantSourceEventId: eventType === "error" ? undefined : assistantSourceEventId,
+                fallbackId: sourceEventId
                   ? `live-terminal-${sourceEventId}`
                   : `live-terminal-synthetic-${generation}`,
                 turnId: getEventTurnId(event),
-                sourceEventId,
+                terminalSourceEventId: sourceEventId,
                 timestamp: completedAt,
                 terminalType: eventType,
-              }));
+              });
             }
           }
           return createState("idle", {
