@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import {
   clearRestartPending,
   configureRestartStateStore,
@@ -20,12 +17,14 @@ import {
   matchesField,
   validateSupportedCronExpression,
 } from "../scheduler.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp, makeTestDir } from "./helpers.js";
 import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {
   clearRestartPending();
-  scheduler.shutdown();
+  if (scheduler.isInitialized()) {
+    scheduler.shutdown();
+  }
   vi.useRealTimers();
 });
 
@@ -247,7 +246,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("triggers schedules when restart is pending with waiting sessions", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const tempDir = makeTestDir("restart-state-scheduler");
     const { ctx } = createTestApp();
     try {
       configureRestartStateStore({ dataDir: tempDir, docsDir: tempDir, env: process.env });
@@ -294,12 +293,11 @@ describe("scheduler restart gating", () => {
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
   it("skips triggering schedules while launcher restart cutover is in progress", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const tempDir = makeTestDir("restart-state-scheduler");
     const { ctx } = createTestApp();
     try {
       configureRestartStateStore({ dataDir: tempDir, docsDir: tempDir, env: process.env });
@@ -343,7 +341,6 @@ describe("scheduler restart gating", () => {
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
@@ -1380,9 +1377,8 @@ describe("scheduler startup recovery", () => {
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBe("2026-04-16T15:59:30.000Z");
 
     await vi.advanceTimersByTimeAsync(60_000);
-    await vi.waitFor(() => {
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    });
+    await scheduler.waitForMissedRunCatchUpForTests();
+    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     expect(sessionManager.startWork).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot");
   });
 
@@ -1573,7 +1569,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const tempDir = makeTestDir("restart-state-scheduler");
     const docsDir = join(tempDir, "docs");
     const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const { ctx } = createTestApp({
@@ -1613,15 +1609,14 @@ describe("scheduler startup recovery", () => {
         globalBus: ctx.globalBus,
       });
 
-      await Promise.resolve();
+      await scheduler.waitForMissedRunCatchUpForTests();
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
 
       clearRestartPending();
       ctx.globalBus.emit({ type: "server:restart-cleared" });
 
-      await vi.waitFor(() => {
-        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      });
+      await scheduler.waitForMissedRunCatchUpForTests();
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
       expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-one-shot", "catch up later");
       expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
         runCount: 1,
@@ -1630,7 +1625,6 @@ describe("scheduler startup recovery", () => {
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
@@ -1638,7 +1632,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const tempDir = makeTestDir("restart-state-scheduler");
     const docsDir = join(tempDir, "docs");
     const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const restartStatePath = join(tempDir, "restart-state.json");
@@ -1680,14 +1674,14 @@ describe("scheduler startup recovery", () => {
       });
 
       await vi.advanceTimersByTimeAsync(5_000);
+      await scheduler.waitForMissedRunCatchUpForTests();
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
 
       await clearRestartState(restartStatePath);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await scheduler.waitForMissedRunCatchUpForTests();
 
-      await vi.waitFor(() => {
-        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      });
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
       expect(sessionManager.startWork).toHaveBeenCalledWith(
         "launcher-cleared-one-shot",
         "catch up after launcher clears",
@@ -1699,7 +1693,6 @@ describe("scheduler startup recovery", () => {
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
@@ -1707,7 +1700,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const tempDir = makeTestDir("restart-state-scheduler");
     const docsDir = join(tempDir, "docs");
     const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const restartStatePath = join(tempDir, "restart-state.json");
@@ -1752,15 +1745,15 @@ describe("scheduler startup recovery", () => {
       });
 
       await vi.advanceTimersByTimeAsync(5_000);
+      await scheduler.waitForMissedRunCatchUpForTests();
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
       expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(true);
 
       await clearRestartState(restartStatePath);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await scheduler.waitForMissedRunCatchUpForTests();
 
-      await vi.waitFor(() => {
-        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      });
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
       expect(sessionManager.startWork).toHaveBeenCalledWith(
         "launcher-aged-one-shot",
         "catch up after long restart",
@@ -1772,7 +1765,6 @@ describe("scheduler startup recovery", () => {
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
@@ -1845,7 +1837,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const tempDir = makeTestDir("restart-state-scheduler");
     const docsDir = join(tempDir, "docs");
     const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const { ctx, db } = createTestApp({
@@ -1890,21 +1882,19 @@ describe("scheduler startup recovery", () => {
         globalBus: ctx.globalBus,
       });
 
-      await Promise.resolve();
+      await scheduler.waitForMissedRunCatchUpForTests();
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
 
       clearRestartPending();
       ctx.globalBus.emit({ type: "server:restart-cleared" });
 
-      await vi.waitFor(() => {
-        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      });
+      await scheduler.waitForMissedRunCatchUpForTests();
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
       expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-cron", "catch up cron");
       expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(2);
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

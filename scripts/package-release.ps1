@@ -6,7 +6,8 @@ param(
   [string]$OutputDir,
   [switch]$IncludeNodeModules,
   [switch]$Analyze,
-  [switch]$SmokeTest
+  [switch]$SmokeTest,
+  [switch]$UsePrebuilt
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,7 +103,17 @@ if ($packageJson.overrides) {
 }
 
 Set-Location $repoRoot
-npm run build
+if ($UsePrebuilt) {
+  npx tsx src/server/build-stamp.ts verify
+  if ($LASTEXITCODE -ne 0) {
+    throw "Prebuilt release verification failed."
+  }
+} else {
+  npm run build
+  if ($LASTEXITCODE -ne 0) {
+    throw "Release build failed."
+  }
+}
 
 $releaseRoot = Join-Path $OutputDir "CopilotBridge"
 $appDir = Join-Path $releaseRoot "app"

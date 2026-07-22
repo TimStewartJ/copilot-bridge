@@ -55,12 +55,6 @@ function fakeStore(schedules: Schedule[]) {
   };
 }
 
-async function flushPromises(): Promise<void> {
-  for (let i = 0; i < 5; i += 1) {
-    await Promise.resolve();
-  }
-}
-
 describe("scheduler missed-run catch-up", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -85,7 +79,7 @@ describe("scheduler missed-run catch-up", () => {
     });
 
     controller.check();
-    await flushPromises();
+    await controller.waitForIdle();
 
     expect(store.listDueSchedules).not.toHaveBeenCalled();
     expect(computeNextRunAt).not.toHaveBeenCalled();
@@ -115,10 +109,9 @@ describe("scheduler missed-run catch-up", () => {
     });
 
     controller.check();
-    await vi.waitFor(() => {
-      expect(triggerSchedule).toHaveBeenCalledTimes(1);
-    });
+    await controller.waitForIdle();
 
+    expect(triggerSchedule).toHaveBeenCalledTimes(1);
     expect(store.listDueSchedules).toHaveBeenCalledTimes(1);
     const listDueSchedulesCalls = store.listDueSchedules.mock.calls as string[][];
     expect(listDueSchedulesCalls[0]?.[0]).toMatch(/^2026-04-16T16:00:00\.\d{3}Z$/);
@@ -153,10 +146,9 @@ describe("scheduler missed-run catch-up", () => {
     });
 
     controller.check();
-    await vi.waitFor(() => {
-      expect(triggerSchedule).toHaveBeenCalledTimes(1);
-    });
+    await controller.waitForIdle();
 
+    expect(triggerSchedule).toHaveBeenCalledTimes(1);
     expect(triggerSchedule).toHaveBeenCalledWith("cron-six", {
       source: "catchup",
       scheduledFor: "2026-04-16T16:05:00.000Z",
@@ -189,15 +181,14 @@ describe("scheduler missed-run catch-up", () => {
         .mockResolvedValueOnce(restartState("idle")),
       getRestartPendingMessage: () => "restart pending",
     });
-
     controller.check();
-    await flushPromises();
+    controller.check();
     expect(triggerSchedule).not.toHaveBeenCalled();
-
+    expect(triggerSchedule).not.toHaveBeenCalled();
     controller.check();
-    await vi.waitFor(() => {
-      expect(triggerSchedule).toHaveBeenCalledTimes(1);
-    });
+    controller.check();
+    await controller.waitForIdle();
+    expect(triggerSchedule).toHaveBeenCalledTimes(1);
     expect(triggerSchedule).toHaveBeenCalledWith("once-1", {
       source: "once",
       scheduledFor: "2026-04-16T15:30:00.000Z",
@@ -227,7 +218,7 @@ describe("scheduler missed-run catch-up", () => {
     });
 
     controller.check();
-    await flushPromises();
+    await controller.waitForIdle();
 
     expect(triggerSchedule).not.toHaveBeenCalled();
     expect(store.updateNextRunAt).toHaveBeenCalledWith("cron-stale", "2026-04-16T18:30:00.000Z");
