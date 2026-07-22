@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { ChatEntry, PendingUserInputRequestView } from "../api";
+import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
 import {
@@ -70,22 +70,28 @@ vi.mock("./MessageBubble", () => ({
     message,
     actionSlot,
     isStreaming,
-    isPending,
+    onRetry,
   }: {
-    message: { role: string; content: string };
+    message: ChatMessage;
     actionSlot?: ReactNode;
     isStreaming?: boolean;
-    isPending?: boolean;
+    onRetry?: () => void;
   }) => createElement(
     "div",
     {
       "data-testid": "message-bubble",
       "data-role": message.role,
       "data-streaming": isStreaming ? "true" : "false",
-      "data-pending": isPending ? "true" : "false",
+      "data-delivery-state": message.delivery
+        ? message.delivery.failed ? "failed" : "sending"
+        : "sent",
+      "data-delivery-error": message.delivery?.error,
     },
     message.content,
     actionSlot,
+    onRetry
+      ? createElement("button", { "aria-label": "Retry sending message", onClick: onRetry }, "Retry")
+      : null,
   ),
 }));
 
@@ -1325,6 +1331,7 @@ describe("ChatView steering sends", () => {
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent?.includes("waiting for server")
       ))).toHaveLength(0);
+      expect(sendMessageMock).toHaveBeenCalledWith("waiting for server", undefined, "interactive");
 
       await act(async () => {
         sendAccepted.resolve();
@@ -1347,15 +1354,95 @@ describe("ChatView steering sends", () => {
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent?.includes("waiting for server")
       ));
-      expect(streamedBubble?.getAttribute("data-pending")).toBe("false");
+      expect(streamedBubble?.getAttribute("data-delivery-state")).toBe("sent");
     } finally {
       sendAccepted.resolve();
       await cleanup();
     }
   });
 
+  it("retains a failed optimistic message and retries the original payload", async () => {
+    const retryAccepted = createDeferred<void>();
+    const attachment: Attachment = {
+      type: "blob",
+      mimeType: "text/plain",
+      data: "cmV0cnk=",
+      displayName: "retry.txt",
+    };
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+    sendMessageMock
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockReturnValueOnce(retryAccepted.promise);
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as {
+        onSend: (prompt: string, attachments?: Attachment[], mode?: "interactive" | "autopilot") => Promise<void>;
+      };
+      await act(async () => {
+        await props.onSend("please retry", [attachment], "autopilot");
+        await waitTick();
+      });
+
+      const findOptimisticBubble = () => findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("please retry")
+      ));
+      expect(findOptimisticBubble()?.getAttribute("data-delivery-state")).toBe("failed");
+      expect(findOptimisticBubble()?.getAttribute("data-delivery-error")).toBe("network unavailable");
+      expect(dom.container.textContent).not.toContain("⚠️ Error:");
+      expect(sendMessageMock).toHaveBeenNthCalledWith(1, "please retry", [attachment], "autopilot");
+
+      await act(async () => {
+        const retryButton = findButtonByAriaLabel(dom.container, "Retry sending message");
+        clickButton(retryButton);
+        clickButton(retryButton);
+        await waitTick();
+      });
+      expect(findOptimisticBubble()?.getAttribute("data-delivery-state")).toBe("sending");
+      expect(sendMessageMock).toHaveBeenCalledTimes(2);
+      expect(sendMessageMock).toHaveBeenNthCalledWith(2, "please retry", [attachment], "autopilot");
+
+      await act(async () => {
+        retryAccepted.resolve();
+        await waitTick();
+      });
+      await waitUntilAct(act, () => (
+        findOptimisticBubble() === undefined
+      ));
+
+      await render({
+        streamOverrides: {
+          liveEntries: [{
+            id: "live-retry-user-1",
+            role: "user",
+            content: "please retry",
+            attachments: [attachment],
+            sourceEventId: "retry-user-event-1",
+          }],
+          isStreaming: true,
+          streamStatus: "thinking",
+        },
+      });
+      const acceptedBubbles = findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("please retry")
+      ));
+      expect(acceptedBubbles).toHaveLength(1);
+      expect(acceptedBubbles[0]?.getAttribute("data-delivery-state")).toBe("sent");
+    } finally {
+      retryAccepted.resolve();
+      await cleanup();
+    }
+  });
+
   it("allows sending a steering message while the session is streaming", async () => {
-    const { act, cleanup, sendMessageMock } = await renderChatView({
+    const { dom, act, cleanup, sendMessageMock } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
         busy: true,
@@ -1373,7 +1460,69 @@ describe("ChatView steering sends", () => {
       });
 
       expect(sendMessageMock).toHaveBeenCalledWith("please adjust", undefined);
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("please adjust")
+      ))).toHaveLength(0);
     } finally {
+      await cleanup();
+    }
+  });
+
+  it("retries a failed steering message without adding a mode or dispatching twice", async () => {
+    const retryAccepted = createDeferred<void>();
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({});
+    sendMessageMock
+      .mockRejectedValueOnce(new Error("steering request rejected"))
+      .mockReturnValueOnce(retryAccepted.promise);
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as {
+        onSend: (prompt: string) => Promise<void>;
+      };
+      await act(async () => {
+        await props.onSend("retry steering");
+        await waitTick();
+      });
+
+      const retryButton = findButtonByAriaLabel(dom.container, "Retry sending message");
+      await act(async () => {
+        clickButton(retryButton);
+        clickButton(retryButton);
+        await waitTick();
+      });
+      const findRetryBubble = () => findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("retry steering")
+      ));
+      expect(findRetryBubble()?.getAttribute("data-delivery-state")).toBe("sending");
+      expect(sendMessageMock).toHaveBeenCalledTimes(2);
+      expect(sendMessageMock.mock.calls[0]).toEqual(["retry steering", undefined]);
+      expect(sendMessageMock.mock.calls[1]).toEqual(["retry steering", undefined]);
+
+      await act(async () => {
+        retryAccepted.resolve();
+        await waitTick();
+      });
+      await waitUntilAct(act, () => (
+        findRetryBubble() === undefined
+      ));
+
+      await render({
+        streamOverrides: {
+          liveEntries: [{
+            id: "live-steering-retry-1",
+            role: "user",
+            content: "retry steering",
+            sourceEventId: "steering-retry-event-1",
+          }],
+          isStreaming: true,
+          streamStatus: "streaming",
+        },
+      });
+      expect(findRetryBubble()?.getAttribute("data-delivery-state")).toBe("sent");
+    } finally {
+      retryAccepted.resolve();
       await cleanup();
     }
   });

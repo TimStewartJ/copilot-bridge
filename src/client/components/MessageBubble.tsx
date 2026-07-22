@@ -2,7 +2,7 @@ import { memo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { FileText } from "lucide-react";
+import { CircleAlert, FileText, RotateCcw } from "lucide-react";
 import type { ChatMessage } from "../api";
 import { buildToolCallForest } from "../lib/tool-call-tree";
 import ToolCallTree from "./ToolCallTree";
@@ -13,7 +13,7 @@ interface MessageBubbleProps {
   message: ChatMessage;
   actionSlot?: ReactNode;
   isStreaming?: boolean;
-  isPending?: boolean;
+  onRetry?: () => void;
 }
 
 function BubbleActions({ side, children }: { side: "left" | "right"; children?: ReactNode }) {
@@ -42,12 +42,15 @@ export default memo(function MessageBubble({
   message,
   actionSlot,
   isStreaming = false,
-  isPending = false,
+  onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
     const hasAttachments = message.attachments && message.attachments.length > 0;
+    const isFailed = message.delivery?.failed === true;
+    const isPending = Boolean(message.delivery) && !isFailed;
+    const deliveryState = isFailed ? "failed" : isPending ? "sending" : "sent";
     return (
       <div className="flex justify-end">
         <div
@@ -55,11 +58,18 @@ export default memo(function MessageBubble({
             isPending ? "opacity-60 grayscale" : ""
           }`}
           aria-busy={isPending || undefined}
-          data-delivery-state={isPending ? "sending" : "sent"}
-          title={isPending ? "Sending to server..." : undefined}
+          aria-invalid={isFailed || undefined}
+          data-delivery-state={deliveryState}
+          title={isPending
+            ? "Sending to server..."
+            : isFailed
+              ? `Failed to send${message.delivery?.error ? `: ${message.delivery.error}` : ""}`
+              : undefined}
         >
           <BubbleActions side="right">{actionSlot}</BubbleActions>
-          <div className="rounded-2xl rounded-br-sm border border-accent-border bg-accent-surface px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words">
+          <div className={`rounded-2xl rounded-br-sm border px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words ${
+            isFailed ? "border-error/40 bg-error/10" : "border-accent-border bg-accent-surface"
+          }`}>
             {hasAttachments && (
               <div className="flex gap-2 flex-wrap mb-2">
                 {message.attachments!.map((att, i) =>
@@ -88,6 +98,29 @@ export default memo(function MessageBubble({
             )}
             {message.content !== "(image)" && message.content !== "(attachment)" && message.content}
           </div>
+          {isFailed && (
+            <div
+              className="mt-1.5 flex items-center justify-end gap-2 text-xs text-error"
+              role="alert"
+            >
+              <CircleAlert size={13} aria-hidden="true" />
+              <span title={message.delivery?.error}>Failed to send</span>
+              {onRetry && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-full border border-error/30 bg-error/10 px-2 py-1 font-medium transition-colors hover:bg-error/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/40"
+                  aria-label="Retry sending message"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRetry();
+                  }}
+                >
+                  <RotateCcw size={12} aria-hidden="true" />
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );

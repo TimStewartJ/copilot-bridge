@@ -250,6 +250,12 @@ export interface FileRefAttachment {
 
 export type Attachment = BlobAttachment | UploadedAttachment | FileRefAttachment;
 
+export interface ChatMessageDelivery {
+  failed: boolean;
+  mode?: SendMode;
+  error?: string;
+}
+
 export interface ChatMessage {
   id?: string;
   turnId?: string;
@@ -263,6 +269,8 @@ export interface ChatMessage {
   timestamp?: string;
   toolCalls?: ToolCall[];
   attachments?: Attachment[];
+  /** Client-only state for optimistic messages awaiting server acceptance. */
+  delivery?: ChatMessageDelivery;
 }
 
 /** A tool call rendered as its own entry in the chronological chat list */

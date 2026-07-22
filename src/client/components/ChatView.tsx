@@ -15,6 +15,7 @@ import {
   type BackgroundAgentsSummary,
   type ChatEntry,
   type ChatMessage,
+  type ChatMessageDelivery,
   type McpServerStatus,
   type ElicitationResponseEndpointPayload,
   type PendingElicitationRequestView,
@@ -136,6 +137,25 @@ function getMaxScrollTop(el: HTMLElement): number {
 
 function isChatMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "message" } {
   return !entry.type || entry.type === "message";
+}
+
+type FailedOptimisticChatMessage = ChatMessage & {
+  id: string;
+  delivery: ChatMessageDelivery & { failed: true };
+};
+
+function isFailedOptimisticChatMessage(message: ChatMessage): message is FailedOptimisticChatMessage {
+  return typeof message.id === "string" && message.delivery?.failed === true;
+}
+
+function createSendingDelivery(mode?: SendMode): ChatMessageDelivery {
+  return mode === undefined ? { failed: false } : { failed: false, mode };
+}
+
+function hasFailedDeliveryEntry(entries: ChatEntry[]): boolean {
+  return entries.some((entry) => (
+    isChatMessageEntry(entry) && entry.delivery?.failed === true
+  ));
 }
 
 function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): string {
@@ -998,8 +1018,10 @@ export default function ChatView({
           if (requestId !== loadRequestIdRef.current) {
             return;
           }
+          const currentEntriesHaveClientState = hasClientGeneratedEntries(entriesRef.current);
           const shouldReplaceLoadedWindow = !background
-            || (replace && !(busy && hasClientGeneratedEntries(entriesRef.current)));
+            || (replace && !hasFailedDeliveryEntry(entriesRef.current)
+              && !(busy && currentEntriesHaveClientState));
           if (shouldReplaceLoadedWindow) {
             staleTailRefreshRetryRef.current = undefined;
             if (!background) tailSkeletonRefreshEligibleRef.current = false;
@@ -1425,6 +1447,130 @@ export default function ChatView({
     scheduleAutoLoad({ consumeTopAutoFill: true });
   }, [entries, hasMore, loading, loadingMore, scheduleAutoLoad, sessionId]);
 
+  const updateOptimisticMessageDelivery = useCallback((
+    messageId: string,
+    ownerSessionId: string | null,
+    delivery: ChatMessageDelivery | undefined,
+  ) => {
+    if (sessionIdRef.current !== ownerSessionId) return;
+    let changed = false;
+    const nextEntries = entriesRef.current.map((entry) => {
+      if (entry.id !== messageId || !isChatMessageEntry(entry)) return entry;
+      changed = true;
+      return { ...entry, delivery };
+    });
+    if (!changed) return;
+    applyHistory(nextEntries, {
+      ownerSessionId,
+      total: totalEntriesRef.current,
+      hasMore: firstItemIndex.current > 0,
+      isCanonical: false,
+    });
+  }, [applyHistory]);
+
+  const removeOptimisticMessage = useCallback((
+    messageId: string,
+    ownerSessionId: string | null,
+  ) => {
+    if (sessionIdRef.current !== ownerSessionId) return;
+    const nextEntries = entriesRef.current.filter((entry) => entry.id !== messageId);
+    if (nextEntries.length === entriesRef.current.length) return;
+    applyHistory(nextEntries, {
+      ownerSessionId,
+      total: totalEntriesRef.current,
+      hasMore: firstItemIndex.current > 0,
+      isCanonical: false,
+    });
+  }, [applyHistory]);
+
+  const appendFailedMessage = useCallback((
+    messageId: string,
+    ownerSessionId: string,
+    prompt: string,
+    attachments: Attachment[] | undefined,
+    mode: SendMode | undefined,
+    error: unknown,
+  ) => {
+    if (sessionIdRef.current !== ownerSessionId) return;
+    const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
+    const nextEntries = [
+      ...entriesRef.current,
+      {
+        role: "user",
+        content: prompt,
+        id: messageId,
+        delivery: {
+          failed: true,
+          ...(mode === undefined ? {} : { mode }),
+          error: errorMessage,
+        },
+        ...(attachments?.length ? { attachments } : {}),
+      } satisfies ChatEntry,
+    ];
+    applyHistory(nextEntries, {
+      ownerSessionId,
+      total: totalEntriesRef.current,
+      hasMore: firstItemIndex.current > 0,
+      isCanonical: false,
+    });
+  }, [applyHistory]);
+
+  const deliverOptimisticMessage = useCallback(async (
+    messageId: string,
+    ownerSessionId: string | null,
+    prompt: string,
+    attachments: Attachment[] | undefined,
+    mode: SendMode | undefined,
+  ) => {
+    try {
+      if (ownerSessionId === null) {
+        if (!onCreateAndSend) throw new Error("Draft session creation is unavailable.");
+        await onCreateAndSend(prompt, attachments, mode);
+      } else if (mode !== undefined) {
+        await sendMessage(prompt, attachments, mode);
+      } else {
+        await sendMessage(prompt, attachments);
+      }
+      if (ownerSessionId === null) {
+        updateOptimisticMessageDelivery(messageId, ownerSessionId, undefined);
+      } else {
+        removeOptimisticMessage(messageId, ownerSessionId);
+      }
+    } catch (error) {
+      const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
+      updateOptimisticMessageDelivery(messageId, ownerSessionId, {
+        failed: true,
+        ...(mode === undefined ? {} : { mode }),
+        error: errorMessage,
+      });
+    } finally {
+      if (ownerSessionId === null && sessionIdRef.current === null) {
+        setCreating(false);
+      }
+    }
+  }, [onCreateAndSend, removeOptimisticMessage, sendMessage, updateOptimisticMessageDelivery]);
+
+  const handleRetryMessage = useCallback(async (message: FailedOptimisticChatMessage) => {
+    const currentEntry = entriesRef.current.find((entry) => entry.id === message.id);
+    if (!currentEntry || !isChatMessageEntry(currentEntry) || !isFailedOptimisticChatMessage(currentEntry)) return;
+    const currentMessage = currentEntry;
+
+    const ownerSessionId = sessionId;
+    updateOptimisticMessageDelivery(
+      currentMessage.id,
+      ownerSessionId,
+      createSendingDelivery(currentMessage.delivery.mode),
+    );
+    if (ownerSessionId === null) setCreating(true);
+    await deliverOptimisticMessage(
+      currentMessage.id,
+      ownerSessionId,
+      currentMessage.content,
+      currentMessage.attachments,
+      currentMessage.delivery.mode,
+    );
+  }, [deliverOptimisticMessage, sessionId, updateOptimisticMessageDelivery]);
+
   const handleSend = useCallback(async (prompt: string, attachments?: Attachment[], mode?: SendMode) => {
     if (loading) {
       queuedSendRef.current = { sessionId, composerKey, prompt, attachments, mode };
@@ -1435,30 +1581,28 @@ export default function ChatView({
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
       const draftMode = mode ?? DEFAULT_SEND_MODE;
+      const draftMessageId = "draft-user-0";
       setCreating(true);
-      applyHistory([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }], {
+      applyHistory([{
+        role: "user",
+        content: prompt,
+        id: draftMessageId,
+        delivery: createSendingDelivery(draftMode),
+        ...(attachments?.length ? { attachments } : {}),
+      }], {
         ownerSessionId: null,
         firstItemIndex: 0,
         total: 1,
         hasMore: false,
         isCanonical: false,
       });
-      try {
-        await onCreateAndSend(prompt, attachments, draftMode);
-      } catch (err: any) {
-        const nextEntries = [
-          ...entriesRef.current,
-          { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `draft-err-0` } satisfies ChatEntry,
-        ];
-        applyHistory(nextEntries, {
-          ownerSessionId: null,
-          firstItemIndex: 0,
-          total: nextEntries.length,
-          hasMore: false,
-          isCanonical: false,
-        });
-        setCreating(false);
-      }
+      await deliverOptimisticMessage(
+        draftMessageId,
+        null,
+        prompt,
+        attachments,
+        draftMode,
+      );
       return;
     }
 
@@ -1474,16 +1618,17 @@ export default function ChatView({
       } else {
         await sendMessage(prompt, attachments);
       }
-    } catch (err: any) {
-      const nextEntriesWithError = [...entriesRef.current, { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` } satisfies ChatEntry];
-      applyHistory(nextEntriesWithError, {
-        ownerSessionId: sessionId,
-        total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntriesWithError.length),
-        hasMore: firstItemIndex.current > 0,
-        isCanonical: false,
-      });
+    } catch (error) {
+      appendFailedMessage(
+        `local-${Date.now()}`,
+        sessionId,
+        prompt,
+        attachments,
+        isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE),
+        error,
+      );
     }
-  }, [sessionId, composerKey, loading, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, applyHistory]);
+  }, [sessionId, composerKey, loading, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, appendFailedMessage]);
 
   useEffect(() => {
     const queuedSend = queuedSendRef.current;
@@ -1889,7 +2034,10 @@ export default function ChatView({
       const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
       const messageAnchorKey = messageAnchorKeys.get(msg) ?? getMessageAnchorKey(msg, index);
       const isLiveStreamingMessage = msg.id === LIVE_STREAMING_MESSAGE_ID;
-      const isPendingUserMessage = msg.role === "user" && creating && msg.id?.startsWith("draft-user-");
+      const failedOptimisticMessage = isFailedOptimisticChatMessage(msg) ? msg : null;
+      const canRetryFailedMessage = Boolean(
+        failedOptimisticMessage && (sessionId !== null || onCreateAndSend),
+      );
       const menuBindings = isLiveStreamingMessage ? null : bindMessageMenu(messageKey, () => {});
       const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageKey);
       const actionSlot = isLiveStreamingMessage ? undefined : (
@@ -1930,7 +2078,9 @@ export default function ChatView({
             message={msg}
             actionSlot={actionSlot}
             isStreaming={isLiveStreamingMessage}
-            isPending={isPendingUserMessage}
+            onRetry={canRetryFailedMessage && failedOptimisticMessage
+              ? () => { void handleRetryMessage(failedOptimisticMessage); }
+              : undefined}
           />
         </div>,
       );
@@ -1945,9 +2095,11 @@ export default function ChatView({
     messageAnchorKeys,
     activeToolCallIds,
     handleCopySpecificMessage,
+    handleRetryMessage,
     isMessageLongPressTarget,
+    onCreateAndSend,
     openMessageActionsMenu,
-    creating,
+    sessionId,
     toolForest,
   ]);
 
