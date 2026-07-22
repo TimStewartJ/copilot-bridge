@@ -58,6 +58,7 @@ export function createIncrementalCopilotUsageReader({
   let sdkModels = staticSdkModels;
   let inflight: Promise<void> | null = null;
   let rerunRequested = false;
+  let stopped = false;
   let lastAttemptAt = cacheEntries.size > 0 && cacheEntries.size === persistedSessionIds.size
     ? parseTimestamp(store.getLastCompletedAt()) ?? 0
     : 0;
@@ -113,6 +114,7 @@ export function createIncrementalCopilotUsageReader({
   }
 
   function scheduleRefresh(force: boolean): boolean {
+    if (stopped) return false;
     if (inflight) {
       rerunRequested ||= force;
       return false;
@@ -129,6 +131,7 @@ export function createIncrementalCopilotUsageReader({
     status.sessionsProcessed = 0;
     status.sessionsUpdated = 0;
     status.error = null;
+    // Pricing refresh stays independent so cached or partial usage responses never wait on SDK metadata.
     refreshModelMetadata();
 
     inflight = runRefresh()
@@ -305,6 +308,11 @@ export function createIncrementalCopilotUsageReader({
       if (!scheduleRefresh(false)) {
         refreshModelMetadata();
       }
+    },
+    shutdown: async () => {
+      stopped = true;
+      rerunRequested = false;
+      await inflight;
     },
   };
 }

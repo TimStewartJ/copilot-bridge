@@ -318,6 +318,30 @@ function createProductionDataDir(): string {
       '2026-01-01T00:00:00.000Z'
     );
 
+    CREATE TABLE copilot_usage_sessions (
+      sessionId TEXT PRIMARY KEY,
+      parserVersion INTEGER NOT NULL,
+      fingerprintJson TEXT NOT NULL,
+      resultJson TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    INSERT INTO copilot_usage_sessions (
+      sessionId, parserVersion, fingerprintJson, resultJson, updatedAt
+    ) VALUES (
+      'production-session',
+      1,
+      '{"events":{"state":"missing"},"modelState":{"state":"missing"}}',
+      '{"hasEvents":false,"included":false,"includedUsageAts":[],"skippedAt":null,"modelRows":[],"totals":{}}',
+      '2026-01-01T00:00:00.000Z'
+    );
+
+    CREATE TABLE copilot_usage_scan_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      completedAt TEXT
+    );
+    INSERT INTO copilot_usage_scan_state (id, completedAt)
+    VALUES (1, '2026-01-01T00:00:00.000Z');
+
     CREATE TABLE settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -631,6 +655,10 @@ describe("staging tools", () => {
       expect(schedules).toEqual([{ enabled: 0 }]);
       const pushSubscriptions = stagingDb.prepare("SELECT COUNT(*) AS count FROM push_subscriptions").get() as { count: number };
       expect(pushSubscriptions.count).toBe(0);
+      const usageSessions = stagingDb.prepare("SELECT COUNT(*) AS count FROM copilot_usage_sessions").get() as { count: number };
+      expect(usageSessions.count).toBe(0);
+      const usageScanState = stagingDb.prepare("SELECT COUNT(*) AS count FROM copilot_usage_scan_state").get() as { count: number };
+      expect(usageScanState.count).toBe(0);
       const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
       const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
       expect(settings.model).toBe("claude-haiku-4.5");
@@ -639,6 +667,16 @@ describe("staging tools", () => {
       expect(settings.customInstructions).toBe("keep me");
     } finally {
       stagingDb.close();
+    }
+
+    const productionDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    try {
+      const productionUsageSessions = productionDb.prepare("SELECT COUNT(*) AS count FROM copilot_usage_sessions").get() as { count: number };
+      expect(productionUsageSessions.count).toBe(1);
+      const productionUsageScanState = productionDb.prepare("SELECT COUNT(*) AS count FROM copilot_usage_scan_state").get() as { count: number };
+      expect(productionUsageScanState.count).toBe(1);
+    } finally {
+      productionDb.close();
     }
 
     expect(existsSync(join(seededDataDir, "docs", "note.md"))).toBe(true);

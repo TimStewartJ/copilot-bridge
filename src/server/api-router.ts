@@ -54,7 +54,6 @@ import {
   sessionVisualOwner,
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
-import { createCopilotUsageReader } from "./copilot-usage.js";
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
@@ -1116,17 +1115,13 @@ export function createApiRouter(
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
-  const copilotUsageReader = ctx.copilotUsageStore
-    ? createIncrementalCopilotUsageReader({
-        copilotHome: getCopilotHome(ctx),
-        store: ctx.copilotUsageStore,
-        sdkModels: listCachedCopilotModelMetadataForPricing(ctx),
-        modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
-      })
-    : createCopilotUsageReader({
-        copilotHome: getCopilotHome(ctx),
-        modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
-      });
+  const copilotUsageReader = ctx.copilotUsageReader ?? createIncrementalCopilotUsageReader({
+    copilotHome: getCopilotHome(ctx),
+    store: ctx.copilotUsageStore,
+    sdkModels: listCachedCopilotModelMetadataForPricing(ctx),
+    modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
+  });
+  ctx.copilotUsageReader ??= copilotUsageReader;
   copilotUsageReader.startBackgroundRefresh?.();
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 

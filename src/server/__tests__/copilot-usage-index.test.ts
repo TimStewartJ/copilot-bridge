@@ -254,4 +254,40 @@ describe("createIncrementalCopilotUsageReader", () => {
     expect(failed.index?.error).toContain("Cached results");
     db.close();
   });
+
+  it("drains an active scan during shutdown and prevents later refreshes", async () => {
+    const db = openMemoryDatabase();
+    const copilotHome = createCopilotHome();
+    writeUsage(copilotHome, "session-1", 10);
+    let releaseScan!: () => void;
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const scanner = vi.fn(async (sessionStateDir: string, sessionId: string) => {
+      await scanGate;
+      return scanCopilotUsageSession(sessionStateDir, sessionId);
+    });
+    const reader = createIncrementalCopilotUsageReader({
+      copilotHome,
+      store: createCopilotUsageStore(db),
+      scanSession: scanner,
+    });
+
+    await reader.readSummary({ refresh: true });
+    await vi.waitFor(() => expect(scanner).toHaveBeenCalledTimes(1));
+    let shutdownComplete = false;
+    const shutdown = reader.shutdown().then(() => {
+      shutdownComplete = true;
+    });
+    await Promise.resolve();
+    expect(shutdownComplete).toBe(false);
+
+    releaseScan();
+    await shutdown;
+    expect(shutdownComplete).toBe(true);
+
+    await reader.readSummary({ refresh: true });
+    expect(scanner).toHaveBeenCalledTimes(1);
+    db.close();
+  });
 });

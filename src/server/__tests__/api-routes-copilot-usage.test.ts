@@ -5,6 +5,8 @@ import {
 } from "../copilot-usage.js";
 import { createCopilotUsageStore } from "../copilot-usage-store.js";
 import { openMemoryDatabase } from "../db.js";
+import type { serializeCopilotUsageSummary } from "../copilot-usage-serializer.js";
+import { createApiRouter } from "../api-router.js";
 import type { ApiRouteTestState } from "./api-routes-test-helpers.js";
 import {
   createCopilotUsageTestHome,
@@ -20,6 +22,21 @@ import {
 } from "./api-routes-test-helpers.js";
 
 let app: ApiRouteTestState["app"];
+type CopilotUsageApiBody = ReturnType<typeof serializeCopilotUsageSummary>;
+
+async function requestUsageUntil(
+  predicate: (body: CopilotUsageApiBody) => boolean,
+  path = "/api/copilot-usage",
+): Promise<{ status: number; body: CopilotUsageApiBody }> {
+  let latest: { status: number; body: CopilotUsageApiBody } | undefined;
+  await vi.waitFor(async () => {
+    const response = await request(app).get(path);
+    latest = { status: response.status, body: response.body };
+    expect(response.status).toBe(200);
+    expect(predicate(response.body)).toBe(true);
+  }, { timeout: 5_000 });
+  return latest!;
+}
 
 installApiRouteTestHooks((state) => {
   ({ app } = state);
@@ -97,6 +114,15 @@ function expectedCostEstimate(overrides: {
 }
 
 describe("Copilot usage routes", () => {
+  it("reuses the context usage reader when the API router is created again", () => {
+    const state = createTestApp();
+    const reader = state.ctx.copilotUsageReader;
+
+    createApiRouter(state.ctx);
+
+    expect(state.ctx.copilotUsageReader).toBe(reader);
+  });
+
   it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeCopilotUsageEvents(copilotHome, "usage-session", [
@@ -143,7 +169,10 @@ describe("Copilot usage routes", () => {
       },
     }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.pricingStatus === "exact"
+    ));
     const pricedTotals = expectedUsageTotals({
       requests: 3,
       inputTokens: 1_000_000,
@@ -313,7 +342,10 @@ describe("Copilot usage routes", () => {
       sessionManager: { ...createMockSessionManager(), listModels },
     }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.pricingStatus === "sdk-name"
+    ));
 
     expect(res.status).toBe(200);
     expect(listModels).toHaveBeenCalledTimes(1);
@@ -437,7 +469,10 @@ describe("Copilot usage routes", () => {
       sessionManager: { ...createMockSessionManager(), listModels },
     }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.pricingStatus === "sdk-name"
+    ));
 
     expect(res.status).toBe(200);
     expect(listModels).toHaveBeenCalledTimes(1);
@@ -481,7 +516,10 @@ describe("Copilot usage routes", () => {
         sessionManager: { ...createMockSessionManager(), listModels },
       }));
 
-      const res = await request(app).get("/api/copilot-usage");
+      const res = await requestUsageUntil((body) => (
+        body.index.state === "idle"
+        && body.models[0]?.model === "opaque-sdk-id"
+      ));
 
       expect(res.status).toBe(200);
       expect(listModels).toHaveBeenCalledTimes(1);
@@ -536,14 +574,22 @@ describe("Copilot usage routes", () => {
         sessionManager: { ...createMockSessionManager(), listModels },
       }));
 
-      const first = await request(app).get("/api/copilot-usage");
+      const first = await requestUsageUntil((body) => (
+        body.index.state === "idle"
+        && body.models[0]?.pricingStatus === "exact"
+      ));
       expect(first.status).toBe(200);
       expect(first.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
       const firstCost = first.body.models[0].estimatedCostUsd;
       expect(firstCost).toBeCloseTo(17.5);
 
       // Force a fresh read; live metadata now fails but the cached price persists.
-      const second = await request(app).get("/api/copilot-usage?refresh=1");
+      await request(app).get("/api/copilot-usage?refresh=1");
+      const second = await requestUsageUntil((body) => (
+        calls >= 2
+        && body.index.state === "idle"
+        && body.models[0]?.pricingStatus === "exact"
+      ));
       expect(second.status).toBe(200);
       expect(listModels.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
@@ -582,16 +628,23 @@ describe("Copilot usage routes", () => {
       sessionManager: { ...createMockSessionManager(), listModels },
     }));
 
-    const first = await request(app).get("/api/copilot-usage");
+    const first = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.estimatedCostUsd === 15
+    ));
     expect(first.body.models[0].estimatedCostUsd).toBeCloseTo(15);
 
-    const second = await request(app).get("/api/copilot-usage?refresh=1");
+    await request(app).get("/api/copilot-usage?refresh=1");
+    const second = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.estimatedCostUsd === 30
+    ));
     // The newer live price (30) must win over the previously cached price (15).
     expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
     expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(30);
   });
 
-  it("GET /api/copilot-usage supports refresh=1 cache bypass", async () => {
+  it("returns cached staging usage immediately while refresh=1 scans and publishes updates progressively", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeCopilotUsageEvents(copilotHome, "usage-session", [
       {
@@ -607,9 +660,12 @@ describe("Copilot usage routes", () => {
         },
       },
     ]);
-    ({ app } = createTestApp({ copilotHome }));
+    ({ app } = createTestApp({ copilotHome, isStaging: true }));
 
-    const initial = await request(app).get("/api/copilot-usage");
+    const initial = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.totals.totalTokens === 9
+    ));
     expect(initial.status).toBe(200);
     expect(initial.body.totals.totalTokens).toBe(9);
 
@@ -634,8 +690,14 @@ describe("Copilot usage routes", () => {
 
     const refreshed = await request(app).get("/api/copilot-usage?refresh=1");
     expect(refreshed.status).toBe(200);
-    expect(refreshed.body.totals.totalTokens).toBe(30);
-    expect(refreshed.body.totals.requests).toBe(2);
+    expect(refreshed.body.index.state).toBe("scanning");
+    expect(refreshed.body.totals.totalTokens).toBe(9);
+
+    const completed = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.totals.totalTokens === 30
+    ));
+    expect(completed.body.totals.requests).toBe(2);
   });
 
   it("GET /api/copilot-usage reads from injected copilotHome", async () => {
@@ -656,7 +718,7 @@ describe("Copilot usage routes", () => {
     ]);
     ({ app } = createTestApp({ copilotHome }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
 
     expect(res.status).toBe(200);
     expect(res.body.models).toEqual([
@@ -683,7 +745,7 @@ describe("Copilot usage routes", () => {
     ]);
     ({ app } = createTestApp({ copilotHome }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
 
     expect(res.status).toBe(200);
     expect(res.body.totals).toEqual({
@@ -730,7 +792,7 @@ describe("Copilot usage routes", () => {
     ]);
     ({ app } = createTestApp({ copilotHome }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
 
     expect(res.status).toBe(200);
     expect(res.body.totals.totalTokens).toBe(12);
@@ -792,7 +854,7 @@ describe("Copilot usage routes", () => {
     ]);
     ({ app } = createTestApp({ copilotHome }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
 
     expect(res.status).toBe(200);
     expect(res.body.totals).toEqual({
@@ -850,7 +912,7 @@ describe("Copilot usage routes", () => {
     ]);
     ({ app } = createTestApp({ copilotHome }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
 
     expect(res.status).toBe(200);
     expect(res.body.totals).toEqual({
@@ -887,15 +949,21 @@ describe("Copilot usage routes", () => {
     });
   });
 
-  it("GET /api/copilot-usage returns a safe error for unreadable session-state", async () => {
+  it("GET /api/copilot-usage reports unreadable session-state as a safe background index error", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeFileSync(join(copilotHome, "session-state"), "not a directory");
     ({ app } = createTestApp({ copilotHome }));
 
-    const res = await request(app).get("/api/copilot-usage");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await requestUsageUntil((body) => body.index.state === "error");
 
-    expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: "Unable to read local Copilot usage history." });
-    expect(JSON.stringify(res.body)).not.toContain(copilotHome);
+      expect(res.status).toBe(200);
+      expect(res.body.index.error).toBe("Local Copilot usage indexing failed. Cached results are still available.");
+      expect(res.body.totals.totalTokens).toBe(0);
+      expect(JSON.stringify(res.body)).not.toContain(copilotHome);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

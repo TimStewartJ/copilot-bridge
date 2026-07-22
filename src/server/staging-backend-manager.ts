@@ -296,6 +296,36 @@ function clearPushSubscriptionsInStagingDb(dbPath: string): void {
   }
 }
 
+function clearCopilotUsageIndexInStagingDb(dbPath: string): void {
+  let stagingDb: DatabaseSync | null = null;
+  try {
+    stagingDb = new DatabaseSync(dbPath);
+    const tables = new Set(
+      (stagingDb.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name IN ('copilot_usage_sessions', 'copilot_usage_scan_state')
+      `).all() as Array<{ name: string }>).map((row) => row.name),
+    );
+    if (tables.has("copilot_usage_sessions")) {
+      stagingDb.exec("DELETE FROM copilot_usage_sessions");
+    }
+    if (tables.has("copilot_usage_scan_state")) {
+      stagingDb.exec("DELETE FROM copilot_usage_scan_state");
+    }
+  } catch (err) {
+    log(`Warning: could not clear Copilot usage index in staging DB: ${err}`);
+  } finally {
+    if (stagingDb) {
+      try {
+        stagingDb.close();
+      } catch (closeErr) {
+        log(`Warning: could not close staging DB after Copilot usage index cleanup: ${closeErr}`);
+      }
+    }
+  }
+}
+
 function resolveStagingPreviewRuntimePaths(stagingDir: string): RuntimePaths {
   const dataDir = join(stagingDir, "data");
   return resolveRuntimePaths(process.env, {
@@ -306,7 +336,7 @@ function resolveStagingPreviewRuntimePaths(stagingDir: string): RuntimePaths {
   });
 }
 
-/** Seed a staging data directory from production data, with schedules disabled.
+/** Seed a staging data directory from production data, with runtime-only state isolated.
  *  Uses the worktree's own data/ directory (already gitignored). */
 export function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): RuntimePaths {
   const runtimePaths = resolveStagingPreviewRuntimePaths(stagingDir);
@@ -332,6 +362,7 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
   }
   disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
   clearPushSubscriptionsInStagingDb(join(dataDir, "bridge.db"));
+  clearCopilotUsageIndexInStagingDb(join(dataDir, "bridge.db"));
   forceStagingModelSettings(join(dataDir, "bridge.db"));
 
   // Copy docs directory (source of truth is filesystem, not SQLite)
