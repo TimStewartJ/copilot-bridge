@@ -648,16 +648,22 @@ export default function ChatView({
     abortSession,
     reconnect,
     activeTurnId,
+    terminalEventId,
   } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, historyCoverage);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   const canonicalEntryKeys = useMemo(
     () => new Set(entries.flatMap(getCanonicalEntryReconciliationKeys)),
     [entries],
   );
+  const coveredTerminalOverlayId = terminalEventId
+    && historyCoverage.latestTerminalEventId === terminalEventId
+    ? `live-terminal-${terminalEventId}`
+    : undefined;
   const visibleStreamLiveEntries = useMemo(() => streamLiveEntries.filter((entry) => {
+    if (entry.id === coveredTerminalOverlayId) return false;
     const key = getLiveEntryReconciliationKey(entry);
     return !key || !canonicalEntryKeys.has(key);
-  }), [canonicalEntryKeys, streamLiveEntries]);
+  }), [canonicalEntryKeys, coveredTerminalOverlayId, streamLiveEntries]);
 
   useLayoutEffect(() => {
     if (!sessionId) return;

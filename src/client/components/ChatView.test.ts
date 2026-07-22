@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatEntry, PendingUserInputRequestView } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
+import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -119,6 +120,7 @@ type FetchMessagesFastResult = {
   warm: boolean;
   hasMore?: boolean;
   lastVisibleActivityAt?: string;
+  coverage?: SessionHistoryCoverage;
 };
 
 type RenderChatViewOptions = {
@@ -1517,6 +1519,46 @@ describe("ChatView steering sends", () => {
       expect(dom.container.textContent).not.toContain("duplicate live assistant");
       expect(dom.container.textContent).toContain("canonical_tool");
       expect(dom.container.textContent).not.toContain("duplicate_live_tool");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("omits a covered terminal overlay when canonical history uses a different event id", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "canonical-final",
+          role: "assistant",
+          content: "Final answer",
+          sourceEventId: "assistant-message-event",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+        coverage: { latestTerminalEventId: "terminal-event" },
+      },
+      streamOverrides: {
+        liveEntries: [{
+          id: "live-terminal-terminal-event",
+          role: "assistant",
+          content: "Final answer",
+          sourceEventId: "terminal-event",
+        }],
+        terminalEventId: "terminal-event",
+        isStreaming: false,
+        streamStatus: "idle",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Final answer") ?? false);
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent === "Final answer"
+      ))).toHaveLength(1);
+      expect(findMessageWrapperByAnchorKey(dom.container, "canonical-final")).toBeDefined();
     } finally {
       await cleanup();
     }
