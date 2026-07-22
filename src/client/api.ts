@@ -1667,9 +1667,11 @@ export interface CopilotUsageIndexStatus {
   sessionsTotal: number;
   sessionsProcessed: number;
   sessionsUpdated: number;
+  sessionsFailed: number;
   cachedSessions: number;
   requestedSessions?: number;
   requestedSessionsCached?: number;
+  warning: string | null;
   error: string | null;
 }
 

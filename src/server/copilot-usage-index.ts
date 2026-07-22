@@ -35,6 +35,17 @@ const DEFAULT_SCAN_CONCURRENCY = 2;
 const DEFAULT_BATCH_SIZE = 16;
 const INDEX_ERROR_MESSAGE = "Local Copilot usage indexing failed. Cached results are still available.";
 
+interface CopilotUsageSessionScanFailure {
+  kind: "failed";
+  sessionId: string;
+  error: unknown;
+}
+
+type CopilotUsageSessionInspectionOutcome =
+  | { kind: "unchanged"; sessionId: string }
+  | { kind: "updated"; entry: CopilotUsageCacheEntry }
+  | CopilotUsageSessionScanFailure;
+
 export function createIncrementalCopilotUsageReader({
   copilotHome,
   store,
@@ -71,7 +82,9 @@ export function createIncrementalCopilotUsageReader({
     sessionsTotal: cacheEntries.size,
     sessionsProcessed: cacheEntries.size,
     sessionsUpdated: 0,
+    sessionsFailed: 0,
     cachedSessions: cacheEntries.size,
+    warning: null,
     error: null,
   };
 
@@ -130,6 +143,8 @@ export function createIncrementalCopilotUsageReader({
     status.startedAt = new Date(currentTime).toISOString();
     status.sessionsProcessed = 0;
     status.sessionsUpdated = 0;
+    status.sessionsFailed = 0;
+    status.warning = null;
     status.error = null;
     // Pricing refresh stays independent so cached or partial usage responses never wait on SDK metadata.
     refreshModelMetadata();
@@ -167,8 +182,18 @@ export function createIncrementalCopilotUsageReader({
     const seenSessionIds = new Set(sessionIds);
     const processedSessionIds = new Set<string>();
     const checkedRequestedSessionIds = new Set<string>();
+    const failedSessions: CopilotUsageSessionScanFailure[] = [];
+    const failedSessionIds = new Set<string>();
     status.sessionsTotal = sessionIds.length;
     status.cachedSessions = cacheEntries.size;
+
+    const processRefreshBatch = async (batch: readonly string[]): Promise<void> => {
+      const failures = await processBatch(batch, processedSessionIds);
+      for (const failure of failures) {
+        failedSessions.push(failure);
+        failedSessionIds.add(failure.sessionId);
+      }
+    };
 
     const initialPriorityIds = takePrioritySessions(
       seenSessionIds,
@@ -187,13 +212,13 @@ export function createIncrementalCopilotUsageReader({
         checkedRequestedSessionIds,
       );
       if (newlyPrioritized.length > 0) {
-        await processBatch(newlyPrioritized, processedSessionIds);
+        await processRefreshBatch(newlyPrioritized);
       }
 
       const batch = orderedSessionIds
         .slice(offset, offset + Math.max(1, batchSize))
         .filter((sessionId) => !processedSessionIds.has(sessionId));
-      await processBatch(batch, processedSessionIds);
+      await processRefreshBatch(batch);
       await yieldToEventLoop();
     }
 
@@ -203,7 +228,7 @@ export function createIncrementalCopilotUsageReader({
       checkedRequestedSessionIds,
     );
     if (finalPriorityIds.length > 0) {
-      await processBatch(finalPriorityIds, processedSessionIds);
+      await processRefreshBatch(finalPriorityIds);
     }
 
     const deletedSessionIds = [...persistedSessionIds]
@@ -220,11 +245,17 @@ export function createIncrementalCopilotUsageReader({
     store.setLastCompletedAt(completedAt);
     const completedAtMs = parseTimestamp(completedAt) ?? now();
     for (const sessionId of checkedRequestedSessionIds) {
-      if (seenSessionIds.has(sessionId)) {
+      if (seenSessionIds.has(sessionId) && !failedSessionIds.has(sessionId)) {
         missingRequestedCheckedAt.delete(sessionId);
       } else {
         missingRequestedCheckedAt.set(sessionId, completedAtMs);
       }
+    }
+    if (failedSessions.length > 0) {
+      console.warn(
+        `[copilot-usage] ${formatSessionScanWarning(failedSessions.length)} First failed session: ${failedSessions[0].sessionId}.`,
+        failedSessions[0].error,
+      );
     }
     status.state = "idle";
     status.completedAt = completedAt;
@@ -236,15 +267,18 @@ export function createIncrementalCopilotUsageReader({
   async function processBatch(
     sessionIds: readonly string[],
     processedSessionIds: Set<string>,
-  ): Promise<void> {
-    if (sessionIds.length === 0) return;
+  ): Promise<CopilotUsageSessionScanFailure[]> {
+    if (sessionIds.length === 0) return [];
     const outcomes = await mapWithConcurrency(
       [...sessionIds],
       Math.max(1, concurrency),
       inspectSession,
     );
-    const changedEntries = outcomes.filter(
-      (entry): entry is CopilotUsageCacheEntry => entry !== null,
+    const changedEntries = outcomes.flatMap((outcome) => (
+      outcome.kind === "updated" ? [outcome.entry] : []
+    ));
+    const failures = outcomes.filter(
+      (outcome): outcome is CopilotUsageSessionScanFailure => outcome.kind === "failed",
     );
     if (changedEntries.length > 0) {
       store.upsertEntries(changedEntries);
@@ -256,6 +290,8 @@ export function createIncrementalCopilotUsageReader({
       status.sessionsUpdated += changedEntries.length;
       status.cachedSessions = cacheEntries.size;
     }
+    status.sessionsFailed += failures.length;
+    status.warning = formatSessionScanWarning(status.sessionsFailed);
     for (const sessionId of sessionIds) {
       processedSessionIds.add(sessionId);
     }
@@ -263,9 +299,10 @@ export function createIncrementalCopilotUsageReader({
       status.sessionsTotal,
       status.sessionsProcessed + sessionIds.length,
     );
+    return failures;
   }
 
-  async function inspectSession(sessionId: string): Promise<CopilotUsageCacheEntry | null> {
+  async function inspectSession(sessionId: string): Promise<CopilotUsageSessionInspectionOutcome> {
     const fingerprint = await readSessionFingerprint(sessionStateDir, sessionId);
     const cached = cacheEntries.get(sessionId);
     if (
@@ -273,16 +310,23 @@ export function createIncrementalCopilotUsageReader({
       && cached.parserVersion === COPILOT_USAGE_PARSER_VERSION
       && fingerprintsEqual(cached.fingerprint, fingerprint)
     ) {
-      return null;
+      return { kind: "unchanged", sessionId };
     }
 
-    const result = await scanSession(sessionStateDir, sessionId);
-    return {
-      sessionId,
-      parserVersion: COPILOT_USAGE_PARSER_VERSION,
-      fingerprint,
-      result,
-    };
+    try {
+      const result = await scanSession(sessionStateDir, sessionId);
+      return {
+        kind: "updated",
+        entry: {
+          sessionId,
+          parserVersion: COPILOT_USAGE_PARSER_VERSION,
+          fingerprint,
+          result,
+        },
+      };
+    } catch (error) {
+      return { kind: "failed", sessionId, error };
+    }
   }
 
   function takePrioritySessions(
@@ -382,6 +426,12 @@ function getErrorCode(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code)
     : undefined;
+}
+
+function formatSessionScanWarning(failedSessions: number): string | null {
+  if (failedSessions === 0) return null;
+  const sessionLabel = failedSessions === 1 ? "session" : "sessions";
+  return `${failedSessions} local Copilot usage ${sessionLabel} failed to index. Cached results were retained when available.`;
 }
 
 async function mapWithConcurrency<T, R>(

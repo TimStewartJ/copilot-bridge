@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createIncrementalCopilotUsageReader } from "../copilot-usage-index.js";
@@ -229,29 +229,133 @@ describe("createIncrementalCopilotUsageReader", () => {
     db.close();
   });
 
-  it("keeps the last good cache when a changed session fails to scan", async () => {
+  it("omits a newly failed session while committing successful sessions from the same batch", async () => {
     const db = openMemoryDatabase();
     const copilotHome = createCopilotHome();
-    writeUsage(copilotHome, "session-1", 10);
-    let fail = false;
+    writeUsage(copilotHome, "failed-session", 10);
+    writeUsage(copilotHome, "successful-session", 20);
+    const store = createCopilotUsageStore(db);
     const reader = createIncrementalCopilotUsageReader({
       copilotHome,
-      store: createCopilotUsageStore(db),
+      store,
+      batchSize: 2,
+      concurrency: 2,
       scanSession: async (sessionStateDir, sessionId) => {
-        if (fail) throw new Error("scan failed");
+        if (sessionId === "failed-session") throw new Error("scan failed");
         return scanCopilotUsageSession(sessionStateDir, sessionId);
       },
     });
 
     await reader.readSummary({ refresh: true });
-    await waitForSummary(reader, (summary) => summary.index?.state === "idle");
-    fail = true;
-    writeUsage(copilotHome, "session-1", 200);
+    const partial = await waitForSummary(
+      reader,
+      (summary) => summary.index?.state === "idle" && summary.index.sessionsFailed === 1,
+    );
+
+    expect(partial.totals.inputTokens).toBe(20);
+    expect(partial.index).toMatchObject({
+      sessionsTotal: 2,
+      sessionsProcessed: 2,
+      sessionsUpdated: 1,
+      sessionsFailed: 1,
+      cachedSessions: 1,
+    });
+    expect(store.listSessionIds()).toEqual(["successful-session"]);
+    db.close();
+  });
+
+  it("isolates a failed session while updating others, pruning stale rows, and recovering later", async () => {
+    const db = openMemoryDatabase();
+    const copilotHome = createCopilotHome();
+    writeUsage(copilotHome, "failed-session", 10);
+    writeUsage(copilotHome, "updated-session-1", 20);
+    writeUsage(copilotHome, "updated-session-2", 30);
+    writeUsage(copilotHome, "stale-session", 40);
+    const store = createCopilotUsageStore(db);
+    let failedSessionId: string | null = null;
+    const scanner = vi.fn(async (sessionStateDir: string, sessionId: string) => {
+      if (sessionId === failedSessionId) throw new Error("scan failed");
+      return scanCopilotUsageSession(sessionStateDir, sessionId);
+    });
+    const reader = createIncrementalCopilotUsageReader({
+      copilotHome,
+      store,
+      scanSession: scanner,
+      batchSize: 2,
+      concurrency: 2,
+    });
+
+    await reader.readSummary({ refresh: true });
+    const seeded = await waitForSummary(reader, (summary) => summary.index?.state === "idle");
+    expect(seeded.totals.inputTokens).toBe(100);
+
+    failedSessionId = "failed-session";
+    writeUsage(copilotHome, "failed-session", 1_000);
+    writeUsage(copilotHome, "updated-session-1", 2_000);
+    writeUsage(copilotHome, "updated-session-2", 3_000);
+    rmSync(join(copilotHome, "session-state", "stale-session"), { recursive: true, force: true });
+    await reader.readSummary({ refresh: true });
+
+    const partial = await waitForSummary(
+      reader,
+      (summary) => summary.index?.state === "idle" && summary.index.sessionsFailed === 1,
+    );
+    expect(partial.totals.inputTokens).toBe(5_010);
+    expect(partial.index).toMatchObject({
+      sessionsTotal: 3,
+      sessionsProcessed: 3,
+      sessionsUpdated: 2,
+      sessionsFailed: 1,
+      cachedSessions: 3,
+      warning: "1 local Copilot usage session failed to index. Cached results were retained when available.",
+      error: null,
+    });
+    expect(store.listSessionIds().sort()).toEqual([
+      "failed-session",
+      "updated-session-1",
+      "updated-session-2",
+    ]);
+
+    failedSessionId = null;
+    await reader.readSummary({ refresh: true });
+    const recovered = await waitForSummary(
+      reader,
+      (summary) => summary.index?.state === "idle" && summary.totals.inputTokens === 6_000,
+    );
+    expect(recovered.index).toMatchObject({
+      sessionsUpdated: 1,
+      sessionsFailed: 0,
+      cachedSessions: 3,
+      warning: null,
+      error: null,
+    });
+    expect(scanner).toHaveBeenCalledTimes(8);
+    db.close();
+  });
+
+  it("keeps cached totals available when a whole-refresh persistence failure occurs", async () => {
+    const db = openMemoryDatabase();
+    const copilotHome = createCopilotHome();
+    writeUsage(copilotHome, "session-1", 10);
+    const store = createCopilotUsageStore(db);
+    const seedReader = createIncrementalCopilotUsageReader({ copilotHome, store });
+    await seedReader.readSummary({ refresh: true });
+    await waitForSummary(seedReader, (summary) => summary.index?.state === "idle");
+
+    const setLastCompletedAt = vi.spyOn(store, "setLastCompletedAt").mockImplementation(() => {
+      throw new Error("write failed");
+    });
+    const reader = createIncrementalCopilotUsageReader({ copilotHome, store });
     await reader.readSummary({ refresh: true });
 
     const failed = await waitForSummary(reader, (summary) => summary.index?.state === "error");
     expect(failed.totals.inputTokens).toBe(10);
-    expect(failed.index?.error).toContain("Cached results");
+    expect(failed.index).toMatchObject({
+      sessionsFailed: 0,
+      warning: null,
+      error: "Local Copilot usage indexing failed. Cached results are still available.",
+    });
+    setLastCompletedAt.mockRestore();
     db.close();
   });
 

@@ -73,9 +73,11 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
       sessionsTotal: index.sessionsTotal,
       sessionsProcessed: index.sessionsProcessed,
       sessionsUpdated: index.sessionsUpdated,
+      sessionsFailed: index.sessionsFailed,
       cachedSessions: index.cachedSessions,
       ...(index.requestedSessions !== undefined ? { requestedSessions: index.requestedSessions } : {}),
       ...(index.requestedSessionsCached !== undefined ? { requestedSessionsCached: index.requestedSessionsCached } : {}),
+      warning: index.warning,
       error: index.error,
     },
     totals: {

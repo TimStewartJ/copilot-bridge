@@ -204,7 +204,9 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
       sessionsTotal: 0,
       sessionsProcessed: 0,
       sessionsUpdated: 0,
+      sessionsFailed: 0,
       cachedSessions: 0,
+      warning: null,
       error: null,
     },
     totals: {
