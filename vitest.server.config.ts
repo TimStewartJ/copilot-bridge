@@ -1,8 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { defineProject } from "vitest/config";
+import { sharedTestConfig } from "./vitest.shared.js";
 
-export default defineConfig({
+export default defineProject({
   test: {
-    root: ".",
+    ...sharedTestConfig,
+    name: "server",
     include: [
       "src/server/**/*.test.ts",
       "src/shared/**/*.test.ts",
@@ -12,17 +14,9 @@ export default defineConfig({
       "src/server/__tests__/staging-preview-backend.test.ts",
       "src/server/__tests__/staging-tools.test.ts",
     ],
-    environment: "node",
-    env: {
-      NODE_ENV: "test",
-    },
-    testTimeout: 10_000,
     // Use threads pool instead of forks. Forks-on-Windows + node:sqlite +
-    // chatty stdout from large api-routes-* test files (each spamming
-    // "[scheduler] Shut down" per test) intermittently kills worker child
-    // processes via what looks like an IPC buffer/handle issue. Threads
-    // share the parent process so worker IPC is not involved, eliminating
-    // the "Worker exited unexpectedly" flake without changing test behavior.
+    // high-volume server test output intermittently kills worker child
+    // processes through IPC. Threads avoid that worker process boundary.
     pool: "threads",
   },
 });

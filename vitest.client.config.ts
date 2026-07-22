@@ -1,16 +1,13 @@
-import { defineConfig } from "vitest/config";
+import { defineProject } from "vitest/config";
+import { sharedTestConfig } from "./vitest.shared.js";
 
-export default defineConfig({
+export default defineProject({
   test: {
-    root: ".",
+    ...sharedTestConfig,
+    name: "client",
     include: ["src/client/**/*.test.ts"],
-    environment: "node",
     // Client React DOM tests are expected to use src/client/test-react-harness.ts
     // so each file owns DOM setup, React act boundaries, and root cleanup.
     fileParallelism: true,
-    env: {
-      NODE_ENV: "test",
-    },
-    testTimeout: 10_000,
   },
 });

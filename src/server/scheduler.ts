@@ -39,6 +39,7 @@ let sessionMetaStore: SessionMetaStore;
 let bus: GlobalBus;
 let deferredPromptStore: DeferredPromptStore | undefined;
 let deferLoopStore: DeferLoopStore | undefined;
+let initialized = false;
 
 // Safety: track in-flight schedule runs to prevent overlap
 const activeRuns = new Set<string>();
@@ -95,14 +96,18 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   registerAllSchedules();
   missedRunCatchUp.check();
   startMissedRunWatchdog();
-  console.log("[scheduler] Initialized");
+  initialized = true;
+  if (process.env.NODE_ENV !== "test") {
+    console.log("[scheduler] Initialized");
+  }
 }
 
 export function isInitialized(): boolean {
-  return sessionMgr !== null && scheduleStore !== undefined && taskStore !== undefined && sessionMetaStore !== undefined && bus !== undefined;
+  return initialized;
 }
 
 export function shutdown(): void {
+  const wasInitialized = initialized;
   for (const [id, job] of cronJobs) {
     job.stop();
     cronJobs.delete(id);
@@ -120,7 +125,12 @@ export function shutdown(): void {
   deferLoopStore = undefined;
   activeRuns.clear();
   _globalPause = false;
-  console.log("[scheduler] Shut down — all jobs stopped");
+  lastCronCursorReconcileAt = 0;
+  sessionMgr = null;
+  initialized = false;
+  if (wasInitialized && process.env.NODE_ENV !== "test") {
+    console.log("[scheduler] Shut down — all jobs stopped");
+  }
 }
 
 /**
@@ -140,6 +150,14 @@ export function shutdown(): void {
  */
 export function stopMissedRunWatchdogForTests(): void {
   clearMissedRunWatchdog();
+}
+
+/**
+ * Test-only: wait for all currently requested missed-run catch-up checks.
+ * Retry timers still need to be advanced by the caller before awaiting.
+ */
+export async function waitForMissedRunCatchUpForTests(): Promise<void> {
+  await missedRunCatchUp.waitForIdle();
 }
 
 export interface TriggerScheduleOptions {

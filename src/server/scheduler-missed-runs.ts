@@ -13,6 +13,7 @@ type MissedRunTriggerResult = { sessionId: string } | { skipped: string };
 export interface MissedRunCatchUpController {
   check(): void;
   reset(): void;
+  waitForIdle(): Promise<void>;
 }
 
 interface MissedRunCatchUpDeps {
@@ -91,6 +92,14 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
           check();
         }
       });
+  }
+
+  async function waitForIdle(): Promise<void> {
+    // Delayed retries are intentionally not drained; tests must advance their
+    // fake clock before waiting for the resulting in-flight check.
+    while (inFlight) {
+      await inFlight;
+    }
   }
 
   function getCandidateKey(candidate: MissedRunCandidate): string {
@@ -280,5 +289,5 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
     }
   }
 
-  return { check, reset };
+  return { check, reset, waitForIdle };
 }

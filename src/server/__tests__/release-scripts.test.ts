@@ -158,6 +158,8 @@ describe("release scripts", () => {
     expect(packageScript).toContain('(Join-Path $releaseRoot "bridge-supervisor-common.ps1")');
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "install-startup-task.ps1")');
     expect(packageScript).toContain('Destination (Join-Path $releaseRoot "uninstall-startup-task.ps1")');
+    expect(packageScript).toContain("npx tsx src/server/build-stamp.ts verify");
+    expect(packageScript).toContain('throw "Prebuilt release verification failed."');
 
     expect(smokeScript).toContain('Assert-PathAbsent "app scripts directory"');
     expect(smokeScript).toContain('Assert-PathExists "install-startup-task.ps1"');
@@ -457,10 +459,32 @@ describe("release scripts", () => {
 
     const immutablePublishStep = workflow.slice(workflow.indexOf("Publish immutable preview prerelease"));
     expect(workflow).toContain("-SmokeTest");
+    expect(workflow).toContain("-UsePrebuilt");
+    expect(workflow).toContain("run: npm run build");
+    expect(workflow).toContain("run: npm run typecheck:client");
     expect(immutablePublishStep).toContain("github.ref == 'refs/heads/master'");
     expect(immutablePublishStep).toContain("github.event_name == 'workflow_dispatch'");
     expect(immutablePublishStep).toContain("inputs.publish_prerelease == true");
     expect(workflow).not.toContain("Release-mode install/update E2E");
+  });
+
+  it("builds and typechecks client code once before prebuilt packaging", () => {
+    const workflows = ["ci.yml", "preview.yml", "release.yml"].map((name) => ({
+      name,
+      content: readFileSync(join(process.cwd(), ".github", "workflows", name), "utf-8"),
+    }));
+
+    for (const workflow of workflows) {
+      expect(workflow.content, workflow.name).toContain("run: npm run typecheck:client");
+      expect(workflow.content, workflow.name).toContain("run: npm run build");
+      expect(workflow.content, workflow.name).not.toContain("run: npx tsc --noEmit");
+      expect(workflow.content, workflow.name).not.toContain("run: npx vite build");
+    }
+
+    for (const workflow of workflows.filter(({ name }) => name !== "ci.yml")) {
+      expect(workflow.content, workflow.name).toContain("-UsePrebuilt");
+      expect(workflow.content.indexOf("run: npm run build")).toBeLessThan(workflow.content.indexOf("-UsePrebuilt"));
+    }
   });
 
   it("runs release-mode install/update E2E in a dedicated workflow", () => {
@@ -476,6 +500,7 @@ describe("release scripts", () => {
     expect(workflow).toContain("-IncludeNodeModules");
     expect(workflow).toContain("-Analyze");
     expect(workflow).toContain("-SmokeTest");
+    expect(workflow).not.toContain("-UsePrebuilt");
     expect(workflow).not.toContain("gh release");
     expect(workflow).not.toContain("latest-preview");
 

@@ -1,13 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { defineProject } from "vitest/config";
+import { sharedTestConfig } from "./vitest.shared.js";
 
-export default defineConfig({
+export default defineProject({
   test: {
-    root: ".",
+    ...sharedTestConfig,
+    name: "launcher",
     include: ["src/launcher*.test.ts"],
-    environment: "node",
-    env: {
-      NODE_ENV: "test",
-    },
-    testTimeout: 10_000,
   },
 });

@@ -49,7 +49,9 @@ export function installApiRouteTestHooks(assign: (state: ApiRouteTestState) => v
   afterEach(() => {
     vi.useRealTimers();
     clearRestartPending();
-    scheduler.shutdown();
+    if (scheduler.isInitialized()) {
+      scheduler.shutdown();
+    }
   });
 }
 

@@ -132,7 +132,7 @@ export async function waitTick(): Promise<void> {
 }
 
 async function waitSchedulerTask(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => setImmediate(resolve));
   await Promise.resolve();
 }
 

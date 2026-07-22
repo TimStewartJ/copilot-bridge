@@ -2,13 +2,13 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    root: ".",
-    include: ["src/**/*.test.ts"],
-    environment: "node",
-    env: {
-      NODE_ENV: "test",
-    },
-    testTimeout: 10_000,
+    silent: "passed-only",
+    projects: [
+      "./vitest.client.config.ts",
+      "./vitest.server.config.ts",
+      "./vitest.launcher.config.ts",
+      "./vitest.staging.config.ts",
+    ],
     coverage: {
       provider: "v8",
       include: ["src/server/**/*.ts"],

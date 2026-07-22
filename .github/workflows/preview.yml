@@ -67,21 +67,21 @@ jobs:
             throw "Missing update manifest public key. Configure BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM or BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64 as a GitHub Actions variable or secret."
           }
 
-      - name: Typecheck
-        shell: pwsh
-        run: npx tsc --noEmit
-
       - name: Cross-platform test audit
         shell: pwsh
         run: npm run test:xplat-audit
 
-      - name: Build client
+      - name: Client typecheck
         shell: pwsh
-        run: npx vite build
+        run: npm run typecheck:client
+
+      - name: Build
+        shell: pwsh
+        run: npm run build
 
       - name: Run tests
         shell: pwsh
-        run: npx vitest run
+        run: npm run test
 
       - name: Build preview package
         shell: pwsh
@@ -95,7 +95,8 @@ jobs:
             -Platform $env:PREVIEW_PLATFORM `
             -IncludeNodeModules `
             -Analyze `
-            -SmokeTest
+            -SmokeTest `
+            -UsePrebuilt
 
       - name: Upload preview smoke logs on failure
         if: failure()
