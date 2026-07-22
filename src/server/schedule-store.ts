@@ -36,6 +36,7 @@ export interface Schedule {
   cron?: string;
   runAt?: string;
   timezone?: string;
+  model?: string;
 
   // Behavior
   enabled: boolean;
@@ -55,11 +56,12 @@ export interface Schedule {
 }
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "model" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
 
 export type ScheduleUpdate = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
+  model?: string | null;
   autoArchiveKeep?: number | null;
 };
 
@@ -105,6 +107,7 @@ export function createScheduleStore(db: DatabaseSync) {
       cron: row.cron ?? undefined,
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
+      model: row.model ?? undefined,
       enabled: row.enabled === 1,
       lastSessionId: row.lastSessionId ?? undefined,
       createdAt: row.createdAt,
@@ -135,12 +138,13 @@ export function createScheduleStore(db: DatabaseSync) {
     const now = new Date().toISOString();
 
     db.prepare(`
-      INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
+      INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone, model,
         enabled, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
+      input.model ?? null,
       now, now,
       input.maxRuns ?? null, input.expiresAt ?? null, input.autoArchiveKeep ?? null,
     );
@@ -160,6 +164,7 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.cron !== undefined) { fields.push("cron = ?"); values.push(updates.cron); }
     if (updates.runAt !== undefined) { fields.push("runAt = ?"); values.push(updates.runAt); }
     if (updates.timezone !== undefined) { fields.push("timezone = ?"); values.push(updates.timezone); }
+    if (updates.model !== undefined) { fields.push("model = ?"); values.push(updates.model); }
     if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }

@@ -438,6 +438,13 @@ function ensureScheduleAutoArchiveKeepColumn(db: DatabaseSync): void {
   }
 }
 
+function ensureScheduleModelColumn(db: DatabaseSync): void {
+  const scheduleCols = getTableInfo(db, "schedules");
+  if (!scheduleCols.some((c: any) => c.name === "model")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN model TEXT");
+  }
+}
+
 function ensureFeedCardsVisualJsonColumn(db: DatabaseSync): void {
   if (!sqliteTableExists(db, "feed_cards")) return;
   const feedCols = getTableInfo(db, "feed_cards");
@@ -503,6 +510,7 @@ function dropScheduleReuseState(db: DatabaseSync): void {
         cron TEXT,
         runAt TEXT,
         timezone TEXT,
+        model TEXT,
         enabled INTEGER NOT NULL DEFAULT 1,
         lastSessionId TEXT,
         createdAt TEXT NOT NULL,
@@ -516,7 +524,7 @@ function dropScheduleReuseState(db: DatabaseSync): void {
       );
 
       INSERT INTO schedules_new (
-        id, taskId, name, prompt, type, cron, runAt, timezone, enabled, lastSessionId,
+        id, taskId, name, prompt, type, cron, runAt, timezone, model, enabled, lastSessionId,
         createdAt, updatedAt, lastRunAt, nextRunAt, runCount, maxRuns, expiresAt, autoArchiveKeep
       )
       SELECT
@@ -528,6 +536,7 @@ function dropScheduleReuseState(db: DatabaseSync): void {
         ${scheduleColumnExpr(scheduleCols, "cron", "NULL")},
         ${scheduleColumnExpr(scheduleCols, "runAt", "NULL")},
         ${scheduleColumnExpr(scheduleCols, "timezone", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "model", "NULL")},
         ${scheduleColumnExpr(scheduleCols, "enabled", "1")},
         ${lastSessionExpr},
         ${scheduleColumnExpr(scheduleCols, "createdAt", "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")},
@@ -1117,6 +1126,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Add schedule autoArchiveKeep to legacy schedules tables.",
     apply: ensureScheduleAutoArchiveKeepColumn,
+  },
+  {
+    id: "schedule-model-column",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Add an optional model override to legacy schedules tables.",
+    apply: ensureScheduleModelColumn,
   },
   {
     id: "feed-cards-visual-json-column",

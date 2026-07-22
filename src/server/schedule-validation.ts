@@ -4,6 +4,10 @@ export type NormalizedScheduleAutoArchiveKeep =
   | { ok: true; value: number | null | undefined }
   | { ok: false; error: string };
 
+export type NormalizedScheduleModel =
+  | { ok: true; value: string | null | undefined }
+  | { ok: false; error: string };
+
 export function findUnknownFields(input: unknown, allowedFields: readonly string[]): string[] {
   if (!input || typeof input !== "object" || Array.isArray(input)) return [];
   const allowed = new Set(allowedFields);
@@ -36,4 +40,15 @@ export function normalizeScheduleAutoArchiveKeep(value: unknown): NormalizedSche
   }
 
   return { ok: true, value: parsed };
+}
+
+export function normalizeScheduleModel(value: unknown): NormalizedScheduleModel {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== "string") {
+    return { ok: false, error: "model must be a string or null" };
+  }
+
+  const normalized = value.trim();
+  return { ok: true, value: normalized || null };
 }

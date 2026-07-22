@@ -102,6 +102,7 @@ describe("schedule tools", () => {
       prompt: "continue working",
       type: "cron",
       cron: "0 0 * * *",
+      model: "claude-sonnet-5",
     });
     const tool = getTool(ctx, "schedule_list");
 
@@ -120,8 +121,45 @@ describe("schedule tools", () => {
       id: schedule.id,
       taskId: task.id,
       name: "Current metadata",
+      model: "claude-sonnet-5",
     });
     expect(result.schedules[0]).not.toHaveProperty("sessionMode");
+  });
+
+  it("creates, updates, and clears schedule model overrides", async () => {
+    const sessionManager = createMockSessionManager();
+    const { ctx } = createTestApp({ sessionManager });
+    const task = ctx.taskStore.createTask("Schedule Host");
+    scheduler.initialize(sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+    const createTool = getTool(ctx, "schedule_create");
+    const updateTool = getTool(ctx, "schedule_update");
+    const meta = {
+      sessionId: "session-1",
+      toolCallId: "tool-model",
+      toolName: "schedule_create",
+      arguments: {},
+    };
+
+    const created = await createTool.handler({
+      taskId: task.id,
+      name: "Model override",
+      prompt: "continue working",
+      type: "cron",
+      cron: "0 0 * * *",
+      model: "  gpt-5.6-sol  ",
+    }, meta) as { scheduleId: string };
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.model).toBe("gpt-5.6-sol");
+
+    await updateTool.handler({
+      scheduleId: created.scheduleId,
+      model: null,
+    }, { ...meta, toolName: "schedule_update" });
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.model).toBeUndefined();
   });
 
   it("filters schedules by name (case-insensitive substring)", async () => {

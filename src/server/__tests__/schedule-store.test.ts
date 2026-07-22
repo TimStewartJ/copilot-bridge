@@ -34,11 +34,16 @@ describe("schedule-store", () => {
     });
 
     it("createSchedule returns a valid schedule", () => {
-      const s = store.createSchedule({ ...baseCron, autoArchiveKeep: 8 });
+      const s = store.createSchedule({
+        ...baseCron,
+        model: "claude-sonnet-5",
+        autoArchiveKeep: 8,
+      });
       expect(s.id).toBeTruthy();
       expect(s.name).toBe("Daily standup");
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
+      expect(s.model).toBe("claude-sonnet-5");
       expect(s.autoArchiveKeep).toBe(8);
     });
 
@@ -92,6 +97,12 @@ describe("schedule-store", () => {
       const s = store.createSchedule(baseCron);
       expect(store.updateSchedule(s.id, { autoArchiveKeep: 4 }).autoArchiveKeep).toBe(4);
       expect(store.updateSchedule(s.id, { autoArchiveKeep: null }).autoArchiveKeep).toBeUndefined();
+    });
+
+    it("updateSchedule changes and clears the model override", () => {
+      const s = store.createSchedule(baseCron);
+      expect(store.updateSchedule(s.id, { model: "gpt-5.6-sol" }).model).toBe("gpt-5.6-sol");
+      expect(store.updateSchedule(s.id, { model: null }).model).toBeUndefined();
     });
 
     it("removes legacy reuse schema while preserving run history during database migration", () => {
@@ -155,22 +166,25 @@ describe("schedule-store", () => {
         const migratedDb = openDatabase(dataDir);
         try {
           const rows = migratedDb.prepare(`
-            SELECT id, autoArchiveKeep, lastSessionId
+            SELECT id, model, autoArchiveKeep, lastSessionId
             FROM schedules
             ORDER BY id
           `).all() as Array<{
             id: string;
+            model: string | null;
             autoArchiveKeep: number | null;
             lastSessionId: string | null;
           }>;
           expect(rows).toEqual([
             {
               id: "reuse-last-schedule",
+              model: null,
               autoArchiveKeep: null,
               lastSessionId: "last-session",
             },
             {
               id: "reuse-target-schedule",
+              model: null,
               autoArchiveKeep: null,
               lastSessionId: "target-session",
             },
@@ -182,6 +196,7 @@ describe("schedule-store", () => {
           expect(scheduleColumns).not.toContain("targetSessionId");
           expect(scheduleColumns).not.toContain("reuseLastRequiresExistingSession");
           expect(scheduleColumns).toContain("autoArchiveKeep");
+          expect(scheduleColumns).toContain("model");
           const claimsTable = migratedDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedule_session_claims'").get();
           expect(claimsTable).toBeUndefined();
           const runs = migratedDb.prepare(`

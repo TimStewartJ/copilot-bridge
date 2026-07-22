@@ -22,9 +22,14 @@ const queryMocks = vi.hoisted(() => ({
   useScheduleSessionsQuery: vi.fn(),
 }));
 
+const modelQueryMocks = vi.hoisted(() => ({
+  useModelsQuery: vi.fn(),
+}));
+
 vi.mock("../api", () => apiMocks);
 
 vi.mock("../hooks/queries/useScheduleSessions", () => queryMocks);
+vi.mock("../hooks/queries/useModels", () => modelQueryMocks);
 
 const NOW = new Date("2026-06-15T17:40:30.000Z");
 
@@ -39,6 +44,14 @@ function findRunAtInput(harness: ReactDomHarness): any {
   );
   if (!input) throw new Error("Run-at input not found");
   return input;
+}
+
+function findModelSelect(harness: ReactDomHarness): any {
+  const select = findAllByTag(harness.dom.container, "SELECT").find(
+    (candidate) => getReactProps(candidate)?.id === "schedule-model-select",
+  );
+  if (!select) throw new Error("Model select not found");
+  return select;
 }
 
 function findButtonByText(harness: ReactDomHarness, text: string): any {
@@ -60,6 +73,13 @@ async function setRunAt(harness: ReactDomHarness, value: string) {
   const input = findRunAtInput(harness);
   await harness.act(async () => {
     await getReactProps(input)?.onChange?.({ target: { value } });
+  });
+}
+
+async function selectModel(harness: ReactDomHarness, value: string) {
+  const select = findModelSelect(harness);
+  await harness.act(async () => {
+    await getReactProps(select)?.onChange?.({ target: { value } });
   });
 }
 
@@ -197,12 +217,12 @@ function makeScheduleRun(runId: number, summary: string, runState: ScheduleRun["
   };
 }
 
-async function renderViewSheet() {
+async function renderViewSheet(schedule = makeRecurringSchedule()) {
   const noop = vi.fn();
   const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
   const render = () => harness.render(
     createElement(ScheduleDetailSheet, {
-      schedule: makeRecurringSchedule(),
+      schedule,
       taskId: "task-1",
       mode: "view" as const,
       onClose: noop,
@@ -237,6 +257,15 @@ beforeEach(() => {
     fetchNextPage: vi.fn(),
     hasNextPage: false,
     isFetchingNextPage: false,
+  });
+  modelQueryMocks.useModelsQuery.mockReset();
+  modelQueryMocks.useModelsQuery.mockReturnValue({
+    data: [
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+    ],
+    isLoading: false,
+    error: null,
   });
 });
 
@@ -281,6 +310,7 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
 
       const future = toDatetimeLocalValue(new Date(NOW.getTime() + 24 * 60 * 60_000));
       await setRunAt(harness, future);
+      await selectModel(harness, "claude-sonnet-5");
 
       await clickButton(harness, "Create Schedule");
 
@@ -289,9 +319,46 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
       const input = apiMocks.createSchedule.mock.calls[0][0];
       expect(input.type).toBe("once");
       expect(input.runAt).toBe(new Date(future).toISOString());
+      expect(input.model).toBe("claude-sonnet-5");
       expect(harness.dom.container.textContent ?? "").not.toContain("Run time must be in the future");
       await waitUntilAct(harness.act, () => onSaved.mock.calls.length > 0);
       expect(onSaved).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
+describe("ScheduleDetailSheet model override", () => {
+  it("shows the selected model name in view mode", async () => {
+    const { harness } = await renderViewSheet({
+      ...makeRecurringSchedule(),
+      model: "claude-sonnet-5",
+    });
+    try {
+      expect(harness.dom.container.textContent).toContain("Claude Sonnet 5");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("changes and clears the model override while editing", async () => {
+    const { harness } = await renderEditSheet({
+      ...makeRecurringSchedule(),
+      model: "claude-sonnet-5",
+    });
+    try {
+      expect(getReactProps(findModelSelect(harness))?.value).toBe("claude-sonnet-5");
+      await selectModel(harness, "gpt-5.6-sol");
+      await clickButton(harness, "Save Changes");
+      await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
+      expect(apiMocks.patchSchedule.mock.calls[0][1].model).toBe("gpt-5.6-sol");
+
+      apiMocks.patchSchedule.mockClear();
+      await selectModel(harness, "");
+      await clickButton(harness, "Save Changes");
+      await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
+      expect(apiMocks.patchSchedule.mock.calls[0][1].model).toBeNull();
     } finally {
       await harness.cleanup();
     }

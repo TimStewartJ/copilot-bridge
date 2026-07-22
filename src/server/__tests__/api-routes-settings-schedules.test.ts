@@ -313,6 +313,7 @@ describe("Schedule routes", () => {
         prompt: "Continue the conversation",
         type: "cron",
         cron: "0 0 * * *",
+        model: "  claude-sonnet-5  ",
       });
 
     expect(res.status).toBe(201);
@@ -320,7 +321,9 @@ describe("Schedule routes", () => {
       taskId,
       name: "Fresh schedule",
       type: "cron",
+      model: "claude-sonnet-5",
     });
+    expect(ctx.scheduleStore.getSchedule(res.body.id)?.model).toBe("claude-sonnet-5");
   });
 
   it("POST /api/schedules accepts supported cron field counts", async () => {
@@ -389,6 +392,22 @@ describe("Schedule routes", () => {
     expect(res.body.error).toMatch(/autoArchiveKeep/);
   });
 
+  it("POST /api/schedules validates model overrides", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Bad model",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        model: 42,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/model/);
+  });
+
   it("POST /api/schedules rejects unknown fields", async () => {
     const res = await request(app)
       .post("/api/schedules")
@@ -443,6 +462,29 @@ describe("Schedule routes", () => {
       id: schedule.id,
       name: "Renamed schedule",
     });
+  });
+
+  it("PATCH /api/schedules changes and clears the model override", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Model patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const updated = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ model: "  gpt-5.6-sol  " });
+    expect(updated.status).toBe(200);
+    expect(updated.body.model).toBe("gpt-5.6-sol");
+
+    const cleared = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ model: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.model).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.model).toBeUndefined();
   });
 
   it("PATCH /api/schedules rejects unsupported non-zero seconds crons", async () => {

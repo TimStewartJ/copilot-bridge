@@ -2213,6 +2213,7 @@ export interface Schedule {
   cron?: string;
   runAt?: string;
   timezone?: string;
+  model?: string;
   enabled: boolean;
   lastSessionId?: string;
   createdAt: string;
@@ -2226,11 +2227,12 @@ export interface Schedule {
 }
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "model" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
 
 export type ScheduleUpdateInput = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
+  model?: string | null;
   autoArchiveKeep?: number | null;
 };
 

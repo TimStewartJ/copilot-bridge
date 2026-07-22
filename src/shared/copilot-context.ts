@@ -17,6 +17,8 @@ export interface CopilotTieredTokenPrices extends CopilotTokenPrices {
 export interface CopilotModelContextMetadata {
   readonly id: string;
   readonly name?: string | null;
+  readonly supportedReasoningEfforts?: readonly string[];
+  readonly defaultReasoningEffort?: string;
   readonly capabilities?: {
     readonly limits?: {
       readonly max_context_window_tokens?: number;

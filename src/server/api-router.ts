@@ -31,7 +31,12 @@ import {
 import * as scheduler from "./scheduler.js";
 import type { Schedule } from "./schedule-store.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
-import { findUnknownFields, formatUnknownFieldsError, normalizeScheduleAutoArchiveKeep } from "./schedule-validation.js";
+import {
+  findUnknownFields,
+  formatUnknownFieldsError,
+  normalizeScheduleAutoArchiveKeep,
+  normalizeScheduleModel,
+} from "./schedule-validation.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import {
   createApiJsonErrorHandler,
@@ -894,6 +899,7 @@ const SCHEDULE_CREATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
+  "model",
   "maxRuns",
   "expiresAt",
   "autoArchiveKeep",
@@ -904,6 +910,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
+  "model",
   "enabled",
   "maxRuns",
   "expiresAt",
@@ -4132,11 +4139,15 @@ export function createApiRouter(
       if (unknownFields.length > 0) {
         return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
       }
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt, autoArchiveKeep } = req.body;
+      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, model, maxRuns, expiresAt, autoArchiveKeep } = req.body;
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
       const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(autoArchiveKeep);
       if (!normalizedAutoArchiveKeep.ok) {
         return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
+      }
+      const normalizedModel = normalizeScheduleModel(model);
+      if (!normalizedModel.ok) {
+        return res.status(400).json({ error: normalizedModel.error });
       }
       if (!taskId || !name || !prompt || !type) {
         return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
@@ -4167,6 +4178,7 @@ export function createApiRouter(
         cron: cronExpr,
         runAt,
         timezone,
+        model: normalizedModel.value ?? undefined,
         maxRuns,
         expiresAt,
         autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
@@ -4209,6 +4221,14 @@ export function createApiRouter(
       }
 
       const updates = { ...req.body };
+      const modelProvided = Object.prototype.hasOwnProperty.call(req.body, "model");
+      if (modelProvided) {
+        const normalizedModel = normalizeScheduleModel(req.body.model);
+        if (!normalizedModel.ok) {
+          return res.status(400).json({ error: normalizedModel.error });
+        }
+        updates.model = normalizedModel.value;
+      }
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
       if (autoArchiveKeepProvided) {
         const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(req.body.autoArchiveKeep);

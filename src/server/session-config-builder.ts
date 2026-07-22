@@ -52,6 +52,7 @@ export interface ScheduleContext {
   type: "cron" | "once";
   runCount: number;
   lastRunAt?: string;
+  model?: string;
 }
 
 export interface SessionConfigOptions {
@@ -240,22 +241,28 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   if (!forResume) {
     if (sessionId) cfg.sessionId = sessionId;
 
-    // Model priority: settings store > deps.config > SDK default
-    const model = settings?.model ?? deps.config.model;
+    // Schedule override > settings store > deps.config > SDK default
+    const model = scheduleContext?.model ?? settings?.model ?? deps.config.model;
     if (model) cfg.model = model;
 
-    // Reasoning effort: settings store > SDK default
-    const reasoningEffort = settings?.reasoningEffort;
-    if (reasoningEffort) cfg.reasoningEffort = reasoningEffort;
-
-    const modelMetadata = model
+    const selectedModelMetadata = model
       ? params.options?.modelMetadata?.find((candidate) => candidate.id === model)
       : undefined;
+
+    // A model-specific schedule override must not inherit an unsupported effort
+    // from the global model. Unknown scheduled models use their SDK default.
+    const reasoningEffort = settings?.reasoningEffort;
+    const scheduleModelSupportsGlobalEffort = !scheduleContext?.model
+      || selectedModelMetadata?.supportedReasoningEfforts?.includes(reasoningEffort ?? "") === true;
+    if (reasoningEffort && scheduleModelSupportsGlobalEffort) {
+      cfg.reasoningEffort = reasoningEffort;
+    }
+
     const contextTier = resolveContextTierForModel(
-      modelMetadata,
+      selectedModelMetadata,
       normalizeCopilotContextTier(settings?.contextTier),
     );
-    const modelCapabilities = getModelCapabilitiesOverrideForContextTier(modelMetadata, contextTier);
+    const modelCapabilities = getModelCapabilitiesOverrideForContextTier(selectedModelMetadata, contextTier);
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;
   }
 
