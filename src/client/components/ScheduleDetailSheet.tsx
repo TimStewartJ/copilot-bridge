@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import type { Schedule, ScheduleCreateInput, ScheduleRun } from "../api";
+import type { ModelInfo, Schedule, ScheduleCreateInput, ScheduleRun } from "../api";
 import { createSchedule, patchSchedule, fetchServerTimezone, getSessionRunState } from "../api";
+import { useModelsQuery } from "../hooks/queries/useModels";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
@@ -75,6 +76,14 @@ export default function ScheduleDetailSheet({
 }: ScheduleDetailSheetProps) {
   const isEditing = mode === "edit" || mode === "create";
   const isCreating = mode === "create";
+  const {
+    data: modelData,
+    isLoading: modelsLoading,
+    error: modelsError,
+  } = useModelsQuery();
+  const models = (modelData ?? [])
+    .filter((model) => !model.policy || model.policy.state !== "disabled")
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
@@ -85,6 +94,9 @@ export default function ScheduleDetailSheet({
             schedule={schedule}
             taskId={taskId}
             isCreating={isCreating}
+            models={models}
+            modelsLoading={modelsLoading}
+            modelsError={modelsError}
             onClose={isCreating ? onClose : onSwitchToView}
             onSaved={onSaved}
           />
@@ -92,6 +104,7 @@ export default function ScheduleDetailSheet({
           <ViewMode
             schedule={schedule}
             taskTitle={taskTitle}
+            models={models}
             onClose={onClose}
             onSwitchToEdit={onSwitchToEdit}
             onTrigger={onTrigger}
@@ -111,6 +124,7 @@ export default function ScheduleDetailSheet({
 function ViewMode({
   schedule,
   taskTitle,
+  models,
   onClose,
   onSwitchToEdit,
   onTrigger,
@@ -121,6 +135,7 @@ function ViewMode({
 }: {
   schedule: Schedule;
   taskTitle?: string | null;
+  models: ModelInfo[];
   onClose: () => void;
   onSwitchToEdit: () => void;
   onTrigger: (id: string) => void;
@@ -138,6 +153,9 @@ function ViewMode({
   const [showOverflow, setShowOverflow] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const modelLabel = schedule.model
+    ? models.find((model) => model.id === schedule.model)?.name ?? schedule.model
+    : "Bridge default";
 
   const seenRunIds = new Set<number>();
   const sessions = (sessionData?.pages ?? [])
@@ -211,6 +229,12 @@ function ViewMode({
               <span className="text-text-secondary flex items-center gap-1">
                 {schedule.type === "cron" ? <Repeat size={11} /> : <Calendar size={11} />}
                 {schedule.type === "cron" ? "Recurring" : "One-time"}
+              </span>
+            </div>
+            <div>
+              <span className="text-text-faint block mb-0.5">AI model</span>
+              <span className="text-text-secondary" title={schedule.model}>
+                {modelLabel}
               </span>
             </div>
             {taskTitle && (
@@ -383,12 +407,18 @@ function EditMode({
   schedule,
   taskId,
   isCreating,
+  models,
+  modelsLoading,
+  modelsError,
   onClose,
   onSaved,
 }: {
   schedule: Schedule | null;
   taskId: string;
   isCreating: boolean;
+  models: ModelInfo[];
+  modelsLoading: boolean;
+  modelsError: Error | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -398,6 +428,7 @@ function EditMode({
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
+  const [model, setModel] = useState(schedule?.model ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
   const [saving, setSaving] = useState(false);
@@ -421,6 +452,7 @@ function EditMode({
     setCronExpr(schedule?.cron ?? "0 8 * * 1-5");
     setRunAt(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
     setTimezone(schedule?.timezone ?? "");
+    setModel(schedule?.model ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
     setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");
   }, [schedule]);
@@ -456,6 +488,7 @@ function EditMode({
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
+          ...(model ? { model } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
           ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
@@ -467,6 +500,7 @@ function EditMode({
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
+          model: model || null,
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
           autoArchiveKeep: parsedAutoArchiveKeep,
         });
@@ -575,6 +609,33 @@ function EditMode({
                   />
                 </div>
               )}
+            </div>
+
+            <div className="col-span-2">
+              <label className="text-text-faint block mb-1" htmlFor="schedule-model-select">
+                AI model
+              </label>
+              <select
+                id="schedule-model-select"
+                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              >
+                <option value="">Bridge default</option>
+                {model && !models.some((candidate) => candidate.id === model) && (
+                  <option value={model}>{model} (unavailable)</option>
+                )}
+                {models.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                ))}
+              </select>
+              <div className="text-[10px] text-text-faint mt-1">
+                {modelsLoading
+                  ? "Loading available models..."
+                  : modelsError
+                    ? "Available models could not be loaded. The current selection can still be saved."
+                    : "Overrides the global Bridge model for sessions created by this schedule."}
+              </div>
             </div>
 
             {/* Max runs */}

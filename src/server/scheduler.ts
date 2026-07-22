@@ -500,7 +500,13 @@ export async function triggerSchedule(
         prDescriptions,
         task.notes,
         task.cwd,
-        { name: schedule.name, type: schedule.type, runCount: schedule.runCount, lastRunAt: schedule.lastRunAt },
+        {
+          name: schedule.name,
+          type: schedule.type,
+          runCount: schedule.runCount,
+          lastRunAt: schedule.lastRunAt,
+          model: schedule.model,
+        },
       );
     } catch (err) {
       retryReleasedClaim = true;

@@ -138,6 +138,68 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
   });
 
+  it("lets a scheduled session override the global model", () => {
+    const settingsStore = {
+      getSettings: () => ({
+        model: "global-model",
+        reasoningEffort: "high",
+      }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      options: {
+        scheduleContext: {
+          name: "Daily review",
+          type: "cron",
+          runCount: 2,
+          model: "schedule-model",
+        },
+        modelMetadata: [{
+          id: "schedule-model",
+          supportedReasoningEfforts: ["high"],
+        }],
+      },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("schedule-model");
+    expect(cfg.reasoningEffort).toBe("high");
+  });
+
+  it("does not apply a global reasoning effort unsupported by the scheduled model", () => {
+    const settingsStore = {
+      getSettings: () => ({
+        model: "global-model",
+        reasoningEffort: "high",
+      }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      options: {
+        scheduleContext: {
+          name: "Daily review",
+          type: "cron",
+          runCount: 2,
+          model: "schedule-model",
+        },
+        modelMetadata: [{
+          id: "schedule-model",
+          supportedReasoningEfforts: [],
+        }],
+      },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("schedule-model");
+    expect(cfg.reasoningEffort).toBeUndefined();
+  });
+
   it("uses the backend permission policy when one is provided", () => {
     const permissionPolicy = vi.fn();
 

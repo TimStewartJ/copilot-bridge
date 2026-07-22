@@ -2,7 +2,12 @@ import { basename, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schedulerModule from "../scheduler.js";
 import { enforceScheduleSessionRetention } from "../schedule-session-retention.js";
-import { findUnknownFields, formatUnknownFieldsError, normalizeScheduleAutoArchiveKeep } from "../schedule-validation.js";
+import {
+  findUnknownFields,
+  formatUnknownFieldsError,
+  normalizeScheduleAutoArchiveKeep,
+  normalizeScheduleModel,
+} from "../schedule-validation.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTask } from "./helpers.js";
@@ -73,6 +78,7 @@ const SCHEDULE_CREATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
+  "model",
   "maxRuns",
   "expiresAt",
   "autoArchiveKeep",
@@ -84,6 +90,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
+  "model",
   "enabled",
   "maxRuns",
   "expiresAt",
@@ -113,6 +120,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: { type: "string", description: "Cron expression (e.g. '0 8 * * 1-5' for weekdays at 8am). Required for type=cron. Interpreted in the schedule's timezone (server-local by default)." },
         runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once. Always interpreted as UTC." },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
+        model: { type: "string", description: "AI model ID for sessions created by this schedule. Omit to use the global Bridge default." },
         maxRuns: { type: "number", description: "Auto-disable after N runs (optional)" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
         autoArchiveKeep: { type: "number", description: "Auto-archive older run sessions after keeping the latest N sessions active (optional)" },
@@ -129,6 +137,8 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(args, "autoArchiveKeep");
       const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(args.autoArchiveKeep);
       if (!normalizedAutoArchiveKeep.ok) return toolFailure(normalizedAutoArchiveKeep.error);
+      const normalizedModel = normalizeScheduleModel(args.model);
+      if (!normalizedModel.ok) return toolFailure(normalizedModel.error);
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
 
@@ -140,6 +150,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: args.cron,
         runAt: args.runAt,
         timezone: args.timezone,
+        model: normalizedModel.value ?? undefined,
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
         autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
@@ -169,6 +180,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: { type: "string", description: "New cron expression" },
         runAt: { type: "string", description: "New one-shot run time (ISO timestamp)" },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/Los_Angeles')" },
+        model: { type: ["string", "null"], description: "AI model ID for future schedule runs. Null clears the override and restores the global Bridge default." },
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
         maxRuns: { type: "number", description: "Auto-disable after N runs" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables" },
@@ -183,6 +195,12 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       const scheduler = getScheduler(ctx);
       if (args.timezone && !scheduler.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
+      const modelProvided = Object.prototype.hasOwnProperty.call(updates, "model");
+      if (modelProvided) {
+        const normalizedModel = normalizeScheduleModel(updates.model);
+        if (!normalizedModel.ok) return toolFailure(normalizedModel.error);
+        updates.model = normalizedModel.value;
+      }
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(updates, "autoArchiveKeep");
       if (autoArchiveKeepProvided) {
         const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(updates.autoArchiveKeep);
@@ -254,6 +272,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
           cron: s.cron,
           runAt: s.runAt,
           timezone: s.timezone,
+          model: s.model,
           enabled: s.enabled,
           lastRunAt: s.lastRunAt,
           nextRunAt: s.nextRunAt,

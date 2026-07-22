@@ -543,6 +543,7 @@ function initSchema(db: DatabaseSync): void {
       cron TEXT,
       runAt TEXT,
       timezone TEXT,
+      model TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       lastSessionId TEXT,
       createdAt TEXT NOT NULL,
