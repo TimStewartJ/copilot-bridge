@@ -1180,6 +1180,15 @@ export async function runStagingDeployJob(
     );
   }
   const releaseCandidate = releaseSlotResult.manifest;
+  if (releaseCandidate.commitSha !== validatedCommitSha) {
+    await unstashProduction();
+    return stagingFailure(
+      "Release candidate does not match the validated staging commit.",
+      `The validated staging commit is ${validatedCommitSha}, but the prepared release candidate points to ${releaseCandidate.commitSha}. ` +
+        "Production was not merged and restart signaling was blocked. The staging worktree is still intact for retry-after-fix.",
+      { toolTelemetry: { stagingDir, branch, prodBranch, validatedCommitSha, releaseCandidateSha: releaseCandidate.commitSha } },
+    );
+  }
 
   const headResult = await runCommand("git rev-parse HEAD", PRODUCTION_ROOT);
   const preDeploySha = headResult.ok ? headResult.output.trim() : "";
@@ -1213,6 +1222,53 @@ export async function runStagingDeployJob(
 
   const newHead = await runCommand("git rev-parse --short HEAD", PRODUCTION_ROOT);
   const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
+  if (
+    !newHead.ok
+    || !commitSha
+    || commitSha === "unknown"
+    || !validatedCommitSha.startsWith(commitSha)
+  ) {
+    let resetFailure = "";
+    if (preDeploySha) {
+      const resetCommand = `git reset --hard ${preDeploySha}`;
+      const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
+      if (resetResult.ok) {
+        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
+        writeLog(`Production checkout reset after validated commit mismatch: ${preDeploySha}`);
+      } else {
+        resetFailure = joinFailureSections(
+          `Reset command: ${resetCommand}`,
+          resetResult.output,
+        ) ?? resetResult.output;
+      }
+    }
+    await unstashProduction();
+    return stagingFailure(
+      resetFailure
+        ? "Production commit changed after validation and the safety reset failed."
+        : "Production commit changed after validation; restart blocked.",
+      `The validated staging commit is ${validatedCommitSha}, but merging produced ${commitSha || "an unreadable HEAD"}. ` +
+        "The prepared release candidate was not activated because it no longer matched production HEAD." +
+        (preDeploySha && !resetFailure
+          ? ` The production checkout was reset to ${preDeploySha}; retry staging_deploy so it can rebase and revalidate.`
+          : " Manual recovery is required before retrying.") +
+        (resetFailure ? `\n\n${resetFailure}` : ""),
+      {
+        sessionLog: joinFailureSections(
+          `Validated staging commit ${validatedCommitSha} did not match merged production HEAD ${commitSha || "unknown"}.`,
+          resetFailure,
+        ),
+        toolTelemetry: {
+          stagingDir,
+          branch,
+          prodBranch,
+          validatedCommitSha,
+          mergedCommitSha: commitSha,
+          ...(preDeploySha && !resetFailure ? { revertedTo: preDeploySha } : {}),
+        },
+      },
+    );
+  }
   writeLog(`Merged to production: ${commitSha}`);
 
   const pkgChanged = await runCommand(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
@@ -1221,26 +1277,13 @@ export async function runStagingDeployJob(
   }
 
   let pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
-  let retryRebaseFailed = false;
   if (!pushResult.ok) {
-    writeLog("Push failed, attempting pull --rebase before retry...");
-    const retryRebase = await runCommand(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
-    if (retryRebase.ok) {
-      pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
-    } else {
-      retryRebaseFailed = true;
-    }
+    writeLog("Push failed, retrying the same validated commit without rebasing...");
+    pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
   }
   if (!pushResult.ok) {
     if (preDeploySha) {
       const resetCommand = `git reset --hard ${preDeploySha}`;
-      if (retryRebaseFailed) {
-        writeLog("Push retry rebase failed — aborting any in-progress production rebase before reset");
-        const abortRebase = await runCommand("git rebase --abort", PRODUCTION_ROOT);
-        if (!abortRebase.ok) {
-          writeLog(`Warning: git rebase --abort failed before push-failure reset: ${abortRebase.output.slice(-200)}`);
-        }
-      }
       writeLog(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
       const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
       if (!resetResult.ok) {
@@ -1276,27 +1319,43 @@ export async function runStagingDeployJob(
 
   const deployedHeadResult = await runCommand("git rev-parse HEAD", PRODUCTION_ROOT);
   const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
-  if (deployedCommitSha && deployedCommitSha === validatedCommitSha) {
-    try {
-      writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
-        commitSha: deployedCommitSha,
-        dependencyHash,
-        gateId: DEPLOY_GATE.id,
-        gateVersion: DEPLOY_GATE_VERSION,
-        command: DEPLOY_CHECK_COMMAND,
-        source: "staging_deploy",
-        validatedAt: new Date().toISOString(),
-      });
-      writeLog(`Deploy validation stamp written for ${deployedCommitSha}`);
-    } catch (error) {
-      writeLog(`Deploy validation stamp could not be written; launcher will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  } else {
-    writeLog(
-      deployedCommitSha
-        ? `Deploy validation stamp skipped because production HEAD changed after validation (${validatedCommitSha} → ${deployedCommitSha})`
-        : "Deploy validation stamp skipped because production HEAD could not be read after push",
+  if (
+    !deployedCommitSha
+    || deployedCommitSha !== validatedCommitSha
+    || deployedCommitSha !== releaseCandidate.commitSha
+  ) {
+    await unstashProduction();
+    return stagingFailure(
+      "Pushed production commit does not match the validated release candidate.",
+      `The push completed, but production HEAD is ${deployedCommitSha || "unreadable"}, the validated commit is ${validatedCommitSha}, ` +
+        `and the prepared release candidate is ${releaseCandidate.commitSha}. Restart signaling was blocked so the mismatched release cannot be activated. ` +
+        "The rollback checkpoint and staging worktree were preserved for manual recovery.",
+      {
+        toolTelemetry: {
+          stagingDir,
+          branch,
+          prodBranch,
+          deployedCommitSha: deployedCommitSha || "unknown",
+          validatedCommitSha,
+          releaseCandidateSha: releaseCandidate.commitSha,
+        },
+      },
     );
+  }
+
+  try {
+    writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
+      commitSha: deployedCommitSha,
+      dependencyHash,
+      gateId: DEPLOY_GATE.id,
+      gateVersion: DEPLOY_GATE_VERSION,
+      command: DEPLOY_CHECK_COMMAND,
+      source: "staging_deploy",
+      validatedAt: new Date().toISOString(),
+    });
+    writeLog(`Deploy validation stamp written for ${deployedCommitSha}`);
+  } catch (error) {
+    writeLog(`Deploy validation stamp could not be written; launcher will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   await unstashProduction();
