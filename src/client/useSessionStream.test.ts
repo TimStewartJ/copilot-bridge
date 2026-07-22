@@ -265,6 +265,146 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
+  it("reuses the persisted assistant message identity at the terminal boundary", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "delta",
+        turnId: "provider-turn-1",
+        content: "Final answer",
+      }, () => getState().streamingContent === "Final answer");
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        turnId: "provider-turn-1",
+        sourceEventId: "assistant-event-1",
+        content: "Final answer",
+        timestamp: "2026-07-21T17:00:00.000Z",
+      }, () => getState().liveEntries.length === 1);
+      await emitAndWait(act, source, {
+        type: "done",
+        turnId: "provider-turn-1",
+        sourceEventId: "terminal-event-1",
+        assistantSourceEventId: "assistant-event-1",
+        content: "Final answer",
+        timestamp: "2026-07-21T17:00:01.000Z",
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveEntries).toMatchObject([
+        {
+          id: "live-assistant-assistant-event-1",
+          role: "assistant",
+          content: "Final answer",
+          sourceEventId: "assistant-event-1",
+        },
+      ]);
+      expect(getState().terminalEventId).toBe("terminal-event-1");
+    });
+  });
+
+  it("updates the matching assistant entry for interrupted terminal events", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        turnId: "provider-turn-1",
+        sourceEventId: "assistant-event-1",
+        content: "Partial answer",
+      }, () => getState().liveEntries.length === 1);
+      await emitAndWait(act, source, {
+        type: "shutdown",
+        turnId: "provider-turn-1",
+        sourceEventId: "terminal-event-1",
+        assistantSourceEventId: "assistant-event-1",
+        content: "Partial answer",
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveEntries).toMatchObject([
+        {
+          id: "live-assistant-assistant-event-1",
+          content: "Partial answer\n\n*(interrupted)*",
+          sourceEventId: "assistant-event-1",
+        },
+      ]);
+    });
+  });
+
+  it("deduplicates complete reconnect snapshots by assistant message identity", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        runId: "run-1",
+        complete: true,
+        turnId: "provider-turn-1",
+        accumulatedContent: "",
+        assistantSegments: [{
+          id: "assistant-event-1",
+          sourceEventId: "assistant-event-1",
+          turnId: "provider-turn-1",
+          content: "Final answer",
+        }],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: ["assistant:assistant-event-1"],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+        terminalType: "done",
+        terminalEventId: "terminal-event-1",
+        terminalAssistantEventId: "assistant-event-1",
+        finalContent: "Final answer",
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveEntries).toMatchObject([
+        {
+          id: "live-assistant-assistant-event-1",
+          content: "Final answer",
+          sourceEventId: "assistant-event-1",
+        },
+      ]);
+      expect(getState().terminalEventId).toBe("terminal-event-1");
+    });
+  });
+
+  it("uses the persisted assistant identity when a terminal snapshot has no live segment", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "snapshot",
+        runId: "run-1",
+        complete: true,
+        turnId: "provider-turn-1",
+        accumulatedContent: "",
+        assistantSegments: [],
+        activeTools: [],
+        currentTurnTools: [],
+        visuals: [],
+        entryOrder: [],
+        pendingUserInputs: [],
+        pendingElicitations: [],
+        terminalType: "done",
+        terminalAssistantEventId: "assistant-event-1",
+        finalContent: "Final answer",
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveEntries).toMatchObject([
+        {
+          id: "live-assistant-assistant-event-1",
+          content: "Final answer",
+          sourceEventId: "assistant-event-1",
+        },
+      ]);
+    });
+  });
+
   it("replaces the whole live overlay from reconnect snapshots", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));

@@ -1751,6 +1751,82 @@ describe("SessionManager run state", () => {
     });
   });
 
+  it("projects the final assistant message identity through terminal events and snapshots", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const received: any[] = [];
+    bus.subscribe((event) => received.push(event));
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    getHandler()?.({
+      id: "turn-start-event",
+      type: "assistant.turn_start",
+      data: { turnId: "provider-turn-1" },
+      timestamp: "2026-07-22T16:00:00.000Z",
+    });
+    getHandler()?.({
+      id: "assistant-event-0",
+      type: "assistant.message",
+      data: { content: "First segment" },
+      timestamp: "2026-07-22T16:00:00.500Z",
+    });
+    getHandler()?.({
+      id: "assistant-event-1",
+      type: "assistant.message",
+      data: { content: "Final answer" },
+      timestamp: "2026-07-22T16:00:01.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(bus.getSnapshot()).toMatchObject({
+      accumulatedContent: "",
+      assistantSegments: [
+        {
+          id: "assistant-event-0",
+          sourceEventId: "assistant-event-0",
+          turnId: "provider-turn-1",
+          content: "First segment",
+        },
+        {
+          id: "assistant-event-1",
+          sourceEventId: "assistant-event-1",
+          turnId: "provider-turn-1",
+          content: "Final answer",
+        },
+      ],
+    });
+
+    getHandler()?.({
+      id: "terminal-event-1",
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-07-22T16:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(bus.getSnapshot()).toMatchObject({
+      complete: true,
+      terminalEventId: "terminal-event-1",
+      terminalAssistantEventId: "assistant-event-1",
+      finalContent: "Final answer",
+    });
+    expect(received).toContainEqual(expect.objectContaining({
+      type: "done",
+      sourceEventId: "terminal-event-1",
+      assistantSourceEventId: "assistant-event-1",
+      content: "Final answer",
+    }));
+  });
+
   it("attempts recovery (re-resume + re-subscribe) when a session first becomes stalled", async () => {
     const { manager } = createManager();
     const { session } = makeSession();
@@ -2355,7 +2431,7 @@ describe("SessionManager run state", () => {
 
   it("resolves abort locally when the runtime never confirms it", async () => {
     const { manager, eventBusRegistry, sessionMetaStore } = createManager();
-    const { session, getReleaseSend } = makeSession();
+    const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
@@ -2367,6 +2443,20 @@ describe("SessionManager run state", () => {
     getReleaseSend()?.();
     await flushMicrotasks();
 
+    getHandler()?.({
+      id: "turn-start-event",
+      type: "assistant.turn_start",
+      data: { turnId: "provider-turn-1" },
+      timestamp: "2026-04-20T00:00:00.000Z",
+    });
+    getHandler()?.({
+      id: "assistant-event-1",
+      type: "assistant.message",
+      data: { content: "partial response" },
+      timestamp: "2026-04-20T00:00:01.000Z",
+    });
+    await flushMicrotasks();
+
     const abortPromise = manager.abortSession("session-1");
     await flushMicrotasks();
     expect(session.abort).toHaveBeenCalledTimes(1);
@@ -2376,9 +2466,15 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
-    expect(bus.getSnapshot().terminalType).toBe("aborted");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "aborted",
+      terminalAssistantEventId: "assistant-event-1",
+      finalContent: "partial response",
+    });
     expect(sessionMetaStore.getTerminalOverlay("session-1")).toMatchObject({
       type: "aborted",
+      assistantSourceEventId: "assistant-event-1",
+      content: "partial response",
     });
   });
 

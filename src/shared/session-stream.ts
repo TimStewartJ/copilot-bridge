@@ -10,6 +10,7 @@ export interface SyntheticTerminalOverlay {
   type: "done" | "error" | "aborted" | "shutdown";
   runId: string;
   turnId?: string;
+  assistantSourceEventId?: string;
   content?: string;
   message?: string;
   timestamp?: string;

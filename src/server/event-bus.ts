@@ -101,6 +101,7 @@ export interface BusSnapshot {
   terminalCompletion?: TerminalCompletion;
   errorMessage?: string;
   terminalEventId?: string;
+  terminalAssistantEventId?: string;
   turnId?: string;
   contextSummary: SessionContextSummary | null;
   /** The user prompt that initiated this turn (for reconnect recovery) */
@@ -270,6 +271,7 @@ export class SessionEventBus {
   private terminalType?: "done" | "error" | "aborted" | "shutdown";
   private terminalTimestamp?: string;
   private terminalEventId?: string;
+  private terminalAssistantEventId?: string;
   private mcpServers: unknown[] = [];
   private currentTurnId?: string;
   private terminalTurnId?: string;
@@ -640,6 +642,9 @@ export class SessionEventBus {
         this.terminalType = "done";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
+        this.terminalAssistantEventId = typeof event.assistantSourceEventId === "string"
+          ? event.assistantSourceEventId
+          : undefined;
         this.finalContent = event.content;
         this.terminalCompletion = resolved;
         this.pendingTerminalCompletion = undefined;
@@ -663,6 +668,9 @@ export class SessionEventBus {
         this.terminalType = "aborted";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
+        this.terminalAssistantEventId = typeof event.assistantSourceEventId === "string"
+          ? event.assistantSourceEventId
+          : undefined;
         this.finalContent = event.content;
         this.terminalCompletion = resolved;
         this.pendingTerminalCompletion = undefined;
@@ -686,6 +694,9 @@ export class SessionEventBus {
         this.terminalType = "shutdown";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
+        this.terminalAssistantEventId = typeof event.assistantSourceEventId === "string"
+          ? event.assistantSourceEventId
+          : undefined;
         this.finalContent = event.content;
         this.terminalCompletion = resolved;
         this.pendingTerminalCompletion = undefined;
@@ -709,6 +720,7 @@ export class SessionEventBus {
         this.terminalType = "error";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
+        this.terminalAssistantEventId = undefined;
         this.errorMessage = event.message;
         this.terminalCompletion = resolved;
         this.pendingTerminalCompletion = undefined;
@@ -761,6 +773,7 @@ export class SessionEventBus {
       terminalCompletion: this.terminalCompletion,
       errorMessage: this.errorMessage,
       terminalEventId: this.terminalEventId,
+      terminalAssistantEventId: this.terminalAssistantEventId,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
       pendingPrompt: this.pendingPrompt,
@@ -817,6 +830,7 @@ export class SessionEventBus {
     this.terminalType = undefined;
     this.terminalTimestamp = undefined;
     this.terminalEventId = undefined;
+    this.terminalAssistantEventId = undefined;
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
     this.pendingTerminalCompletion = undefined;
@@ -834,6 +848,7 @@ export class SessionEventBus {
     this.terminalType = undefined;
     this.terminalTimestamp = undefined;
     this.terminalEventId = undefined;
+    this.terminalAssistantEventId = undefined;
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
     this.pendingTerminalCompletion = undefined;
