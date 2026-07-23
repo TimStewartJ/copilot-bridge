@@ -204,21 +204,38 @@ describe("SessionManager run state", () => {
       mode: "immediate",
     });
     const bus = eventBusRegistry.getBus("session-1");
-    expect(bus?.getSnapshot().pendingPrompt).toBe("please adjust");
+    expect(bus?.getSnapshot().userMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: "please adjust", pending: true }),
+    ]));
 
     getHandler()?.({
+      id: "user-event-hello",
       type: "user.message",
       data: { content: "hello" },
       timestamp: "2026-04-24T12:00:00.000Z",
     });
-    expect(bus?.getSnapshot().pendingPrompt).toBe("please adjust");
+    expect(bus?.getSnapshot().userMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        content: "hello",
+        pending: false,
+        sourceEventId: "user-event-hello",
+      }),
+      expect.objectContaining({ content: "please adjust", pending: true }),
+    ]));
 
     getHandler()?.({
+      id: "user-event-steer",
       type: "user.message",
       data: { content: "please adjust" },
       timestamp: "2026-04-24T12:00:01.000Z",
     });
-    expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
+    expect(bus?.getSnapshot().userMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        content: "please adjust",
+        pending: false,
+        sourceEventId: "user-event-steer",
+      }),
+    ]));
   });
 
   it("sets the SDK session mode before sending normal work", async () => {
@@ -562,7 +579,12 @@ describe("SessionManager run state", () => {
       timestamp: "2026-04-24T12:00:00.000Z",
     });
     const bus = eventBusRegistry.getBus("session-1");
-    expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
+    expect(bus?.getSnapshot().userMessages).toEqual([
+      expect.objectContaining({
+        content: "Autopilot objective: fix tests",
+        pending: false,
+      }),
+    ]);
 
     getReleaseSend()?.();
     await flushMicrotasks();
@@ -731,7 +753,35 @@ describe("SessionManager run state", () => {
     });
 
     await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("ended before steering");
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().pendingPrompt).toBeUndefined();
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().userMessages.some((message) => message.pending))
+      .toBe(false);
+  });
+
+  it("discards the projected steering message when the immediate send fails", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    session.send.mockRejectedValueOnce(new Error("steer failed"));
+    await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("steer failed");
+
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().userMessages).toEqual([
+      expect.objectContaining({ content: "hello" }),
+    ]);
+
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    await flushMicrotasks();
   });
 
   it("rejects steering while the busy session is still reconnecting", async () => {

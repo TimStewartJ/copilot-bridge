@@ -4,7 +4,7 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
 
-describe("SessionManager pendingPrompt lifecycle", () => {
+describe("SessionManager projected user message lifecycle", () => {
   function createManager() {
     const db = setupTestDb();
     const eventBusRegistry = createEventBusRegistry();
@@ -29,7 +29,7 @@ describe("SessionManager pendingPrompt lifecycle", () => {
     vi.restoreAllMocks();
   });
 
-  it("stops advertising pendingPrompt after user.message arrives", async () => {
+  it("projects a pending message immediately and reconciles it when user.message arrives", async () => {
     const { manager, eventBusRegistry } = createManager();
     let handler: ((event: any) => void) | undefined;
     let releaseSend: (() => void) | undefined;
@@ -60,10 +60,16 @@ describe("SessionManager pendingPrompt lifecycle", () => {
     manager.startWork("session-1", "hello there");
 
     const bus = eventBusRegistry.getBus("session-1");
+    expect(bus?.getSnapshot()).not.toHaveProperty("pendingPrompt");
+    expect(bus?.getSnapshot().userMessages).toMatchObject([
+      {
+        content: "hello there",
+        pending: true,
+      },
+    ]);
     await vi.waitFor(() => {
       expect(session.send).toHaveBeenCalledTimes(1);
     });
-    expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
     expect(bus?.getSnapshot().userMessages).toMatchObject([
       {
         content: "hello there",

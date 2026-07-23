@@ -73,6 +73,26 @@ describe("event-bus", () => {
       });
     });
 
+    it("finalizes pending user messages on terminal events", () => {
+      const terminalEvents: StreamEvent[] = [
+        { type: "done", content: "Done" },
+        { type: "error", message: "Boom" },
+        { type: "aborted", content: "Stopped" },
+        { type: "shutdown", content: "Interrupted" },
+      ];
+
+      terminalEvents.forEach((event, index) => {
+        const bus = getOrCreateBus(`test-terminal-pending-message-${index}`);
+        bus.setPendingPrompt("in flight");
+
+        bus.emit(event);
+
+        expect(bus.getSnapshot().userMessages).toEqual([
+          expect.objectContaining({ content: "in flight", pending: false }),
+        ]);
+      });
+    });
+
     it("carries a pending terminal completion into abnormal terminal snapshots and broadcasts", () => {
       const terminalTypes = ["aborted", "shutdown", "error"] as const;
 
@@ -127,29 +147,42 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().terminalCompletion).toBeUndefined();
     });
 
-    it("commits a projected user message after it is persisted", () => {
+    it("projects pending user messages in reconnect snapshots and commits them after persistence", () => {
       const bus = getOrCreateBus("test-pending-prompt-1");
-      bus.setPendingPrompt("recover me");
+      const messageId = bus.setPendingPrompt("recover me", [{
+        type: "uploaded",
+        displayName: "evidence.png",
+        mimeType: "image/png",
+      }]);
+      const reconnectEvents: StreamEvent[] = [];
+      const unsubscribe = bus.subscribe((event) => reconnectEvents.push(event));
 
-      expect(bus.getSnapshot()).toMatchObject({
-        pendingPrompt: "recover me",
+      expect(reconnectEvents[0]).not.toHaveProperty("pendingPrompt");
+      expect(reconnectEvents[0]).toMatchObject({
+        type: "snapshot",
         userMessages: [{
+          id: messageId,
           content: "recover me",
           pending: true,
+          attachments: [{
+            displayName: "evidence.png",
+            mimeType: "image/png",
+          }],
         }],
       });
 
       bus.commitPendingPrompt("recover me", "user-event-1", "2026-07-21T22:00:00.000Z");
 
       expect(bus.getSnapshot()).toMatchObject({
-        pendingPrompt: undefined,
         userMessages: [{
+          id: messageId,
           content: "recover me",
           pending: false,
           sourceEventId: "user-event-1",
           timestamp: "2026-07-21T22:00:00.000Z",
         }],
       });
+      unsubscribe();
     });
 
     it("only commits the matching projected user message", () => {
@@ -158,11 +191,13 @@ describe("event-bus", () => {
 
       bus.commitPendingPrompt("original prompt", "wrong-event");
 
-      expect(bus.getSnapshot().pendingPrompt).toBe("steer me");
+      expect(bus.getSnapshot().userMessages[0]).toMatchObject({
+        content: "steer me",
+        pending: true,
+      });
 
       bus.commitPendingPrompt("steer me", "steer-event");
 
-      expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
       expect(bus.getSnapshot().userMessages[0]).toMatchObject({
         pending: false,
         sourceEventId: "steer-event",
@@ -187,8 +222,20 @@ describe("event-bus", () => {
       const events: StreamEvent[] = [];
       bus.subscribe((event) => events.push(event));
 
-      const id = bus.setPendingPrompt("original");
+      const id = bus.setPendingPrompt("original", [{
+        type: "uploaded",
+        displayName: "evidence.png",
+        mimeType: "image/png",
+      }]);
       bus.replacePendingPrompt("updated");
+
+      expect(bus.getSnapshot().userMessages).toMatchObject([{
+        id,
+        content: "updated",
+        pending: true,
+        attachments: [{ displayName: "evidence.png" }],
+      }]);
+
       bus.discardPendingPrompt("updated");
 
       expect(events).toEqual(expect.arrayContaining([
@@ -198,7 +245,11 @@ describe("event-bus", () => {
         }),
         expect.objectContaining({
           type: "user_message_updated",
-          userMessage: expect.objectContaining({ id, content: "updated" }),
+          userMessage: expect.objectContaining({
+            id,
+            content: "updated",
+            attachments: [expect.objectContaining({ displayName: "evidence.png" })],
+          }),
         }),
         { type: "user_message_discarded", id },
       ]));
@@ -222,9 +273,11 @@ describe("event-bus", () => {
           expect.objectContaining({ toolCallId: "tc-old", turnId: "turn-1" }),
         ],
         intentText: "",
-        pendingPrompt: "steer me",
         turnId: "turn-2",
       });
+      expect(bus.getSnapshot().userMessages).toEqual([
+        expect.objectContaining({ content: "steer me", pending: true }),
+      ]);
     });
 
     it("tracks pending native user input requests in snapshots", () => {
@@ -714,7 +767,8 @@ describe("event-bus", () => {
       expect(snap.terminalType).toBeUndefined();
       expect(snap.finalContent).toBeUndefined();
       expect(snap.errorMessage).toBeUndefined();
-      expect(snap.pendingPrompt).toBeUndefined();
+      expect(snap).not.toHaveProperty("pendingPrompt");
+      expect(snap.userMessages).toEqual([]);
       expect(snap.pendingUserInputs).toEqual([]);
     });
   });

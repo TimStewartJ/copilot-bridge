@@ -642,7 +642,7 @@ describe("useSessionStream EventSource lifecycle", () => {
 });
 
 describe("useSessionStream projection events", () => {
-  it("hydrates, appends, and commits server-owned user messages", async () => {
+  it("hydrates reconnect snapshots and applies pending user message lifecycle events", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
@@ -694,6 +694,43 @@ describe("useSessionStream projection events", () => {
       ]);
 
       await emitAndWait(act, source, {
+        type: "user_message_updated",
+        userMessage: {
+          id: "user-2",
+          content: "steered",
+          pending: true,
+          attachments: [{
+            type: "uploaded",
+            displayName: "example.png",
+            mimeType: "image/png",
+            size: 10,
+          }],
+        },
+      }, () => {
+        const entry = getState().liveEntries[1];
+        return entry?.type === "message" && entry.content === "steered";
+      });
+      expect(getState().liveEntries[1]).toMatchObject({
+        id: "live-user-user-2",
+        content: "steered",
+        attachments: [{ displayName: "example.png" }],
+      });
+
+      await emitAndWait(act, source, {
+        type: "user_message_committed",
+        id: "user-2",
+        sourceEventId: "user-event-2",
+        timestamp: "2026-07-21T21:59:00.000Z",
+      }, () => getState().liveEntries[1]?.sourceEventId === "user-event-2");
+      expect(getState().liveEntries[1]).toMatchObject({
+        id: "live-user-user-2",
+        content: "steered",
+        sourceEventId: "user-event-2",
+        timestamp: "2026-07-21T21:59:00.000Z",
+        attachments: [{ displayName: "example.png" }],
+      });
+
+      await emitAndWait(act, source, {
         type: "user_message",
         userMessage: {
           id: "user-3",
@@ -714,6 +751,20 @@ describe("useSessionStream projection events", () => {
         sourceEventId: "user-event-3",
         timestamp: "2026-07-21T22:00:00.000Z",
       });
+
+      await emitAndWait(act, source, {
+        type: "user_message",
+        userMessage: {
+          id: "user-4",
+          content: "failed",
+          pending: true,
+        },
+      }, () => getState().liveEntries.length === 4);
+      await emitAndWait(act, source, {
+        type: "user_message_discarded",
+        id: "user-4",
+      }, () => getState().liveEntries.length === 3);
+      expect(getState().liveEntries.some((entry) => entry.id === "live-user-user-4")).toBe(false);
     });
   });
 
