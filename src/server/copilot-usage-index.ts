@@ -1,13 +1,13 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
+import type { CopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { BRIDGE_SESSION_MODEL_STATE_FILE } from "./session-model-state-sidecar.js";
 import {
   buildCopilotUsageSummaryFromSessionResults,
   COPILOT_USAGE_PARSER_VERSION,
   scanCopilotUsageSession,
   type CopilotUsageIndexStatus,
-  type CopilotUsageModelMetadataProvider,
   type CopilotUsageReader,
   type CopilotUsageSessionScanResult,
 } from "./copilot-usage.js";
@@ -26,7 +26,7 @@ export interface IncrementalCopilotUsageReaderOptions {
   concurrency?: number;
   batchSize?: number;
   sdkModels?: readonly CopilotModelMetadataForPricing[];
-  modelMetadataProvider?: CopilotUsageModelMetadataProvider;
+  modelPriceLoader?: CopilotModelPriceLoader;
   scanSession?: (sessionStateDir: string, sessionId: string) => Promise<CopilotUsageSessionScanResult>;
 }
 
@@ -54,7 +54,7 @@ export function createIncrementalCopilotUsageReader({
   concurrency = DEFAULT_SCAN_CONCURRENCY,
   batchSize = DEFAULT_BATCH_SIZE,
   sdkModels: staticSdkModels,
-  modelMetadataProvider,
+  modelPriceLoader,
   scanSession = scanCopilotUsageSession,
 }: IncrementalCopilotUsageReaderOptions): CopilotUsageReader {
   const sessionStateDir = join(copilotHome, "session-state");
@@ -66,7 +66,6 @@ export function createIncrementalCopilotUsageReader({
     }
   }
 
-  let sdkModels = staticSdkModels;
   let inflight: Promise<void> | null = null;
   let rerunRequested = false;
   let stopped = false;
@@ -90,6 +89,7 @@ export function createIncrementalCopilotUsageReader({
 
   function readSummary(options?: { refresh?: boolean; sessionIds?: readonly string[] }) {
     const currentTime = now();
+    requestModelPriceRefresh(options?.refresh === true);
     const uncachedRequestedSessionIds = options?.sessionIds?.filter((sessionId) => {
       if (cacheEntries.has(sessionId)) return false;
       const checkedAt = missingRequestedCheckedAt.get(sessionId);
@@ -105,14 +105,19 @@ export function createIncrementalCopilotUsageReader({
     }
     const requestedSessions = options?.sessionIds?.length;
     const requestedSessionsCached = options?.sessionIds?.filter((sessionId) => cacheEntries.has(sessionId)).length;
+    const modelSnapshot = modelPriceLoader?.getSnapshot();
+    const indexState = status.state === "scanning" || modelSnapshot?.refreshState === "refreshing"
+      ? "scanning"
+      : status.state;
     return Promise.resolve(buildCopilotUsageSummaryFromSessionResults({
       sessionResults: [...cacheEntries.values()].map((entry) => entry.result),
       sessionsSeen: status.sessionsTotal,
       now,
-      sdkModels,
+      sdkModels: modelSnapshot?.models ?? staticSdkModels,
       sessionIds: options?.sessionIds,
       index: {
         ...status,
+        state: indexState,
         ...(requestedSessions !== undefined ? { requestedSessions } : {}),
         ...(requestedSessionsCached !== undefined ? { requestedSessionsCached } : {}),
       },
@@ -146,8 +151,6 @@ export function createIncrementalCopilotUsageReader({
     status.sessionsFailed = 0;
     status.warning = null;
     status.error = null;
-    // Pricing refresh stays independent so cached or partial usage responses never wait on SDK metadata.
-    refreshModelMetadata();
 
     inflight = runRefresh()
       .catch((error) => {
@@ -165,16 +168,9 @@ export function createIncrementalCopilotUsageReader({
     return true;
   }
 
-  function refreshModelMetadata(): void {
-    if (!modelMetadataProvider) return;
-    Promise.resolve()
-      .then(() => modelMetadataProvider())
-      .then((models) => {
-        sdkModels = models;
-      })
-      .catch((error) => {
-        console.warn("[copilot-usage] Failed to refresh Copilot model metadata; cached pricing remains in use.", error);
-      });
+  function requestModelPriceRefresh(force: boolean): void {
+    if (!modelPriceLoader) return;
+    void modelPriceLoader.refresh({ force });
   }
 
   async function runRefresh(): Promise<void> {
@@ -347,11 +343,13 @@ export function createIncrementalCopilotUsageReader({
 
   return {
     readSummary,
-    invalidate: () => scheduleRefresh(true),
+    invalidate: () => {
+      requestModelPriceRefresh(true);
+      scheduleRefresh(true);
+    },
     startBackgroundRefresh: () => {
-      if (!scheduleRefresh(false)) {
-        refreshModelMetadata();
-      }
+      requestModelPriceRefresh(false);
+      scheduleRefresh(false);
     },
     shutdown: async () => {
       stopped = true;
