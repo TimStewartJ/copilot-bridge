@@ -14,7 +14,6 @@ vi.mock("./telemetry-batcher", () => ({
 }));
 
 import type { ChatEntry } from "./api";
-import type { SessionHistoryCoverage } from "../shared/session-stream.js";
 import {
   buildSnapshotToolState,
   buildTerminalToolEntries,
@@ -81,24 +80,20 @@ async function withHarness(
     getSource: () => MockEventSource;
     settled: ReturnType<typeof vi.fn<() => void>>;
     titleChanged: ReturnType<typeof vi.fn<() => void>>;
-    setCoverage: (coverage: SessionHistoryCoverage) => void;
     setSessionId: (sessionId: string | null) => void;
     act: Act;
   }) => Promise<void>,
 ) {
   const harness = await createReactDomHarness();
   let state: HookState | null = null;
-  let updateCoverage: ((coverage: SessionHistoryCoverage) => void) | null = null;
   let updateSessionId: ((sessionId: string | null) => void) | null = null;
   const settled = vi.fn<() => void>();
   const titleChanged = vi.fn<() => void>();
 
   function TestComponent() {
-    const [coverage, setCoverage] = useState<SessionHistoryCoverage>({});
     const [sessionId, setSessionId] = useState<string | null>("session-1");
-    updateCoverage = setCoverage;
     updateSessionId = setSessionId;
-    state = useSessionStream(sessionId, settled, titleChanged, coverage);
+    state = useSessionStream(sessionId, settled, titleChanged);
     return null;
   }
 
@@ -117,10 +112,6 @@ async function withHarness(
       },
       settled,
       titleChanged,
-      setCoverage: (coverage) => {
-        if (!updateCoverage) throw new Error("Coverage setter is unavailable");
-        updateCoverage(coverage);
-      },
       setSessionId: (sessionId) => {
         if (!updateSessionId) throw new Error("Session setter is unavailable");
         updateSessionId(sessionId);
@@ -224,8 +215,8 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
-  it("closes on terminal events and retains the overlay until disk coverage arrives", async () => {
-    await withHarness(async ({ getState, getSource, settled, titleChanged, setCoverage, act }) => {
+  it("closes on terminal events and keeps exactly one server-projected final assistant entry", async () => {
+    await withHarness(async ({ getState, getSource, settled, titleChanged, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
 
@@ -244,24 +235,27 @@ describe("useSessionStream EventSource lifecycle", () => {
         sourceEventId: "terminal-event-1",
         content: "Final answer",
         timestamp: "2026-07-21T17:00:00.000Z",
+        finalAssistantEntry: {
+          id: "assistant-event-1",
+          content: "Final answer",
+          turnId: "provider-turn-1",
+          sourceEventId: "assistant-event-1",
+          timestamp: "2026-07-21T17:00:00.000Z",
+        },
       }, () => getState().streamStatus === "idle");
 
       expect(source.close).toHaveBeenCalledOnce();
-      expect(getState().terminalEventId).toBe("terminal-event-1");
       expect(getState().liveEntries).toMatchObject([
         {
+          id: "live-assistant-assistant-event-1",
           role: "assistant",
           content: "Final answer",
           turnId: "provider-turn-1",
-          sourceEventId: "terminal-event-1",
+          sourceEventId: "assistant-event-1",
         },
       ]);
       expect(settled).toHaveBeenCalledOnce();
       expect(titleChanged).toHaveBeenCalledOnce();
-
-      await act(async () => setCoverage({ latestTerminalEventId: "terminal-event-1" }));
-      await waitUntilAct(act, () => getState().liveEntries.length === 0);
-      expect(getState().terminalEventId).toBeUndefined();
     });
   });
 
@@ -289,6 +283,13 @@ describe("useSessionStream EventSource lifecycle", () => {
         assistantSourceEventId: "assistant-event-1",
         content: "Final answer",
         timestamp: "2026-07-21T17:00:01.000Z",
+        finalAssistantEntry: {
+          id: "assistant-event-1",
+          content: "Final answer",
+          turnId: "provider-turn-1",
+          sourceEventId: "assistant-event-1",
+          timestamp: "2026-07-21T17:00:01.000Z",
+        },
       }, () => getState().streamStatus === "idle");
 
       expect(getState().liveEntries).toMatchObject([
@@ -299,11 +300,19 @@ describe("useSessionStream EventSource lifecycle", () => {
           sourceEventId: "assistant-event-1",
         },
       ]);
-      expect(getState().terminalEventId).toBe("terminal-event-1");
     });
   });
 
-  it("updates the matching assistant entry for interrupted terminal events", async () => {
+  it.each([
+    {
+      eventType: "aborted",
+      content: "Partial answer\n\n*(stopped)*",
+    },
+    {
+      eventType: "shutdown",
+      content: "Partial answer\n\n*(interrupted)*",
+    },
+  ] as const)("updates the matching assistant entry for $eventType terminal events", async ({ eventType, content }) => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
@@ -315,20 +324,107 @@ describe("useSessionStream EventSource lifecycle", () => {
         content: "Partial answer",
       }, () => getState().liveEntries.length === 1);
       await emitAndWait(act, source, {
-        type: "shutdown",
+        type: eventType,
         turnId: "provider-turn-1",
         sourceEventId: "terminal-event-1",
         assistantSourceEventId: "assistant-event-1",
         content: "Partial answer",
+        finalAssistantEntry: {
+          id: "assistant-event-1",
+          content,
+          turnId: "provider-turn-1",
+          sourceEventId: "assistant-event-1",
+        },
       }, () => getState().streamStatus === "idle");
 
       expect(getState().liveEntries).toMatchObject([
         {
           id: "live-assistant-assistant-event-1",
-          content: "Partial answer\n\n*(interrupted)*",
+          content,
           sourceEventId: "assistant-event-1",
         },
       ]);
+    });
+  });
+
+  it("renders the server-projected error once and finalizes current-turn tools", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "thinking",
+        turnId: "provider-turn-1",
+      }, () => getState().streamStatus === "thinking");
+      await emitAndWait(act, source, {
+        type: "tool_start",
+        turnId: "provider-turn-1",
+        sourceEventId: "tool-event-1",
+        toolCallId: "tool-1",
+        name: "bash",
+      }, () => getState().currentTurnTools.length === 1);
+      await emitAndWait(act, source, {
+        type: "error",
+        turnId: "provider-turn-1",
+        sourceEventId: "terminal-error-1",
+        message: "Something broke",
+        timestamp: "2026-07-21T17:00:02.000Z",
+        finalAssistantEntry: {
+          id: "terminal-error-1",
+          content: "⚠️ Error: Something broke",
+          turnId: "provider-turn-1",
+          sourceEventId: "terminal-error-1",
+          timestamp: "2026-07-21T17:00:02.000Z",
+        },
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveEntries.filter((entry) => (
+        entry.type !== "tool"
+        && entry.type !== "visual"
+        && entry.type !== "completion"
+        && entry.type !== "skill"
+        && entry.role === "assistant"
+      ))).toMatchObject([{
+        id: "live-assistant-terminal-error-1",
+        content: "⚠️ Error: Something broke",
+        sourceEventId: "terminal-error-1",
+      }]);
+      expect(getState().currentTurnTools).toMatchObject([{
+        toolCallId: "tool-1",
+        success: false,
+        completedAt: "2026-07-21T17:00:02.000Z",
+      }]);
+      expect(getState().liveEntries.find((entry) => entry.type === "tool")).toMatchObject({
+        toolCall: {
+          toolCallId: "tool-1",
+          success: false,
+          completedAt: "2026-07-21T17:00:02.000Z",
+        },
+      });
+    });
+  });
+
+  it("keeps terminal completion cards mutually exclusive with final assistant messages", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "done",
+        turnId: "provider-turn-1",
+        sourceEventId: "terminal-event-1",
+        timestamp: "2026-07-21T17:00:03.000Z",
+        terminalCompletion: {
+          content: "Completed the task",
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "session.task_complete",
+        },
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveEntries).toMatchObject([{
+        type: "completion",
+        sourceEventId: "terminal-event-1",
+        content: "Completed the task",
+      }]);
     });
   });
 
@@ -359,6 +455,12 @@ describe("useSessionStream EventSource lifecycle", () => {
         terminalEventId: "terminal-event-1",
         terminalAssistantEventId: "assistant-event-1",
         finalContent: "Final answer",
+        finalAssistantEntry: {
+          id: "assistant-event-1",
+          content: "Final answer",
+          turnId: "provider-turn-1",
+          sourceEventId: "assistant-event-1",
+        },
       }, () => getState().streamStatus === "idle");
 
       expect(getState().liveEntries).toMatchObject([
@@ -368,7 +470,6 @@ describe("useSessionStream EventSource lifecycle", () => {
           sourceEventId: "assistant-event-1",
         },
       ]);
-      expect(getState().terminalEventId).toBe("terminal-event-1");
     });
   });
 
@@ -393,6 +494,12 @@ describe("useSessionStream EventSource lifecycle", () => {
         terminalType: "done",
         terminalAssistantEventId: "assistant-event-1",
         finalContent: "Final answer",
+        finalAssistantEntry: {
+          id: "assistant-event-1",
+          content: "Final answer",
+          turnId: "provider-turn-1",
+          sourceEventId: "assistant-event-1",
+        },
       }, () => getState().streamStatus === "idle");
 
       expect(getState().liveEntries).toMatchObject([

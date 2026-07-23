@@ -97,6 +97,8 @@ describe("Session stream route", () => {
     expect(res.text).toContain('"type":"snapshot"');
     expect(res.text).toContain('"terminalType":"done"');
     expect(res.text).toContain('"finalContent":"Run finished"');
+    expect(res.text).toContain('"finalAssistantEntry"');
+    expect(res.text).toContain('"content":"Run finished"');
   });
 
   it("GET /api/sessions/:id/stream preserves terminal completion metadata on replay", async () => {
@@ -191,6 +193,27 @@ describe("Session stream route", () => {
     expect(res.text).toContain('"terminalType":"aborted"');
     expect(res.text).toContain('"terminalCompletion"');
     expect(res.text).toContain('"content":"Wrapped up before abort"');
+  });
+
+  it("GET /api/sessions/:id/stream rebuilds the authoritative final entry from a persisted overlay", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("session-123", {
+      type: "shutdown",
+      runId: "run-1",
+      turnId: "provider-turn-1",
+      assistantSourceEventId: "assistant-event-1",
+      content: "Partial answer",
+      timestamp: "2026-07-23T16:00:00.000Z",
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"type":"snapshot"');
+    expect(res.text).toContain('"finalAssistantEntry"');
+    expect(res.text).toContain('"id":"assistant-event-1"');
+    expect(res.text).toContain('"sourceEventId":"assistant-event-1"');
+    expect(res.text).toContain('"content":"Partial answer\\n\\n*(interrupted)*"');
   });
 
   it("GET /api/sessions/:id/stream includes pending user input requests in live snapshots", async () => {

@@ -100,12 +100,14 @@ describe("event-bus", () => {
           content: "Wrapped up before the interruption",
           sourceEventType: "tool.execution_complete",
         });
+        expect(snap.finalAssistantEntry).toBeUndefined();
 
         const broadcastTerminal = received.find((event) => event.type === terminalType);
         expect(broadcastTerminal?.terminalCompletion).toMatchObject({
           content: "Wrapped up before the interruption",
           sourceEventType: "tool.execution_complete",
         });
+        expect(broadcastTerminal?.finalAssistantEntry).toBeUndefined();
       });
     });
 
@@ -546,6 +548,85 @@ describe("event-bus", () => {
       expect(snap.finalContent).toBe("Partial answer");
       expect(snap.intentText).toBe("");
     });
+
+    it.each([
+      {
+        terminalType: "done",
+        terminalEvent: {
+          type: "done",
+          sourceEventId: "terminal-done",
+          assistantSourceEventId: "assistant-done",
+          content: "Final answer",
+          timestamp: "2026-07-23T16:00:00.000Z",
+        },
+        expected: {
+          id: "assistant-done",
+          sourceEventId: "assistant-done",
+          content: "Final answer",
+        },
+      },
+      {
+        terminalType: "error",
+        terminalEvent: {
+          type: "error",
+          sourceEventId: "terminal-error",
+          message: "Something broke",
+          timestamp: "2026-07-23T16:00:01.000Z",
+        },
+        expected: {
+          id: "terminal-error",
+          sourceEventId: "terminal-error",
+          content: "⚠️ Error: Something broke",
+        },
+      },
+      {
+        terminalType: "aborted",
+        terminalEvent: {
+          type: "aborted",
+          sourceEventId: "terminal-aborted",
+          assistantSourceEventId: "assistant-aborted",
+          content: "Partial answer",
+          timestamp: "2026-07-23T16:00:02.000Z",
+        },
+        expected: {
+          id: "assistant-aborted",
+          sourceEventId: "assistant-aborted",
+          content: "Partial answer\n\n*(stopped)*",
+        },
+      },
+      {
+        terminalType: "shutdown",
+        terminalEvent: {
+          type: "shutdown",
+          sourceEventId: "terminal-shutdown",
+          assistantSourceEventId: "assistant-shutdown",
+          content: "Partial answer",
+          timestamp: "2026-07-23T16:00:03.000Z",
+        },
+        expected: {
+          id: "assistant-shutdown",
+          sourceEventId: "assistant-shutdown",
+          content: "Partial answer\n\n*(interrupted)*",
+        },
+      },
+    ] as const)(
+      "projects one authoritative final assistant entry for $terminalType live and snapshot delivery",
+      ({ terminalType, terminalEvent, expected }) => {
+        const bus = getOrCreateBus(`test-final-assistant-projection-${terminalType}`);
+        const received: StreamEvent[] = [];
+        bus.subscribe((event) => received.push(event));
+        bus.emit({ type: "thinking", turnId: "provider-turn-1" });
+        bus.emit(terminalEvent);
+
+        const liveTerminal = received.find((event) => event.type === terminalType);
+        expect(liveTerminal?.finalAssistantEntry).toMatchObject({
+          ...expected,
+          turnId: "provider-turn-1",
+          timestamp: terminalEvent.timestamp,
+        });
+        expect(bus.getSnapshot().finalAssistantEntry).toEqual(liveTerminal?.finalAssistantEntry);
+      },
+    );
   });
 
   describe("subscribe", () => {

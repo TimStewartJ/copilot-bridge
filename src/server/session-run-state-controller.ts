@@ -143,6 +143,9 @@ export class SessionRunStateController {
         ...(snapshot.errorMessage ? { message: snapshot.errorMessage } : {}),
         ...(snapshot.terminalTimestamp ? { timestamp: snapshot.terminalTimestamp } : {}),
         ...(snapshot.terminalCompletion ? { terminalCompletion: snapshot.terminalCompletion } : {}),
+        ...(snapshot.finalAssistantEntry
+          ? { finalAssistantEntry: { ...snapshot.finalAssistantEntry } }
+          : {}),
       });
     };
 

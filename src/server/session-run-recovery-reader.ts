@@ -1,4 +1,5 @@
 import { open, stat } from "node:fs/promises";
+import { getSdkEventId } from "./sdk-event-identity.js";
 
 const MAX_RECOVERY_TAIL_BYTES = 8 * 1024 * 1024;
 
@@ -58,6 +59,7 @@ export interface PersistedRunEventInfo {
 export interface PersistedRunTerminal {
   event: any;
   assistantContent?: string;
+  assistantSourceEventId?: string;
 }
 
 export interface PersistedRunRecoveryInspection {
@@ -98,6 +100,7 @@ export async function inspectPersistedRunRecovery(
   options: {
     now?: number;
     lastAssistantContent?: string;
+    lastAssistantSourceEventId?: string;
     treatSessionShutdownAsTerminal?: boolean;
   } = {},
 ): Promise<PersistedRunRecoveryInspection> {
@@ -117,6 +120,7 @@ export async function inspectPersistedRunRecovery(
   let latestTerminalEventType: string | undefined;
   let latestTerminalEventAt: number | undefined;
   let assistantContent = options.lastAssistantContent;
+  let assistantSourceEventId = options.lastAssistantSourceEventId;
   let latestRelevantState: "active" | "terminal" | undefined;
   let terminalEvent: any | null = null;
   let hasTurnEnd = false;
@@ -158,7 +162,10 @@ export async function inspectPersistedRunRecovery(
     switch (eventType) {
       case "assistant.message":
         if (data?.parentToolCallId) break;
-        if (typeof data?.content === "string") assistantContent = data.content;
+        if (typeof data?.content === "string") {
+          assistantContent = data.content;
+          assistantSourceEventId = getSdkEventId(event);
+        }
         markActive(eventType);
         break;
       case "user.message":
@@ -207,7 +214,11 @@ export async function inspectPersistedRunRecovery(
         : Math.max(0, now - latestTerminalEventAt),
     },
     terminal: latestRelevantState === "terminal" && terminalEvent
-      ? { event: terminalEvent, assistantContent }
+      ? {
+          event: terminalEvent,
+          assistantContent,
+          ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
+        }
       : null,
   };
 }

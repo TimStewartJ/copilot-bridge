@@ -563,7 +563,7 @@ describe("ChatView cached resume loading state", () => {
       await render({
         streamOverrides: {
           liveEntries: [{
-            id: "live-terminal-1",
+            id: "live-assistant-terminal-1",
             type: "message",
             turnId: "provider-turn-1",
             sourceEventId: "terminal-1",
@@ -1673,36 +1673,81 @@ describe("ChatView steering sends", () => {
     }
   });
 
-  it("omits a covered terminal overlay when canonical history uses a different event id", async () => {
+  it("reconciles a projected final assistant entry when delayed disk history reaches its source event", async () => {
+    const onRenderedReadThrough = vi.fn();
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [{
-          id: "canonical-final",
-          role: "assistant",
-          content: "Final answer",
-          sourceEventId: "assistant-message-event",
+          id: "canonical-user",
+          role: "user",
+          content: "Question",
+          sourceEventId: "user-message-event",
         }],
-        busy: false,
+        busy: true,
         total: 1,
         warm: true,
         hasMore: false,
-        coverage: { latestTerminalEventId: "terminal-event" },
       },
       streamOverrides: {
         liveEntries: [{
-          id: "live-terminal-terminal-event",
+          id: "live-assistant-assistant-message-event",
           role: "assistant",
           content: "Final answer",
-          sourceEventId: "terminal-event",
+          sourceEventId: "assistant-message-event",
+          timestamp: "2026-07-23T16:00:00.000Z",
         }],
-        terminalEventId: "terminal-event",
         isStreaming: false,
         streamStatus: "idle",
       },
+      onRenderedReadThrough,
     });
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Final answer") ?? false);
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent === "Final answer"
+      ))).toHaveLength(1);
+      expect(onRenderedReadThrough).toHaveBeenCalledWith(
+        "session-1",
+        "2026-07-23T16:00:00.000Z",
+      );
+
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [
+          {
+            id: "canonical-user",
+            role: "user",
+            content: "Question",
+            sourceEventId: "user-message-event",
+          },
+          {
+            id: "canonical-final",
+            role: "assistant",
+            content: "Final answer",
+            sourceEventId: "assistant-message-event",
+            timestamp: "2026-07-23T15:59:59.000Z",
+          },
+        ],
+        busy: false,
+        total: 2,
+        warm: true,
+        hasMore: false,
+      });
+      const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as (() => void) | undefined;
+      if (!onSettled) throw new Error("Stream settled callback is unavailable");
+      await act(async () => {
+        onSettled();
+      });
+      await waitUntilAct(act, () => {
+        try {
+          findMessageWrapperByAnchorKey(dom.container, "canonical-final");
+          return true;
+        } catch {
+          return false;
+        }
+      });
+
       expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent === "Final answer"
@@ -1760,11 +1805,17 @@ describe("ChatView steering sends", () => {
               name: "current_tool",
             },
           },
+          {
+            id: "live-assistant-current",
+            role: "assistant",
+            content: "current reply",
+            turnId: "1",
+            sourceEventId: "current-assistant-event",
+          },
         ],
-        streamingContent: "current reply",
         activeTurnId: "1",
-        isStreaming: true,
-        streamStatus: "streaming",
+        isStreaming: false,
+        streamStatus: "idle",
       },
     });
 
@@ -1782,7 +1833,7 @@ describe("ChatView steering sends", () => {
       expect(renderedText.indexOf("current reply")).toBeGreaterThan(renderedText.indexOf("current_tool"));
 
       const historicalMessage = findMessageWrapperByAnchorKey(dom.container, "historical-assistant");
-      const currentMessage = findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream");
+      const currentMessage = findMessageWrapperByAnchorKey(dom.container, "live-assistant-current");
       expect(historicalMessage.getAttribute("data-latest-chat-message")).not.toBe("true");
       expect(currentMessage.getAttribute("data-latest-chat-message")).toBe("true");
     } finally {
