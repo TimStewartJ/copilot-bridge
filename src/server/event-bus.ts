@@ -106,8 +106,6 @@ export interface BusSnapshot {
   finalAssistantEntry?: ProjectedAssistantEntry;
   turnId?: string;
   contextSummary: SessionContextSummary | null;
-  /** The user prompt that initiated this turn (for reconnect recovery) */
-  pendingPrompt?: string;
   /** Pending native user input requests only; answered/canceled requests are omitted. */
   pendingUserInputs: PendingUserInputRequestView[];
   /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
@@ -320,8 +318,6 @@ export class SessionEventBus {
   private mcpServers: unknown[] = [];
   private currentTurnId?: string;
   private terminalTurnId?: string;
-  /** The user prompt that initiated this turn (for reconnect recovery) */
-  private pendingPrompt?: string;
   private pendingUserInputs = new Map<UserInputRequestId, PendingUserInputRequestView>();
   private pendingElicitations = new Map<ElicitationRequestId, PendingElicitationRequestView>();
   private contextSummary: SessionContextSummary | null = null;
@@ -345,7 +341,6 @@ export class SessionEventBus {
     };
     this.userMessages = [...this.userMessages, userMessage];
     this.entryOrder = [...this.entryOrder, `user:${userMessage.id}`];
-    this.pendingPrompt = prompt;
     this.broadcast({ type: "user_message", userMessage: structuredClone(userMessage) });
     return userMessage.id;
   }
@@ -368,7 +363,6 @@ export class SessionEventBus {
           : {}),
     };
     this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
-    this.pendingPrompt = prompt;
     this.broadcast({ type: "user_message_updated", userMessage: structuredClone(next) });
   }
 
@@ -384,7 +378,6 @@ export class SessionEventBus {
       ...(timestamp ? { timestamp } : {}),
     };
     this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
-    this.refreshPendingPrompt();
     this.broadcast({
       type: "user_message_committed",
       id: next.id,
@@ -402,7 +395,6 @@ export class SessionEventBus {
     if (!removed) return;
     this.userMessages = this.userMessages.filter((_, entryIndex) => entryIndex !== index);
     this.entryOrder = this.entryOrder.filter((key) => key !== `user:${removed.id}`);
-    this.refreshPendingPrompt();
     this.broadcast({ type: "user_message_discarded", id: removed.id });
   }
 
@@ -838,7 +830,6 @@ export class SessionEventBus {
         : undefined,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
-      pendingPrompt: this.pendingPrompt,
       pendingUserInputs: [...this.pendingUserInputs.values()],
       pendingElicitations: [...this.pendingElicitations.values()].map((request) => structuredClone(request)),
       ...(turnId ? { turnId } : {}),
@@ -878,7 +869,6 @@ export class SessionEventBus {
     this.assistantSegments = [];
     this.visuals = [];
     this.entryOrder = [];
-    this.pendingPrompt = undefined;
     this.pendingUserInputs.clear();
     this.pendingElicitations.clear();
   }
@@ -935,15 +925,10 @@ export class SessionEventBus {
     ));
   }
 
-  private refreshPendingPrompt(): void {
-    this.pendingPrompt = [...this.userMessages].reverse().find((message) => message.pending)?.content;
-  }
-
   private finalizePendingUserMessages(): void {
     this.userMessages = this.userMessages.map((message) => (
       message.pending ? { ...message, pending: false } : message
     ));
-    this.pendingPrompt = undefined;
   }
 
   cancelCleanup(): void {
