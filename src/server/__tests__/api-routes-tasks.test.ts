@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionStorageMeasurement, SessionStorageReader } from "../session-storage-reader.js";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
 import {
   createCopilotUsageTestHome,
@@ -110,6 +111,68 @@ describe("Task routes", () => {
         diskSizeBytes: 0,
       },
     ]));
+  });
+
+  it("GET /api/tasks/:id/session-storage warns when a linked session directory is missing", async () => {
+    const task = ctx.taskStore.createTask("Missing storage task");
+    const sessionId = "11111111-2222-4333-8444-555555555555";
+    ctx.taskStore.linkSession(task.id, sessionId);
+
+    const res = await request(app).get(`/api/tasks/${task.id}/session-storage`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.totalDiskSizeBytes).toBe(0);
+    expect(res.body.sessions).toEqual([{
+      sessionId,
+      diskSizeBytes: 0,
+      storageWarning: {
+        code: "missing",
+        message: "Session storage directory is missing.",
+      },
+    }]);
+  });
+
+  it("GET /api/tasks/:id/session-storage leaves other requests responsive while sizing is pending", async () => {
+    let signalSizingStarted!: () => void;
+    const sizingStarted = new Promise<void>((resolve) => {
+      signalSizingStarted = resolve;
+    });
+    let resolveMeasurement!: (measurement: SessionStorageMeasurement) => void;
+    const pendingMeasurement = new Promise<SessionStorageMeasurement>((resolve) => {
+      resolveMeasurement = resolve;
+    });
+    const sessionStorageReader: SessionStorageReader = {
+      measureSession: vi.fn(async () => {
+        signalSizingStarted();
+        return pendingMeasurement;
+      }),
+    };
+    const local = createTestApp(undefined, { sessionStorageReader });
+    const task = local.ctx.taskStore.createTask("Responsive storage task");
+    const sessionId = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+    local.ctx.taskStore.linkSession(task.id, sessionId);
+
+    let storageSettled = false;
+    const storageResponsePromise = request(local.app)
+      .get(`/api/tasks/${task.id}/session-storage`)
+      .then((response) => {
+        storageSettled = true;
+        return response;
+      });
+    await sizingStarted;
+
+    try {
+      const healthResponse = await request(local.app).get("/api/health");
+      expect(healthResponse.status).toBe(200);
+      expect(healthResponse.body.ok).toBe(true);
+      expect(storageSettled).toBe(false);
+    } finally {
+      resolveMeasurement({ status: "complete", diskSizeBytes: 42 });
+    }
+
+    const storageResponse = await storageResponsePromise;
+    expect(storageResponse.status).toBe(200);
+    expect(storageResponse.body.totalDiskSizeBytes).toBe(42);
   });
 
   it("GET /api/tasks/:id returns 404 for missing task", async () => {

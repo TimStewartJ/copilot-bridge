@@ -34,7 +34,7 @@ import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createDocsSnapshotStore } from "../docs-snapshot-store.js";
-import { createApiRouter } from "../api-router.js";
+import { createApiRouter, type ApiRouterOptions } from "../api-router.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
 import type { AppContext } from "../app-context.js";
@@ -327,7 +327,7 @@ export {
  * Uses in-memory SQLite, real stores (including docs), and a mock session manager.
  * Returns the app, AppContext, and db for direct access in assertions.
  */
-export function createTestApp(overrides?: Partial<AppContext>) {
+export function createTestApp(overrides?: Partial<AppContext>, routerOptions: ApiRouterOptions = {}) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
@@ -409,7 +409,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   });
 
   const app = express();
-  app.use("/api", createApiRouter(ctx));
+  app.use("/api", createApiRouter(ctx, routerOptions));
 
   const cleanup = registerTestAppCleanup(async () => {
     const cleanupErrors: unknown[] = [];

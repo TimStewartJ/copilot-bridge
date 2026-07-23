@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionStorageReader } from "../session-storage-reader.js";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
 import {
   createCopilotUsageTestHome,
@@ -579,6 +580,11 @@ describe("Schedule routes", () => {
       expect.objectContaining({
         sessionId: "sess-1",
         linkedTaskIds: [taskId],
+        diskSizeBytes: 0,
+        storageWarning: {
+          code: "missing",
+          message: "Session storage directory is missing.",
+        },
       }),
     ]));
     expect(res.body).toHaveProperty("offset", 0);
@@ -607,26 +613,58 @@ describe("Schedule routes", () => {
     expect(res.body.sessions).toHaveLength(2);
   });
 
-  it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {
+  it("GET /api/schedules/:id/sessions includes recursive session storage totals", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
-      taskId, name: "Repeated target", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+      taskId, name: "Storage totals", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
     });
-    ctx.sessionManager.listSessionsFromDisk = async () => [
+    const sessionId = "schedule-storage-session";
+    const sessionDir = join(ctx.copilotHome!, "session-state", sessionId);
+    mkdirSync(join(sessionDir, "files"), { recursive: true });
+    writeFileSync(join(sessionDir, "events.jsonl"), "events");
+    writeFileSync(join(sessionDir, "files", "artifact.txt"), "artifact");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, sessionId);
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId,
+      diskSizeBytes: "events".length + "artifact".length,
+    });
+    expect(res.body.sessions[0]).not.toHaveProperty("storageWarning");
+  });
+
+  it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {
+    const measureSession = vi.fn<SessionStorageReader["measureSession"]>().mockResolvedValue({
+      status: "complete",
+      diskSizeBytes: 17,
+    });
+    const sessionStorageReader: SessionStorageReader = { measureSession };
+    const local = createTestApp(undefined, { sessionStorageReader });
+    const localTask = local.ctx.taskStore.createTask("Repeated target task");
+    const schedule = local.ctx.scheduleStore.createSchedule({
+      taskId: localTask.id, name: "Repeated target", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    local.ctx.sessionManager.listSessionsFromDisk = async () => [
       { sessionId: "shared-session", summary: "Shared session" } as any,
     ];
 
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
 
-    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+    const res = await request(local.app).get(`/api/schedules/${schedule.id}/sessions`);
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(2);
     expect(res.body.sessions).toHaveLength(2);
     expect(res.body.sessions[0].sessionId).toBe("shared-session");
     expect(res.body.sessions[1].sessionId).toBe("shared-session");
+    expect(res.body.sessions[0].diskSizeBytes).toBe(17);
+    expect(res.body.sessions[1].diskSizeBytes).toBe(17);
     expect(res.body.sessions[0].runId).not.toBe(res.body.sessions[1].runId);
     expect(res.body.sessions[0].recordedAt).toEqual(expect.any(String));
     expect(res.body.sessions[1].recordedAt).toEqual(expect.any(String));
+    expect(measureSession).toHaveBeenCalledTimes(1);
+    expect(measureSession).toHaveBeenCalledWith("shared-session");
   });
 
   it("GET /api/schedules/:id/sessions includes runState while keeping busy compatibility", async () => {
