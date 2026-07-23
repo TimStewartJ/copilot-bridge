@@ -31,6 +31,11 @@ import {
 } from "./settings/settings-layout";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 
+type SettingsToast = {
+  message: string;
+  tone: "success" | "error";
+};
+
 function CategoryPanel({
   category,
   activeCategory,
@@ -69,12 +74,11 @@ function SettingsShellSkeleton() {
       label="Loading settings"
       className="flex-1 flex flex-col min-h-0"
     >
-      <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-secondary">
+      <div className="shrink-0 flex items-center px-6 py-4 border-b border-border bg-bg-secondary">
         <div className="flex items-center gap-1.5">
           <Settings size={16} className="text-text-muted" />
           <Skeleton height={18} width={76} shape="pill" />
         </div>
-        <Skeleton height={30} width={64} shape="rounded" />
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
@@ -142,7 +146,7 @@ export default function SettingsView() {
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<SettingsToast | null>(null);
   const [mcpSectionResetSignal, setMcpSectionResetSignal] = useState(0);
   const [tags, setTags] = useState<Tag[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -209,9 +213,9 @@ export default function SettingsView() {
       const updated = await settingsMutation.mutateAsync(draft);
       setSettings(updated);
       setDraft(structuredClone(updated));
-      showToast("Settings saved");
+      showToast("Settings saved", "success");
     } catch (err) {
-      showToast(`Save failed: ${err instanceof Error ? err.message : err}`);
+      showToast(`Save failed: ${err instanceof Error ? err.message : err}`, "error");
     } finally {
       setSaving(false);
     }
@@ -222,8 +226,8 @@ export default function SettingsView() {
     setMcpSectionResetSignal((signal) => signal + 1);
   };
 
-  const showToast = (msg: string) => {
-    setToast(msg);
+  const showToast = (message: string, tone: SettingsToast["tone"]) => {
+    setToast({ message, tone });
     setTimeout(() => setToast(null), 4000);
   };
 
@@ -240,38 +244,25 @@ export default function SettingsView() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Header */}
-      <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-secondary">
+      <div className="shrink-0 flex items-center px-6 py-4 border-b border-border bg-bg-secondary">
         <h1 className="text-lg font-medium text-text-primary flex items-center gap-1.5">
           <Settings size={16} className="text-text-muted" />
           Settings
         </h1>
-        <div className="flex items-center gap-2">
-          {hasChanges && (
-            <button
-              onClick={handleDiscard}
-              className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
-            >
-              Discard
-            </button>
-          )}
-          <button
-            onClick={handleSave}
-            disabled={!hasChanges || saving}
-            className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
-              hasChanges
-                ? "bg-accent text-white hover:bg-accent-hover"
-                : "bg-bg-elevated text-text-faint cursor-not-allowed"
-            }`}
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
       </div>
 
       {/* Toast */}
       {toast && (
-        <div className="mx-6 mt-3 rounded-md border border-success/25 bg-success/10 px-4 py-2 text-xs text-success">
-          {toast}
+        <div
+          role={toast.tone === "error" ? "alert" : "status"}
+          aria-live={toast.tone === "success" ? "polite" : undefined}
+          className={`mx-6 mt-3 rounded-md border px-4 py-2 text-xs ${
+            toast.tone === "error"
+              ? "border-error/25 bg-error/10 text-error"
+              : "border-success/25 bg-success/10 text-success"
+          }`}
+        >
+          {toast.message}
         </div>
       )}
 
