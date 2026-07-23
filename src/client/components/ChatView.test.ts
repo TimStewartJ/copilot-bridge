@@ -132,6 +132,7 @@ type FetchMessagesFastResult = {
 type RenderChatViewOptions = {
   activeSessionActivityAt?: string;
   busySignal?: number;
+  composerKey?: string;
   fetchMessagesFastResult?: Promise<FetchMessagesFastResult> | FetchMessagesFastResult;
   fetchSessionContextError?: Error;
   fetchSessionContextResult?: Promise<SessionContextResponse> | SessionContextResponse;
@@ -140,7 +141,14 @@ type RenderChatViewOptions = {
   streamOverrides?: Record<string, unknown>;
   waitForQuestion?: boolean;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
+  onCreateAndSend?: (
+    prompt: string,
+    attachments?: Attachment[],
+    mode?: "interactive" | "autopilot",
+  ) => Promise<void>;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
+  sessionId?: string | null;
+  materializingSessionId?: string | null;
   newWorkDisabled?: boolean;
   newWorkDisabledHint?: string;
 };
@@ -399,9 +407,11 @@ async function renderChatView(
           MemoryRouter,
           null,
           createElement(ChatView, {
-            composerKey: "composer-1",
-            sessionId: "session-1",
+            composerKey: nextOptions.composerKey ?? "composer-1",
+            sessionId: nextOptions.sessionId === undefined ? "session-1" : nextOptions.sessionId,
+            materializingSessionId: nextOptions.materializingSessionId,
             onMessageSent: vi.fn(),
+            onCreateAndSend: nextOptions.onCreateAndSend,
             onSubmitVoiceCapture: vi.fn(),
             busySignal: nextOptions.busySignal,
             activeSessionActivityAt: nextOptions.activeSessionActivityAt,
@@ -430,7 +440,7 @@ async function renderChatView(
     }
   }
 
-  return { dom, act: act as Act, cleanup, queryClient, render, sendMessageMock };
+  return { dom, act: act as Act, cleanup, queryClient, render, reconnectMock, sendMessageMock };
 }
 
 afterEach(() => {
@@ -1302,6 +1312,120 @@ describe("ChatView history pagination", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Could not load older messages: network unavailable") ?? false);
     } finally {
       errorSpy.mockRestore();
+      await cleanup();
+    }
+  });
+});
+
+describe("ChatView draft materialization", () => {
+  it("reconnects the created session when delivery resolves before the route transition commits", async () => {
+    const delivery = createDeferred<void>();
+    const onCreateAndSend = vi.fn(() => delivery.promise);
+    const { act, cleanup, reconnectMock, render } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend,
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      let sendPromise!: Promise<void>;
+      await act(async () => {
+        sendPromise = props.onSend("first message");
+        await waitTick();
+      });
+
+      await act(async () => {
+        delivery.resolve();
+        await sendPromise;
+        await waitTick();
+      });
+      await render({
+        composerKey: "created-session",
+        sessionId: "created-session",
+        materializingSessionId: "created-session",
+      });
+
+      expect(reconnectMock).toHaveBeenCalledWith("created-session");
+      expect(fetchMessagesFastMock).not.toHaveBeenCalled();
+    } finally {
+      delivery.resolve();
+      await cleanup();
+    }
+  });
+
+  it("loads an unrelated session normally while a draft session is materializing", async () => {
+    const delivery = createDeferred<void>();
+    const onCreateAndSend = vi.fn(() => delivery.promise);
+    const { act, cleanup, reconnectMock, render } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend,
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        void props.onSend("first message");
+        await waitTick();
+      });
+      await render({
+        composerKey: "draft:quickchat",
+        sessionId: null,
+        materializingSessionId: "created-session",
+      });
+      await render({
+        composerKey: "existing-session",
+        sessionId: "existing-session",
+        materializingSessionId: "created-session",
+      });
+
+      expect(reconnectMock).not.toHaveBeenCalledWith("existing-session");
+      expect(fetchMessagesFastMock).toHaveBeenCalledWith("existing-session", { limit: 50 });
+    } finally {
+      delivery.resolve();
+      await cleanup();
+    }
+  });
+
+  it("clears draft creation state and retains the failed message when creation is rejected", async () => {
+    const onCreateAndSend = vi.fn().mockRejectedValue(new Error("creation rejected"));
+    const { dom, act, cleanup } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend,
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        await props.onSend("failed first message");
+        await waitTick();
+      });
+
+      const failedBubble = findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("failed first message")
+      ));
+      expect(failedBubble?.getAttribute("data-delivery-state")).toBe("failed");
+      expect(failedBubble?.getAttribute("data-delivery-error")).toBe("creation rejected");
+      expect(dom.container.textContent).not.toContain("Creating session");
+    } finally {
       await cleanup();
     }
   });

@@ -2149,6 +2149,7 @@ function SessionRoute({
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
+  const [materializingSessionId, setMaterializingSessionId] = useState<string | null>(null);
 
   const draftRouteKey = getDraftComposerKey(taskId);
   const isDraftRoute = rawSessionId === "new";
@@ -2175,6 +2176,11 @@ function SessionRoute({
       : `/sessions/${validMappedDraftSessionId}`;
     navigate(path, { replace: true });
   }, [isDraftRoute, navigate, taskId, validMappedDraftSessionId]);
+
+  useEffect(() => {
+    if (!materializingSessionId || rawSessionId !== materializingSessionId) return;
+    setMaterializingSessionId(null);
+  }, [materializingSessionId, rawSessionId]);
 
   const handleDraftChange = useCallback(
     (text: string, attachments?: import("./api").Attachment[]) => {
@@ -2203,6 +2209,7 @@ function SessionRoute({
     mode?: SendMode,
   ) => {
     const newSessionId = await materializeSession(taskId);
+    setMaterializingSessionId(newSessionId);
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
@@ -2212,6 +2219,7 @@ function SessionRoute({
       attachments,
       mode,
       onRejected: async () => {
+        setMaterializingSessionId((current) => current === newSessionId ? null : current);
         await cleanupFailedFirstSendSession(newSessionId, taskId);
         setDraft(draftRouteKey, prompt, attachments);
         navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new", { replace: true });
@@ -2239,6 +2247,7 @@ function SessionRoute({
       // inside ChatView so draft→real transitions can still stay mounted.
       composerKey={composerKey}
       sessionId={sessionId}
+      materializingSessionId={materializingSessionId}
       hasPlan={hasPlan}
       onMessageSent={handleMessageSent}
       onRenderedReadThrough={onRenderedReadThrough}

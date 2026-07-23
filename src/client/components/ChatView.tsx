@@ -73,6 +73,7 @@ type PendingStatusTone = "sending" | "thinking" | "creating";
 interface ChatViewProps {
   composerKey: string;
   sessionId: string | null;
+  materializingSessionId?: string | null;
   hasPlan?: boolean;
   onMessageSent: () => void;
   draft?: Draft | null;
@@ -479,6 +480,7 @@ function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps
 export default function ChatView({
   composerKey,
   sessionId,
+  materializingSessionId = null,
   hasPlan,
   onMessageSent,
   draft,
@@ -540,6 +542,7 @@ export default function ChatView({
   const historyLastVisibleActivityAtRef = useRef<string | undefined>(undefined);
   const entriesRef = useRef<ChatEntry[]>([]);
   const sessionIdRef = useRef<string | null>(sessionId);
+  const materializingSessionIdRef = useRef<string | null>(materializingSessionId);
   const activeSessionActivityAtRef = useRef<string | undefined>(activeSessionActivityAt);
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
@@ -574,6 +577,7 @@ export default function ChatView({
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<(opts?: { background?: boolean; replace?: boolean }) => void>(() => {});
   activeSessionActivityAtRef.current = activeSessionActivityAt;
+  materializingSessionIdRef.current = materializingSessionId;
 
   useEffect(() => () => {
     if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
@@ -907,7 +911,9 @@ export default function ChatView({
   useEffect(() => {
     const prevSession = prevSessionRef.current;
     const prevComposerKey = prevComposerKeyRef.current;
-    const wasDraft = prevSession === null && creating;
+    const transitionedFromDraft = prevSession === null;
+    const wasMaterializedDraft = transitionedFromDraft
+      && sessionId === materializingSessionIdRef.current;
     const draftComposerChanged = prevSession === null
       && prevComposerKey !== undefined
       && prevComposerKey !== composerKey;
@@ -962,7 +968,7 @@ export default function ChatView({
     }
 
     // Transitioning from draft → real session: the authoritative stream now owns the user entry.
-    if (wasDraft) {
+    if (wasMaterializedDraft) {
       applyHistory([], {
         ownerSessionId: sessionId,
         firstItemIndex: 0,
@@ -973,6 +979,9 @@ export default function ChatView({
       setCreating(false);
       reconnect(sessionId);
       return;
+    }
+    if (transitionedFromDraft) {
+      setCreating(false);
     }
     // Reset stick-to-bottom so the new session starts following output,
     // regardless of scroll position in the previous session.
@@ -1533,8 +1542,7 @@ export default function ChatView({
         ...(mode === undefined ? {} : { mode }),
         error: errorMessage,
       });
-    } finally {
-      if (ownerSessionId === null && sessionIdRef.current === null) {
+      if (ownerSessionId === null) {
         setCreating(false);
       }
     }
