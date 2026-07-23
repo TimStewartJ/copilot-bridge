@@ -130,8 +130,6 @@ export interface ReadCopilotUsageSummaryOptions {
   sdkModels?: readonly CopilotModelMetadataForPricing[];
 }
 
-export type CopilotUsageModelMetadataProvider = () => Promise<readonly CopilotModelMetadataForPricing[]>;
-
 export interface CopilotUsageReader {
   readSummary(options?: { refresh?: boolean; sessionIds?: readonly string[] }): Promise<CopilotUsageSummary>;
   invalidate(): void;

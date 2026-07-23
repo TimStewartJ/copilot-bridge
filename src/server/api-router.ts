@@ -61,10 +61,10 @@ import {
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
+import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
-import { isCopilotModelPriceable, type CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { isCopilotContextTier } from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
 import {
@@ -196,163 +196,6 @@ interface DashboardChecklistItem extends ChecklistItem {
 interface DashboardChecklistData {
   openChecklistItems: DashboardChecklistItem[];
   completedChecklistItems: DashboardChecklistItem[];
-}
-
-function toCopilotModelMetadataForPricing(value: unknown): CopilotModelMetadataForPricing | null {
-  if (!isRecord(value)) return null;
-  let record = value;
-  if (typeof record.id !== "string" && typeof record.toJSON === "function") {
-    const serialized = record.toJSON();
-    if (isRecord(serialized)) record = serialized;
-  }
-  if (typeof record.id !== "string") return null;
-  const id = record.id.trim();
-  if (!id) return null;
-  const name = typeof record.name === "string" ? record.name.trim() : "";
-  const billing = isRecord(record.billing) ? sanitizeCopilotBilling(record.billing) : undefined;
-  const capabilities = isRecord(record.capabilities) ? sanitizeCopilotCapabilities(record.capabilities) : undefined;
-  return {
-    id,
-    ...(name ? { name } : {}),
-    ...(billing ? { billing } : {}),
-    ...(capabilities ? { capabilities } : {}),
-  };
-}
-
-function sanitizeCopilotBilling(record: Record<string, unknown>): CopilotModelMetadataForPricing["billing"] | undefined {
-  const multiplier = typeof record.multiplier === "number" && Number.isFinite(record.multiplier)
-    ? record.multiplier
-    : undefined;
-  const tokenPrices = isRecord(record.tokenPrices) ? sanitizeCopilotTokenPrices(record.tokenPrices) : undefined;
-  if (multiplier === undefined && !tokenPrices) return undefined;
-  return {
-    ...(multiplier !== undefined ? { multiplier } : {}),
-    ...(tokenPrices ? { tokenPrices } : {}),
-  };
-}
-
-function sanitizeCopilotTokenPrices(record: Record<string, unknown>): NonNullable<NonNullable<CopilotModelMetadataForPricing["billing"]>["tokenPrices"]> | undefined {
-  const tokenPrices = {
-    ...copyFiniteNumber(record, "inputPrice"),
-    ...copyFiniteNumber(record, "outputPrice"),
-    ...copyFiniteNumber(record, "cachePrice"),
-    ...copyFiniteNumber(record, "batchSize"),
-    ...copyFiniteNumber(record, "contextMax"),
-    ...(isRecord(record.longContext) ? { longContext: sanitizeCopilotTokenPrices(record.longContext) } : {}),
-  };
-  return Object.keys(tokenPrices).length > 0 ? tokenPrices : undefined;
-}
-
-function sanitizeCopilotCapabilities(record: Record<string, unknown>): CopilotModelMetadataForPricing["capabilities"] | undefined {
-  const limits = isRecord(record.limits)
-    ? {
-        ...copyFiniteNumber(record.limits, "max_context_window_tokens"),
-        ...copyFiniteNumber(record.limits, "max_prompt_tokens"),
-        ...copyFiniteNumber(record.limits, "max_output_tokens"),
-      }
-    : undefined;
-  if (!limits || Object.keys(limits).length === 0) return undefined;
-  return { limits };
-}
-
-function copyFiniteNumber<const Key extends string>(record: Record<string, unknown>, key: Key): { [K in Key]?: number } {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? { [key]: value } as { [K in Key]?: number } : {};
-}
-
-function sanitizeCopilotModelMetadataForPricing(value: unknown): readonly CopilotModelMetadataForPricing[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map(toCopilotModelMetadataForPricing)
-    .filter((model): model is CopilotModelMetadataForPricing => model !== null);
-}
-
-async function listCopilotModelMetadataForPricing(
-  ctx: AppContext,
-): Promise<readonly CopilotModelMetadataForPricing[]> {
-  const priceStore = ctx.copilotModelPriceStore;
-
-  let liveModels: readonly CopilotModelMetadataForPricing[] | undefined;
-  try {
-    liveModels = sanitizeCopilotModelMetadataForPricing(await ctx.sessionManager.listModels());
-  } catch (error) {
-    console.warn("[copilot-usage] listModels() failed; falling back to cached model prices.", error);
-    liveModels = undefined;
-  }
-
-  if (!priceStore) {
-    return liveModels ?? [];
-  }
-
-  // When the live fetch succeeds it is authoritative. Cache writes/reads are
-  // best-effort and must never mask successfully fetched live metadata.
-  if (liveModels && liveModels.length > 0) {
-    let cachedModels: readonly CopilotModelMetadataForPricing[] = [];
-    try {
-      priceStore.upsertModelPrices(liveModels);
-    } catch (error) {
-      console.warn("[copilot-usage] Failed to persist live model prices to cache.", error);
-    }
-    try {
-      cachedModels = priceStore.listModelPrices();
-    } catch (error) {
-      console.warn("[copilot-usage] Failed to read cached model prices.", error);
-    }
-    return mergeLiveAndCachedModelPrices(liveModels, cachedModels);
-  }
-
-  // Live fetch failed or returned nothing: serve last-known-good cache.
-  try {
-    return priceStore.listModelPrices();
-  } catch (error) {
-    console.warn("[copilot-usage] Failed to read cached model prices during outage.", error);
-    return liveModels ?? [];
-  }
-}
-
-function listCachedCopilotModelMetadataForPricing(
-  ctx: AppContext,
-): readonly CopilotModelMetadataForPricing[] | undefined {
-  try {
-    return ctx.copilotModelPriceStore?.listModelPrices();
-  } catch (error) {
-    console.warn("[copilot-usage] Failed to hydrate cached model prices.", error);
-    return undefined;
-  }
-}
-
-// Live-first merge that yields at most one entry per model id, with explicit
-// precedence:
-//   1. a priceable live entry (freshest, always wins);
-//   2. else a priceable cached entry (last-known-good — keeps a model priced when
-//      a transient live response drops its billing data, and keeps retired models
-//      priced after they leave the live list);
-//   3. else the live entry itself (unpriceable, retained only so the resolver can
-//      still map an opaque observed id to its display name).
-// Live priceable entries are emitted first so display-name/variant matching
-// prefers live over cache on name collisions.
-function mergeLiveAndCachedModelPrices(
-  liveModels: readonly CopilotModelMetadataForPricing[],
-  cachedModels: readonly CopilotModelMetadataForPricing[],
-): readonly CopilotModelMetadataForPricing[] {
-  const byId = new Map<string, CopilotModelMetadataForPricing>();
-  const order: string[] = [];
-  const remember = (model: CopilotModelMetadataForPricing): void => {
-    if (!byId.has(model.id)) order.push(model.id);
-    byId.set(model.id, model);
-  };
-
-  for (const model of liveModels) {
-    if (isCopilotModelPriceable(model)) remember(model);
-  }
-  for (const model of cachedModels) {
-    if (!byId.has(model.id) && isCopilotModelPriceable(model)) remember(model);
-  }
-  for (const model of liveModels) {
-    if (!byId.has(model.id)) remember(model);
-  }
-
-  return order.map((id) => byId.get(id)!);
 }
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
@@ -1115,13 +958,19 @@ export function createApiRouter(
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
   const sessionStorageReader = options.sessionStorageReader
     ?? createSessionStorageReader(join(getCopilotHome(ctx), "session-state"));
-  const copilotUsageReader = ctx.copilotUsageReader ?? createIncrementalCopilotUsageReader({
-    copilotHome: getCopilotHome(ctx),
-    store: ctx.copilotUsageStore,
-    sdkModels: listCachedCopilotModelMetadataForPricing(ctx),
-    modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
-  });
-  ctx.copilotUsageReader ??= copilotUsageReader;
+  let copilotUsageReader = ctx.copilotUsageReader;
+  if (!copilotUsageReader) {
+    const copilotModelPriceLoader = createCopilotModelPriceLoader({
+      loadModels: () => ctx.sessionManager.listModels(),
+      store: ctx.copilotModelPriceStore,
+    });
+    copilotUsageReader = createIncrementalCopilotUsageReader({
+      copilotHome: getCopilotHome(ctx),
+      store: ctx.copilotUsageStore,
+      modelPriceLoader: copilotModelPriceLoader,
+    });
+    ctx.copilotUsageReader = copilotUsageReader;
+  }
   copilotUsageReader.startBackgroundRefresh?.();
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 

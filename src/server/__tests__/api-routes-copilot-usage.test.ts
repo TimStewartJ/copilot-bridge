@@ -3,6 +3,7 @@ import {
   COPILOT_USAGE_PARSER_VERSION,
   scanCopilotUsageSession,
 } from "../copilot-usage.js";
+import { createCopilotModelPriceStore } from "../copilot-model-price-store.js";
 import { createCopilotUsageStore } from "../copilot-usage-store.js";
 import { openMemoryDatabase } from "../db.js";
 import type { serializeCopilotUsageSummary } from "../copilot-usage-serializer.js";
@@ -644,6 +645,72 @@ describe("Copilot usage routes", () => {
     // The newer live price (30) must win over the previously cached price (15).
     expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
     expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(30);
+  });
+
+  it("keeps the incremental index scanning until delayed live prices are published", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T16:30:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    const usageDb = openMemoryDatabase();
+    const copilotUsageStore = createCopilotUsageStore(usageDb);
+    const copilotModelPriceStore = createCopilotModelPriceStore(usageDb);
+    copilotModelPriceStore.upsertModelPrices([
+      sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4"),
+    ]);
+    let resolveModels: ((models: unknown[]) => void) | undefined;
+    const listModels = vi.fn(() => new Promise<unknown[]>((resolve) => {
+      resolveModels = resolve;
+    }));
+    ({ app } = createTestApp({
+      copilotHome,
+      copilotUsageStore,
+      copilotModelPriceStore,
+      sessionManager: { ...createMockSessionManager(), listModels },
+    }));
+
+    try {
+      const initial = await request(app).get("/api/copilot-usage");
+      expect(initial.status).toBe(200);
+      expect(initial.body.index.state).toBe("scanning");
+
+      let intermediate: typeof initial | undefined;
+      await vi.waitFor(async () => {
+        intermediate = await request(app).get("/api/copilot-usage");
+        expect(intermediate.body.index).toMatchObject({
+          state: "scanning",
+          sessionsProcessed: 1,
+          cachedSessions: 1,
+        });
+        expect(intermediate.body.models[0].estimatedCostUsd).toBeCloseTo(15);
+      }, { timeout: 5_000 });
+      expect(listModels).toHaveBeenCalledTimes(1);
+
+      resolveModels?.([
+        sdkPriceableModel("gpt-5.4", { input: 2.5, output: 30, cache: 0.25 }, "GPT-5.4"),
+      ]);
+
+      let complete: typeof initial | undefined;
+      await vi.waitFor(async () => {
+        complete = await request(app).get("/api/copilot-usage");
+        expect(complete.body.index.state).toBe("idle");
+        expect(complete.body.models[0].estimatedCostUsd).toBeCloseTo(30);
+      }, { timeout: 5_000 });
+      expect(complete?.body.totals.unpricedModelCount).toBe(0);
+    } finally {
+      usageDb.close();
+    }
   });
 
   it("returns cached staging usage immediately while refresh=1 scans and publishes updates progressively", async () => {
