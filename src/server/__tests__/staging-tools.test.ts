@@ -1162,6 +1162,97 @@ describe("staging tools", () => {
     expect(String(deployStampWrite?.[1])).toContain('"command": "npm run check:deploy"');
   });
 
+  it("unstashes and blocks merge when the prepared release candidate differs from the validated commit", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    const validatedSha = "1111111111111111111111111111111111111111";
+    const releaseCandidateSha = "2222222222222222222222222222222222222222";
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+    prepareReleaseSlotMock.mockImplementationOnce(async (options) => ({
+      ok: true as const,
+      manifest: {
+        version: 1,
+        id: "release-slot-mismatched",
+        root: join(options.dataDir, "release-slots", "release-slot-mismatched"),
+        commitSha: releaseCandidateSha,
+        source: options.source,
+        dependencyHash: "same-hash",
+        createdAt: "2026-05-18T20:00:00.000Z",
+        validationMode: options.validationMode,
+      },
+    }));
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (cmd === "git stash --include-untracked") return "Saved working directory and index state WIP on main\n";
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD" && cwd === stagingDir) return `${validatedSha}\n`;
+      if (cmd === "git stash pop") return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy mismatched release candidate" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Release candidate does not match the validated staging commit.");
+    expect(result.textResultForLlm).toContain(validatedSha);
+    expect(result.textResultForLlm).toContain(releaseCandidateSha);
+    expect(result.textResultForLlm).toContain("Production was not merged and restart signaling was blocked.");
+    expect(result.textResultForLlm).toContain("staging worktree is still intact for retry-after-fix");
+    expect(result.toolTelemetry).toEqual({
+      bridge: {
+        stagingDir,
+        branch: "staging/preview-deploy",
+        prodBranch: "main",
+        validatedCommitSha: validatedSha,
+        releaseCandidateSha,
+      },
+    });
+    expect(prepareReleaseSlotMock).toHaveBeenCalledTimes(1);
+    expect(prepareReleaseSlotMock).toHaveBeenCalledWith(expect.objectContaining({ commitSha: validatedSha }));
+
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    const stashIndex = commands.indexOf("git stash --include-untracked");
+    const unstashIndex = commands.indexOf("git stash pop");
+    expect(stashIndex).toBeGreaterThan(-1);
+    expect(unstashIndex).toBeGreaterThan(stashIndex);
+    expect(execSyncMock.mock.calls[unstashIndex]?.[1]?.cwd).toBe(execSyncMock.mock.calls[stashIndex]?.[1]?.cwd);
+    const headReads = execSyncMock.mock.calls.filter(([cmd]) => String(cmd) === "git rev-parse HEAD");
+    expect(headReads).toHaveLength(1);
+    expect(headReads[0]?.[1]?.cwd).toBe(stagingDir);
+    expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
+    expect(commands).not.toContain("git push origin main");
+    expect(commands).not.toContain(`git worktree remove "${stagingDir}" --force`);
+    expect(commands).not.toContain('git branch -D "staging/preview-deploy"');
+    expect(commands).not.toContain("git worktree prune");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
+    expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
+    expect(existsSync(stagingDir)).toBe(true);
+    expect(readFileSync(join(stagingDir, ".gitignore"), "utf-8")).toBe("node_modules\n");
+  });
+
   it("resets production and blocks push when the merged commit differs from the validated candidate", async () => {
     const mod = await loadStagingToolsModule();
     const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
