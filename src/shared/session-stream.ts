@@ -6,6 +6,14 @@ export interface SessionHistoryCoverage {
   latestTerminalEventId?: string;
 }
 
+export interface ProjectedAssistantEntry {
+  id: string;
+  content: string;
+  turnId?: string;
+  sourceEventId?: string;
+  timestamp?: string;
+}
+
 export interface SyntheticTerminalOverlay {
   type: "done" | "error" | "aborted" | "shutdown";
   runId: string;
@@ -15,4 +23,5 @@ export interface SyntheticTerminalOverlay {
   message?: string;
   timestamp?: string;
   terminalCompletion?: TerminalCompletion;
+  finalAssistantEntry?: ProjectedAssistantEntry;
 }

@@ -2217,7 +2217,7 @@ describe("SessionManager run state", () => {
     const sessionStateDir = join(tmpDir, "session-state", sessionId);
     mkdirSync(sessionStateDir, { recursive: true });
 
-    const { manager, telemetryStore } = createManager({ copilotHome: tmpDir, telemetry: true });
+    const { manager, telemetryStore, eventBusRegistry } = createManager({ copilotHome: tmpDir, telemetry: true });
     const initial = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(initial.session);
     manager.backend = { resumeSession };
@@ -2242,8 +2242,18 @@ describe("SessionManager run state", () => {
 
     writeFileSync(join(sessionStateDir, "events.jsonl"), [
       JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 500).toISOString(), data: { content: "hello" } }),
-      JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "done from turn_end" } }),
-      JSON.stringify({ type: "assistant.turn_end", timestamp: new Date(baseTime + 2_000).toISOString(), data: { turnId: "1" } }),
+      JSON.stringify({
+        id: "assistant-event-persisted-recovery",
+        type: "assistant.message",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        data: { content: "done from turn_end" },
+      }),
+      JSON.stringify({
+        id: "terminal-event-persisted-recovery",
+        type: "assistant.turn_end",
+        timestamp: new Date(baseTime + 2_000).toISOString(),
+        data: { turnId: "1" },
+      }),
     ].join("\n") + "\n");
 
     await vi.advanceTimersByTimeAsync(300_000);
@@ -2252,6 +2262,15 @@ describe("SessionManager run state", () => {
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
     expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(eventBusRegistry.getBus(sessionId)?.getSnapshot()).toMatchObject({
+      terminalEventId: "terminal-event-persisted-recovery",
+      terminalAssistantEventId: "assistant-event-persisted-recovery",
+      finalAssistantEntry: {
+        id: "assistant-event-persisted-recovery",
+        sourceEventId: "assistant-event-persisted-recovery",
+        content: "done from turn_end",
+      },
+    });
     expect(latestSpanMetadata(telemetryStore, "session.run.stalled", sessionId)).toMatchObject({
       previousRunState: "busy",
       watchdogTimeoutMs: 300_000,

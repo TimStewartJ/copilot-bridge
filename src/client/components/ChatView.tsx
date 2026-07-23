@@ -36,7 +36,6 @@ import useLongPressMenu from "../hooks/useLongPressMenu";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
-import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
 import ElicitationCard from "./ElicitationCard";
@@ -526,7 +525,6 @@ export default function ChatView({
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsSupported, setSlashCommandsSupported] = useState(false);
-  const [historyCoverage, setHistoryCoverage] = useState<SessionHistoryCoverage>({});
   const slashCommandFetchKeyRef = useRef<string | null>(null);
   const {
     bind: bindMessageMenu,
@@ -668,22 +666,16 @@ export default function ChatView({
     abortSession,
     reconnect,
     activeTurnId,
-    terminalEventId,
-  } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, historyCoverage);
+  } = useSessionStream(sessionId, handleStreamSettled, onMessageSent);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   const canonicalEntryKeys = useMemo(
     () => new Set(entries.flatMap(getCanonicalEntryReconciliationKeys)),
     [entries],
   );
-  const coveredTerminalOverlayId = terminalEventId
-    && historyCoverage.latestTerminalEventId === terminalEventId
-    ? `live-terminal-${terminalEventId}`
-    : undefined;
   const visibleStreamLiveEntries = useMemo(() => streamLiveEntries.filter((entry) => {
-    if (entry.id === coveredTerminalOverlayId) return false;
     const key = getLiveEntryReconciliationKey(entry);
     return !key || !canonicalEntryKeys.has(key);
-  }), [canonicalEntryKeys, coveredTerminalOverlayId, streamLiveEntries]);
+  }), [canonicalEntryKeys, streamLiveEntries]);
 
   useLayoutEffect(() => {
     if (!sessionId) return;
@@ -949,7 +941,6 @@ export default function ChatView({
       setLoadMoreError(null);
       setShowJumpToLatest(false);
       setMcpStatus([]);
-      setHistoryCoverage({});
       setManualMcpOverride(null);
       cancelFollowScroll();
       clearProgrammaticScroll();
@@ -1013,7 +1004,7 @@ export default function ChatView({
 
       // Phase 1: Fast load messages from disk — don't wait for MCP status
       fetchMessagesFast(sessionId, { limit: INITIAL_PAGE_SIZE })
-        .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt, coverage }) => {
+        .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt }) => {
           if (controller.signal.aborted) return;
           if (requestId !== loadRequestIdRef.current) {
             return;
@@ -1073,7 +1064,6 @@ export default function ChatView({
               return;
             }
           }
-          setHistoryCoverage(coverage ?? {});
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);

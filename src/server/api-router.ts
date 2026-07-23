@@ -9,6 +9,7 @@ import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
+import { createProjectedFinalAssistantEntry } from "./event-bus.js";
 import {
   createServerShutdownCoordinator,
   type ServerShutdownCoordinator,
@@ -2732,6 +2733,21 @@ export function createApiRouter(
     if (!bus) {
       const terminalOverlay = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
       if (terminalOverlay) {
+        const finalAssistantEntry = terminalOverlay.finalAssistantEntry
+          ?? createProjectedFinalAssistantEntry({
+            runId: terminalOverlay.runId,
+            terminalType: terminalOverlay.type,
+            ...(terminalOverlay.turnId ? { turnId: terminalOverlay.turnId } : {}),
+            ...(terminalOverlay.assistantSourceEventId
+              ? { assistantSourceEventId: terminalOverlay.assistantSourceEventId }
+              : {}),
+            ...(terminalOverlay.content ? { content: terminalOverlay.content } : {}),
+            ...(terminalOverlay.message ? { message: terminalOverlay.message } : {}),
+            ...(terminalOverlay.timestamp ? { timestamp: terminalOverlay.timestamp } : {}),
+            ...(terminalOverlay.terminalCompletion
+              ? { terminalCompletion: terminalOverlay.terminalCompletion }
+              : {}),
+          });
         sendEvent({
           type: "snapshot",
           runId: terminalOverlay.runId,
@@ -2753,6 +2769,7 @@ export function createApiRouter(
           finalContent: terminalOverlay.content,
           errorMessage: terminalOverlay.message,
           terminalCompletion: terminalOverlay.terminalCompletion,
+          finalAssistantEntry,
         });
         return;
       }

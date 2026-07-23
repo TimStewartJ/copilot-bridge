@@ -21,6 +21,7 @@ import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
+import type { ProjectedAssistantEntry } from "../shared/session-stream.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
 
 export type {
@@ -102,6 +103,7 @@ export interface BusSnapshot {
   errorMessage?: string;
   terminalEventId?: string;
   terminalAssistantEventId?: string;
+  finalAssistantEntry?: ProjectedAssistantEntry;
   turnId?: string;
   contextSummary: SessionContextSummary | null;
   /** The user prompt that initiated this turn (for reconnect recovery) */
@@ -162,8 +164,50 @@ interface ElicitationCanceledOptions {
   timestamp?: string;
 }
 
+export interface TerminalAssistantProjectionOptions {
+  runId: string;
+  terminalType: "done" | "error" | "aborted" | "shutdown";
+  turnId?: string;
+  terminalSourceEventId?: string;
+  assistantSourceEventId?: string;
+  content?: string;
+  message?: string;
+  timestamp?: string;
+  terminalCompletion?: TerminalCompletion;
+}
+
+export function createProjectedFinalAssistantEntry(
+  options: TerminalAssistantProjectionOptions,
+): ProjectedAssistantEntry | undefined {
+  if (options.terminalCompletion) return undefined;
+  const content = options.terminalType === "error"
+    ? `⚠️ Error: ${options.message || "Unknown session error"}`
+    : options.content;
+  if (!content) return undefined;
+  const formattedContent = options.terminalType === "aborted"
+    ? `${content}\n\n*(stopped)*`
+    : options.terminalType === "shutdown"
+      ? `${content}\n\n*(interrupted)*`
+      : content;
+  const sourceEventId = options.assistantSourceEventId ?? options.terminalSourceEventId;
+  return {
+    id: sourceEventId ?? `terminal-${options.runId}`,
+    content: formattedContent,
+    ...(options.turnId ? { turnId: options.turnId } : {}),
+    ...(sourceEventId ? { sourceEventId } : {}),
+    ...(options.timestamp ? { timestamp: options.timestamp } : {}),
+  };
+}
+
 function getStreamTurnId(event: StreamEvent): string | undefined {
   return typeof event.turnId === "string" && event.turnId ? event.turnId : undefined;
+}
+
+function isTerminalStreamEvent(event: StreamEvent): boolean {
+  return event.type === "done"
+    || event.type === "error"
+    || event.type === "aborted"
+    || event.type === "shutdown";
 }
 
 function isTurnScopedStreamEvent(event: StreamEvent): boolean {
@@ -272,6 +316,7 @@ export class SessionEventBus {
   private terminalTimestamp?: string;
   private terminalEventId?: string;
   private terminalAssistantEventId?: string;
+  private finalAssistantEntry?: ProjectedAssistantEntry;
   private mcpServers: unknown[] = [];
   private currentTurnId?: string;
   private terminalTurnId?: string;
@@ -442,12 +487,7 @@ export class SessionEventBus {
     } else if (this.currentTurnId && isTurnScopedStreamEvent(event) && !getStreamTurnId(event)) {
       event = { ...event, turnId: this.currentTurnId };
     }
-    if (
-      event.type === "done"
-      || event.type === "error"
-      || event.type === "aborted"
-      || event.type === "shutdown"
-    ) {
+    if (isTerminalStreamEvent(event)) {
       this.finalizePendingUserMessages();
     }
 
@@ -742,6 +782,25 @@ export class SessionEventBus {
         break;
     }
 
+    if (isTerminalStreamEvent(event) && this.terminalType) {
+      this.finalAssistantEntry = createProjectedFinalAssistantEntry({
+        runId: this.runId,
+        terminalType: this.terminalType,
+        ...(this.terminalTurnId ? { turnId: this.terminalTurnId } : {}),
+        ...(this.terminalEventId ? { terminalSourceEventId: this.terminalEventId } : {}),
+        ...(this.terminalAssistantEventId
+          ? { assistantSourceEventId: this.terminalAssistantEventId }
+          : {}),
+        ...(this.finalContent ? { content: this.finalContent } : {}),
+        ...(this.errorMessage ? { message: this.errorMessage } : {}),
+        ...(this.terminalTimestamp ? { timestamp: this.terminalTimestamp } : {}),
+        ...(this.terminalCompletion ? { terminalCompletion: this.terminalCompletion } : {}),
+      });
+      if (this.finalAssistantEntry) {
+        event = { ...event, finalAssistantEntry: { ...this.finalAssistantEntry } };
+      }
+    }
+
     this.broadcast(event);
   }
 
@@ -774,6 +833,9 @@ export class SessionEventBus {
       errorMessage: this.errorMessage,
       terminalEventId: this.terminalEventId,
       terminalAssistantEventId: this.terminalAssistantEventId,
+      finalAssistantEntry: this.finalAssistantEntry
+        ? { ...this.finalAssistantEntry }
+        : undefined,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
       pendingPrompt: this.pendingPrompt,
@@ -831,6 +893,7 @@ export class SessionEventBus {
     this.terminalTimestamp = undefined;
     this.terminalEventId = undefined;
     this.terminalAssistantEventId = undefined;
+    this.finalAssistantEntry = undefined;
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
     this.pendingTerminalCompletion = undefined;
@@ -849,6 +912,7 @@ export class SessionEventBus {
     this.terminalTimestamp = undefined;
     this.terminalEventId = undefined;
     this.terminalAssistantEventId = undefined;
+    this.finalAssistantEntry = undefined;
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
     this.pendingTerminalCompletion = undefined;

@@ -14,7 +14,6 @@ import type {
 } from "./api";
 import { API_BASE, reportTiming, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
-import type { SessionHistoryCoverage } from "../shared/session-stream.js";
 import type { SendMode } from "../shared/send-mode.js";
 import {
   isTerminalCompletionToolName,
@@ -74,7 +73,6 @@ export interface StreamState {
   contextSummary: SessionContextSummary | null;
   pendingOrigin: PendingOrigin;
   runMode?: SendMode;
-  terminalEventId?: string;
   activeTurnId?: string;
 }
 
@@ -481,12 +479,6 @@ function getStreamContextSummary(event: Record<string, unknown>): SessionContext
     ?? normalizeStreamContextSummary(event.context);
 }
 
-function formatTerminalContent(content: string, terminalType?: string): string {
-  if (terminalType === "aborted") return `${content}\n\n*(stopped)*`;
-  if (terminalType === "shutdown") return `${content}\n\n*(interrupted)*`;
-  return content;
-}
-
 function createAssistantEntry(
   content: string,
   options: {
@@ -494,62 +486,29 @@ function createAssistantEntry(
     turnId?: string;
     sourceEventId?: string;
     timestamp?: string;
-    terminalType?: string;
   },
 ): ChatEntry {
   return {
     id: options.id,
     type: "message",
     role: "assistant",
-    content: formatTerminalContent(content, options.terminalType),
+    content,
     ...(options.turnId ? { turnId: options.turnId } : {}),
     ...(options.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
     ...(options.timestamp ? { timestamp: options.timestamp } : {}),
   };
 }
 
-function reconcileTerminalAssistantEntry(
-  entries: ChatEntry[],
-  content: string,
-  options: {
-    assistantSourceEventId?: string;
-    fallbackId: string;
-    turnId?: string;
-    terminalSourceEventId?: string;
-    timestamp?: string;
-    terminalType?: string;
-  },
-): ChatEntry[] {
-  if (options.assistantSourceEventId) {
-    const index = entries.findIndex((entry) => (
-      entry.type !== "tool"
-      && entry.type !== "visual"
-      && entry.type !== "completion"
-      && entry.type !== "skill"
-      && entry.role === "assistant"
-      && entry.sourceEventId === options.assistantSourceEventId
-    ));
-    if (index >= 0) {
-      return entries.map((entry, entryIndex) => entryIndex === index
-        ? {
-            ...entry,
-            content: formatTerminalContent(content, options.terminalType),
-            turnId: entry.turnId ?? options.turnId,
-          }
-        : entry);
-    }
+function createProjectedAssistantEntry(value: unknown): ChatEntry | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
+    return null;
   }
-
-  const fallbackSourceEventId = options.assistantSourceEventId ?? options.terminalSourceEventId;
-  return appendUniqueEntry(entries, createAssistantEntry(content, {
-    id: options.assistantSourceEventId
-      ? `live-assistant-${options.assistantSourceEventId}`
-      : options.fallbackId,
-    turnId: options.turnId,
-    sourceEventId: fallbackSourceEventId,
-    timestamp: options.timestamp,
-    terminalType: options.terminalType,
-  }));
+  return createAssistantEntry(value.content, {
+    id: `live-assistant-${value.id}`,
+    turnId: optionalString(value.turnId),
+    sourceEventId: optionalString(value.sourceEventId),
+    timestamp: optionalString(value.timestamp),
+  });
 }
 
 function createUserEntry(value: unknown): ChatEntry | null {
@@ -619,29 +578,13 @@ function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: str
 
   if (!event.complete) return result;
   const sourceEventId = optionalString(event.terminalEventId);
-  const assistantSourceEventId = optionalString(event.terminalAssistantEventId);
   const timestamp = optionalString(event.terminalTimestamp);
   const completion = normalizeTerminalCompletion(event.terminalCompletion);
   if (completion) {
     result.push(createCompletionEntry(completion, timestamp, turnId, sourceEventId));
-  } else if (typeof event.finalContent === "string" && event.finalContent) {
-    return reconcileTerminalAssistantEntry(result, event.finalContent, {
-      assistantSourceEventId,
-      fallbackId: sourceEventId
-        ? `live-terminal-${sourceEventId}`
-        : `live-terminal-${optionalString(event.runId) ?? "synthetic"}`,
-      turnId,
-      terminalSourceEventId: sourceEventId,
-      timestamp,
-      terminalType: optionalString(event.terminalType),
-    });
-  } else if (typeof event.errorMessage === "string" && event.errorMessage) {
-    result.push(createAssistantEntry(`⚠️ Error: ${event.errorMessage}`, {
-      id: sourceEventId ? `live-terminal-${sourceEventId}` : `live-terminal-${optionalString(event.runId) ?? "synthetic"}`,
-      turnId,
-      sourceEventId,
-      timestamp,
-    }));
+  } else {
+    const finalAssistantEntry = createProjectedAssistantEntry(event.finalAssistantEntry);
+    if (finalAssistantEntry) return upsertLiveEntry(result, finalAssistantEntry);
   }
   return result;
 }
@@ -697,7 +640,6 @@ export function useSessionStream(
   sessionId: string | null,
   onSettled: () => void,
   onTitleChanged: () => void,
-  historyCoverage?: SessionHistoryCoverage,
 ) {
   const [streamState, setStreamState] = useState<StreamState>(() => createState("idle"));
   const streamStateRef = useRef(streamState);
@@ -803,7 +745,6 @@ export function useSessionStream(
                 : current.mcpServers,
               contextSummary: contextSummary ?? current.contextSummary,
               elicitationCancellation: current.elicitationCancellation,
-              terminalEventId: optionalString(event.terminalEventId),
               hadVisibleOutput: liveEntries.length > 0,
               activeTurnId: getEventTurnId(event),
             })
@@ -823,7 +764,6 @@ export function useSessionStream(
               streamStatus: liveEntries.length > 0 || event.accumulatedContent ? "streaming" : "thinking",
               isStreaming: true,
               hadVisibleOutput: liveEntries.length > 0 || Boolean(event.accumulatedContent),
-              terminalEventId: undefined,
               activeTurnId: getEventTurnId(event),
             });
         if (complete) {
@@ -1121,7 +1061,6 @@ export function useSessionStream(
       if (eventType === "done" || eventType === "error" || eventType === "aborted" || eventType === "shutdown") {
         closeCurrent();
         const sourceEventId = optionalString(event.sourceEventId);
-        const assistantSourceEventId = optionalString(event.assistantSourceEventId);
         setStreamState((current) => {
           let liveEntries = current.liveEntries;
           const completedAt = optionalString(event.timestamp);
@@ -1140,21 +1079,8 @@ export function useSessionStream(
               sourceEventId,
             ));
           } else {
-            const content = eventType === "error"
-              ? `⚠️ Error: ${optionalString(event.message) ?? "Unknown session error"}`
-              : optionalString(event.content) ?? current.streamingContent;
-            if (content) {
-              liveEntries = reconcileTerminalAssistantEntry(liveEntries, content, {
-                assistantSourceEventId: eventType === "error" ? undefined : assistantSourceEventId,
-                fallbackId: sourceEventId
-                  ? `live-terminal-${sourceEventId}`
-                  : `live-terminal-synthetic-${generation}`,
-                turnId: getEventTurnId(event),
-                terminalSourceEventId: sourceEventId,
-                timestamp: completedAt,
-                terminalType: eventType,
-              });
-            }
+            const finalAssistantEntry = createProjectedAssistantEntry(event.finalAssistantEntry);
+            if (finalAssistantEntry) liveEntries = upsertLiveEntry(liveEntries, finalAssistantEntry);
           }
           return createState("idle", {
             liveEntries,
@@ -1162,7 +1088,6 @@ export function useSessionStream(
             mcpServers: current.mcpServers,
             contextSummary: current.contextSummary,
             elicitationCancellation: current.elicitationCancellation,
-            terminalEventId: sourceEventId,
             hadVisibleOutput: liveEntries.length > 0,
             activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
           });
@@ -1182,18 +1107,6 @@ export function useSessionStream(
     setStreamState(createState("idle"));
     return closeStream;
   }, [closeStream, sessionId]);
-
-  useEffect(() => {
-    const terminalEventId = streamStateRef.current.terminalEventId;
-    if (!terminalEventId || historyCoverage?.latestTerminalEventId !== terminalEventId) return;
-    setStreamState((current) => current.terminalEventId === terminalEventId
-      ? createState("idle", {
-          mcpServers: current.mcpServers,
-          contextSummary: current.contextSummary,
-          elicitationCancellation: current.elicitationCancellation,
-        })
-      : current);
-  }, [historyCoverage?.latestTerminalEventId]);
 
   const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[], mode?: SendMode) => {
     if (!sessionId) return;

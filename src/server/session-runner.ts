@@ -968,7 +968,11 @@ export class SessionRunner {
     };
 
     const resolvePersistedTerminalEvent = (
-      persistedTerminal: { event: any; assistantContent?: string } | null,
+      persistedTerminal: {
+        event: any;
+        assistantContent?: string;
+        assistantSourceEventId?: string;
+      } | null,
       reason: string,
     ): boolean => {
       if (!persistedTerminal) return false;
@@ -989,6 +993,9 @@ export class SessionRunner {
         recordCompletionAttention("done", persistedTerminal.event);
         runController.completeDone(content, {
           sourceEventId: getSdkEventId(persistedTerminal.event),
+          ...(persistedTerminal.assistantSourceEventId
+            ? { assistantSourceEventId: persistedTerminal.assistantSourceEventId }
+            : {}),
         });
         return true;
       }
@@ -1491,6 +1498,7 @@ export class SessionRunner {
         const inspection = await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
           now,
           lastAssistantContent,
+          lastAssistantSourceEventId,
         });
         recordRunSpan("session.run.recovery", now - recoveryStartedAt, {
           outcome,
@@ -1501,7 +1509,10 @@ export class SessionRunner {
       };
       try {
         const persistedTerminalBeforeResume = (
-          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, { lastAssistantContent })
+          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
+            lastAssistantContent,
+            lastAssistantSourceEventId,
+          })
         ).terminal;
         if (persistedTerminalBeforeResume) {
           if (resolvePersistedTerminalEvent(persistedTerminalBeforeResume, "before resume")) {
@@ -1533,7 +1544,10 @@ export class SessionRunner {
         }
 
         const persistedTerminalAfterResume = (
-          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, { lastAssistantContent })
+          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
+            lastAssistantContent,
+            lastAssistantSourceEventId,
+          })
         ).terminal;
         if (persistedTerminalAfterResume) {
           await this.deps.disposeSession(
@@ -1588,7 +1602,10 @@ export class SessionRunner {
         });
       } catch (err) {
         const persistedTerminalAfterFailedResume = (
-          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, { lastAssistantContent })
+          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
+            lastAssistantContent,
+            lastAssistantSourceEventId,
+          })
         ).terminal;
         if (persistedTerminalAfterFailedResume && resolvePersistedTerminalEvent(persistedTerminalAfterFailedResume, "after failed resume")) {
           const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
@@ -1669,6 +1686,7 @@ export class SessionRunner {
         const telemetryInspection = inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
           now,
           lastAssistantContent,
+          lastAssistantSourceEventId,
         }).then((inspection) => {
           recordRunSpan("session.run.stalled", 0, {
             watchdogTimeoutMs: WATCHDOG_TIMEOUT,
