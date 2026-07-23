@@ -104,6 +104,16 @@ describe("SessionManager run state", () => {
     for (let i = 0; i < 20; i++) await Promise.resolve();
   }
 
+  function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
   function latestSpanMetadata(telemetryStore: TelemetryStore | undefined, name: string, sessionId: string): Record<string, unknown> {
     expect(telemetryStore).toBeDefined();
     const [span] = telemetryStore!.querySpans({ name, sessionId, limit: 10 });
@@ -2083,19 +2093,23 @@ describe("SessionManager run state", () => {
     const recovered = makeSession();
     const current = makeSession();
     let resolveRecovery!: (session: typeof recovered.session) => void;
+    const recoveryStarted = createDeferred<void>();
     manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
-        .mockReturnValueOnce(new Promise<typeof recovered.session>((resolve) => {
-          resolveRecovery = resolve;
-        })),
+        .mockImplementationOnce(() => {
+          recoveryStarted.resolve();
+          return new Promise<typeof recovered.session>((resolve) => {
+            resolveRecovery = resolve;
+          });
+        }),
     };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
 
     await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryResumeStarted("session-1");
+    await recoveryStarted.promise;
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
 
@@ -2608,11 +2622,15 @@ describe("SessionManager run state", () => {
     const { manager } = createManager();
     let resolveRecovery!: () => void;
     const recoveryPromise = new Promise<void>((res) => { resolveRecovery = res; });
+    const recoveryStarted = createDeferred<void>();
     const { session } = makeSession();
     // First call returns immediately; second call hangs (simulates slow recovery)
     const resumeSession = vi.fn()
       .mockResolvedValueOnce(session)
-      .mockReturnValueOnce(recoveryPromise.then(() => session));
+      .mockImplementationOnce(() => {
+        recoveryStarted.resolve();
+        return recoveryPromise.then(() => session);
+      });
     manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
@@ -2620,7 +2638,7 @@ describe("SessionManager run state", () => {
 
     // Trigger first stall + recovery
     await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryResumeStarted("session-1");
+    await recoveryStarted.promise;
     await flushMicrotasks();
     expect(resumeSession).toHaveBeenCalledTimes(2);
     // Recovery is still in progress — advance another watchdog interval
@@ -2994,10 +3012,14 @@ describe("SessionManager run state", () => {
       const recoveryPromise = new Promise<any>((resolve) => {
         resolveRecovery = resolve;
       });
+      const recoveryStarted = createDeferred<void>();
       manager.backend = {
         resumeSession: vi.fn()
           .mockResolvedValueOnce(initial.session)
-          .mockReturnValueOnce(recoveryPromise),
+          .mockImplementationOnce(() => {
+            recoveryStarted.resolve();
+            return recoveryPromise;
+          }),
       };
 
       manager.startWork(sessionId, "hello");
@@ -3006,7 +3028,7 @@ describe("SessionManager run state", () => {
       await flushMicrotasks();
 
       await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryResumeStarted(sessionId);
+      await recoveryStarted.promise;
       await flushMicrotasks();
 
       const baseTime = Date.now();
@@ -3041,10 +3063,14 @@ describe("SessionManager run state", () => {
       const recoveryPromise = new Promise<any>((_, reject) => {
         rejectRecovery = reject;
       });
+      const recoveryStarted = createDeferred<void>();
       manager.backend = {
         resumeSession: vi.fn()
           .mockResolvedValueOnce(initial.session)
-          .mockReturnValueOnce(recoveryPromise),
+          .mockImplementationOnce(() => {
+            recoveryStarted.resolve();
+            return recoveryPromise;
+          }),
       };
 
       manager.startWork(sessionId, "hello");
@@ -3053,7 +3079,7 @@ describe("SessionManager run state", () => {
       await flushMicrotasks();
 
       await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryResumeStarted(sessionId);
+      await recoveryStarted.promise;
       await flushMicrotasks();
 
       const baseTime = Date.now();
@@ -3184,7 +3210,13 @@ describe("SessionManager run state", () => {
   it("waits for sync shell initial_wait before marking a session stalled", async () => {
     const { manager } = createManager();
     const { session, getHandler } = makeSession();
-    const resumeSession = vi.fn().mockResolvedValue(session);
+    const recoveryStarted = createDeferred<void>();
+    const resumeSession = vi.fn()
+      .mockResolvedValueOnce(session)
+      .mockImplementationOnce(() => {
+        recoveryStarted.resolve();
+        return Promise.resolve(session);
+      });
     manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
@@ -3211,7 +3243,7 @@ describe("SessionManager run state", () => {
     expect(resumeSession).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(240_000);
-    await manager.waitForSessionRecoveryResumeStarted("session-1");
+    await recoveryStarted.promise;
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
     expect(resumeSession).toHaveBeenCalledTimes(2);
