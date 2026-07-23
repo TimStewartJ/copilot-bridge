@@ -1,7 +1,6 @@
 import type { AgentModelInfo } from "./agent-backend/index.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { deleteCliSessionStoreRows } from "./cli-session-store.js";
 import {
   buildSessionTitleSystemPrompt,
@@ -191,6 +190,7 @@ export class SessionNameAutogenerator {
         systemMessage: { mode: "replace", content: buildSessionTitleSystemPrompt() },
         infiniteSessions: { enabled: false },
         enableSessionTelemetry: false,
+        enableSessionStore: false,
       });
       const response = await helperSession.sendAndWait(
         { prompt: buildSessionTitleUserPrompt(userMessages), attachments: [] },
@@ -213,21 +213,17 @@ export class SessionNameAutogenerator {
       }
     }
     await rm(join(this.deps.getCopilotHome(), "session-state", sessionId), { recursive: true, force: true });
-    // The CLI session-store row may be flushed after the helper session directory is gone.
-    for (const delayMs of [0, 500, 2_000]) {
-      if (delayMs > 0) await sleep(delayMs);
-      const start = Date.now();
-      try {
-        deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
-        this.recordSpan("session.name.cleanup", start, sessionId, { result: "ok", delayMs });
-      } catch (error) {
-        this.recordSpan("session.name.cleanup", start, sessionId, {
-          result: "error",
-          delayMs,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Disposable title session DB cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+    // Defensive for legacy/pre-flag rows: disconnect/delete flush SDK tracking before returning.
+    const start = Date.now();
+    try {
+      deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
+      this.recordSpan("session.name.cleanup", start, sessionId, { result: "ok" });
+    } catch (error) {
+      this.recordSpan("session.name.cleanup", start, sessionId, {
+        result: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Disposable title session DB cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
