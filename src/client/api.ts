@@ -133,6 +133,7 @@ export interface Session {
   lastAttentionAt?: string;
   lastActivityAt?: string;
   diskSizeBytes?: number;
+  storageWarning?: SessionStorageWarning;
   eventLogSizeBytes?: number;
   runState?: SessionRunState;
   busy?: boolean;
@@ -482,10 +483,21 @@ export interface EnrichedTaskData {
   pullRequests: EnrichedPR[];
 }
 
+export interface SessionStorageWarning {
+  code: "missing" | "partial";
+  message: string;
+}
+
+export interface TaskSessionStorageEntry {
+  sessionId: string;
+  diskSizeBytes: number;
+  storageWarning?: SessionStorageWarning;
+}
+
 export interface TaskSessionStorage {
   taskId: string;
   totalDiskSizeBytes: number;
-  sessions: Array<{ sessionId: string; diskSizeBytes: number }>;
+  sessions: TaskSessionStorageEntry[];
 }
 
 export type TaskGitStatus = TaskGitStatusResponse;

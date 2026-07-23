@@ -3,7 +3,7 @@
 import express from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -132,6 +132,7 @@ import { isRestartAlreadyInFlight } from "./restart-state.js";
 import { writeRestartSignalFile } from "./restart-signal.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
+import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 
@@ -144,22 +145,6 @@ function docsIndexMutationWarning(result: DocsFtsMutationResult | undefined): { 
   return result && !result.indexed
     ? { indexed: false, indexError: result.indexError }
     : {};
-}
-
-function getDirSize(dirPath: string): number {
-  let size = 0;
-  try {
-    const entries = readdirSync(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name);
-      if (entry.isDirectory()) {
-        size += getDirSize(fullPath);
-      } else {
-        size += statSync(fullPath).size;
-      }
-    }
-  } catch { /* ignore errors */ }
-  return size;
 }
 
 /** Resolve the .copilot home directory — uses ctx.copilotHome if set, otherwise homedir()/.copilot */
@@ -1108,9 +1093,14 @@ function managementJobConflictBody(
   };
 }
 
+export interface ApiRouterOptions {
+  shutdownCoordinator?: ServerShutdownCoordinator;
+  sessionStorageReader?: SessionStorageReader;
+}
+
 export function createApiRouter(
   ctx: AppContext,
-  options: { shutdownCoordinator?: ServerShutdownCoordinator } = {},
+  options: ApiRouterOptions = {},
 ): express.Router {
   configureRestartStateStore(ctx.runtimePaths);
   const router = express.Router();
@@ -1123,6 +1113,8 @@ export function createApiRouter(
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
+  const sessionStorageReader = options.sessionStorageReader
+    ?? createSessionStorageReader(join(getCopilotHome(ctx), "session-state"));
   const copilotUsageReader = ctx.copilotUsageReader ?? createIncrementalCopilotUsageReader({
     copilotHome: getCopilotHome(ctx),
     store: ctx.copilotUsageStore,
@@ -3447,18 +3439,22 @@ export function createApiRouter(
     }
   });
 
-  router.get("/tasks/:id/session-storage", (req, res) => {
+  router.get("/tasks/:id/session-storage", async (req, res) => {
     try {
       const task = ctx.taskStore.getTask(req.params.id);
       if (!task) return res.status(404).json({ error: "Task not found" });
 
-      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
-      const sessions = task.sessionIds.map((sessionId) => {
-        const diskSizeBytes = isCanonicalSessionId(sessionId)
-          ? getDirSize(join(sessionStateDir, sessionId))
-          : 0;
-        return { sessionId, diskSizeBytes };
-      });
+      const sessions = await Promise.all(task.sessionIds.map(async (sessionId) => {
+        if (!isCanonicalSessionId(sessionId)) {
+          return { sessionId, diskSizeBytes: 0 };
+        }
+        const measurement = await sessionStorageReader.measureSession(sessionId);
+        return {
+          sessionId,
+          diskSizeBytes: measurement.diskSizeBytes,
+          ...(measurement.warning ? { storageWarning: measurement.warning } : {}),
+        };
+      }));
       const totalDiskSizeBytes = sessions.reduce((sum, session) => sum + session.diskSizeBytes, 0);
       res.json({ taskId: task.id, totalDiskSizeBytes, sessions });
     } catch (err) {
@@ -4318,6 +4314,15 @@ export function createApiRouter(
       const taskLookup = createSessionListTaskLookup(ctx);
       const meta = ctx.sessionMetaStore.listMeta();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
+      const storageMeasurements = new Map<string, Promise<Awaited<ReturnType<SessionStorageReader["measureSession"]>>>>();
+      const measureSessionStorage = (sessionId: string) => {
+        let measurement = storageMeasurements.get(sessionId);
+        if (!measurement) {
+          measurement = sessionStorageReader.measureSession(sessionId);
+          storageMeasurements.set(sessionId, measurement);
+        }
+        return measurement;
+      };
 
       const enriched = await Promise.all(
         pageRuns.map(async (run) => {
@@ -4328,9 +4333,10 @@ export function createApiRouter(
           const status = s
             ? getSessionStatus(ctx, run.sessionId)
             : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false, backgroundAgents: emptyBackgroundAgentsSummary("unknown") };
-          const hasPlan = await statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false);
-          let diskSize = 0;
-          try { diskSize = getDirSize(join(sessionStateDir, run.sessionId)); } catch {}
+          const [hasPlan, storageMeasurement] = await Promise.all([
+            statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false),
+            measureSessionStorage(run.sessionId),
+          ]);
           return {
             ...s,
             runId: run.id,
@@ -4342,7 +4348,8 @@ export function createApiRouter(
             ...status,
             hasPlan,
             archived,
-            diskSizeBytes: diskSize,
+            diskSizeBytes: storageMeasurement.diskSizeBytes,
+            ...(storageMeasurement.warning ? { storageWarning: storageMeasurement.warning } : {}),
             missing: !s,
           };
         }),
