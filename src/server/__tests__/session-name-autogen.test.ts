@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createSessionNameAutogenerator } from "../session-name-autogen.js";
 import { buildSessionNameHelperBaseConfig } from "../session-name-rpc.js";
 import type { WorkspaceSessionNameMetadata } from "../session-workspace-yaml.js";
@@ -269,10 +270,68 @@ describe("session name autogenerator", () => {
     expect(config.model).toBe("gpt-5-mini");
     expect(config.infiniteSessions).toEqual({ enabled: false });
     expect(config.enableSessionTelemetry).toBe(false);
+    expect(config.enableSessionStore).toBe(false);
     expect((config.systemMessage as { mode?: string } | undefined)?.mode).toBe("replace");
     expect(typeof config.sessionId).toBe("string");
 
     expect(config).not.toHaveProperty("suppressResumeEvent");
     expect(config).not.toHaveProperty("continuePendingWork");
+  });
+
+  it("removes legacy session-store rows after helper persistence completes", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
+    tempDirs.push(copilotHome);
+    const dbPath = join(copilotHome, "session-store.db");
+    const setupDb = new DatabaseSync(dbPath);
+    setupDb.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY);
+      CREATE TABLE turns (session_id TEXT, content TEXT);
+    `);
+    setupDb.close();
+
+    let helperSessionId = "";
+    let disconnectFinished = false;
+    const disconnect = vi.fn(async () => {
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.prepare("INSERT INTO sessions (id) VALUES (?)").run(helperSessionId);
+        db.prepare("INSERT INTO turns (session_id, content) VALUES (?, ?)").run(helperSessionId, "title prompt");
+      } finally {
+        db.close();
+      }
+      disconnectFinished = true;
+    });
+    const deleteSession = vi.fn(async (sessionId: string) => {
+      expect(disconnectFinished).toBe(true);
+      expect(sessionId).toBe(helperSessionId);
+    });
+    const createSession = vi.fn(async (config: Record<string, unknown>) => {
+      helperSessionId = String(config.sessionId);
+      return {
+        sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+        disconnect,
+      };
+    });
+    const generator = createSessionNameAutogenerator({
+      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
+      createSession,
+      deleteSession,
+      getCopilotHome: () => copilotHome,
+      getSessionName: vi.fn(async () => undefined),
+      getSessionNameMetadata: () => undefined,
+      setSessionName: vi.fn(async () => {}),
+    });
+
+    await (generator as any).generateSessionName(["Please fix this complicated issue"]);
+
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(deleteSession).toHaveBeenCalledOnce();
+    const readDb = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(readDb.prepare("SELECT count(*) AS count FROM sessions WHERE id = ?").get(helperSessionId)).toEqual({ count: 0 });
+      expect(readDb.prepare("SELECT count(*) AS count FROM turns WHERE session_id = ?").get(helperSessionId)).toEqual({ count: 0 });
+    } finally {
+      readDb.close();
+    }
   });
 });
