@@ -1546,6 +1546,8 @@ describe("SessionManager run state", () => {
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
+    const endSessionResume = vi.spyOn(manager, "endSessionResume");
+    const flushPendingSessionEviction = vi.spyOn(manager, "flushPendingSessionEviction");
     sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-05-09T10:01:01.000Z");
     sessionMetaStore.setLastAttentionAt("session-1", "2026-05-09T10:01:02.000Z");
     globalBus.subscribe((event) => statusEvents.push(event));
@@ -1568,6 +1570,42 @@ describe("SessionManager run state", () => {
       metadata: { eventId: "user-2", reason: "user-undo" },
     });
     expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(endSessionResume).toHaveBeenCalledTimes(1);
+    expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases undo resume cleanup exactly once when resume fails", async () => {
+    const { manager } = createManager({ telemetry: true });
+    const resumeError = new Error("resume failed");
+    manager.backend = {
+      resumeSession: vi.fn().mockRejectedValue(resumeError),
+    };
+    const endSessionResume = vi.spyOn(manager, "endSessionResume");
+    const flushPendingSessionEviction = vi.spyOn(manager, "flushPendingSessionEviction");
+
+    await expect(manager.undoSessionTurn("session-1", "user-1")).rejects.toBe(resumeError);
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(endSessionResume).toHaveBeenCalledTimes(1);
+    expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases undo resume cleanup exactly once on timeout", async () => {
+    const { manager } = createManager({ telemetry: true });
+    manager.backend = {
+      resumeSession: vi.fn(() => new Promise(() => {})),
+    };
+    const endSessionResume = vi.spyOn(manager, "endSessionResume");
+    const flushPendingSessionEviction = vi.spyOn(manager, "flushPendingSessionEviction");
+
+    const undo = manager.undoSessionTurn("session-1", "user-1");
+    const rejection = expect(undo).rejects.toThrow("undo history resume timed out after 60s");
+    await vi.advanceTimersByTimeAsync(60_000);
+    await rejection;
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(endSessionResume).toHaveBeenCalledTimes(1);
+    expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
   });
 
   it("rejects stale or non-user undo boundaries before truncating history", async () => {
