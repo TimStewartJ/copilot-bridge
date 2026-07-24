@@ -55,20 +55,4 @@ describe("read-state-store", () => {
   it("isUnread returns false when activityTime is undefined", () => {
     expect(store.isUnread("session-1")).toBe(false);
   });
-
-  it("pruneReadState removes entries not in validSessionIds", () => {
-    store.markRead("keep");
-    store.markRead("remove");
-    store.pruneReadState(new Set(["keep"]));
-    const state = store.getReadState();
-    expect(state["keep"]).toBeDefined();
-    expect(state["remove"]).toBeUndefined();
-  });
-
-  it("pruneReadState is no-op when all sessions valid", () => {
-    store.markRead("s1");
-    store.markRead("s2");
-    store.pruneReadState(new Set(["s1", "s2"]));
-    expect(Object.keys(store.getReadState())).toHaveLength(2);
-  });
 });

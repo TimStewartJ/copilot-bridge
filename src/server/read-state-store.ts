@@ -48,16 +48,7 @@ export function createReadStateStore(db: DatabaseSync) {
     db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
   }
 
-  function pruneReadState(validSessionIds: Set<string>): void {
-    const rows = db.prepare("SELECT sessionId FROM read_state").all() as any[];
-    for (const row of rows) {
-      if (!validSessionIds.has(row.sessionId)) {
-        db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(row.sessionId);
-      }
-    }
-  }
-
-  return { getReadState, markRead, isUnread, markUnread, pruneReadState };
+  return { getReadState, markRead, isUnread, markUnread };
 }
 
 export type ReadStateStore = ReturnType<typeof createReadStateStore>;
