@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { copyFile, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { copyFile, readdir, rm, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SessionManager } from "./session-manager.js";
 import {
   isRestartCutoverInProgress,
@@ -39,6 +39,20 @@ interface CreateVoiceJobManagerOptions {
   taskGroupStore: TaskGroupStore;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const VOICE_JOB_MAINTENANCE_INTERVAL_MS = DAY_MS;
+const VOICE_JOB_DIRECTORY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Terminal rows remain visible for recovery and diagnostics for 30 days. */
+export const VOICE_JOB_TERMINAL_RETENTION_MS = 30 * DAY_MS;
+/** Young untracked directories may belong to an accept request that has not inserted its DB row yet. */
+export const VOICE_JOB_ORPHAN_GRACE_MS = DAY_MS;
+
+export interface VoiceJobMaintenanceResult {
+  terminalRowsPruned: number;
+  orphanDirectoriesRemoved: number;
+}
+
 export function createVoiceJobManager({
   dataDir,
   store,
@@ -52,9 +66,12 @@ export function createVoiceJobManager({
 
   const processingJobRuns = new Map<string, Promise<void>>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const creatingJobIds = new Set<string>();
   const SEND_ACCEPTANCE_TIMEOUT_MS = 15_000;
   const SEND_ACCEPTANCE_POLL_MS = 250;
   const RESTART_RETRY_DELAY_MS = 30_000;
+  let maintenanceRun: Promise<VoiceJobMaintenanceResult> | undefined;
+  let maintenanceTimer: ReturnType<typeof setInterval> | undefined;
   let shuttingDown = false;
 
   function toSnapshot(job: VoiceJob | undefined): VoiceJobSnapshot | undefined {
@@ -77,9 +94,10 @@ export function createVoiceJobManager({
     }
     const id = randomUUID();
     const jobDir = join(voiceJobsDir, id);
-    mkdirSync(jobDir, { recursive: true });
+    creatingJobIds.add(id);
 
     try {
+      mkdirSync(jobDir, { recursive: true });
       const safeFilename = basename(originalFilename ?? "voice-input.wav").replace(/\.\./g, "_") || "voice-input.wav";
       const audioPath = join(jobDir, safeFilename);
       await copyFile(sourceFilePath, audioPath);
@@ -96,8 +114,10 @@ export function createVoiceJobManager({
       void processVoiceJob(id);
       return toSnapshot(job)!;
     } catch (error) {
-      await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+      await removeJobDirectory(jobDir, id);
       throw error;
+    } finally {
+      creatingJobIds.delete(id);
     }
   }
 
@@ -109,7 +129,10 @@ export function createVoiceJobManager({
     return toSnapshot(store.findLatestRelevantForComposer(composerKey));
   }
 
-  function markRecovered(id: string): VoiceJobSnapshot | undefined {
+  async function markRecovered(id: string): Promise<VoiceJobSnapshot | undefined> {
+    const job = store.getVoiceJob(id);
+    if (!job) return undefined;
+    await cleanupJobArtifacts(job);
     return toSnapshot(store.markRecovered(id));
   }
 
@@ -130,10 +153,7 @@ export function createVoiceJobManager({
       try {
         const job = store.getVoiceJob(jobId);
         const canResume =
-          !!job && (
-            ["accepted", "transcribing", "sending"].includes(job.status)
-            || (job.status === "error" && !job.transcript)
-          );
+          !!job && ["accepted", "transcribing", "sending"].includes(job.status);
         if (!canResume || !job) return;
         if (isRestartCutoverInProgress(await refreshRestartState())) {
           scheduleRetry(job.id);
@@ -149,13 +169,41 @@ export function createVoiceJobManager({
     await run;
   }
 
+  function runMaintenance(now = Date.now()): Promise<VoiceJobMaintenanceResult> {
+    if (maintenanceRun) return maintenanceRun;
+    const run = performMaintenance(now).finally(() => {
+      if (maintenanceRun === run) maintenanceRun = undefined;
+    });
+    maintenanceRun = run;
+    return run;
+  }
+
+  async function startMaintenance(): Promise<VoiceJobMaintenanceResult> {
+    if (!maintenanceTimer && !shuttingDown) {
+      maintenanceTimer = setInterval(() => {
+        void runMaintenance().catch((error) => {
+          console.error("[voice-jobs] Maintenance failed:", error);
+        });
+      }, VOICE_JOB_MAINTENANCE_INTERVAL_MS);
+      maintenanceTimer.unref();
+    }
+    return runMaintenance();
+  }
+
   async function shutdown(): Promise<void> {
     shuttingDown = true;
+    if (maintenanceTimer) {
+      clearInterval(maintenanceTimer);
+      maintenanceTimer = undefined;
+    }
     for (const timer of retryTimers.values()) {
       clearTimeout(timer);
     }
     retryTimers.clear();
-    await Promise.allSettled([...processingJobRuns.values()]);
+    await Promise.allSettled([
+      ...processingJobRuns.values(),
+      ...(maintenanceRun ? [maintenanceRun] : []),
+    ]);
   }
 
   async function transcribeAndSend(job: StoredVoiceJob, existingTranscript?: string): Promise<void> {
@@ -177,7 +225,7 @@ export function createVoiceJobManager({
           throw new Error("No transcript returned");
         }
       } catch (error) {
-        store.markError(job.id, error instanceof Error ? error.message : String(error));
+        await markJobError(job.id, error instanceof Error ? error.message : String(error));
         return;
       }
 
@@ -187,11 +235,11 @@ export function createVoiceJobManager({
       });
     }
 
-    await cleanupJobArtifacts(job.audioPath);
+    await cleanupJobArtifacts(job);
 
     const targetSessionId = job.targetSessionId;
     if (!targetSessionId) {
-      store.markError(job.id, "Voice job target session is missing.", transcript);
+      await markJobError(job.id, "Voice job target session is missing.", transcript);
       return;
     }
 
@@ -202,11 +250,7 @@ export function createVoiceJobManager({
 
     const isResumingSend = job.status === "sending";
     if (isResumingSend && await sessionHasAcceptedTranscript(targetSessionId, transcript, job.updatedAt)) {
-      store.updateVoiceJob(job.id, {
-        status: "done",
-        transcript,
-        error: undefined,
-      });
+      await markJobDone(job.id, transcript);
       return;
     }
 
@@ -214,13 +258,9 @@ export function createVoiceJobManager({
       if (isResumingSend) {
         try {
           await waitForTranscriptAcceptance(targetSessionId, transcript, job.updatedAt);
-          store.updateVoiceJob(job.id, {
-            status: "done",
-            transcript,
-            error: undefined,
-          });
+          await markJobDone(job.id, transcript);
         } catch (error) {
-          store.markError(
+          await markJobError(
             job.id,
             `Auto-send failed. Transcript was saved to the composer instead. (${error instanceof Error ? error.message : String(error)})`,
             transcript,
@@ -229,7 +269,7 @@ export function createVoiceJobManager({
         return;
       }
 
-      store.markError(
+      await markJobError(
         job.id,
         "Auto-send failed. Transcript was saved to the composer instead. (Session is busy, please wait)",
         transcript,
@@ -248,17 +288,13 @@ export function createVoiceJobManager({
     try {
       sessionManager.startWork(targetSessionId, transcript);
       await waitForTranscriptAcceptance(targetSessionId, transcript, sendingJob.updatedAt);
-      store.updateVoiceJob(job.id, {
-        status: "done",
-        transcript,
-        error: undefined,
-      });
+      await markJobDone(job.id, transcript);
     } catch (error) {
       if (isRestartPendingError(error)) {
         scheduleRetry(job.id);
         return;
       }
-      store.markError(
+      await markJobError(
         job.id,
         `Auto-send failed. Transcript was saved to the composer instead. (${error instanceof Error ? error.message : String(error)})`,
         transcript,
@@ -346,8 +382,90 @@ export function createVoiceJobManager({
     return result.sessionId;
   }
 
-  async function cleanupJobArtifacts(audioPath: string): Promise<void> {
-    await rm(dirname(audioPath), { recursive: true, force: true }).catch(() => {});
+  async function markJobDone(id: string, transcript: string): Promise<StoredVoiceJob | undefined> {
+    const job = store.getVoiceJob(id);
+    if (!job) return undefined;
+    await cleanupJobArtifacts(job);
+    return store.updateVoiceJob(id, {
+      status: "done",
+      transcript,
+      error: undefined,
+    });
+  }
+
+  async function markJobError(
+    id: string,
+    error: string,
+    transcript?: string,
+  ): Promise<StoredVoiceJob | undefined> {
+    const job = store.getVoiceJob(id);
+    if (!job) return undefined;
+    await cleanupJobArtifacts(job);
+    return store.markError(id, error, transcript);
+  }
+
+  async function performMaintenance(now: number): Promise<VoiceJobMaintenanceResult> {
+    for (const job of store.listTerminalVoiceJobs()) {
+      await cleanupJobArtifacts(job);
+    }
+
+    const terminalRowsPruned = store.pruneTerminalVoiceJobs(
+      new Date(now - VOICE_JOB_TERMINAL_RETENTION_MS).toISOString(),
+    );
+    const orphanDirectoriesRemoved = await sweepOrphanJobDirectories(now);
+    return { terminalRowsPruned, orphanDirectoriesRemoved };
+  }
+
+  async function sweepOrphanJobDirectories(now: number): Promise<number> {
+    const knownJobIds = new Set(store.listVoiceJobIds());
+    const orphanCutoff = now - VOICE_JOB_ORPHAN_GRACE_MS;
+    const entries = await readdir(voiceJobsDir, { withFileTypes: true });
+    let removed = 0;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !VOICE_JOB_DIRECTORY_PATTERN.test(entry.name)) continue;
+      if (knownJobIds.has(entry.name) || creatingJobIds.has(entry.name)) continue;
+
+      const jobDir = join(voiceJobsDir, entry.name);
+      try {
+        const jobDirStat = await stat(jobDir);
+        if (jobDirStat.mtimeMs > orphanCutoff) continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        console.warn(`[voice-jobs] Failed to inspect orphan candidate ${entry.name}:`, error);
+        continue;
+      }
+
+      if (await removeJobDirectory(jobDir, entry.name)) removed++;
+    }
+
+    return removed;
+  }
+
+  async function cleanupJobArtifacts(job: Pick<StoredVoiceJob, "id" | "audioPath">): Promise<boolean> {
+    const jobDir = resolve(dirname(job.audioPath));
+    const relativeJobDir = relative(resolve(voiceJobsDir), jobDir);
+    const isDirectChild =
+      relativeJobDir.length > 0
+      && relativeJobDir !== ".."
+      && !relativeJobDir.startsWith(`..${sep}`)
+      && !isAbsolute(relativeJobDir)
+      && !relativeJobDir.includes(sep);
+    if (!isDirectChild) {
+      console.warn(`[voice-jobs] Refusing to remove artifacts outside the voice-jobs directory for ${job.id}`);
+      return false;
+    }
+    return removeJobDirectory(jobDir, job.id);
+  }
+
+  async function removeJobDirectory(jobDir: string, jobId: string): Promise<boolean> {
+    try {
+      await rm(jobDir, { recursive: true, force: true });
+      return true;
+    } catch (error) {
+      console.warn(`[voice-jobs] Failed to remove artifacts for ${jobId}:`, error);
+      return false;
+    }
   }
 
   return {
@@ -356,6 +474,8 @@ export function createVoiceJobManager({
     findLatestRelevantForComposer,
     markRecovered,
     resumePendingJobs,
+    runMaintenance,
+    startMaintenance,
     shutdown,
   };
 }

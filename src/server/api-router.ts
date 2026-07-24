@@ -1156,8 +1156,8 @@ export function createApiRouter(
     res.json(job);
   });
 
-  router.post("/voice-jobs/:id/recovered", (req, res) => {
-    const job = voiceJobManager.markRecovered(req.params.id);
+  router.post("/voice-jobs/:id/recovered", async (req, res) => {
+    const job = await voiceJobManager.markRecovered(req.params.id);
     if (!job) {
       return res.status(404).json({ error: "Voice job not found" });
     }

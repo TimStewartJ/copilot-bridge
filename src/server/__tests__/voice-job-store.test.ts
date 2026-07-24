@@ -52,3 +52,48 @@ describe("voice-job-store task foreign key", () => {
     ).toThrow();
   });
 });
+
+describe("voice-job-store retention", () => {
+  it("prunes only terminal rows older than the updatedAt cutoff", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    const oldTimestamp = "2026-05-01T00:00:00.000Z";
+    const recentTimestamp = "2026-07-20T00:00:00.000Z";
+    const cutoff = "2026-06-23T00:00:00.000Z";
+    const createJob = (id: string) => voiceJobs.createVoiceJob({
+      id,
+      composerKey: "existing-session",
+      targetSessionId: "existing-session",
+      audioPath: join(audioDir, id, "recording.wav"),
+    });
+
+    createJob("old-done");
+    voiceJobs.updateVoiceJob("old-done", { status: "done", transcript: "done" });
+    createJob("old-error");
+    voiceJobs.markError("old-error", "failed");
+    createJob("old-recovered");
+    voiceJobs.markRecovered("old-recovered");
+    createJob("old-active");
+    createJob("recent-error");
+    voiceJobs.markError("recent-error", "still visible");
+    db.prepare(`
+      UPDATE voice_jobs
+      SET createdAt = ?, updatedAt = ?
+      WHERE id IN ('old-done', 'old-error', 'old-recovered', 'old-active')
+    `).run(oldTimestamp, oldTimestamp);
+    db.prepare(`
+      UPDATE voice_jobs
+      SET createdAt = ?, updatedAt = ?
+      WHERE id = 'recent-error'
+    `).run(oldTimestamp, recentTimestamp);
+
+    expect(voiceJobs.pruneTerminalVoiceJobs(cutoff)).toBe(3);
+    expect(voiceJobs.getVoiceJob("old-done")).toBeUndefined();
+    expect(voiceJobs.getVoiceJob("old-error")).toBeUndefined();
+    expect(voiceJobs.getVoiceJob("old-recovered")).toBeUndefined();
+    expect(voiceJobs.getVoiceJob("old-active")?.status).toBe("accepted");
+    expect(voiceJobs.getVoiceJob("recent-error")).toMatchObject({
+      status: "error",
+      error: "still visible",
+    });
+  });
+});

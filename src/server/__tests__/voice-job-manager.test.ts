@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { makeTestRuntimePaths } from "./helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +9,10 @@ import { writeRestartState } from "../restart-state.js";
 import { clearRestartPending, configureRestartStateStore, RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createTaskStore } from "../task-store.js";
-import { createVoiceJobManager } from "../voice-job-manager.js";
+import {
+  createVoiceJobManager,
+  VOICE_JOB_ORPHAN_GRACE_MS,
+} from "../voice-job-manager.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
 
 async function flushMicrotasks(): Promise<void> {
@@ -18,6 +22,34 @@ async function flushMicrotasks(): Promise<void> {
 
 function createRestartRuntimePaths() {
   return makeTestRuntimePaths("voice-jobs");
+}
+
+function createManagerHarness(transcribe = vi.fn()) {
+  const runtimePaths = createRestartRuntimePaths();
+  const db = openMemoryDatabase();
+  const store = createVoiceJobStore(db);
+  const sessionManager = {
+    isSessionBusy: vi.fn(() => false),
+    startWork: vi.fn(),
+    readMessagesFromDisk: vi.fn(async () => ({ messages: [], total: 0, hasMore: false })),
+  } as any;
+  const manager = createVoiceJobManager({
+    dataDir: runtimePaths.dataDir,
+    store,
+    transcriptionService: {
+      getStatus: () => ({
+        available: true,
+        provider: "whisper.cpp",
+        label: "whisper.cpp",
+        maxDurationSeconds: 120,
+      }),
+      transcribe,
+    },
+    sessionManager,
+    taskStore: createTaskStore(db, createGlobalBus(), { runtimePaths }),
+    taskGroupStore: createTaskGroupStore(db),
+  });
+  return { runtimePaths, store, sessionManager, manager };
 }
 
 beforeEach(() => {
@@ -84,6 +116,102 @@ describe("voice job restart gating", () => {
     expect(store.getVoiceJob(result.id)).toMatchObject({
       composerKey: "draft:quickchat",
       targetSessionId: "new-session",
+    });
+  });
+
+  describe("voice job artifact retention", () => {
+    it("removes audio artifacts when transcription fails", async () => {
+      const transcribe = vi.fn().mockRejectedValue(new Error("whisper failed"));
+      const { runtimePaths, store, manager } = createManagerHarness(transcribe);
+      const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
+      writeFileSync(sourceFilePath, "test-audio");
+
+      const accepted = await manager.acceptVoiceJob({
+        composerKey: "existing-session",
+        targetSessionId: "existing-session",
+        sourceFilePath,
+        originalFilename: "recording.wav",
+      });
+      await manager.shutdown();
+
+      expect(store.getVoiceJob(accepted.id)).toMatchObject({
+        status: "error",
+        error: "whisper failed",
+      });
+      expect(existsSync(join(runtimePaths.dataDir, "voice-jobs", accepted.id))).toBe(false);
+    });
+
+    it("does not retry terminal transcription errors after restart", async () => {
+      const transcribe = vi.fn();
+      const { runtimePaths, store, manager } = createManagerHarness(transcribe);
+      const id = randomUUID();
+      const audioPath = join(runtimePaths.dataDir, "voice-jobs", id, "recording.wav");
+      mkdirSync(dirname(audioPath), { recursive: true });
+      writeFileSync(audioPath, "test-audio");
+      store.createVoiceJob({
+        id,
+        composerKey: "existing-session",
+        targetSessionId: "existing-session",
+        audioPath,
+      });
+      store.markError(id, "whisper failed");
+
+      await manager.runMaintenance();
+      manager.resumePendingJobs();
+      await manager.shutdown();
+
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(store.getVoiceJob(id)?.status).toBe("error");
+      expect(existsSync(dirname(audioPath))).toBe(false);
+    });
+
+    it("removes old orphan job directories but preserves young candidates", async () => {
+      const { runtimePaths, manager } = createManagerHarness();
+      const now = Date.parse("2026-07-23T20:00:00.000Z");
+      const oldId = randomUUID();
+      const youngId = randomUUID();
+      const oldDir = join(runtimePaths.dataDir, "voice-jobs", oldId);
+      const youngDir = join(runtimePaths.dataDir, "voice-jobs", youngId);
+      mkdirSync(oldDir, { recursive: true });
+      mkdirSync(youngDir, { recursive: true });
+      writeFileSync(join(oldDir, "recording.wav"), "old-audio");
+      writeFileSync(join(youngDir, "recording.wav"), "young-audio");
+      const oldTime = new Date(now - VOICE_JOB_ORPHAN_GRACE_MS - 1);
+      const youngTime = new Date(now - VOICE_JOB_ORPHAN_GRACE_MS + 1);
+      utimesSync(oldDir, oldTime, oldTime);
+      utimesSync(youngDir, youngTime, youngTime);
+
+      const result = await manager.runMaintenance(now);
+      await manager.shutdown();
+
+      expect(result.orphanDirectoriesRemoved).toBe(1);
+      expect(existsSync(oldDir)).toBe(false);
+      expect(existsSync(youngDir)).toBe(true);
+    });
+
+    it("preserves active job directories during maintenance", async () => {
+      const { runtimePaths, store, manager } = createManagerHarness();
+      const now = Date.parse("2026-07-23T20:00:00.000Z");
+      const id = randomUUID();
+      const audioPath = join(runtimePaths.dataDir, "voice-jobs", id, "recording.wav");
+      mkdirSync(dirname(audioPath), { recursive: true });
+      writeFileSync(audioPath, "test-audio");
+      const oldTime = new Date(now - VOICE_JOB_ORPHAN_GRACE_MS - 1);
+      utimesSync(dirname(audioPath), oldTime, oldTime);
+      store.createVoiceJob({
+        id,
+        composerKey: "existing-session",
+        targetSessionId: "existing-session",
+        audioPath,
+      });
+      store.updateVoiceJob(id, { status: "transcribing" });
+
+      const result = await manager.runMaintenance(now);
+      await manager.shutdown();
+
+      expect(result.orphanDirectoriesRemoved).toBe(0);
+      expect(existsSync(dirname(audioPath))).toBe(true);
+      expect(store.getVoiceJob(id)?.status).toBe("transcribing");
     });
   });
 

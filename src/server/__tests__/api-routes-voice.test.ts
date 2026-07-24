@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
 import {
@@ -321,6 +323,35 @@ describe("Voice job routes", () => {
 
     const afterRecovery = await request(app).get("/api/voice-jobs/latest").query({ composerKey: "new-session" });
     expect(afterRecovery.status).toBe(404);
+  });
+
+  it("POST /api/voice-jobs/:id/recovered removes retained audio artifacts", async () => {
+    const id = randomUUID();
+    const dataDir = ctx.runtimePaths!.dataDir;
+    const audioPath = join(dataDir, "voice-jobs", id, "recording.wav");
+    mkdirSync(join(dataDir, "voice-jobs", id), { recursive: true });
+    writeFileSync(audioPath, "test-audio");
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO voice_jobs (
+        id, composerKey, taskId, targetSessionId, status, audioPath, transcript, error, createdAt, updatedAt
+      ) VALUES (?, ?, NULL, ?, 'error', ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      "existing-session",
+      "existing-session",
+      audioPath,
+      "Recovered transcript",
+      "Auto-send failed",
+      now,
+      now,
+    );
+
+    const recovered = await request(app).post(`/api/voice-jobs/${id}/recovered`);
+
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.status).toBe("recovered");
+    expect(existsSync(join(dataDir, "voice-jobs", id))).toBe(false);
   });
 });
 

@@ -123,6 +123,17 @@ async function main(): Promise<void> {
     console.log(`[restart] Swept ${sweptRestartTemps} stale restart-state temp file(s) at startup`);
   }
   await refreshRestartState();
+  try {
+    const voiceJobMaintenance = await defaultContext.voiceJobManager.startMaintenance();
+    if (voiceJobMaintenance.terminalRowsPruned > 0 || voiceJobMaintenance.orphanDirectoriesRemoved > 0) {
+      console.log(
+        `[voice-jobs] Pruned ${voiceJobMaintenance.terminalRowsPruned} terminal row(s) and removed `
+        + `${voiceJobMaintenance.orphanDirectoriesRemoved} orphan director${voiceJobMaintenance.orphanDirectoriesRemoved === 1 ? "y" : "ies"}`,
+      );
+    }
+  } catch (error) {
+    console.error("[voice-jobs] Initial maintenance failed:", error);
+  }
   defaultContext.voiceJobManager.resumePendingJobs();
 
   // Prune old telemetry data
