@@ -236,7 +236,9 @@ function triggerRestartPendingWithWaitingCount(waitingSessions: number): number 
   });
   queueRestartStateWrite(async () => {
     const persistedState = await writeRestartState(writeTarget.path, nextState);
-    if (isCurrentRestartStateWriteTarget(writeTarget)) {
+    // Live countdown updates are memory-only; a late initial write must not
+    // restore the snapshot that was current when persistence started.
+    if (isCurrentRestartStateWriteTarget(writeTarget) && _restartState === nextState) {
       setCachedRestartState(persistedState);
     }
   });

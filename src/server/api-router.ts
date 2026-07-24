@@ -1899,7 +1899,7 @@ export function createApiRouter(
     mkdirSync(dataDir, { recursive: true });
     const signalFile = join(dataDir, "restart.signal");
     const waitingSessions = triggerRestartPendingForExternalRequest(
-      ctx.sessionManager.getActiveSessions().length,
+      ctx.sessionManager.getLifecycleBlockingSessionCount(),
     );
     try {
       writeRestartSignalFile(signalFile, {

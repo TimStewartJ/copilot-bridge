@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { SessionManager } from "../session-manager.js";
+import {
+  clearRestartPending,
+  configureRestartStateStore,
+  getRestartWaitingCount,
+  isRestartImminent,
+  refreshRestartState,
+  SessionManager,
+  triggerRestartPendingForExternalRequest,
+} from "../session-manager.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { createTestBus, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 
@@ -69,6 +77,26 @@ function createInteractiveFakeSession(sessionId: string, tools: any[] = []) {
   return session;
 }
 
+function createControlledFakeSession(sessionId: string, tools: any[] = []) {
+  const handlers = new Set<(event: any) => void>();
+  const sendGate = createDeferred<undefined>();
+  const session = createFakeSession(sessionId, tools);
+  session.on = vi.fn((handler: (event: any) => void) => {
+    handlers.add(handler);
+    return () => {
+      handlers.delete(handler);
+    };
+  });
+  session.send = vi.fn(() => sendGate.promise);
+  return {
+    session,
+    releaseSend: () => sendGate.resolve(undefined),
+    emit: (event: any) => {
+      for (const handler of handlers) handler(event);
+    },
+  };
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -77,6 +105,10 @@ function createDeferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function flushMicrotasks() {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
 function createBridgeToolServer() {
@@ -122,13 +154,17 @@ function createManager() {
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({})),
   };
+  const taskStore = {
+    findTaskBySessionId: vi.fn().mockReturnValue(null),
+    getTask: vi.fn().mockReturnValue(null),
+    listTasks: vi.fn().mockReturnValue([]),
+    unlinkSession: vi.fn(),
+  };
   const manager = new SessionManager({
     globalBus: createTestBus(),
     eventBusRegistry: createEventBusRegistry(),
     sessionTitles: createSessionTitlesStore(db),
-    taskStore: {
-      findTaskBySessionId: vi.fn().mockReturnValue(null),
-    } as any,
+    taskStore: taskStore as any,
     config: { sessionMcpServers: { custom: { command: "custom-mcp", args: [] } } },
     builtInMcpServers: {
       [EXTRA_MCP_SERVER_NAME]: { command: "node", args: ["extra-mcp.js"] },
@@ -140,7 +176,7 @@ function createManager() {
     copilotHome: runtimePaths.copilotHome,
   });
 
-  return { manager, backend, db };
+  return { manager, backend, db, runtimePaths, taskStore };
 }
 
 afterEach(async () => {
@@ -510,6 +546,125 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
+  it("keeps restart waiting on plain creation after an active run settles", async () => {
+    const { manager, backend, db, runtimePaths } = createManager();
+    const creationGate = createDeferred<void>();
+    const activeSession = createControlledFakeSession("active-session");
+    try {
+      configureRestartStateStore(runtimePaths);
+      clearRestartPending();
+      await refreshRestartState();
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async (config: any) => {
+        await creationGate.promise;
+        return createFakeSession(config.sessionId, config.tools ?? []);
+      });
+      backend.resumeSession.mockResolvedValueOnce(activeSession.session);
+
+      const { sessionId } = await manager.createSession({ background: true });
+      manager.startWork(activeSession.session.sessionId, "hello");
+      await vi.waitFor(() => {
+        expect(manager.getActiveSessions()).toEqual([activeSession.session.sessionId]);
+      });
+
+      expect(manager.isSessionWarm(sessionId)).toBe(false);
+      expect(manager.getRuntimeActivity().sessions.active).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(2);
+      expect(triggerRestartPendingForExternalRequest(manager.getLifecycleBlockingSessionCount())).toBe(2);
+      expect(getRestartWaitingCount()).toBe(2);
+      expect(isRestartImminent()).toBe(false);
+
+      activeSession.releaseSend();
+      await flushMicrotasks();
+      activeSession.emit({
+        type: "session.idle",
+        data: {},
+        timestamp: new Date().toISOString(),
+      });
+      await flushMicrotasks();
+      await vi.waitFor(() => expect(getRestartWaitingCount()).toBe(1));
+
+      expect(manager.getActiveSessions()).toEqual([]);
+      expect(manager.getRuntimeActivity().sessions.active).toBe(0);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+      expect(isRestartImminent()).toBe(false);
+
+      creationGate.resolve();
+      await flushMicrotasks();
+      await vi.waitFor(() => expect(getRestartWaitingCount()).toBe(0));
+
+      expect(manager.isSessionWarm(sessionId)).toBe(true);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+      expect(isRestartImminent()).toBe(true);
+    } finally {
+      activeSession.releaseSend();
+      creationGate.resolve();
+      clearRestartPending();
+      await refreshRestartState();
+      await manager.gracefulShutdown();
+      configureRestartStateStore(undefined);
+      db.close();
+    }
+  });
+
+  it("releases restart waiting and task links when background task creation fails", async () => {
+    const { manager, backend, db, runtimePaths, taskStore } = createManager();
+    const creationGate = createDeferred<void>();
+    const creationError = new Error("Task MCP initialization failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      configureRestartStateStore(runtimePaths);
+      clearRestartPending();
+      await refreshRestartState();
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async (config: any) => {
+        await creationGate.promise;
+        return createFakeSession(config.sessionId, config.tools ?? []);
+      });
+
+      const { sessionId } = await manager.createTaskSession(
+        "task-1",
+        "Task one",
+        [],
+        [],
+        "",
+        undefined,
+        undefined,
+        undefined,
+        { background: true },
+      );
+      taskStore.listTasks.mockReturnValue([{ id: "task-1", sessionIds: [sessionId] }]);
+
+      expect(manager.getActiveSessions()).toEqual([]);
+      expect(manager.getRuntimeActivity().sessions.active).toBe(0);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+      expect(triggerRestartPendingForExternalRequest(manager.getLifecycleBlockingSessionCount())).toBe(1);
+      expect(getRestartWaitingCount()).toBe(1);
+      expect(isRestartImminent()).toBe(false);
+
+      creationGate.reject(creationError);
+      await flushMicrotasks();
+      await vi.waitFor(() => expect(manager.getLifecycleBlockingSessionCount()).toBe(0));
+      await vi.waitFor(() => expect(getRestartWaitingCount()).toBe(0));
+      await vi.waitFor(() => expect(taskStore.unlinkSession).toHaveBeenCalledWith("task-1", sessionId));
+
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+      expect(manager.isSessionWarm(sessionId)).toBe(false);
+      expect(isRestartImminent()).toBe(true);
+      expect(consoleError).toHaveBeenCalledWith(
+        `[sdk] Session ${sessionId} creation failed:`,
+        creationError.message,
+      );
+    } finally {
+      creationGate.reject(creationError);
+      clearRestartPending();
+      await refreshRestartState();
+      await manager.gracefulShutdown();
+      configureRestartStateStore(undefined);
+      db.close();
+    }
+  });
+
   it("releases creation capacity once the session is cached", async () => {
     const { manager, backend, db } = createManager();
     const warmupGate = createDeferred<void>();
@@ -610,12 +765,20 @@ describe("SessionManager native Bridge tools", () => {
       });
 
       const { sessionId } = await manager.createSession({ background: true });
-      const shutdown = manager.gracefulShutdown();
+      expect(manager.getActiveSessions()).toEqual([]);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+
+      const shutdown = manager.gracefulShutdown().then(() => {
+        shutdownCompleted = true;
+      });
+      await Promise.resolve();
+      expect(shutdownCompleted).toBe(false);
+
       creationGate.resolve();
       await shutdown;
-      shutdownCompleted = true;
 
       expect(manager.isSessionWarm(sessionId)).toBe(false);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
       expect(backend.deleteSession).toHaveBeenCalledWith(sessionId);
     } finally {
       creationGate.resolve();
