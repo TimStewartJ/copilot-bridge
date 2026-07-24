@@ -676,6 +676,92 @@ describe("readMessagesFromDisk latest-page path", () => {
       latestTerminalEventId: "terminal-event",
     });
   });
+
+  it("keeps agent-scoped errors nonterminal across the bounded-tail boundary", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-subagent-error-tail");
+    const sessionId = "subagent-error-tail";
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-07-24T17:59:30.500Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        {
+          id: "turn-start-event",
+          type: "assistant.turn_start",
+          timestamp: "2026-07-24T17:54:20.000Z",
+          data: { turnId: "provider-turn-35" },
+        },
+        {
+          id: "agent-tool-start",
+          type: "tool.execution_start",
+          timestamp: "2026-07-24T17:54:28.000Z",
+          data: {
+            toolCallId: "agent-call-1",
+            toolName: "task",
+            arguments: { mode: "sync", agent_type: "code-review" },
+          },
+        },
+        {
+          id: "agent-start",
+          type: "subagent.started",
+          agentId: "agent-call-1",
+          timestamp: "2026-07-24T17:54:28.100Z",
+          data: {
+            toolCallId: "agent-call-1",
+            agentName: "code-review",
+            agentDisplayName: "Code Review Agent",
+          },
+        },
+        {
+          id: "agent-error",
+          type: "session.error",
+          agentId: "agent-call-1",
+          timestamp: "2026-07-24T17:59:30.000Z",
+          data: {
+            errorType: "query",
+            message: "CAPIError: flagged child request",
+          },
+        },
+        {
+          id: "agent-complete",
+          type: "subagent.completed",
+          agentId: "agent-call-1",
+          timestamp: "2026-07-24T17:59:30.010Z",
+          data: { toolCallId: "agent-call-1" },
+        },
+        {
+          id: "agent-tool-complete",
+          type: "tool.execution_complete",
+          timestamp: "2026-07-24T17:59:30.020Z",
+          data: { toolCallId: "agent-call-1", success: true, result: "" },
+        },
+        ...padding,
+        {
+          id: "parent-response",
+          type: "assistant.message",
+          timestamp: "2026-07-24T18:00:00.000Z",
+          data: { content: "Parent continued." },
+        },
+      ],
+    });
+    const { deps } = createDeps(copilotHome);
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
+
+    expect(result.messages).toMatchObject([
+      {
+        content: "Parent continued.",
+        turnId: "provider-turn-35",
+        sourceEventId: "parent-response",
+      },
+    ]);
+    expect(result.coverage).toEqual({
+      latestEventId: "parent-response",
+      latestTurnId: "provider-turn-35",
+    });
+  });
 });
 
 describe("readMessagesFromDisk older-page pagination", () => {

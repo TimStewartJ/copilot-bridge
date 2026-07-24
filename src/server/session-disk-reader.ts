@@ -22,6 +22,7 @@ import {
   getAssistantTurnInstanceId,
   getSdkEventId,
   getSdkTurnId,
+  isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
@@ -51,6 +52,8 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [
 ];
 
 const TURN_TERMINAL_EVENT_TYPES = TERMINAL_TURN_EVENT_TYPES;
+const isTurnTerminalEvent = (event: any): boolean =>
+  TURN_TERMINAL_EVENT_TYPES.has(event?.type) && !isSdkSubagentSessionError(event);
 
 export interface SessionDiskReaderDeps {
   copilotHome?: string;
@@ -374,7 +377,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
       turnIndex += 1;
       latestTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
     }
-    if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && eventId) {
+    if (isTurnTerminalEvent(event) && eventId) {
       latestTerminalEventId = eventId;
     }
     if (
@@ -392,7 +395,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
           event,
           `turn-instance-${initialTurnIndex}`,
         );
-      } else if (TURN_TERMINAL_EVENT_TYPES.has(event.type)) {
+      } else if (isTurnTerminalEvent(event)) {
         initialActiveTurnId = undefined;
         initialActiveTurnInstanceId = undefined;
       }
@@ -429,12 +432,12 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
       return;
     }
 
-    if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && pendingTerminalCompletionEntry) {
+    if (isTurnTerminalEvent(event) && pendingTerminalCompletionEntry) {
       totalEntries += 1;
       pendingTerminalCompletionEntry = false;
     }
 
-    if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && openVisibleToolCallIds.size > 0) {
+    if (isTurnTerminalEvent(event) && openVisibleToolCallIds.size > 0) {
       openVisibleToolCallIds.clear();
     }
   };
@@ -622,7 +625,7 @@ export function getSessionHistoryCoverage(events: readonly unknown[]): SessionHi
         fallbackTurnIndex += 1;
         latestTurnId = getSdkTurnId(event) ?? `turn-${fallbackTurnIndex}`;
       }
-      if (typeof type === "string" && TURN_TERMINAL_EVENT_TYPES.has(type) && eventId) {
+      if (typeof type === "string" && isTurnTerminalEvent(event) && eventId) {
         latestTerminalEventId = eventId;
       }
     }

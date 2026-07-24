@@ -57,8 +57,10 @@ import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
 import {
   getAssistantTurnInstanceId,
+  getSdkAgentId,
   getSdkEventId,
   getSdkTurnId,
+  isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 
@@ -660,6 +662,7 @@ export class SessionRunner {
     const subAgentToolCallIds = new Set<string>();
     const subAgentTurnIdMap = new Map<string, string>();
     const subAgentResponseMap = new Map<string, string>();
+    const subAgentErrors = new Map<string, string>();
     const activeExternalTools = new Map<string, ActiveExternalToolCall>();
     const contextTelemetryProvider = this.client?.id ?? "copilot";
     const contextTelemetryProviderSessionId = sessionId;
@@ -768,17 +771,20 @@ export class SessionRunner {
     const publishContextSummary = (summary: ReturnType<SessionContextStore["getSummary"]>): void => {
       if (summary) bus.emit({ type: "context_update", summary });
     };
-    const getSubagentContextTurnId = (data: any): string | undefined => {
+    const getSubagentContextTurnId = (event: any): string | undefined => {
+      const data = event?.data;
+      const agentId = getSdkAgentId(event);
       const toolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
       const parentToolCallId = typeof data?.parentToolCallId === "string" ? data.parentToolCallId : undefined;
-      return (toolCallId ? subAgentTurnIdMap.get(toolCallId) : undefined)
+      return (agentId ? subAgentTurnIdMap.get(agentId) : undefined)
+        ?? (toolCallId ? subAgentTurnIdMap.get(toolCallId) : undefined)
         ?? (parentToolCallId ? subAgentTurnIdMap.get(parentToolCallId) : undefined);
     };
     const recordLiveContextTelemetry = (event: any): void => {
       const store = this.deps.sessionContextStore;
       if (!store) return;
       const data = event?.data;
-      const subagentTurnId = getSubagentContextTurnId(data);
+      const subagentTurnId = getSubagentContextTurnId(event);
       const bridgeTurnId = subagentTurnId ?? currentBridgeTurnId;
       const attribution = subagentTurnId
         ? "subagent_turn"
@@ -906,6 +912,22 @@ export class SessionRunner {
         ...metadata,
       }, now);
     };
+    const completeSessionError = (event: any, context: SessionEventHandlingContext) => {
+      if (runController.isCompleted()) return;
+      const data = event?.data;
+      console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
+      endCurrentContextTurn(event);
+      recordRunCompletion(event, context, "error", {
+        errorMessagePresent: typeof data?.message === "string",
+        errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
+      });
+      recordCompletionAttention("error", event);
+      runController.completeError(data?.message ?? "unknown", {
+        sourceEventId: getSdkEventId(event),
+      });
+    };
+    const isLiveRunTerminalEvent = (event: any): boolean =>
+      LIVE_RUN_TERMINAL_EVENT_TYPES.has(event?.type) && !isSdkSubagentSessionError(event);
     const hasPersistedRecoveryConflictAfterTurnEnd = () =>
       lastLiveTurnEndAt !== undefined && persistedRecoveryConflictEventsAfterLastLiveTurnEnd > 0;
     const isPersistedTurnEndConflictEvent = (event: any): boolean => {
@@ -916,7 +938,7 @@ export class SessionRunner {
     const noteLiveEvent = (event: any, eventAt: number, origin: SessionEventOrigin) => {
       const eventType = typeof event?.type === "string" ? event.type : undefined;
       if (!eventType) return;
-      if (lastLiveTurnEndAt !== undefined && eventType !== "assistant.turn_end" && !LIVE_RUN_TERMINAL_EVENT_TYPES.has(eventType)) {
+      if (lastLiveTurnEndAt !== undefined && eventType !== "assistant.turn_end" && !isLiveRunTerminalEvent(event)) {
         eventsAfterLastLiveTurnEnd += 1;
       }
       if (lastLiveTurnEndAt !== undefined && LIVE_TURN_END_FOLLOWUP_EVENT_TYPES.has(eventType)) {
@@ -1003,7 +1025,7 @@ export class SessionRunner {
       if (context.origin === "live") {
         noteLiveEvent(event, eventAt, context.origin);
       }
-      const isTerminalEvent = LIVE_RUN_TERMINAL_EVENT_TYPES.has(event.type);
+      const isTerminalEvent = isLiveRunTerminalEvent(event);
       if (!isTerminalEvent) {
         lastEventTime = eventAt;
         this.touchSessionRun(sessionId, eventAt);
@@ -1249,13 +1271,17 @@ export class SessionRunner {
         case "tool.execution_complete": {
           clearExternalToolsForToolCall(data?.toolCallId, eventAt);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
-          const ok = data?.success !== false;
-          const isAgent = subAgentMap.has(data?.toolCallId);
+          const subAgentError = typeof data?.toolCallId === "string"
+            ? subAgentErrors.get(data.toolCallId)
+            : undefined;
+          const ok = subAgentError ? false : data?.success !== false;
+          const isAgent = subAgentMap.has(data?.toolCallId) || subAgentError !== undefined;
           const agentDisplayName = subAgentMap.get(data?.toolCallId);
-          const result = getToolExecutionDisplayText(data, {
+          const result = subAgentError ?? getToolExecutionDisplayText(data, {
             subAgentResponse: isAgent ? subAgentResponseMap.get(data?.toolCallId) : undefined,
           });
-          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${isAgent ? agentDisplayName : completedToolName} (${ok ? "ok" : "failed"})`);
+          const displayName = isAgent ? (agentDisplayName ?? "🤖 agent") : completedToolName;
+          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${displayName} (${ok ? "ok" : "failed"})`);
           const toolStart = toolStartTimes.get(data?.toolCallId);
           if (toolStart) {
             this.recordSpan("tool.execution", Date.now() - toolStart, sessionId, {
@@ -1268,9 +1294,9 @@ export class SessionRunner {
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
-            name: isAgent ? agentDisplayName : completedToolName,
+            name: displayName,
             result,
-            success: data?.success,
+            success: subAgentError ? false : data?.success,
             isSubAgent: isAgent || undefined,
             timestamp: event.timestamp,
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
@@ -1280,6 +1306,11 @@ export class SessionRunner {
             && subAgentToolCallIds.delete(data.toolCallId)
           ) {
             void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId, data.toolCallId);
+          }
+          if (typeof data?.toolCallId === "string") {
+            subAgentMap.delete(data.toolCallId);
+            subAgentResponseMap.delete(data.toolCallId);
+            subAgentErrors.delete(data.toolCallId);
           }
           break;
         }
@@ -1327,9 +1358,12 @@ export class SessionRunner {
             });
           }
           if (subagentToolCallId) {
-            subAgentMap.delete(subagentToolCallId);
             subAgentTurnIdMap.delete(subagentToolCallId);
-            subAgentResponseMap.delete(subagentToolCallId);
+            if (!toolStartTimes.has(subagentToolCallId)) {
+              subAgentMap.delete(subagentToolCallId);
+              subAgentResponseMap.delete(subagentToolCallId);
+              subAgentErrors.delete(subagentToolCallId);
+            }
           }
           this.refreshSessionAgents(sessionId, event.type);
           break;
@@ -1355,18 +1389,26 @@ export class SessionRunner {
           endCurrentContextTurn(event);
           break;
         }
-        case "session.error":
-          console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
-          endCurrentContextTurn(event);
-          recordRunCompletion(event, context, "error", {
-            errorMessagePresent: typeof data?.message === "string",
-            errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
-          });
-          recordCompletionAttention("error", event);
-          runController.completeError(data?.message ?? "unknown", {
-            sourceEventId: getSdkEventId(event),
-          });
+        case "session.error": {
+          const agentId = getSdkAgentId(event);
+          if (agentId) {
+            if (typeof data?.message === "string" && data.message) {
+              subAgentErrors.set(agentId, data.message);
+            }
+            console.warn(
+              `[sdk] [${sid}] Subagent ${agentId} error did not terminate the parent run: ${data?.message ?? "unknown"}`,
+            );
+            recordRunSpan("session.subagent.error", 0, {
+              subagentTracked: subAgentMap.has(agentId),
+              errorType: typeof data?.errorType === "string" ? data.errorType : undefined,
+              errorMessagePresent: typeof data?.message === "string",
+              errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
+            }, eventAt);
+            break;
+          }
+          completeSessionError(event, context);
           break;
+        }
         case "abort": {
           const reason = data?.reason ?? "user initiated";
           console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);

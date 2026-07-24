@@ -9,8 +9,10 @@ import {
 } from "../shared/terminal-completion.js";
 import {
   getAssistantTurnInstanceId,
+  getSdkAgentId,
   getSdkEventId,
   getSdkTurnId,
+  isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 
 // Shared event→entry transform logic
@@ -67,7 +69,8 @@ export interface TransformedEntry {
 }
 
 function isTurnTerminalEvent(event: any): boolean {
-  return isTerminalTurnEventType(event?.type);
+  return isTerminalTurnEventType(event?.type)
+    && !isSdkSubagentSessionError(event);
 }
 
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
@@ -411,6 +414,7 @@ export function transformEventsToMessages(
   const openToolCallIds = new Set<string>();
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
   const subAgentResponses = new Map<string, string>();
+  const subAgentErrors = new Map<string, string>();
   const toolNames = new Map<string, string>();
   const assistantForkBoundaries = getAssistantForkBoundaries(events);
   // Detect visual artifact publications from publish_visual tool completions
@@ -442,6 +446,11 @@ export function transformEventsToMessages(
       subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
     } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
       subAgentResponses.set(data.parentToolCallId, data.content);
+    } else if (event.type === "session.error" && getSdkAgentId(event)) {
+      const agentId = getSdkAgentId(event)!;
+      if (typeof data?.message === "string" && data.message) {
+        subAgentErrors.set(agentId, data.message);
+      }
     } else if (isTurnTerminalEvent(event)) {
       for (const toolCallId of openToolCallIds) {
         toolCompletes.set(toolCallId, {
@@ -558,6 +567,7 @@ export function transformEventsToMessages(
       if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
       const subAgent = subAgentStarts.get(data.toolCallId);
       const complete = toolCompletes.get(data.toolCallId);
+      const subAgentError = subAgentErrors.get(data.toolCallId);
       const isSubAgent = !!subAgent;
       entries.push({
         id: `entry-${idx++}`,
@@ -569,11 +579,11 @@ export function transformEventsToMessages(
           toolCallId: data.toolCallId,
           name: isSubAgent ? `🤖 ${subAgent!.agentDisplayName ?? subAgent!.agentName ?? "agent"}` : toolName,
           args: data.arguments,
-          result: isSubAgent && complete?.success !== false
+          result: subAgentError ?? (isSubAgent && complete?.success !== false
             ? (subAgentResponses.get(data.toolCallId) ?? complete?.result)
-            : complete?.result,
+            : complete?.result),
           progressText: toolProgress.get(data.toolCallId),
-          success: complete?.success,
+          success: subAgentError ? false : complete?.success,
           parentToolCallId: data.parentToolCallId,
           isSubAgent: isSubAgent || undefined,
           startedAt: (event as any).timestamp,

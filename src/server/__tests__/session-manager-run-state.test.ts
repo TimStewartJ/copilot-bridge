@@ -446,6 +446,160 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("keeps the parent run active when a subagent query errors", async () => {
+    const sessionId = "session-sync-subagent-query-error";
+    const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    const received: any[] = [];
+    bus.subscribe((event) => received.push(event));
+    manager.startWork(sessionId, "review the validator");
+    await flushMicrotasks();
+    const handler = getHandler();
+    const baseTime = Date.now();
+
+    handler?.({
+      type: "assistant.turn_start",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    handler?.({
+      type: "tool.execution_start",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: {
+        toolCallId: "sync-agent-1",
+        toolName: "task",
+        arguments: { mode: "sync", agent_type: "code-review" },
+      },
+    });
+    handler?.({
+      type: "subagent.started",
+      timestamp: new Date(baseTime + 3_000).toISOString(),
+      data: { toolCallId: "sync-agent-1", agentName: "code-review" },
+    });
+    handler?.({
+      id: "subagent-query-error-1",
+      type: "session.error",
+      agentId: "sync-agent-1",
+      timestamp: new Date(baseTime + 4_000).toISOString(),
+      data: {
+        errorType: "query",
+        message: "CAPIError: flagged child request",
+      },
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getSnapshot().complete).toBe(false);
+    expect(latestSpanMetadata(telemetryStore, "session.subagent.error", sessionId)).toMatchObject({
+      subagentTracked: true,
+      errorType: "query",
+    });
+
+    handler?.({
+      type: "subagent.completed",
+      timestamp: new Date(baseTime + 4_010).toISOString(),
+      data: { toolCallId: "sync-agent-1" },
+    });
+    handler?.({
+      type: "tool.execution_complete",
+      timestamp: new Date(baseTime + 4_020).toISOString(),
+      data: { toolCallId: "sync-agent-1", success: true, result: "" },
+    });
+    expect(received).toContainEqual(expect.objectContaining({
+      type: "tool_done",
+      toolCallId: "sync-agent-1",
+      name: "🤖 code-review",
+      result: "CAPIError: flagged child request",
+      success: false,
+      isSubAgent: true,
+    }));
+    handler?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 5_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    handler?.({
+      type: "assistant.turn_start",
+      timestamp: new Date(baseTime + 6_000).toISOString(),
+      data: { turnId: "2" },
+    });
+    handler?.({
+      id: "parent-response-1",
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 7_000).toISOString(),
+      data: { content: "Parent continued successfully." },
+    });
+    handler?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 8_000).toISOString(),
+      data: { turnId: "2" },
+    });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    handler?.({
+      id: "parent-idle-1",
+      type: "session.idle",
+      timestamp: new Date(baseTime + 9_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      complete: true,
+      terminalType: "done",
+      finalContent: "Parent continued successfully.",
+    });
+  });
+
+  it("keeps root query errors terminal while a background subagent is active", async () => {
+    const sessionId = "session-background-subagent-root-error";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "start a background review");
+    await flushMicrotasks();
+    const handler = getHandler();
+
+    handler?.({
+      type: "tool.execution_start",
+      data: {
+        toolCallId: "background-agent-1",
+        toolName: "task",
+        arguments: { mode: "background", agent_type: "code-review" },
+      },
+    });
+    handler?.({
+      type: "subagent.started",
+      data: { toolCallId: "background-agent-1", agentName: "code-review" },
+    });
+    handler?.({
+      id: "root-query-error-1",
+      type: "session.error",
+      data: {
+        errorType: "query",
+        message: "Root request failed",
+      },
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      complete: true,
+      terminalType: "error",
+      errorMessage: "Root request failed",
+    });
+  });
+
   it("records usage after turn end as session overhead", async () => {
     const { manager, sessionContextStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
@@ -2418,6 +2572,128 @@ describe("SessionManager run state", () => {
     expect(bus.getSnapshot()).toMatchObject({
       terminalType: "done",
       finalContent: "finished",
+    });
+  });
+
+  it("does not recover a persisted subagent error as a parent terminal", async () => {
+    const tmpDir = makeTestDir("persisted-subagent-error");
+    const sessionId = "session-persisted-subagent-error";
+    const sessionStateDir = join(tmpDir, "session-state", sessionId);
+    mkdirSync(sessionStateDir, { recursive: true });
+
+    const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
+    const initial = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(initial.session) };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "run a reviewer");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    writeFileSync(join(sessionStateDir, "events.jsonl"), [
+      JSON.stringify({
+        type: "tool.execution_start",
+        timestamp: new Date(baseTime + 500).toISOString(),
+        data: {
+          toolCallId: "persisted-agent-1",
+          toolName: "task",
+          arguments: { mode: "sync", agent_type: "code-review" },
+        },
+      }),
+      JSON.stringify({
+        type: "subagent.started",
+        agentId: "persisted-agent-1",
+        timestamp: new Date(baseTime + 750).toISOString(),
+        data: { toolCallId: "persisted-agent-1", agentName: "code-review" },
+      }),
+      JSON.stringify({
+        id: "persisted-subagent-error-1",
+        type: "session.error",
+        agentId: "persisted-agent-1",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        data: {
+          errorType: "query",
+          message: "CAPIError: flagged child request",
+        },
+      }),
+    ].join("\n") + "\n");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getSnapshot().complete).toBe(false);
+
+    initial.getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 61_000).toISOString(),
+      data: { content: "Parent recovered." },
+    });
+    initial.getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 62_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "done",
+      finalContent: "Parent recovered.",
+    });
+  });
+
+  it("keeps a persisted root error terminal when a later subagent error is recorded", async () => {
+    const tmpDir = makeTestDir("persisted-root-then-subagent-error");
+    const sessionId = "session-persisted-root-then-subagent-error";
+    const sessionStateDir = join(tmpDir, "session-state", sessionId);
+    mkdirSync(sessionStateDir, { recursive: true });
+
+    const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
+    const initial = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(initial.session) };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "run parent and child work");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    writeFileSync(join(sessionStateDir, "events.jsonl"), [
+      JSON.stringify({
+        id: "persisted-root-error",
+        type: "session.error",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        data: {
+          errorType: "query",
+          message: "Root request failed",
+        },
+      }),
+      JSON.stringify({
+        id: "persisted-child-error",
+        type: "session.error",
+        agentId: "background-agent-1",
+        timestamp: new Date(baseTime + 2_000).toISOString(),
+        data: {
+          errorType: "query",
+          message: "Child request also failed",
+        },
+      }),
+    ].join("\n") + "\n");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "error",
+      errorMessage: "Root request failed",
+      terminalEventId: "persisted-root-error",
     });
   });
 
