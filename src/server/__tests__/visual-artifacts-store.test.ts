@@ -10,11 +10,12 @@ import {
   MAX_MERMAID_SOURCE_CHARS,
   isAllowedImageMime,
   isCanonicalArtifactId,
-  loadVisualArtifactMeta,
+  loadVisualArtifactMetaForOwner,
   publishHtmlArtifact,
   publishMermaidArtifact,
   publishVisualArtifact,
-  resolveVisualArtifact,
+  resolveVisualArtifactForOwner,
+  sessionVisualOwner,
 } from "../visual-artifacts.js";
 
 const SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -206,7 +207,7 @@ describe("publishVisualArtifact", () => {
   });
 });
 
-describe("resolveVisualArtifact", () => {
+describe("resolveVisualArtifactForOwner", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
@@ -238,7 +239,11 @@ describe("resolveVisualArtifact", () => {
     expect(published.ok).toBe(true);
     if (!published.ok) return;
 
-    const resolved = resolveVisualArtifact(copilotHome, SESSION_ID, published.value.artifactId);
+    const resolved = resolveVisualArtifactForOwner(
+      copilotHome,
+      sessionVisualOwner(SESSION_ID),
+      published.value.artifactId,
+    );
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.value.mimeType).toBe("image/png");
@@ -247,9 +252,9 @@ describe("resolveVisualArtifact", () => {
 
   it("returns error for non-existent artifact", () => {
     const copilotHome = makeTmpDir();
-    const result = resolveVisualArtifact(
+    const result = resolveVisualArtifactForOwner(
       copilotHome,
-      SESSION_ID,
+      sessionVisualOwner(SESSION_ID),
       "550e8400-e29b-41d4-a716-446655440000",
     );
     expect(result.ok).toBe(false);
@@ -257,13 +262,13 @@ describe("resolveVisualArtifact", () => {
 
   it("returns error for invalid artifactId", () => {
     const copilotHome = makeTmpDir();
-    const result = resolveVisualArtifact(copilotHome, SESSION_ID, "../evil");
+    const result = resolveVisualArtifactForOwner(copilotHome, sessionVisualOwner(SESSION_ID), "../evil");
     expect(result.ok).toBe(false);
     expect((result as any).error).toMatch(/invalid/);
   });
 });
 
-describe("loadVisualArtifactMeta", () => {
+describe("loadVisualArtifactMetaForOwner", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
@@ -296,7 +301,11 @@ describe("loadVisualArtifactMeta", () => {
     expect(published.ok).toBe(true);
     if (!published.ok) return;
 
-    const meta = loadVisualArtifactMeta(copilotHome, SESSION_ID, published.value.artifactId);
+    const meta = loadVisualArtifactMetaForOwner(
+      copilotHome,
+      sessionVisualOwner(SESSION_ID),
+      published.value.artifactId,
+    );
     expect(meta.ok).toBe(true);
     if (!meta.ok) return;
     expect(meta.value.title).toBe("WebP Image");
@@ -417,7 +426,7 @@ describe("publishMermaidArtifact", () => {
     expect((result as any).error).toMatch(/title/);
   });
 
-  it("resolves a published mermaid artifact via resolveVisualArtifact", () => {
+  it("resolves a published mermaid artifact via resolveVisualArtifactForOwner", () => {
     const copilotHome = makeTmpDir();
     const source = "pie\n  \"A\" : 50\n  \"B\" : 50";
 
@@ -430,7 +439,11 @@ describe("publishMermaidArtifact", () => {
     expect(published.ok).toBe(true);
     if (!published.ok) return;
 
-    const resolved = resolveVisualArtifact(copilotHome, SESSION_ID, published.value.artifactId);
+    const resolved = resolveVisualArtifactForOwner(
+      copilotHome,
+      sessionVisualOwner(SESSION_ID),
+      published.value.artifactId,
+    );
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.value.mimeType).toBe(MERMAID_MIME_TYPE);
@@ -567,7 +580,7 @@ describe("publishHtmlArtifact", () => {
     expect((result as any).error).toMatch(/title/);
   });
 
-  it("resolves a published HTML artifact via resolveVisualArtifact", () => {
+  it("resolves a published HTML artifact via resolveVisualArtifactForOwner", () => {
     const copilotHome = makeTmpDir();
     const content = "<html><body>Hello</body></html>";
 
@@ -580,7 +593,11 @@ describe("publishHtmlArtifact", () => {
     expect(published.ok).toBe(true);
     if (!published.ok) return;
 
-    const resolved = resolveVisualArtifact(copilotHome, SESSION_ID, published.value.artifactId);
+    const resolved = resolveVisualArtifactForOwner(
+      copilotHome,
+      sessionVisualOwner(SESSION_ID),
+      published.value.artifactId,
+    );
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.value.mimeType).toBe(HTML_MIME_TYPE);
