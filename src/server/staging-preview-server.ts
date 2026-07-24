@@ -121,6 +121,17 @@ async function main(): Promise<void> {
   });
 
   await ctx.sessionManager.initialize();
+  try {
+    const voiceJobMaintenance = await ctx.voiceJobManager.startMaintenance();
+    if (voiceJobMaintenance.terminalRowsPruned > 0 || voiceJobMaintenance.orphanDirectoriesRemoved > 0) {
+      console.log(
+        `[voice-jobs] Pruned ${voiceJobMaintenance.terminalRowsPruned} terminal row(s) and removed `
+        + `${voiceJobMaintenance.orphanDirectoriesRemoved} orphan director${voiceJobMaintenance.orphanDirectoriesRemoved === 1 ? "y" : "ies"}`,
+      );
+    }
+  } catch (error) {
+    console.error("[voice-jobs] Initial maintenance failed:", error);
+  }
   ctx.voiceJobManager.resumePendingJobs();
   initializeSchedulerAndDeferredRunners(ctx);
 

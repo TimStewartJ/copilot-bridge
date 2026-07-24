@@ -33,6 +33,8 @@ interface VoiceJobCreate {
 }
 
 const RELEVANT_STATUSES: readonly VoiceJobStatus[] = ["accepted", "transcribing", "sending", "error"];
+const TERMINAL_STATUSES: readonly VoiceJobStatus[] = ["done", "error", "recovered"];
+
 export function createVoiceJobStore(db: DatabaseSync) {
   function hydrate(row: any): StoredVoiceJob {
     return {
@@ -123,10 +125,34 @@ export function createVoiceJobStore(db: DatabaseSync) {
     const rows = db.prepare(`
       SELECT * FROM voice_jobs
       WHERE status IN ('accepted', 'transcribing', 'sending')
-         OR (status = 'error' AND transcript IS NULL)
       ORDER BY createdAt ASC
     `).all() as any[];
     return rows.map(hydrate);
+  }
+
+  function listTerminalVoiceJobs(): StoredVoiceJob[] {
+    const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
+    const rows = db.prepare(`
+      SELECT * FROM voice_jobs
+      WHERE status IN (${placeholders})
+      ORDER BY updatedAt ASC
+    `).all(...TERMINAL_STATUSES) as any[];
+    return rows.map(hydrate);
+  }
+
+  function listVoiceJobIds(): string[] {
+    const rows = db.prepare("SELECT id FROM voice_jobs").all() as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
+  function pruneTerminalVoiceJobs(updatedBefore: string): number {
+    const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
+    const result = db.prepare(`
+      DELETE FROM voice_jobs
+      WHERE status IN (${placeholders})
+        AND updatedAt < ?
+    `).run(...TERMINAL_STATUSES, updatedBefore);
+    return Number(result.changes ?? 0);
   }
 
   function findLatestRelevantForComposer(composerKey: string): StoredVoiceJob | undefined {
@@ -148,6 +174,9 @@ export function createVoiceJobStore(db: DatabaseSync) {
     markError,
     markRecovered,
     listPendingVoiceJobs,
+    listTerminalVoiceJobs,
+    listVoiceJobIds,
+    pruneTerminalVoiceJobs,
     findLatestRelevantForComposer,
   };
 }
