@@ -295,14 +295,6 @@ export function resolveVisualArtifactForOwner(
   return ok({ filePath: realPath, displayName: meta.displayName, mimeType: meta.mimeType });
 }
 
-export function resolveVisualArtifact(
-  copilotHome: string,
-  sessionId: string,
-  artifactId: string,
-): Result<ResolvedVisualArtifact> {
-  return resolveVisualArtifactForOwner(copilotHome, sessionVisualOwner(sessionId), artifactId);
-}
-
 export function loadVisualArtifactMetaForOwner(
   copilotHome: string,
   owner: VisualArtifactOwner,
@@ -322,14 +314,6 @@ export function loadVisualArtifactMetaForOwner(
   } catch {
     return err("Visual artifact metadata is corrupted");
   }
-}
-
-export function loadVisualArtifactMeta(
-  copilotHome: string,
-  sessionId: string,
-  artifactId: string,
-): Result<VisualArtifactMeta> {
-  return loadVisualArtifactMetaForOwner(copilotHome, sessionVisualOwner(sessionId), artifactId);
 }
 
 export function deleteVisualArtifactForOwner(
