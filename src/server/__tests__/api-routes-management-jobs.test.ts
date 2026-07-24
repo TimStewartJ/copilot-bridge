@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { rmSync, writeFileSync } from "node:fs";
 import { request } from "./api-routes-test-helpers.js";
 import { createTestApp, makeTestDir } from "./helpers.js";
-import { createManagementJobStore, type ManagementJobStore } from "../management-job-store.js";
+import {
+  createManagementJobStore,
+  ManagementJobNotCancellableError,
+  type ManagementJobStore,
+} from "../management-job-store.js";
 import { clearRestartPending, triggerRestartPending } from "../restart-controller.js";
 
 function createManagementJobApiTestApp(): ReturnType<typeof createTestApp> & { store: ManagementJobStore } {
@@ -119,19 +123,49 @@ describe("management job API routes", () => {
 
     expect(cancelled.status).toBe(200);
     expect(cancelled.body.status).toBe("cancelled");
-    expect(store.get(queued.id)?.status).toBe("cancelled");
+    expect(cancelled.body.cancelRequestedAt).toEqual(expect.any(String));
+    expect(cancelled.body.completedAt).toBe(cancelled.body.cancelRequestedAt);
+    expect(store.get(queued.id)).toMatchObject({
+      status: "cancelled",
+      cancelRequestedAt: cancelled.body.cancelRequestedAt,
+      completedAt: cancelled.body.completedAt,
+    });
 
     const terminal = await request(app).post(`/api/management-jobs/${queued.id}/cancel`);
     expect(terminal.status).toBe(409);
+    expect(terminal.body.error).toBe("Cannot cancel terminal management jobs.");
     expect(terminal.body.job.status).toBe("cancelled");
 
     const running = store.enqueue("staging_preview", { stagingDir: "cancel-running" });
     expect(store.claimNext({ runnerPid: 7 })?.id).toBe(running.id);
+    const runningBefore = store.get(running.id);
 
     const runningCancel = await request(app).post(`/api/management-jobs/${running.id}/cancel`);
     expect(runningCancel.status).toBe(409);
+    expect(runningCancel.body.error).toBe("Cannot cancel running management jobs.");
     expect(runningCancel.body.job.status).toBe("running");
-    expect(store.get(running.id)?.cancelRequestedAt).toBeUndefined();
+    expect(store.get(running.id)).toEqual(runningBefore);
+  });
+
+  it("returns 409 when queued cancellation loses a status race", async () => {
+    const { app, store } = createManagementJobApiTestApp();
+    const queued = store.enqueue("staging_preview", { stagingDir: "cancel-race" });
+    const cancelSpy = vi.spyOn(store, "cancel").mockImplementationOnce((id) => {
+      const claimed = store.claimNext({ runnerPid: 8 });
+      if (!claimed || claimed.id !== id) throw new Error("expected queued job to become running");
+      throw new ManagementJobNotCancellableError(claimed);
+    });
+
+    const response = await request(app).post(`/api/management-jobs/${queued.id}/cancel`);
+
+    expect(cancelSpy).toHaveBeenCalledWith(queued.id, "Cancelled from Management Jobs UI.");
+    expect(response.status).toBe(409);
+    expect(response.body.error).toBe("Cannot cancel running management jobs.");
+    expect(response.body.job.status).toBe("running");
+    expect(store.get(queued.id)).toMatchObject({
+      status: "running",
+      cancelRequestedAt: undefined,
+    });
   });
 
   it("rejects cross-site cancel and retry mutations", async () => {

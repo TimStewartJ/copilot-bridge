@@ -83,6 +83,16 @@ export class ActiveManagementJobError extends Error {
   }
 }
 
+export class ManagementJobNotCancellableError extends Error {
+  readonly job: ManagementJob;
+
+  constructor(job: ManagementJob) {
+    super(`Only queued management jobs can be cancelled; ${job.id} is ${job.status}.`);
+    this.name = "ManagementJobNotCancellableError";
+    this.job = job;
+  }
+}
+
 const ACTIVE_STATUSES: readonly ManagementJobStatus[] = ["queued", "running"];
 const EXCLUSIVE_DEPLOY_TYPES: readonly ManagementJobType[] = ["self_update", "staging_deploy"];
 export const DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
@@ -454,27 +464,24 @@ export function createManagementJobStore(
         const row = getJobRow(db, id);
         if (!row) return null;
         const job = rowToJob(row);
+        if (job.status !== "queued") throw new ManagementJobNotCancellableError(job);
+
         const timestamp = nowIso(now);
-        if (job.status === "queued") {
-          db.prepare(`
-            UPDATE management_jobs
-            SET status = 'cancelled',
-                error = ?,
-                cancelRequestedAt = ?,
-                completedAt = ?,
-                updatedAt = ?
-            WHERE id = ?
-          `).run(reason, timestamp, timestamp, timestamp, id);
-        } else if (job.status === "running") {
-          db.prepare(`
-            UPDATE management_jobs
-            SET cancelRequestedAt = ?,
-                updatedAt = ?
-            WHERE id = ?
-          `).run(timestamp, timestamp, id);
-        }
+        db.prepare(`
+          UPDATE management_jobs
+          SET status = 'cancelled',
+              error = ?,
+              cancelRequestedAt = ?,
+              completedAt = ?,
+              updatedAt = ?
+          WHERE id = ?
+            AND status = 'queued'
+        `).run(reason, timestamp, timestamp, timestamp, id);
         const updated = getJobRow(db, id);
-        return updated ? rowToJob(updated) : null;
+        if (!updated || updated.status !== "cancelled") {
+          throw new Error(`Failed to cancel management job ${id}; current status is ${updated?.status ?? "missing"}.`);
+        }
+        return rowToJob(updated);
       });
     },
 

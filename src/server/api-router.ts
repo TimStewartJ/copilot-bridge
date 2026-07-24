@@ -114,6 +114,7 @@ import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutat
 import {
   isManagementJobStatus,
   isManagementJobType,
+  ManagementJobNotCancellableError,
   MAX_MANAGEMENT_JOB_LIST_LIMIT,
   type ManagementJob,
   type ManagementJobStatus,
@@ -936,6 +937,20 @@ function managementJobConflictBody(
     error: message,
     job: toManagementJobSummaryResponse(job, { now, staleAfterMs }),
   };
+}
+
+function managementJobCancellationConflictBody(
+  job: ManagementJob,
+  now: Date,
+  staleAfterMs: number,
+): ReturnType<typeof managementJobConflictBody> {
+  const target = job.status === "running" ? "running" : "terminal";
+  return managementJobConflictBody(
+    `Cannot cancel ${target} management jobs.`,
+    job,
+    now,
+    staleAfterMs,
+  );
 }
 
 export interface ApiRouterOptions {
@@ -4591,13 +4606,7 @@ export function createApiRouter(
       const now = new Date();
       const staleAfterMs = managementJobStaleAfterMs();
       if (job.status !== "queued") {
-        const target = job.status === "running" ? "running" : "terminal";
-        return res.status(409).json(managementJobConflictBody(
-          `Cannot cancel ${target} management jobs yet.`,
-          job,
-          now,
-          staleAfterMs,
-        ));
+        return res.status(409).json(managementJobCancellationConflictBody(job, now, staleAfterMs));
       }
 
       const cancelled = store.cancel(job.id, "Cancelled from Management Jobs UI.");
@@ -4609,6 +4618,13 @@ export function createApiRouter(
         logTail: store.readLogTail(cancelled),
       }));
     } catch (err) {
+      if (err instanceof ManagementJobNotCancellableError) {
+        return res.status(409).json(managementJobCancellationConflictBody(
+          err.job,
+          new Date(),
+          managementJobStaleAfterMs(),
+        ));
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
