@@ -82,8 +82,8 @@ function enabled(env: NodeJS.ProcessEnv): boolean {
   return !/^(0|false|no|off)$/i.test(env.BRIDGE_ENABLE_TUNNEL || "");
 }
 
-export function buildTunnelHostArgs(name: string, port: number): string[] {
-  return ["host", name, "--port-number", String(port)];
+export function buildTunnelHostArgs(name: string, _port: number): string[] {
+  return ["host", name];
 }
 
 export function resolveTunnelName(env: NodeJS.ProcessEnv = process.env): string {
@@ -359,6 +359,9 @@ export class TunnelSupervisor {
       : Promise.resolve(null);
 
     const urlPromise = this.waitForUrl(child, generation);
+    // The CLI can exit before process identity capture completes. Mark the
+    // rejection handled immediately; the awaited promise still drives retries.
+    void urlPromise.catch(() => undefined);
     const startingIdentity = await this.identity;
     if (
       startingIdentity

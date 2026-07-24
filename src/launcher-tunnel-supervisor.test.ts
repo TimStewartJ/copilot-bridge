@@ -123,14 +123,12 @@ afterEach(() => {
 });
 
 describe("TunnelSupervisor", () => {
-  it("uses one stable default name and explicit host arguments", () => {
+  it("uses one stable default name without mutating persistent tunnel ports", () => {
     expect(resolveTunnelName({})).toBe("copilot-bridge");
     expect(resolveTunnelName({ BRIDGE_TUNNEL_NAME: "Tim-Bridge" })).toBe("tim-bridge");
     expect(buildTunnelHostArgs("tim-bridge", 3333)).toEqual([
       "host",
       "tim-bridge",
-      "--port-number",
-      "3333",
     ]);
     expect(() => resolveTunnelName({ BRIDGE_TUNNEL_NAME: "bad.name" })).toThrow(
       "Invalid BRIDGE_TUNNEL_NAME",
