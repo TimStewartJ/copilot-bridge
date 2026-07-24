@@ -43,6 +43,19 @@ export interface BrowserAutomationStepResult {
   output: string;
 }
 
+export function truncateBrowserFailureText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  return trimmed ? trimmed.slice(0, 200) : undefined;
+}
+
+export function formatBrowserStepTimeline(steps: BrowserAutomationStepResult[]): string | undefined {
+  if (steps.length === 0) return undefined;
+  return steps.map((step) => {
+    const output = truncateBrowserFailureText(step.output);
+    return `${step.index + 1}. ${step.command} ${step.ok ? "ok" : "failed"}${output ? ` — ${output}` : ""}`;
+  }).join("\n");
+}
+
 export interface BrowserAutomationRunSuccess {
   steps: BrowserAutomationStepResult[];
 }
