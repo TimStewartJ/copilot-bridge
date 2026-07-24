@@ -9,7 +9,10 @@ import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
-import { createProjectedFinalAssistantEntry } from "./event-bus.js";
+import {
+  createProjectedFinalAssistantEntry,
+  type PendingInteractionSnapshot,
+} from "./event-bus.js";
 import {
   createServerShutdownCoordinator,
   type ServerShutdownCoordinator,
@@ -77,8 +80,7 @@ import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import { TaskGroupValidationError } from "./task-group-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
-import { UserInputBrokerError } from "./user-input-broker.js";
-import { ElicitationBrokerError } from "./elicitation-broker.js";
+import { PendingInteractionError } from "./pending-interaction-validation.js";
 import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
@@ -2491,7 +2493,7 @@ export function createApiRouter(
       );
       res.json(response);
     } catch (err) {
-      if (err instanceof UserInputBrokerError) {
+      if (err instanceof PendingInteractionError) {
         return res.status(err.statusCode).json({ error: err.message, code: err.code });
       }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -2507,7 +2509,7 @@ export function createApiRouter(
       );
       res.json(response);
     } catch (err) {
-      if (err instanceof ElicitationBrokerError) {
+      if (err instanceof PendingInteractionError) {
         return res.status(err.statusCode).json({ error: err.message, code: err.code });
       }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -2530,7 +2532,7 @@ export function createApiRouter(
   });
 
   // GET /sessions/:id/stream — SSE stream with snapshot + live events
-  router.get("/sessions/:id/stream", (req, res) => {
+  router.get("/sessions/:id/stream", async (req, res) => {
     const sessionId = req.params.id;
     const streamStart = Date.now();
     let firstEventSent = false;
@@ -2622,7 +2624,38 @@ export function createApiRouter(
       return;
     }
 
-    unsub = bus.subscribe(sendEvent);
+    const bufferedEvents: any[] = [];
+    let hydrated = false;
+    const subscription = bus.subscribeWithSnapshot((event) => {
+      if (hydrated) {
+        sendEvent(event);
+      } else {
+        bufferedEvents.push(event);
+      }
+    });
+    unsub = subscription.unsubscribe;
+
+    let pendingInteractions: PendingInteractionSnapshot = {
+      pendingUserInputs: [],
+      pendingElicitations: [],
+    };
+    try {
+      pendingInteractions = await ctx.sessionManager.getPendingInteractionSnapshot(sessionId);
+    } catch (error) {
+      console.warn(
+        `[sessions] Failed to hydrate pending interactions for ${sessionId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+    if (connection.closed) return;
+    sendEvent({
+      ...subscription.snapshot,
+      ...pendingInteractions,
+    });
+    hydrated = true;
+    for (const event of bufferedEvents) {
+      sendEvent(event);
+    }
   });
 
   // GET /sessions/:id/plan — read plan.md from session state directory

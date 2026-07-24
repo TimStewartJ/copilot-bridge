@@ -2,11 +2,6 @@ import type { AgentPermissionPolicy, AgentSectionOverride } from "./agent-backen
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import type { NativeUserInputRequest, NativeUserInputResponse } from "./user-input-types.js";
-import type {
-  NativeElicitationRequest,
-  NativeElicitationResult,
-} from "./elicitation-types.js";
 import type { Task } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -93,11 +88,6 @@ export interface SessionConfigBuilderDeps {
 export interface SessionConfigBuilderCallbacks {
   resolveEffectiveSessionCwd(opts: { sessionId?: string; task?: Pick<Task, "cwd"> | null }): string | undefined;
   getCopilotHome(): string;
-  handleUserInputRequest(
-    request: NativeUserInputRequest,
-    invocation: { sessionId: string },
-  ): Promise<NativeUserInputResponse>;
-  handleElicitationRequest(request: NativeElicitationRequest): Promise<NativeElicitationResult>;
 }
 
 export interface BuildSessionConfigParams {
@@ -200,10 +190,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
   const cfg: any = {
-    onUserInputRequest: (request: NativeUserInputRequest, invocation: { sessionId: string }) =>
-      callbacks.handleUserInputRequest(request, invocation),
-    onElicitationRequest: (request: NativeElicitationRequest) =>
-      callbacks.handleElicitationRequest(request),
+    pendingInteractionEvents: true,
     streaming: true,
     includeSubAgentStreamingEvents: false,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],

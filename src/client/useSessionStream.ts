@@ -1097,6 +1097,7 @@ export function useSessionStream(
         const requestId = optionalString(event.requestId);
         if (requestId) setStreamState((current) => {
           const request = current.pendingElicitations.find((candidate) => candidate.requestId === requestId);
+          if (!request) return current;
           return {
             ...current,
             pendingElicitations: removeByRequestId(current.pendingElicitations, requestId),
@@ -1155,12 +1156,25 @@ export function useSessionStream(
             const finalAssistantEntry = createProjectedAssistantEntry(event.finalAssistantEntry);
             if (finalAssistantEntry) liveEntries = upsertLiveEntry(liveEntries, finalAssistantEntry);
           }
+          const canceledElicitation = eventType === "done"
+            ? undefined
+            : current.pendingElicitations[0];
           return createState("idle", {
             liveEntries,
             currentTurnTools: finalizedTools,
             mcpServers: current.mcpServers,
             contextSummary: current.contextSummary,
-            elicitationCancellation: current.elicitationCancellation,
+            elicitationCancellation: current.elicitationCancellation
+              ?? (canceledElicitation
+                ? {
+                    requestId: canceledElicitation.requestId,
+                    question: canceledElicitation.message,
+                    detail: eventType === "error"
+                      ? optionalString(event.message) ?? "The request was canceled because the session failed."
+                      : "The request was canceled because the session ended.",
+                    ...(optionalString(event.timestamp) ? { timestamp: optionalString(event.timestamp) } : {}),
+                  }
+                : null),
             hadVisibleOutput: liveEntries.length > 0,
             activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
             activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,

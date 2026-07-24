@@ -1,6 +1,5 @@
 import type { getOrCreateBus } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
-import type { UserInputCancelReason } from "./user-input-types.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
@@ -62,11 +61,7 @@ export interface SessionRunStateControllerDeps {
   isRestartPending(): boolean;
   syncRestartWaitingSessions(activeSessionCount: number): void;
   getActiveSessionCount?(): number;
-  cancelPendingUserInputRequests(
-    sessionId: string,
-    reason: UserInputCancelReason,
-    message?: string,
-  ): void;
+  clearPendingInteractionStatus(sessionId: string): void;
   promptDeliveryAbortedMessage: string;
   promptDeliveryShutdownMessage: string;
   persistTerminalOverlay(sessionId: string, overlay: SyntheticTerminalOverlay): void;
@@ -154,6 +149,7 @@ export class SessionRunStateController {
       if (completed) return false;
       completed = true;
       clearAbortWait();
+      this.deps.clearPendingInteractionStatus(sessionId);
       emitTerminal?.(new Date().toISOString());
       resolveCompletion();
       return true;
@@ -173,11 +169,6 @@ export class SessionRunStateController {
         if (preview) this.completedAssistantPreviews.set(sessionId, preview);
         settlePromptDelivery({ status: "accepted" });
         finish((timestamp) => {
-          this.deps.cancelPendingUserInputRequests(
-            sessionId,
-            "session_ended",
-            "Session operation completed before the user input request was answered",
-          );
           bus.emit({
             type: "done",
             content,
@@ -195,7 +186,6 @@ export class SessionRunStateController {
         this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message });
         finish((timestamp) => {
-          this.deps.cancelPendingUserInputRequests(sessionId, "error", message);
           bus.emit({
             type: "error",
             message,
@@ -209,7 +199,6 @@ export class SessionRunStateController {
         this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryAbortedMessage });
         finish((timestamp) => {
-          this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryAbortedMessage);
           bus.emit({
             type: "aborted",
             content,
@@ -226,7 +215,6 @@ export class SessionRunStateController {
         this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryShutdownMessage });
         finish((timestamp) => {
-          this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryShutdownMessage);
           bus.emit({
             type: "shutdown",
             content,
@@ -254,7 +242,6 @@ export class SessionRunStateController {
             }
             this.logger.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
             resolve(finish((timestamp) => {
-              this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryAbortedMessage);
               const assistantSourceEventId = getAssistantSourceEventId?.();
               bus.emit({
                 type: "aborted",

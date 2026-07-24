@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
-import { ElicitationBrokerError } from "../elicitation-broker.js";
 import {
   createCopilotUsageTestHome,
   createMockSessionManager,
@@ -15,11 +14,11 @@ import {
   makeTestDir,
   mkdirSync,
   providers,
+  PendingInteractionError,
   publishOutboundAttachment,
   RESTART_PENDING_MESSAGE,
   request,
   scheduler,
-  UserInputBrokerError,
   writeCopilotUsageEvents,
   writeRawCopilotUsageEvents,
   writeFileSync,
@@ -125,14 +124,16 @@ describe("Session stream route", () => {
 
   it("GET /api/sessions/:id/stream forwards completed snapshots without transport normalization", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribe(listener: (event: unknown) => void) {
-        listener({
+      subscribeWithSnapshot() {
+        return {
+          snapshot: {
           type: "snapshot",
           complete: true,
           terminalType: "done",
           finalContent: "Run finished",
-        });
-        return () => {};
+          },
+          unsubscribe: () => {},
+        };
       },
     });
 
@@ -146,14 +147,16 @@ describe("Session stream route", () => {
 
   it("GET /api/sessions/:id/stream forwards shutdown snapshots", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribe(listener: (event: unknown) => void) {
-        listener({
-          type: "snapshot",
-          complete: true,
-          terminalType: "shutdown",
-          finalContent: "Partial answer",
-        });
-        return () => {};
+      subscribeWithSnapshot() {
+        return {
+          snapshot: {
+            type: "snapshot",
+            complete: true,
+            terminalType: "shutdown",
+            finalContent: "Partial answer",
+          },
+          unsubscribe: () => {},
+        };
       },
     });
 
@@ -168,20 +171,22 @@ describe("Session stream route", () => {
 
   it("GET /api/sessions/:id/stream forwards a pending terminal completion on an aborted snapshot replay", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribe(listener: (event: unknown) => void) {
-        listener({
-          type: "snapshot",
-          complete: true,
-          terminalType: "aborted",
-          finalContent: "Partial answer",
-          terminalCompletion: {
-            content: "Wrapped up before abort",
-            title: "Task complete",
-            status: "success",
-            sourceEventType: "tool.execution_complete",
+      subscribeWithSnapshot() {
+        return {
+          snapshot: {
+            type: "snapshot",
+            complete: true,
+            terminalType: "aborted",
+            finalContent: "Partial answer",
+            terminalCompletion: {
+              content: "Wrapped up before abort",
+              title: "Task complete",
+              status: "success",
+              sourceEventType: "tool.execution_complete",
+            },
           },
-        });
-        return () => {};
+          unsubscribe: () => {},
+        };
       },
     });
 
@@ -233,11 +238,21 @@ describe("Session stream route", () => {
         },
       ],
     };
+    ctx.sessionManager.getPendingInteractionSnapshot = vi.fn().mockResolvedValue({
+      pendingUserInputs: snapshot.pendingUserInputs,
+      pendingElicitations: [],
+    });
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribe(listener: (event: unknown) => void) {
-        listener(snapshot);
-        listener({ type: "done", content: "" });
-        return () => {};
+      subscribeWithSnapshot(listener: (event: unknown) => void) {
+        queueMicrotask(() => listener({ type: "done", content: "" }));
+        return {
+          snapshot: {
+            ...snapshot,
+            pendingUserInputs: [],
+            pendingElicitations: [],
+          },
+          unsubscribe: () => {},
+        };
       },
     });
 
@@ -245,7 +260,34 @@ describe("Session stream route", () => {
       .get("/api/sessions/session-123/stream");
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain(`data: ${JSON.stringify(snapshot)}`);
+    expect(res.text).toContain('"pendingUserInputs":[{"requestId":"request-1"');
+  });
+
+  it("keeps the SSE stream usable when pending snapshot hydration fails", async () => {
+    ctx.sessionManager.getPendingInteractionSnapshot = vi.fn().mockRejectedValue(
+      new Error("session connection closed"),
+    );
+    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
+      subscribeWithSnapshot(listener: (event: unknown) => void) {
+        queueMicrotask(() => listener({ type: "done", content: "" }));
+        return {
+          snapshot: {
+            type: "snapshot",
+            complete: false,
+            pendingUserInputs: [],
+            pendingElicitations: [],
+          },
+          unsubscribe: () => {},
+        };
+      },
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"type":"snapshot"');
+    expect(res.text).toContain('"type":"done"');
   });
 });
 
@@ -278,9 +320,9 @@ describe("User input response route", () => {
     );
   });
 
-  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps broker validation errors", async () => {
+  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps transport validation errors", async () => {
     ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(
-      new UserInputBrokerError("invalid_response", "Response answer cannot be blank"),
+      new PendingInteractionError("invalid_response", "Response answer cannot be blank"),
     );
 
     const res = await request(app)
@@ -296,7 +338,7 @@ describe("User input response route", () => {
 
   it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps missing requests", async () => {
     ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(
-      new UserInputBrokerError("request_not_found", "Pending user input request not found", { statusCode: 404 }),
+      new PendingInteractionError("request_not_found", "Pending user input request not found", { statusCode: 404 }),
     );
 
     const res = await request(app)
@@ -344,7 +386,7 @@ describe("Elicitation response route", () => {
 
   it("maps elicitation validation errors", async () => {
     ctx.sessionManager.submitElicitationResponse = vi.fn().mockRejectedValue(
-      new ElicitationBrokerError("invalid_response", "Missing required field"),
+      new PendingInteractionError("invalid_response", "Missing required field"),
     );
 
     const res = await request(app)

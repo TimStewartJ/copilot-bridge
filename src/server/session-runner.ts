@@ -16,7 +16,10 @@ import type { GlobalBus } from "./global-bus.js";import type { SessionMetaStore 
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
 import type { Task } from "./task-store.js";
-import type { UserInputCancelReason } from "./user-input-types.js";
+import {
+  normalizePendingElicitationRequest,
+  normalizePendingUserInputRequest,
+} from "./pending-interaction-validation.js";
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   RESTART_PENDING_MESSAGE,
@@ -233,10 +236,11 @@ export interface SessionRunnerDeps {
   flushPendingSessionEviction(sessionId: string): void;
   getPendingUserInputCount(sessionId: string): number;
   getPendingInteractionCount(sessionId: string): number;
-  cancelPendingUserInputRequests(
+  recordPendingInteractionEvent(
     sessionId: string,
-    reason: UserInputCancelReason,
-    message?: string,
+    kind: "user_input" | "elicitation",
+    state: "requested" | "completed",
+    at?: string,
   ): void;
   recordSessionAttention(sessionId: string, at?: string): void;
   touchSessionActivity?(sessionId: string, at: number): void;
@@ -463,11 +467,6 @@ export class SessionRunner {
       runController.completeError(err instanceof Error ? err.message : String(err));
     }).finally(() => {
       runController.clearAbortWait();
-      this.deps.cancelPendingUserInputRequests(
-        sessionId,
-        "session_ended",
-        "Session operation ended before the user input request was answered",
-      );
       if (this.deps.activeRunControllers.get(sessionId) === runController) {
         this.deps.activeRunControllers.delete(sessionId);
       }
@@ -1015,6 +1014,87 @@ export class SessionRunner {
         this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
       }
       switch (event.type) {
+        case "user_input.requested": {
+          try {
+            const request = normalizePendingUserInputRequest(data, getEventTimestampIso(event));
+            bus.emitUserInputRequested(request, getEventTimestampIso(event));
+            this.deps.recordPendingInteractionEvent(
+              sessionId,
+              "user_input",
+              "requested",
+              getEventTimestampIso(event),
+            );
+          } catch (error) {
+            console.warn(`[sdk] [${sid}] Ignoring invalid user input request event:`, error);
+          }
+          break;
+        }
+        case "user_input.completed": {
+          const requestId = typeof data?.requestId === "string" ? data.requestId : undefined;
+          if (!requestId) {
+            console.warn(`[sdk] [${sid}] Ignoring user input completion without requestId`);
+            break;
+          }
+          if (typeof data.answer === "string" && typeof data.wasFreeform === "boolean") {
+            bus.emitUserInputAnswered(requestId, {
+              answer: data.answer,
+              wasFreeform: data.wasFreeform,
+            }, getEventTimestampIso(event));
+          } else {
+            bus.emitUserInputCanceled(requestId, {
+              reason: "session_ended",
+              timestamp: getEventTimestampIso(event),
+            });
+          }
+          this.deps.recordPendingInteractionEvent(
+            sessionId,
+            "user_input",
+            "completed",
+            getEventTimestampIso(event),
+          );
+          break;
+        }
+        case "elicitation.requested": {
+          try {
+            const request = normalizePendingElicitationRequest(data, getEventTimestampIso(event));
+            bus.emitElicitationRequested(request, getEventTimestampIso(event));
+            this.deps.recordPendingInteractionEvent(
+              sessionId,
+              "elicitation",
+              "requested",
+              getEventTimestampIso(event),
+            );
+          } catch (error) {
+            console.warn(`[sdk] [${sid}] Ignoring invalid elicitation request event:`, error);
+          }
+          break;
+        }
+        case "elicitation.completed": {
+          const requestId = typeof data?.requestId === "string" ? data.requestId : undefined;
+          if (!requestId) {
+            console.warn(`[sdk] [${sid}] Ignoring elicitation completion without requestId`);
+            break;
+          }
+          const action = data.action;
+          if (action === "cancel") {
+            bus.emitElicitationCanceled(requestId, {
+              reason: "session_ended",
+              timestamp: getEventTimestampIso(event),
+            });
+          } else if (action === "accept" || action === "decline") {
+            bus.emitElicitationResolved(requestId, action, getEventTimestampIso(event));
+          } else {
+            console.warn(`[sdk] [${sid}] Ignoring elicitation completion with invalid action`);
+            break;
+          }
+          this.deps.recordPendingInteractionEvent(
+            sessionId,
+            "elicitation",
+            "completed",
+            getEventTimestampIso(event),
+          );
+          break;
+        }
         case "user.message":
           bus.commitPendingPrompt(
             typeof data?.content === "string"

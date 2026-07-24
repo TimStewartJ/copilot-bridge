@@ -18,6 +18,7 @@ function createFakeSession(rpc: any = {}) {
     disconnect: vi.fn(),
     on: vi.fn(() => () => undefined),
     getEvents: vi.fn(async () => [{ type: "test" }]),
+    registerElicitationHandler: vi.fn(),
     rpc,
   };
 }
@@ -94,6 +95,20 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(resumed.sessionId).toBe("fake-session-id");
   });
 
+  it("advertises pending interaction events without leaving an in-process elicitation handler", async () => {
+    const session = createFakeSession();
+    const client = createFakeClient(session);
+    const backend = new CopilotBackend(client as any);
+
+    await backend.createSession({ pendingInteractionEvents: true, streaming: true });
+
+    expect(client.createSession).toHaveBeenCalledWith({
+      streaming: true,
+      onElicitationRequest: expect.any(Function),
+    });
+    expect(session.registerElicitationHandler).toHaveBeenCalledWith(undefined);
+  });
+
   it("delegates deleteSession and getSessionMetadata", async () => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
@@ -168,6 +183,62 @@ describe("CopilotAgentSession wrap fidelity", () => {
 
     delete (session as any).getEvents;
     await expect(wrapped.getEvents!()).rejects.toThrow(/event API is not available/);
+  });
+
+  it("reads runtime-owned pending interaction snapshots through the patched session RPCs", async () => {
+    const pendingRequests = vi.fn()
+      .mockResolvedValueOnce({
+        pendingUserInputs: [{
+          requestId: "ui-1",
+          request: { question: "Continue?", allowFreeform: true },
+        }],
+      })
+      .mockResolvedValueOnce({
+        pendingElicitations: [{
+          requestId: "el-1",
+          request: { message: "Deploy?", mode: "form", requestedSchema: { type: "object", properties: {} } },
+        }],
+      });
+    const session = createFakeSession({ permissions: { pendingRequests } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+
+    await expect(wrapped.getPendingUserInputRequests!()).resolves.toEqual([{
+      requestId: "ui-1",
+      request: { question: "Continue?", allowFreeform: true },
+    }]);
+    await expect(wrapped.getPendingElicitationRequests!()).resolves.toEqual([{
+      requestId: "el-1",
+      request: { message: "Deploy?", mode: "form", requestedSchema: { type: "object", properties: {} } },
+    }]);
+    expect(pendingRequests).toHaveBeenCalledTimes(2);
+  });
+
+  it("delegates race-safe pending interaction responses", async () => {
+    const handlePendingUserInput = vi.fn(async () => ({ success: true }));
+    const handlePendingElicitation = vi.fn(async () => ({ success: false }));
+    const session = createFakeSession({
+      ui: {
+        handlePendingUserInput,
+        handlePendingElicitation,
+      },
+    });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+
+    await expect(wrapped.respondToUserInput!("ui-1", {
+      answer: "yes",
+      wasFreeform: false,
+    })).resolves.toBe(true);
+    await expect(wrapped.tryRespondToElicitation!("el-1", {
+      action: "cancel",
+    })).resolves.toBe(false);
+    expect(handlePendingUserInput).toHaveBeenCalledWith({
+      requestId: "ui-1",
+      response: { answer: "yes", wasFreeform: false },
+    });
+    expect(handlePendingElicitation).toHaveBeenCalledWith({
+      requestId: "el-1",
+      result: { action: "cancel" },
+    });
   });
 
   it("setSendMode delegates to rpc.mode.set and throws when unavailable", async () => {

@@ -1,5 +1,5 @@
 /**
- * Shared types for native Copilot SDK onUserInputRequest support.
+ * Shared transport types for native Copilot user-input events and responses.
  *
  * These types intentionally model the SDK's ask_user flow, not elicitation forms.
  */

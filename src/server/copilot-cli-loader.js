@@ -29,6 +29,40 @@ const ASK_USER_ELICITATION_PATTERN = new RegExp(
   "g",
 );
 const ELICITATION_CALLBACK_PATTERN = /requestElicitation:this\.hasEventListeners\("elicitation\.requested"\)\?/g;
+const PENDING_INTERACTION_METHODS_PATTERN = /getPendingUserInputRequests\(\)\{return this\.pendingRequests\.getPendingUserInputRequests\(\)\}getPendingElicitationRequests\(\)\{return this\.pendingRequests\.getPendingElicitationRequests\(\)\}/g;
+const PENDING_INTERACTION_PERMISSIONS_FACADE_PATTERN = new RegExp(
+  String.raw`pendingRequests\(\)\{return\{items:(${ID})\((${ID})\)\}\}`,
+  "g",
+);
+
+export function patchCopilotPendingInteractionRpcSource(source) {
+  const pendingInteractionMethodMatches = source.match(PENDING_INTERACTION_METHODS_PATTERN)?.length ?? 0;
+  if (pendingInteractionMethodMatches !== 1) {
+    throw new Error(
+      "Unable to patch Copilot app for pending interaction snapshots: "
+        + `expected 1 runtime getter pair, found ${pendingInteractionMethodMatches}.`,
+    );
+  }
+
+  let pendingInteractionFacadeMatches = 0;
+  source = source.replace(
+    PENDING_INTERACTION_PERMISSIONS_FACADE_PATTERN,
+    (match, permissionSnapshot, sessionVar) => {
+      pendingInteractionFacadeMatches++;
+      return `pendingRequests(){return{items:${permissionSnapshot}(${sessionVar}),`
+        + `pendingUserInputs:${sessionVar}.getPendingUserInputRequests(),`
+        + `pendingElicitations:${sessionVar}.getPendingElicitationRequests()}}`;
+    },
+  );
+  if (pendingInteractionFacadeMatches !== 1) {
+    throw new Error(
+      "Unable to patch Copilot app for pending interaction snapshots: "
+        + `expected 1 permissions snapshot facade, found ${pendingInteractionFacadeMatches}.`,
+    );
+  }
+
+  return source;
+}
 
 export function patchCopilotAppSource(source) {
   let methodMatches = 0;
@@ -103,12 +137,13 @@ export function patchCopilotAppSource(source) {
     );
   }
 
-  return source;
+  return patchCopilotPendingInteractionRpcSource(source);
 }
 
 export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context);
-  if (url !== process.env.BRIDGE_COPILOT_APP_URL) return result;
+  const isAppSource = url === process.env.BRIDGE_COPILOT_APP_URL;
+  if (!isAppSource) return result;
   if (result.source === undefined || result.source === null) {
     throw new Error("Unable to patch Copilot app for Bridge GitHub MCP auth: loader returned no source.");
   }

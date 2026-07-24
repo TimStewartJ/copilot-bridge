@@ -18,7 +18,6 @@ import {
   RESTART_PENDING_MESSAGE,
   request,
   scheduler,
-  UserInputBrokerError,
   writeCopilotUsageEvents,
   writeRawCopilotUsageEvents,
   writeFileSync,

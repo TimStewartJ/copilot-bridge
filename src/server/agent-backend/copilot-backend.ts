@@ -21,8 +21,11 @@ import type {
   AgentBackend,
   AgentBackgroundTask,
   AgentCapabilities,
+  AgentElicitationResponse,
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
+  AgentPendingElicitationRequest,
+  AgentPendingUserInputRequest,
   AgentToolMetadata,
   AgentModelInfo,
   AgentPermissionPolicy,
@@ -36,6 +39,7 @@ import type {
   AgentSessionEventHandler,
   AgentSessionSummary,
   AgentSetModelOptions,
+  AgentUserInputResponse,
 } from "./types.js";
 
 const COPILOT_CAPABILITIES: AgentCapabilities = {
@@ -211,6 +215,49 @@ class CopilotAgentSession implements AgentSession {
     return this.session.getEvents();
   }
 
+  async getPendingUserInputRequests(): Promise<AgentPendingUserInputRequest[]> {
+    const pendingRequests = this.session?.rpc?.permissions?.pendingRequests;
+    if (typeof pendingRequests !== "function") {
+      throw new Error("Pending user input snapshots are not available in this Copilot SDK build");
+    }
+    const result = await pendingRequests.call(this.session.rpc.permissions);
+    return Array.isArray((result as any)?.pendingUserInputs)
+      ? (result as any).pendingUserInputs
+      : [];
+  }
+
+  async respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean> {
+    const handle = this.session?.rpc?.ui?.handlePendingUserInput;
+    if (typeof handle !== "function") {
+      throw new Error("Pending user input responses are not available in this Copilot SDK build");
+    }
+    const result = await handle.call(this.session.rpc.ui, { requestId, response });
+    return (result as any)?.success === true;
+  }
+
+  async getPendingElicitationRequests(): Promise<AgentPendingElicitationRequest[]> {
+    const pendingRequests = this.session?.rpc?.permissions?.pendingRequests;
+    if (typeof pendingRequests !== "function") {
+      throw new Error("Pending elicitation snapshots are not available in this Copilot SDK build");
+    }
+    const result = await pendingRequests.call(this.session.rpc.permissions);
+    return Array.isArray((result as any)?.pendingElicitations)
+      ? (result as any).pendingElicitations
+      : [];
+  }
+
+  async tryRespondToElicitation(
+    requestId: string,
+    response: AgentElicitationResponse,
+  ): Promise<boolean> {
+    const handle = this.session?.rpc?.ui?.handlePendingElicitation;
+    if (typeof handle !== "function") {
+      throw new Error("Pending elicitation responses are not available in this Copilot SDK build");
+    }
+    const result = await handle.call(this.session.rpc.ui, { requestId, result: response });
+    return (result as any)?.success === true;
+  }
+
   async setSendMode(opts: { mode: string }): Promise<unknown> {
     const setMode = this.session?.rpc?.mode?.set;
     if (typeof setMode !== "function") {
@@ -315,6 +362,35 @@ class CopilotAgentSession implements AgentSession {
     const result = await remove.call(this.session.rpc.tasks, { id });
     return { removed: Boolean((result as any)?.removed) };
   }
+
+}
+
+const PENDING_INTERACTION_PLACEHOLDER = async (): Promise<{ action: "cancel" }> => ({
+  action: "cancel",
+});
+
+function prepareCopilotSessionConfig(config: AgentSessionConfig): {
+  sdkConfig: Record<string, unknown>;
+  pendingInteractionEvents: boolean;
+} {
+  const {
+    pendingInteractionEvents = false,
+    ...sdkConfig
+  } = config;
+  if (pendingInteractionEvents) {
+    sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
+  }
+  return { sdkConfig, pendingInteractionEvents };
+}
+
+function wrapCopilotSession(session: any, pendingInteractionEvents: boolean): AgentSession {
+  if (pendingInteractionEvents) {
+    // The placeholder makes the Node SDK advertise elicitation and register
+    // event interest during create/resume. Remove it before exposing the
+    // session so only Bridge transport listeners can answer runtime requests.
+    session.registerElicitationHandler?.(undefined);
+  }
+  return new CopilotAgentSession(session);
 }
 
 /**
@@ -354,13 +430,15 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
-    const session = await this.client.createSession(config as any);
-    return new CopilotAgentSession(session);
+    const prepared = prepareCopilotSessionConfig(config);
+    const session = await this.client.createSession(prepared.sdkConfig as any);
+    return wrapCopilotSession(session, prepared.pendingInteractionEvents);
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
-    const session = await this.client.resumeSession(sessionId, config as any);
-    return new CopilotAgentSession(session);
+    const prepared = prepareCopilotSessionConfig(config);
+    const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
+    return wrapCopilotSession(session, prepared.pendingInteractionEvents);
   }
 
   deleteSession(sessionId: string): Promise<unknown> {

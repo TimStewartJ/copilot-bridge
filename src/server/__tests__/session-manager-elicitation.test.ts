@@ -1,64 +1,19 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+import type { AgentPendingElicitationRequest, AgentSession } from "../agent-backend/index.js";
 import { createEventBusRegistry } from "../event-bus.js";
-import { ElicitationBroker } from "../elicitation-broker.js";
+import { PendingInteractionError } from "../pending-interaction-validation.js";
 import { SessionManager } from "../session-manager.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
 import { createTestBus, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 
-type ElicitationSessionConfig = {
-  onElicitationRequest: (request: {
-    sessionId: string;
-    message: string;
-    requestedSchema?: unknown;
-    mode?: "form" | "url";
-    elicitationSource?: string;
-    url?: string;
-  }) => Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }>;
-};
-
-function createManager() {
-  const db = setupTestDb();
-  const globalBus = createTestBus();
-  const eventBusRegistry = createEventBusRegistry();
-  const runtimePaths = makeTestRuntimePaths("elicitation-manager");
-  const copilotHome = runtimePaths.copilotHome;
-  if (!copilotHome) throw new Error("Expected test runtime paths to include copilotHome");
-  const elicitationBroker = new ElicitationBroker({
-    requestIdFactory: () => "el_request",
-    now: () => new Date("2026-07-13T12:00:00.000Z"),
-  });
-  const manager = new SessionManager({
-    globalBus,
-    eventBusRegistry,
-    elicitationBroker,
-    sessionTitles: createSessionTitlesStore(db),
-    taskStore: createTaskStore(db, globalBus),
-    config: { sessionMcpServers: {} },
-    clientEnv: runtimePaths.env,
-    copilotHome,
-    runtimePaths,
-  });
-  return { manager, copilotHome, eventBusRegistry, globalBus, elicitationBroker };
-}
-
-function writeDiskSession(copilotHome: string, sessionId: string) {
-  const sessionDir = join(copilotHome, "session-state", sessionId);
-  mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(join(sessionDir, "workspace.yaml"), "created_at: 2026-07-13T12:00:00.000Z\n");
-}
-
-describe("SessionManager elicitation responses", () => {
-  it("wires native elicitation requests through the broker and sanitized stream events", async () => {
-    const { manager, eventBusRegistry } = createManager();
-    const cfg = (Reflect.get(manager, "buildSessionConfig") as () => ElicitationSessionConfig).call(manager);
-
-    const responsePromise = cfg.onElicitationRequest({
-      sessionId: "session-1",
+function pendingRequest(): AgentPendingElicitationRequest {
+  return {
+    requestId: "el-request",
+    request: {
       message: "Configure deployment",
+      mode: "form",
       requestedSchema: {
         type: "object",
         properties: {
@@ -70,139 +25,127 @@ describe("SessionManager elicitation responses", () => {
         },
         required: ["target", "reason"],
       },
-    });
+    },
+    elicitationSource: "deployment-mcp",
+  };
+}
 
-    const bus = eventBusRegistry.getBus("session-1")!;
-    expect(bus.getSnapshot().pendingElicitations).toEqual([
-      {
-        requestId: "el_request",
-        message: "Configure deployment",
-        mode: "form",
-        requestedAt: "2026-07-13T12:00:00.000Z",
-        requestedSchema: {
-          type: "object",
-          properties: {
-            target: {
-              type: "string",
-              enum: ["staging", "production"],
-            },
-            reason: { type: "string" },
-          },
-          required: ["target", "reason"],
-        },
-      },
-    ]);
+function createManager(pending: AgentPendingElicitationRequest[] = []) {
+  const db = setupTestDb();
+  const globalBus = createTestBus();
+  const eventBusRegistry = createEventBusRegistry();
+  const runtimePaths = makeTestRuntimePaths("elicitation-manager");
+  const tryRespondToElicitation = vi.fn(async (requestId: string) => {
+    const index = pending.findIndex((request) => request.requestId === requestId);
+    if (index < 0) return false;
+    pending.splice(index, 1);
+    return true;
+  });
+  const session = {
+    sessionId: "session-1",
+    getPendingUserInputRequests: vi.fn(async () => []),
+    getPendingElicitationRequests: vi.fn(async () => structuredClone(pending)),
+    tryRespondToElicitation,
+  } as unknown as AgentSession;
+  const manager = new SessionManager({
+    globalBus,
+    eventBusRegistry,
+    sessionTitles: createSessionTitlesStore(db),
+    taskStore: createTaskStore(db, globalBus),
+    config: { sessionMcpServers: {} },
+    clientEnv: runtimePaths.env,
+    copilotHome: runtimePaths.copilotHome,
+    runtimePaths,
+  });
+  (Reflect.get(manager, "sessionObjects") as Map<string, AgentSession>).set("session-1", session);
+  return { manager, tryRespondToElicitation, eventBusRegistry };
+}
 
-    const endpointResult = await manager.submitElicitationResponse("session-1", "el_request", {
-      action: "accept",
-      content: {
-        target: "staging",
-        reason: "Safer",
+describe("SessionManager SDK-owned elicitation", () => {
+  it.each([
+    {
+      name: "accept",
+      payload: {
+        action: "accept",
+        content: { target: "staging", reason: "Safer" },
       },
-    });
+    },
+    { name: "decline", payload: { action: "decline" } },
+    { name: "cancel", payload: { action: "cancel" } },
+  ])("delegates a validated $name response", async ({ payload }) => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
+    const events: unknown[] = [];
+    eventBusRegistry.getOrCreateBus("session-1").subscribe((event) => events.push(event));
 
-    expect(endpointResult).toMatchObject({
-      requestId: "el_request",
-      action: "accept",
+    await expect(manager.submitElicitationResponse(
+      "session-1",
+      "el-request",
+      payload,
+    )).resolves.toMatchObject({
+      requestId: "el-request",
+      action: payload.action,
     });
-    expect(endpointResult).not.toHaveProperty("content");
-    expect(bus.getSnapshot().pendingElicitations).toEqual([]);
-    await expect(responsePromise).resolves.toEqual({
-      action: "accept",
-      content: {
-        target: "staging",
-        reason: "Safer",
-      },
-    });
+    expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", payload);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "elicitation_resolved",
+      requestId: "el-request",
+      action: payload.action,
+    }));
   });
 
-  it("combines legacy user input and elicitation in needs-answer status", async () => {
-    const { manager, eventBusRegistry, globalBus } = createManager();
-    const events: any[] = [];
-    const unsubscribe = globalBus.subscribe((event) => {
-      if (event.type === "session:user-input" && event.sessionId === "session-1") {
-        events.push(event);
-      }
-    });
-    const cfg = (Reflect.get(manager, "buildSessionConfig") as () => any).call(manager);
+  it("rejects invalid form content before calling the SDK", async () => {
+    const { manager, tryRespondToElicitation } = createManager([pendingRequest()]);
 
-    const legacyPromise = cfg.onUserInputRequest(
-      { question: "Legacy?" },
-      { sessionId: "session-1" },
-    );
-    const elicitationPromise = cfg.onElicitationRequest({
-      sessionId: "session-1",
-      message: "Form?",
-      requestedSchema: {
-        type: "object",
-        properties: {
-          answer: { type: "string" },
-        },
-      },
-    });
-
-    expect(events.at(-1)).toMatchObject({
-      pendingUserInputCount: 2,
-      needsUserInput: true,
-    });
-
-    const legacyRequestId = eventBusRegistry.getBus("session-1")
-      ?.getSnapshot()
-      .pendingUserInputs[0]
-      ?.requestId;
-    if (!legacyRequestId) throw new Error("Expected a pending legacy user input request");
-    await manager.submitUserInputResponse("session-1", legacyRequestId, {
-      answer: "legacy",
-      wasFreeform: true,
-    });
-    expect(events.at(-1)).toMatchObject({ pendingUserInputCount: 1, needsUserInput: true });
-
-    await manager.submitElicitationResponse("session-1", "el_request", { action: "cancel" });
-    expect(events.at(-1)).toMatchObject({ pendingUserInputCount: 0, needsUserInput: false });
-    unsubscribe();
-    await expect(legacyPromise).resolves.toEqual({ answer: "legacy", wasFreeform: true });
-    await expect(elicitationPromise).resolves.toEqual({ action: "cancel" });
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
+      action: "accept",
+      content: { target: "staging" },
+    })).rejects.toMatchObject({
+      code: "invalid_response",
+      statusCode: 400,
+      message: "Elicitation response is missing required field reason",
+    } satisfies Partial<PendingInteractionError>);
+    expect(tryRespondToElicitation).not.toHaveBeenCalled();
   });
 
-  it("resolves pending elicitation as canceled when a run aborts", async () => {
-    const { manager, eventBusRegistry, elicitationBroker } = createManager();
-    const cfg = (Reflect.get(manager, "buildSessionConfig") as () => ElicitationSessionConfig).call(manager);
-    const responsePromise = cfg.onElicitationRequest({
-      sessionId: "session-1",
-      message: "Continue?",
-      requestedSchema: {
-        type: "object",
-        properties: {
-          answer: { type: "boolean" },
-        },
-      },
-    });
+  it("maps first-responder races to the stale request contract", async () => {
+    const { manager, tryRespondToElicitation } = createManager([pendingRequest()]);
+    tryRespondToElicitation.mockResolvedValueOnce(false);
 
-    const bus = eventBusRegistry.getBus("session-1")!;
-    const events: any[] = [];
-    const unsubscribe = bus.subscribe((event) => events.push(event));
-    const controller = (Reflect.get(manager, "createRunController") as any).call(manager, "session-1", bus);
-    controller.completeAborted("partial");
-    unsubscribe();
-
-    expect(elicitationBroker.getPendingCount("session-1")).toBe(0);
-    expect(events.filter((event) => event.type !== "snapshot").map((event) => event.type)).toEqual([
-      "elicitation_canceled",
-      "aborted",
-    ]);
-    await expect(responsePromise).resolves.toEqual({ action: "cancel" });
-  });
-
-  it("addresses existing disk sessions without scanning the session list", async () => {
-    const { manager, copilotHome } = createManager();
-    writeDiskSession(copilotHome, "session-on-disk");
-
-    await expect(manager.submitElicitationResponse("session-on-disk", "missing", {
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
       action: "cancel",
     })).rejects.toMatchObject({
       code: "request_not_found",
       statusCode: 404,
-      message: "Pending elicitation request not found",
+    } satisfies Partial<PendingInteractionError>);
+  });
+
+  it("hydrates reconnect snapshots from the SDK-owned pending store", async () => {
+    const { manager } = createManager([pendingRequest()]);
+
+    await expect(manager.getPendingInteractionSnapshot("session-1")).resolves.toEqual({
+      pendingUserInputs: [],
+      pendingElicitations: [{
+        requestId: "el-request",
+        message: "Configure deployment",
+        mode: "form",
+        elicitationSource: "deployment-mcp",
+        requestedSchema: pendingRequest().request.requestedSchema,
+      }],
     });
+  });
+
+  it("surfaces unsupported backends clearly", async () => {
+    const { manager } = createManager([pendingRequest()]);
+    (Reflect.get(manager, "sessionObjects") as Map<string, AgentSession>).set("session-1", {
+      sessionId: "session-1",
+    } as AgentSession);
+
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
+      action: "cancel",
+    })).rejects.toMatchObject({
+      code: "unsupported",
+      statusCode: 501,
+      message: "Pending elicitation is not supported by this agent backend",
+    } satisfies Partial<PendingInteractionError>);
   });
 });

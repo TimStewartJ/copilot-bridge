@@ -62,6 +62,8 @@ describe("SessionManager run state", () => {
 
   function makeSession() {
     const handlers: Array<(event: any) => void> = [];
+    const pendingUserInputs: any[] = [];
+    const pendingElicitations: any[] = [];
     let releaseSend: (() => void) | undefined;
     const session = {
       setSendMode: vi.fn().mockResolvedValue(undefined),
@@ -81,6 +83,20 @@ describe("SessionManager run state", () => {
       listSlashCommands: vi.fn(),
       abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
+      getPendingUserInputRequests: vi.fn(async () => structuredClone(pendingUserInputs)),
+      getPendingElicitationRequests: vi.fn(async () => structuredClone(pendingElicitations)),
+      respondToUserInput: vi.fn(async (requestId: string) => {
+        const index = pendingUserInputs.findIndex((request) => request.requestId === requestId);
+        if (index < 0) return false;
+        pendingUserInputs.splice(index, 1);
+        return true;
+      }),
+      tryRespondToElicitation: vi.fn(async (requestId: string) => {
+        const index = pendingElicitations.findIndex((request) => request.requestId === requestId);
+        if (index < 0) return false;
+        pendingElicitations.splice(index, 1);
+        return true;
+      }),
     };
     const getHandler = () => {
       if (handlers.length === 0) return undefined;
@@ -91,7 +107,13 @@ describe("SessionManager run state", () => {
       };
     };
     const getReleaseSend = () => releaseSend;
-    return { session, getHandler, getReleaseSend };
+    return {
+      session,
+      getHandler,
+      getReleaseSend,
+      pendingUserInputs,
+      pendingElicitations,
+    };
   }
 
   async function flushMicrotasks() {
@@ -1697,36 +1719,44 @@ describe("SessionManager run state", () => {
 
   it("keeps native elicitation waits busy beyond the no-progress warning window", async () => {
     const sessionId = "session-elicitation-wait";
-    const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
-    const { session, getHandler, getReleaseSend } = makeSession();
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend, pendingElicitations } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
     manager.backend = { resumeSession };
 
     manager.startWork(sessionId, "hello");
     await flushMicrotasks();
 
-    const config = (Reflect.get(manager, "buildSessionConfig") as () => any).call(manager);
-    const elicitationPromise = config.onElicitationRequest({
-      sessionId,
-      message: "Choose a deployment target",
-      requestedSchema: {
-        type: "object",
-        properties: {
-          target: {
-            type: "string",
-            enum: ["staging", "production"],
+    pendingElicitations.push({
+      requestId: "el-1",
+      request: {
+        message: "Choose a deployment target",
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            target: {
+              type: "string",
+              enum: ["staging", "production"],
+            },
           },
+          required: ["target"],
         },
-        required: ["target"],
       },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      data: {
+        requestId: "el-1",
+        message: "Choose a deployment target",
+        mode: "form",
+        requestedSchema: pendingElicitations[0].request.requestedSchema,
+      },
+      timestamp: new Date().toISOString(),
     });
     await flushMicrotasks();
 
-    const requestId = eventBusRegistry.getBus(sessionId)
-      ?.getSnapshot()
-      .pendingElicitations[0]
-      ?.requestId;
-    expect(requestId).toBeDefined();
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(1);
 
     await vi.advanceTimersByTimeAsync(900_000);
     await manager.waitForSessionWatchdogIdle(sessionId);
@@ -1736,8 +1766,8 @@ describe("SessionManager run state", () => {
     expect(resumeSession).toHaveBeenCalledTimes(1);
     expect(telemetryStore!.querySpans({ name: "session.run.no_progress_abort", sessionId })).toEqual([]);
 
-    await manager.submitElicitationResponse(sessionId, requestId!, { action: "cancel" });
-    await expect(elicitationPromise).resolves.toEqual({ action: "cancel" });
+    await manager.submitElicitationResponse(sessionId, "el-1", { action: "cancel" });
+    expect(session.tryRespondToElicitation).toHaveBeenCalledWith("el-1", { action: "cancel" });
     getReleaseSend()?.();
     await flushMicrotasks();
     getHandler()?.({
@@ -1748,6 +1778,61 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
+  });
+
+  it("translates runtime capability-loss cancellation without owning the request", async () => {
+    const sessionId = "session-elicitation-cancel";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend, pendingElicitations } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    const events: any[] = [];
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    eventBusRegistry.getBus(sessionId)?.subscribe((event) => events.push(event));
+    pendingElicitations.push({
+      requestId: "el-cancel",
+      request: {
+        message: "Choose",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      data: {
+        requestId: "el-cancel",
+        message: "Choose",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      },
+      timestamp: "2026-07-23T12:00:00.000Z",
+    });
+    pendingElicitations.splice(0);
+    getHandler()?.({
+      type: "elicitation.completed",
+      data: {
+        requestId: "el-cancel",
+        action: "cancel",
+      },
+      timestamp: "2026-07-23T12:00:01.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "elicitation_requested", requestId: "el-cancel" }),
+      expect.objectContaining({ type: "elicitation_canceled", requestId: "el-cancel" }),
+    ]));
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-07-23T12:00:02.000Z",
+    });
+    await flushMicrotasks();
   });
 
   it("includes the final assistant message preview on normal idle events", async () => {
