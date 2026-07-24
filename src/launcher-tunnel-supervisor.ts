@@ -134,6 +134,7 @@ export class TunnelSupervisor {
   private readonly healthTimeoutMs: number;
   private readonly healthFailureThreshold: number;
   private readonly deps: TunnelSupervisorDependencies;
+  private readonly tunnelEnabled: boolean;
   private readonly name: string;
   private readonly plannedStops = new WeakSet<ChildProcess>();
 
@@ -170,28 +171,14 @@ export class TunnelSupervisor {
     this.healthFailureThreshold = options.healthFailureThreshold ?? HEALTH_FAILURE_THRESHOLD;
     this.retryDelayMs = this.retryBaseMs;
     this.deps = dependencies;
-    this.name = enabled(this.env) ? resolveTunnelName(this.env) : DEFAULT_TUNNEL_NAME;
+    this.tunnelEnabled = enabled(this.env);
+    this.name = this.tunnelEnabled ? resolveTunnelName(this.env) : DEFAULT_TUNNEL_NAME;
   }
 
   async start(): Promise<void> {
-    if (this.desired) return;
-    if (!enabled(this.env)) {
+    if (this.desired || this.stopping) return;
+    if (!this.tunnelEnabled) {
       this.log("[tunnel] Disabled by BRIDGE_ENABLE_TUNNEL");
-      let delayMs = this.retryBaseMs;
-      while (!this.stopping) {
-        try {
-          await this.cleanupOrphan();
-          return;
-        } catch (error) {
-          this.log(
-            `[tunnel] Disabled tunnel cleanup failed: ${error instanceof Error ? error.message : String(error)}; `
-            + `retrying in ${delayMs / 1000}s`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          delayMs = Math.min(delayMs * 2, this.retryCapMs);
-        }
-      }
-      return;
     }
     this.desired = true;
     this.requestReconcile(0);
@@ -203,7 +190,7 @@ export class TunnelSupervisor {
     }
     if (this.port === port) return;
     this.port = port;
-    if (this.desired) {
+    if (this.desired && this.tunnelEnabled) {
       this.restartRequested = true;
       this.requestReconcile(0);
     }
@@ -273,7 +260,7 @@ export class TunnelSupervisor {
 
   private async reconcile(): Promise<void> {
     await this.cleanupOrphan();
-    if (!this.desired) return;
+    if (!this.desired || !this.tunnelEnabled) return;
 
     if (this.restartRequested && this.child) {
       this.restartRequested = false;
