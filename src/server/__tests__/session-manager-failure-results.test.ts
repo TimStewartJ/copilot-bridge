@@ -192,13 +192,24 @@ Original body
       .resolves.toEqual(toolFailure("confirm: true is required to restore a docs snapshot"));
 
     ctx.docsStore!.writePage("notes/snapshotted", "# Snapshotted\n\nChanged body");
+    const stalePage = ctx.docsStore!.writePage(
+      "notes/stale-after-snapshot",
+      "# Stale after snapshot\n\nstalesnapshotmarker",
+    );
+    ctx.docsIndex!.indexPage(stalePage);
+    expect(ctx.docsIndex!.search("stalesnapshotmarker", 20, 0).results.map((result) => result.path))
+      .toContain("notes/stale-after-snapshot");
+
     await expect(restoreTool.handler({ id: created.snapshot.id, confirm: true }, createInvocation("docs_snapshot_restore")))
       .resolves.toMatchObject({
         success: true,
+        reindexed: true,
         restoredFrom: { id: created.snapshot.id },
         preRestoreSnapshotId: expect.any(String),
       });
     expect(ctx.docsStore!.readPage("notes/snapshotted")?.body).toContain("Original body");
+    expect(ctx.docsIndex!.search("stalesnapshotmarker", 20, 0).results.map((result) => result.path))
+      .not.toContain("notes/stale-after-snapshot");
   });
 
   it("surfaces unexpected docs tool errors as failure results", async () => {
