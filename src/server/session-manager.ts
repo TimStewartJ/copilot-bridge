@@ -474,6 +474,20 @@ export interface McpLoginResult {
 
 export type SessionHistoryUndoErrorCode = "busy" | "stale-boundary" | "unsupported";
 
+interface SessionResumeLifecycleOptions {
+  backend: Pick<AgentBackend, "resumeSession">;
+  sessionId: string;
+  sessionConfig: { mcpServers?: Record<string, McpServerConfig> };
+  cancellationMessage: string;
+  timeoutMessage?: string;
+  reuseCachedSession?: boolean;
+  reserveCachedSession?: boolean;
+  probeMcpStatus?: boolean;
+  probeTarget?: "resumed" | "cached";
+  beforeResume?: () => void | Promise<void>;
+  flushPendingEviction?: boolean;
+}
+
 export class SessionHistoryUndoError extends Error {
   constructor(
     readonly code: SessionHistoryUndoErrorCode,
@@ -2094,6 +2108,63 @@ export class SessionManager {
     );
   }
 
+  private withSessionResumeLifecycle(options: SessionResumeLifecycleOptions): Promise<AgentSession>;
+  private withSessionResumeLifecycle<T>(
+    options: SessionResumeLifecycleOptions,
+    operation: (session: AgentSession) => T | Promise<T>,
+  ): Promise<T>;
+  private async withSessionResumeLifecycle<T>(
+    options: SessionResumeLifecycleOptions,
+    operation?: (session: AgentSession) => T | Promise<T>,
+  ): Promise<AgentSession | T> {
+    const {
+      backend,
+      sessionId,
+      sessionConfig,
+      cancellationMessage,
+      timeoutMessage,
+      reuseCachedSession = false,
+      reserveCachedSession = false,
+      probeMcpStatus = true,
+      probeTarget = "cached",
+      beforeResume,
+      flushPendingEviction = true,
+    } = options;
+    const resumeLease = await this.beginSessionResume(
+      sessionId,
+      sessionConfig,
+      { reserveCachedSession },
+    );
+    if (!resumeLease) throw new Error(cancellationMessage);
+
+    try {
+      let session = reuseCachedSession ? this.sessionObjects.get(sessionId) : undefined;
+      if (!session) {
+        await beforeResume?.();
+        const resume = backend.resumeSession(sessionId, sessionConfig);
+        const resumedSession = timeoutMessage
+          ? await resumeSessionWithTimeout(resume, timeoutMessage)
+          : await resume;
+        const cachedSession = await this.cacheResumedSession(sessionId, resumedSession, sessionConfig);
+        if (probeMcpStatus) {
+          this.probeMcpStatus(
+            sessionId,
+            probeTarget === "resumed" ? resumedSession : cachedSession,
+          );
+        }
+        session = cachedSession;
+      }
+
+      if (!operation) return session;
+      return await operation(session);
+    } finally {
+      this.endSessionResume(resumeLease);
+      if (flushPendingEviction) {
+        this.flushPendingSessionEviction(sessionId);
+      }
+    }
+  }
+
   private isSessionResuming(sessionId: string): boolean {
     return this.pendingSessionResumeAdmissions.has(sessionId)
       || (this.resumingSessions.get(sessionId) ?? 0) > 0;
@@ -2949,19 +3020,18 @@ export class SessionManager {
       throw new Error(`MCP server "${requestedServerName}" is not configured for this session`);
     }
 
-    const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
-    if (!resumeLease) throw new Error("MCP authentication resume cancelled before admission");
-    try {
-      let session = this.sessionObjects.get(sessionId);
-      if (!session) {
+    return this.withSessionResumeLifecycle({
+      backend: client,
+      sessionId,
+      sessionConfig: resumeConfig,
+      cancellationMessage: "MCP authentication resume cancelled before admission",
+      timeoutMessage: "MCP auth resume timed out after 60s",
+      reuseCachedSession: true,
+      probeMcpStatus: false,
+      beforeResume: () => {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
-        session = await resumeSessionWithTimeout(
-          client.resumeSession(sessionId, resumeConfig),
-          "MCP auth resume timed out after 60s",
-        );
-        session = await this.cacheResumedSession(sessionId, session, resumeConfig);
-      }
-
+      },
+    }, async (session) => {
       if (typeof session.startMcpOauthLogin !== "function") {
         throw new Error("MCP OAuth login is not available in this Copilot SDK build");
       }
@@ -2989,10 +3059,7 @@ export class SessionManager {
           : {}),
         servers,
       };
-    } finally {
-      this.endSessionResume(resumeLease);
-      this.flushPendingSessionEviction(sessionId);
-    }
+    });
   }
 
 
@@ -3267,16 +3334,13 @@ export class SessionManager {
           groupNotes: this.lookupGroupNotes(sourceTask?.groupId),
           forResume: true,
         });
-        const resumeLease = await this.beginSessionResume(result.sessionId, forkResumeConfig);
-        if (!resumeLease) throw new Error("Fork resume cancelled before admission");
-        try {
-          const forkedSession = await backend.resumeSession(result.sessionId, forkResumeConfig);
-          await this.cacheResumedSession(result.sessionId, forkedSession, forkResumeConfig);
-          this.probeMcpStatus(result.sessionId, forkedSession);
-        } finally {
-          this.endSessionResume(resumeLease);
-          this.flushPendingSessionEviction(result.sessionId);
-        }
+        await this.withSessionResumeLifecycle({
+          backend,
+          sessionId: result.sessionId,
+          sessionConfig: forkResumeConfig,
+          cancellationMessage: "Fork resume cancelled before admission",
+          probeTarget: "resumed",
+        });
       } catch (error) {
         try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
         throw error;
@@ -3324,18 +3388,14 @@ export class SessionManager {
           groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
         });
-        const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
-        if (!resumeLease) throw new Error("History undo resume cancelled before admission");
-        try {
-          session = await resumeSessionWithTimeout(
-            backend.resumeSession(sessionId, resumeConfig),
-            "undo history resume timed out after 60s",
-          );
-          session = await this.cacheResumedSession(sessionId, session, resumeConfig);
-          this.probeMcpStatus(sessionId, session);
-        } finally {
-          this.endSessionResume(resumeLease);
-        }
+        session = await this.withSessionResumeLifecycle({
+          backend,
+          sessionId,
+          sessionConfig: resumeConfig,
+          cancellationMessage: "History undo resume cancelled before admission",
+          timeoutMessage: "undo history resume timed out after 60s",
+          flushPendingEviction: false,
+        });
       }
 
       if (typeof session.truncateHistory !== "function" || typeof session.getEvents !== "function") {
@@ -3797,28 +3857,21 @@ export class SessionManager {
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
-    const warmPromise = (async () => {
-      const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
-      if (!resumeLease) throw new Error("Session warmup cancelled before admission");
-      try {
-        const session = await resumeSessionWithTimeout(
-          client.resumeSession(sessionId, resumeConfig),
-          "warmSession timed out after 60s",
-        );
-        const cachedSession = await this.cacheResumedSession(sessionId, session, resumeConfig);
-        this.probeMcpStatus(sessionId, cachedSession);
-        this.invalidateSessionListCache("session:warm");
-        this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
+    const warmPromise = this.withSessionResumeLifecycle({
+      backend: client,
+      sessionId,
+      sessionConfig: resumeConfig,
+      cancellationMessage: "Session warmup cancelled before admission",
+      timeoutMessage: "warmSession timed out after 60s",
+    }, () => {
+      this.invalidateSessionListCache("session:warm");
+      this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
 
-        const duration = Date.now() - t0;
-        this.recordSpan("session.warm.coldResume", duration, sessionId);
-        this.recordSpan("session.warm", duration, sessionId);
-        console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
-      } finally {
-        this.endSessionResume(resumeLease);
-        this.flushPendingSessionEviction(sessionId);
-      }
-    })();
+      const duration = Date.now() - t0;
+      this.recordSpan("session.warm.coldResume", duration, sessionId);
+      this.recordSpan("session.warm", duration, sessionId);
+      console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+    });
     this.warmSessionPromises.set(sessionId, warmPromise);
     try {
       await warmPromise;
@@ -3901,28 +3954,20 @@ export class SessionManager {
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
-    const resumeLease = await this.beginSessionResume(
+    return this.withSessionResumeLifecycle({
+      backend: client,
       sessionId,
-      resumeConfig,
-      { reserveCachedSession: true },
-    );
-    if (!resumeLease) throw new Error("Session reload cancelled before admission");
-    try {
-      await this.evictCachedSession(sessionId);
-      this.mcpStatus.delete(sessionId);
-
-      console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
-      const session = await resumeSessionWithTimeout(
-        client.resumeSession(sessionId, resumeConfig),
-        "reloadSession timed out after 60s",
-      );
-      await this.cacheResumedSession(sessionId, session, resumeConfig);
-
-      return this.getMcpStatus(sessionId);
-    } finally {
-      this.endSessionResume(resumeLease);
-      this.flushPendingSessionEviction(sessionId);
-    }
+      sessionConfig: resumeConfig,
+      cancellationMessage: "Session reload cancelled before admission",
+      timeoutMessage: "reloadSession timed out after 60s",
+      reserveCachedSession: true,
+      probeMcpStatus: false,
+      beforeResume: async () => {
+        await this.evictCachedSession(sessionId);
+        this.mcpStatus.delete(sessionId);
+        console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
+      },
+    }, () => this.getMcpStatus(sessionId));
   }
 
   isSessionBusy(sessionId: string): boolean {

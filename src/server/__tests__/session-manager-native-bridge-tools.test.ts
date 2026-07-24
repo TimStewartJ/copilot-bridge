@@ -118,6 +118,7 @@ function createManager() {
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async (config: any) => createFakeSession(config.sessionId ?? "created-session", config.tools ?? [])),
     resumeSession: vi.fn(async (sessionId: string, config: any) => createFakeSession(sessionId, config.tools ?? [])),
+    forkSession: vi.fn(async () => ({ sessionId: "forked-session" })),
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({})),
   };
@@ -696,6 +697,87 @@ describe("SessionManager native Bridge tools", () => {
       expect(config.mcpServers["bridge-tools-session"]).toBeUndefined();
       expect(config.model).toBeUndefined();
       expect(config.reasoningEffort).toBeUndefined();
+    } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("caches a forked session and releases resume cleanup exactly once", async () => {
+    const { manager, backend, db } = createManager();
+    try {
+      await manager.initialize();
+      const forkedSession = createFakeSession("forked-session");
+      backend.resumeSession.mockResolvedValueOnce(forkedSession);
+      const endSessionResume = vi.spyOn(manager as any, "endSessionResume");
+      const flushPendingSessionEviction = vi.spyOn(manager as any, "flushPendingSessionEviction");
+
+      await expect(manager.forkSession("source-session")).resolves.toEqual({
+        sessionId: "forked-session",
+      });
+      await Promise.resolve();
+
+      expect(manager.isSessionWarm("forked-session")).toBe(true);
+      expect(forkedSession.listMcpServers).toHaveBeenCalledTimes(1);
+      expect(endSessionResume).toHaveBeenCalledTimes(1);
+      expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
+    } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("preserves fork success without a timeout when the MCP probe rejects", async () => {
+    const { manager, backend, db } = createManager();
+    const resumeGate = createDeferred<ReturnType<typeof createFakeSession>>();
+    let settled = false;
+    try {
+      await manager.initialize();
+      vi.useFakeTimers();
+      const forkedSession = createFakeSession("forked-session");
+      forkedSession.listMcpServers.mockRejectedValueOnce(new Error("probe failed"));
+      backend.resumeSession.mockImplementationOnce(() => resumeGate.promise);
+      const endSessionResume = vi.spyOn(manager as any, "endSessionResume");
+      const flushPendingSessionEviction = vi.spyOn(manager as any, "flushPendingSessionEviction");
+
+      const forking = manager.forkSession("source-session");
+      void forking.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(settled).toBe(false);
+
+      resumeGate.resolve(forkedSession);
+      await expect(forking).resolves.toEqual({ sessionId: "forked-session" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(forkedSession.listMcpServers).toHaveBeenCalledTimes(1);
+      expect(endSessionResume).toHaveBeenCalledTimes(1);
+      expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      resumeGate.resolve(createFakeSession("forked-session"));
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("deletes a failed fork and releases resume cleanup exactly once", async () => {
+    const { manager, backend, db } = createManager();
+    const resumeError = new Error("fork resume failed");
+    try {
+      await manager.initialize();
+      backend.resumeSession.mockRejectedValueOnce(resumeError);
+      const endSessionResume = vi.spyOn(manager as any, "endSessionResume");
+      const flushPendingSessionEviction = vi.spyOn(manager as any, "flushPendingSessionEviction");
+
+      await expect(manager.forkSession("source-session")).rejects.toBe(resumeError);
+
+      expect(backend.deleteSession).toHaveBeenCalledTimes(1);
+      expect(backend.deleteSession).toHaveBeenCalledWith("forked-session");
+      expect(endSessionResume).toHaveBeenCalledTimes(1);
+      expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
     } finally {
       await manager.gracefulShutdown();
       db.close();
