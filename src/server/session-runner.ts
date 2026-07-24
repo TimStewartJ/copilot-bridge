@@ -63,6 +63,8 @@ import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 const WATCHDOG_INTERVAL_MS = 60_000;
 const NO_PROGRESS_WARNING_MS = 10 * 60_000;
 const NO_PROGRESS_ABORT_MS = 60 * 60_000;
+const SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE =
+  "Session tool initialization did not complete before prompt delivery";
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
   "session.idle",
   "session.task_complete",
@@ -216,6 +218,7 @@ export interface SessionRunnerDeps {
     attachments?: StartWorkAttachment[],
   ): RoutedSdkAttachment[] | undefined;
   cacheResumedSession(sessionId: string, session: any, sessionConfig?: any): Promise<any>;
+  waitForSessionToolInitialization(sessionId: string, session: any): boolean | Promise<boolean>;
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
   abortSession(sessionId: string): Promise<boolean>;
   probeMcpStatus(sessionId: string, session: any): void;
@@ -384,6 +387,9 @@ export class SessionRunner {
     if (!session) {
       throw new Error("Session is still reconnecting; try again shortly");
     }
+    if (this.deps.runStateController.getRunRecords().get(sessionId)?.promptAccepted !== true) {
+      throw new Error("Session is still starting the current turn; try again shortly");
+    }
 
     const sid = sessionId.slice(0, 8);
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
@@ -408,6 +414,13 @@ export class SessionRunner {
     bus.setPendingPrompt(prompt, attachments);
     this.touchSessionRun(sessionId);
     try {
+      if (
+        runController.isCompleted()
+        || this.deps.activeRunControllers.get(sessionId) !== runController
+        || this.deps.sessionObjects.get(sessionId) !== session
+      ) {
+        throw new Error("Session ended before steering could attach; send a normal message instead");
+      }
       await session.send({
         prompt,
         ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
@@ -1416,6 +1429,10 @@ export class SessionRunner {
     let unsub: (() => void) | undefined;
 
     const prepareSessionForSend = async (activeSession: typeof session) => {
+      const initialization = this.deps.waitForSessionToolInitialization(sessionId, activeSession);
+      if (!(initialization === true || await initialization)) {
+        throw new Error(SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE);
+      }
       if (opts.historyTruncation?.mode !== "replace-quiet-interval-defer-tail") return;
       const result = await truncateQuietIntervalDeferTail({
         session: activeSession,
