@@ -104,11 +104,7 @@ import {
   type UpdateChannel,
 } from "./update-service.js";
 import { BrowserHeadedCloseError, closeHeadedDiagnosticsBrowser, getBrowserDiagnostics, launchHeadedDiagnosticsBrowser } from "./browser-diagnostics.js";
-import {
-  DocsSnapshotNotFoundError,
-  DocsSnapshotValidationError,
-  PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
-} from "./docs-snapshot-store.js";
+import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
 import {
@@ -4799,69 +4795,6 @@ export function createApiRouter(
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(500).json({ error: String(err) });
-      }
-    });
-
-    router.get("/docs/snapshots", (_req, res) => {
-      if (!docsSnapshots) return res.status(501).json({ error: "Docs snapshots not available" });
-      try {
-        res.json({ snapshots: docsSnapshots.listSnapshots() });
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
-      }
-    });
-
-    router.post("/docs/snapshots", (req, res) => {
-      if (!docsSnapshots) return res.status(501).json({ error: "Docs snapshots not available" });
-      try {
-        const reason = typeof req.body?.reason === "string" && req.body.reason.trim()
-          ? req.body.reason.trim()
-          : "manual";
-        const result = docsSnapshots.createSnapshot({ reason, allowEmpty: true });
-        res.json(result);
-      } catch (err: any) {
-        res.status(400).json({ error: err.message || String(err) });
-      }
-    });
-
-    router.post("/docs/snapshots/:id/restore", (req, res) => {
-      if (!docsSnapshots) return res.status(501).json({ error: "Docs snapshots not available" });
-      if (req.body?.confirm !== true) {
-        return res.status(400).json({ error: "confirm: true is required to restore a docs snapshot" });
-      }
-      try {
-        const result = docsSnapshots.restoreSnapshot(String(req.params.id));
-        let reindexed = true;
-        let reindexError: string | undefined;
-        let reindexErrorCode: string | undefined;
-        let reindexHealth: unknown;
-        try {
-          docsIdx.reindex();
-        } catch (error) {
-          reindexed = false;
-          if (isDocsFtsUnavailableError(error)) {
-            const payload = docsFtsUnavailablePayload(error);
-            reindexError = payload.error;
-            reindexErrorCode = payload.code;
-            reindexHealth = payload.health;
-          } else {
-            reindexError = error instanceof Error ? error.message : String(error);
-          }
-          const codeSuffix = reindexErrorCode ? ` (${reindexErrorCode})` : "";
-          console.warn(`[docs-snapshots] Restore succeeded but reindex failed${codeSuffix}: ${reindexError}`);
-        }
-        res.json({
-          success: true,
-          reindexed,
-          ...(reindexError ? { reindexError } : {}),
-          ...(reindexErrorCode ? { reindexErrorCode } : {}),
-          ...(reindexHealth ? { reindexHealth } : {}),
-          ...result,
-        });
-      } catch (err: any) {
-        if (err instanceof DocsSnapshotNotFoundError) return res.status(404).json({ error: err.message });
-        if (err instanceof DocsSnapshotValidationError) return res.status(422).json({ error: err.message });
-        res.status(500).json({ error: err.message || String(err) });
       }
     });
 

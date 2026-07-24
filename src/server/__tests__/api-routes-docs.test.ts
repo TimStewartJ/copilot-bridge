@@ -355,67 +355,14 @@ tags:
     expect(typeof res.body.indexed).toBe("number");
   });
 
-  it("POST /api/docs/snapshots creates a restorable docs snapshot", async () => {
-    await request(app)
-      .put("/api/docs/pages/snapshot-source")
-      .send({ content: "# Snapshot Source\n\nDurable content" });
+  it("does not expose docs snapshot REST routes", async () => {
+    const responses = await Promise.all([
+      request(app).get("/api/docs/snapshots"),
+      request(app).post("/api/docs/snapshots").send({ reason: "manual-test" }),
+      request(app).post("/api/docs/snapshots/example/restore").send({ confirm: true }),
+    ]);
 
-    const create = await request(app)
-      .post("/api/docs/snapshots")
-      .send({ reason: "manual-test" });
-
-    expect(create.status).toBe(200);
-    expect(create.body.created).toBe(true);
-    expect(create.body.snapshot).toMatchObject({
-      reason: "manual-test",
-      fileCount: 1,
-    });
-
-    const list = await request(app).get("/api/docs/snapshots");
-    expect(list.status).toBe(200);
-    expect(list.body.snapshots.map((snapshot: any) => snapshot.id)).toContain(create.body.snapshot.id);
-  });
-
-  it("POST /api/docs/snapshots/:id/restore restores docs and rebuilds the search index", async () => {
-    await request(app)
-      .put("/api/docs/pages/restorable")
-      .send({ content: "# Restorable\n\nOriginal body" });
-    const create = await request(app)
-      .post("/api/docs/snapshots")
-      .send({ reason: "restore-test" });
-    const snapshotId = create.body.snapshot.id;
-
-    await request(app)
-      .put("/api/docs/pages/restorable")
-      .send({ content: "# Restorable\n\nChanged body" });
-    await request(app)
-      .put("/api/docs/pages/temporary")
-      .send({ content: "# Temporary\n\nShould disappear" });
-
-    const rejected = await request(app)
-      .post(`/api/docs/snapshots/${snapshotId}/restore`)
-      .send({});
-    expect(rejected.status).toBe(400);
-
-    const restore = await request(app)
-      .post(`/api/docs/snapshots/${snapshotId}/restore`)
-      .send({ confirm: true });
-
-    expect(restore.status).toBe(200);
-    expect(restore.body.success).toBe(true);
-    expect(restore.body.restoredFrom.id).toBe(snapshotId);
-    expect(restore.body.preRestoreSnapshotId).toBeTruthy();
-
-    const restored = await request(app).get("/api/docs/pages/restorable");
-    expect(restored.status).toBe(200);
-    expect(restored.body.body).toContain("Original body");
-
-    const missing = await request(app).get("/api/docs/pages/temporary");
-    expect(missing.status).toBe(404);
-
-    const staleSearch = await request(app).get("/api/docs/search?q=disappear");
-    expect(staleSearch.status).toBe(200);
-    expect(staleSearch.body.results.map((result: any) => result.path)).not.toContain("temporary");
+    expect(responses.map((response) => response.status)).toEqual([404, 404, 404]);
   });
 
   it("DELETE /api/docs/pages creates a throttled pre-delete snapshot", async () => {
@@ -430,15 +377,16 @@ tags:
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(true);
 
-    const list = await request(app).get("/api/docs/snapshots");
-    expect(list.status).toBe(200);
-    const preDeleteSnapshots = list.body.snapshots.filter((snapshot: any) => snapshot.reason === "pre-delete");
+    const preDeleteSnapshots = ctx.docsSnapshotStore!
+      .listSnapshots()
+      .filter((snapshot) => snapshot.reason === "pre-delete");
     expect(preDeleteSnapshots).toHaveLength(1);
 
     const secondDelete = await request(app).delete("/api/docs/pages/to-delete-with-same-snapshot");
     expect(secondDelete.status).toBe(200);
-    const secondList = await request(app).get("/api/docs/snapshots");
-    expect(secondList.body.snapshots.filter((snapshot: any) => snapshot.reason === "pre-delete")).toHaveLength(1);
+    expect(ctx.docsSnapshotStore!
+      .listSnapshots()
+      .filter((snapshot) => snapshot.reason === "pre-delete")).toHaveLength(1);
   });
 
   it("GET /api/docs/search returns empty for no match", async () => {
