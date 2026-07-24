@@ -3,12 +3,12 @@
 // of valid identifier characters so pattern matching survives minifier renames.
 const ID = String.raw`[$A-Za-z_][\w$]*`;
 
-const GITHUB_MCP_CONFIG_METHOD_PATTERN = new RegExp(
-  String.raw`async createBuiltInGitHubMcpConfig\((${ID})\)\{let (${ID});try\{\2=await (${ID})\(\1\)\}catch\{return\}if\(!\2\)return;let (${ID})=await (${ID})\(\);return (${ID})\(\2,\1,\{excludeGhReplaceableTools:\4\},(${ID})\)\}`,
+const GITHUB_MCP_CONFIG_METHOD_SIGNATURE_PATTERN = new RegExp(
+  String.raw`async createBuiltInGitHubMcpConfig\((${ID}(?:,${ID})*)\)\{`,
   "g",
 );
-const GITHUB_MCP_CONFIG_SIMPLE_METHOD_PATTERN = new RegExp(
-  String.raw`async createBuiltInGitHubMcpConfig\((${ID})\)\{let (${ID});try\{\2=await (${ID})\(\1\)\}catch\{return\}if\(\2\)return (${ID})\(\2,\1,\{\},(${ID})\)\}`,
+const GITHUB_MCP_CONFIG_RETURN_PATTERN = new RegExp(
+  String.raw`return (${ID})\((${ID}),(${ID}),(\{[^{}]*\}),(${ID})\)`,
   "g",
 );
 const GITHUB_MCP_CONFIG_CALL_PATTERN = new RegExp(
@@ -16,7 +16,7 @@ const GITHUB_MCP_CONFIG_CALL_PATTERN = new RegExp(
   "g",
 );
 const GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN = new RegExp(
-  String.raw`if\(this\.shouldInjectBuiltInGitHubMcp\((${ID})\)&&(${ID})&&!\1\.provider\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\4\.mcpServers\}\)\}`,
+  String.raw`if\(this\.shouldInjectBuiltInGitHubMcp\((${ID})\)&&(${ID})&&!\1\.provider\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2([^;]*?)\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\5\.mcpServers\}\)\}`,
   "g",
 );
 // The CLI already ships the native schema-driven ask_user implementation, but
@@ -64,25 +64,68 @@ export function patchCopilotPendingInteractionRpcSource(source) {
   return source;
 }
 
-export function patchCopilotAppSource(source) {
-  let methodMatches = 0;
-  source = source.replace(
-    GITHUB_MCP_CONFIG_METHOD_PATTERN,
-    (match, authParam, tokenVar, tokenResolver, replaceableToolsVar, replaceableToolsResolver, configBuilder, logger) => {
-      methodMatches++;
-      return `async createBuiltInGitHubMcpConfig(${authParam},__bridgeGithubMcpOptions={}){let ${tokenVar};try{${tokenVar}=await ${tokenResolver}(${authParam})}catch{return}if(!${tokenVar})return;let ${replaceableToolsVar}=await ${replaceableToolsResolver}();return ${configBuilder}(${tokenVar},${authParam},{excludeGhReplaceableTools:${replaceableToolsVar},...__bridgeGithubMcpOptions},${logger})}`;
-    },
-  );
-  source = source.replace(
-    GITHUB_MCP_CONFIG_SIMPLE_METHOD_PATTERN,
-    (match, authParam, tokenVar, tokenResolver, configBuilder, logger) => {
-      methodMatches++;
-      return `async createBuiltInGitHubMcpConfig(${authParam},__bridgeGithubMcpOptions={}){let ${tokenVar};try{${tokenVar}=await ${tokenResolver}(${authParam})}catch{return}if(!${tokenVar})return;return ${configBuilder}(${tokenVar},${authParam},{...__bridgeGithubMcpOptions},${logger})}`;
-    },
-  );
-  if (methodMatches !== 1) {
-    throw new Error(`Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 config method, found ${methodMatches}.`);
+function findMatchingBrace(source, openBraceIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openBraceIndex; index < source.length; index++) {
+    const character = source[index];
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'" || character === "`") {
+      quote = character;
+    } else if (character === "{") {
+      depth++;
+    } else if (character === "}") {
+      depth--;
+      if (depth === 0) return index;
+    }
   }
+  return -1;
+}
+
+export function patchCopilotAppSource(source) {
+  const methodMatches = [...source.matchAll(GITHUB_MCP_CONFIG_METHOD_SIGNATURE_PATTERN)];
+  if (methodMatches.length !== 1) {
+    throw new Error(`Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 config method, found ${methodMatches.length}.`);
+  }
+  const methodMatch = methodMatches[0];
+  const methodStart = methodMatch.index;
+  const methodOpenBrace = methodStart + methodMatch[0].length - 1;
+  const methodEnd = findMatchingBrace(source, methodOpenBrace);
+  if (methodEnd < 0) {
+    throw new Error("Unable to patch Copilot app for Bridge GitHub MCP auth: config method has no matching closing brace.");
+  }
+  let returnMatches = 0;
+  let methodSource = source.slice(methodStart, methodEnd + 1);
+  methodSource = methodSource.replace(
+    GITHUB_MCP_CONFIG_METHOD_SIGNATURE_PATTERN,
+    `async createBuiltInGitHubMcpConfig(${methodMatch[1]},__bridgeGithubMcpOptions={}){`,
+  );
+  methodSource = methodSource.replace(
+    GITHUB_MCP_CONFIG_RETURN_PATTERN,
+    (match, configBuilder, tokenVar, authParam, configObject, logger) => {
+      returnMatches++;
+      const patchedConfigObject = configObject === "{}"
+        ? "{...__bridgeGithubMcpOptions}"
+        : `${configObject.slice(0, -1)},...__bridgeGithubMcpOptions}`;
+      return `return ${configBuilder}(${tokenVar},${authParam},${patchedConfigObject},${logger})`;
+    },
+  );
+  if (returnMatches !== 1) {
+    throw new Error(
+      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 config return, found ${returnMatches}.`,
+    );
+  }
+  source = source.slice(0, methodStart) + methodSource + source.slice(methodEnd + 1);
 
   let legacyCallMatches = 0;
   source = source.replace(
@@ -95,9 +138,9 @@ export function patchCopilotAppSource(source) {
   let helperCallMatches = 0;
   source = source.replace(
     GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN,
-    (match, optionsVar, sessionVar, configVar, mcpTargetVar) => {
+    (match, optionsVar, sessionVar, configVar, callArgs, mcpTargetVar) => {
       helperCallMatches++;
-      return `if((this.shouldInjectBuiltInGitHubMcp(${optionsVar})||(${optionsVar}.githubMcpToolOptions&&!${optionsVar}.gitHubToken))&&${sessionVar}&&!${optionsVar}.provider){let ${configVar}=await this.createBuiltInGitHubMcpConfig(${sessionVar},${optionsVar}.githubMcpToolOptions);${configVar}&&(${mcpTargetVar}.mcpServers={"github-mcp-server":${configVar},...${mcpTargetVar}.mcpServers})}`;
+      return `if((this.shouldInjectBuiltInGitHubMcp(${optionsVar})||(${optionsVar}.githubMcpToolOptions&&!${optionsVar}.gitHubToken))&&${sessionVar}&&!${optionsVar}.provider){let ${configVar}=await this.createBuiltInGitHubMcpConfig(${sessionVar}${callArgs},${optionsVar}.githubMcpToolOptions);${configVar}&&(${mcpTargetVar}.mcpServers={"github-mcp-server":${configVar},...${mcpTargetVar}.mcpServers})}`;
     },
   );
   const hasLegacyCallSites = legacyCallMatches === 2 && helperCallMatches === 0;
