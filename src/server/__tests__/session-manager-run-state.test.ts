@@ -2060,6 +2060,54 @@ describe("SessionManager run state", () => {
     });
   });
 
+  it("trusts live session.idle after trailing tool activity without a new assistant turn", async () => {
+    const sessionId = "session-idle-after-tool-tail";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { content: "finishing tool output" },
+    });
+    getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    getHandler()?.({
+      type: "tool.execution_partial_result",
+      data: { toolCallId: "shell-1", partialOutput: "done" },
+    });
+    getHandler()?.({
+      type: "tool.execution_complete",
+      timestamp: new Date(baseTime + 3_000).toISOString(),
+      data: { toolCallId: "shell-1", success: true },
+    });
+    getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 4_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "done",
+      finalContent: "finishing tool output",
+    });
+  });
+
   it("records persisted-terminal recovery telemetry without replacing the live session", async () => {
     const tmpDir = makeTestDir("stall-turn-end-telemetry");
     const sessionId = "session-turn-end-telemetry";
@@ -2136,6 +2184,272 @@ describe("SessionManager run state", () => {
       terminalEventType: "assistant.turn_end",
       latestPersistedEventType: "assistant.turn_end",
       latestPersistedTerminalEventType: "assistant.turn_end",
+    });
+  });
+
+  it("keeps the run busy when live activity continues after a persisted turn end", async () => {
+    const tmpDir = makeTestDir("stale-persisted-turn-end");
+    const sessionId = "session-stale-persisted-turn-end";
+    const sessionStateDir = join(tmpDir, "session-state", sessionId);
+    mkdirSync(sessionStateDir, { recursive: true });
+
+    const { manager, telemetryStore, eventBusRegistry } = createManager({ copilotHome: tmpDir, telemetry: true });
+    const initial = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(initial.session) };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    initial.getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { content: "waiting for background work" },
+    });
+    initial.getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    initial.getHandler()?.({
+      type: "session.autopilot_objective_changed",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { operation: "update", id: 1, status: "active" },
+    });
+    initial.getHandler()?.({
+      type: "tool.execution_partial_result",
+      data: { toolCallId: "shell-1", partialOutput: "still running" },
+    });
+    await flushMicrotasks();
+
+    writeFileSync(join(sessionStateDir, "events.jsonl"), [
+      JSON.stringify({
+        type: "user.message",
+        timestamp: new Date(baseTime + 500).toISOString(),
+        data: { content: "hello" },
+      }),
+      JSON.stringify({
+        type: "assistant.message",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        data: { content: "waiting for background work" },
+      }),
+      JSON.stringify({
+        type: "assistant.turn_end",
+        timestamp: new Date(baseTime + 2_000).toISOString(),
+        data: { turnId: "1" },
+      }),
+    ].join("\n") + "\n");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getSnapshot().complete).toBe(false);
+    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
+      outcome: "deferred_persisted_turn_end_after_live_activity",
+      deferredReason: "live_activity_after_turn_end",
+      terminalEventType: "assistant.turn_end",
+      activeEventsAfterLastLiveTurnEnd: 0,
+      persistedRecoveryConflictEventsAfterLastLiveTurnEnd: 2,
+    });
+
+    initial.session.send.mockResolvedValueOnce(undefined);
+    await manager.steerSession(sessionId, "adjust the remaining work");
+    expect(initial.session.send).toHaveBeenLastCalledWith({
+      prompt: "adjust the remaining work",
+      mode: "immediate",
+    });
+
+    initial.getHandler()?.({
+      type: "system.notification",
+      timestamp: new Date(baseTime + 60_500).toISOString(),
+      data: { kind: { type: "shell_completed" } },
+    });
+    initial.getHandler()?.({
+      type: "assistant.turn_start",
+      timestamp: new Date(baseTime + 61_000).toISOString(),
+      data: { turnId: "2" },
+    });
+    initial.getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 62_000).toISOString(),
+      data: { content: "finished" },
+    });
+    initial.getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 63_000).toISOString(),
+      data: { turnId: "2" },
+    });
+    initial.getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 64_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "done",
+      finalContent: "finished",
+    });
+  });
+
+  it("waits for live agent status before resolving persisted turn end", async () => {
+    const tmpDir = makeTestDir("persisted-turn-end-running-agent");
+    const sessionId = "session-persisted-turn-end-running-agent";
+    const sessionStateDir = join(tmpDir, "session-state", sessionId);
+    mkdirSync(sessionStateDir, { recursive: true });
+
+    const { manager, telemetryStore, eventBusRegistry } = createManager({ copilotHome: tmpDir, telemetry: true });
+    const initial = makeSession();
+    let agentStatus = "running";
+    let resolveTaskRefresh!: (value: any) => void;
+    let taskListCall = 0;
+    (initial.session as any).listTasks = vi.fn(async () => {
+      taskListCall += 1;
+      if (taskListCall === 1) return { tasks: [] };
+      if (taskListCall === 2) {
+        return new Promise((resolve) => {
+          resolveTaskRefresh = resolve;
+        });
+      }
+      return {
+        tasks: [{
+          kind: "agent",
+          id: "background-review",
+          toolCallId: "agent-call-1",
+          status: agentStatus,
+          executionMode: "background",
+          agentType: "code-review",
+        }],
+      };
+    });
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(initial.session) };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "review the change");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    initial.getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { content: "waiting for the reviewer" },
+    });
+    initial.getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    initial.getHandler()?.({
+      type: "session.background_tasks_changed",
+      timestamp: new Date(baseTime + 3_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    writeFileSync(join(sessionStateDir, "events.jsonl"), [
+      JSON.stringify({
+        type: "user.message",
+        timestamp: new Date(baseTime + 500).toISOString(),
+        data: { content: "review the change" },
+      }),
+      JSON.stringify({
+        type: "assistant.message",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        data: { content: "waiting for the reviewer" },
+      }),
+      JSON.stringify({
+        type: "assistant.turn_end",
+        timestamp: new Date(baseTime + 2_000).toISOString(),
+        data: { turnId: "1" },
+      }),
+    ].join("\n") + "\n");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getSnapshot().complete).toBe(false);
+    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
+      outcome: "deferred_persisted_turn_end_after_live_activity",
+      deferredReason: "background_agent_refresh_pending",
+      terminalEventType: "assistant.turn_end",
+      activeEventsAfterLastLiveTurnEnd: 0,
+    });
+
+    resolveTaskRefresh({
+      tasks: [{
+        kind: "agent",
+        id: "background-review",
+        toolCallId: "agent-call-1",
+        status: "running",
+        executionMode: "background",
+        agentType: "code-review",
+      }],
+    });
+    await flushMicrotasks();
+    expect(manager.getBackgroundAgentsSummary(sessionId)).toMatchObject({
+      running: 1,
+      source: "live",
+    });
+
+    writeFileSync(join(sessionStateDir, "events.jsonl"), [
+      JSON.stringify({
+        type: "user.message",
+        timestamp: new Date(baseTime + 500).toISOString(),
+        data: { content: "review the change" },
+      }),
+      JSON.stringify({
+        type: "assistant.message",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        data: { content: "waiting for the reviewer" },
+      }),
+      JSON.stringify({
+        type: "assistant.turn_end",
+        timestamp: new Date(baseTime + 2_000).toISOString(),
+        data: { turnId: "1" },
+      }),
+      "",
+    ].join("\n"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
+      outcome: "deferred_persisted_turn_end_after_live_activity",
+      deferredReason: "running_background_agent",
+    });
+
+    agentStatus = "completed";
+    initial.getHandler()?.({
+      type: "session.background_tasks_changed",
+      timestamp: new Date(baseTime + 61_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+    expect(manager.getBackgroundAgentsSummary(sessionId)).toMatchObject({
+      running: 0,
+      source: "live",
+    });
+
+    initial.getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 62_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "done",
+      finalContent: "waiting for the reviewer",
     });
   });
 

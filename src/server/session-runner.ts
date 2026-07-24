@@ -82,6 +82,14 @@ const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
   "subagent.completed",
   "subagent.failed",
 ]);
+const PERSISTED_TURN_END_CONFLICT_EVENT_TYPES = new Set([
+  ...LIVE_TURN_END_FOLLOWUP_EVENT_TYPES,
+  "assistant.message_delta",
+  "assistant.streaming_delta",
+  "assistant.intent",
+  "tool.execution_progress",
+  "tool.execution_partial_result",
+]);
 
 type SessionEventOrigin = "live" | "persisted_recovery";
 
@@ -702,8 +710,11 @@ export class SessionRunner {
     let lastLiveEventOrigin: SessionEventOrigin | undefined;
     let liveTurnEndCount = 0;
     let lastLiveTurnEndAt: number | undefined;
+    let liveAssistantTurnOpen = false;
     let eventsAfterLastLiveTurnEnd = 0;
     let activeEventsAfterLastLiveTurnEnd = 0;
+    let persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
+    let postTurnAgentRefreshPromise: Promise<void> | undefined;
     let staleCacheRetryCount = 0;
     let acceptingSessionEvents = false;
     const resetRunTelemetryState = () => {
@@ -715,8 +726,11 @@ export class SessionRunner {
       lastLiveEventOrigin = undefined;
       liveTurnEndCount = 0;
       lastLiveTurnEndAt = undefined;
+      liveAssistantTurnOpen = false;
       eventsAfterLastLiveTurnEnd = 0;
       activeEventsAfterLastLiveTurnEnd = 0;
+      persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
+      postTurnAgentRefreshPromise = undefined;
     };
     const beginSend = () => {
       sendStart = Date.now();
@@ -840,6 +854,7 @@ export class SessionRunner {
       lastLiveTurnEndAgeMs: getAgeMs(now, lastLiveTurnEndAt),
       eventsAfterLastLiveTurnEnd,
       activeEventsAfterLastLiveTurnEnd,
+      persistedRecoveryConflictEventsAfterLastLiveTurnEnd,
       pendingUserInputCount: this.deps.getPendingUserInputCount(sessionId),
       pendingInteractionCount: this.deps.getPendingInteractionCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
@@ -879,8 +894,13 @@ export class SessionRunner {
         ...metadata,
       }, now);
     };
-    const hasActiveFollowupAfterTurnEnd = () =>
-      lastLiveTurnEndAt !== undefined && activeEventsAfterLastLiveTurnEnd > 0;
+    const hasPersistedRecoveryConflictAfterTurnEnd = () =>
+      lastLiveTurnEndAt !== undefined && persistedRecoveryConflictEventsAfterLastLiveTurnEnd > 0;
+    const isPersistedTurnEndConflictEvent = (event: any): boolean => {
+      if (PERSISTED_TURN_END_CONFLICT_EVENT_TYPES.has(event?.type)) return true;
+      return event?.type === "session.autopilot_objective_changed"
+        && event?.data?.status === "active";
+    };
     const noteLiveEvent = (event: any, eventAt: number, origin: SessionEventOrigin) => {
       const eventType = typeof event?.type === "string" ? event.type : undefined;
       if (!eventType) return;
@@ -890,14 +910,22 @@ export class SessionRunner {
       if (lastLiveTurnEndAt !== undefined && LIVE_TURN_END_FOLLOWUP_EVENT_TYPES.has(eventType)) {
         activeEventsAfterLastLiveTurnEnd += 1;
       }
+      if (lastLiveTurnEndAt !== undefined && isPersistedTurnEndConflictEvent(event)) {
+        persistedRecoveryConflictEventsAfterLastLiveTurnEnd += 1;
+      }
       lastLiveEventType = eventType;
       lastLiveEventAt = eventAt;
       lastLiveEventOrigin = origin;
+      if (eventType === "assistant.turn_start") {
+        liveAssistantTurnOpen = true;
+      }
       if (eventType === "assistant.turn_end") {
+        liveAssistantTurnOpen = false;
         liveTurnEndCount += 1;
         lastLiveTurnEndAt = eventAt;
         eventsAfterLastLiveTurnEnd = 0;
         activeEventsAfterLastLiveTurnEnd = 0;
+        persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
       }
     };
 
@@ -912,8 +940,27 @@ export class SessionRunner {
       if (!persistedTerminal) return false;
       if (runController.isCompleted()) return true;
       lastAssistantContent = persistedTerminal.assistantContent ?? lastAssistantContent;
-      console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
       if (persistedTerminal.event.type === "assistant.turn_end") {
+        const deferredReason = postTurnAgentRefreshPromise
+          ? "background_agent_refresh_pending"
+          : this.deps.agentRegistry.hasRunningAgents(sessionId)
+            ? "running_background_agent"
+            : hasPersistedRecoveryConflictAfterTurnEnd()
+              ? "live_activity_after_turn_end"
+            : undefined;
+        if (deferredReason) {
+          console.warn(
+            `[sdk] [${sid}] Persisted assistant.turn_end conflicts with ${deferredReason} ${reason} — retaining the active session owner`,
+          );
+          recordRunSpan("session.run.recovery", 0, {
+            outcome: "deferred_persisted_turn_end_after_live_activity",
+            deferredReason,
+            terminalEventType: persistedTerminal.event.type,
+            recoveryReason: reason,
+          });
+          return false;
+        }
+        console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted assistant.turn_end ${reason} — resolving locally`);
         const content = lastAssistantContent ?? "(no response)";
         recordRunCompletion(
           persistedTerminal.event,
@@ -933,6 +980,7 @@ export class SessionRunner {
         });
         return true;
       }
+      console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
       handleEvent(persistedTerminal.event, { origin: "persisted_recovery", recoveryReason: reason });
       return true;
     };
@@ -1194,7 +1242,13 @@ export class SessionRunner {
           break;
         }
         case "session.background_tasks_changed": {
-          this.refreshSessionAgents(sessionId, "background_tasks_changed");
+          const refresh = this.deps.agentRegistry.refresh(sessionId, "background_tasks_changed");
+          postTurnAgentRefreshPromise = refresh;
+          void refresh.finally(() => {
+            if (postTurnAgentRefreshPromise === refresh) {
+              postTurnAgentRefreshPromise = undefined;
+            }
+          });
           break;
         }
         case "system.notification": {
@@ -1275,7 +1329,8 @@ export class SessionRunner {
           const content = resolvedTerminalCompletion?.content ?? lastAssistantContent ?? "(no response)";
           if (
             context.origin === "live"
-            && hasActiveFollowupAfterTurnEnd()
+            && liveAssistantTurnOpen
+            && lastLiveTurnEndAt !== undefined
           ) {
             console.warn(
               `[sdk] [${sid}] Ignoring ${event.type} with active follow-up after turn end (${elapsed}s)`,
