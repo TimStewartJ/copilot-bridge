@@ -283,10 +283,46 @@ describe("management job status tool", () => {
       expect(succeeded).toMatchObject({
         success: true,
         terminal: true,
-        toolNextAction: "respond",
+        toolNextAction: "proceed",
       });
       expect(succeeded.content[0].text).toContain("https://bridge.example/staging/x/");
-      expect(succeeded.content[0].text).toContain('"nextAction":"respond"');
+      expect(succeeded.content[0].text).toContain('"nextAction":"proceed"');
+
+      const failedPreview = store.enqueue("staging_preview", { stagingDir: join(dataDir, "failed-staging") });
+      store.fail(failedPreview.id, "Preview build failed.");
+      const failed = await tool.handler({ jobId: failedPreview.id }, {} as any);
+      expect(failed).toMatchObject({
+        success: true,
+        terminal: true,
+        toolNextAction: "respond",
+      });
+
+      const cancelledPreview = store.enqueue("staging_preview", { stagingDir: join(dataDir, "cancelled-staging") });
+      store.cancel(cancelledPreview.id);
+      const cancelled = await tool.handler({ jobId: cancelledPreview.id }, {} as any);
+      expect(cancelled).toMatchObject({
+        success: true,
+        terminal: true,
+        toolNextAction: "respond",
+      });
+
+      const deploy = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "deploy"), message: "Deploy" });
+      store.succeed(deploy.id, { success: true, commitSha: "abc123" });
+      const deployed = await tool.handler({ jobId: deploy.id }, {} as any);
+      expect(deployed).toMatchObject({
+        success: true,
+        terminal: true,
+        toolNextAction: "respond",
+      });
+
+      const update = store.enqueue("self_update", {});
+      store.succeed(update.id, { success: true, commitSha: "def456" });
+      const updated = await tool.handler({ jobId: update.id }, {} as any);
+      expect(updated).toMatchObject({
+        success: true,
+        terminal: true,
+        toolNextAction: "respond",
+      });
     } finally {
       db.close();
       rmSync(dataDir, { recursive: true, force: true });

@@ -1,7 +1,7 @@
 import type { ToolResultObject } from "@github/copilot-sdk";
 
 export type ToolFailureResultType = Exclude<ToolResultObject["resultType"], "success">;
-export type BridgeToolNextAction = "respond" | "respond_or_defer" | "wait" | "retry" | "manual_recovery";
+export type BridgeToolNextAction = "proceed" | "respond" | "respond_or_defer" | "wait" | "retry" | "manual_recovery";
 
 export interface ToolFailureOptions {
   detail?: string;
@@ -58,6 +58,8 @@ function getDisplayText(value: unknown): string | undefined {
 
 function formatNextAction(nextAction: BridgeToolNextAction | undefined, pollAfterMs: number | undefined): string | undefined {
   switch (nextAction) {
+    case "proceed":
+      return "proceed with relevant follow-up tools to verify or inspect the result; do not re-poll this status";
     case "respond":
       return "respond to the user; do not call another tool for this status";
     case "respond_or_defer":

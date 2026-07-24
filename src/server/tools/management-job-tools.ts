@@ -65,7 +65,9 @@ function getManagementJobContract(job: ManagementJob): {
         resultSummary,
       ].filter(Boolean).join("\n"),
       terminal: true,
-      toolNextAction: "respond",
+      toolNextAction: job.type === "staging_preview" && job.status === "succeeded"
+        ? "proceed"
+        : "respond",
       retryable: job.status !== "succeeded",
     };
   }

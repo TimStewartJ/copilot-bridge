@@ -67,4 +67,18 @@ describe("tool results", () => {
     expect(result.content[0].text).toContain("do not synchronously poll");
     expect(result.content[0].text).toContain('"nextAction":"respond_or_defer"');
   });
+
+  it("allows relevant follow-up tools after a successful background result", () => {
+    const result = bridgeToolResult({
+      success: true,
+      summary: "Preview is ready.",
+      terminal: true,
+      toolNextAction: "proceed",
+      retryable: false,
+    });
+
+    expect(result.content[0].text).toContain("proceed with relevant follow-up tools");
+    expect(result.content[0].text).toContain("do not re-poll this status");
+    expect(result.content[0].text).toContain('"nextAction":"proceed"');
+  });
 });
