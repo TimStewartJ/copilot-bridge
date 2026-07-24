@@ -867,6 +867,77 @@ describe("event-transform tool results", () => {
     ]);
   });
 
+  it("keeps subagent session.error scoped to the agent tool", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "assistant.turn_start",
+        timestamp: "2026-07-24T17:54:20.000Z",
+        data: { turnId: "35" },
+      },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-07-24T17:54:28.000Z",
+        data: {
+          toolCallId: "agent-call-1",
+          toolName: "task",
+          arguments: { mode: "sync", agent_type: "code-review" },
+        },
+      },
+      {
+        type: "subagent.started",
+        agentId: "agent-call-1",
+        timestamp: "2026-07-24T17:54:28.100Z",
+        data: {
+          toolCallId: "agent-call-1",
+          agentName: "code-review",
+          agentDisplayName: "Code Review Agent",
+        },
+      },
+      {
+        type: "session.error",
+        agentId: "agent-call-1",
+        timestamp: "2026-07-24T17:59:30.000Z",
+        data: {
+          errorType: "query",
+          message: "CAPIError: flagged child request",
+        },
+      },
+      {
+        type: "subagent.completed",
+        agentId: "agent-call-1",
+        timestamp: "2026-07-24T17:59:30.010Z",
+        data: { toolCallId: "agent-call-1" },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-07-24T17:59:30.020Z",
+        data: { toolCallId: "agent-call-1", success: true, result: "" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-07-24T17:59:31.000Z",
+        data: { content: "Parent continued." },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        toolCall: {
+          toolCallId: "agent-call-1",
+          name: "🤖 Code Review Agent",
+          result: "CAPIError: flagged child request",
+          success: false,
+        },
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: "Parent continued.",
+      },
+    ]);
+  });
+
   it("marks open tools as failed when the turn ends with abort", () => {
     const entries = transformEventsToMessages([
       {

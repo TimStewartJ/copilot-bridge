@@ -1,5 +1,5 @@
 import { open, stat } from "node:fs/promises";
-import { getSdkEventId } from "./sdk-event-identity.js";
+import { getSdkEventId, isSdkSubagentSessionError } from "./sdk-event-identity.js";
 
 const MAX_RECOVERY_TAIL_BYTES = 8 * 1024 * 1024;
 
@@ -123,6 +123,7 @@ export async function inspectPersistedRunRecovery(
   let assistantSourceEventId = options.lastAssistantSourceEventId;
   let latestRelevantState: "active" | "terminal" | undefined;
   let terminalEvent: any | null = null;
+  let stickyTerminal = false;
   let hasTurnEnd = false;
   let activeEventsAfterTurnEnd = 0;
 
@@ -130,12 +131,15 @@ export async function inspectPersistedRunRecovery(
     if (hasTurnEnd && ACTIVE_FOLLOWUP_EVENT_TYPES.has(eventType)) {
       activeEventsAfterTurnEnd += 1;
     }
+    if (stickyTerminal) return;
     latestRelevantState = "active";
     terminalEvent = null;
   };
-  const markTerminal = (event: any) => {
+  const markTerminal = (event: any, sticky = false) => {
+    if (stickyTerminal) return;
     latestRelevantState = "terminal";
     terminalEvent = event;
+    stickyTerminal = sticky;
   };
 
   for (const line of raw.split(/\r?\n/)) {
@@ -150,10 +154,11 @@ export async function inspectPersistedRunRecovery(
     if (typeof eventType !== "string" || !RELEVANT_EVENT_TYPES.has(eventType)) continue;
     const eventTime = getEventTimestampMs(event);
     if (eventTime === undefined || eventTime < sendStart) continue;
+    const isSubagentSessionError = isSdkSubagentSessionError(event);
 
     latestEventType = eventType;
     latestEventAt = eventTime;
-    if (DIAGNOSTIC_TERMINAL_EVENT_TYPES.has(eventType)) {
+    if (DIAGNOSTIC_TERMINAL_EVENT_TYPES.has(eventType) && !isSubagentSessionError) {
       latestTerminalEventType = eventType;
       latestTerminalEventAt = eventTime;
     }
@@ -195,6 +200,9 @@ export async function inspectPersistedRunRecovery(
         markTerminal(event);
         break;
       case "session.error":
+        if (isSubagentSessionError) markActive(eventType);
+        else markTerminal(event, true);
+        break;
       case "abort":
         markTerminal(event);
         break;
