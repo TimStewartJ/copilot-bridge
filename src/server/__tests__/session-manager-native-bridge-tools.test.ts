@@ -42,7 +42,9 @@ function createFakeSession(sessionId: string, tools: any[] = []) {
         deferLoading: false,
       })),
     })),
-    listMcpServers: vi.fn(async () => ({ servers: [] })),
+    listMcpServers: vi.fn(async () => ({
+      servers: [] as Array<{ name: string; status: string; source?: string }>,
+    })),
   };
 }
 
@@ -169,6 +171,223 @@ describe("SessionManager native Bridge tools", () => {
         expect((await backend.createSession.mock.results[0].value).initializeTools).toHaveBeenCalledOnce();
       });
     } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("serializes resumed-session MCP probing behind native tool initialization without blocking warmup", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    const callOrder: string[] = [];
+    try {
+      await manager.initialize();
+      const session = createFakeSession("resumed-session");
+      session.initializeTools.mockImplementationOnce(async () => {
+        callOrder.push("initialize:start");
+        await initializationGate.promise;
+        callOrder.push("initialize:end");
+      });
+      session.listMcpServers.mockImplementationOnce(async () => {
+        callOrder.push("mcp:list");
+        return { servers: [] };
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+
+      await expect(manager.warmSession(session.sessionId)).resolves.toBeUndefined();
+
+      expect(session.initializeTools).toHaveBeenCalledOnce();
+      expect(session.listMcpServers).not.toHaveBeenCalled();
+
+      initializationGate.resolve();
+      await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
+      expect(callOrder).toEqual(["initialize:start", "initialize:end", "mcp:list"]);
+    } finally {
+      initializationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("initializes each successive cached session once", async () => {
+    const { manager, db } = createManager();
+    try {
+      await manager.initialize();
+      const firstSession = createFakeSession("replacement-session");
+      const secondSession = createFakeSession("replacement-session");
+      const sessionCache = manager as unknown as {
+        cacheResumedSession(
+          sessionId: string,
+          session: typeof firstSession,
+          sessionConfig: { mcpServers: Record<string, never> },
+        ): Promise<unknown>;
+        evictCachedSession(
+          sessionId: string,
+          expectedSession: typeof firstSession,
+          reason: string,
+        ): Promise<unknown>;
+      };
+
+      await sessionCache.cacheResumedSession(firstSession.sessionId, firstSession, { mcpServers: {} });
+      await vi.waitFor(() => expect(firstSession.initializeTools).toHaveBeenCalledOnce());
+
+      await sessionCache.evictCachedSession(
+        firstSession.sessionId,
+        firstSession,
+        "test replacement",
+      );
+      await sessionCache.cacheResumedSession(secondSession.sessionId, secondSession, { mcpServers: {} });
+      await vi.waitFor(() => expect(secondSession.initializeTools).toHaveBeenCalledOnce());
+
+      expect(firstSession.initializeTools).toHaveBeenCalledOnce();
+      expect(secondSession.initializeTools).toHaveBeenCalledOnce();
+    } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("does not publish an MCP probe from a superseded session", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    try {
+      await manager.initialize();
+      const firstSession = createFakeSession("superseded-probe-session");
+      const secondSession = createFakeSession("superseded-probe-session");
+      firstSession.initializeTools.mockImplementationOnce(async () => {
+        await initializationGate.promise;
+      });
+      firstSession.listMcpServers.mockResolvedValueOnce({
+        servers: [{ name: "old", status: "failed" }],
+      });
+      secondSession.listMcpServers.mockResolvedValue({
+        servers: [{ name: "current", status: "connected" }],
+      });
+      backend.resumeSession.mockResolvedValueOnce(firstSession);
+
+      await manager.warmSession(firstSession.sessionId);
+      const sessionCache = manager as unknown as {
+        cacheResumedSession(
+          sessionId: string,
+          session: typeof secondSession,
+          sessionConfig: { mcpServers: Record<string, never> },
+        ): Promise<unknown>;
+        evictCachedSession(
+          sessionId: string,
+          expectedSession: typeof firstSession,
+          reason: string,
+        ): Promise<unknown>;
+        probeMcpStatus(sessionId: string, session: typeof secondSession): void;
+      };
+      await sessionCache.evictCachedSession(
+        firstSession.sessionId,
+        firstSession,
+        "test replacement",
+      );
+      await sessionCache.cacheResumedSession(secondSession.sessionId, secondSession, { mcpServers: {} });
+      sessionCache.probeMcpStatus(secondSession.sessionId, secondSession);
+
+      initializationGate.resolve();
+      await vi.waitFor(() => expect(secondSession.listMcpServers).toHaveBeenCalledOnce());
+
+      expect(firstSession.listMcpServers).not.toHaveBeenCalled();
+      expect(await manager.getMcpStatus(secondSession.sessionId)).toEqual([
+        { name: "current", status: "connected" },
+      ]);
+    } finally {
+      initializationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("logs a failed resumed-session initialization once before probing", async () => {
+    const { manager, backend, db } = createManager();
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await manager.initialize();
+      const session = createFakeSession("failed-initialization-session");
+      session.initializeTools.mockRejectedValueOnce(new Error("initialization failed"));
+      backend.resumeSession.mockResolvedValueOnce(session);
+
+      await manager.warmSession(session.sessionId);
+      await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
+
+      expect(session.initializeTools).toHaveBeenCalledOnce();
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      expect(consoleWarn).toHaveBeenCalledWith(
+        `[sdk] [${session.sessionId.slice(0, 8)}] Native Bridge tool warmup failed: initialization failed`,
+      );
+    } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("waits for resumed-session initialization before starting MCP OAuth", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    const startMcpOauthLogin = vi.fn(async () => ({}));
+    try {
+      await manager.initialize();
+      const session = {
+        ...createFakeSession("oauth-session"),
+        startMcpOauthLogin,
+      };
+      session.initializeTools.mockImplementationOnce(async () => {
+        await initializationGate.promise;
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+
+      const login = manager.loginMcpServer(session.sessionId, "custom");
+      await vi.waitFor(() => expect(session.initializeTools).toHaveBeenCalledOnce());
+
+      expect(startMcpOauthLogin).not.toHaveBeenCalled();
+
+      initializationGate.resolve();
+      await expect(login).resolves.toEqual({
+        serverName: "custom",
+        servers: [],
+      });
+      expect(startMcpOauthLogin).toHaveBeenCalledOnce();
+      expect(session.listMcpServers).toHaveBeenCalledOnce();
+    } finally {
+      initializationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("fails MCP OAuth instead of racing a timed-out session initialization", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    const startMcpOauthLogin = vi.fn(async () => ({}));
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await manager.initialize();
+      const session = {
+        ...createFakeSession("oauth-timeout-session"),
+        startMcpOauthLogin,
+      };
+      session.initializeTools.mockImplementationOnce(async () => {
+        await initializationGate.promise;
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+      const testManager = manager as unknown as {
+        sessionToolInitializationWaitTimeoutMs: number;
+      };
+      testManager.sessionToolInitializationWaitTimeoutMs = 1;
+
+      await expect(manager.loginMcpServer(session.sessionId, "custom"))
+        .rejects.toThrow("Session tool initialization did not complete before MCP authentication");
+
+      expect(startMcpOauthLogin).not.toHaveBeenCalled();
+      expect(session.listMcpServers).not.toHaveBeenCalled();
+      expect(consoleWarn).toHaveBeenCalledWith(
+        `[sdk] [${session.sessionId.slice(0, 8)}] Session tool initialization timed out after 1ms`,
+      );
+    } finally {
+      initializationGate.resolve();
       await manager.gracefulShutdown();
       db.close();
     }
