@@ -209,6 +209,98 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
+  it("holds the first resumed prompt until native tool initialization completes", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    const callOrder: string[] = [];
+    try {
+      await manager.initialize();
+      const session = createInteractiveFakeSession("resumed-prompt-session");
+      session.initializeTools.mockImplementationOnce(async () => {
+        callOrder.push("initialize:start");
+        await initializationGate.promise;
+        callOrder.push("initialize:end");
+      });
+      const send = session.send.getMockImplementation();
+      session.send.mockImplementationOnce(async () => {
+        callOrder.push("send");
+        await send?.();
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+
+      const delivered = manager.startWorkAndWaitForDelivery(session.sessionId, "hello");
+      await vi.waitFor(() => expect(session.initializeTools).toHaveBeenCalledOnce());
+
+      expect(session.send).not.toHaveBeenCalled();
+
+      initializationGate.resolve();
+      await expect(delivered).resolves.toBeUndefined();
+      expect(session.send).toHaveBeenCalledOnce();
+      expect(callOrder).toEqual(["initialize:start", "initialize:end", "send"]);
+    } finally {
+      initializationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("fails the first resumed prompt instead of racing timed-out tool initialization", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await manager.initialize();
+      const session = createInteractiveFakeSession("resumed-prompt-timeout");
+      session.initializeTools.mockImplementationOnce(async () => {
+        await initializationGate.promise;
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+      const testManager = manager as unknown as {
+        sessionToolInitializationWaitTimeoutMs: number;
+      };
+      testManager.sessionToolInitializationWaitTimeoutMs = 1;
+
+      await expect(manager.startWorkAndWaitForDelivery(session.sessionId, "hello"))
+        .rejects.toThrow("Session tool initialization did not complete before prompt delivery");
+
+      expect(session.send).not.toHaveBeenCalled();
+      expect(consoleWarn).toHaveBeenCalledWith(
+        `[sdk] [${session.sessionId.slice(0, 8)}] Session tool initialization timed out after 1ms`,
+      );
+    } finally {
+      initializationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("rejects steering until the resumed session accepts its first prompt", async () => {
+    const { manager, backend, db } = createManager();
+    const initializationGate = createDeferred<void>();
+    try {
+      await manager.initialize();
+      const session = createInteractiveFakeSession("resumed-steering-session");
+      session.initializeTools.mockImplementationOnce(async () => {
+        await initializationGate.promise;
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+
+      manager.startWork(session.sessionId, "hello");
+      await vi.waitFor(() => expect(session.initializeTools).toHaveBeenCalledOnce());
+
+      await expect(manager.steerSession(session.sessionId, "please adjust"))
+        .rejects.toThrow("Session is still starting the current turn");
+      expect(session.send).not.toHaveBeenCalled();
+
+      initializationGate.resolve();
+      await vi.waitFor(() => expect(session.send).toHaveBeenCalled());
+    } finally {
+      initializationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
   it("initializes each successive cached session once", async () => {
     const { manager, db } = createManager();
     try {

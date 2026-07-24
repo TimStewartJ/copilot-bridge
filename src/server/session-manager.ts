@@ -757,6 +757,10 @@ export class SessionManager {
       notifySessionCapacityChanged: () => this.notifySessionCapacityChanged(),
       cacheResumedSession: (sessionId, session, sessionConfig) =>
         this.cacheResumedSession(sessionId, session, sessionConfig),
+      waitForSessionToolInitialization: (sessionId, session) =>
+        this.supportsSessionToolInitialization(session)
+          ? this.waitForSessionToolInitialization(sessionId, session)
+          : true,
       abandonCachedSession: (sessionId, expectedSession) => this.abandonCachedSession(sessionId, expectedSession),
       abortSession: (sessionId) => this.abortSession(
         sessionId,
@@ -2243,9 +2247,16 @@ export class SessionManager {
     return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
   }
 
+  private supportsSessionToolInitialization(
+    session: AgentSession,
+  ): session is AgentSession & { initializeTools: () => Promise<unknown> } {
+    return this.shouldUseNativeBridgeTools()
+      && this.backend?.capabilities?.toolMetadataWarmup === true
+      && typeof session.initializeTools === "function";
+  }
+
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
-    if (!this.shouldUseNativeBridgeTools() || !this.backend?.capabilities.toolMetadataWarmup) return;
-    if (typeof session.initializeTools !== "function") return;
+    if (!this.supportsSessionToolInitialization(session)) return;
     const expectedTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
     try {
       await session.initializeTools();
