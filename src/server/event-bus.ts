@@ -13,7 +13,6 @@ import type {
   ElicitationAction,
   ElicitationCancelReason,
   ElicitationRequestId,
-  ElicitationSchema,
   PendingElicitationRequestView,
 } from "./elicitation-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
@@ -114,6 +113,11 @@ export interface BusSnapshot {
   /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
   pendingElicitations: PendingElicitationRequestView[];
   [key: string]: unknown;
+}
+
+export interface PendingInteractionSnapshot {
+  pendingUserInputs: PendingUserInputRequestView[];
+  pendingElicitations: PendingElicitationRequestView[];
 }
 
 export interface AssistantSegment {
@@ -336,8 +340,6 @@ export class SessionEventBus {
   private terminalTurnId?: string;
   private currentTurnInstanceId?: string;
   private terminalTurnInstanceId?: string;
-  private pendingUserInputs = new Map<UserInputRequestId, PendingUserInputRequestView>();
-  private pendingElicitations = new Map<ElicitationRequestId, PendingElicitationRequestView>();
   private contextSummary: SessionContextSummary | null = null;
 
   constructor(
@@ -672,36 +674,6 @@ export class SessionEventBus {
         }
         break;
       }
-      case "user_input_requested": {
-        const pending = this.pendingUserInputFromEvent(event);
-        if (pending) {
-          this.pendingUserInputs.set(pending.requestId, pending);
-        }
-        break;
-      }
-      case "user_input_answered":
-      case "user_input_canceled": {
-        const requestId = this.userInputRequestIdFromEvent(event);
-        if (requestId) {
-          this.pendingUserInputs.delete(requestId);
-        }
-        break;
-      }
-      case "elicitation_requested": {
-        const pending = this.pendingElicitationFromEvent(event);
-        if (pending) {
-          this.pendingElicitations.set(pending.requestId, pending);
-        }
-        break;
-      }
-      case "elicitation_resolved":
-      case "elicitation_canceled": {
-        const requestId = this.elicitationRequestIdFromEvent(event);
-        if (requestId) {
-          this.pendingElicitations.delete(requestId);
-        }
-        break;
-      }
       case "done": {
         const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
           ?? this.pendingTerminalCompletion;
@@ -723,8 +695,6 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
-        this.pendingUserInputs.clear();
-        this.pendingElicitations.clear();
         this.currentTurnId = undefined;
         this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
@@ -751,8 +721,6 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
-        this.pendingUserInputs.clear();
-        this.pendingElicitations.clear();
         this.currentTurnId = undefined;
         this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
@@ -779,8 +747,6 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
-        this.pendingUserInputs.clear();
-        this.pendingElicitations.clear();
         this.currentTurnId = undefined;
         this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
@@ -805,8 +771,6 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
-        this.pendingUserInputs.clear();
-        this.pendingElicitations.clear();
         this.currentTurnId = undefined;
         this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
@@ -853,7 +817,10 @@ export class SessionEventBus {
     }
   }
 
-  getSnapshot(): BusSnapshot {
+  getSnapshot(pendingInteractions: PendingInteractionSnapshot = {
+    pendingUserInputs: [],
+    pendingElicitations: [],
+  }): BusSnapshot {
     const turnId = this.currentTurnId ?? this.terminalTurnId;
     const turnInstanceId = this.currentTurnInstanceId ?? this.terminalTurnInstanceId;
     return {
@@ -880,8 +847,8 @@ export class SessionEventBus {
         : undefined,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
-      pendingUserInputs: [...this.pendingUserInputs.values()],
-      pendingElicitations: [...this.pendingElicitations.values()].map((request) => structuredClone(request)),
+      pendingUserInputs: pendingInteractions.pendingUserInputs.map((request) => structuredClone(request)),
+      pendingElicitations: pendingInteractions.pendingElicitations.map((request) => structuredClone(request)),
       ...(turnId ? { turnId } : {}),
       ...(turnInstanceId ? { turnInstanceId } : {}),
     };
@@ -908,6 +875,22 @@ export class SessionEventBus {
     };
   }
 
+  subscribeWithSnapshot(listener: Listener): { snapshot: BusSnapshot; unsubscribe: () => void } {
+    if (!this._complete) {
+      this.listeners.add(listener);
+      if (this.cleanupTimer) {
+        clearTimeout(this.cleanupTimer);
+        this.cleanupTimer = null;
+      }
+    }
+    return {
+      snapshot: this.getSnapshot(),
+      unsubscribe: () => {
+        this.listeners.delete(listener);
+      },
+    };
+  }
+
   get complete(): boolean {
     return this._complete;
   }
@@ -920,8 +903,6 @@ export class SessionEventBus {
     this.assistantSegments = [];
     this.visuals = [];
     this.entryOrder = [];
-    this.pendingUserInputs.clear();
-    this.pendingElicitations.clear();
   }
 
   private resetLiveTurnState(): void {
@@ -1011,74 +992,6 @@ export class SessionEventBus {
     }, CLEANUP_DELAY);
   }
 
-  private pendingUserInputFromEvent(event: StreamEvent): PendingUserInputRequestView | undefined {
-    const requestId = this.userInputRequestIdFromEvent(event);
-    if (!requestId || typeof event.question !== "string") {
-      return undefined;
-    }
-
-    const choices = Array.isArray(event.choices)
-      ? event.choices.filter((choice): choice is string => typeof choice === "string")
-      : undefined;
-    const requestedAt = typeof event.requestedAt === "string"
-      ? event.requestedAt
-      : typeof event.timestamp === "string"
-        ? event.timestamp
-        : undefined;
-
-    return {
-      requestId,
-      question: event.question,
-      choices,
-      allowFreeform: typeof event.allowFreeform === "boolean" ? event.allowFreeform : true,
-      requestedAt,
-      toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
-    };
-  }
-
-  private userInputRequestIdFromEvent(event: StreamEvent): UserInputRequestId | undefined {
-    return typeof event.requestId === "string" ? event.requestId : undefined;
-  }
-
-  private pendingElicitationFromEvent(event: StreamEvent): PendingElicitationRequestView | undefined {
-    const requestId = this.elicitationRequestIdFromEvent(event);
-    if (!requestId || typeof event.message !== "string") return undefined;
-    const mode = event.mode === "url" ? "url" : event.mode === "form" ? "form" : undefined;
-    if (!mode) return undefined;
-    const requestedAt = typeof event.requestedAt === "string"
-      ? event.requestedAt
-      : typeof event.timestamp === "string"
-        ? event.timestamp
-        : undefined;
-    if (mode === "url") {
-      if (typeof event.url !== "string") return undefined;
-      return {
-        requestId,
-        message: event.message,
-        mode,
-        url: event.url,
-        requestedAt,
-        elicitationSource: typeof event.elicitationSource === "string"
-          ? event.elicitationSource
-          : undefined,
-      };
-    }
-    if (!event.requestedSchema || typeof event.requestedSchema !== "object") return undefined;
-    return {
-      requestId,
-      message: event.message,
-      mode,
-      requestedSchema: structuredClone(event.requestedSchema as ElicitationSchema),
-      requestedAt,
-      elicitationSource: typeof event.elicitationSource === "string"
-        ? event.elicitationSource
-        : undefined,
-    };
-  }
-
-  private elicitationRequestIdFromEvent(event: StreamEvent): ElicitationRequestId | undefined {
-    return typeof event.requestId === "string" ? event.requestId : undefined;
-  }
 }
 
 // ── Factory ───────────────────────────────────────────────────────

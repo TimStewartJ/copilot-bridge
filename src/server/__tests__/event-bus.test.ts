@@ -280,145 +280,75 @@ describe("event-bus", () => {
       ]);
     });
 
-    it("tracks pending native user input requests in snapshots", () => {
-      const bus = getOrCreateBus("test-user-input-pending-1");
-
-      bus.emitUserInputRequested({
-        requestId: "request-1",
-        question: "Pick one",
-        choices: ["yes", "no"],
-        allowFreeform: false,
-        requestedAt: "2026-04-25T00:00:00.000Z",
-        toolCallId: "tool-1",
-      }, "2026-04-25T00:00:00.100Z");
-
-      let snap = bus.getSnapshot();
-      expect(snap.pendingUserInputs).toHaveLength(1);
-      expect(snap.pendingUserInputs[0]).toMatchObject({
-        requestId: "request-1",
-        question: "Pick one",
-        choices: ["yes", "no"],
-        allowFreeform: false,
-        requestedAt: "2026-04-25T00:00:00.000Z",
-        toolCallId: "tool-1",
-      });
-
-      bus.emitUserInputRequested({
-        requestId: "request-1",
-        question: "Pick one again",
-        allowFreeform: true,
-        requestedAt: "2026-04-25T00:00:01.000Z",
-      });
-
-      snap = bus.getSnapshot();
-      expect(snap.pendingUserInputs).toHaveLength(1);
-      expect(snap.pendingUserInputs[0]).toMatchObject({
-        requestId: "request-1",
-        question: "Pick one again",
-        allowFreeform: true,
-        requestedAt: "2026-04-25T00:00:01.000Z",
-      });
-    });
-
-    it("tracks pending elicitation requests without storing submitted content", () => {
-      const bus = getOrCreateBus("test-elicitation-pending-1");
+    it("does not retain pending interaction lifecycle state", () => {
+      const bus = getOrCreateBus("test-interactions-not-retained");
       const events: StreamEvent[] = [];
       bus.subscribe((event) => events.push(event));
 
+      bus.emitUserInputRequested({
+        requestId: "request-1",
+        question: "Pick one",
+        allowFreeform: true,
+      });
       bus.emitElicitationRequested({
         requestId: "el-1",
         message: "Configure deployment",
         mode: "form",
-        requestedAt: "2026-07-13T12:00:00.000Z",
-        requestedSchema: {
-          type: "object",
-          properties: {
-            target: {
-              type: "string",
-              enum: ["staging", "production"],
-            },
-          },
-          required: ["target"],
-        },
+        requestedSchema: { type: "object", properties: {} },
       });
 
-      expect(bus.getSnapshot().pendingElicitations).toHaveLength(1);
-      bus.emitElicitationResolved("el-1", "accept", "2026-07-13T12:00:01.000Z");
-      expect(bus.getSnapshot().pendingElicitations).toEqual([]);
-      expect(events.find((event) => event.type === "elicitation_resolved")).toEqual({
-        type: "elicitation_resolved",
-        requestId: "el-1",
-        action: "accept",
-        timestamp: "2026-07-13T12:00:01.000Z",
+      expect(bus.getSnapshot()).toMatchObject({
+        pendingUserInputs: [],
+        pendingElicitations: [],
       });
-    });
-
-    it("removes pending user input requests when answered or canceled", () => {
-      const bus = getOrCreateBus("test-user-input-complete-1");
-      const events: StreamEvent[] = [];
-      bus.subscribe((event) => events.push(event));
-
-      bus.emitUserInputRequested({
-        requestId: "request-1",
-        question: "First?",
-        allowFreeform: true,
-      });
-      bus.emitUserInputRequested({
-        requestId: "request-2",
-        question: "Second?",
-        allowFreeform: true,
-      });
-
-      bus.emitUserInputAnswered("request-1", { answer: "yes", wasFreeform: false }, "2026-04-25T00:00:02.000Z");
-
-      expect(bus.getSnapshot().pendingUserInputs.map((request) => request.requestId)).toEqual(["request-2"]);
-
-      bus.emitUserInputCanceled("request-2", {
-        reason: "session_ended",
-        message: "Session ended",
-        timestamp: "2026-04-25T00:00:03.000Z",
-      });
-
-      expect(bus.getSnapshot().pendingUserInputs).toEqual([]);
       expect(events.map((event) => event.type)).toEqual([
         "snapshot",
         "user_input_requested",
-        "user_input_requested",
-        "user_input_answered",
-        "user_input_canceled",
+        "elicitation_requested",
       ]);
-      expect(events[3]).toMatchObject({
+    });
+
+    it("hydrates snapshots from an authoritative pending interaction snapshot", () => {
+      const bus = getOrCreateBus("test-interaction-hydration");
+      const snapshot = bus.getSnapshot({
+        pendingUserInputs: [{
+          requestId: "request-1",
+          question: "Pick one",
+          choices: ["yes", "no"],
+          allowFreeform: false,
+        }],
+        pendingElicitations: [{
+          requestId: "el-1",
+          message: "Configure deployment",
+          mode: "form",
+          requestedSchema: { type: "object", properties: {} },
+        }],
+      });
+
+      expect(snapshot.pendingUserInputs.map((request) => request.requestId)).toEqual(["request-1"]);
+      expect(snapshot.pendingElicitations.map((request) => request.requestId)).toEqual(["el-1"]);
+    });
+
+    it("atomically subscribes before capturing the base snapshot", () => {
+      const bus = getOrCreateBus("test-interaction-subscribe-snapshot");
+      const events: StreamEvent[] = [];
+      const subscription = bus.subscribeWithSnapshot((event) => events.push(event));
+
+      bus.emitUserInputAnswered(
+        "request-1",
+        { answer: "yes", wasFreeform: false },
+        "2026-04-25T00:00:02.000Z",
+      );
+
+      expect(subscription.snapshot.type).toBe("snapshot");
+      expect(events).toEqual([{
+        type: "user_input_answered",
         requestId: "request-1",
         answer: "yes",
         wasFreeform: false,
-      });
-      expect(events[4]).toMatchObject({
-        requestId: "request-2",
-        reason: "session_ended",
-        message: "Session ended",
-      });
-    });
-
-    it("normalizes direct user input stream events for snapshots", () => {
-      const bus = getOrCreateBus("test-user-input-direct-1");
-
-      bus.emit({
-        type: "user_input_requested",
-        requestId: "request-direct",
-        question: "Direct?",
-        timestamp: "2026-04-25T00:00:04.000Z",
-      });
-
-      expect(bus.getSnapshot().pendingUserInputs[0]).toMatchObject({
-        requestId: "request-direct",
-        question: "Direct?",
-        allowFreeform: true,
-        requestedAt: "2026-04-25T00:00:04.000Z",
-      });
-
-      bus.emit({ type: "user_input_canceled", requestId: "request-direct" });
-
-      expect(bus.getSnapshot().pendingUserInputs).toEqual([]);
+        timestamp: "2026-04-25T00:00:02.000Z",
+      }]);
+      subscription.unsubscribe();
     });
 
     it("tracks tool lifecycle", () => {

@@ -14,6 +14,8 @@ import {
   type AgentBackendFactory,
   type AgentBackgroundTask,
   type AgentModelInfo,
+  type AgentPendingElicitationRequest,
+  type AgentPendingUserInputRequest,
   type AgentSession,
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
@@ -28,7 +30,7 @@ import type { Task } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createScheduleStore } from "./schedule-store.js";
-import { getOrCreateBus } from "./event-bus.js";
+import { getOrCreateBus, type PendingInteractionSnapshot } from "./event-bus.js";
 import {
   buildSessionConfig as buildSessionConfigWithDeps,
   type ScheduleContext,
@@ -70,18 +72,20 @@ import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBrowserLaunchConfig } from "./agent-browser.js";
 import { createBridgeBrowserLifecycle, noopBrowserLifecycle, type BrowserLifecycle } from "./browser-lifecycle.js";
 import type { RuntimePaths } from "./runtime-paths.js";
-import { UserInputBrokerError, type UserInputBroker } from "./user-input-broker.js";
-import type { NativeUserInputRequest, NativeUserInputResponse, UserInputCancelReason, UserInputRequestId } from "./user-input-types.js";
-import { ElicitationBrokerError, type ElicitationBroker } from "./elicitation-broker.js";
+import type { UserInputRequestId } from "./user-input-types.js";
 import type {
   ElicitationRequestId,
-  NativeElicitationRequest,
-  NativeElicitationResult,
   SubmittedElicitationResponse,
 } from "./elicitation-types.js";
 import { SessionWorkspaceController } from "./session-workspace-controller.js";
-import { SessionUserInputController } from "./session-user-input-controller.js";
-import { SessionElicitationController } from "./session-elicitation-controller.js";
+import {
+  normalizeInteractionIdentifier,
+  normalizePendingElicitationRequest,
+  normalizePendingUserInputRequest,
+  PendingInteractionError,
+  validateElicitationResponse,
+  validateUserInputResponse,
+} from "./pending-interaction-validation.js";
 import {
   deduplicateFilename as deduplicateAttachmentFilename,
   persistAndRouteAttachments as persistAndRouteSessionAttachments,
@@ -204,6 +208,7 @@ export {
 
 type CopilotModelList = AgentModelInfo[];
 export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
+const PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS = 5_000;
 
 // Graceful shutdown must finish before the launcher's force-kill window
 // (GRACEFUL_EXIT_WAIT = 15s) so the server exits on its own. The overall budget
@@ -415,8 +420,6 @@ function withModelRefreshClientRotationTimeout<T>(
 export interface SessionManagerDeps {
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
-  userInputBroker?: UserInputBroker;
-  elicitationBroker?: ElicitationBroker;
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
   sessionMetaStore?: SessionMetaStore;
@@ -560,6 +563,11 @@ export class SessionManager {
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
   private pendingSessionEvictions = new Set<string>();
+  private readonly pendingInteractionCounts = new Map<string, {
+    userInput: number;
+    elicitation: number;
+  }>();
+  private readonly pendingInteractionReconcileGeneration = new Map<string, number>();
   private cacheQueue: Promise<void> = Promise.resolve();
   private cleanupQueue: Promise<void> = Promise.resolve();
   private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
@@ -584,8 +592,6 @@ export class SessionManager {
   private readonly sessionCapacityWaiters = new Set<() => void>();
   private syncTaskCapacityReap?: Promise<number>;
   private readonly workspaceController: SessionWorkspaceController;
-  private readonly userInputController: SessionUserInputController;
-  private readonly elicitationController: SessionElicitationController;
   private readonly runStateController: SessionRunStateController;
   private readonly agentRegistry: SessionAgentRegistry;
   private readonly sessionNameRpc: SessionNameRpc;
@@ -663,26 +669,12 @@ export class SessionManager {
         this.invalidateSessionListCache("workspace:changed");
       },
     });
-    this.userInputController = new SessionUserInputController({
-      broker: deps.userInputBroker,
-      eventBusRegistry: deps.eventBusRegistry,
-      globalBus: deps.globalBus,
-      touchActivity: (sessionId, timestamp) => this.touchUserInputActivity(sessionId, timestamp),
-      getPendingCount: (sessionId) => this.getPendingInteractionCount(sessionId),
-    });
-    this.elicitationController = new SessionElicitationController({
-      broker: deps.elicitationBroker,
-      eventBusRegistry: deps.eventBusRegistry,
-      touchActivity: (sessionId, timestamp) => this.touchUserInputActivity(sessionId, timestamp),
-      emitPendingStatus: (sessionId) => this.userInputController.emitPendingStatus(sessionId),
-    });
     this.runStateController = new SessionRunStateController({
       globalBus: deps.globalBus,
       isRestartPending,
       syncRestartWaitingSessions,
       getActiveSessionCount: () => this.getActiveSessions().length,
-      cancelPendingUserInputRequests: (sessionId, reason, message) =>
-        this.cancelPendingUserInputRequests(sessionId, reason, message),
+      clearPendingInteractionStatus: (sessionId) => this.clearPendingInteractionStatus(sessionId),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
       promptDeliveryShutdownMessage: PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
       persistTerminalOverlay: (sessionId, overlay) => {
@@ -770,10 +762,10 @@ export class SessionManager {
       markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
       deferMcpStatusSessionEviction: (sessionId, reason) => this.deferMcpStatusSessionEviction(sessionId, reason),
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
-      getPendingUserInputCount: (sessionId) => this.userInputController.getPendingCount(sessionId),
+      getPendingUserInputCount: (sessionId) => this.getPendingUserInputOnlyCount(sessionId),
       getPendingInteractionCount: (sessionId) => this.getPendingInteractionCount(sessionId),
-      cancelPendingUserInputRequests: (sessionId, reason, message) =>
-        this.cancelPendingUserInputRequests(sessionId, reason, message),
+      recordPendingInteractionEvent: (sessionId, kind, state, at) =>
+        this.recordPendingInteractionEvent(sessionId, kind, state, at),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
       touchSessionActivity: (sessionId, at) => this.touchSessionTree(sessionId, at),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
@@ -1628,6 +1620,10 @@ export class SessionManager {
     this.liveSessionModelState.delete(sessionId);
     this.slashCommandListCache.delete(sessionId);
     this.agentRegistry.markSessionUnavailable(sessionId);
+    this.pendingInteractionReconcileGeneration.delete(sessionId);
+    if (this.pendingInteractionCounts.delete(sessionId)) {
+      this.emitPendingInteractionStatus(sessionId);
+    }
     return session;
   }
 
@@ -1786,7 +1782,7 @@ export class SessionManager {
     session: AgentSession,
     sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<AgentSession> {
-    return this.enqueueCache("insert", sessionId, () => {
+    const cached = this.enqueueCache("insert", sessionId, () => {
       const current = this.sessionObjects.get(sessionId);
       const capacityProfile = sessionConfig
         ? this.getCapacityProfile(sessionConfig)
@@ -1817,6 +1813,17 @@ export class SessionManager {
       this.enforceSessionCacheLimitUnsafe(sessionId);
       return session;
     });
+    void cached.then(
+      (cachedSession) => {
+        if (cachedSession === session) {
+          void this.reconcilePendingInteractionCounts(sessionId, session);
+        }
+      },
+      () => {
+        // The caller owns the cache insertion rejection.
+      },
+    );
+    return cached;
   }
 
   private evictCachedSession(
@@ -2092,36 +2099,183 @@ export class SessionManager {
       || (this.resumingSessions.get(sessionId) ?? 0) > 0;
   }
 
-  private handleUserInputRequest(
-    request: NativeUserInputRequest,
-    invocation: { sessionId: string },
-  ): Promise<NativeUserInputResponse> {
-    return this.userInputController.requestUserInput(invocation.sessionId, request);
-  }
-
-  private handleElicitationRequest(
-    request: NativeElicitationRequest,
-  ): Promise<NativeElicitationResult> {
-    return this.elicitationController.requestElicitation(request);
-  }
-
-  private cancelPendingUserInputRequests(
-    sessionId: string,
-    reason: UserInputCancelReason,
-    message?: string,
-  ): void {
-    this.userInputController.cancelPendingSessionRequests(sessionId, reason, message);
-    this.elicitationController.cancelPendingSessionRequests(sessionId, reason, message);
-  }
-
-  private cancelAllPendingUserInputRequests(reason: UserInputCancelReason, message?: string): void {
-    this.userInputController.cancelAllPendingRequests(reason, message);
-    this.elicitationController.cancelAllPendingRequests(reason, message);
-  }
-
   private getPendingInteractionCount(sessionId: string): number {
-    return this.userInputController.getPendingCount(sessionId)
-      + this.elicitationController.getPendingCount(sessionId);
+    const counts = this.pendingInteractionCounts.get(sessionId);
+    return (counts?.userInput ?? 0) + (counts?.elicitation ?? 0);
+  }
+
+  private getPendingUserInputOnlyCount(sessionId: string): number {
+    return this.pendingInteractionCounts.get(sessionId)?.userInput ?? 0;
+  }
+
+  private emitPendingInteractionStatus(sessionId: string): void {
+    const pendingUserInputCount = this.getPendingInteractionCount(sessionId);
+    this.deps.globalBus.emit({
+      type: "session:user-input",
+      sessionId,
+      pendingUserInputCount,
+      needsUserInput: pendingUserInputCount > 0,
+    });
+  }
+
+  private setPendingInteractionCounts(
+    sessionId: string,
+    counts: { userInput: number; elicitation: number },
+    emit = true,
+  ): void {
+    const normalized = {
+      userInput: Math.max(0, counts.userInput),
+      elicitation: Math.max(0, counts.elicitation),
+    };
+    const current = this.pendingInteractionCounts.get(sessionId);
+    if (normalized.userInput === 0 && normalized.elicitation === 0) {
+      this.pendingInteractionCounts.delete(sessionId);
+    } else {
+      this.pendingInteractionCounts.set(sessionId, normalized);
+    }
+
+    if (
+      emit
+      && (
+        (current?.userInput ?? 0) !== normalized.userInput
+        || (current?.elicitation ?? 0) !== normalized.elicitation
+      )
+    ) {
+      this.emitPendingInteractionStatus(sessionId);
+    }
+  }
+
+  private nextPendingInteractionReconcileGeneration(sessionId: string): number {
+    const generation = (this.pendingInteractionReconcileGeneration.get(sessionId) ?? 0) + 1;
+    this.pendingInteractionReconcileGeneration.set(sessionId, generation);
+    return generation;
+  }
+
+  private clearPendingInteractionStatus(sessionId: string): void {
+    this.nextPendingInteractionReconcileGeneration(sessionId);
+    this.setPendingInteractionCounts(sessionId, {
+      userInput: 0,
+      elicitation: 0,
+    });
+  }
+
+  private recordPendingInteractionEvent(
+    sessionId: string,
+    kind: "user_input" | "elicitation",
+    state: "requested" | "completed",
+    at?: string,
+  ): void {
+    const current = this.pendingInteractionCounts.get(sessionId) ?? {
+      userInput: 0,
+      elicitation: 0,
+    };
+    const delta = state === "requested" ? 1 : -1;
+    this.setPendingInteractionCounts(sessionId, {
+      userInput: kind === "user_input" ? current.userInput + delta : current.userInput,
+      elicitation: kind === "elicitation" ? current.elicitation + delta : current.elicitation,
+    });
+    this.touchUserInputActivity(sessionId, at);
+    const session = this.sessionObjects.get(sessionId);
+    if (session) {
+      void this.reconcilePendingInteractionCounts(sessionId, session);
+    }
+  }
+
+  private async readPendingInteractionSnapshot(
+    session: AgentSession,
+  ): Promise<PendingInteractionSnapshot> {
+    const [rawUserInputs, rawElicitations] = await this.runPendingInteractionOperation(
+      "Pending interaction snapshot",
+      () => Promise.all([
+        typeof session.getPendingUserInputRequests === "function"
+          ? session.getPendingUserInputRequests()
+          : Promise.resolve([]),
+        typeof session.getPendingElicitationRequests === "function"
+          ? session.getPendingElicitationRequests()
+          : Promise.resolve([]),
+      ]),
+    );
+    return {
+      pendingUserInputs: rawUserInputs.map((pending: AgentPendingUserInputRequest) =>
+        normalizePendingUserInputRequest({
+          requestId: pending.requestId,
+          ...pending.request,
+        })
+      ),
+      pendingElicitations: rawElicitations.map((pending: AgentPendingElicitationRequest) =>
+        normalizePendingElicitationRequest({
+          requestId: pending.requestId,
+          ...pending.request,
+          elicitationSource: pending.elicitationSource,
+        })
+      ),
+    };
+  }
+
+  private async reconcilePendingInteractionCounts(
+    sessionId: string,
+    session: AgentSession,
+  ): Promise<void> {
+    const generation = this.nextPendingInteractionReconcileGeneration(sessionId);
+    try {
+      const snapshot = await this.readPendingInteractionSnapshot(session);
+      if (this.sessionObjects.get(sessionId) !== session) return;
+      if (this.pendingInteractionReconcileGeneration.get(sessionId) !== generation) return;
+      this.setPendingInteractionCounts(sessionId, {
+        userInput: snapshot.pendingUserInputs.length,
+        elicitation: snapshot.pendingElicitations.length,
+      });
+    } catch (error) {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Failed to reconcile pending interaction counts:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  async getPendingInteractionSnapshot(sessionId: string): Promise<PendingInteractionSnapshot> {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session) {
+      return { pendingUserInputs: [], pendingElicitations: [] };
+    }
+    const generation = this.nextPendingInteractionReconcileGeneration(sessionId);
+    const snapshot = await this.readPendingInteractionSnapshot(session);
+    if (
+      this.sessionObjects.get(sessionId) === session
+      && this.pendingInteractionReconcileGeneration.get(sessionId) === generation
+    ) {
+      this.setPendingInteractionCounts(sessionId, {
+        userInput: snapshot.pendingUserInputs.length,
+        elicitation: snapshot.pendingElicitations.length,
+      });
+    }
+    return snapshot;
+  }
+
+  private async runPendingInteractionOperation<T>(
+    label: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const outcome = await settleByDeadline(
+      operation,
+      createDeadline(PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS),
+    );
+    if (outcome.status === "timed-out") {
+      throw new PendingInteractionError(
+        "backend_unavailable",
+        `${label} timed out after ${PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS}ms`,
+        { statusCode: 504 },
+      );
+    }
+    if (outcome.status === "rejected") {
+      const detail = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+      throw new PendingInteractionError(
+        "backend_unavailable",
+        `${label} failed: ${detail}`,
+        { statusCode: 503 },
+      );
+    }
+    return outcome.value;
   }
 
   private touchUserInputActivity(sessionId: string, timestamp?: string): void {
@@ -2145,8 +2299,6 @@ export class SessionManager {
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
         getCopilotHome: () => this.getCopilotHome(),
-        handleUserInputRequest: (request, invocation) => this.handleUserInputRequest(request, invocation),
-        handleElicitationRequest: (request) => this.handleElicitationRequest(request),
       },
     });
     if (opts.forResume && opts.sessionId) {
@@ -2854,11 +3006,7 @@ export class SessionManager {
   }
 
   private normalizeUserInputIdentifier(value: string, fieldName: string): string {
-    const normalized = value.trim();
-    if (!normalized) {
-      throw new UserInputBrokerError("invalid_request", `${fieldName} is required`);
-    }
-    return normalized;
+    return normalizeInteractionIdentifier(value, fieldName);
   }
 
   private isSessionStatePathSegment(sessionId: string): boolean {
@@ -2911,11 +3059,61 @@ export class SessionManager {
     const normalizedRequestId = this.normalizeUserInputIdentifier(requestId, "requestId");
 
     if (!(await this.canAddressSession(normalizedSessionId))) {
-      throw new UserInputBrokerError("request_not_found", "Session not found", { statusCode: 404 });
+      throw new PendingInteractionError("request_not_found", "Session not found", { statusCode: 404 });
     }
-
-    const response = this.userInputController.submitUserInputResponse(normalizedSessionId, normalizedRequestId, payload);
+    const session = this.sessionObjects.get(normalizedSessionId);
+    if (!session) {
+      throw new PendingInteractionError(
+        "request_not_found",
+        "Pending user input request not found",
+        { statusCode: 404 },
+      );
+    }
+    if (
+      typeof session.getPendingUserInputRequests !== "function"
+      || typeof session.respondToUserInput !== "function"
+    ) {
+      throw new PendingInteractionError(
+        "unsupported",
+        "Pending user input is not supported by this agent backend",
+        { statusCode: 501 },
+      );
+    }
+    const pendingRequests = await this.runPendingInteractionOperation(
+      "Pending user input lookup",
+      () => session.getPendingUserInputRequests!(),
+    );
+    const pending = pendingRequests.find((request) => request.requestId === normalizedRequestId);
+    if (!pending) {
+      throw new PendingInteractionError(
+        "request_not_found",
+        "Pending user input request not found",
+        { statusCode: 404 },
+      );
+    }
+    const view = normalizePendingUserInputRequest({
+      requestId: pending.requestId,
+      ...pending.request,
+    });
+    const response = validateUserInputResponse(view, payload);
+    const accepted = await this.runPendingInteractionOperation(
+      "Pending user input response",
+      () => session.respondToUserInput!(normalizedRequestId, response),
+    );
+    if (!accepted) {
+      throw new PendingInteractionError(
+        "request_not_found",
+        "Pending user input request not found",
+        { statusCode: 404 },
+      );
+    }
     const timestamp = new Date().toISOString();
+    this.deps.eventBusRegistry.getBus(normalizedSessionId)?.emitUserInputAnswered(
+      normalizedRequestId,
+      response,
+      timestamp,
+    );
+    void this.reconcilePendingInteractionCounts(normalizedSessionId, session);
     return { requestId: normalizedRequestId, ...response, timestamp };
   }
 
@@ -2928,18 +3126,66 @@ export class SessionManager {
     const normalizedRequestId = this.normalizeUserInputIdentifier(requestId, "requestId");
 
     if (!(await this.canAddressSession(normalizedSessionId))) {
-      throw new ElicitationBrokerError("request_not_found", "Session not found", { statusCode: 404 });
+      throw new PendingInteractionError("request_not_found", "Session not found", { statusCode: 404 });
     }
-
-    const result = this.elicitationController.submitResponse(
-      normalizedSessionId,
-      normalizedRequestId,
-      payload,
+    const session = this.sessionObjects.get(normalizedSessionId);
+    if (!session) {
+      throw new PendingInteractionError(
+        "request_not_found",
+        "Pending elicitation request not found",
+        { statusCode: 404 },
+      );
+    }
+    if (
+      typeof session.getPendingElicitationRequests !== "function"
+      || typeof session.tryRespondToElicitation !== "function"
+    ) {
+      throw new PendingInteractionError(
+        "unsupported",
+        "Pending elicitation is not supported by this agent backend",
+        { statusCode: 501 },
+      );
+    }
+    const pendingRequests = await this.runPendingInteractionOperation(
+      "Pending elicitation lookup",
+      () => session.getPendingElicitationRequests!(),
     );
+    const pending = pendingRequests.find((request) => request.requestId === normalizedRequestId);
+    if (!pending) {
+      throw new PendingInteractionError(
+        "request_not_found",
+        "Pending elicitation request not found",
+        { statusCode: 404 },
+      );
+    }
+    const view = normalizePendingElicitationRequest({
+      requestId: pending.requestId,
+      ...pending.request,
+      elicitationSource: pending.elicitationSource,
+    });
+    const result = validateElicitationResponse(view, payload);
+    const accepted = await this.runPendingInteractionOperation(
+      "Pending elicitation response",
+      () => session.tryRespondToElicitation!(normalizedRequestId, result),
+    );
+    if (!accepted) {
+      throw new PendingInteractionError(
+        "request_not_found",
+        "Pending elicitation request not found",
+        { statusCode: 404 },
+      );
+    }
+    const timestamp = new Date().toISOString();
+    this.deps.eventBusRegistry.getBus(normalizedSessionId)?.emitElicitationResolved(
+      normalizedRequestId,
+      result.action,
+      timestamp,
+    );
+    void this.reconcilePendingInteractionCounts(normalizedSessionId, session);
     return {
       requestId: normalizedRequestId,
       action: result.action,
-      timestamp: new Date().toISOString(),
+      timestamp,
     };
   }
 
@@ -3315,7 +3561,7 @@ export class SessionManager {
   }
 
   private completeSessionAbortLocally(sessionId: string, content: string): void {
-    this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
+    this.clearPendingInteractionStatus(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
     const assistantSourceEventId = bus?.getSnapshot().assistantSegments.at(-1)?.sourceEventId;
     const runController = this.activeRunControllers.get(sessionId);
@@ -3591,11 +3837,6 @@ export class SessionManager {
         await pendingWarm.catch(() => undefined);
       }
       let sdkDeleteError: unknown;
-      this.cancelPendingUserInputRequests(
-        sessionId,
-        "session_ended",
-        "Session was deleted before the user input request was answered",
-      );
       await this.evictCachedSession(sessionId);
       this.deps.eventBusRegistry.deleteBus(sessionId);
       this.agentRegistry.forget(sessionId);
@@ -3651,11 +3892,6 @@ export class SessionManager {
     );
     if (!resumeLease) throw new Error("Session reload cancelled before admission");
     try {
-      this.cancelPendingUserInputRequests(
-        sessionId,
-        "session_ended",
-        "Session was reloaded before the user input request was answered",
-      );
       await this.evictCachedSession(sessionId);
       this.mcpStatus.delete(sessionId);
 
@@ -4054,11 +4290,6 @@ export class SessionManager {
         console.error(`[sdk] ${inFlightCreations.length} session creation(s) did not drain before shutdown`);
       }
     }
-
-    this.cancelAllPendingUserInputRequests(
-      "session_ended",
-      "Session manager shut down before the user input request was answered",
-    );
 
     if (this.deps.browserSessionStore) {
       const store = this.deps.browserSessionStore;

@@ -819,6 +819,58 @@ describe("useSessionStream projection events", () => {
     });
   });
 
+  it("ignores a late cancellation after a locally resolved elicitation", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "elicitation_requested",
+        requestId: "el-1",
+        message: "Choose",
+        mode: "url",
+        url: "https://example.com",
+      }, () => getState().pendingElicitations.length === 1);
+      await emitAndWait(act, source, {
+        type: "elicitation_resolved",
+        requestId: "el-1",
+        action: "cancel",
+      }, () => getState().pendingElicitations.length === 0);
+
+      source.emit({
+        type: "elicitation_canceled",
+        requestId: "el-1",
+        reason: "session_ended",
+      });
+      await act(async () => {});
+
+      expect(getState().elicitationCancellation).toBeNull();
+    });
+  });
+
+  it("surfaces pending elicitation cancellation when a run aborts", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "elicitation_requested",
+        requestId: "el-1",
+        message: "Choose",
+        mode: "url",
+        url: "https://example.com",
+      }, () => getState().pendingElicitations.length === 1);
+      await emitAndWait(act, source, {
+        type: "aborted",
+        timestamp: "2026-07-23T12:00:00.000Z",
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().elicitationCancellation).toMatchObject({
+        requestId: "el-1",
+        question: "Choose",
+        detail: "The request was canceled because the session ended.",
+      });
+    });
+  });
+
   it("keeps tool, assistant, and visual entries in event order", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));

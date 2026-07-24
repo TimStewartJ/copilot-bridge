@@ -37,8 +37,6 @@ function createCallbacks(overrides: Partial<SessionConfigBuilderCallbacks> = {})
   return {
     resolveEffectiveSessionCwd: () => "/workspace/project",
     getCopilotHome: () => join("/home", "bridge-user", ".copilot"),
-    handleUserInputRequest: async () => ({ text: "ok" }) as any,
-    handleElicitationRequest: async () => ({ action: "cancel" }),
     ...overrides,
   };
 }
@@ -808,8 +806,6 @@ describe("session-config-builder", () => {
   });
 
   it("renders task, schedule, staging, checklist, and self-rename prompt context", async () => {
-    const userInputHandler = vi.fn(async () => ({ text: "provided input" }) as any);
-    const elicitationHandler = vi.fn(async () => ({ action: "cancel" as const }));
     const checklistStore = {
       listChecklistItems: () => [{
         id: "check-1",
@@ -839,34 +835,12 @@ describe("session-config-builder", () => {
       },
       callbacks: createCallbacks({
         resolveEffectiveSessionCwd: () => undefined,
-        handleUserInputRequest: userInputHandler,
-        handleElicitationRequest: elicitationHandler,
       }),
     });
 
-    await cfg.onUserInputRequest({ prompt: "Need input" } as any, { sessionId: "session-1" });
-    await cfg.onElicitationRequest({
-      sessionId: "session-1",
-      message: "Need structured input",
-      requestedSchema: {
-        type: "object",
-        properties: {
-          value: { type: "string" },
-        },
-      },
-    });
-
-    expect(userInputHandler).toHaveBeenCalledWith({ prompt: "Need input" }, { sessionId: "session-1" });
-    expect(elicitationHandler).toHaveBeenCalledWith({
-      sessionId: "session-1",
-      message: "Need structured input",
-      requestedSchema: {
-        type: "object",
-        properties: {
-          value: { type: "string" },
-        },
-      },
-    });
+    expect(cfg.pendingInteractionEvents).toBe(true);
+    expect(cfg.onUserInputRequest).toBeUndefined();
+    expect(cfg.onElicitationRequest).toBeUndefined();
     expect(cfg.systemMessage.sections.code_change_rules.content).toContain("<staging_workflow>");
     expect(cfg.systemMessage.content).toContain('You are helping with task "Config task" (taskId: task-1).');
     expect(cfg.systemMessage.content).toContain("use the task update tool");

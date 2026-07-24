@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import {
   MAX_ELICITATION_FIELDS,
   MAX_ELICITATION_LABEL_LENGTH,
@@ -9,74 +7,48 @@ import {
   MAX_ELICITATION_SCHEMA_LENGTH,
   MAX_ELICITATION_STRING_LENGTH,
   MAX_ELICITATION_URL_LENGTH,
-  type ElicitationAction,
-  type ElicitationCancelReason,
   type ElicitationEnumField,
   type ElicitationFieldValue,
   type ElicitationMultiSelectField,
-  type ElicitationRequestId,
   type ElicitationSchema,
   type ElicitationSchemaField,
   type ElicitationTextField,
   type ElicitationTitledEnumField,
-  type NativeElicitationRequest,
   type NativeElicitationResult,
   type PendingElicitationRequestView,
 } from "./elicitation-types.js";
+import type {
+  NativeUserInputResponse,
+  PendingUserInputRequestView,
+} from "./user-input-types.js";
 
-export type ElicitationBrokerErrorCode =
+export type PendingInteractionErrorCode =
   | "invalid_request"
   | "invalid_response"
-  | "request_not_found";
+  | "request_not_found"
+  | "unsupported"
+  | "backend_unavailable";
 
-interface ElicitationBrokerErrorOptions {
+interface PendingInteractionErrorOptions {
   statusCode?: number;
 }
 
-export class ElicitationBrokerError extends Error {
-  readonly code: ElicitationBrokerErrorCode;
+export class PendingInteractionError extends Error {
+  readonly code: PendingInteractionErrorCode;
   readonly statusCode: number;
 
   constructor(
-    code: ElicitationBrokerErrorCode,
+    code: PendingInteractionErrorCode,
     message: string,
-    options: ElicitationBrokerErrorOptions = {},
+    options: PendingInteractionErrorOptions = {},
   ) {
     super(message);
-    this.name = "ElicitationBrokerError";
+    this.name = "PendingInteractionError";
     this.code = code;
     this.statusCode = options.statusCode ?? 400;
   }
 }
 
-export interface ElicitationBrokerEventHandlers {
-  onRequestCreated?: (sessionId: string, request: PendingElicitationRequestView) => void;
-  onRequestResolved?: (
-    sessionId: string,
-    requestId: ElicitationRequestId,
-    action: ElicitationAction,
-    timestamp: string,
-  ) => void;
-  onRequestCanceled?: (
-    sessionId: string,
-    requestId: ElicitationRequestId,
-    reason: ElicitationCancelReason,
-    message: string | undefined,
-    timestamp: string,
-  ) => void;
-}
-
-export interface ElicitationBrokerOptions extends ElicitationBrokerEventHandlers {
-  requestIdFactory?: () => ElicitationRequestId;
-  now?: () => Date;
-}
-
-interface PendingElicitationRecord {
-  view: PendingElicitationRequestView;
-  resolve: (result: NativeElicitationResult) => void;
-}
-
-const MAX_REQUEST_ID_ATTEMPTS = 100;
 const DANGEROUS_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const FIELD_BASE_KEYS = new Set(["type", "title", "description"]);
 
@@ -85,18 +57,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function makeError(
-  code: ElicitationBrokerErrorCode,
+  code: PendingInteractionErrorCode,
   message: string,
-  options: ElicitationBrokerErrorOptions = {},
-): ElicitationBrokerError {
-  return new ElicitationBrokerError(code, message, options);
+  options: PendingInteractionErrorOptions = {},
+): PendingInteractionError {
+  return new PendingInteractionError(code, message, options);
 }
 
 function validateString(
   value: unknown,
   fieldName: string,
   maxLength: number,
-  code: ElicitationBrokerErrorCode = "invalid_request",
+  code: PendingInteractionErrorCode = "invalid_request",
 ): string {
   if (typeof value !== "string") {
     throw makeError(code, `${fieldName} must be a string`);
@@ -228,7 +200,7 @@ function validateStringFormat(
   value: string,
   format: unknown,
   fieldName: string,
-  code: ElicitationBrokerErrorCode,
+  code: PendingInteractionErrorCode,
 ): void {
   if (format === undefined) return;
   const valid = format === "email"
@@ -249,7 +221,7 @@ function normalizeFieldValue(
   field: ElicitationSchemaField,
   value: unknown,
   fieldName: string,
-  code: ElicitationBrokerErrorCode,
+  code: PendingInteractionErrorCode,
 ): ElicitationFieldValue {
   if (field.type === "boolean") {
     if (typeof value !== "boolean") throw makeError(code, `${fieldName} must be a boolean`);
@@ -604,289 +576,185 @@ function normalizeHttpsUrl(value: unknown): string {
   return raw;
 }
 
-function cloneView(view: PendingElicitationRequestView): PendingElicitationRequestView {
-  return structuredClone(view);
+function normalizeUserInputChoices(rawChoices: unknown): string[] | undefined {
+  if (rawChoices === undefined) return undefined;
+  if (!Array.isArray(rawChoices)) {
+    throw makeError("invalid_request", "choices must be an array of strings");
+  }
+  const choices: string[] = [];
+  const seen = new Set<string>();
+  for (const rawChoice of rawChoices) {
+    if (typeof rawChoice !== "string") {
+      throw makeError("invalid_request", "choices must be an array of strings");
+    }
+    const choice = rawChoice.trim();
+    if (!choice) {
+      throw makeError("invalid_request", "choices cannot contain blank values");
+    }
+    if (seen.has(choice)) {
+      throw makeError("invalid_request", "choices cannot contain duplicates after trimming");
+    }
+    seen.add(choice);
+    choices.push(choice);
+  }
+  return choices.length > 0 ? choices : undefined;
 }
 
-function cloneResult(result: NativeElicitationResult): NativeElicitationResult {
-  return structuredClone(result);
+export function normalizeInteractionIdentifier(value: unknown, fieldName: string): string {
+  return normalizeIdentifier(value, fieldName);
 }
 
-export class ElicitationBroker {
-  private readonly pendingBySession = new Map<string, Map<ElicitationRequestId, PendingElicitationRecord>>();
-  private readonly requestIdFactory: () => ElicitationRequestId;
-  private readonly now: () => Date;
-  private onRequestCreated: ElicitationBrokerEventHandlers["onRequestCreated"];
-  private onRequestResolved: ElicitationBrokerEventHandlers["onRequestResolved"];
-  private onRequestCanceled: ElicitationBrokerEventHandlers["onRequestCanceled"];
-
-  constructor(options: ElicitationBrokerOptions = {}) {
-    this.requestIdFactory = options.requestIdFactory ?? (() => `el_${randomUUID()}`);
-    this.now = options.now ?? (() => new Date());
-    this.onRequestCreated = options.onRequestCreated;
-    this.onRequestResolved = options.onRequestResolved;
-    this.onRequestCanceled = options.onRequestCanceled;
+export function normalizePendingUserInputRequest(
+  input: unknown,
+  requestedAt?: string,
+): PendingUserInputRequestView {
+  if (!isRecord(input)) {
+    throw makeError("invalid_request", "User input request must be an object");
   }
-
-  setEventHandlers(handlers: ElicitationBrokerEventHandlers): void {
-    this.onRequestCreated = handlers.onRequestCreated;
-    this.onRequestResolved = handlers.onRequestResolved;
-    this.onRequestCanceled = handlers.onRequestCanceled;
+  const requestId = normalizeIdentifier(input.requestId, "requestId");
+  const question = normalizeIdentifier(input.question, "question");
+  const allowFreeform = input.allowFreeform ?? true;
+  if (typeof allowFreeform !== "boolean") {
+    throw makeError("invalid_request", "allowFreeform must be a boolean");
   }
-
-  requestElicitation(request: NativeElicitationRequest): Promise<NativeElicitationResult> {
-    // The SDK omits the CLI's native requestId from ElicitationContext. Bridge
-    // is the sole headless responder and generates an ID only for browser/API
-    // correlation while the SDK handler promise remains pending.
-    const sessionId = normalizeIdentifier(request.sessionId, "sessionId");
-    const requestId = this.createUniqueRequestId();
-    const requestedAt = this.now().toISOString();
-    const view = this.normalizeRequest(request, requestId, requestedAt);
-
-    let resolve!: (result: NativeElicitationResult) => void;
-    const promise = new Promise<NativeElicitationResult>((res) => {
-      resolve = res;
-    });
-    this.getOrCreateSessionRequests(sessionId).set(requestId, { view, resolve });
-    this.notifyRequestCreated(sessionId, view);
-    return promise;
+  const choices = normalizeUserInputChoices(input.choices);
+  if (!allowFreeform && !choices?.length) {
+    throw makeError("invalid_request", "User input requests without choices must allow freeform answers");
   }
+  const toolCallId = typeof input.toolCallId === "string" && input.toolCallId.trim()
+    ? input.toolCallId.trim()
+    : undefined;
+  return {
+    requestId,
+    question,
+    allowFreeform,
+    ...(choices ? { choices } : {}),
+    ...(requestedAt ? { requestedAt } : {}),
+    ...(toolCallId ? { toolCallId } : {}),
+  };
+}
 
-  submitResponse(
-    sessionId: string,
-    requestId: ElicitationRequestId,
-    payload: unknown,
-  ): NativeElicitationResult {
-    const normalizedSessionId = normalizeIdentifier(sessionId, "sessionId");
-    const normalizedRequestId = normalizeIdentifier(requestId, "requestId");
-    const pending = this.pendingBySession.get(normalizedSessionId)?.get(normalizedRequestId);
-    if (!pending) {
-      throw makeError("request_not_found", "Pending elicitation request not found", { statusCode: 404 });
+export function validateUserInputResponse(
+  view: PendingUserInputRequestView,
+  payload: unknown,
+): NativeUserInputResponse {
+  if (!isRecord(payload)) {
+    throw makeError("invalid_response", "User input response must be an object");
+  }
+  assertOnlyKeys(payload, new Set(["answer", "wasFreeform"]), "User input response");
+  if (typeof payload.answer !== "string") {
+    throw makeError("invalid_response", "Response answer must be a string");
+  }
+  if (!payload.answer.trim()) {
+    throw makeError("invalid_response", "Response answer cannot be blank");
+  }
+  if (typeof payload.wasFreeform !== "boolean") {
+    throw makeError("invalid_response", "Response wasFreeform must be a boolean");
+  }
+  const response = {
+    answer: payload.answer,
+    wasFreeform: payload.wasFreeform,
+  };
+  const choices = view.choices ?? [];
+  const matchesChoice = choices.includes(response.answer);
+  if (response.wasFreeform && !view.allowFreeform) {
+    throw makeError("invalid_response", "Freeform answers are not allowed for this request");
+  }
+  if (choices.length > 0 && !response.wasFreeform && !matchesChoice) {
+    throw makeError("invalid_response", "Choice responses must match one of the request choices");
+  }
+  if (choices.length > 0 && !view.allowFreeform && !matchesChoice) {
+    throw makeError("invalid_response", "Response answer must match one of the request choices");
+  }
+  return response;
+}
+
+export function normalizePendingElicitationRequest(
+  input: unknown,
+  requestedAt?: string,
+): PendingElicitationRequestView {
+  if (!isRecord(input)) {
+    throw makeError("invalid_request", "Elicitation request must be an object");
+  }
+  const requestId = normalizeIdentifier(input.requestId, "requestId");
+  const mode = input.mode ?? "form";
+  if (mode !== "form" && mode !== "url") {
+    throw makeError("invalid_request", "Elicitation mode must be form or url");
+  }
+  const message = validateString(input.message, "message", MAX_ELICITATION_MESSAGE_LENGTH);
+  const source = input.elicitationSource === undefined
+    ? undefined
+    : validateString(input.elicitationSource, "elicitationSource", MAX_ELICITATION_LABEL_LENGTH);
+  const common = {
+    requestId,
+    message,
+    mode,
+    ...(requestedAt ? { requestedAt } : {}),
+    ...(source ? { elicitationSource: source } : {}),
+  };
+  if (mode === "url") {
+    if (input.requestedSchema !== undefined) {
+      throw makeError("invalid_request", "URL elicitation cannot include requestedSchema");
     }
-
-    const result = this.validateResponse(pending.view, payload);
-    this.removePendingRequest(normalizedSessionId, normalizedRequestId);
-    this.notifyRequestResolved(normalizedSessionId, normalizedRequestId, result.action);
-    pending.resolve(cloneResult(result));
-    return cloneResult(result);
+    return { ...common, mode, url: normalizeHttpsUrl(input.url) };
   }
-
-  cancelSessionRequests(
-    sessionId: string,
-    reason: ElicitationCancelReason = "session_ended",
-    message?: string,
-  ): number {
-    const normalizedSessionId = normalizeIdentifier(sessionId, "sessionId");
-    const pending = this.pendingBySession.get(normalizedSessionId);
-    if (!pending) return 0;
-    this.pendingBySession.delete(normalizedSessionId);
-    for (const [requestId, record] of pending) {
-      this.notifyRequestCanceled(normalizedSessionId, requestId, reason, message);
-      record.resolve({ action: "cancel" });
-    }
-    return pending.size;
+  if (input.url !== undefined) {
+    throw makeError("invalid_request", "Form elicitation cannot include url");
   }
+  return {
+    ...common,
+    mode,
+    requestedSchema: normalizeSchema(input.requestedSchema),
+  };
+}
 
-  cancelAllRequests(
-    reason: ElicitationCancelReason = "session_ended",
-    message?: string,
-  ): number {
-    let canceled = 0;
-    for (const sessionId of [...this.pendingBySession.keys()]) {
-      canceled += this.cancelSessionRequests(sessionId, reason, message);
-    }
-    return canceled;
+export function validateElicitationResponse(
+  view: PendingElicitationRequestView,
+  payload: unknown,
+): NativeElicitationResult {
+  if (!isRecord(payload)) {
+    throw makeError("invalid_response", "Elicitation response must be an object");
   }
-
-  listPending(sessionId: string): PendingElicitationRequestView[] {
-    const normalizedSessionId = normalizeIdentifier(sessionId, "sessionId");
-    const pending = this.pendingBySession.get(normalizedSessionId);
-    if (!pending) return [];
-    return [...pending.values()].map((record) => cloneView(record.view));
+  assertOnlyKeys(payload, new Set(["action", "content"]), "Elicitation response");
+  const action = payload.action;
+  if (action !== "accept" && action !== "decline" && action !== "cancel") {
+    throw makeError("invalid_response", "Elicitation action must be accept, decline, or cancel");
   }
-
-  getPendingCount(sessionId?: string): number {
-    if (sessionId !== undefined) {
-      const normalizedSessionId = normalizeIdentifier(sessionId, "sessionId");
-      return this.pendingBySession.get(normalizedSessionId)?.size ?? 0;
+  if (action !== "accept") {
+    if (payload.content !== undefined) {
+      throw makeError("invalid_response", "Declined or canceled responses cannot include content");
     }
-    let count = 0;
-    for (const pending of this.pendingBySession.values()) count += pending.size;
-    return count;
+    return { action };
   }
-
-  private normalizeRequest(
-    request: NativeElicitationRequest,
-    requestId: ElicitationRequestId,
-    requestedAt: string,
-  ): PendingElicitationRequestView {
-    if (!isRecord(request)) {
-      throw makeError("invalid_request", "Elicitation request must be an object");
+  if (view.mode === "url") {
+    if (payload.content !== undefined) {
+      throw makeError("invalid_response", "URL elicitation responses cannot include content");
     }
-    const mode = request.mode ?? "form";
-    if (mode !== "form" && mode !== "url") {
-      throw makeError("invalid_request", "Elicitation mode must be form or url");
+    return { action };
+  }
+  if (!isRecord(payload.content)) {
+    throw makeError("invalid_response", "Accepted form responses must include content");
+  }
+  const schema = view.requestedSchema;
+  if (!schema) {
+    throw makeError("invalid_response", "Pending form elicitation schema is unavailable");
+  }
+  const content: Record<string, ElicitationFieldValue> = Object.create(null);
+  for (const key of Object.keys(payload.content)) {
+    if (DANGEROUS_PROPERTY_NAMES.has(key) || !Object.hasOwn(schema.properties, key)) {
+      throw makeError("invalid_response", `Elicitation response contains unknown field ${key}`);
     }
-    const message = validateString(
-      request.message,
-      "message",
-      MAX_ELICITATION_MESSAGE_LENGTH,
+    content[key] = normalizeFieldValue(
+      schema.properties[key],
+      payload.content[key],
+      key,
+      "invalid_response",
     );
-    const source = request.elicitationSource === undefined
-      ? undefined
-      : validateString(
-        request.elicitationSource,
-        "elicitationSource",
-        MAX_ELICITATION_LABEL_LENGTH,
-      );
-    const common = {
-      requestId,
-      message,
-      mode,
-      requestedAt,
-      ...(source ? { elicitationSource: source } : {}),
-    };
-
-    if (mode === "url") {
-      if (request.requestedSchema !== undefined) {
-        throw makeError("invalid_request", "URL elicitation cannot include requestedSchema");
-      }
-      return { ...common, mode, url: normalizeHttpsUrl(request.url) };
-    }
-    if (request.url !== undefined) {
-      throw makeError("invalid_request", "Form elicitation cannot include url");
-    }
-    return {
-      ...common,
-      mode,
-      requestedSchema: normalizeSchema(request.requestedSchema),
-    };
   }
-
-  private validateResponse(
-    view: PendingElicitationRequestView,
-    payload: unknown,
-  ): NativeElicitationResult {
-    if (!isRecord(payload)) {
-      throw makeError("invalid_response", "Elicitation response must be an object");
-    }
-    assertOnlyKeys(payload, new Set(["action", "content"]), "Elicitation response");
-    const action = payload.action;
-    if (action !== "accept" && action !== "decline" && action !== "cancel") {
-      throw makeError("invalid_response", "Elicitation action must be accept, decline, or cancel");
-    }
-    if (action !== "accept") {
-      if (payload.content !== undefined) {
-        throw makeError("invalid_response", "Declined or canceled responses cannot include content");
-      }
-      return { action };
-    }
-    if (view.mode === "url") {
-      if (payload.content !== undefined) {
-        throw makeError("invalid_response", "URL elicitation responses cannot include content");
-      }
-      return { action };
-    }
-    if (!isRecord(payload.content)) {
-      throw makeError("invalid_response", "Accepted form responses must include content");
-    }
-    const schema = view.requestedSchema;
-    if (!schema) {
-      throw makeError("invalid_response", "Pending form elicitation schema is unavailable");
-    }
-    const content: Record<string, ElicitationFieldValue> = Object.create(null);
-    for (const key of Object.keys(payload.content)) {
-      if (DANGEROUS_PROPERTY_NAMES.has(key) || !Object.hasOwn(schema.properties, key)) {
-        throw makeError("invalid_response", `Elicitation response contains unknown field ${key}`);
-      }
-      content[key] = normalizeFieldValue(
-        schema.properties[key],
-        payload.content[key],
-        key,
-        "invalid_response",
-      );
-    }
-    for (const required of schema.required ?? []) {
-      if (!Object.hasOwn(content, required)) {
-        throw makeError("invalid_response", `Elicitation response is missing required field ${required}`);
-      }
-    }
-    return { action, content };
-  }
-
-  private createUniqueRequestId(): ElicitationRequestId {
-    for (let attempt = 0; attempt < MAX_REQUEST_ID_ATTEMPTS; attempt += 1) {
-      const requestId = normalizeIdentifier(this.requestIdFactory(), "requestId");
-      if (!this.hasPendingRequestId(requestId)) return requestId;
-    }
-    throw makeError("invalid_request", "Unable to generate a unique elicitation request ID");
-  }
-
-  private hasPendingRequestId(requestId: ElicitationRequestId): boolean {
-    for (const pending of this.pendingBySession.values()) {
-      if (pending.has(requestId)) return true;
-    }
-    return false;
-  }
-
-  private getOrCreateSessionRequests(
-    sessionId: string,
-  ): Map<ElicitationRequestId, PendingElicitationRecord> {
-    let pending = this.pendingBySession.get(sessionId);
-    if (!pending) {
-      pending = new Map();
-      this.pendingBySession.set(sessionId, pending);
-    }
-    return pending;
-  }
-
-  private removePendingRequest(sessionId: string, requestId: ElicitationRequestId): void {
-    const pending = this.pendingBySession.get(sessionId);
-    if (!pending) return;
-    pending.delete(requestId);
-    if (pending.size === 0) this.pendingBySession.delete(sessionId);
-  }
-
-  private notifyRequestCreated(sessionId: string, view: PendingElicitationRequestView): void {
-    try {
-      this.onRequestCreated?.(sessionId, cloneView(view));
-    } catch (error) {
-      console.warn("[elicitation] Failed to publish request:", error);
+  for (const required of schema.required ?? []) {
+    if (!Object.hasOwn(content, required)) {
+      throw makeError("invalid_response", `Elicitation response is missing required field ${required}`);
     }
   }
-
-  private notifyRequestResolved(
-    sessionId: string,
-    requestId: ElicitationRequestId,
-    action: ElicitationAction,
-  ): void {
-    try {
-      this.onRequestResolved?.(sessionId, requestId, action, this.now().toISOString());
-    } catch (error) {
-      console.warn("[elicitation] Failed to publish resolution:", error);
-    }
-  }
-
-  private notifyRequestCanceled(
-    sessionId: string,
-    requestId: ElicitationRequestId,
-    reason: ElicitationCancelReason,
-    message?: string,
-  ): void {
-    try {
-      this.onRequestCanceled?.(
-        sessionId,
-        requestId,
-        reason,
-        message,
-        this.now().toISOString(),
-      );
-    } catch (error) {
-      console.warn("[elicitation] Failed to publish cancellation:", error);
-    }
-  }
-}
-
-export function createElicitationBroker(options: ElicitationBrokerOptions = {}): ElicitationBroker {
-  return new ElicitationBroker(options);
+  return { action, content };
 }

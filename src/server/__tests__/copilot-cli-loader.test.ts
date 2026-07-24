@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { patchCopilotAppSource } from "../copilot-cli-loader.js";
+import {
+  patchCopilotAppSource,
+  patchCopilotPendingInteractionRpcSource,
+} from "../copilot-cli-loader.js";
 
 const CONFIG_CALL_SITES = `
 async createSession(r){let o=await this.resolveSessionAuth(r);let s={};if(r.enableConfigDiscovery&&o&&!r.provider&&!r.gitHubToken){let p=await this.createBuiltInGitHubMcpConfig(o);p&&(s.mcpServers={"github-mcp-server":p,...s.mcpServers})}}
@@ -30,7 +33,13 @@ async function tools(f){let G=!!f.requestUserInput,W=!!f.featureFlags?.ASK_USER_
 const ELICITATION_CALLBACK_SELECTION = `
 function callbacks(){return{requestElicitation:this.hasEventListeners("elicitation.requested")?q=>this.pendingRequests.requestElicitation(q):void 0}}
 `;
-const NATIVE_ASK_USER_SOURCE = `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}`;
+const PENDING_INTERACTION_RUNTIME = `
+class Session{getPendingUserInputRequests(){return this.pendingRequests.getPendingUserInputRequests()}getPendingElicitationRequests(){return this.pendingRequests.getPendingElicitationRequests()}}
+`;
+const PENDING_INTERACTION_PERMISSIONS_FACADE = `
+function permissions(t){return{pendingRequests(){return{items:jbr(t)}}}}
+`;
+const NATIVE_ASK_USER_SOURCE = `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_RUNTIME}${PENDING_INTERACTION_PERMISSIONS_FACADE}`;
 
 describe("copilot-cli-loader", () => {
   it("patches the current simple GitHub MCP config method shape", () => {
@@ -45,6 +54,9 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
     expect(patched).toContain(
       'requestElicitation:(this.hasEventListeners("elicitation.requested")||this.supportsElicitation())?',
+    );
+    expect(patched).toContain(
+      "pendingRequests(){return{items:jbr(t),pendingUserInputs:t.getPendingUserInputRequests(),pendingElicitations:t.getPendingElicitationRequests()}}",
     );
   });
 
@@ -132,5 +144,21 @@ describe("copilot-cli-loader", () => {
     const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}${legacyCallSite}${helperCallSite}${NATIVE_ASK_USER_SOURCE}}`;
 
     expect(() => patchCopilotAppSource(source)).toThrow("found 1 legacy and 1 helper");
+  });
+
+  it("rejects SDK drift that removes the runtime pending getters", () => {
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_PERMISSIONS_FACADE}}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow("expected 1 runtime getter pair, found 0");
+  });
+
+  it("patches the pending interaction snapshot facade independently", () => {
+    const source = `${PENDING_INTERACTION_RUNTIME}${PENDING_INTERACTION_PERMISSIONS_FACADE}`;
+
+    const patched = patchCopilotPendingInteractionRpcSource(source);
+
+    expect(patched).toContain(
+      "pendingRequests(){return{items:jbr(t),pendingUserInputs:t.getPendingUserInputRequests(),pendingElicitations:t.getPendingElicitationRequests()}}",
+    );
   });
 });

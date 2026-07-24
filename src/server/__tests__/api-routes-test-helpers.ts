@@ -12,11 +12,11 @@ import { writeRestartState } from "../restart-state.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
 import * as providers from "../providers/index.js";
-import { UserInputBrokerError } from "../user-input-broker.js";
+import { PendingInteractionError } from "../pending-interaction-validation.js";
 import { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 export { request, get, mkdirSync, writeFileSync, join };
-export { publishOutboundAttachment, writeRestartState, RESTART_PENDING_MESSAGE, scheduler, providers, UserInputBrokerError };
+export { publishOutboundAttachment, writeRestartState, RESTART_PENDING_MESSAGE, scheduler, providers, PendingInteractionError };
 export { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir };
 export type { DeferredPromptRunner };
 

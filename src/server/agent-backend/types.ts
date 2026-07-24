@@ -93,7 +93,15 @@ export type AgentPermissionPolicy = PermissionHandler;
  * boundary because session-config-builder.ts still produces a
  * Copilot-shaped config; Step 3 will introduce a normalized config type.
  */
-export type AgentSessionConfig = unknown;
+export interface AgentSessionConfig {
+  /**
+   * Ask the backend to surface native pending-interaction events without
+   * installing an in-process responder. Backends that do not support this
+   * marker may ignore it.
+   */
+  pendingInteractionEvents?: boolean;
+  [key: string]: unknown;
+}
 
 /**
  * Options for `AgentSession.send(...)`. Mirrors the Copilot SDK's send
@@ -174,7 +182,77 @@ export type AgentSlashCommandResult =
  * type discriminators (e.g. "assistant.turn_end"). Step 3 will normalize
  * these into a discriminated union when a second backend lands.
  */
-export type AgentSessionEventHandler = (event: unknown) => void;
+export interface AgentUserInputRequest {
+  question: string;
+  choices?: string[];
+  allowFreeform?: boolean;
+  toolCallId?: string;
+}
+
+export interface AgentUserInputResponse {
+  answer: string;
+  wasFreeform: boolean;
+}
+
+export interface AgentPendingUserInputRequest {
+  requestId: string;
+  request: AgentUserInputRequest;
+}
+
+export type AgentElicitationAction = "accept" | "decline" | "cancel";
+
+export interface AgentElicitationRequest {
+  message: string;
+  mode?: "form" | "url";
+  requestedSchema?: unknown;
+  url?: string;
+  toolCallId?: string;
+}
+
+export interface AgentElicitationResponse {
+  action: AgentElicitationAction;
+  content?: Record<string, unknown>;
+}
+
+export interface AgentPendingElicitationRequest {
+  requestId: string;
+  request: AgentElicitationRequest;
+  elicitationSource?: string;
+}
+
+export type AgentPendingInteractionEvent =
+  | {
+    type: "user_input.requested";
+    data: AgentUserInputRequest & { requestId: string };
+    timestamp?: string;
+  }
+  | {
+    type: "user_input.completed";
+    data: Partial<AgentUserInputResponse> & { requestId: string };
+    timestamp?: string;
+  }
+  | {
+    type: "elicitation.requested";
+    data: AgentElicitationRequest & {
+      requestId: string;
+      elicitationSource?: string;
+    };
+    timestamp?: string;
+  }
+  | {
+    type: "elicitation.completed";
+    data: AgentElicitationResponse & { requestId: string };
+    timestamp?: string;
+  };
+
+export type AgentSessionEvent = AgentPendingInteractionEvent | {
+  type: string;
+  data?: unknown;
+  timestamp?: string;
+  [key: string]: unknown;
+};
+
+export type AgentSessionEventHandler = (event: AgentSessionEvent) => void;
 
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
@@ -208,6 +286,18 @@ export interface AgentSession {
 
   /** Read the full on-disk event log. Used by readSdkSessionEvents. */
   getEvents?(): Promise<unknown>;
+
+  /** Snapshot live, unresolved ask_user requests owned by the backend runtime. */
+  getPendingUserInputRequests?(): Promise<AgentPendingUserInputRequest[]>;
+
+  /** Resolve an ask_user request. False means another responder already won or the ID is stale. */
+  respondToUserInput?(requestId: string, response: AgentUserInputResponse): Promise<boolean>;
+
+  /** Snapshot live, unresolved elicitation requests owned by the backend runtime. */
+  getPendingElicitationRequests?(): Promise<AgentPendingElicitationRequest[]>;
+
+  /** Resolve an elicitation request. False means another responder already won or the ID is stale. */
+  tryRespondToElicitation?(requestId: string, response: AgentElicitationResponse): Promise<boolean>;
 
   /** Switch the session's send mode. Optional — older SDK builds may lack `mode.set`. */
   setSendMode?(opts: { mode: string }): Promise<unknown>;

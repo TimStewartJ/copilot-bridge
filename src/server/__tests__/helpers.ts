@@ -237,6 +237,10 @@ export function createMockSessionManager() {
     cancelSessionAgent: async () => ({ cancelled: false }),
     listSlashCommands: async () => ({ supported: false, commands: [] }),
     getPendingUserInputCount: () => 0,
+    getPendingInteractionSnapshot: async () => ({
+      pendingUserInputs: [],
+      pendingElicitations: [],
+    }),
     getActiveSessions: () => [],
     isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),

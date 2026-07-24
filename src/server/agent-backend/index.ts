@@ -18,7 +18,13 @@ export type {
   AgentBackendFactory,
   AgentBackgroundTask,
   AgentCapabilities,
+  AgentElicitationAction,
+  AgentElicitationRequest,
+  AgentElicitationResponse,
   AgentModelInfo,
+  AgentPendingElicitationRequest,
+  AgentPendingInteractionEvent,
+  AgentPendingUserInputRequest,
   AgentPermissionDecision,
   AgentPermissionPolicy,
   AgentPermissionRequest,
@@ -31,9 +37,12 @@ export type {
   AgentSlashCommandResult,
   AgentSession,
   AgentSessionConfig,
+  AgentSessionEvent,
   AgentSessionEventHandler,
   AgentSessionSummary,
   AgentSetModelOptions,
+  AgentUserInputRequest,
+  AgentUserInputResponse,
 } from "./types.js";
 
 export { CopilotBackend };
