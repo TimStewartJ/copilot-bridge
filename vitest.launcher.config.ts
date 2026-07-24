@@ -6,5 +6,8 @@ export default defineProject({
     ...sharedTestConfig,
     name: "launcher",
     include: ["src/launcher*.test.ts"],
+    sequence: {
+      groupOrder: process.platform === "win32" ? 1 : 0,
+    },
   },
 });
