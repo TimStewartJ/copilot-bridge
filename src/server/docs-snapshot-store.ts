@@ -12,7 +12,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 export const STARTUP_SNAPSHOT_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS = 15 * 60 * 1000;
@@ -74,18 +75,6 @@ export class DocsSnapshotValidationError extends Error {
     super(message);
     this.name = "DocsSnapshotValidationError";
   }
-}
-
-function normalizePathForContainment(filePath: string): string {
-  const resolved = resolve(filePath);
-  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
-}
-
-function isPathAtOrUnder(parent: string, candidate: string): boolean {
-  const normalizedParent = normalizePathForContainment(parent);
-  const normalizedCandidate = normalizePathForContainment(candidate);
-  const parentWithSeparator = normalizedParent.endsWith(sep) ? normalizedParent : `${normalizedParent}${sep}`;
-  return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(parentWithSeparator);
 }
 
 function assertSafeSnapshotId(snapshotId: string): void {

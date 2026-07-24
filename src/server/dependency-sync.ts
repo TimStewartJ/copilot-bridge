@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 const ROOT_DEP_FILES = ["package.json", "package-lock.json"] as const;
 const PATCHES_DIR = "patches";
@@ -176,9 +177,7 @@ function getResetTargets(root: string): PatchTarget[] {
 
   for (const target of sorted) {
     const covered = selected.some((existing) =>
-      target.installPath === existing.installPath ||
-      target.installPath.startsWith(`${existing.installPath}${sep}`),
-    );
+      isPathAtOrUnder(existing.installPath, target.installPath));
     if (!covered) {
       selected.push(target);
     }

@@ -1,5 +1,5 @@
 import type { AgentPermissionPolicy, AgentSectionOverride } from "./agent-backend/index.js";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
 import type { Task } from "./task-store.js";
@@ -39,6 +39,7 @@ import {
   type CopilotContextTier,
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
+import { pathsEqual } from "./path-utils.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -338,7 +339,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   }
 
   // Staging rules — only when working on the bridge repo itself
-  const isSelfRepo = !workingDirectory || resolve(workingDirectory) === resolve(REPO_ROOT);
+  const isSelfRepo = !workingDirectory || pathsEqual(workingDirectory, REPO_ROOT);
   const sections: Partial<Record<string, AgentSectionOverride>> = {};
   if (isSelfRepo && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT)) {
     sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };

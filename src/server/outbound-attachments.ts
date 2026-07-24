@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join } from "node:path";
 import { err, ok, type Result } from "./tool-results.js";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 const MIME_TYPES_BY_EXTENSION: Record<string, string> = {
   bmp: "image/bmp",
@@ -117,8 +118,7 @@ export function publishOutboundAttachment(input: PublishOutboundAttachmentInput)
 
     const storedName = deduplicateFilename(outgoingDir, requestedName);
     const filePath = join(outgoingDir, storedName);
-    const root = resolve(outgoingDir);
-    if (!resolve(filePath).startsWith(root + sep)) {
+    if (!isPathAtOrUnder(outgoingDir, filePath)) {
       return err("Attachment filename is unsafe");
     }
 
@@ -158,14 +158,15 @@ export function resolveOutboundAttachment(copilotHome: string, sessionId: string
   if (!existsSync(filePath)) return err("Attachment not found");
 
   let realPath: string;
+  let realOutgoingDir: string;
   try {
     realPath = realpathSync(filePath);
+    realOutgoingDir = realpathSync(outgoingDir);
   } catch {
     return err("Attachment not found");
   }
 
-  const root = resolve(outgoingDir) + sep;
-  if (!realPath.startsWith(root)) return err("Attachment path is unsafe");
+  if (!isPathAtOrUnder(realOutgoingDir, realPath)) return err("Attachment path is unsafe");
 
   let stat;
   try {

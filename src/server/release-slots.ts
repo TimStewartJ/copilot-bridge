@@ -11,10 +11,11 @@ import {
   type Dirent,
 } from "node:fs";
 import { cp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { dependencySyncHash, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import type { RestartValidationMode, RestartReleaseCandidate } from "./restart-signal.js";
 import type { ValidationCommandOptions } from "./validation-pipeline.js";
+import { isPathAtOrUnder, pathsEqual } from "./path-utils.js";
 
 const RELEASE_SLOT_VERSION = 1;
 const RELEASE_SLOT_MANIFEST = "release-slot.json";
@@ -135,13 +136,6 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function isPathInside(parentDir: string, childPath: string): boolean {
-  const parent = resolve(parentDir);
-  const child = resolve(childPath);
-  const rel = relative(parent, child);
-  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
-}
-
 function releaseSlotManifestPath(slotRoot: string): string {
   return join(slotRoot, RELEASE_SLOT_MANIFEST);
 }
@@ -171,7 +165,8 @@ function normalizeManifest(value: unknown, dataDir: string): ReleaseSlotManifest
   ) {
     return null;
   }
-  if (!isPathInside(getReleaseSlotsDir(dataDir), root)) return null;
+  const releaseSlotsDir = getReleaseSlotsDir(dataDir);
+  if (!isPathAtOrUnder(releaseSlotsDir, root) || pathsEqual(releaseSlotsDir, root)) return null;
   if (basename(root) !== id) return null;
   return {
     version: RELEASE_SLOT_VERSION,
@@ -200,7 +195,8 @@ export function resolveReleaseCandidate(
 ): ReleaseSlotManifest | null {
   if (!candidate) return null;
   const root = resolve(candidate.root);
-  if (!isPathInside(getReleaseSlotsDir(dataDir), root)) return null;
+  const releaseSlotsDir = getReleaseSlotsDir(dataDir);
+  if (!isPathAtOrUnder(releaseSlotsDir, root) || pathsEqual(releaseSlotsDir, root)) return null;
   const manifest = readReleaseSlotManifest(root, dataDir);
   if (!manifest) return null;
   if (manifest.id !== candidate.id || manifest.commitSha !== candidate.commitSha) return null;
@@ -267,7 +263,7 @@ function shouldCopySourcePath(sourceDir: string, currentPath: string, rootExclud
 
 function buildRootCopyExcludes(sourceDir: string, targetDir: string): Set<string> {
   const rootExcludes = new Set(ROOT_COPY_EXCLUDES);
-  if (isPathInside(sourceDir, targetDir)) {
+  if (isPathAtOrUnder(sourceDir, targetDir) && !pathsEqual(sourceDir, targetDir)) {
     const firstSegment = firstPathSegment(relative(sourceDir, targetDir));
     if (firstSegment !== null) rootExcludes.add(firstSegment);
   }

@@ -1,9 +1,10 @@
 import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RuntimePaths } from "./runtime-paths.js";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 export type UpdateChannel = "stable" | "preview";
 export type UpdateCheckStatus =
@@ -175,12 +176,6 @@ function getUpdateLogPath(runtimePaths: RuntimePaths, installId: string): string
   return join(runtimePaths.dataDir, "logs", `update-${installId}.log`);
 }
 
-function isPathWithinDirectory(childPath: string, parentDir: string): boolean {
-  const normalizedChild = childPath.toLowerCase();
-  const normalizedParent = parentDir.toLowerCase();
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${sep}`);
-}
-
 function safeRealPath(path: string): string | null {
   try {
     return realpathSync.native(path);
@@ -218,7 +213,7 @@ function readUpdateInstallLogTail(status: UpdateInstallStatus | null, runtimePat
   const resolvedLogPath = safeRealPath(status.logPath);
   const resolvedLogsDir = safeRealPath(logsDir);
   if (!resolvedLogPath || !resolvedLogsDir) return undefined;
-  if (!isPathWithinDirectory(resolve(resolvedLogPath), resolve(resolvedLogsDir))) return undefined;
+  if (!isPathAtOrUnder(resolvedLogsDir, resolvedLogPath)) return undefined;
 
   try {
     const tail = readFileTail(resolvedLogPath, UPDATE_LOG_TAIL_BYTES)

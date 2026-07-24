@@ -5,9 +5,8 @@ import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
-import { join, basename, dirname, sep } from "node:path";
+import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
 import {
   createProjectedFinalAssistantEntry,
@@ -136,6 +135,7 @@ import { writeRestartSignalFile } from "./restart-signal.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
 import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
+import { isLocalStagingModule } from "./path-utils.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 
@@ -204,23 +204,6 @@ interface DashboardChecklistData {
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 const TASK_GIT_STATUS_NOT_CONFIGURED_ERROR = "Task working directory is not configured.";
 const SESSION_WORKSPACE_NOT_CONFIGURED_ERROR = "Session workspace is not configured.";
-
-function isPathAtOrUnder(parent: string, candidate: string): boolean {
-  const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
-  return candidate === parent || candidate.startsWith(parentWithSeparator);
-}
-
-function isLocalStagingModule(ctx: AppContext): boolean {
-  const dataDir = ctx.runtimePaths?.dataDir;
-  if (!dataDir) return false;
-  const dataFolder = basename(dataDir);
-  if (dataFolder !== "data") return false;
-  try {
-    return isPathAtOrUnder(dirname(dataDir), fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
 
 function getSchedulerModule(ctx: AppContext): typeof scheduler {
   if (ctx.scheduler) return ctx.scheduler;
