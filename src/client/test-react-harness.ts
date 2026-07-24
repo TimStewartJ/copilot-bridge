@@ -132,7 +132,13 @@ export async function waitTick(): Promise<void> {
 }
 
 async function waitSchedulerTask(): Promise<void> {
+  // Service the check phase (setImmediate) and the timers phase (setTimeout) so a
+  // React scheduler task backed by a real timer is observed deterministically.
+  // setImmediate alone never advances the timers phase, so a fast, idle event loop
+  // can exhaust every flush before a setTimeout(0) — clamped to ~1ms, and up to the
+  // ~15.6ms tick on Windows — ever fires, which made scheduler-task waits flaky.
   await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
 }
 
