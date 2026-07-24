@@ -214,6 +214,60 @@ describe("SessionManager session config", () => {
     expect(content).not.toContain("update with the task momentum tool");
   });
 
+  it("applies one-session model, effort, and context overrides during SDK session creation", async () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const manager = new SessionManager({
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: createTaskStore(db, globalBus),
+      config: { sessionMcpServers: {}, model: "configured-model" },
+      copilotHome,
+    }) as any;
+    manager.backend = {
+      createSession: vi.fn(async () => ({ sessionId: "new-session", disconnect: vi.fn() })),
+    };
+
+    manager.modelMetadataForContextTiers = [{
+      id: "launch-model",
+      supportedReasoningEfforts: ["high"],
+      capabilities: {
+        limits: {
+          max_context_window_tokens: 1_050_000,
+          max_prompt_tokens: 922_000,
+        },
+      },
+      billing: {
+        tokenPrices: {
+          contextMax: 272_000,
+          longContext: {
+            contextMax: 922_000,
+          },
+        },
+      },
+    }];
+
+    await manager.createSession({
+      model: "launch-model",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+
+    expect(manager.backend.createSession.mock.calls[0][0]).toMatchObject({
+      model: "launch-model",
+      reasoningEffort: "high",
+      modelCapabilities: {
+        limits: {
+          max_context_window_tokens: 1_050_000,
+          max_prompt_tokens: 922_000,
+        },
+      },
+    });
+  });
+
   it("includes stored task momentum in newly created task sessions", async () => {
     const db = setupTestDb();
     const globalBus = createTestBus();

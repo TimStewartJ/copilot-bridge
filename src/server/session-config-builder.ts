@@ -36,6 +36,7 @@ import {
   getModelCapabilitiesOverrideForContextTier,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
+  type CopilotContextTier,
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 
@@ -56,6 +57,9 @@ export interface SessionConfigOptions {
   isNewTask?: boolean;
   prDescriptions?: string[];
   scheduleContext?: ScheduleContext;
+  modelOverride?: string;
+  reasoningEffortOverride?: string;
+  contextTierOverride?: CopilotContextTier;
   /** Group notes to inject into context (looked up by caller) */
   groupNotes?: { groupName: string; notes: string } | null;
   /**
@@ -185,7 +189,18 @@ function shouldUseSdkGitHubMcp(
 
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
-  const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes, forResume } = params.options ?? {};
+  const {
+    sessionId,
+    task,
+    isNewTask,
+    prDescriptions,
+    scheduleContext,
+    modelOverride,
+    reasoningEffortOverride,
+    contextTierOverride,
+    groupNotes,
+    forResume,
+  } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
@@ -228,26 +243,31 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   if (!forResume) {
     if (sessionId) cfg.sessionId = sessionId;
 
-    // Schedule override > settings store > deps.config > SDK default
-    const model = scheduleContext?.model ?? settings?.model ?? deps.config.model;
+    // Explicit launch override > schedule override > settings store > deps.config > SDK default
+    const explicitModelOverride = modelOverride ?? scheduleContext?.model;
+    const model = explicitModelOverride ?? settings?.model ?? deps.config.model;
     if (model) cfg.model = model;
 
     const selectedModelMetadata = model
       ? params.options?.modelMetadata?.find((candidate) => candidate.id === model)
       : undefined;
 
-    // A model-specific schedule override must not inherit an unsupported effort
-    // from the global model. Unknown scheduled models use their SDK default.
-    const reasoningEffort = settings?.reasoningEffort;
-    const scheduleModelSupportsGlobalEffort = !scheduleContext?.model
-      || selectedModelMetadata?.supportedReasoningEfforts?.includes(reasoningEffort ?? "") === true;
-    if (reasoningEffort && scheduleModelSupportsGlobalEffort) {
-      cfg.reasoningEffort = reasoningEffort;
+    // An explicit model override must not inherit an unsupported effort from
+    // the global model. Unknown override models use their SDK default.
+    if (reasoningEffortOverride) {
+      cfg.reasoningEffort = reasoningEffortOverride;
+    } else {
+      const reasoningEffort = settings?.reasoningEffort;
+      const overrideModelSupportsGlobalEffort = !explicitModelOverride
+        || selectedModelMetadata?.supportedReasoningEfforts?.includes(reasoningEffort ?? "") === true;
+      if (reasoningEffort && overrideModelSupportsGlobalEffort) {
+        cfg.reasoningEffort = reasoningEffort;
+      }
     }
 
     const contextTier = resolveContextTierForModel(
       selectedModelMetadata,
-      normalizeCopilotContextTier(settings?.contextTier),
+      contextTierOverride ?? normalizeCopilotContextTier(settings?.contextTier),
     );
     const modelCapabilities = getModelCapabilitiesOverrideForContextTier(selectedModelMetadata, contextTier);
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;

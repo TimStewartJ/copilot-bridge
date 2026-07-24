@@ -631,8 +631,18 @@ export async function fetchTaskSessionStorage(
   );
 }
 
-export async function createSession(): Promise<string> {
-  const data = await apiFetch<{ sessionId: string }>("/api/sessions", {});
+export interface CreateSessionOptions {
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
+}
+
+export async function createSession(options: CreateSessionOptions = {}): Promise<string> {
+  const data = await apiFetch<{ sessionId: string }>("/api/sessions", {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+    ...(options.contextTier ? { contextTier: options.contextTier } : {}),
+  });
   return data.sessionId;
 }
 
@@ -1016,10 +1026,17 @@ export async function unlinkResource(
   return data.task;
 }
 
-export async function createTaskSession(taskId: string): Promise<string> {
+export async function createTaskSession(
+  taskId: string,
+  options: CreateSessionOptions = {},
+): Promise<string> {
   const data = await apiFetch<{ sessionId: string }>(
     `/api/tasks/${taskId}/session`,
-    {},
+    {
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+      ...(options.contextTier ? { contextTier: options.contextTier } : {}),
+    },
   );
   return data.sessionId;
 }

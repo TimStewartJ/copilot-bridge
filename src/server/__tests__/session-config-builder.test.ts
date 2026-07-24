@@ -198,6 +198,91 @@ describe("session-config-builder", () => {
     expect(cfg.reasoningEffort).toBeUndefined();
   });
 
+  it("lets an explicit launch model override schedule and global models", () => {
+    const settingsStore = {
+      getSettings: () => ({
+        model: "global-model",
+        reasoningEffort: "high",
+      }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      options: {
+        modelOverride: "launch-model",
+        scheduleContext: {
+          name: "Daily review",
+          type: "cron",
+          runCount: 2,
+          model: "schedule-model",
+        },
+        modelMetadata: [{
+          id: "launch-model",
+          supportedReasoningEfforts: ["high"],
+        }],
+      },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("launch-model");
+    expect(cfg.reasoningEffort).toBe("high");
+  });
+
+  it("does not apply a global reasoning effort unsupported by a launch model", () => {
+    const settingsStore = {
+      getSettings: () => ({
+        model: "global-model",
+        reasoningEffort: "high",
+      }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      options: {
+        modelOverride: "launch-model",
+        modelMetadata: [{
+          id: "launch-model",
+          supportedReasoningEfforts: [],
+        }],
+      },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("launch-model");
+    expect(cfg.reasoningEffort).toBeUndefined();
+  });
+
+  it("applies explicit launch effort and context over global settings", () => {
+    const settingsStore = {
+      getSettings: () => ({
+        model: "gpt-5.5",
+        reasoningEffort: "low",
+        contextTier: "default",
+      }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      options: {
+        modelOverride: "gpt-5.5",
+        reasoningEffortOverride: "high",
+        contextTierOverride: "long_context",
+        modelMetadata: [GPT_55_TIERED_MODEL],
+      },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("gpt-5.5");
+    expect(cfg.reasoningEffort).toBe("high");
+    expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
+  });
+
   it("uses the backend permission policy when one is provided", () => {
     const permissionPolicy = vi.fn();
 

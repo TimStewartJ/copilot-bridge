@@ -68,7 +68,11 @@ import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
-import { isCopilotContextTier } from "../shared/copilot-context.js";
+import {
+  isCopilotContextTier,
+  modelSupportsLongContext,
+  type CopilotContextTier,
+} from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
 import {
   type BackgroundAgentsSummary,
@@ -2214,6 +2218,97 @@ export function createApiRouter(
     return union.size > 0 ? union : null;
   }
 
+  async function resolveSessionCreationOptions(body: unknown): Promise<{
+    options?: {
+      model?: string;
+      reasoningEffort?: string;
+      contextTier?: CopilotContextTier;
+    };
+    error?: string;
+    status?: number;
+  }> {
+    const payload = body && typeof body === "object"
+      ? body as Record<string, unknown>
+      : {};
+    if (payload.model !== undefined && payload.model !== null && typeof payload.model !== "string") {
+      return { error: "model must be a string", status: 400 };
+    }
+    if (
+      payload.reasoningEffort !== undefined
+      && payload.reasoningEffort !== null
+      && typeof payload.reasoningEffort !== "string"
+    ) {
+      return { error: "reasoningEffort must be a string", status: 400 };
+    }
+    if (payload.contextTier !== undefined && !isCopilotContextTier(payload.contextTier)) {
+      return { error: "contextTier must be default or long_context", status: 400 };
+    }
+    const model = typeof payload.model === "string" ? payload.model.trim() : "";
+    const reasoningEffort = typeof payload.reasoningEffort === "string"
+      ? payload.reasoningEffort.trim()
+      : "";
+    const contextTier = isCopilotContextTier(payload.contextTier)
+      ? payload.contextTier
+      : undefined;
+    if (!model && !reasoningEffort && !contextTier) return { options: {} };
+
+    let models: Array<{
+      id: string;
+      policy?: { state?: string };
+      supportedReasoningEfforts?: readonly string[];
+      billing?: {
+        tokenPrices?: {
+          contextMax?: number;
+          longContext?: { contextMax?: number };
+        };
+      };
+    }>;
+    try {
+      models = (await ctx.sessionManager.listModels()) ?? [];
+    } catch {
+      return { error: "Unable to validate the requested model", status: 503 };
+    }
+    const targetModelId = model || ctx.settingsStore.getSettings().model;
+    if (!targetModelId) {
+      return {
+        error: "A model is required to set reasoning effort or context for a new session",
+        status: 400,
+      };
+    }
+    const selected = models.find((candidate) => candidate.id === targetModelId);
+    if (!selected) {
+      return { error: `Model is not available: ${targetModelId}`, status: 400 };
+    }
+    if (selected.policy?.state === "disabled") {
+      return { error: `Model is disabled by policy: ${targetModelId}`, status: 400 };
+    }
+    if (
+      reasoningEffort
+      && !selected.supportedReasoningEfforts?.includes(reasoningEffort)
+    ) {
+      const available = selected.supportedReasoningEfforts ?? [];
+      return {
+        error: available.length > 0
+          ? `reasoningEffort must be one of: ${available.join(", ")}`
+          : `Model does not expose configurable reasoning effort: ${targetModelId}`,
+        status: 400,
+      };
+    }
+    if (contextTier === "long_context" && !modelSupportsLongContext(selected)) {
+      return {
+        error: `Model does not support long context: ${targetModelId}`,
+        status: 400,
+      };
+    }
+    return {
+      options: {
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextTier ? { contextTier } : {}),
+      },
+    };
+  }
+
   // GET /sessions/:id/model — derive current model/reasoning for a session on demand
   router.get("/sessions/:id/model", async (req, res) => {
     const sessionId = req.params.id;
@@ -2282,9 +2377,15 @@ export function createApiRouter(
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
+    const creationResult = await resolveSessionCreationOptions(req.body);
+    if (creationResult.error) {
+      return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
+    }
     try {
-      const { name } = req.body ?? {};
-      const result = await ctx.sessionManager.createSession({ background: true });
+      const result = await ctx.sessionManager.createSession({
+        background: true,
+        ...creationResult.options,
+      });
       invalidateEnrichedCache("route:session:create");
       res.json(result);
     } catch (err) {
@@ -3434,6 +3535,10 @@ export function createApiRouter(
       if (isRestartCutoverInProgress(await refreshRestartState())) {
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
+      const creationResult = await resolveSessionCreationOptions(req.body);
+      if (creationResult.error) {
+        return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
+      }
       const prDescriptions = task.pullRequests.map(
         (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
       );
@@ -3448,7 +3553,10 @@ export function createApiRouter(
         task.cwd,
         undefined,
         groupNotes,
-        { background: true },
+        {
+          background: true,
+          ...creationResult.options,
+        },
       );
       invalidateEnrichedCache("route:task-session:create");
 

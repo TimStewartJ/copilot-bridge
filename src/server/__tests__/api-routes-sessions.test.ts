@@ -553,6 +553,127 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createSession).toHaveBeenCalledWith({ background: true });
   });
 
+  it("POST /api/sessions validates and forwards one-session launch options", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listModels = vi.fn().mockResolvedValue([
+      {
+        id: "gpt-5.6",
+        name: "GPT-5.6",
+        policy: { state: "enabled" },
+        supportedReasoningEfforts: ["low", "high"],
+        billing: {
+          tokenPrices: {
+            contextMax: 272_000,
+            longContext: { contextMax: 922_000 },
+          },
+        },
+      },
+    ]);
+    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions")
+      .send({
+        model: "gpt-5.6",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.createSession).toHaveBeenCalledWith({
+      background: true,
+      model: "gpt-5.6",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+  });
+
+  it("POST /api/sessions rejects unavailable and disabled models before creation", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listModels = vi.fn().mockResolvedValue([
+      { id: "disabled-model", name: "Disabled", policy: { state: "disabled" } },
+    ]);
+    sessionManager.createSession = vi.fn();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const unavailable = await request(app)
+      .post("/api/sessions")
+      .send({ model: "missing-model" });
+    const disabled = await request(app)
+      .post("/api/sessions")
+      .send({ model: "disabled-model" });
+
+    expect(unavailable.status).toBe(400);
+    expect(unavailable.body.error).toContain("not available");
+    expect(disabled.status).toBe(400);
+    expect(disabled.body.error).toContain("disabled by policy");
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/sessions rejects unsupported effort and long context before creation", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listModels = vi.fn().mockResolvedValue([
+      {
+        id: "small-model",
+        name: "Small Model",
+        policy: { state: "enabled" },
+        supportedReasoningEfforts: ["low"],
+        billing: {
+          tokenPrices: {
+            contextMax: 128_000,
+          },
+        },
+      },
+    ]);
+    sessionManager.createSession = vi.fn();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const unsupportedEffort = await request(app)
+      .post("/api/sessions")
+      .send({ model: "small-model", reasoningEffort: "high" });
+    const unsupportedContext = await request(app)
+      .post("/api/sessions")
+      .send({ model: "small-model", contextTier: "long_context" });
+
+    expect(unsupportedEffort.status).toBe(400);
+    expect(unsupportedEffort.body.error).toContain("reasoningEffort must be one of: low");
+    expect(unsupportedContext.status).toBe(400);
+    expect(unsupportedContext.body.error).toContain("does not support long context");
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/sessions validates effort and context against the configured default model", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listModels = vi.fn().mockResolvedValue([
+      {
+        id: "default-model",
+        name: "Default Model",
+        supportedReasoningEfforts: ["medium"],
+        billing: {
+          tokenPrices: {
+            contextMax: 200_000,
+            longContext: { contextMax: 800_000 },
+          },
+        },
+      },
+    ]);
+    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.settingsStore.updateSettings({ model: "default-model" });
+
+    const res = await request(app)
+      .post("/api/sessions")
+      .send({ reasoningEffort: "medium", contextTier: "long_context" });
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.createSession).toHaveBeenCalledWith({
+      background: true,
+      reasoningEffort: "medium",
+      contextTier: "long_context",
+    });
+  });
+
   it("POST /api/sessions rejects session creation while launcher restart cutover is in progress", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn();
@@ -614,6 +735,43 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({ background: true });
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("task-session");
+  });
+
+  it("POST /api/tasks/:id/session forwards validated launch options", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listModels = vi.fn().mockResolvedValue([
+      {
+        id: "claude-opus",
+        name: "Claude Opus",
+        policy: { state: "unconfigured" },
+        supportedReasoningEfforts: ["max"],
+        billing: {
+          tokenPrices: {
+            contextMax: 200_000,
+            longContext: { contextMax: 1_000_000 },
+          },
+        },
+      },
+    ]);
+    sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = ctx.taskStore.createTask("Model-specific task");
+
+    const res = await request(app)
+      .post(`/api/tasks/${task.id}/session`)
+      .send({
+        model: "claude-opus",
+        reasoningEffort: "max",
+        contextTier: "long_context",
+      });
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({
+      background: true,
+      model: "claude-opus",
+      reasoningEffort: "max",
+      contextTier: "long_context",
+    });
   });
 
   it("POST /api/chat requires sessionId and prompt", async () => {

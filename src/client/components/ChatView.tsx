@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fetchSlashCommands,
@@ -79,6 +79,8 @@ interface ChatViewProps {
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
   onDraftClear?: () => void;
   onCreateAndSend?: (prompt: string, attachments?: Attachment[], mode?: SendMode) => Promise<void>;
+  emptyState?: ReactNode;
+  defaultSendMode?: SendMode;
   voiceJob?: VoiceBackgroundJob | null;
   onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
   onReviewVoiceJob?: (composerKey: string) => void;
@@ -485,6 +487,8 @@ export default function ChatView({
   onDraftChange,
   onDraftClear,
   onCreateAndSend,
+  emptyState,
+  defaultSendMode = DEFAULT_SEND_MODE,
   voiceJob,
   onSubmitVoiceCapture,
   onReviewVoiceJob,
@@ -2159,9 +2163,11 @@ export default function ChatView({
           </div>
         </LoadingSkeletonRegion>
       ) : entries.length === 0 && !isStreaming && !creating && !hasPendingInteractions ? (
-        <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
-          Send a message to get started
-        </div>
+        emptyState ?? (
+          <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
+            Send a message to get started
+          </div>
+        )
       ) : (
         <div
           ref={scrollContainerRef}
@@ -2274,6 +2280,7 @@ export default function ChatView({
         disabledHint={composerDisabledHint}
         slashCommands={slashCommands}
         slashCommandsSupported={slashCommandsSupported}
+        defaultSendMode={defaultSendMode}
       />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
