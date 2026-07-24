@@ -5,6 +5,7 @@ import { openMemoryDatabase } from "../db.js";
 import {
   ActiveManagementJobError,
   createManagementJobStore,
+  ManagementJobNotCancellableError,
 } from "../management-job-store.js";
 import {
   ManagementJobExecutionError,
@@ -75,6 +76,51 @@ describe("management job store", () => {
       const reclaimed = store.claimNext({ runnerPid: 2, staleAfterMs: 1_000 });
       expect(reclaimed?.id).toBe(job.id);
       expect(reclaimed?.runnerPid).toBe(2);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels queued jobs with terminal cancellation metadata", () => {
+    let current = new Date("2026-05-18T20:00:00.000Z");
+    const { db, store, dataDir } = createStore("cancel-queued", () => current);
+    try {
+      const job = store.enqueue("staging_preview", { stagingDir: "queued" });
+      current = new Date("2026-05-18T20:00:01.000Z");
+
+      const cancelled = store.cancel(job.id, "Cancelled by test.");
+
+      expect(cancelled).toMatchObject({
+        status: "cancelled",
+        error: "Cancelled by test.",
+        cancelRequestedAt: current.toISOString(),
+        completedAt: current.toISOString(),
+        updatedAt: current.toISOString(),
+      });
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects running and terminal cancellation without mutating jobs", () => {
+    let current = new Date("2026-05-18T20:00:00.000Z");
+    const { db, store, dataDir } = createStore("cancel-non-queued", () => current);
+    try {
+      const running = store.enqueue("staging_preview", { stagingDir: "running" });
+      expect(store.claimNext({ runnerPid: 7 })?.id).toBe(running.id);
+      const runningBefore = store.get(running.id);
+
+      const terminal = store.enqueue("staging_preview", { stagingDir: "terminal" });
+      store.fail(terminal.id, "terminal");
+      const terminalBefore = store.get(terminal.id);
+
+      current = new Date("2026-05-18T20:00:01.000Z");
+      expect(() => store.cancel(running.id)).toThrow(ManagementJobNotCancellableError);
+      expect(() => store.cancel(terminal.id)).toThrow(ManagementJobNotCancellableError);
+      expect(store.get(running.id)).toEqual(runningBefore);
+      expect(store.get(terminal.id)).toEqual(terminalBefore);
     } finally {
       db.close();
       rmSync(dataDir, { recursive: true, force: true });
