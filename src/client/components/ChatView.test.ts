@@ -1964,6 +1964,96 @@ describe("ChatView steering sends", () => {
       await cleanup();
     }
   });
+
+  it("keeps tool cards ordered when provider turn IDs restart within one interaction", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          {
+            id: "assistant-first",
+            role: "assistant",
+            content: "First pass",
+            turnId: "0",
+            turnInstanceId: "turn-start-a",
+          },
+          {
+            id: "tool-first",
+            type: "tool",
+            turnId: "0",
+            turnInstanceId: "turn-start-a",
+            toolCall: {
+              toolCallId: "tool-first-call",
+              name: "first_tool",
+              result: "done",
+              success: true,
+            },
+          },
+          {
+            id: "assistant-middle",
+            role: "assistant",
+            content: "Middle pass",
+            turnId: "1",
+            turnInstanceId: "turn-start-b",
+          },
+          {
+            id: "tool-middle",
+            type: "tool",
+            turnId: "1",
+            turnInstanceId: "turn-start-b",
+            toolCall: {
+              toolCallId: "tool-middle-call",
+              name: "middle_tool",
+              result: "done",
+              success: true,
+            },
+          },
+          {
+            id: "assistant-resumed",
+            role: "assistant",
+            content: "Resumed pass",
+            turnId: "0",
+            turnInstanceId: "turn-start-c",
+          },
+          {
+            id: "tool-resumed",
+            type: "tool",
+            turnId: "0",
+            turnInstanceId: "turn-start-c",
+            toolCall: {
+              toolCallId: "tool-resumed-call",
+              name: "resumed_tool",
+              result: "done",
+              success: true,
+            },
+          },
+          {
+            id: "assistant-finished",
+            role: "assistant",
+            content: "Finished",
+            turnId: "0",
+            turnInstanceId: "turn-start-c",
+          },
+        ],
+        busy: false,
+        total: 7,
+        warm: true,
+        hasMore: false,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("resumed_tool") ?? false);
+      const renderedText = dom.container.textContent ?? "";
+      expect(renderedText.indexOf("first_tool")).toBeGreaterThan(renderedText.indexOf("First pass"));
+      expect(renderedText.indexOf("Middle pass")).toBeGreaterThan(renderedText.indexOf("first_tool"));
+      expect(renderedText.indexOf("middle_tool")).toBeGreaterThan(renderedText.indexOf("Middle pass"));
+      expect(renderedText.indexOf("Resumed pass")).toBeGreaterThan(renderedText.indexOf("middle_tool"));
+      expect(renderedText.indexOf("resumed_tool")).toBeGreaterThan(renderedText.indexOf("Resumed pass"));
+      expect(renderedText.indexOf("Finished")).toBeGreaterThan(renderedText.indexOf("resumed_tool"));
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("ChatView live streaming UX", () => {

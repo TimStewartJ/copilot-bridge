@@ -2579,6 +2579,9 @@ export function createApiRouter(
             runId: terminalOverlay.runId,
             terminalType: terminalOverlay.type,
             ...(terminalOverlay.turnId ? { turnId: terminalOverlay.turnId } : {}),
+            ...(terminalOverlay.turnInstanceId
+              ? { turnInstanceId: terminalOverlay.turnInstanceId }
+              : {}),
             ...(terminalOverlay.assistantSourceEventId
               ? { assistantSourceEventId: terminalOverlay.assistantSourceEventId }
               : {}),
@@ -2594,6 +2597,7 @@ export function createApiRouter(
           runId: terminalOverlay.runId,
           complete: true,
           turnId: terminalOverlay.turnId,
+          turnInstanceId: terminalOverlay.turnInstanceId,
           accumulatedContent: "",
           assistantSegments: [],
           activeTools: [],

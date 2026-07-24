@@ -62,6 +62,7 @@ export interface StreamEvent {
   message?: string;
   intent?: string;
   turnId?: string;
+  turnInstanceId?: string;
   summary?: SessionContextSummary;
   [key: string]: unknown;
 }
@@ -70,6 +71,7 @@ export interface ActiveTool {
   toolCallId: string;
   name: string;
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   args?: unknown;
   startedAt?: string;
@@ -105,6 +107,7 @@ export interface BusSnapshot {
   terminalAssistantEventId?: string;
   finalAssistantEntry?: ProjectedAssistantEntry;
   turnId?: string;
+  turnInstanceId?: string;
   contextSummary: SessionContextSummary | null;
   /** Pending native user input requests only; answered/canceled requests are omitted. */
   pendingUserInputs: PendingUserInputRequestView[];
@@ -117,6 +120,7 @@ export interface AssistantSegment {
   id: string;
   content: string;
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   timestamp?: string;
 }
@@ -144,6 +148,7 @@ export interface PublishedVisual {
   altText?: string;
   timestamp?: string;
   turnId?: string;
+  turnInstanceId?: string;
 }
 
 type Listener = (event: StreamEvent) => void;
@@ -166,6 +171,7 @@ export interface TerminalAssistantProjectionOptions {
   runId: string;
   terminalType: "done" | "error" | "aborted" | "shutdown";
   turnId?: string;
+  turnInstanceId?: string;
   terminalSourceEventId?: string;
   assistantSourceEventId?: string;
   content?: string;
@@ -192,6 +198,7 @@ export function createProjectedFinalAssistantEntry(
     id: sourceEventId ?? `terminal-${options.runId}`,
     content: formattedContent,
     ...(options.turnId ? { turnId: options.turnId } : {}),
+    ...(options.turnInstanceId ? { turnInstanceId: options.turnInstanceId } : {}),
     ...(sourceEventId ? { sourceEventId } : {}),
     ...(options.timestamp ? { timestamp: options.timestamp } : {}),
   };
@@ -199,6 +206,12 @@ export function createProjectedFinalAssistantEntry(
 
 function getStreamTurnId(event: StreamEvent): string | undefined {
   return typeof event.turnId === "string" && event.turnId ? event.turnId : undefined;
+}
+
+function getStreamTurnInstanceId(event: StreamEvent): string | undefined {
+  return typeof event.turnInstanceId === "string" && event.turnInstanceId
+    ? event.turnInstanceId
+    : undefined;
 }
 
 function isTerminalStreamEvent(event: StreamEvent): boolean {
@@ -229,10 +242,12 @@ function getToolCallId(event: StreamEvent): string {
 
 function buildActiveTool(event: StreamEvent): ActiveTool {
   const turnId = getStreamTurnId(event);
+  const turnInstanceId = getStreamTurnInstanceId(event);
   return {
     toolCallId: getToolCallId(event),
     name: event.name ?? "unknown",
     ...(turnId ? { turnId } : {}),
+    ...(turnInstanceId ? { turnInstanceId } : {}),
     ...(typeof event.sourceEventId === "string" ? { sourceEventId: event.sourceEventId } : {}),
     args: event.args,
     startedAt: event.timestamp as string | undefined,
@@ -247,6 +262,7 @@ function mergeActiveTool(existing: ActiveTool, patch: Partial<ActiveTool>): Acti
     name: patch.name ?? existing.name,
   };
   if (patch.turnId !== undefined) merged.turnId = patch.turnId;
+  if (patch.turnInstanceId !== undefined) merged.turnInstanceId = patch.turnInstanceId;
   if (existing.sourceEventId === undefined && patch.sourceEventId !== undefined) {
     merged.sourceEventId = patch.sourceEventId;
   }
@@ -318,6 +334,8 @@ export class SessionEventBus {
   private mcpServers: unknown[] = [];
   private currentTurnId?: string;
   private terminalTurnId?: string;
+  private currentTurnInstanceId?: string;
+  private terminalTurnInstanceId?: string;
   private pendingUserInputs = new Map<UserInputRequestId, PendingUserInputRequestView>();
   private pendingElicitations = new Map<ElicitationRequestId, PendingElicitationRequestView>();
   private contextSummary: SessionContextSummary | null = null;
@@ -473,11 +491,21 @@ export class SessionEventBus {
   emit(event: StreamEvent): void {
     if (event.type === "thinking") {
       const turnId = getStreamTurnId(event) ?? `turn-${randomUUID()}`;
+      const turnInstanceId = getStreamTurnInstanceId(event) ?? `turn-instance-${randomUUID()}`;
       this.startTurn();
       this.currentTurnId = turnId;
-      event = { ...event, turnId };
-    } else if (this.currentTurnId && isTurnScopedStreamEvent(event) && !getStreamTurnId(event)) {
-      event = { ...event, turnId: this.currentTurnId };
+      this.currentTurnInstanceId = turnInstanceId;
+      event = { ...event, turnId, turnInstanceId };
+    } else if (isTurnScopedStreamEvent(event)) {
+      const turnId = getStreamTurnId(event) ?? this.currentTurnId;
+      const turnInstanceId = getStreamTurnInstanceId(event) ?? this.currentTurnInstanceId;
+      if (turnId || turnInstanceId) {
+        event = {
+          ...event,
+          ...(turnId ? { turnId } : {}),
+          ...(turnInstanceId ? { turnInstanceId } : {}),
+        };
+      }
     }
     if (isTerminalStreamEvent(event)) {
       this.finalizePendingUserMessages();
@@ -510,6 +538,7 @@ export class SessionEventBus {
           const patch: Partial<ActiveTool> = {
             name: event.name,
             turnId: getStreamTurnId(event),
+            turnInstanceId: getStreamTurnInstanceId(event),
             sourceEventId: typeof event.sourceEventId === "string" ? event.sourceEventId : undefined,
             args: event.args,
             parentToolCallId: event.parentToolCallId as string | undefined,
@@ -525,6 +554,7 @@ export class SessionEventBus {
           const patch: Partial<ActiveTool> = {
             name: event.name,
             turnId: getStreamTurnId(event),
+            turnInstanceId: getStreamTurnInstanceId(event),
             sourceEventId: typeof event.sourceEventId === "string" ? event.sourceEventId : undefined,
             args: event.args,
             progressText: event.message as string | undefined,
@@ -541,6 +571,7 @@ export class SessionEventBus {
           const patch: Partial<ActiveTool> = {
             name: event.name,
             turnId: getStreamTurnId(event),
+            turnInstanceId: getStreamTurnInstanceId(event),
             sourceEventId: typeof event.sourceEventId === "string" ? event.sourceEventId : undefined,
             args: event.args,
             progressText: event.content as string | undefined,
@@ -560,6 +591,7 @@ export class SessionEventBus {
             toolCallId,
             name: event.name ?? priorTool?.name ?? "unknown",
             turnId: getStreamTurnId(event) ?? priorTool?.turnId,
+            turnInstanceId: getStreamTurnInstanceId(event) ?? priorTool?.turnInstanceId,
             sourceEventId: typeof event.sourceEventId === "string"
               ? event.sourceEventId
               : priorTool?.sourceEventId,
@@ -599,6 +631,9 @@ export class SessionEventBus {
                   id,
                   content,
                   ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
+                  ...(this.currentTurnInstanceId
+                    ? { turnInstanceId: this.currentTurnInstanceId }
+                    : {}),
                   ...(sourceEventId ? { sourceEventId } : {}),
                   ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
                 },
@@ -624,6 +659,9 @@ export class SessionEventBus {
           ...(typeof event.altText === "string" ? { altText: event.altText } : {}),
           ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
           ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
+          ...(this.currentTurnInstanceId
+            ? { turnInstanceId: this.currentTurnInstanceId }
+            : {}),
         };
         this.visuals = [
           ...this.visuals.filter((candidate) => candidate.artifactId !== visual.artifactId),
@@ -671,6 +709,7 @@ export class SessionEventBus {
           event = { ...event, terminalCompletion: resolved };
         }
         this.terminalTurnId = getStreamTurnId(event);
+        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
         this.terminalType = "done";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
@@ -687,6 +726,7 @@ export class SessionEventBus {
         this.pendingUserInputs.clear();
         this.pendingElicitations.clear();
         this.currentTurnId = undefined;
+        this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
         break;
       }
@@ -697,6 +737,7 @@ export class SessionEventBus {
           event = { ...event, terminalCompletion: resolved };
         }
         this.terminalTurnId = getStreamTurnId(event);
+        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
         this.terminalType = "aborted";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
@@ -713,6 +754,7 @@ export class SessionEventBus {
         this.pendingUserInputs.clear();
         this.pendingElicitations.clear();
         this.currentTurnId = undefined;
+        this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
         break;
       }
@@ -723,6 +765,7 @@ export class SessionEventBus {
           event = { ...event, terminalCompletion: resolved };
         }
         this.terminalTurnId = getStreamTurnId(event);
+        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
         this.terminalType = "shutdown";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
@@ -739,6 +782,7 @@ export class SessionEventBus {
         this.pendingUserInputs.clear();
         this.pendingElicitations.clear();
         this.currentTurnId = undefined;
+        this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
         break;
       }
@@ -749,6 +793,7 @@ export class SessionEventBus {
           event = { ...event, terminalCompletion: resolved };
         }
         this.terminalTurnId = getStreamTurnId(event);
+        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
         this.terminalType = "error";
         this.terminalTimestamp = event.timestamp as string | undefined;
         this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
@@ -763,6 +808,7 @@ export class SessionEventBus {
         this.pendingUserInputs.clear();
         this.pendingElicitations.clear();
         this.currentTurnId = undefined;
+        this.currentTurnInstanceId = undefined;
         this.scheduleCleanup();
         break;
       }
@@ -779,6 +825,9 @@ export class SessionEventBus {
         runId: this.runId,
         terminalType: this.terminalType,
         ...(this.terminalTurnId ? { turnId: this.terminalTurnId } : {}),
+        ...(this.terminalTurnInstanceId
+          ? { turnInstanceId: this.terminalTurnInstanceId }
+          : {}),
         ...(this.terminalEventId ? { terminalSourceEventId: this.terminalEventId } : {}),
         ...(this.terminalAssistantEventId
           ? { assistantSourceEventId: this.terminalAssistantEventId }
@@ -806,6 +855,7 @@ export class SessionEventBus {
 
   getSnapshot(): BusSnapshot {
     const turnId = this.currentTurnId ?? this.terminalTurnId;
+    const turnInstanceId = this.currentTurnInstanceId ?? this.terminalTurnInstanceId;
     return {
       type: "snapshot",
       runId: this.runId,
@@ -833,6 +883,7 @@ export class SessionEventBus {
       pendingUserInputs: [...this.pendingUserInputs.values()],
       pendingElicitations: [...this.pendingElicitations.values()].map((request) => structuredClone(request)),
       ...(turnId ? { turnId } : {}),
+      ...(turnInstanceId ? { turnInstanceId } : {}),
     };
   }
 
@@ -890,6 +941,8 @@ export class SessionEventBus {
     this.errorMessage = undefined;
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;
+    this.currentTurnInstanceId = undefined;
+    this.terminalTurnInstanceId = undefined;
     this.cancelCleanup();
   }
 
@@ -909,6 +962,8 @@ export class SessionEventBus {
     this.errorMessage = undefined;
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;
+    this.currentTurnInstanceId = undefined;
+    this.terminalTurnInstanceId = undefined;
     this.cancelCleanup();
   }
 

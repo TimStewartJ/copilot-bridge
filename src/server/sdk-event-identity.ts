@@ -14,3 +14,8 @@ export function getSdkTurnId(event: unknown): string | undefined {
   const value = data?.turnId ?? record.turnId;
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
+
+export function getAssistantTurnInstanceId(event: unknown, fallback: string): string {
+  // Persisted turn-start event ids keep replay and live grouping identical.
+  return getSdkEventId(event) ?? fallback;
+}

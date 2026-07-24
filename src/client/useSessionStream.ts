@@ -25,6 +25,7 @@ export interface PendingTool {
   toolCallId: string;
   name: string;
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   args?: ToolArgs;
   parentToolCallId?: string;
@@ -42,6 +43,7 @@ interface SnapshotTool extends PendingTool {
 export interface PendingToolPrelude {
   toolCallId: string;
   turnId?: string;
+  turnInstanceId?: string;
   name?: string;
   progressText?: string;
   isSubAgent?: boolean;
@@ -74,6 +76,7 @@ export interface StreamState {
   pendingOrigin: PendingOrigin;
   runMode?: SendMode;
   activeTurnId?: string;
+  activeTurnInstanceId?: string;
 }
 
 const VISUAL_KIND_MIME_TYPES: Record<VisualArtifact["kind"], string> = {
@@ -119,6 +122,10 @@ function getEventTurnId(event: Record<string, unknown>): string | undefined {
   return optionalString(event.turnId);
 }
 
+function getEventTurnInstanceId(event: Record<string, unknown>): string | undefined {
+  return optionalString(event.turnInstanceId);
+}
+
 function isVisualArtifactKind(value: unknown): value is VisualArtifact["kind"] {
   return value === "image" || value === "mermaid" || value === "vega-lite" || value === "html";
 }
@@ -144,6 +151,9 @@ export function createVisualEntryFromPublishedEvent(event: Record<string, unknow
     id: `live-visual-${event.artifactId}`,
     type: "visual",
     ...(optionalString(event.turnId) ? { turnId: optionalString(event.turnId) } : {}),
+    ...(optionalString(event.turnInstanceId)
+      ? { turnInstanceId: optionalString(event.turnInstanceId) }
+      : {}),
     visual,
     ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
   };
@@ -185,6 +195,7 @@ function createCompletionEntry(
   completion: TerminalCompletion,
   timestamp?: string,
   turnId?: string,
+  turnInstanceId?: string,
   sourceEventId?: string,
 ): ChatCompletionEntry {
   return {
@@ -194,6 +205,7 @@ function createCompletionEntry(
     completion,
     ...(timestamp ? { timestamp } : {}),
     ...(turnId ? { turnId } : {}),
+    ...(turnInstanceId ? { turnInstanceId } : {}),
     ...(sourceEventId ? { sourceEventId } : {}),
   };
 }
@@ -290,6 +302,7 @@ export function bufferPendingToolPrelude(
   return {
     toolCallId: patch.toolCallId,
     turnId: patch.turnId ?? existing?.turnId,
+    turnInstanceId: patch.turnInstanceId ?? existing?.turnInstanceId,
     name: patch.name ?? existing?.name,
     progressText: patch.progressText ?? existing?.progressText,
     isSubAgent: patch.isSubAgent ?? existing?.isSubAgent,
@@ -301,12 +314,14 @@ export function resolvePendingToolName(name: unknown, prelude?: PendingToolPrelu
 }
 
 export function materializePendingTool<
-  T extends Pick<PendingTool, "name" | "progressText" | "isSubAgent"> & { turnId?: string }
+  T extends Pick<PendingTool, "name" | "progressText" | "isSubAgent">
+    & { turnId?: string; turnInstanceId?: string }
 >(tool: T, prelude?: PendingToolPrelude): T {
   if (!prelude) return tool;
   return {
     ...tool,
     turnId: tool.turnId ?? prelude.turnId,
+    turnInstanceId: tool.turnInstanceId ?? prelude.turnInstanceId,
     progressText: prelude.progressText ?? tool.progressText,
     isSubAgent: tool.isSubAgent ?? prelude.isSubAgent,
   };
@@ -328,6 +343,7 @@ export function collectTerminalPendingTools(
       parentToolCallId: tool.parentToolCallId ?? existing?.parentToolCallId,
       isSubAgent: tool.isSubAgent ?? existing?.isSubAgent,
       turnId: tool.turnId ?? existing?.turnId,
+      turnInstanceId: tool.turnInstanceId ?? existing?.turnInstanceId,
       sourceEventId: existing?.sourceEventId ?? tool.sourceEventId,
       startedAt: tool.startedAt ?? existing?.startedAt,
       progressText: tool.progressText ?? existing?.progressText,
@@ -340,6 +356,7 @@ export function collectTerminalPendingTools(
       toolCallId: prelude.toolCallId,
       name: resolvePendingToolName(undefined, prelude),
       turnId: prelude.turnId,
+      turnInstanceId: prelude.turnInstanceId,
     }, prelude));
   }
   return [...collected.values()];
@@ -353,12 +370,17 @@ function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: strin
   return typeof targetSessionId !== "string" || targetSessionId === sessionId;
 }
 
-function normalizeSnapshotTool(rawTool: unknown, activeTurnId: string | undefined): SnapshotTool | undefined {
+function normalizeSnapshotTool(
+  rawTool: unknown,
+  activeTurnId: string | undefined,
+  activeTurnInstanceId: string | undefined,
+): SnapshotTool | undefined {
   if (!isRecord(rawTool)) return undefined;
   return {
     toolCallId: optionalString(rawTool.toolCallId) ?? "",
     name: optionalString(rawTool.name) ?? "unknown",
     turnId: optionalString(rawTool.turnId) ?? activeTurnId,
+    turnInstanceId: optionalString(rawTool.turnInstanceId) ?? activeTurnInstanceId,
     sourceEventId: optionalString(rawTool.sourceEventId),
     args: rawTool.args as ToolArgs | undefined,
     startedAt: optionalString(rawTool.startedAt),
@@ -378,6 +400,7 @@ function mergeSnapshotTool(existing: SnapshotTool, next: SnapshotTool): Snapshot
     toolCallId: existing.toolCallId,
     name: getKnownToolName(next.name) ?? getKnownToolName(existing.name) ?? next.name,
     turnId: next.turnId ?? existing.turnId,
+    turnInstanceId: next.turnInstanceId ?? existing.turnInstanceId,
     sourceEventId: existing.sourceEventId ?? next.sourceEventId,
     args: next.args ?? existing.args,
     parentToolCallId: next.parentToolCallId ?? existing.parentToolCallId,
@@ -390,11 +413,16 @@ function mergeSnapshotTool(existing: SnapshotTool, next: SnapshotTool): Snapshot
   };
 }
 
-function normalizeSnapshotTools(rawTools: unknown, activeTurnId: string | undefined, sessionId: string): SnapshotTool[] {
+function normalizeSnapshotTools(
+  rawTools: unknown,
+  activeTurnId: string | undefined,
+  activeTurnInstanceId: string | undefined,
+  sessionId: string,
+): SnapshotTool[] {
   if (!Array.isArray(rawTools)) return [];
   const tools = new Map<string, SnapshotTool>();
   for (const rawTool of rawTools) {
-    const tool = normalizeSnapshotTool(rawTool, activeTurnId);
+    const tool = normalizeSnapshotTool(rawTool, activeTurnId, activeTurnInstanceId);
     if (!tool?.toolCallId || isHiddenTool(tool.name, tool.args, sessionId)) continue;
     const existing = tools.get(tool.toolCallId);
     tools.set(tool.toolCallId, existing ? mergeSnapshotTool(existing, tool) : tool);
@@ -407,6 +435,7 @@ function pendingToolToToolCall(tool: PendingTool, partial: Partial<ToolCall> = {
     toolCallId: tool.toolCallId,
     name: tool.name,
     turnId: tool.turnId,
+    turnInstanceId: tool.turnInstanceId,
     sourceEventId: tool.sourceEventId,
     args: tool.args,
     parentToolCallId: tool.parentToolCallId,
@@ -426,14 +455,28 @@ function snapshotToolToToolCall(tool: SnapshotTool): ToolCall {
 }
 
 export function buildSnapshotToolState(
-  event: { activeTools?: unknown; currentTurnTools?: unknown; turnId?: unknown },
+  event: {
+    activeTools?: unknown;
+    currentTurnTools?: unknown;
+    turnId?: unknown;
+    turnInstanceId?: unknown;
+  },
   sessionId: string,
 ): { activeTools: PendingTool[]; currentTurnTools: ToolCall[]; toolEntries: ChatEntry[] } {
   const activeTurnId = typeof event.turnId === "string" ? event.turnId : undefined;
-  const activeTools = normalizeSnapshotTools(event.activeTools, activeTurnId, sessionId);
+  const activeTurnInstanceId = typeof event.turnInstanceId === "string"
+    ? event.turnInstanceId
+    : undefined;
+  const activeTools = normalizeSnapshotTools(
+    event.activeTools,
+    activeTurnId,
+    activeTurnInstanceId,
+    sessionId,
+  );
   const allTools = normalizeSnapshotTools(
     Array.isArray(event.currentTurnTools) ? event.currentTurnTools : event.activeTools,
     activeTurnId,
+    activeTurnInstanceId,
     sessionId,
   );
   return {
@@ -443,6 +486,7 @@ export function buildSnapshotToolState(
       id: `live-tool-${tool.toolCallId}`,
       type: "tool",
       turnId: tool.turnId,
+      turnInstanceId: tool.turnInstanceId,
       sourceEventId: tool.sourceEventId,
       toolCall: snapshotToolToToolCall(tool),
     })),
@@ -458,6 +502,7 @@ export function buildTerminalToolEntries(
     id: `live-tool-${tool.toolCallId}`,
     type: "tool",
     turnId: tool.turnId,
+    turnInstanceId: tool.turnInstanceId,
     sourceEventId: tool.sourceEventId,
     toolCall: pendingToolToToolCall(tool, {
       success: terminalType === "done",
@@ -484,6 +529,7 @@ function createAssistantEntry(
   options: {
     id: string;
     turnId?: string;
+    turnInstanceId?: string;
     sourceEventId?: string;
     timestamp?: string;
   },
@@ -494,6 +540,7 @@ function createAssistantEntry(
     role: "assistant",
     content,
     ...(options.turnId ? { turnId: options.turnId } : {}),
+    ...(options.turnInstanceId ? { turnInstanceId: options.turnInstanceId } : {}),
     ...(options.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
     ...(options.timestamp ? { timestamp: options.timestamp } : {}),
   };
@@ -506,6 +553,7 @@ function createProjectedAssistantEntry(value: unknown): ChatEntry | null {
   return createAssistantEntry(value.content, {
     id: `live-assistant-${value.id}`,
     turnId: optionalString(value.turnId),
+    turnInstanceId: optionalString(value.turnInstanceId),
     sourceEventId: optionalString(value.sourceEventId),
     timestamp: optionalString(value.timestamp),
   });
@@ -528,6 +576,7 @@ function createUserEntry(value: unknown): ChatEntry | null {
 
 function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: string): ChatEntry[] {
   const turnId = getEventTurnId(event);
+  const turnInstanceId = getEventTurnInstanceId(event);
   const entriesByKey = new Map<string, ChatEntry>();
   if (Array.isArray(event.userMessages)) {
     for (const rawMessage of event.userMessages) {
@@ -542,6 +591,7 @@ function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: str
       entriesByKey.set(`assistant:${rawSegment.id}`, createAssistantEntry(rawSegment.content, {
         id: `live-assistant-${rawSegment.id}`,
         turnId: optionalString(rawSegment.turnId) ?? turnId,
+        turnInstanceId: optionalString(rawSegment.turnInstanceId) ?? turnInstanceId,
         sourceEventId: optionalString(rawSegment.sourceEventId),
         timestamp: optionalString(rawSegment.timestamp),
       }));
@@ -581,7 +631,13 @@ function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: str
   const timestamp = optionalString(event.terminalTimestamp);
   const completion = normalizeTerminalCompletion(event.terminalCompletion);
   if (completion) {
-    result.push(createCompletionEntry(completion, timestamp, turnId, sourceEventId));
+    result.push(createCompletionEntry(
+      completion,
+      timestamp,
+      turnId,
+      turnInstanceId,
+      sourceEventId,
+    ));
   } else {
     const finalAssistantEntry = createProjectedAssistantEntry(event.finalAssistantEntry);
     if (finalAssistantEntry) return upsertLiveEntry(result, finalAssistantEntry);
@@ -598,6 +654,8 @@ function upsertTool(tools: ToolCall[], next: ToolCall): ToolCall[] {
         ...next,
         toolCallId: tool.toolCallId,
         name: getKnownToolName(next.name) ?? getKnownToolName(tool.name) ?? next.name,
+        turnId: next.turnId ?? tool.turnId,
+        turnInstanceId: next.turnInstanceId ?? tool.turnInstanceId,
         sourceEventId: tool.sourceEventId ?? next.sourceEventId,
         args: next.args ?? tool.args,
         result: next.result ?? tool.result,
@@ -616,6 +674,7 @@ function upsertLiveToolEntry(entries: ChatEntry[], tool: ToolCall): ChatEntry[] 
     id: `live-tool-${tool.toolCallId}`,
     type: "tool",
     turnId: tool.turnId,
+    turnInstanceId: tool.turnInstanceId,
     sourceEventId: tool.sourceEventId,
     toolCall: tool,
   };
@@ -747,6 +806,7 @@ export function useSessionStream(
               elicitationCancellation: current.elicitationCancellation,
               hadVisibleOutput: liveEntries.length > 0,
               activeTurnId: getEventTurnId(event),
+              activeTurnInstanceId: getEventTurnInstanceId(event),
             })
           : {
               ...current,
@@ -765,6 +825,7 @@ export function useSessionStream(
               isStreaming: true,
               hadVisibleOutput: liveEntries.length > 0 || Boolean(event.accumulatedContent),
               activeTurnId: getEventTurnId(event),
+              activeTurnInstanceId: getEventTurnInstanceId(event),
             });
         if (complete) {
           report("stream.terminal", { terminalType: event.terminalType, source: "snapshot" });
@@ -792,6 +853,7 @@ export function useSessionStream(
           streamStatus: "thinking",
           isStreaming: true,
           activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
+          activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
         }));
         return;
       }
@@ -846,6 +908,7 @@ export function useSessionStream(
           isStreaming: true,
           hadVisibleOutput: true,
           activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
+          activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
         }));
         return;
       }
@@ -860,12 +923,14 @@ export function useSessionStream(
             liveEntries: appendUniqueEntry(current.liveEntries, createAssistantEntry(content, {
               id: `live-assistant-${id}`,
               turnId: getEventTurnId(event),
+              turnInstanceId: getEventTurnInstanceId(event),
               sourceEventId,
               timestamp: optionalString(event.timestamp),
             })),
             streamingContent: "",
             hadVisibleOutput: true,
             activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
+            activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
           };
         });
         return;
@@ -880,6 +945,7 @@ export function useSessionStream(
             toolCallId,
             name: resolvePendingToolName(event.name, prelude),
             turnId: getEventTurnId(event) ?? prelude?.turnId,
+            turnInstanceId: getEventTurnInstanceId(event) ?? prelude?.turnInstanceId,
             sourceEventId: optionalString(event.sourceEventId),
             args: event.args as ToolArgs | undefined,
             parentToolCallId: optionalString(event.parentToolCallId),
@@ -909,6 +975,7 @@ export function useSessionStream(
             preludesRef.current.set(toolCallId, bufferPendingToolPrelude(preludesRef.current.get(toolCallId), {
               toolCallId,
               turnId: getEventTurnId(event),
+              turnInstanceId: getEventTurnInstanceId(event),
               name: getKnownToolName(event.name),
               progressText: optionalString(eventType === "tool_output" ? event.content : event.message),
               isSubAgent: optionalBoolean(event.isSubAgent),
@@ -918,6 +985,7 @@ export function useSessionStream(
           const next: ToolCall = {
             ...existing,
             turnId: existing.turnId ?? getEventTurnId(event),
+            turnInstanceId: existing.turnInstanceId ?? getEventTurnInstanceId(event),
             name: getKnownToolName(event.name) ?? existing.name,
             progressText: optionalString(eventType === "tool_output" ? event.content : event.message)
               ?? existing.progressText,
@@ -929,6 +997,7 @@ export function useSessionStream(
               ? {
                   ...tool,
                   turnId: tool.turnId ?? next.turnId,
+                  turnInstanceId: tool.turnInstanceId ?? next.turnInstanceId,
                   name: next.name,
                   progressText: next.progressText,
                   isSubAgent: next.isSubAgent,
@@ -953,6 +1022,9 @@ export function useSessionStream(
             toolCallId,
             name,
             turnId: existing?.turnId ?? prelude?.turnId ?? getEventTurnId(event),
+            turnInstanceId: existing?.turnInstanceId
+              ?? prelude?.turnInstanceId
+              ?? getEventTurnInstanceId(event),
             sourceEventId: existing?.sourceEventId ?? optionalString(event.sourceEventId),
             args: existing?.args,
             result: optionalString(event.result),
@@ -1076,6 +1148,7 @@ export function useSessionStream(
               completion,
               completedAt,
               getEventTurnId(event),
+              getEventTurnInstanceId(event),
               sourceEventId,
             ));
           } else {
@@ -1090,6 +1163,7 @@ export function useSessionStream(
             elicitationCancellation: current.elicitationCancellation,
             hadVisibleOutput: liveEntries.length > 0,
             activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
+            activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
           });
         });
         report("stream.terminal", { terminalType: eventType, source: "event" });

@@ -188,6 +188,48 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect(readSpan?.metadata?.tailEventCount as number).toBeLessThan(5_180);
   });
 
+  it("preserves the active turn instance when the bounded tail starts mid-turn", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-tail-turn-instance");
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, "tail-turn-instance", {
+      events: [
+        {
+          id: "turn-start-event",
+          type: "assistant.turn_start",
+          timestamp: "2026-04-30T09:00:00.000Z",
+          data: { turnId: "0" },
+        },
+        ...padding,
+        {
+          id: "tool-event",
+          type: "tool.execution_start",
+          timestamp: "2026-04-30T11:00:00.000Z",
+          data: { toolCallId: "tool-1", toolName: "bash" },
+        },
+      ],
+    });
+
+    const { deps, spans } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "tail-turn-instance", { limit: 1 });
+
+    expect(result.messages).toMatchObject([
+      {
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-event",
+        toolCall: { toolCallId: "tool-1" },
+      },
+    ]);
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata).toMatchObject({
+      mode: "tail",
+      readFullFile: false,
+    });
+  });
+
   it("keeps terminal completion summaries in the bounded tail path and pagination totals", async () => {
     const copilotHome = makeTestDir("session-disk-reader-tail-completion");
     const oldMessages = Array.from({ length: 20 }, (_, index) => ({
