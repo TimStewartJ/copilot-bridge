@@ -74,22 +74,23 @@ describe("server management API routes", () => {
     expect(response.body.sourceManagementAvailable).toEqual(expect.any(Boolean));
   });
 
-  it("queues an operational restart while counting every active session", async () => {
+  it("queues an operational restart while counting every lifecycle-blocking session", async () => {
     const { app, ctx } = createTestApp();
     ctx.sessionManager.getActiveSessions = () => ["session-a", "session-b"];
+    ctx.sessionManager.getLifecycleBlockingSessionCount = () => 3;
     const dataDir = ctx.runtimePaths!.dataDir;
 
     const response = await request(app).post("/api/server/restart");
 
     expect(response.status).toBe(202);
-    expect(response.body).toEqual({ ok: true, waitingSessions: 2 });
+    expect(response.body).toEqual({ ok: true, waitingSessions: 3 });
     expect(readRestartSignalFile(join(dataDir, "restart.signal"))).toMatchObject({
       validationMode: "operational",
       source: "settings_ui",
     });
     await expect(refreshRestartState()).resolves.toMatchObject({
       phase: "waiting-for-sessions",
-      waitingSessions: 2,
+      waitingSessions: 3,
     });
   });
 

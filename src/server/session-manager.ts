@@ -687,7 +687,7 @@ export class SessionManager {
       globalBus: deps.globalBus,
       isRestartPending,
       syncRestartWaitingSessions,
-      getActiveSessionCount: () => this.getActiveSessions().length,
+      getActiveSessionCount: () => this.getLifecycleBlockingSessionCount(),
       clearPendingInteractionStatus: (sessionId) => this.clearPendingInteractionStatus(sessionId),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
       promptDeliveryShutdownMessage: PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
@@ -1220,6 +1220,7 @@ export class SessionManager {
       resolveLifetime = resolve;
     });
     this.inFlightSessionCreations.add(lifetime);
+    this.syncRestartWaitingIfPending();
     return () => {
       if (completed) return;
       completed = true;
@@ -2049,7 +2050,7 @@ export class SessionManager {
 
   private syncRestartWaitingIfPending(): void {
     if (isRestartPending()) {
-      syncRestartWaitingSessions(this.getActiveSessions().length);
+      syncRestartWaitingSessions(this.getLifecycleBlockingSessionCount());
     }
   }
 
@@ -2671,7 +2672,7 @@ export class SessionManager {
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing agent backend...");
-    configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
+    configureRestartActiveSessionCountProvider(() => this.getLifecycleBlockingSessionCount());
     this.backend = this.createBackend();
     await this.backend.start();
     this.backendCreatedAtMs = Date.now();
@@ -4063,6 +4064,15 @@ export class SessionManager {
       ...this.modelSwitchingSessions,
       ...this.historyUndoingSessions,
     ]));
+  }
+
+  /**
+   * Counts work that must settle before restart cutover. Session creation is
+   * intentionally excluded from getActiveSessions() so passive background
+   * creation does not appear as user-visible agent activity.
+   */
+  getLifecycleBlockingSessionCount(): number {
+    return this.getActiveSessions().length + this.inFlightSessionCreations.size;
   }
 
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
