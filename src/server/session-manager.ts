@@ -539,6 +539,7 @@ export class SessionManager {
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
+  private readonly pendingSessionResumeAdmissions = new Set<string>();
   private readonly resumingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
   private creatingSessions = 0;
   private creatingCapacityUnits = 0;
@@ -752,10 +753,11 @@ export class SessionManager {
       notifySessionCapacityChanged: () => this.notifySessionCapacityChanged(),
       cacheResumedSession: (sessionId, session, sessionConfig) =>
         this.cacheResumedSession(sessionId, session, sessionConfig),
-      replaceCachedSession: (sessionId, expectedSession, nextSession) =>
-        this.replaceCachedSession(sessionId, expectedSession, nextSession),
       abandonCachedSession: (sessionId, expectedSession) => this.abandonCachedSession(sessionId, expectedSession),
-      disposeSession: (sessionId, session, reason) => this.disposeSession(sessionId, session, reason),
+      abortSession: (sessionId) => this.abortSession(
+        sessionId,
+        createDeadline(SESSION_ABORT_TIMEOUT_MS),
+      ),
       probeMcpStatus: (sessionId, session) => this.probeMcpStatus(sessionId, session),
       markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
       deferMcpStatusSessionEviction: (sessionId, reason) => this.deferMcpStatusSessionEviction(sessionId, reason),
@@ -1292,7 +1294,7 @@ export class SessionManager {
       }
 
       try {
-        await this.cacheSession(session.sessionId, session, null, sessionConfig);
+        await this.cacheSession(session.sessionId, session, sessionConfig);
       } catch (error) {
         try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
           console.warn(`[sdk] Failed to delete rejected ${cleanupLabel} ${session.sessionId}:`, cleanupError);
@@ -1760,38 +1762,37 @@ export class SessionManager {
     return Number.isFinite(value) && value > 0 ? value : fallback;
   }
 
+  private ignoreDuplicateSessionHandleUnsafe(
+    sessionId: string,
+    session: AgentSession,
+    reason: string,
+  ): void {
+    this.sessionCapacityProfiles.delete(session);
+    console.warn(
+      `[sdk] [${sessionId.slice(0, 8)}] Ignoring duplicate session handle without disconnecting the shared session (${reason})`,
+    );
+  }
+
   private cacheSession(
     sessionId: string,
     session: AgentSession,
-    expectedSession: AgentSession | null,
     sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<AgentSession> {
     return this.enqueueCache("insert", sessionId, () => {
       const current = this.sessionObjects.get(sessionId);
       const capacityProfile = sessionConfig
         ? this.getCapacityProfile(sessionConfig)
-        : expectedSession
-          ? this.sessionCapacityProfiles.get(expectedSession)
-          : current
-            ? this.sessionCapacityProfiles.get(current)
-            : undefined;
+        : current
+          ? this.sessionCapacityProfiles.get(current)
+          : undefined;
       this.sessionCapacityProfiles.set(session, capacityProfile ?? { localMcpCount: 0 });
       if (this.deletingSessions.has(sessionId)) {
         this.queueSessionCleanupUnsafe(sessionId, session, "discarding session while deletion is in progress");
         throw new Error("Session is being deleted");
       }
-      const accepted = current === undefined
-        || current === session
-        || (expectedSession !== null && current === expectedSession);
+      const accepted = current === undefined || current === session;
       if (!accepted) {
-        this.queueSessionCleanupUnsafe(sessionId, session, "discarding superseded session");
-        if (expectedSession !== null && expectedSession !== current && expectedSession !== session) {
-          this.queueSessionCleanupUnsafe(
-            sessionId,
-            expectedSession,
-            "discarding superseded cached session",
-          );
-        }
+        this.ignoreDuplicateSessionHandleUnsafe(sessionId, session, "cache insertion");
         return current;
       }
 
@@ -1799,9 +1800,6 @@ export class SessionManager {
         this.sessionObjects.delete(sessionId);
         this.sessionObjects.set(sessionId, session);
         this.slashCommandListCache.delete(sessionId);
-        if (current) {
-          this.queueSessionCleanupUnsafe(sessionId, current, "replacing cached session");
-        }
       } else {
         this.sessionObjects.delete(sessionId);
         this.sessionObjects.set(sessionId, session);
@@ -1830,14 +1828,21 @@ export class SessionManager {
       const current = this.sessionObjects.get(sessionId);
       if (current === expectedSession) {
         this.evictCachedSessionUnsafe(sessionId, expectedSession, "abandoning cached session");
+      } else if (current) {
+        this.ignoreDuplicateSessionHandleUnsafe(sessionId, expectedSession, "abandoning superseded handle");
       } else {
-        this.queueSessionCleanupUnsafe(sessionId, expectedSession, "abandoning superseded session");
+        this.queueSessionCleanupUnsafe(sessionId, expectedSession, "abandoning uncached session");
       }
     });
   }
 
   private async disposeSession(sessionId: string, session: AgentSession, reason: string): Promise<void> {
     const { cleanup } = await this.enqueueCache("dispose", sessionId, () => {
+      const current = this.sessionObjects.get(sessionId);
+      if (current && current !== session) {
+        this.ignoreDuplicateSessionHandleUnsafe(sessionId, session, reason);
+        return { cleanup: Promise.resolve(true) };
+      }
       this.removeReadySessionUnsafe(sessionId, session);
       return { cleanup: this.queueSessionCleanupUnsafe(sessionId, session, reason) };
     });
@@ -2034,16 +2039,27 @@ export class SessionManager {
       this.syncRestartWaitingIfPending();
       return lease;
     }
-    const admitted = await this.waitForSessionCapacity(sessionConfig, {
-      isCancelled: options.isCancelled,
-      reserve: (reservation) => {
-        this.resumingCapacityReservations.set(lease.token, reservation);
-        this.touchSessionTree(sessionId);
-        this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
-        this.syncRestartWaitingIfPending();
-      },
-    });
-    return admitted ? lease : null;
+    if (
+      this.pendingSessionResumeAdmissions.has(sessionId)
+      || this.resumingSessions.has(sessionId)
+    ) {
+      throw new Error(`Session ${sessionId} already has a resume in progress`);
+    }
+    this.pendingSessionResumeAdmissions.add(sessionId);
+    try {
+      const admitted = await this.waitForSessionCapacity(sessionConfig, {
+        isCancelled: options.isCancelled,
+        reserve: (reservation) => {
+          this.resumingCapacityReservations.set(lease.token, reservation);
+          this.touchSessionTree(sessionId);
+          this.resumingSessions.set(sessionId, 1);
+          this.syncRestartWaitingIfPending();
+        },
+      });
+      return admitted ? lease : null;
+    } finally {
+      this.pendingSessionResumeAdmissions.delete(sessionId);
+    }
   }
 
   private endSessionResume(lease: SessionResumeLease): void {
@@ -2064,7 +2080,8 @@ export class SessionManager {
   }
 
   private isSessionResuming(sessionId: string): boolean {
-    return (this.resumingSessions.get(sessionId) ?? 0) > 0;
+    return this.pendingSessionResumeAdmissions.has(sessionId)
+      || (this.resumingSessions.get(sessionId) ?? 0) > 0;
   }
 
   private handleUserInputRequest(
@@ -2657,19 +2674,10 @@ export class SessionManager {
     session: AgentSession,
     sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<AgentSession> {
-    return this.cacheSession(sessionId, session, null, sessionConfig).then((cachedSession) => {
+    return this.cacheSession(sessionId, session, sessionConfig).then((cachedSession) => {
       if (cachedSession === session) {
         void this.warmNativeBridgeTools(sessionId, session);
         this.maybeAutoNameSession(sessionId, { session });
-      }
-      return cachedSession;
-    });
-  }
-
-  private replaceCachedSession(sessionId: string, expectedSession: AgentSession, nextSession: AgentSession): Promise<AgentSession> {
-    return this.cacheSession(sessionId, nextSession, expectedSession).then((cachedSession) => {
-      if (cachedSession === nextSession) {
-        void this.warmNativeBridgeTools(sessionId, nextSession);
       }
       return cachedSession;
     });
@@ -3422,8 +3430,8 @@ export class SessionManager {
     }, sessionId, opts);
   }
 
-  waitForSessionRecoveryIdle(sessionId: string): Promise<void> {
-    return this.sessionRunner.waitForRecoveryIdle(sessionId);
+  waitForSessionWatchdogIdle(sessionId: string): Promise<void> {
+    return this.sessionRunner.waitForWatchdogIdle(sessionId);
   }
 
   /**

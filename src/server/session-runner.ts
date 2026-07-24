@@ -5,7 +5,7 @@
 
 import type { AgentBackend, AgentSession, AgentSlashCommandResult } from "./agent-backend/index.js";
 import { stat } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
@@ -56,9 +56,9 @@ import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 
 
-const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
-const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
-const EXTERNAL_TOOL_WAIT_SPAN_INTERVAL_MS = 5 * 60_000;
+const WATCHDOG_INTERVAL_MS = 60_000;
+const NO_PROGRESS_WARNING_MS = 10 * 60_000;
+const NO_PROGRESS_ABORT_MS = 60 * 60_000;
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
   "session.idle",
   "session.task_complete",
@@ -79,7 +79,7 @@ const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
   "subagent.failed",
 ]);
 
-type SessionEventOrigin = "live" | "live_recovered" | "persisted_recovery";
+type SessionEventOrigin = "live" | "persisted_recovery";
 
 interface SessionEventHandlingContext {
   origin: SessionEventOrigin;
@@ -145,27 +145,6 @@ async function invokeSlashCommand(session: AgentSession, command: ParsedSlashCom
   return session.invokeSlashCommand({ name: command.name, input: command.input });
 }
 
-function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function getSyncShellInitialWaitUntil(toolName: string, args: unknown, startedAt: number): number | undefined {
-  if (!SYNC_SHELL_TOOL_NAMES.has(toolName)) return undefined;
-  const argRecord = asObjectRecord(args);
-  if (!argRecord || argRecord.mode !== "sync") return undefined;
-
-  const rawInitialWait = argRecord.initial_wait;
-  const initialWaitSeconds = typeof rawInitialWait === "number"
-    ? rawInitialWait
-    : typeof rawInitialWait === "string"
-      ? Number(rawInitialWait)
-      : Number.NaN;
-  if (!Number.isFinite(initialWaitSeconds) || initialWaitSeconds <= 0) return undefined;
-  return startedAt + initialWaitSeconds * 1000;
-}
-
 function getSessionShutdownType(data: any): string | undefined {
   return typeof data?.shutdownType === "string" ? data.shutdownType.toLowerCase() : undefined;
 }
@@ -225,9 +204,8 @@ export interface SessionRunnerDeps {
     attachments?: StartWorkAttachment[],
   ): RoutedSdkAttachment[] | undefined;
   cacheResumedSession(sessionId: string, session: any, sessionConfig?: any): Promise<any>;
-  replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): Promise<any>;
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
-  disposeSession(sessionId: string, session: any, reason: string): Promise<void>;
+  abortSession(sessionId: string): Promise<boolean>;
   probeMcpStatus(sessionId: string, session: any): void;
   markCachedSessionForEviction(sessionId: string, reason: string): void;
   /**
@@ -255,13 +233,13 @@ export interface SessionRunnerDeps {
 }
 
 export class SessionRunner {
-  private readonly recoveryPromises = new Map<string, Promise<void>>();
+  private readonly watchdogPromises = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: SessionRunnerDeps) {}
 
-  async waitForRecoveryIdle(sessionId: string): Promise<void> {
+  async waitForWatchdogIdle(sessionId: string): Promise<void> {
     while (true) {
-      const pending = this.recoveryPromises.get(sessionId);
+      const pending = this.watchdogPromises.get(sessionId);
       if (!pending) return;
       await pending;
     }
@@ -644,8 +622,7 @@ export class SessionRunner {
         void stepPromise.catch((error) => {
           console.warn(`[sdk] [${sid}] ${stepName} rejected after run completion:`, error);
         });
-        console.warn(`[sdk] [${sid}] ${stepName} still pending after run completion — abandoning cached session`);
-        await abandonSession(session);
+        console.warn(`[sdk] [${sid}] ${stepName} still pending after run completion — retaining the single session owner`);
         return { completed: true };
       }
       if (result.type === "error") throw result.error;
@@ -664,7 +641,6 @@ export class SessionRunner {
     const contextTelemetryProviderSessionId = sessionId;
     let currentBridgeTurnId: string | undefined;
     let pendingTerminalCompletion: TerminalCompletion | undefined;
-    let lastExternalToolWaitSpanAt = 0;
     const rememberToolName = (toolCallId: unknown, toolName: unknown): string | undefined => {
       if (typeof toolName !== "string") return undefined;
       const normalized = toolName.trim();
@@ -694,18 +670,12 @@ export class SessionRunner {
         ...(toolCallId ? { toolCallId } : {}),
         ...(toolName ? { toolName } : {}),
       });
-      if (activeExternalTools.size === 1) {
-        lastExternalToolWaitSpanAt = eventAt;
-      }
     };
     const clearExternalToolRequest = (requestId: unknown, eventAt: number) => {
       if (typeof requestId !== "string" || !requestId) return;
       const active = activeExternalTools.get(requestId);
       if (active) active.lastActivityAt = eventAt;
       activeExternalTools.delete(requestId);
-      if (activeExternalTools.size === 0) {
-        lastExternalToolWaitSpanAt = 0;
-      }
     };
     const clearExternalToolsForToolCall = (toolCallId: unknown, eventAt: number) => {
       if (typeof toolCallId !== "string" || !toolCallId) return;
@@ -715,17 +685,14 @@ export class SessionRunner {
           activeExternalTools.delete(requestId);
         }
       }
-      if (activeExternalTools.size === 0) {
-        lastExternalToolWaitSpanAt = 0;
-      }
     };
-    const syncShellWaits = new Map<string, number>();
-    const handledCurrentTurnEventKeys = new Set<string>();
     let lastAssistantContent: string | undefined;
     let lastAssistantSourceEventId: string | undefined;
     let lastEventTime = Date.now();
     let sendStart = lastEventTime;
     let lastDiskMtime: number | undefined;
+    let lastDiskSize: number | undefined;
+    let lastPersistedEventTime: number | undefined;
     let lastLiveEventType: string | undefined;
     let lastLiveEventAt: number | undefined;
     let lastLiveEventOrigin: SessionEventOrigin | undefined;
@@ -734,10 +701,11 @@ export class SessionRunner {
     let eventsAfterLastLiveTurnEnd = 0;
     let activeEventsAfterLastLiveTurnEnd = 0;
     let staleCacheRetryCount = 0;
-    let recoveryAttemptIndex = 0;
     let acceptingSessionEvents = false;
     const resetRunTelemetryState = () => {
       lastDiskMtime = undefined;
+      lastDiskSize = undefined;
+      lastPersistedEventTime = undefined;
       lastLiveEventType = undefined;
       lastLiveEventAt = undefined;
       lastLiveEventOrigin = undefined;
@@ -749,12 +717,10 @@ export class SessionRunner {
     const beginSend = () => {
       sendStart = Date.now();
       lastEventTime = sendStart;
-      handledCurrentTurnEventKeys.clear();
       lastAssistantContent = undefined;
       lastAssistantSourceEventId = undefined;
       pendingTerminalCompletion = undefined;
       activeExternalTools.clear();
-      lastExternalToolWaitSpanAt = 0;
       resetRunTelemetryState();
       acceptingSessionEvents = true;
     };
@@ -840,6 +806,22 @@ export class SessionRunner {
         activeExternalToolLastActivityAgeMs: getAgeMs(now, latestActivityAt),
       };
     };
+    const getActiveToolTelemetry = (): Record<string, unknown> => {
+      if (toolStartTimes.size === 0) return {};
+      return {
+        activeToolCount: toolStartTimes.size,
+        activeToolNames: [...new Set(
+          [...toolStartTimes.keys()].map((toolCallId) => toolNameMap.get(toolCallId) ?? "unknown"),
+        )],
+      };
+    };
+    const getLastProgressAt = () => Math.max(
+      lastEventTime,
+      lastPersistedEventTime ?? 0,
+      lastDiskMtime !== undefined && lastDiskMtime >= sendStart
+        ? Math.min(lastDiskMtime, Date.now())
+        : 0,
+    );
     const buildRunTelemetryMetadata = (now = Date.now()): Record<string, unknown> => ({
       runStartedAt: new Date(sendStart).toISOString(),
       elapsedMs: Math.max(0, now - sendStart),
@@ -848,6 +830,8 @@ export class SessionRunner {
       lastLiveEventOrigin,
       lastEventTimeAgeMs: getAgeMs(now, lastEventTime),
       lastDiskMtimeAgeMs: getAgeMs(now, lastDiskMtime),
+      lastPersistedEventAgeMs: getAgeMs(now, lastPersistedEventTime),
+      lastProgressAgeMs: getAgeMs(now, getLastProgressAt()),
       liveTurnEndCount,
       lastLiveTurnEndAgeMs: getAgeMs(now, lastLiveTurnEndAt),
       eventsAfterLastLiveTurnEnd,
@@ -855,6 +839,7 @@ export class SessionRunner {
       pendingUserInputCount: this.deps.getPendingUserInputCount(sessionId),
       pendingInteractionCount: this.deps.getPendingInteractionCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
+      ...getActiveToolTelemetry(),
       ...getActiveExternalToolTelemetry(now),
     });
     const recordRunSpan = (
@@ -868,31 +853,9 @@ export class SessionRunner {
         ...metadata,
       });
     };
-    const forceReleaseStalledRun = (now: number, reason: string): boolean => {
-      if (runController.isCompleted()) return true;
-      const record = this.deps.runStateController.getRunRecords().get(sessionId);
-      const stalledAt = record?.stalledAt;
-      if (!stalledAt) return false;
-      const stalledForMs = now - stalledAt;
-      if (stalledForMs < STALLED_RUN_FORCE_RELEASE_MS) return false;
-
-      const message = `Session stalled for ${Math.ceil(stalledForMs / 1000)}s without recoverable SDK events; releasing run state locally.`;
-      console.error(`[sdk] [${sid}] ⚠️ ${message}`);
-      recordRunSpan("session.run.force_released", 0, {
-        reason,
-        stalledForMs,
-        forceReleaseThresholdMs: STALLED_RUN_FORCE_RELEASE_MS,
-      }, now);
-      runController.completeError(message);
-      void abandonSession(session).catch((error) => {
-        console.error(`[sdk] [${sid}] Failed to reap force-released session:`, error);
-      });
-      return true;
-    };
     const getTerminalCompletionSource = (eventType: string, origin: SessionEventOrigin): string => {
       const normalizedEventType = eventType.replace(/\./g, "_");
       if (origin === "persisted_recovery") return `persisted_${normalizedEventType}_recovery`;
-      if (origin === "live_recovered") return `live_recovered_${normalizedEventType}`;
       return `live_${normalizedEventType}`;
     };
     const recordRunCompletion = (
@@ -931,18 +894,6 @@ export class SessionRunner {
         lastLiveTurnEndAt = eventAt;
         eventsAfterLastLiveTurnEnd = 0;
         activeEventsAfterLastLiveTurnEnd = 0;
-      }
-    };
-
-    const getEventReplayKey = (event: any): string | undefined => {
-      const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
-      const timestampPart = typeof rawTimestamp === "string" ? rawTimestamp : "";
-      try {
-        return createHash("sha1")
-          .update(JSON.stringify([event?.type ?? "", timestampPart, event?.data ?? null]))
-          .digest("hex");
-      } catch {
-        return undefined;
       }
     };
 
@@ -985,9 +936,7 @@ export class SessionRunner {
     const handleEvent = (event: any, context: SessionEventHandlingContext) => {
       if (!acceptingSessionEvents || runController.isCompleted()) return;
       const eventAt = Date.now();
-      const replayKey = getEventReplayKey(event);
-      if (replayKey) handledCurrentTurnEventKeys.add(replayKey);
-      if (context.origin === "live" || context.origin === "live_recovered") {
+      if (context.origin === "live") {
         noteLiveEvent(event, eventAt, context.origin);
       }
       const isTerminalEvent = LIVE_RUN_TERMINAL_EVENT_TYPES.has(event.type);
@@ -1107,10 +1056,6 @@ export class SessionRunner {
               toolName,
               data?.arguments,
             ) ?? pendingTerminalCompletion;
-            const toolStartAt = getEventTimestampMs(event) ?? eventAt;
-            const syncShellWaitUntil = getSyncShellInitialWaitUntil(toolName, data?.arguments, toolStartAt);
-            if (syncShellWaitUntil) syncShellWaits.set(data.toolCallId, syncShellWaitUntil);
-            else syncShellWaits.delete(data.toolCallId);
           }
           const pendingAgent = data?.toolCallId ? subAgentMap.get(data.toolCallId) : undefined;
           const displayName = pendingAgent ?? toolName;
@@ -1152,7 +1097,6 @@ export class SessionRunner {
           });
           break;
         case "tool.execution_complete": {
-          if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);
           clearExternalToolsForToolCall(data?.toolCallId, eventAt);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const ok = data?.success !== false;
@@ -1170,6 +1114,7 @@ export class SessionRunner {
               isSubAgent: isAgent || undefined,
             });
           }
+          if (data?.toolCallId) toolStartTimes.delete(data.toolCallId);
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
@@ -1320,7 +1265,7 @@ export class SessionRunner {
           const resolvedTerminalCompletion = terminalCompletion ?? pendingTerminalCompletion;
           const content = resolvedTerminalCompletion?.content ?? lastAssistantContent ?? "(no response)";
           if (
-            (context.origin === "live" || context.origin === "live_recovered")
+            context.origin === "live"
             && hasActiveFollowupAfterTurnEnd()
           ) {
             console.warn(
@@ -1383,7 +1328,7 @@ export class SessionRunner {
           }
           this.deps.mcpStatus.set(sessionId, current);
           if (
-            (context.origin === "live" || context.origin === "live_recovered")
+            context.origin === "live"
             && previousStatus === "connected"
             && status === "not_configured"
             && isConfiguredMcpServer(name)
@@ -1445,246 +1390,140 @@ export class SessionRunner {
 
     const eventsJsonlPath = join(this.deps.getSessionStateDir(sessionId), "events.jsonl");
 
-    let recoveryInProgress = false;
-    let lastRecoveryAttempt = 0;
+    let noProgressWarningActive = false;
+    let noProgressAbortAttempted = false;
 
-    const resumeFreshRecoverySession = async (): Promise<any> => {
-      const resumeStart = Date.now();
-      console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
-      const resumePromise = this.client!.resumeSession(sessionId, resumeConfig);
-      const recoveredSession = await resumeSessionWithTimeout(
-        resumePromise,
-        "resumeSession timed out after 60s",
-      );
-      const resumeDuration = Date.now() - resumeStart;
-      this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
-      console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
-      return recoveredSession;
+    const inspectPersistedRun = async (now: number, reason: string) => {
+      const inspection = await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
+        now,
+        lastAssistantContent,
+        lastAssistantSourceEventId,
+      });
+      if (inspection.info.latestPersistedEventAgeMs !== undefined) {
+        const persistedEventAt = now - inspection.info.latestPersistedEventAgeMs;
+        lastPersistedEventTime = Math.max(lastPersistedEventTime ?? 0, persistedEventAt);
+        this.deps.runStateController.touchSessionRunIfNewer(sessionId, persistedEventAt);
+      }
+      if (inspection.terminal && resolvePersistedTerminalEvent(inspection.terminal, reason)) {
+        recordRunSpan("session.run.recovery", 0, {
+          outcome: "resolved_persisted_terminal",
+          terminalEventType: inspection.terminal.event?.type,
+          ...inspection.info,
+        }, now);
+      }
+      return inspection;
     };
 
-    const attemptStalledRecovery = async () => {
-      if (recoveryInProgress) return;
-      recoveryInProgress = true;
-      const recoveryStartedAt = Date.now();
-      const attemptIndex = ++recoveryAttemptIndex;
-      lastRecoveryAttempt = recoveryStartedAt;
-      const recordRecoveryOutcome = async (
-        outcome: string,
-        metadata: Record<string, unknown> = {},
-        now = Date.now(),
-      ) => {
-        const inspection = await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
-          now,
-          lastAssistantContent,
-          lastAssistantSourceEventId,
-        });
-        recordRunSpan("session.run.recovery", now - recoveryStartedAt, {
-          outcome,
-          attemptIndex,
-          ...inspection.info,
-          ...metadata,
-        }, now);
-      };
+    const runWatchdogTick = async () => {
+      if (runController.isCompleted()) return;
       try {
-        const persistedTerminalBeforeResume = (
-          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
-            lastAssistantContent,
-            lastAssistantSourceEventId,
-          })
-        ).terminal;
-        if (persistedTerminalBeforeResume) {
-          if (resolvePersistedTerminalEvent(persistedTerminalBeforeResume, "before resume")) {
-            await recordRecoveryOutcome("resolved_persisted_terminal", {
-              when: "before_resume",
-              terminalEventType: persistedTerminalBeforeResume.event?.type,
-            });
-            return;
+        let fileChanged = false;
+        try {
+          const fileStat = await stat(eventsJsonlPath);
+          fileChanged = fileStat.mtimeMs !== lastDiskMtime || fileStat.size !== lastDiskSize;
+          lastDiskMtime = fileStat.mtimeMs;
+          lastDiskSize = fileStat.size;
+          if (fileStat.mtimeMs >= sendStart) {
+            this.deps.runStateController.touchSessionRunIfNewer(
+              sessionId,
+              Math.min(fileStat.mtimeMs, Date.now()),
+            );
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
           }
         }
 
-        const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
-        console.warn(`[sdk] [${sid}] 🔄 Stall recovery: re-subscribing (${elapsed}s total)...`);
-        const previousSession = session;
-        const previousUnsub = unsub;
-        const recoveredSession = await resumeFreshRecoverySession();
+        let inspection: Awaited<ReturnType<typeof inspectPersistedRun>> | undefined;
+        if (fileChanged) {
+          inspection = await inspectPersistedRun(Date.now(), "watchdog disk progress");
+          if (runController.isCompleted()) return;
+        }
 
-        if (runController.isCompleted() || this.deps.runStateController.getSessionRunState(sessionId) !== "stalled") {
-          await this.deps.disposeSession(
-            sessionId,
-            recoveredSession,
-            "discarding completed stall-recovery session",
-          );
-          await recordRecoveryOutcome("skipped_not_stalled_or_completed", {
-            completed: runController.isCompleted(),
-            runState: this.deps.runStateController.getSessionRunState(sessionId),
-          });
+        let now = Date.now();
+        let noProgressMs = Math.max(0, now - getLastProgressAt());
+        if (noProgressMs < NO_PROGRESS_WARNING_MS) {
+          noProgressWarningActive = false;
           return;
         }
 
-        const persistedTerminalAfterResume = (
-          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
-            lastAssistantContent,
-            lastAssistantSourceEventId,
-          })
-        ).terminal;
-        if (persistedTerminalAfterResume) {
-          await this.deps.disposeSession(
-            sessionId,
-            recoveredSession,
-            "discarding redundant stall-recovery session",
-          );
-          resolvePersistedTerminalEvent(persistedTerminalAfterResume, "after resume");
-          await recordRecoveryOutcome("resolved_persisted_terminal", {
-            when: "after_resume",
-            terminalEventType: persistedTerminalAfterResume.event?.type,
-          });
+        inspection ??= await inspectPersistedRun(now, "watchdog inactivity check");
+        if (runController.isCompleted()) return;
+        now = Date.now();
+        noProgressMs = Math.max(0, now - getLastProgressAt());
+        if (noProgressMs < NO_PROGRESS_WARNING_MS) {
+          noProgressWarningActive = false;
           return;
         }
 
-        const shouldIgnoreRecoveredEvent = (event: any) => {
-          const eventTimestampMs = getEventTimestampMs(event);
-          if (eventTimestampMs !== undefined && eventTimestampMs < sendStart) return true;
-          const replayKey = getEventReplayKey(event);
-          return replayKey !== undefined && handledCurrentTurnEventKeys.has(replayKey);
-        };
+        if (!noProgressWarningActive) {
+          noProgressWarningActive = true;
+          console.warn(
+            `[sdk] [${sid}] ⚠️ No live or persisted progress for ${Math.floor(noProgressMs / 1000)}s; retaining the active session owner`,
+          );
+          recordRunSpan("session.run.no_progress", 0, {
+            noProgressMs,
+            warningThresholdMs: NO_PROGRESS_WARNING_MS,
+            abortThresholdMs: NO_PROGRESS_ABORT_MS,
+            ...inspection.info,
+          }, now);
+        }
 
-        const recoverySession = await this.deps.replaceCachedSession(sessionId, previousSession, recoveredSession);
-        const bufferedRecoveredEvents: any[] = [];
-        let acceptingRecoveredEvents = false;
-        const recoveredUnsub = recoverySession.on((event: any) => {
-          if (!acceptingRecoveredEvents) {
-            bufferedRecoveredEvents.push(event);
-            return;
+        if (noProgressMs < NO_PROGRESS_ABORT_MS || noProgressAbortAttempted) return;
+        noProgressAbortAttempted = true;
+        console.error(
+          `[sdk] [${sid}] ⚠️ No progress for ${Math.floor(noProgressMs / 1000)}s; aborting the existing session turn`,
+        );
+        recordRunSpan("session.run.no_progress_abort", 0, {
+          outcome: "requested",
+          noProgressMs,
+          abortThresholdMs: NO_PROGRESS_ABORT_MS,
+          ...inspection.info,
+        }, now);
+        try {
+          const aborted = await this.deps.abortSession(sessionId);
+          recordRunSpan("session.run.no_progress_abort", Date.now() - now, {
+            outcome: aborted ? "completed" : "run_already_completed",
+            noProgressMs,
+            abortThresholdMs: NO_PROGRESS_ABORT_MS,
+          });
+          if (!aborted && !runController.isCompleted()) {
+            runController.completeError("Session exceeded the no-progress limit and could not be aborted.");
           }
-          if (shouldIgnoreRecoveredEvent(event)) return;
-          handleEvent(event, { origin: "live_recovered" });
-        });
-
-        session = recoverySession;
-        unsub = recoveredUnsub;
-        this.deps.probeMcpStatus(sessionId, recoverySession);
-        acceptingSessionEvents = true;
-
-        try { previousUnsub?.(); } catch { /* best-effort */ }
-
-        acceptingRecoveredEvents = true;
-        for (const event of bufferedRecoveredEvents) {
-          if (shouldIgnoreRecoveredEvent(event)) continue;
-          handleEvent(event, { origin: "live_recovered" });
-          if (runController.isCompleted()) break;
-        }
-
-        console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
-        await recordRecoveryOutcome("reattached", {
-          bufferedEventCount: bufferedRecoveredEvents.length,
-        });
-      } catch (err) {
-        const persistedTerminalAfterFailedResume = (
-          await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
-            lastAssistantContent,
-            lastAssistantSourceEventId,
-          })
-        ).terminal;
-        if (persistedTerminalAfterFailedResume && resolvePersistedTerminalEvent(persistedTerminalAfterFailedResume, "after failed resume")) {
-          const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
-          await recordRecoveryOutcome("resolved_persisted_terminal", {
-            when: "after_failed_resume",
-            terminalEventType: persistedTerminalAfterFailedResume.event?.type,
-            errorName,
+        } catch (error) {
+          const message = getErrorMessage(error);
+          recordRunSpan("session.run.no_progress_abort", Date.now() - now, {
+            outcome: "failed",
+            noProgressMs,
+            abortThresholdMs: NO_PROGRESS_ABORT_MS,
+            error: message,
           });
-        } else {
-          const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
-          await recordRecoveryOutcome("failed", { errorName });
-          console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
+          console.error(`[sdk] [${sid}] No-progress abort failed:`, error);
+          if (!runController.isCompleted()) {
+            runController.completeError(`Session exceeded the no-progress limit and abort failed: ${message}`);
+          }
         }
-      } finally {
-        recoveryInProgress = false;
+      } catch (error) {
+        console.error(`[sdk] [${sid}] Watchdog check failed:`, error);
+        recordRunSpan("session.run.watchdog_error", 0, {
+          error: getErrorMessage(error),
+        });
       }
     };
-    const startStalledRecovery = (relatedWork?: Promise<unknown>) => {
-      const existing = this.recoveryPromises.get(sessionId);
-      if (existing) return;
-      const recovery = attemptStalledRecovery();
-      const tracked = Promise.all([recovery, relatedWork]).then(() => undefined);
-      this.recoveryPromises.set(sessionId, tracked);
-      void tracked.finally(() => {
-        if (this.recoveryPromises.get(sessionId) === tracked) {
-          this.recoveryPromises.delete(sessionId);
+    const startWatchdogTick = () => {
+      if (this.watchdogPromises.has(sessionId)) return;
+      const tick = runWatchdogTick();
+      this.watchdogPromises.set(sessionId, tick);
+      void tick.finally(() => {
+        if (this.watchdogPromises.get(sessionId) === tick) {
+          this.watchdogPromises.delete(sessionId);
         }
       });
     };
-
-    const WATCHDOG_INTERVAL = 60_000;
-    const WATCHDOG_TIMEOUT = 300_000;
-    const RECOVERY_INTERVAL = 300_000;
-    const runWatchdogTick = () => {
-      const now = Date.now();
-
-      void stat(eventsJsonlPath).then((fileStat) => {
-        lastDiskMtime = fileStat.mtimeMs;
-        if (fileStat.mtimeMs > lastEventTime) {
-          this.deps.runStateController.touchSessionRunIfNewer(sessionId, fileStat.mtimeMs);
-        }
-      }).catch(() => { /* events.jsonl may not exist yet */ });
-
-      let syncShellWaitUntil = 0;
-      for (const waitUntil of syncShellWaits.values()) {
-        if (waitUntil > syncShellWaitUntil) syncShellWaitUntil = waitUntil;
-      }
-      if (syncShellWaitUntil > now) return;
-
-      if (this.deps.getPendingInteractionCount(sessionId) > 0) {
-        lastEventTime = now;
-        this.touchSessionRun(sessionId, now);
-        return;
-      }
-
-      if (activeExternalTools.size > 0) {
-        this.touchSessionRun(sessionId, now);
-        if (now - lastExternalToolWaitSpanAt >= EXTERNAL_TOOL_WAIT_SPAN_INTERVAL_MS) {
-          lastExternalToolWaitSpanAt = now;
-          const activeToolNames = [...new Set([...activeExternalTools.values()].map((tool) => tool.toolName ?? "unknown"))];
-          console.log(`[sdk] [${sid}] ⏳ Waiting for external tool(s): ${activeToolNames.join(", ")}`);
-          recordRunSpan("session.run.waiting_on_external_tool", 0, {
-            watchdogTimeoutMs: WATCHDOG_TIMEOUT,
-            ...getActiveExternalToolTelemetry(now),
-          }, now);
-        }
-        return;
-      }
-
-      if (now - lastEventTime < WATCHDOG_TIMEOUT) return;
-
-      const currentState = this.deps.runStateController.getSessionRunState(sessionId);
-      const elapsed = ((now - sendStart) / 1000).toFixed(0);
-
-      if (currentState !== "stalled") {
-        console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — marking stalled (${elapsed}s total)`);
-        this.setSessionRunState(sessionId, "stalled");
-        const telemetryInspection = inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
-          now,
-          lastAssistantContent,
-          lastAssistantSourceEventId,
-        }).then((inspection) => {
-          recordRunSpan("session.run.stalled", 0, {
-            watchdogTimeoutMs: WATCHDOG_TIMEOUT,
-            previousRunState: currentState,
-            ...inspection.info,
-          }, now);
-        }).catch((error) => {
-          console.warn(`[sdk] [${sid}] Failed to inspect persisted events for stall telemetry:`, error);
-        });
-        startStalledRecovery(telemetryInspection);
-      } else if (forceReleaseStalledRun(now, "stalled_watchdog_timeout")) {
-        return;
-      } else if (now - lastRecoveryAttempt >= RECOVERY_INTERVAL) {
-        console.warn(`[sdk] [${sid}] ⚠️ Session still stalled — retrying recovery (${elapsed}s total)`);
-        startStalledRecovery();
-      }
-    };
     const watchdog = setInterval(() => {
-      runWatchdogTick();
-    }, WATCHDOG_INTERVAL);
+      startWatchdogTick();
+    }, WATCHDOG_INTERVAL_MS);
 
     try {
       console.log(opts.startLog);
@@ -1733,8 +1572,6 @@ export class SessionRunner {
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
       activeExternalTools.clear();
-      lastExternalToolWaitSpanAt = 0;
-      syncShellWaits.clear();
       unsub?.();
     }
   }

@@ -219,7 +219,7 @@ describe("SessionManager.setSessionModel", () => {
     await switching;
 
     expect(manager.sessionObjects.get("cold-session")).toBe(newerSession);
-    expect(resumedSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(resumedSession.disconnect).not.toHaveBeenCalled();
     expect(resumedSession.setModel).not.toHaveBeenCalled();
     expect(newerSession.setModel).toHaveBeenCalledWith("gpt-5.5", undefined);
   });
