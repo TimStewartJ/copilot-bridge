@@ -217,6 +217,7 @@ const BACKEND_STOP_TIMEOUT_MS = 4_000;
 const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
 const DISCONNECT_TIMEOUT_MS = 5_000;
 const DISCONNECT_MAX_ATTEMPTS = 2;
+const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = 30_000;
 const SESSION_TASK_CLEANUP_TIMEOUT_MS = 10_000;
 const SESSION_TASK_CLEANUP_POLL_MS = 100;
 const DEFAULT_SESSION_CACHE_IDLE_TTL_MS = 60 * 60_000;
@@ -552,6 +553,9 @@ export class SessionManager {
   private historyUndoingSessions = new Set<string>();
   private sessionObjects = new Map<string, AgentSession>();
   private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
+  private readonly sessionToolInitialization = new WeakMap<AgentSession, Promise<void>>();
+  private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
+  private sessionToolInitializationWaitTimeoutMs = SESSION_TOOL_INITIALIZATION_TIMEOUT_MS;
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
@@ -1303,7 +1307,7 @@ export class SessionManager {
       }
       releaseReservation();
 
-      await this.warmNativeBridgeTools(session.sessionId, session);
+      await this.ensureSessionToolInitialization(session.sessionId, session);
       if (this.shuttingDown) {
         await this.evictCachedSession(
           session.sessionId,
@@ -2274,6 +2278,34 @@ export class SessionManager {
     }
   }
 
+  private ensureSessionToolInitialization(sessionId: string, session: AgentSession): Promise<void> {
+    const existing = this.sessionToolInitialization.get(session);
+    if (existing) return existing;
+
+    const initialization = this.warmNativeBridgeTools(sessionId, session);
+    this.sessionToolInitialization.set(session, initialization);
+    return initialization;
+  }
+
+  private async waitForSessionToolInitialization(
+    sessionId: string,
+    session: AgentSession,
+  ): Promise<boolean> {
+    const outcome = await settleByDeadline(
+      () => this.ensureSessionToolInitialization(sessionId, session),
+      createDeadline(this.sessionToolInitializationWaitTimeoutMs),
+    );
+    if (outcome.status === "fulfilled") return true;
+    if (!this.sessionToolInitializationTimeoutWarned.has(session)) {
+      this.sessionToolInitializationTimeoutWarned.add(session);
+      const detail = outcome.status === "rejected"
+        ? `failed: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`
+        : `timed out after ${this.sessionToolInitializationWaitTimeoutMs}ms`;
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Session tool initialization ${detail}`);
+    }
+    return false;
+  }
+
   private async rejectMismatchedCreatedSession(
     expectedSessionId: string,
     session: AgentSession,
@@ -2652,9 +2684,13 @@ export class SessionManager {
   private probeMcpStatus(sessionId: string, session: AgentSession): void {
     const list = session.listMcpServers;
     if (typeof list !== "function") return;
-    void list.call(session)
+    void this.waitForSessionToolInitialization(sessionId, session)
+      .then((initialized) => {
+        if (!initialized || this.sessionObjects.get(sessionId) !== session) return undefined;
+        return list.call(session);
+      })
       .then((result) => {
-        if (result?.servers) {
+        if (result?.servers && this.sessionObjects.get(sessionId) === session) {
           const servers: McpServerStatus[] = result.servers.map((s) => ({
             name: s.name,
             status: coerceMcpServerStatus(s.status),
@@ -2676,7 +2712,7 @@ export class SessionManager {
   ): Promise<AgentSession> {
     return this.cacheSession(sessionId, session, sessionConfig).then((cachedSession) => {
       if (cachedSession === session) {
-        void this.warmNativeBridgeTools(sessionId, session);
+        void this.ensureSessionToolInitialization(sessionId, session);
         this.maybeAutoNameSession(sessionId, { session });
       }
       return cachedSession;
@@ -2704,8 +2740,12 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (session && typeof session.listMcpServers === "function") {
       try {
+        const initialized = await this.waitForSessionToolInitialization(sessionId, session);
+        if (!initialized || this.sessionObjects.get(sessionId) !== session) {
+          return this.mcpStatus.get(sessionId) ?? [];
+        }
         const result = await session.listMcpServers();
-        if (result?.servers) {
+        if (result?.servers && this.sessionObjects.get(sessionId) === session) {
           const servers: McpServerStatus[] = result.servers.map((s) => ({
             name: s.name,
             status: coerceMcpServerStatus(s.status),
@@ -2763,6 +2803,13 @@ export class SessionManager {
         throw new Error("MCP OAuth login is not available in this Copilot SDK build");
       }
 
+      const initialized = await this.waitForSessionToolInitialization(sessionId, session);
+      if (!initialized) {
+        throw new Error("Session tool initialization did not complete before MCP authentication");
+      }
+      if (this.sessionObjects.get(sessionId) !== session) {
+        throw new Error("Session changed while preparing MCP authentication");
+      }
       const rawResult = await session.startMcpOauthLogin({
         serverName: configuredServerName,
         forceReauth: options.forceReauth,
