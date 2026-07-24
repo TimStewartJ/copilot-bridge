@@ -373,7 +373,7 @@ describe("TunnelSupervisor", () => {
     expect(harness.spawnTunnel).toHaveBeenCalledTimes(2);
   });
 
-  it("retries exact orphan cleanup before honoring disabled tunnel configuration", async () => {
+  it("resolves disabled startup before persistent exact orphan cleanup retries", async () => {
     vi.useFakeTimers();
     const orphan = identity(77);
     const harness = createHarness({
@@ -385,23 +385,32 @@ describe("TunnelSupervisor", () => {
         updatedAt: "2026-07-20T00:00:00.000Z",
       },
     });
-    harness.terminateProcessTree
-      .mockResolvedValueOnce({
-        ok: false,
-        status: "snapshot-unavailable",
-        root: orphan,
-      })
-      .mockResolvedValueOnce(stopped(orphan));
+    harness.terminateProcessTree.mockResolvedValue({
+      ok: false,
+      status: "snapshot-unavailable",
+      root: orphan,
+    });
 
     const start = harness.supervisor.start();
-    await flushAsync();
+    await expect(start).resolves.toBeUndefined();
+
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.spawnTunnel).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(0);
     expect(harness.terminateProcessTree).toHaveBeenCalledTimes(1);
+    expect(harness.logs).toContain("[tunnel] Disabled by BRIDGE_ENABLE_TUNNEL");
+    expect(harness.logs).toContain("[tunnel] Previous tunnel cleanup failed: snapshot-unavailable");
+    expect(harness.logs).toContain("[tunnel] Retrying in 0.01s");
 
-    vi.advanceTimersByTime(10);
-    await flushAsync();
-    await start;
-
+    await vi.advanceTimersByTimeAsync(10);
     expect(harness.terminateProcessTree).toHaveBeenCalledTimes(2);
+
+    const cleanupAttempts = harness.terminateProcessTree.mock.calls.length;
+    harness.supervisor.prepareForShutdown();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(harness.terminateProcessTree).toHaveBeenCalledTimes(cleanupAttempts);
     expect(harness.spawnTunnel).not.toHaveBeenCalled();
   });
 
