@@ -27,6 +27,13 @@ const CONFIG_CALL_SITES_1_0_70 = `
 async createSession(e){let s=await this.resolveSessionAuth(e),c={};if(this.shouldInjectBuiltInGitHubMcp(e)&&s&&!e.provider){let S=await this.createBuiltInGitHubMcpConfig(s);S&&(c.mcpServers={"github-mcp-server":S,...c.mcpServers})}}
 async resumeSession(l,e){let o=await this.resolveSessionAuth(e),g={};if(this.shouldInjectBuiltInGitHubMcp(e)&&o&&!e.provider){let S=await this.createBuiltInGitHubMcpConfig(o);S&&(g.mcpServers={"github-mcp-server":S,...g.mcpServers})}}
 `;
+const GITHUB_MCP_CONFIG_METHOD_1_0_71 = `
+async createBuiltInGitHubMcpConfig(e,n,r,o){let s;try{s=await ji(e)}catch{return}if(!s)return;let a=await HR(),l=await pn.load(o??this.options.settings),c=await this.coreServices.createFeatureFlagService({sessionId:n}).isFidesIfcEnabled().catch(()=>this.options.featureFlags?.FIDES_IFC??!1),u=KF({settings:VF(l),session:r},c);return rwe(s,e,{...u,excludeGhReplaceableTools:a},x)}
+`;
+const CONFIG_CALL_SITES_1_0_71 = `
+async createSession(e){let a=await this.resolveSessionAuth(e),l=this.sessionId,s={};if(this.shouldInjectBuiltInGitHubMcp(e)&&a&&!e.provider){let E=await this.createBuiltInGitHubMcpConfig(a,l,s,e.configDir?{configDir:e.configDir}:void 0);E&&(u.mcpServers={"github-mcp-server":E,...u.mcpServers})}}
+async resumeSession(l,e){let o=await this.resolveSessionAuth(e),g={};if(this.shouldInjectBuiltInGitHubMcp(e)&&o&&!e.provider){let w=await this.createBuiltInGitHubMcpConfig(o,e.sessionId,void 0,e.configDir?{configDir:e.configDir}:void 0);w&&(g.mcpServers={"github-mcp-server":w,...g.mcpServers})}}
+`;
 const ASK_USER_TOOL_SELECTION = `
 async function tools(f){let G=!!f.requestUserInput,W=!!f.featureFlags?.ASK_USER_ELICITATION&&!!f.requestElicitation;return W?"ask_user_2":G?"ask_user":"none"}
 `;
@@ -128,6 +135,24 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,e.githubMcpToolOptions)");
     expect(patched).toContain("if((this.shouldInjectBuiltInGitHubMcp(e)||(e.githubMcpToolOptions&&!e.gitHubToken))&&o&&!e.provider)");
     expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,e.githubMcpToolOptions)");
+    expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
+  });
+
+  it("patches the 1.0.71 Fides-aware GitHub MCP config shape", () => {
+    const source = `class App{${GITHUB_MCP_CONFIG_METHOD_1_0_71}${CONFIG_CALL_SITES_1_0_71}${NATIVE_ASK_USER_SOURCE}}`;
+
+    const patched = patchCopilotAppSource(source);
+
+    expect(patched).toContain("async createBuiltInGitHubMcpConfig(e,n,r,o,__bridgeGithubMcpOptions={})");
+    expect(patched).toContain(
+      "return rwe(s,e,{...u,excludeGhReplaceableTools:a,...__bridgeGithubMcpOptions},x)",
+    );
+    expect(patched).toContain(
+      "this.createBuiltInGitHubMcpConfig(a,l,s,e.configDir?{configDir:e.configDir}:void 0,e.githubMcpToolOptions)",
+    );
+    expect(patched).toContain(
+      "this.createBuiltInGitHubMcpConfig(o,e.sessionId,void 0,e.configDir?{configDir:e.configDir}:void 0,e.githubMcpToolOptions)",
+    );
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
   });
 
