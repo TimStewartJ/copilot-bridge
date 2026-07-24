@@ -2,8 +2,8 @@ node_modules
 coverage/
 dist/
 *.log
-.env
-.env.local
+.env*
+!.env.example
 data/
 .preview-smoke-fixture/
 .DS_Store
