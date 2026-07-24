@@ -52,7 +52,11 @@ import {
 } from "./session-context-normalizer.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
-import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
+import {
+  getAssistantTurnInstanceId,
+  getSdkEventId,
+  getSdkTurnId,
+} from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 
 
@@ -968,6 +972,10 @@ export class SessionRunner {
         case "assistant.turn_start":
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           currentBridgeTurnId = getSdkTurnId(event) ?? `turn-${randomUUID()}`;
+          const turnInstanceId = getAssistantTurnInstanceId(
+            event,
+            `turn-instance-${randomUUID()}`,
+          );
           this.deps.sessionContextStore?.recordTurnStart({
             sessionId,
             provider: contextTelemetryProvider,
@@ -981,6 +989,7 @@ export class SessionRunner {
           bus.emit({
             type: "thinking",
             turnId: currentBridgeTurnId,
+            turnInstanceId,
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           break;

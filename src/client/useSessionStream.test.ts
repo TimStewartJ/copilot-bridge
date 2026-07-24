@@ -182,6 +182,7 @@ describe("useSessionStream EventSource lifecycle", () => {
         runId: "run-1",
         complete: false,
         turnId: "provider-turn-1",
+        turnInstanceId: "turn-start-event-1",
         accumulatedContent: "working",
         assistantSegments: [],
         activeTools: [],
@@ -199,6 +200,8 @@ describe("useSessionStream EventSource lifecycle", () => {
       expect(getState()).toMatchObject({
         isStreaming: true,
         streamingContent: "working",
+        activeTurnId: "provider-turn-1",
+        activeTurnInstanceId: "turn-start-event-1",
       });
     });
   });
@@ -223,15 +226,18 @@ describe("useSessionStream EventSource lifecycle", () => {
       await emitAndWait(act, source, {
         type: "thinking",
         turnId: "provider-turn-1",
+        turnInstanceId: "turn-start-event-1",
       }, () => getState().streamStatus === "thinking");
       await emitAndWait(act, source, {
         type: "delta",
         turnId: "provider-turn-1",
+        turnInstanceId: "turn-start-event-1",
         content: "Final answer",
       }, () => getState().streamingContent === "Final answer");
       await emitAndWait(act, source, {
         type: "done",
         turnId: "provider-turn-1",
+        turnInstanceId: "turn-start-event-1",
         sourceEventId: "terminal-event-1",
         content: "Final answer",
         timestamp: "2026-07-21T17:00:00.000Z",
@@ -239,6 +245,7 @@ describe("useSessionStream EventSource lifecycle", () => {
           id: "assistant-event-1",
           content: "Final answer",
           turnId: "provider-turn-1",
+          turnInstanceId: "turn-start-event-1",
           sourceEventId: "assistant-event-1",
           timestamp: "2026-07-21T17:00:00.000Z",
         },
@@ -251,6 +258,7 @@ describe("useSessionStream EventSource lifecycle", () => {
           role: "assistant",
           content: "Final answer",
           turnId: "provider-turn-1",
+          turnInstanceId: "turn-start-event-1",
           sourceEventId: "assistant-event-1",
         },
       ]);

@@ -177,6 +177,94 @@ describe("tool call tree helpers", () => {
     ]);
   });
 
+  it("keeps reused provider turn ids ordered within one interaction", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "First pass", turnId: "0", turnInstanceId: "turn-start-a" },
+      {
+        id: "tool-a",
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-a",
+        toolCall: createToolCall("tool-a"),
+      },
+      { role: "assistant", content: "Second turn", turnId: "1", turnInstanceId: "turn-start-b" },
+      {
+        id: "tool-b",
+        type: "tool",
+        turnId: "1",
+        turnInstanceId: "turn-start-b",
+        toolCall: createToolCall("tool-b"),
+      },
+      { role: "assistant", content: "Resumed pass", turnId: "0", turnInstanceId: "turn-start-c" },
+      {
+        id: "tool-c",
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-c",
+        toolCall: createToolCall("tool-c"),
+      },
+      { role: "assistant", content: "Finished", turnId: "0", turnInstanceId: "turn-start-c" },
+    ];
+
+    const segments = segmentChatEntries(entries);
+
+    expect(segments).toMatchObject([
+      { type: "message", entry: { content: "First pass" } },
+      { type: "tool-segment", turnInstanceId: "turn-start-a", entries: [{ id: "tool-a" }] },
+      { type: "message", entry: { content: "Second turn" } },
+      { type: "tool-segment", turnInstanceId: "turn-start-b", entries: [{ id: "tool-b" }] },
+      { type: "message", entry: { content: "Resumed pass" } },
+      { type: "tool-segment", turnInstanceId: "turn-start-c", entries: [{ id: "tool-c" }] },
+      { type: "message", entry: { content: "Finished" } },
+    ]);
+  });
+
+  it("separates consecutive reused provider ids without an intervening different id", () => {
+    const entries: ChatEntry[] = [
+      {
+        id: "tool-first",
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-first",
+        toolCall: createToolCall("tool-first"),
+      },
+      {
+        id: "completion-first",
+        type: "completion",
+        turnId: "0",
+        turnInstanceId: "turn-start-first",
+        content: "Paused",
+        completion: {
+          content: "Paused",
+          title: "Task complete",
+          status: "success",
+          sourceEventType: "session.task_complete",
+        },
+      },
+      {
+        id: "tool-resumed",
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-resumed",
+        toolCall: createToolCall("tool-resumed"),
+      },
+    ];
+
+    expect(segmentChatEntries(entries)).toMatchObject([
+      {
+        type: "tool-segment",
+        turnInstanceId: "turn-start-first",
+        entries: [{ id: "tool-first" }],
+      },
+      { type: "completion-segment", entry: { content: "Paused" } },
+      {
+        type: "tool-segment",
+        turnInstanceId: "turn-start-resumed",
+        entries: [{ id: "tool-resumed" }],
+      },
+    ]);
+  });
+
   it("merges root-only subagent launch turns with later descendant tool turns", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "Delegating work", turnId: "turn-1" },
@@ -222,6 +310,60 @@ describe("tool call tree helpers", () => {
       ],
     });
     expect(segments[2]).toMatchObject({ type: "message", entry: { content: "Agents are running" } });
+  });
+
+  it("merges subagent descendants by turn instance when provider ids repeat", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "Delegating first", turnId: "0", turnInstanceId: "turn-root-a" },
+      {
+        id: "agent-a",
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-root-a",
+        toolCall: createToolCall("agent-a", { isSubAgent: true }),
+      },
+      {
+        id: "child-a",
+        type: "tool",
+        turnId: "1",
+        turnInstanceId: "turn-child-a",
+        toolCall: createToolCall("child-a", { parentToolCallId: "agent-a" }),
+      },
+      { role: "assistant", content: "First agent done", turnId: "1", turnInstanceId: "turn-child-a" },
+      { role: "assistant", content: "Delegating resumed", turnId: "0", turnInstanceId: "turn-root-b" },
+      {
+        id: "agent-b",
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-root-b",
+        toolCall: createToolCall("agent-b", { isSubAgent: true }),
+      },
+      {
+        id: "child-b",
+        type: "tool",
+        turnId: "1",
+        turnInstanceId: "turn-child-b",
+        toolCall: createToolCall("child-b", { parentToolCallId: "agent-b" }),
+      },
+      { role: "assistant", content: "Second agent done", turnId: "1", turnInstanceId: "turn-child-b" },
+    ];
+
+    expect(segmentChatEntries(entries)).toMatchObject([
+      { type: "message", entry: { content: "Delegating first" } },
+      {
+        type: "tool-segment",
+        turnInstanceId: "turn-root-a",
+        entries: [{ id: "agent-a" }, { id: "child-a" }],
+      },
+      { type: "message", entry: { content: "First agent done" } },
+      { type: "message", entry: { content: "Delegating resumed" } },
+      {
+        type: "tool-segment",
+        turnInstanceId: "turn-root-b",
+        entries: [{ id: "agent-b" }, { id: "child-b" }],
+      },
+      { type: "message", entry: { content: "Second agent done" } },
+    ]);
   });
 
   it("collapses repeated same-turn snapshots into one renderable root", () => {

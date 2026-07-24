@@ -243,7 +243,7 @@ describe("event-transform visible activity", () => {
 });
 
 describe("event-transform stable identity", () => {
-  it("preserves provider turn and event identities", () => {
+  it("preserves provider turn identity while deriving a unique turn instance from the start event", () => {
     const entries = transformEventsToMessages([
       {
         id: "turn-start-event",
@@ -267,7 +267,53 @@ describe("event-transform stable identity", () => {
         type: "message",
         content: "Hello",
         turnId: "provider-turn-1",
+        turnInstanceId: "turn-start-event",
         sourceEventId: "assistant-event",
+      },
+    ]);
+  });
+
+  it("keeps repeated provider turn ids in distinct turn instances", () => {
+    const entries = transformEventsToMessages([
+      {
+        id: "turn-start-first",
+        type: "assistant.turn_start",
+        data: { turnId: "0" },
+      },
+      {
+        id: "tool-first-event",
+        type: "tool.execution_start",
+        data: { toolCallId: "tool-first", toolName: "bash" },
+      },
+      {
+        id: "terminal-first",
+        type: "session.idle",
+        data: {},
+      },
+      {
+        id: "turn-start-resumed",
+        type: "assistant.turn_start",
+        data: { turnId: "0" },
+      },
+      {
+        id: "tool-resumed-event",
+        type: "tool.execution_start",
+        data: { toolCallId: "tool-resumed", toolName: "view" },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-first",
+        toolCall: { toolCallId: "tool-first" },
+      },
+      {
+        type: "tool",
+        turnId: "0",
+        turnInstanceId: "turn-start-resumed",
+        toolCall: { toolCallId: "tool-resumed" },
       },
     ]);
   });

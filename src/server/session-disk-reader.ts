@@ -18,7 +18,11 @@ import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import type { SessionHistoryCoverage } from "../shared/session-stream.js";
-import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
+import {
+  getAssistantTurnInstanceId,
+  getSdkEventId,
+  getSdkTurnId,
+} from "./sdk-event-identity.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
@@ -98,6 +102,7 @@ interface TailCandidateEvents {
 interface TailTurnState {
   initialTurnIndex: number;
   initialActiveTurnId?: string;
+  initialActiveTurnInstanceId?: string;
 }
 
 interface EventLogStatsCacheEntry {
@@ -336,6 +341,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
   let totalEntries = 0;
   let initialTurnIndex = 0;
   let initialActiveTurnId: string | undefined;
+  let initialActiveTurnInstanceId: string | undefined;
   let pendingTerminalCompletionEntry = false;
   let latestEventId: string | undefined;
   let latestTurnId: string | undefined;
@@ -382,8 +388,13 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
       if (event.type === "assistant.turn_start") {
         initialTurnIndex += 1;
         initialActiveTurnId = getSdkTurnId(event) ?? `turn-${initialTurnIndex}`;
+        initialActiveTurnInstanceId = getAssistantTurnInstanceId(
+          event,
+          `turn-instance-${initialTurnIndex}`,
+        );
       } else if (TURN_TERMINAL_EVENT_TYPES.has(event.type)) {
         initialActiveTurnId = undefined;
+        initialActiveTurnInstanceId = undefined;
       }
     }
 
@@ -440,6 +451,7 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
         turnState: {
           initialTurnIndex,
           ...(initialActiveTurnId ? { initialActiveTurnId } : {}),
+          ...(initialActiveTurnInstanceId ? { initialActiveTurnInstanceId } : {}),
         },
         coverage: {
           ...(latestEventId ? { latestEventId } : {}),

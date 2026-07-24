@@ -201,6 +201,7 @@ export interface ToolCall {
   toolCallId: string;
   name: string;
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   args?: ToolArgs;
   result?: string;
@@ -260,6 +261,7 @@ export interface ChatMessageDelivery {
 export interface ChatMessage {
   id?: string;
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   /** Raw exclusive SDK event boundary for safe "fork from here" actions. */
   forkBoundaryEventId?: string;
@@ -279,6 +281,7 @@ export interface ChatToolEntry {
   id?: string;
   type: "tool";
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   toolCall: ToolCall;
 }
@@ -305,6 +308,7 @@ export interface ChatVisualEntry {
   id?: string;
   type: "visual";
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   visual: VisualArtifact;
   timestamp?: string;
@@ -315,6 +319,7 @@ export interface ChatCompletionEntry {
   id?: string;
   type: "completion";
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   content: string;
   timestamp?: string;
@@ -326,6 +331,7 @@ export interface ChatSkillEntry {
   id?: string;
   type: "skill";
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   skill: { id: string; label: string };
   content: string;

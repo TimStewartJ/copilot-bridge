@@ -136,6 +136,7 @@ export class SessionRunStateController {
         type: snapshot.terminalType,
         runId: snapshot.runId,
         ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+        ...(snapshot.turnInstanceId ? { turnInstanceId: snapshot.turnInstanceId } : {}),
         ...(snapshot.terminalAssistantEventId
           ? { assistantSourceEventId: snapshot.terminalAssistantEventId }
           : {}),

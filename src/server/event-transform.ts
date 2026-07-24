@@ -7,7 +7,11 @@ import {
   isTerminalTurnEventType,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
-import { getSdkEventId, getSdkTurnId } from "./sdk-event-identity.js";
+import {
+  getAssistantTurnInstanceId,
+  getSdkEventId,
+  getSdkTurnId,
+} from "./sdk-event-identity.js";
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
@@ -32,6 +36,7 @@ export interface TransformedEntry {
   id: string;
   type: "message" | "tool" | "visual" | "completion" | "skill";
   turnId?: string;
+  turnInstanceId?: string;
   sourceEventId?: string;
   // Message fields (when type === "message")
   role?: string;
@@ -380,6 +385,7 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
 export interface TransformEventsToMessagesOptions {
   initialTurnIndex?: number;
   initialActiveTurnId?: string;
+  initialActiveTurnInstanceId?: string;
 }
 
 /**
@@ -395,6 +401,7 @@ export function transformEventsToMessages(
   let idx = 0;
   let turnIndex = options.initialTurnIndex ?? 0;
   let activeTurnId = options.initialActiveTurnId;
+  let activeTurnInstanceId = options.initialActiveTurnInstanceId;
   let activeUndoEventId: string | undefined;
   let pendingTerminalCompletion: TerminalCompletion | undefined;
 
@@ -454,6 +461,7 @@ export function transformEventsToMessages(
     if (event.type === "assistant.turn_start") {
       turnIndex += 1;
       activeTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
+      activeTurnInstanceId = getAssistantTurnInstanceId(event, `turn-instance-${turnIndex}`);
     } else if (extractTerminalCompletion(event)) {
       const completion = extractTerminalCompletion(event)!;
       entries.push({
@@ -464,9 +472,11 @@ export function transformEventsToMessages(
         content: completion.content,
         timestamp: (event as any).timestamp,
         ...(activeTurnId ? { turnId: activeTurnId } : {}),
+        ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
       });
       pendingTerminalCompletion = undefined;
       activeTurnId = undefined;
+      activeTurnInstanceId = undefined;
     } else if (isTurnTerminalEvent(event)) {
       if (pendingTerminalCompletion) {
         entries.push({
@@ -477,10 +487,12 @@ export function transformEventsToMessages(
           content: pendingTerminalCompletion.content,
           timestamp: data?.timestamp ?? (event as any).timestamp,
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
+          ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
         });
         pendingTerminalCompletion = undefined;
       }
       activeTurnId = undefined;
+      activeTurnInstanceId = undefined;
     } else if (event.type === "user.message") {
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
@@ -530,6 +542,7 @@ export function transformEventsToMessages(
           content,
           timestamp: data.timestamp ?? (event as any).timestamp,
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
+          ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
           ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
           ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         });
@@ -551,6 +564,7 @@ export function transformEventsToMessages(
         type: "tool",
         ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
         ...(activeTurnId ? { turnId: activeTurnId } : {}),
+        ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
         toolCall: {
           toolCallId: data.toolCallId,
           name: isSubAgent ? `🤖 ${subAgent!.agentDisplayName ?? subAgent!.agentName ?? "agent"}` : toolName,
@@ -573,6 +587,8 @@ export function transformEventsToMessages(
           id: `entry-${idx++}`,
           type: "visual",
           ...(complete?.eventId ? { sourceEventId: complete.eventId } : {}),
+          ...(activeTurnId ? { turnId: activeTurnId } : {}),
+          ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
           visual,
           timestamp: complete?.timestamp ?? (event as any).timestamp,
         });

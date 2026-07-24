@@ -670,6 +670,7 @@ export default function ChatView({
     abortSession,
     reconnect,
     activeTurnId,
+    activeTurnInstanceId,
   } = useSessionStream(sessionId, handleStreamSettled, onMessageSent);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   const canonicalEntryKeys = useMemo(
@@ -1671,6 +1672,8 @@ export default function ChatView({
     () => activeTools.map((tool) => ({
       toolCallId: tool.toolCallId,
       name: tool.name,
+      turnId: tool.turnId,
+      turnInstanceId: tool.turnInstanceId,
       args: tool.args,
       parentToolCallId: tool.parentToolCallId,
       isSubAgent: tool.isSubAgent,
@@ -1694,10 +1697,18 @@ export default function ChatView({
         role: "assistant",
         content: displayedStreamingContent,
         turnId: activeTurnId,
+        turnInstanceId: activeTurnInstanceId,
       });
     }
     return nextEntries;
-  }, [activeTurnId, displayedStreamingContent, hasStreamingText, isStreaming, visibleStreamLiveEntries]);
+  }, [
+    activeTurnId,
+    activeTurnInstanceId,
+    displayedStreamingContent,
+    hasStreamingText,
+    isStreaming,
+    visibleStreamLiveEntries,
+  ]);
   const displayEntries = useMemo(
     () => liveEntries.length > 0 ? [...entries, ...liveEntries] : entries,
     [entries, liveEntries],

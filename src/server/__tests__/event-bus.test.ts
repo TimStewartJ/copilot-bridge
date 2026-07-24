@@ -501,7 +501,7 @@ describe("event-bus", () => {
       });
     });
 
-    it("stamps live turn ids on turn-scoped stream events", () => {
+    it("stamps live turn and instance ids on turn-scoped stream events", () => {
       const bus = getOrCreateBus("test-turn-id-1");
       const events: StreamEvent[] = [];
       bus.subscribe((event) => {
@@ -515,17 +515,20 @@ describe("event-bus", () => {
       bus.emit({ type: "done", content: "Done" });
 
       const turnId = events[0]?.turnId;
+      const turnInstanceId = events[0]?.turnInstanceId;
       expect(turnId).toMatch(/^turn-[0-9a-f-]{36}$/);
+      expect(turnInstanceId).toMatch(/^turn-instance-[0-9a-f-]{36}$/);
       expect(events).toMatchObject([
-        { type: "thinking", turnId },
-        { type: "tool_start", toolCallId: "tc1", turnId },
-        { type: "assistant_partial", content: "Interim", turnId },
-        { type: "tool_done", toolCallId: "tc1", turnId },
-        { type: "done", content: "Done", turnId },
+        { type: "thinking", turnId, turnInstanceId },
+        { type: "tool_start", toolCallId: "tc1", turnId, turnInstanceId },
+        { type: "assistant_partial", content: "Interim", turnId, turnInstanceId },
+        { type: "tool_done", toolCallId: "tc1", turnId, turnInstanceId },
+        { type: "done", content: "Done", turnId, turnInstanceId },
       ]);
       expect(bus.getSnapshot()).toMatchObject({
         complete: true,
         turnId,
+        turnInstanceId,
       });
     });
 
@@ -533,14 +536,19 @@ describe("event-bus", () => {
       const bus = getOrCreateBus("test-turn-id-reset-1");
       bus.emit({ type: "thinking" });
       const firstTurnId = bus.getSnapshot().turnId;
+      const firstTurnInstanceId = bus.getSnapshot().turnInstanceId;
 
       bus.reset();
       bus.emit({ type: "thinking" });
       const secondTurnId = bus.getSnapshot().turnId;
+      const secondTurnInstanceId = bus.getSnapshot().turnInstanceId;
 
       expect(firstTurnId).toMatch(/^turn-[0-9a-f-]{36}$/);
       expect(secondTurnId).toMatch(/^turn-[0-9a-f-]{36}$/);
       expect(secondTurnId).not.toBe(firstTurnId);
+      expect(firstTurnInstanceId).toMatch(/^turn-instance-[0-9a-f-]{36}$/);
+      expect(secondTurnInstanceId).toMatch(/^turn-instance-[0-9a-f-]{36}$/);
+      expect(secondTurnInstanceId).not.toBe(firstTurnInstanceId);
     });
 
     it("assistant_partial resets accumulated content", () => {
