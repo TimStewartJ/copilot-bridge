@@ -148,7 +148,6 @@ type RenderChatViewOptions = {
   ) => Promise<void>;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
   sessionId?: string | null;
-  materializingSessionId?: string | null;
   newWorkDisabled?: boolean;
   newWorkDisabledHint?: string;
 };
@@ -409,7 +408,6 @@ async function renderChatView(
           createElement(ChatView, {
             composerKey: nextOptions.composerKey ?? "composer-1",
             sessionId: nextOptions.sessionId === undefined ? "session-1" : nextOptions.sessionId,
-            materializingSessionId: nextOptions.materializingSessionId,
             onMessageSent: vi.fn(),
             onCreateAndSend: nextOptions.onCreateAndSend,
             onSubmitVoiceCapture: vi.fn(),
@@ -1318,10 +1316,10 @@ describe("ChatView history pagination", () => {
 });
 
 describe("ChatView draft materialization", () => {
-  it("reconnects the created session when delivery resolves before the route transition commits", async () => {
+  it("loads the created session when delivery resolves before the route transition commits", async () => {
     const delivery = createDeferred<void>();
     const onCreateAndSend = vi.fn(() => delivery.promise);
-    const { act, cleanup, reconnectMock, render } = await renderChatView({
+    const { dom, act, cleanup, reconnectMock, render } = await renderChatView({
       composerKey: "draft:quickchat",
       sessionId: null,
       onCreateAndSend,
@@ -1345,21 +1343,127 @@ describe("ChatView draft materialization", () => {
         await sendPromise;
         await waitTick();
       });
+      fetchMessagesFastMock.mockResolvedValueOnce({
+        messages: [createMessage("created-response", "created response")],
+        busy: false,
+        total: 1,
+        warm: true,
+      });
       await render({
         composerKey: "created-session",
         sessionId: "created-session",
-        materializingSessionId: "created-session",
       });
 
-      expect(reconnectMock).toHaveBeenCalledWith("created-session");
-      expect(fetchMessagesFastMock).not.toHaveBeenCalled();
+      await waitUntilAct(act, () => dom.container.textContent?.includes("created response") ?? false);
+      expect(fetchMessagesFastMock).toHaveBeenCalledWith("created-session", { limit: 50 });
+      expect(reconnectMock).not.toHaveBeenCalledWith("created-session");
     } finally {
       delivery.resolve();
       await cleanup();
     }
   });
 
-  it("loads an unrelated session normally while a draft session is materializing", async () => {
+  it("refreshes created-session history after delivery if the first route load races empty", async () => {
+    const delivery = createDeferred<void>();
+    const onCreateAndSend = vi.fn(() => delivery.promise);
+    const { dom, act, cleanup, render } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend,
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      let sendPromise!: Promise<void>;
+      await act(async () => {
+        sendPromise = props.onSend("first message");
+        await waitTick();
+      });
+      fetchMessagesFastMock
+        .mockResolvedValueOnce({
+          messages: [],
+          busy: false,
+          total: 0,
+          warm: true,
+        })
+        .mockResolvedValueOnce({
+          messages: [createMessage("delivered-response", "delivered response")],
+          busy: false,
+          total: 1,
+          warm: true,
+        });
+      await render({
+        composerKey: "created-session",
+        sessionId: "created-session",
+      });
+
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
+      await act(async () => {
+        delivery.resolve();
+        await sendPromise;
+        await waitTick();
+      });
+
+      await waitUntilAct(act, () => dom.container.textContent?.includes("delivered response") ?? false);
+      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(2);
+    } finally {
+      delivery.resolve();
+      await cleanup();
+    }
+  });
+
+  it("refreshes history when a materialized session stream requests resync", async () => {
+    const { dom, act, cleanup, render } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend: vi.fn(),
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+
+    try {
+      fetchMessagesFastMock
+        .mockResolvedValueOnce({
+          messages: [],
+          busy: false,
+          total: 0,
+          warm: true,
+        })
+        .mockResolvedValueOnce({
+          messages: [createMessage("resynced-response", "resynced response")],
+          busy: false,
+          total: 1,
+          warm: true,
+        });
+      await render({
+        composerKey: "created-session",
+        sessionId: "created-session",
+      });
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
+
+      const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as (() => void) | undefined;
+      expect(onSettled).toBeTypeOf("function");
+      await act(async () => {
+        onSettled?.();
+        await waitTick();
+      });
+
+      await waitUntilAct(act, () => dom.container.textContent?.includes("resynced response") ?? false);
+      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(2);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("loads an unrelated session normally while a draft send is pending", async () => {
     const delivery = createDeferred<void>();
     const onCreateAndSend = vi.fn(() => delivery.promise);
     const { act, cleanup, reconnectMock, render } = await renderChatView({
@@ -1380,14 +1484,8 @@ describe("ChatView draft materialization", () => {
         await waitTick();
       });
       await render({
-        composerKey: "draft:quickchat",
-        sessionId: null,
-        materializingSessionId: "created-session",
-      });
-      await render({
         composerKey: "existing-session",
         sessionId: "existing-session",
-        materializingSessionId: "created-session",
       });
 
       expect(reconnectMock).not.toHaveBeenCalledWith("existing-session");
