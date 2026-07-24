@@ -228,6 +228,62 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("hello", undefined, "interactive");
   });
 
+  it("uses the selected Autopilot mode for the primary draft send", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({
+      onSend,
+      isDraft: true,
+      defaultSendMode: "autopilot",
+    });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "finish the task",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    const sendButton = findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot");
+    await getHarness().act(async () => {
+      getReactProps(sendButton.parentNode)?.onClick?.();
+    });
+
+    expect(onSend).toHaveBeenCalledWith("finish the task", undefined, "autopilot");
+  });
+
+  it("uses the selected Autopilot mode when Enter submits the draft", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({
+      onSend,
+      isDraft: true,
+      defaultSendMode: "autopilot",
+    });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "run autonomously",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+      getReactProps(textarea)?.onKeyDown?.({
+        key: "Enter",
+        shiftKey: false,
+        preventDefault,
+      });
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("run autonomously", undefined, "autopilot");
+  });
+
   it("shows slash command suggestions and inserts a selected command", async () => {
     await renderChatInput({
       slashCommandsSupported: true,

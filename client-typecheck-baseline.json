@@ -2,91 +2,91 @@
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 26,
+    "line": 28,
     "character": 33,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 27,
+    "line": 29,
     "character": 33,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 34,
+    "line": 36,
     "character": 7,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 45,
+    "line": 47,
     "character": 7,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 55,
+    "line": 57,
     "character": 7,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 67,
+    "line": 69,
     "character": 9,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
   },
   {
     "code": 2353,
     "file": "src/client/api.test.ts",
-    "line": 88,
+    "line": 90,
     "character": 9,
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
   },
   {
     "code": 2345,
     "file": "src/client/App.tsx",
-    "line": 542,
+    "line": 550,
     "character": 55,
     "message": "Argument of type '\"done\" | \"archived\" | \"active\"' is not assignable to parameter of type '\"archived\" | \"active\"'.\n  Type '\"done\"' is not assignable to type '\"archived\" | \"active\"'."
   },
   {
     "code": 2345,
     "file": "src/client/components/ChatInput.tsx",
-    "line": 273,
+    "line": 275,
     "character": 65,
     "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
   },
   {
     "code": 2345,
     "file": "src/client/components/ChatInput.tsx",
-    "line": 278,
+    "line": 280,
     "character": 33,
     "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
   },
   {
     "code": 2345,
     "file": "src/client/components/ChatInput.tsx",
-    "line": 282,
+    "line": 284,
     "character": 9,
     "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
   },
   {
     "code": 2345,
     "file": "src/client/components/ChatInput.tsx",
-    "line": 293,
+    "line": 295,
     "character": 78,
     "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
   },
   {
     "code": 2322,
     "file": "src/client/components/ChatInput.tsx",
-    "line": 535,
+    "line": 537,
     "character": 5,
     "message": "Type '{ status: VoiceBackgroundJobStatus; submitMode: VoiceSubmitMode; serverOwned: boolean | undefined; } | null' is not assignable to type 'VoiceUiJobState | null'.\n  Type '{ status: VoiceBackgroundJobStatus; submitMode: VoiceSubmitMode; serverOwned: boolean | undefined; }' is not assignable to type 'VoiceUiJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type '\"accepted\" | \"transcribing\" | \"sending\" | \"uploading\"'.\n        Type '\"error\"' is not assignable to type '\"accepted\" | \"transcribing\" | \"sending\" | \"uploading\"'."
   },

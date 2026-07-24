@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteDbEntryPage,
+  createSession,
+  createTaskSession,
   getSessionActivityTime,
   getSessionReadThroughActivityTime,
   getSessionRunState,
@@ -98,6 +100,57 @@ describe("serializeSettingsPatch", () => {
     expect(serializeSettingsPatch({ model: undefined })).toBe(
       JSON.stringify({ model: "" }),
     );
+  });
+
+  describe("session creation client API", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    function stubSessionResponse(sessionId: string) {
+      vi.stubGlobal("fetch", vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ sessionId }),
+      })));
+    }
+
+    it("sends explicit model, effort, and context for a new quick chat", async () => {
+      stubSessionResponse("session-1");
+
+      await expect(createSession({
+        model: "gpt-5.6",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      })).resolves.toBe("session-1");
+
+      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
+        "/api/sessions",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            model: "gpt-5.6",
+            reasoningEffort: "high",
+            contextTier: "long_context",
+          }),
+        }),
+      ]);
+    });
+
+    it("omits a blank model override for a task session", async () => {
+      stubSessionResponse("task-session");
+
+      await expect(createTaskSession("task-1", { model: "" })).resolves.toBe("task-session");
+
+      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
+        "/api/tasks/task-1/session",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+      ]);
+    });
   });
 
   it("preserves explicit reasoning effort clears", () => {

@@ -35,6 +35,7 @@ import {
   type Task,
   type TaskGroup,
   type McpServerStatus,
+  type CreateSessionOptions,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
@@ -52,6 +53,11 @@ import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
+import { useModelsQuery } from "./hooks/queries/useModels";
+import {
+  resolveNewSessionLaunchState,
+  type ScopedLaunchSelection,
+} from "./lib/new-session-launch";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
@@ -63,6 +69,7 @@ import TaskPanel, { TaskPanelRouteSkeleton } from "./components/TaskPanel";
 import TaskDashboard, { TaskDashboardRouteSkeleton } from "./components/TaskDashboard";
 import TaskList from "./components/TaskList";
 import ChatView from "./components/ChatView";
+import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
 import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
@@ -76,7 +83,8 @@ import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
 import { createTaskCompletionFeedback, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
-import type { SendMode } from "../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
+import type { CopilotContextTier } from "../shared/copilot-context.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
@@ -949,9 +957,12 @@ export default function App() {
     ]);
 
   // Actually create a session on the server (called on first message send)
-  const materializeSession = useCallback(async (taskId?: string): Promise<string> => {
+  const materializeSession = useCallback(async (
+    taskId?: string,
+    options?: CreateSessionOptions,
+  ): Promise<string> => {
     if (taskId) {
-      const sessionId = await createTaskSession(taskId);
+      const sessionId = await createTaskSession(taskId, options);
       addPendingPromptSession(sessionId);
       const addSession = (t: Task) =>
         t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
@@ -959,7 +970,7 @@ export default function App() {
       setSelectedTask((prev) => (prev ? addSession(prev) : prev));
       return sessionId;
     } else {
-      const sessionId = await createSession();
+      const sessionId = await createSession(options);
       addPendingPromptSession(sessionId);
       return sessionId;
     }
@@ -1818,6 +1829,8 @@ export default function App() {
                   sessionHistorySignals={sessionHistorySignals}
                   newWorkDisabled={newWorkDisabledByRestart}
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
+                  defaultModelId={settings?.model}
+                  defaultReasoningEffort={settings?.reasoningEffort}
                 />
               }
             />
@@ -1892,6 +1905,8 @@ export default function App() {
                   sessionHistorySignals={sessionHistorySignals}
                   newWorkDisabled={newWorkDisabledByRestart}
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
+                  defaultModelId={settings?.model}
+                  defaultReasoningEffort={settings?.reasoningEffort}
                 />
               }
             />
@@ -2123,6 +2138,8 @@ function SessionRoute({
   sessionHistorySignals,
   newWorkDisabled,
   newWorkDisabledHint,
+  defaultModelId,
+  defaultReasoningEffort,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -2133,7 +2150,7 @@ function SessionRoute({
   clearDraft: (composerKey: string) => void;
   clearDraftSession: (composerKey: string) => void;
   clearDraftSessionBySessionId: (sessionId: string) => void;
-  materializeSession: (taskId?: string) => Promise<string>;
+  materializeSession: (taskId?: string, options?: CreateSessionOptions) => Promise<string>;
   cleanupFailedFirstSendSession: (sessionId: string, taskId?: string) => Promise<void>;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
   startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
@@ -2146,9 +2163,17 @@ function SessionRoute({
   sessionHistorySignals: Record<string, number>;
   newWorkDisabled?: boolean;
   newWorkDisabledHint?: string;
+  defaultModelId?: string;
+  defaultReasoningEffort?: string;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
+  const [launchModel, setLaunchModel] = useState("");
+  const [launchMode, setLaunchMode] = useState<SendMode>(DEFAULT_SEND_MODE);
+  const [launchReasoningEffort, setLaunchReasoningEffort] =
+    useState<ScopedLaunchSelection<string> | null>(null);
+  const [launchContextTier, setLaunchContextTier] =
+    useState<ScopedLaunchSelection<CopilotContextTier> | null>(null);
 
   const draftRouteKey = getDraftComposerKey(taskId);
   const isDraftRoute = rawSessionId === "new";
@@ -2159,6 +2184,7 @@ function SessionRoute({
   const sessionId = isDraftRoute ? validMappedDraftSessionId : (rawSessionId ?? null);
   const composerKey = sessionId ?? draftRouteKey;
   const isDraft = sessionId === null;
+  const modelsQuery = useModelsQuery({ enabled: isDraft });
   const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
   const historySignal = sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0;
@@ -2167,6 +2193,34 @@ function SessionRoute({
   const activeSessionActivityAt = activeSession?.lastVisibleActivityAt;
   const draft = getDraft(composerKey);
   const voiceJob = getVoiceJob(composerKey);
+  const previousDraftRouteKeyRef = useRef(draftRouteKey);
+  const launchState = resolveNewSessionLaunchState({
+    models: modelsQuery.data ?? [],
+    selectedModelId: launchModel,
+    defaultModelId,
+    defaultReasoningEffort,
+    reasoningEffortSelection: launchReasoningEffort,
+    contextTierSelection: launchContextTier,
+  });
+
+  const resetLaunchOptions = useCallback(() => {
+    setLaunchModel("");
+    setLaunchMode(DEFAULT_SEND_MODE);
+    setLaunchReasoningEffort(null);
+    setLaunchContextTier(null);
+  }, []);
+
+  const handleLaunchModelChange = useCallback((modelId: string) => {
+    setLaunchModel(modelId);
+    setLaunchReasoningEffort(null);
+    setLaunchContextTier(null);
+  }, []);
+
+  useEffect(() => {
+    if (previousDraftRouteKeyRef.current === draftRouteKey) return;
+    previousDraftRouteKeyRef.current = draftRouteKey;
+    resetLaunchOptions();
+  }, [draftRouteKey, resetLaunchOptions]);
 
   useEffect(() => {
     if (!isDraftRoute || !validMappedDraftSessionId) return;
@@ -2202,7 +2256,18 @@ function SessionRoute({
     attachments?: import("./api").Attachment[],
     mode?: SendMode,
   ) => {
-    const newSessionId = await materializeSession(taskId);
+    const newSessionId = await materializeSession(
+      taskId,
+      {
+        ...(launchModel ? { model: launchModel } : {}),
+        ...(launchState.selectedReasoningEffort
+          ? { reasoningEffort: launchState.selectedReasoningEffort }
+          : {}),
+        ...(launchState.selectedContextTier
+          ? { contextTier: launchState.selectedContextTier }
+          : {}),
+      },
+    );
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
@@ -2220,16 +2285,50 @@ function SessionRoute({
     clearDraft(composerKey);
     navigate(path, { replace: true });
     await delivery;
+    resetLaunchOptions();
   }, [
     cleanupFailedFirstSendSession,
     clearDraft,
     composerKey,
     draftRouteKey,
+    launchModel,
+    launchState.selectedContextTier,
+    launchState.selectedReasoningEffort,
     materializeSession,
     navigate,
+    resetLaunchOptions,
     setDraft,
     taskId,
   ]);
+
+  const draftEmptyState = isDraft ? (
+    <NewSessionLaunchPanel
+      models={launchState.availableModels}
+      modelsLoading={modelsQuery.isLoading}
+      modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
+      defaultModelId={defaultModelId}
+      selectedModelId={launchModel}
+      reasoningEffortOptions={launchState.reasoningEffortOptions}
+      selectedReasoningEffort={launchState.selectedReasoningEffort}
+      contextOptions={launchState.contextOptions}
+      selectedContextTier={launchState.selectedContextTier}
+      mode={launchMode}
+      onModelChange={handleLaunchModelChange}
+      onReasoningEffortChange={(reasoningEffort) => {
+        setLaunchReasoningEffort({
+          modelId: launchState.modelKey,
+          value: reasoningEffort,
+        });
+      }}
+      onContextTierChange={(contextTier) => {
+        setLaunchContextTier({
+          modelId: launchState.modelKey,
+          value: contextTier,
+        });
+      }}
+      onModeChange={setLaunchMode}
+    />
+  ) : undefined;
 
   return (
     <ChatView
@@ -2245,6 +2344,8 @@ function SessionRoute({
       onDraftChange={handleDraftChange}
       onDraftClear={handleDraftClear}
       onCreateAndSend={isDraft ? onCreateAndSend : undefined}
+      emptyState={draftEmptyState}
+      defaultSendMode={isDraft ? launchMode : DEFAULT_SEND_MODE}
       voiceJob={voiceJob}
       onSubmitVoiceCapture={startBackgroundVoiceJob}
       onReviewVoiceJob={reviewVoiceJob}

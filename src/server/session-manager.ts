@@ -3189,7 +3189,12 @@ export class SessionManager {
     };
   }
 
-  async createSession(options: { background?: boolean } = {}): Promise<{ sessionId: string }> {
+  async createSession(options: {
+    background?: boolean;
+    model?: string;
+    reasoningEffort?: string;
+    contextTier?: CopilotContextTier;
+  } = {}): Promise<{ sessionId: string }> {
     if (this.shuttingDown) {
       throw new Error("Session manager is shutting down");
     }
@@ -3206,6 +3211,9 @@ export class SessionManager {
       const modelMetadata = await this.loadModelMetadataForContextTiers(client);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+        ...(options.model ? { modelOverride: options.model } : {}),
+        ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
+        ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -3480,7 +3488,12 @@ export class SessionManager {
     cwd?: string,
     scheduleContext?: ScheduleContext,
     groupNotes?: { groupName: string; notes: string } | null,
-    options: { background?: boolean } = {},
+    options: {
+      background?: boolean;
+      model?: string;
+      reasoningEffort?: string;
+      contextTier?: CopilotContextTier;
+    } = {},
   ): Promise<{ sessionId: string }> {
     if (this.shuttingDown) {
       throw new Error("Session manager is shutting down");
@@ -3529,6 +3542,9 @@ export class SessionManager {
         isNewTask: isPlaceholder,
         prDescriptions,
         scheduleContext,
+        ...(options.model ? { modelOverride: options.model } : {}),
+        ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
+        ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
         groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
         ...(modelMetadata ? { modelMetadata } : {}),
       });

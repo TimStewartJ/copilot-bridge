@@ -97,6 +97,7 @@ interface ChatInputProps {
   disabledHint?: string;
   slashCommands?: SlashCommandInfo[];
   slashCommandsSupported?: boolean;
+  defaultSendMode?: SendMode;
 }
 
 export default function ChatInput({
@@ -116,6 +117,7 @@ export default function ChatInput({
   disabledHint,
   slashCommands = [],
   slashCommandsSupported = false,
+  defaultSendMode = DEFAULT_SEND_MODE,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -453,7 +455,7 @@ export default function ChatInput({
     setSelectedSlashCommandIndex(0);
   }, [slashDraft?.query, slashSuggestions.length]);
 
-  const handleSend = useCallback((mode: SendMode = DEFAULT_SEND_MODE) => {
+  const handleSend = useCallback((mode: SendMode = defaultSendMode) => {
     if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
 
     const text = inputRef.current.trim();
@@ -486,7 +488,7 @@ export default function ChatInput({
     if (textareaRef.current && !window.matchMedia("(pointer: fine)").matches) {
       textareaRef.current.blur();
     }
-  }, [clearComposer, composerKey, disabled, manualSendBlockedByVoiceJob, onAbort, onClearVoiceJobError, onSend, uploading]);
+  }, [clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e as any).isComposing || (e as any).keyCode === 229) return;
@@ -553,11 +555,13 @@ export default function ChatInput({
     ? (disabledHint ?? "Warming up…")
     : onAbort
       ? "Send steering note"
-      : "Send message";
+      : isDraft && defaultSendMode === "autopilot"
+        ? "Start Autopilot"
+        : "Send message";
   const submitControlTitle = showAbortControl ? "Stop generating" : sendTitle;
   const modeMenuBindings = bindSendModeMenu(
     "send-mode",
-    showAbortControl ? () => onAbort?.() : () => handleSend(DEFAULT_SEND_MODE),
+    showAbortControl ? () => onAbort?.() : () => handleSend(defaultSendMode),
   );
   const handleMenuSend = useCallback((mode: SendMode) => {
     closeSendModeMenu();
