@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
 import { getBrowserLaunchConfig, safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
-import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
+import { captureFinalBrowserState, formatBrowserStepTimeline, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, truncateBrowserFailureText, type BrowserAutomationRunFailure } from "./browser-automation.js";
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
 import {
   defineBridgeTool,
@@ -12,19 +12,6 @@ import { joinFailureSections, toolFailure, toolFailureWithContext } from "./tool
 
 const AGENT_BROWSER_INSTALL_GUIDANCE =
   "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
-
-function truncateBrowserFailureText(text: string | undefined): string | undefined {
-  const trimmed = text?.trim();
-  return trimmed ? trimmed.slice(0, 200) : undefined;
-}
-
-function formatBrowserStepTimeline(steps: BrowserAutomationStepResult[]): string | undefined {
-  if (steps.length === 0) return undefined;
-  return steps.map((step) => {
-    const output = truncateBrowserFailureText(step.output);
-    return `${step.index + 1}. ${step.command} ${step.ok ? "ok" : "failed"}${output ? ` — ${output}` : ""}`;
-  }).join("\n");
-}
 
 function browserSessionExecFailure(
   failure: BrowserAutomationRunFailure,

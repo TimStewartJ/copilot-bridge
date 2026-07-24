@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
 import type { BrowserLane } from "./agent-browser.js";
 import { browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
-import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
+import { captureFinalBrowserState, formatBrowserStepTimeline, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, truncateBrowserFailureText, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure } from "./browser-automation.js";
 import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
@@ -31,19 +31,6 @@ const MUTATING_COMMANDS = new Set<BrowserAutomationCommandName>([
 
 const AGENT_BROWSER_INSTALL_GUIDANCE =
   "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
-
-function truncateBrowserFailureText(text: string | undefined): string | undefined {
-  const trimmed = text?.trim();
-  return trimmed ? trimmed.slice(0, 200) : undefined;
-}
-
-function formatBrowserStepTimeline(steps: BrowserAutomationStepResult[]): string | undefined {
-  if (steps.length === 0) return undefined;
-  return steps.map((step) => {
-    const output = truncateBrowserFailureText(step.output);
-    return `${step.index + 1}. ${step.command} ${step.ok ? "ok" : "failed"}${output ? ` — ${output}` : ""}`;
-  }).join("\n");
-}
 
 function browserExecStepFailure(
   failure: BrowserAutomationRunFailure,
