@@ -1,5 +1,3 @@
-import { basename, dirname, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as schedulerModule from "../scheduler.js";
 import { enforceScheduleSessionRetention } from "../schedule-session-retention.js";
 import {
@@ -17,23 +15,7 @@ import {
   type BridgeToolDefinition,
   type BridgeToolsMcpServer,
 } from "../agent-tools-mcp/index.js";
-
-function isPathAtOrUnder(parent: string, candidate: string): boolean {
-  const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
-  return candidate === parent || candidate.startsWith(parentWithSeparator);
-}
-
-function isLocalStagingModule(ctx: AppContext): boolean {
-  const dataDir = ctx.runtimePaths?.dataDir;
-  if (!dataDir) return false;
-  const dataFolder = basename(dataDir);
-  if (dataFolder !== "data") return false;
-  try {
-    return isPathAtOrUnder(dirname(dataDir), fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
+import { isLocalStagingModule } from "../path-utils.js";
 
 function getScheduler(ctx: AppContext): typeof schedulerModule {
   if (ctx.scheduler) return ctx.scheduler;

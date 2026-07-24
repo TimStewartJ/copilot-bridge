@@ -37,6 +37,25 @@ function writeSourceFixture(sourceDir: string): void {
 }
 
 describe("release slots", () => {
+  it("rejects the release-slots parent directory as a slot root", () => {
+    const dataDir = makeTestDir("release-slot-parent-root");
+    const releaseSlotsDir = getReleaseSlotsDir(dataDir);
+    mkdirSync(join(releaseSlotsDir, "dist", "server"), { recursive: true });
+    writeFileSync(join(releaseSlotsDir, "dist", "server", "index.js"), "console.log('unsafe');\n");
+    writeFileSync(join(dataDir, "active-release.json"), JSON.stringify({
+      version: 1,
+      id: "release-slots",
+      root: releaseSlotsDir,
+      commitSha: "abcdef1234567890",
+      source: "test",
+      dependencyHash: "hash",
+      createdAt: "2026-05-18T20:00:00.000Z",
+      validationMode: "deploy",
+    }));
+
+    expect(readActiveRelease(dataDir)).toBeNull();
+  });
+
   it("prepares an inactive slot with owned dependencies and copied source exclusions", async () => {
     const sourceDir = makeTestDir("release-slot-source");
     const dataDir = makeTestDir("release-slot-data");

@@ -13,6 +13,7 @@ import {
   type UpdateInstallStatus,
 } from "../update-service.js";
 import { makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { isLinux } from "./test-paths.js";
 
 function createKeyPair() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -443,6 +444,35 @@ describe("update service", () => {
       startedAt: "2026-05-08T20:00:00.000Z",
       updatedAt: "2026-05-08T20:01:00.000Z",
       logPath: outsideLogPath,
+    });
+
+    const result = readUpdateInstallStatus({ runtimePaths });
+
+    expect(result.status?.phase).toBe("staging");
+    expect(result.logTail).toBeUndefined();
+  });
+
+  it("does not expose a case-only-different update logs sibling on Linux", () => {
+    if (!isLinux) return;
+
+    const runtimePaths = makeTestRuntimePaths("update-log-case-sibling", { distributionMode: "release" });
+    const logsDir = join(runtimePaths.dataDir, "logs");
+    const caseDifferentLogsDir = join(runtimePaths.dataDir, "LOGS");
+    const logPath = join(caseDifferentLogsDir, "update-case-only.log");
+    mkdirSync(logsDir, { recursive: true });
+    mkdirSync(caseDifferentLogsDir, { recursive: true });
+    writeFileSync(logPath, "case-sensitive secret\n");
+    writeInstallStatus(runtimePaths, {
+      id: "case-only",
+      phase: "staging",
+      channel: "preview",
+      fromVersion: "0.1.0-preview.1",
+      toVersion: "0.1.0-preview.2",
+      packageUrl: "https://github.com/timstewartj/copilot-bridge/releases/download/preview/test.zip",
+      packageSha256: "a".repeat(64),
+      startedAt: "2026-05-08T20:00:00.000Z",
+      updatedAt: "2026-05-08T20:01:00.000Z",
+      logPath,
     });
 
     const result = readUpdateInstallStatus({ runtimePaths });

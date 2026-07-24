@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import {
   ALLOWED_IMAGE_MIME_TYPES,
@@ -248,6 +248,40 @@ describe("resolveVisualArtifactForOwner", () => {
     if (!resolved.ok) return;
     expect(resolved.value.mimeType).toBe("image/png");
     expect(resolved.value.displayName).toBe("test.png");
+  });
+
+  it("accepts a valid artifact and rejects a resolved path outside the visuals directory", () => {
+    const copilotHome = makeTmpDir();
+    const srcDir = makeTmpDir();
+    const srcPath = join(srcDir, "safe.png");
+    writeFileSync(srcPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const published = publishVisualArtifact({
+      copilotHome,
+      sessionId: SESSION_ID,
+      kind: "image",
+      title: "Safe",
+      mimeType: "image/png",
+      sourcePath: srcPath,
+    });
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+
+    const owner = sessionVisualOwner(SESSION_ID);
+    expect(resolveVisualArtifactForOwner(copilotHome, owner, published.value.artifactId).ok).toBe(true);
+
+    const visualsDir = join(copilotHome, "session-state", SESSION_ID, "files", "visuals");
+    const metaPath = join(visualsDir, `${published.value.artifactId}.meta.json`);
+    const metadata = JSON.parse(readFileSync(metaPath, "utf-8"));
+    mkdirSync(join(visualsDir, `${published.value.artifactId}.escape`));
+    writeFileSync(join(visualsDir, "..", "outside.png"), Buffer.from([0x89, 0x50]));
+    metadata.ext = `escape${sep}..${sep}..${sep}outside.png`;
+    writeFileSync(metaPath, JSON.stringify(metadata), "utf-8");
+
+    const unsafe = resolveVisualArtifactForOwner(copilotHome, owner, published.value.artifactId);
+
+    expect(unsafe.ok).toBe(false);
+    expect(unsafe.ok ? "" : unsafe.error).toContain("path is unsafe");
   });
 
   it("returns error for non-existent artifact", () => {

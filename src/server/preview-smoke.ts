@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "./db.js";
 import { openDatabase } from "./db.js";
 import { createDocsStore } from "./docs-store.js";
@@ -11,6 +11,7 @@ import { createSettingsStore } from "./settings-store.js";
 import { createTaskStore } from "./task-store.js";
 import express from "express";
 import request from "supertest";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 interface PreviewResult {
   success: boolean;
@@ -193,11 +194,6 @@ function parseArgs(argv: string[]): { stagingDir?: string; validate: boolean } {
   }
 
   return { stagingDir, validate };
-}
-
-function isPathAtOrUnder(parent: string, candidate: string): boolean {
-  const rel = relative(resolve(parent), resolve(candidate));
-  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function assertFixtureSchema(db: DatabaseSync): void {

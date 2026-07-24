@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep, win32 } from "node:path";
 import matter from "gray-matter";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { tagNamesMatch } from "./tag-name.js";
+import { isPathAtOrUnder, type PathComparisonApi } from "./path-utils.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -65,15 +66,12 @@ export class DocsStoreValidationError extends Error {
   }
 }
 
-export interface DocsPathApi {
+export interface DocsPathApi extends PathComparisonApi {
   join: (...paths: string[]) => string;
-  resolve: (...paths: string[]) => string;
-  relative: (from: string, to: string) => string;
-  isAbsolute: (path: string) => boolean;
-  sep: string;
+  platform?: NodeJS.Platform;
 }
 
-const nativePathApi: DocsPathApi = { join, resolve, relative, isAbsolute, sep };
+const nativePathApi: DocsPathApi = { join, resolve, sep, platform: process.platform };
 
 export function validateDocsPathSegments(input: string, label = "path"): string[] {
   const normalized = input.replace(/\\/g, "/").replace(/\.md$/i, "");
@@ -102,15 +100,9 @@ export function validateDocsPathSegments(input: string, label = "path"): string[
 }
 
 export function isResolvedPathWithinRoot(root: string, candidate: string, pathApi: DocsPathApi = nativePathApi): boolean {
-  const resolvedRoot = pathApi.resolve(root);
-  const resolvedCandidate = pathApi.resolve(candidate);
-  if (resolvedCandidate === resolvedRoot) return true;
-
-  const relativePath = pathApi.relative(resolvedRoot, resolvedCandidate);
-  return relativePath !== ""
-    && relativePath !== ".."
-    && !relativePath.startsWith(`..${pathApi.sep}`)
-    && !pathApi.isAbsolute(relativePath);
+  const platform = pathApi.platform
+    ?? (pathApi.sep === win32.sep ? "win32" : "linux");
+  return isPathAtOrUnder(root, candidate, { pathApi, platform });
 }
 
 export function resolveContainedDocsPath(

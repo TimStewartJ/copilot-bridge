@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join } from "node:path";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 export type StartWorkAttachment =
   | { type: "blob"; data: string; mimeType: string; displayName?: string }
@@ -49,7 +50,7 @@ export function persistAndRouteAttachments(
       // File already on disk from multipart upload
       const safeName = basename(att.displayName).replace(/\.\./g, "_") || "attachment";
       const filePath = join(filesDir, safeName);
-      if (!resolve(filePath).startsWith(resolve(filesDir) + sep)) {
+      if (!isPathAtOrUnder(filesDir, filePath)) {
         logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping uploaded attachment with unsafe name: ${att.displayName}`);
         continue;
       }
@@ -69,7 +70,7 @@ export function persistAndRouteAttachments(
       // Legacy blob path: decode base64 and save to disk
       const safeName = deduplicateFilename(filesDir, att.displayName ?? "attachment");
       const filePath = join(filesDir, safeName);
-      if (!resolve(filePath).startsWith(resolve(filesDir) + sep)) {
+      if (!isPathAtOrUnder(filesDir, filePath)) {
         logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping attachment with unsafe name: ${att.displayName}`);
         continue;
       }

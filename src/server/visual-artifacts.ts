@@ -1,8 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { err, ok, type Result } from "./tool-results.js";
 import { isCanonicalSessionId } from "./outbound-attachments.js";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 export const ALLOWED_IMAGE_MIME_TYPES = new Set([
   "image/png",
@@ -200,8 +201,7 @@ export function publishVisualArtifact(input: PublishVisualInput): Result<Publish
     const filePath = artifactFilePath(visualsDir, artifactId, ext);
     const metaPath = artifactMetaPath(visualsDir, artifactId);
 
-    const root = resolve(visualsDir);
-    if (!resolve(filePath).startsWith(root + sep)) {
+    if (!isPathAtOrUnder(visualsDir, filePath)) {
       return err("Artifact path is unsafe");
     }
 
@@ -283,14 +283,15 @@ export function resolveVisualArtifactForOwner(
   if (!existsSync(filePath)) return err("Visual artifact file not found");
 
   let realPath: string;
+  let realVisualsDir: string;
   try {
     realPath = realpathSync(filePath);
+    realVisualsDir = realpathSync(visualsDir);
   } catch {
     return err("Visual artifact not found");
   }
 
-  const root = resolve(visualsDir) + sep;
-  if (!realPath.startsWith(root)) return err("Visual artifact path is unsafe");
+  if (!isPathAtOrUnder(realVisualsDir, realPath)) return err("Visual artifact path is unsafe");
 
   return ok({ filePath: realPath, displayName: meta.displayName, mimeType: meta.mimeType });
 }
@@ -371,8 +372,7 @@ export function publishMermaidArtifact(input: PublishMermaidInput): Result<Publi
     const filePath = artifactFilePath(visualsDir, artifactId, "mmd");
     const metaPath = artifactMetaPath(visualsDir, artifactId);
 
-    const root = resolve(visualsDir);
-    if (!resolve(filePath).startsWith(root + sep)) {
+    if (!isPathAtOrUnder(visualsDir, filePath)) {
       return err("Artifact path is unsafe");
     }
 
@@ -543,8 +543,7 @@ export function publishVegaLiteArtifact(input: PublishVegaLiteInput): Result<Pub
     const filePath = artifactFilePath(visualsDir, artifactId, "vl.json");
     const metaPath = artifactMetaPath(visualsDir, artifactId);
 
-    const root = resolve(visualsDir);
-    if (!resolve(filePath).startsWith(root + sep)) {
+    if (!isPathAtOrUnder(visualsDir, filePath)) {
       return err("Artifact path is unsafe");
     }
 
@@ -626,8 +625,7 @@ export function publishHtmlArtifact(input: PublishHtmlInput): Result<PublishedVi
     const filePath = artifactFilePath(visualsDir, artifactId, "html");
     const metaPath = artifactMetaPath(visualsDir, artifactId);
 
-    const root = resolve(visualsDir);
-    if (!resolve(filePath).startsWith(root + sep)) {
+    if (!isPathAtOrUnder(visualsDir, filePath)) {
       return err("Artifact path is unsafe");
     }
 
