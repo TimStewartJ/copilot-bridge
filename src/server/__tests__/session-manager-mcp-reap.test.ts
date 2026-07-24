@@ -284,66 +284,19 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.cleanupOwnership.size).toBe(0);
   });
 
-  it("tracks same-id replacement cleanup without delaying the replacement", async () => {
+  it("keeps the existing same-id owner without disconnecting a duplicate handle", async () => {
     const { manager } = createManager();
-    let releaseOld!: () => void;
-    const oldSession = {
-      disconnect: vi.fn(() => new Promise<void>((resolve) => {
-        releaseOld = resolve;
-      })),
-    };
-    const replacement = fakeSession();
-    await manager.cacheResumedSession("same", oldSession);
+    const existing = fakeSession();
+    const duplicate = fakeSession();
 
-    await manager.replaceCachedSession("same", oldSession, replacement);
+    await manager.cacheResumedSession("same", existing);
+    const cached = await manager.cacheResumedSession("same", duplicate);
 
-    expect(manager.sessionObjects.get("same")).toBe(replacement);
-    expect(manager.cleanupOwnership.get(oldSession)).toMatchObject({
-      sessionId: "same",
-      state: "pending",
-    });
-    releaseOld();
-    await manager._drainCacheQueue();
-    expect(manager.cleanupOwnership.has(oldSession)).toBe(false);
-  });
-
-  it("does not erase replacement agent accounting when old same-id cleanup finishes", async () => {
-    const { manager } = createManager();
-    let releaseOld!: () => void;
-    const oldSession = {
-      sessionId: "same",
-      listTasks: vi.fn(async () => ({ tasks: [] })),
-      disconnect: vi.fn(() => new Promise<void>((resolve) => {
-        releaseOld = resolve;
-      })),
-    };
-    const replacement = fakeSessionWithAgent("same", "running");
-    await manager.cacheResumedSession("same", oldSession);
-    await manager.replaceCachedSession("same", oldSession, replacement);
-    await manager.agentRegistry.refresh("same", "replacement");
-
-    await vi.waitFor(() => expect(oldSession.disconnect).toHaveBeenCalledTimes(1));
-    releaseOld();
-    await manager._drainCacheQueue();
-
-    expect(manager.sessionObjects.get("same")).toBe(replacement);
-    expect(manager.agentRegistry.getTrackedAgentCount("same")).toBe(1);
-    expect(manager.agentRegistry.hasRunningAgents("same")).toBe(true);
-  });
-
-  it("drops old agent accounting when an unrefreshed same-id replacement exists", async () => {
-    const { manager } = createManager();
-    const oldSession = fakeSessionWithAgent("same", "completed");
-    const replacement = fakeSession();
-    await manager.cacheResumedSession("same", oldSession);
-    await manager.agentRegistry.refresh("same", "old");
-    expect(manager.agentRegistry.getTrackedAgentCount("same")).toBe(1);
-
-    await manager.replaceCachedSession("same", oldSession, replacement);
-    await manager._drainCacheQueue();
-
-    expect(manager.sessionObjects.get("same")).toBe(replacement);
-    expect(manager.agentRegistry.getTrackedAgentCount("same")).toBe(0);
+    expect(cached).toBe(existing);
+    expect(manager.sessionObjects.get("same")).toBe(existing);
+    expect(existing.disconnect).not.toHaveBeenCalled();
+    expect(duplicate.disconnect).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.get("same")).toBe(existing);
   });
 
   it("retries a rejected disconnect in the cleanup worker", async () => {
@@ -754,6 +707,31 @@ describe("SessionManager bounded session lifecycle", () => {
 
     manager.endSessionResume(switchingLease);
     manager.modelSwitchingSessions.delete("switching");
+  });
+
+  it("rejects concurrent resume admission for the same session id", async () => {
+    const { manager } = createManager();
+    const firstLease = await manager.beginSessionResume("same", { mcpServers: {} });
+
+    await expect(manager.beginSessionResume("same", { mcpServers: {} }))
+      .rejects.toThrow("Session same already has a resume in progress");
+
+    manager.endSessionResume(firstLease);
+  });
+
+  it("rejects a duplicate resume while the first admission is waiting for capacity", async () => {
+    const { manager } = createManager();
+    manager.maxCachedContexts = 1;
+    manager.sessionCapacityWaitTimeoutMs = 5_000;
+    const blockerLease = await manager.beginSessionResume("blocker", { mcpServers: {} });
+    const pendingLease = manager.beginSessionResume("same", { mcpServers: {} });
+    await vi.waitFor(() => expect(manager.pendingSessionResumeAdmissions.has("same")).toBe(true));
+
+    await expect(manager.beginSessionResume("same", { mcpServers: {} }))
+      .rejects.toThrow("Session same already has a resume in progress");
+
+    manager.endSessionResume(blockerLease);
+    manager.endSessionResume(await pendingLease);
   });
 
   it("protects a cached session operation without reserving a second context", async () => {

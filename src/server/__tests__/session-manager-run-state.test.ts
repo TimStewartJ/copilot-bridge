@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,19 +60,13 @@ describe("SessionManager run state", () => {
     return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore, sessionMetaStore };
   }
 
-  function makeSession(opts: { replayOnSubscribe?: any | (() => any) } = {}) {
+  function makeSession() {
     const handlers: Array<(event: any) => void> = [];
     let releaseSend: (() => void) | undefined;
     const session = {
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((cb: (event: any) => void) => {
         handlers.push(cb);
-        if (opts.replayOnSubscribe) {
-          const replayed = typeof opts.replayOnSubscribe === "function"
-            ? opts.replayOnSubscribe()
-            : opts.replayOnSubscribe;
-          cb(replayed);
-        }
         return vi.fn(() => {
           const idx = handlers.indexOf(cb);
           if (idx !== -1) handlers.splice(idx, 1);
@@ -102,16 +96,6 @@ describe("SessionManager run state", () => {
 
   async function flushMicrotasks() {
     for (let i = 0; i < 20; i++) await Promise.resolve();
-  }
-
-  function createDeferred<T>() {
-    let resolve!: (value: T | PromiseLike<T>) => void;
-    let reject!: (reason?: unknown) => void;
-    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-      resolve = resolvePromise;
-      reject = rejectPromise;
-    });
-    return { promise, resolve, reject };
   }
 
   function latestSpanMetadata(telemetryStore: TelemetryStore | undefined, name: string, sessionId: string): Record<string, unknown> {
@@ -1132,7 +1116,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.sessionObjects.get("session-run-superseded")).toBe(current.session);
-    expect(stale.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(stale.session.disconnect).not.toHaveBeenCalled();
     expect(stale.session.send).not.toHaveBeenCalled();
     expect(current.session.send).toHaveBeenCalledOnce();
 
@@ -1653,7 +1637,7 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
-  it("transitions busy → stalled → busy → idle from the server run-state model", async () => {
+  it("keeps advisory inactivity in the busy state until live events complete the run", async () => {
     const { manager, globalBus } = createManager();
     const events: string[] = [];
     globalBus.subscribe((event) => {
@@ -1673,48 +1657,45 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("busy");
     expect(manager.isSessionBusy("session-1")).toBe(true);
 
-    // Watchdog fires every 60s; stall threshold is 300s — first trigger at exactly 300s
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-    expect(manager.isSessionStalled("session-1")).toBe(true);
-    expect(manager.getActiveSessions()).toEqual(["session-1"]);
-    expect(manager.getSessionActivity()).toEqual([
-      expect.objectContaining({
-        id: "session-1",
-        state: "stalled",
-        stalledAt: expect.any(Number),
-      }),
-    ]);
-    const recoveryEventBase = Date.now();
-
-    getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: new Date(recoveryEventBase + 1_000).toISOString(),
-    });
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await manager.waitForSessionWatchdogIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("busy");
     expect(manager.isSessionStalled("session-1")).toBe(false);
+    expect(manager.getActiveSessions()).toEqual(["session-1"]);
+    expect(manager.getSessionActivity()).toEqual([
+      expect.objectContaining({
+        id: "session-1",
+        state: "busy",
+      }),
+    ]);
+    const eventBase = Date.now();
+
+    getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: new Date(eventBase + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
 
     getReleaseSend()?.();
     await flushMicrotasks();
     getHandler()?.({
       type: "session.idle",
       data: {},
-      timestamp: new Date(recoveryEventBase + 2_000).toISOString(),
+      timestamp: new Date(eventBase + 2_000).toISOString(),
     });
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(manager.isSessionBusy("session-1")).toBe(false);
-    expect(events).toEqual(["session:busy", "session:stalled", "session:busy", "session:idle"]);
+    expect(events).toEqual(["session:busy", "session:idle"]);
   });
 
-  it("keeps native elicitation waits busy beyond the stalled watchdog window", async () => {
+  it("keeps native elicitation waits busy beyond the no-progress warning window", async () => {
     const sessionId = "session-elicitation-wait";
     const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();
@@ -1748,12 +1729,12 @@ describe("SessionManager run state", () => {
     expect(requestId).toBeDefined();
 
     await vi.advanceTimersByTimeAsync(900_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
     expect(resumeSession).toHaveBeenCalledTimes(1);
-    expect(telemetryStore!.querySpans({ name: "session.run.stalled", sessionId })).toEqual([]);
-    expect(telemetryStore!.querySpans({ name: "session.run.force_released", sessionId })).toEqual([]);
+    expect(telemetryStore!.querySpans({ name: "session.run.no_progress_abort", sessionId })).toEqual([]);
 
     await manager.submitElicitationResponse(sessionId, requestId!, { action: "cancel" });
     await expect(elicitationPromise).resolves.toEqual({ action: "cancel" });
@@ -1887,261 +1868,63 @@ describe("SessionManager run state", () => {
     }));
   });
 
-  it("attempts recovery (re-resume + re-subscribe) when a session first becomes stalled", async () => {
-    const { manager } = createManager();
-    const { session } = makeSession();
-    const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.backend = { resumeSession };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    expect(resumeSession).toHaveBeenCalledTimes(1);
-
-    // Advance to exactly the stall threshold
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-    // Recovery should have triggered a second resume
-    expect(resumeSession).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps quiet external tools busy instead of recovering them as stalled sessions", async () => {
-    const sessionId = "session-external-tool-wait";
+  it("records advisory no-progress telemetry without replacing or disconnecting the active session", async () => {
+    const sessionId = "session-no-progress-warning";
     const { manager, telemetryStore } = createManager({ telemetry: true });
-    const { session, getHandler, getReleaseSend } = makeSession();
-    const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.backend = { resumeSession };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    const baseTime = Date.now();
-
-    getHandler()?.({
-      type: "external_tool.requested",
-      timestamp: new Date(baseTime + 1_000).toISOString(),
-      data: {
-        requestId: "external-req-1",
-        sessionId,
-        toolCallId: "external-call-1",
-        toolName: "staging_preview",
-        arguments: {},
-      },
-    });
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle(sessionId);
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("busy");
-    expect(resumeSession).toHaveBeenCalledTimes(1);
-    expect(telemetryStore!.querySpans({ name: "session.run.stalled", sessionId })).toEqual([]);
-    expect(latestSpanMetadata(telemetryStore, "session.run.waiting_on_external_tool", sessionId)).toMatchObject({
-      watchdogTimeoutMs: 300_000,
-      activeExternalToolCount: 1,
-      activeExternalToolNames: ["staging_preview"],
-      oldestActiveExternalToolName: "staging_preview",
-      oldestActiveExternalToolRequestId: "external-req-1",
-      oldestActiveExternalToolCallId: "external-call-1",
-    });
-
-    getHandler()?.({
-      type: "external_tool.completed",
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-      data: {
-        requestId: "external-req-1",
-      },
-    });
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle(sessionId);
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("stalled");
-    expect(resumeSession).toHaveBeenCalledTimes(2);
-  });
-
-  it("clears quiet external tool protection when the matching tool execution completes", async () => {
-    const sessionId = "session-external-tool-execution-complete";
-    const { manager } = createManager();
-    const { session, getHandler, getReleaseSend } = makeSession();
-    const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.backend = { resumeSession };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    const baseTime = Date.now();
-
-    getHandler()?.({
-      type: "external_tool.requested",
-      timestamp: new Date(baseTime + 1_000).toISOString(),
-      data: {
-        requestId: "external-req-2",
-        sessionId,
-        toolCallId: "external-call-2",
-        toolName: "staging_preview",
-        arguments: {},
-      },
-    });
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle(sessionId);
-    await flushMicrotasks();
-    expect(manager.getSessionRunState(sessionId)).toBe("busy");
-    expect(resumeSession).toHaveBeenCalledTimes(1);
-
-    getHandler()?.({
-      type: "tool.execution_complete",
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-      data: {
-        toolCallId: "external-call-2",
-        success: true,
-        output: "done",
-      },
-    });
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle(sessionId);
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("stalled");
-    expect(resumeSession).toHaveBeenCalledTimes(2);
-  });
-
-  it("retries recovery every 5 minutes while the session remains stalled", async () => {
-    const { manager } = createManager();
     const { session } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
     manager.backend = { resumeSession };
 
-    manager.startWork("session-1", "hello");
+    manager.startWork(sessionId, "hello");
     await flushMicrotasks();
 
-    // First stall + first recovery at 300s (first eligible watchdog tick)
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
-    expect(resumeSession).toHaveBeenCalledTimes(2);
 
-    // Second recovery after exactly RECOVERY_INTERVAL (300s) while still stalled
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-    expect(resumeSession).toHaveBeenCalledTimes(3);
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(latestSpanMetadata(telemetryStore, "session.run.no_progress", sessionId)).toMatchObject({
+      warningThresholdMs: 10 * 60_000,
+      abortThresholdMs: 60 * 60_000,
+    });
   });
 
-  it("re-attaches listeners to the recovered session so later events clear stalled state", async () => {
-    const { manager, globalBus } = createManager();
-    const events: string[] = [];
-    globalBus.subscribe((event) => {
-      if (event.sessionId === "session-1" && ["session:busy", "session:stalled", "session:idle"].includes(event.type)) {
-        events.push(event.type);
-      }
-    });
-    const initial = makeSession();
-    const recovered = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-    expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
-    const recoveryEventBase = Date.now();
-
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    recovered.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: new Date(recoveryEventBase + 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-
-    recovered.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(recoveryEventBase + 2_000).toISOString(),
-    });
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-    expect(events).toEqual(["session:busy", "session:stalled", "session:busy", "session:idle"]);
-  });
-
-  it("does not let a superseded stalled-recovery resume overwrite a newer cached session", async () => {
+  it("keeps a silent synchronous shell on the original session owner", async () => {
+    const sessionId = "session-silent-sync-shell";
     const { manager } = createManager();
-    const initial = makeSession();
-    const recovered = makeSession();
-    const current = makeSession();
-    let resolveRecovery!: (session: typeof recovered.session) => void;
-    const recoveryStarted = createDeferred<void>();
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockImplementationOnce(() => {
-          recoveryStarted.resolve();
-          return new Promise<typeof recovered.session>((resolve) => {
-            resolveRecovery = resolve;
-          });
-        }),
-    };
+    const { session, getHandler } = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.backend = { resumeSession };
 
-    manager.startWork("session-1", "hello");
+    manager.startWork(sessionId, "hello");
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(300_000);
-    await recoveryStarted.promise;
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-
-    manager.sessionObjects.set("session-1", current.session);
-    resolveRecovery(recovered.session);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(manager.sessionObjects.get("session-1")).toBe(current.session);
-    expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
-    expect(recovered.session.on).not.toHaveBeenCalled();
-    expect(current.session.on).toHaveBeenCalledOnce();
-    expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
-
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    current.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
+    getHandler()?.({
+      type: "tool.execution_start",
       timestamp: new Date(Date.now() + 1_000).toISOString(),
+      data: {
+        toolCallId: "tool-sync-shell",
+        toolName: "bash",
+        arguments: {
+          command: "npm run build",
+          mode: "sync",
+          initial_wait: 3_600,
+        },
+      },
     });
     await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
 
-    current.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 2_000).toISOString(),
-    });
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(session.abort).not.toHaveBeenCalled();
   });
 
   it("records completion telemetry for live session.idle", async () => {
@@ -2275,7 +2058,7 @@ describe("SessionManager run state", () => {
     });
   });
 
-  it("records diagnostic telemetry when a live turn-end stalls before persisted recovery", async () => {
+  it("records persisted-terminal recovery telemetry without replacing the live session", async () => {
     const tmpDir = makeTestDir("stall-turn-end-telemetry");
     const sessionId = "session-turn-end-telemetry";
     const sessionStateDir = join(tmpDir, "session-state", sessionId);
@@ -2320,8 +2103,8 @@ describe("SessionManager run state", () => {
       }),
     ].join("\n") + "\n");
 
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle(sessionId);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2335,22 +2118,12 @@ describe("SessionManager run state", () => {
         content: "done from turn_end",
       },
     });
-    expect(latestSpanMetadata(telemetryStore, "session.run.stalled", sessionId)).toMatchObject({
-      previousRunState: "busy",
-      watchdogTimeoutMs: 300_000,
-      lastLiveEventType: "assistant.turn_end",
-      liveTurnEndCount: 1,
-      eventsAfterLastLiveTurnEnd: 0,
-      activeEventsAfterLastLiveTurnEnd: 0,
-      latestPersistedEventType: "assistant.turn_end",
-      latestPersistedTerminalEventType: "assistant.turn_end",
-    });
     expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
       completionSource: "persisted_assistant_turn_end_recovery",
       completionStatus: "done",
       terminalEventType: "assistant.turn_end",
       terminalEventOrigin: "persisted_recovery",
-      recoveryReason: "before resume",
+      recoveryReason: "watchdog disk progress",
       finalContentLength: "done from turn_end".length,
       assistantContentKnown: true,
       lastLiveEventType: "assistant.turn_end",
@@ -2358,15 +2131,13 @@ describe("SessionManager run state", () => {
     });
     expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
       outcome: "resolved_persisted_terminal",
-      when: "before_resume",
       terminalEventType: "assistant.turn_end",
-      attemptIndex: 1,
       latestPersistedEventType: "assistant.turn_end",
       latestPersistedTerminalEventType: "assistant.turn_end",
     });
   });
 
-  it("resolves a stalled turn from persisted terminal events without waiting for a new live event", async () => {
+  it("resolves a run from persisted terminal events without waiting for a live event", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-"));
     try {
       const sessionId = "session-terminal";
@@ -2397,19 +2168,20 @@ describe("SessionManager run state", () => {
         JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
       ].join("\n") + "\n");
 
-      await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryIdle(sessionId);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(events).toEqual(["session:busy", "session:stalled", "session:idle"]);
+      expect(events).toEqual(["session:busy", "session:idle"]);
       expect(resumeSession).toHaveBeenCalledTimes(1);
+      expect(initial.session.disconnect).not.toHaveBeenCalled();
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("resolves a stalled turn from persisted assistant.turn_end without waiting for session.idle", async () => {
+  it("resolves a run from persisted assistant.turn_end without waiting for session.idle", async () => {
     const tmpDir = makeTestDir("stall-turn-end-terminal");
     try {
       const sessionId = "session-turn-end-terminal";
@@ -2434,8 +2206,8 @@ describe("SessionManager run state", () => {
         JSON.stringify({ type: "assistant.turn_end", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
       ].join("\n") + "\n");
 
-      await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryIdle(sessionId);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
@@ -2561,7 +2333,7 @@ describe("SessionManager run state", () => {
     });
   });
 
-  it("clears run state when an abort event arrives while send is still pending", async () => {
+  it("clears run state without disconnecting when an abort event arrives while send is still pending", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler } = makeSession();
     manager.backend = {
@@ -2582,7 +2354,7 @@ describe("SessionManager run state", () => {
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(bus.getSnapshot().terminalType).toBe("aborted");
-    expect(session.disconnect).toHaveBeenCalledTimes(1);
+    expect(session.disconnect).not.toHaveBeenCalled();
   });
 
   it("does not send the prompt after a local abort during initial resume", async () => {
@@ -2618,487 +2390,6 @@ describe("SessionManager run state", () => {
     await vi.waitFor(() => expect(manager.getSessionRunState("session-1")).toBe("idle"));
   });
 
-  it("does not attempt a second recovery while one is already in progress", async () => {
-    const { manager } = createManager();
-    let resolveRecovery!: () => void;
-    const recoveryPromise = new Promise<void>((res) => { resolveRecovery = res; });
-    const recoveryStarted = createDeferred<void>();
-    const { session } = makeSession();
-    // First call returns immediately; second call hangs (simulates slow recovery)
-    const resumeSession = vi.fn()
-      .mockResolvedValueOnce(session)
-      .mockImplementationOnce(() => {
-        recoveryStarted.resolve();
-        return recoveryPromise.then(() => session);
-      });
-    manager.backend = { resumeSession };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-
-    // Trigger first stall + recovery
-    await vi.advanceTimersByTimeAsync(300_000);
-    await recoveryStarted.promise;
-    await flushMicrotasks();
-    expect(resumeSession).toHaveBeenCalledTimes(2);
-    // Recovery is still in progress — advance another watchdog interval
-    await vi.advanceTimersByTimeAsync(60_000);
-    await flushMicrotasks();
-    // Should NOT have triggered a third resume while recovery is pending
-    expect(resumeSession).toHaveBeenCalledTimes(2);
-
-    resolveRecovery();
-  });
-
-  it("keeps the existing session listener and abort path if recovery resume fails", async () => {
-    const { manager } = createManager();
-    const initial = makeSession();
-    const resumeSession = vi.fn()
-      .mockResolvedValueOnce(initial.session)
-      .mockRejectedValueOnce(new Error("resume failed"));
-    manager.backend = { resumeSession };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-    expect(initial.session.disconnect).not.toHaveBeenCalled();
-    expect(resumeSession).toHaveBeenCalledTimes(2);
-
-    const abortPromise = manager.abortSession("session-1");
-    await flushMicrotasks();
-    expect(initial.session.abort).toHaveBeenCalledTimes(1);
-
-    initial.getHandler()?.({
-      type: "abort",
-      data: { reason: "user initiated" },
-      timestamp: "2026-04-20T00:00:02.000Z",
-    });
-    await expect(abortPromise).resolves.toBe(true);
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-  });
-
-  it("does not attach a recovered listener after the original stalled turn already finished", async () => {
-    const { manager } = createManager();
-    const initial = makeSession();
-    const recovered = makeSession();
-    let resolveRecovery!: (session: any) => void;
-    const recoveryPromise = new Promise<any>((resolve) => {
-      resolveRecovery = resolve;
-    });
-    const resumeSession = vi.fn()
-      .mockResolvedValueOnce(initial.session)
-      .mockReturnValueOnce(recoveryPromise);
-    manager.backend = { resumeSession };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await flushMicrotasks();
-
-    initial.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: "2026-04-20T00:00:02.000Z",
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-
-    resolveRecovery(recovered.session);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(recovered.session.on).not.toHaveBeenCalled();
-    expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the original listener when stalled recovery wakes up after live events have resumed", async () => {
-    const { manager } = createManager();
-    const initial = makeSession();
-    const recovered = makeSession();
-    let resolveRecovery!: (session: any) => void;
-    const recoveryPromise = new Promise<any>((resolve) => {
-      resolveRecovery = resolve;
-    });
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockReturnValueOnce(recoveryPromise),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await flushMicrotasks();
-
-    initial.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-
-    resolveRecovery(recovered.session);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(recovered.session.on).not.toHaveBeenCalled();
-    expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
-    expect(initial.session.disconnect).not.toHaveBeenCalled();
-  });
-
-  it("ignores replayed historical events when attaching a recovered listener", async () => {
-    const { manager } = createManager();
-    const initial = makeSession();
-    const staleTimestamp = new Date(Date.now() - 1_000).toISOString();
-    const recovered = makeSession({
-      replayOnSubscribe: {
-        type: "session.idle",
-        data: {},
-        timestamp: staleTimestamp,
-      },
-    });
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-
-    recovered.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-
-    recovered.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 2_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-  });
-
-  it("processes fresh replayed terminal events from the recovered listener", async () => {
-    const { manager } = createManager();
-    const initial = makeSession();
-    const recovered = makeSession({
-      replayOnSubscribe: () => ({
-        type: "session.idle",
-        data: {},
-        timestamp: new Date(Date.now() + 1_000).toISOString(),
-      }),
-    });
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-  });
-
-  it("ignores replayed same-turn events that were already processed before the stall", async () => {
-    const { manager } = createManager();
-    const replayedTurnStart = new Date(Date.now() + 1_000).toISOString();
-    const initial = makeSession();
-    const recovered = makeSession({
-      replayOnSubscribe: {
-        type: "assistant.turn_start",
-        data: {},
-        timestamp: replayedTurnStart,
-      },
-    });
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    initial.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: replayedTurnStart,
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-
-    recovered.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-  });
-
-  it("does not duplicate replayed same-turn delta content during recovery", async () => {
-    const { manager, eventBusRegistry } = createManager();
-    const replayedDeltaTimestamp = new Date(Date.now() + 1_000).toISOString();
-    const initial = makeSession();
-    const recovered = makeSession({
-      replayOnSubscribe: {
-        type: "assistant.message_delta",
-        data: { deltaContent: "dup" },
-        timestamp: replayedDeltaTimestamp,
-      },
-    });
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    initial.getHandler()?.({
-      type: "assistant.message_delta",
-      data: { deltaContent: "dup" },
-      timestamp: replayedDeltaTimestamp,
-    });
-    await flushMicrotasks();
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dup");
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dup");
-
-    recovered.getHandler()?.({
-      type: "assistant.message_delta",
-      data: { deltaContent: "new" },
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dupnew");
-  });
-
-  it("processes distinct recovered events that share a timestamp with the last handled event", async () => {
-    const { manager } = createManager();
-    const sharedTimestamp = new Date(Date.now() + 1_000).toISOString();
-    const initial = makeSession();
-    const recovered = makeSession({
-      replayOnSubscribe: {
-        type: "session.idle",
-        data: {},
-        timestamp: sharedTimestamp,
-      },
-    });
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    initial.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: sharedTimestamp,
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-  });
-
-  it("ignores historical recovered events emitted after subscription becomes active", async () => {
-    const { manager } = createManager();
-    const initialTurnBase = Date.now();
-    const initial = makeSession();
-    const recovered = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await manager.waitForSessionRecoveryIdle("session-1");
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-
-    recovered.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(initialTurnBase - 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-
-    recovered.getHandler()?.({
-      type: "assistant.turn_start",
-      data: {},
-      timestamp: new Date(Date.now() + 1_000).toISOString(),
-    });
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-  });
-
-  it("resolves from persisted terminal events that land while recovery resume is still in flight", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-after-resume-"));
-    try {
-      const sessionId = "session-terminal-after-resume";
-      const sessionStateDir = join(tmpDir, "session-state", sessionId);
-      mkdirSync(sessionStateDir, { recursive: true });
-
-      const { manager } = createManager({ copilotHome: tmpDir });
-      const initial = makeSession();
-      const recovered = makeSession();
-      let resolveRecovery!: (session: any) => void;
-      const recoveryPromise = new Promise<any>((resolve) => {
-        resolveRecovery = resolve;
-      });
-      const recoveryStarted = createDeferred<void>();
-      manager.backend = {
-        resumeSession: vi.fn()
-          .mockResolvedValueOnce(initial.session)
-          .mockImplementationOnce(() => {
-            recoveryStarted.resolve();
-            return recoveryPromise;
-          }),
-      };
-
-      manager.startWork(sessionId, "hello");
-      await flushMicrotasks();
-      initial.getReleaseSend()?.();
-      await flushMicrotasks();
-
-      await vi.advanceTimersByTimeAsync(300_000);
-      await recoveryStarted.promise;
-      await flushMicrotasks();
-
-      const baseTime = Date.now();
-      writeFileSync(join(sessionStateDir, "events.jsonl"), [
-        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
-        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
-        JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
-      ].join("\n") + "\n");
-
-      resolveRecovery(recovered.session);
-      await manager.waitForSessionRecoveryIdle(sessionId);
-      await flushMicrotasks();
-
-      expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(recovered.session.on).not.toHaveBeenCalled();
-      expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("resolves from persisted terminal events if recovery resume fails after the turn already finished on disk", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-after-failure-"));
-    try {
-      const sessionId = "session-terminal-after-failure";
-      const sessionStateDir = join(tmpDir, "session-state", sessionId);
-      mkdirSync(sessionStateDir, { recursive: true });
-
-      const { manager } = createManager({ copilotHome: tmpDir });
-      const initial = makeSession();
-      let rejectRecovery!: (error: Error) => void;
-      const recoveryPromise = new Promise<any>((_, reject) => {
-        rejectRecovery = reject;
-      });
-      const recoveryStarted = createDeferred<void>();
-      manager.backend = {
-        resumeSession: vi.fn()
-          .mockResolvedValueOnce(initial.session)
-          .mockImplementationOnce(() => {
-            recoveryStarted.resolve();
-            return recoveryPromise;
-          }),
-      };
-
-      manager.startWork(sessionId, "hello");
-      await flushMicrotasks();
-      initial.getReleaseSend()?.();
-      await flushMicrotasks();
-
-      await vi.advanceTimersByTimeAsync(300_000);
-      await recoveryStarted.promise;
-      await flushMicrotasks();
-
-      const baseTime = Date.now();
-      writeFileSync(join(sessionStateDir, "events.jsonl"), [
-        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
-        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
-        JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
-      ].join("\n") + "\n");
-
-      rejectRecovery(new Error("resume failed"));
-      await manager.waitForSessionRecoveryIdle(sessionId);
-      await flushMicrotasks();
-
-      expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
   it("updates lastEventAt from events.jsonl mtime to prevent false stale reports", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-test-"));
     try {
@@ -3117,11 +2408,15 @@ describe("SessionManager run state", () => {
       // we'll check that the run record's lastEventAt is pushed forward by file
       // mtime probing once we write a file and advance the watchdog.
       const eventsPath = join(sessionStateDir, "events.jsonl");
-      writeFileSync(eventsPath, '{"type":"user.message"}\n');
+      await vi.advanceTimersByTimeAsync(59_000);
+      writeFileSync(eventsPath, JSON.stringify({
+        type: "user.message",
+        timestamp: new Date(Date.now()).toISOString(),
+        data: { content: "hello" },
+      }) + "\n");
 
-      // Advance past the stall threshold so the watchdog fires
-      await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryIdle(sessionId);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
       // The file's real mtime is close to wall-clock time so it will be
@@ -3129,18 +2424,16 @@ describe("SessionManager run state", () => {
       // lastEventAt updated to the file's mtime.
       const activity = manager.getSessionActivity();
       expect(activity).toHaveLength(1);
-      // lastEventAt must be >= the file's mtime (set near test start) which is
-      // well after the fake-time start, so staleMs should not be ~300s
-      expect(activity[0].staleMs).toBeLessThan(300_000);
+      expect(activity[0].staleMs).toBeLessThan(60_000);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("disk-mtime progress does not suppress stall detection or recovery retries", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-test-disk-"));
+  it("persisted progress extends the no-progress abort deadline", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-no-progress-disk-"));
     try {
-      const sessionId = "session-disk-stall";
+      const sessionId = "session-disk-progress";
       const sessionStateDir = join(tmpDir, "session-state", sessionId);
       mkdirSync(sessionStateDir, { recursive: true });
 
@@ -3149,40 +2442,49 @@ describe("SessionManager run state", () => {
       const resumeSession = vi.fn().mockResolvedValue(session);
       manager.backend = { resumeSession };
 
-      // Create events.jsonl before starting so its mtime is close to the fake-timer epoch.
-      // The live listener stays silent throughout, which is the condition under test.
       const eventsPath = join(sessionStateDir, "events.jsonl");
-      writeFileSync(eventsPath, '{"type":"user.message"}\n');
 
       manager.startWork(sessionId, "hello");
       await flushMicrotasks();
       expect(resumeSession).toHaveBeenCalledTimes(1);
+      const runStartedAt = Date.now();
 
-      // Advance to exactly the stall threshold.
-      // Even though events.jsonl mtime is fresh relative to real wall-clock time, it must
-      // NOT suppress stall detection — lastEventTime is only updated by live SDK events.
-      await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryIdle(sessionId);
+      await vi.advanceTimersByTimeAsync(50 * 60_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
+      writeFileSync(eventsPath, JSON.stringify({
+        type: "assistant.intent",
+        timestamp: new Date(Date.now()).toISOString(),
+        data: { intent: "Still working" },
+      }) + "\n");
+      const preRunMtime = new Date(runStartedAt - 1_000);
+      utimesSync(eventsPath, preRunMtime, preRunMtime);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
-      expect(manager.getSessionRunState(sessionId)).toBe("stalled");
-      expect(resumeSession).toHaveBeenCalledTimes(2);
-
-      // Recovery retries must still fire on schedule while stalled, regardless of disk activity.
-      await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryIdle(sessionId);
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
-      expect(manager.getSessionRunState(sessionId)).toBe("stalled");
-      expect(resumeSession).toHaveBeenCalledTimes(3);
+      expect(manager.getSessionRunState(sessionId)).toBe("busy");
+      expect(resumeSession).toHaveBeenCalledTimes(1);
+      expect(session.abort).not.toHaveBeenCalled();
+      expect(session.disconnect).not.toHaveBeenCalled();
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("force releases a stalled turn after the bounded stalled window", async () => {
+  it("aborts the original session exactly once after the hard no-progress deadline", async () => {
     const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
-    const { session } = makeSession();
+    const { session, getHandler } = makeSession();
+    session.abort.mockImplementation(async () => {
+      getHandler()?.({
+        type: "abort",
+        data: { reason: "watchdog no-progress deadline" },
+        timestamp: new Date().toISOString(),
+      });
+    });
     const resumeSession = vi.fn().mockResolvedValue(session);
     manager.backend = { resumeSession };
 
@@ -3190,66 +2492,58 @@ describe("SessionManager run state", () => {
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(300_000);
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-
-    await vi.advanceTimersByTimeAsync(600_000);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    await manager.waitForSessionWatchdogIdle("session-1");
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
-    expect(bus.getSnapshot().terminalType).toBe("error");
-    expect(bus.getSnapshot().errorMessage).toContain("Session stalled for");
-    expect(session.disconnect).toHaveBeenCalled();
-    expect(latestSpanMetadata(telemetryStore, "session.run.force_released", "session-1")).toMatchObject({
-      reason: "stalled_watchdog_timeout",
-      forceReleaseThresholdMs: 600_000,
-    });
+    expect(bus.getSnapshot().terminalType).toBe("aborted");
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(
+      telemetryStore!.querySpans({ name: "session.run.no_progress_abort", sessionId: "session-1" })
+        .map((span) => span.metadata),
+    ).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: "completed",
+        abortThresholdMs: 60 * 60_000,
+      }),
+    ]));
   });
 
-  it("waits for sync shell initial_wait before marking a session stalled", async () => {
+  it("does not abort when live progress arrives immediately before the hard deadline", async () => {
     const { manager } = createManager();
     const { session, getHandler } = makeSession();
-    const recoveryStarted = createDeferred<void>();
-    const resumeSession = vi.fn()
-      .mockResolvedValueOnce(session)
-      .mockImplementationOnce(() => {
-        recoveryStarted.resolve();
-        return Promise.resolve(session);
-      });
+    const resumeSession = vi.fn().mockResolvedValue(session);
     manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
 
+    await vi.advanceTimersByTimeAsync(59 * 60_000);
     getHandler()?.({
-      type: "tool.execution_start",
+      type: "tool.execution_complete",
       timestamp: new Date(Date.now() + 1_000).toISOString(),
       data: {
         toolCallId: "tool-sync-shell",
-        toolName: "bash",
-        arguments: {
-          command: "npm run build",
-          mode: "sync",
-          initial_wait: 480,
-        },
+        success: true,
+        output: "build complete",
       },
     });
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(300_000);
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await manager.waitForSessionWatchdogIdle("session-1");
     await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-    expect(resumeSession).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(240_000);
-    await recoveryStarted.promise;
-    await flushMicrotasks();
-    expect(manager.getSessionRunState("session-1")).toBe("stalled");
-    expect(resumeSession).toHaveBeenCalledTimes(2);
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(resumeSession).toHaveBeenCalledTimes(1);
   });
 
-  it("resolves a stalled turn from persisted session.shutdown events", async () => {
+  it("resolves a run from persisted session.shutdown events", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-shutdown-terminal-"));
     try {
       const sessionId = "session-shutdown-terminal";
@@ -3274,8 +2568,8 @@ describe("SessionManager run state", () => {
         JSON.stringify({ type: "session.shutdown", timestamp: new Date(baseTime + 3_000).toISOString(), data: { shutdownType: "graceful" } }),
       ].join("\n") + "\n");
 
-      await vi.advanceTimersByTimeAsync(300_000);
-      await manager.waitForSessionRecoveryIdle(sessionId);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");

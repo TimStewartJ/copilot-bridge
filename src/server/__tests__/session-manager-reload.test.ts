@@ -250,7 +250,7 @@ describe("SessionManager warmSession", () => {
     await manager._drainCacheQueue();
 
     expect(manager.sessionObjects.get("session-warm-superseded")).toBe(newerSession);
-    expect(resumedSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(resumedSession.disconnect).not.toHaveBeenCalled();
     expect(newerSession.disconnect).not.toHaveBeenCalled();
   });
 });
