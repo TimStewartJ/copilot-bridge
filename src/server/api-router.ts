@@ -88,7 +88,14 @@ import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
-import { cancelHibernate, getHibernateStatus, scheduleHibernate } from "./device-hibernate.js";
+import {
+  armHibernateOnIdle,
+  cancelHibernate,
+  disarmHibernateOnIdle,
+  getHibernateOnIdleStatus,
+  getHibernateStatus,
+  scheduleHibernate,
+} from "./device-hibernate.js";
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
@@ -138,6 +145,9 @@ import { createSessionStorageReader, type SessionStorageReader } from "./session
 import { isLocalStagingModule } from "./path-utils.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
+/** Idle grace windows (minutes) accepted by the hibernate-on-idle watcher. */
+const HIBERNATE_IDLE_GRACE_MINUTES = [0, 1, 2, 5, 15, 30, 60] as const;
+const DEFAULT_HIBERNATE_IDLE_GRACE_MINUTES = 2;
 
 function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
   if (!isDocsFtsUnavailableError(error)) return null;
@@ -1800,6 +1810,7 @@ export function createApiRouter(
       // Immediate: drop any pending scheduled hibernation, then fire shortly
       // after the response flushes so the client still receives the ack.
       cancelHibernate();
+      disarmHibernateOnIdle();
       console.log("[device] Hibernate requested via API (immediate)");
       res.on("finish", () => {
         setTimeout(() => {
@@ -1813,6 +1824,7 @@ export function createApiRouter(
         pending: false,
         scheduledAt: null,
         delayMs: null,
+        onIdle: getHibernateOnIdleStatus(),
         message: "Hibernate requested. This device may sleep shortly.",
       });
     }
@@ -1822,19 +1834,80 @@ export function createApiRouter(
     return res.status(202).json({
       ok: true,
       ...status,
+      onIdle: getHibernateOnIdleStatus(),
       message: `Hibernate scheduled in ${delayMinutes} minute${delayMinutes === 1 ? "" : "s"}. The device will sleep then unless cancelled.`,
     });
   });
 
   router.get("/device/hibernate", (_req, res) => {
-    res.json(getHibernateStatus());
+    res.json({ ...getHibernateStatus(), onIdle: getHibernateOnIdleStatus() });
+  });
+
+  // POST /device/hibernate/on-idle — arm or disarm "hibernate once all sessions
+  // are idle". The watcher lives in memory only, so a restart or wake clears it.
+  router.post("/device/hibernate/on-idle", (req, res) => {
+    if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
+
+    const body = req.body as { enabled?: unknown; graceMinutes?: unknown } | undefined;
+    const rawEnabled = body?.enabled;
+    if (rawEnabled !== undefined && typeof rawEnabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be a boolean." });
+    }
+    const enabled = rawEnabled ?? true;
+
+    if (!enabled) {
+      const disarmed = disarmHibernateOnIdle();
+      console.log(`[device] Hibernate-on-idle disarm requested via API (disarmed=${disarmed})`);
+      return res.json({
+        ok: true,
+        disarmed,
+        ...getHibernateOnIdleStatus(),
+        message: disarmed
+          ? "Hibernate on idle turned off."
+          : "Hibernate on idle was not armed.",
+      });
+    }
+
+    const rawGrace = body?.graceMinutes;
+    const graceMinutes = rawGrace === undefined || rawGrace === null
+      ? DEFAULT_HIBERNATE_IDLE_GRACE_MINUTES
+      : Number(rawGrace);
+    if (!HIBERNATE_IDLE_GRACE_MINUTES.includes(graceMinutes as (typeof HIBERNATE_IDLE_GRACE_MINUTES)[number])) {
+      return res.status(400).json({
+        error: `graceMinutes must be one of: ${HIBERNATE_IDLE_GRACE_MINUTES.join(", ")}.`,
+      });
+    }
+
+    let idleHibernateCommand: DeviceHibernateCommand;
+    try {
+      idleHibernateCommand = getDeviceHibernateCommand();
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+
+    const status = armHibernateOnIdle({
+      command: idleHibernateCommand,
+      graceMs: graceMinutes * 60_000,
+      getActiveSessionCount: () => ctx.sessionManager.getLifecycleBlockingSessionCount(),
+    });
+    console.log(
+      `[device] Hibernate-on-idle armed via API (grace=${graceMinutes}m, active=${status.activeSessions})`,
+    );
+    return res.status(202).json({
+      ok: true,
+      disarmed: false,
+      ...status,
+      message: graceMinutes > 0
+        ? `Hibernate on idle armed. The device will sleep after ${graceMinutes} minute${graceMinutes === 1 ? "" : "s"} with no active sessions.`
+        : "Hibernate on idle armed. The device will sleep once every session is idle.",
+    });
   });
 
   router.post("/device/hibernate/cancel", (_req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
     const cancelled = cancelHibernate();
     console.log(`[device] Hibernate cancel requested via API (cancelled=${cancelled})`);
-    res.json({ ok: true, cancelled, ...getHibernateStatus() });
+    res.json({ ok: true, cancelled, ...getHibernateStatus(), onIdle: getHibernateOnIdleStatus() });
   });
 
   // POST /restart-clear — manual escape hatch to dismiss a stale restart banner

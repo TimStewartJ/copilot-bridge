@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requestDeviceHibernate, type DeviceHibernateCommand } from "../platform.js";
-import { cancelHibernate, getHibernateStatus, scheduleHibernate } from "../device-hibernate.js";
+import {
+  armHibernateOnIdle,
+  cancelHibernate,
+  disarmHibernateOnIdle,
+  getHibernateOnIdleStatus,
+  getHibernateStatus,
+  scheduleHibernate,
+  HIBERNATE_IDLE_POLL_INTERVAL_MS,
+} from "../device-hibernate.js";
 
 vi.mock("../platform.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../platform.js")>();
@@ -15,6 +23,7 @@ const command: DeviceHibernateCommand = { platform: "linux", command: "systemctl
 
 beforeEach(() => {
   cancelHibernate();
+  disarmHibernateOnIdle();
   requestDeviceHibernateMock.mockReset();
   requestDeviceHibernateMock.mockResolvedValue(command);
   vi.useFakeTimers({ now: new Date("2026-06-06T00:00:00.000Z") });
@@ -22,6 +31,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cancelHibernate();
+  disarmHibernateOnIdle();
   vi.useRealTimers();
 });
 
@@ -82,5 +92,124 @@ describe("device-hibernate scheduler", () => {
     await vi.advanceTimersByTimeAsync(extraMs);
     expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
     expect(getHibernateStatus().pending).toBe(false);
+  });
+});
+
+describe("device-hibernate idle watcher", () => {
+  const GRACE_MS = 2 * 60_000;
+
+  function arm(getActiveSessionCount: () => number) {
+    return armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount });
+  }
+
+  it("reports a disarmed watcher initially", () => {
+    expect(getHibernateOnIdleStatus()).toEqual({
+      armed: false,
+      armedAt: null,
+      graceMs: null,
+      activeSessions: 0,
+      idleSince: null,
+      hibernateAt: null,
+    });
+  });
+
+  it("waits for the idle grace window before hibernating", async () => {
+    const status = arm(() => 0);
+    expect(status).toEqual({
+      armed: true,
+      armedAt: Date.now(),
+      graceMs: GRACE_MS,
+      activeSessions: 0,
+      idleSince: Date.now(),
+      hibernateAt: Date.now() + GRACE_MS,
+    });
+
+    // Arming alone must never hibernate — only a later poll tick can fire.
+    await vi.advanceTimersByTimeAsync(GRACE_MS - HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    expect(getHibernateOnIdleStatus().armed).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+    expect(requestDeviceHibernateMock).toHaveBeenCalledWith(command);
+    // The watcher disarms itself so waking the device does not hibernate again.
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+  });
+
+  it("restarts the idle window when a session becomes active", async () => {
+    let activeSessions = 1;
+    arm(() => activeSessions);
+    expect(getHibernateOnIdleStatus()).toMatchObject({ activeSessions: 1, idleSince: null, hibernateAt: null });
+
+    activeSessions = 0;
+    await vi.advanceTimersByTimeAsync(HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    const idleSince = getHibernateOnIdleStatus().idleSince;
+    expect(idleSince).toBe(Date.now());
+
+    // A new turn starts before the grace window elapses.
+    await vi.advanceTimersByTimeAsync(GRACE_MS - HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    activeSessions = 1;
+    await vi.advanceTimersByTimeAsync(HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    expect(getHibernateOnIdleStatus().idleSince).toBeNull();
+
+    // The full window must pass again from the new idle point.
+    activeSessions = 0;
+    await vi.advanceTimersByTimeAsync(GRACE_MS);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+  });
+
+  it("treats an activity-count failure as busy instead of hibernating", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    arm(() => {
+      throw new Error("session manager unavailable");
+    });
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
+
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    expect(getHibernateOnIdleStatus()).toMatchObject({ armed: true, activeSessions: 1, idleSince: null });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("disarming stops the watcher from firing", async () => {
+    arm(() => 0);
+    expect(disarmHibernateOnIdle()).toBe(true);
+    expect(disarmHibernateOnIdle()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+  });
+
+  it("re-arming replaces the previous watcher without double firing", async () => {
+    arm(() => 0);
+    arm(() => 0);
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS + HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+  });
+
+  it("idle hibernation drops a redundant scheduled hibernation", async () => {
+    scheduleHibernate(command, 60 * 60_000);
+    arm(() => 0);
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS + HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+    expect(getHibernateStatus().pending).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+  });
+
+  it("a scheduled hibernation disarms the idle watcher when it fires", async () => {
+    arm(() => 1);
+    scheduleHibernate(command, 30_000);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
   });
 });
