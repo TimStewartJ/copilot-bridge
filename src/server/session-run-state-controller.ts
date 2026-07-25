@@ -62,6 +62,7 @@ export interface SessionRunStateControllerDeps {
   syncRestartWaitingSessions(activeSessionCount: number): void;
   getActiveSessionCount?(): number;
   clearPendingInteractionStatus(sessionId: string): void;
+  onRunIdle?(sessionId: string, at: number): void;
   promptDeliveryAbortedMessage: string;
   promptDeliveryShutdownMessage: string;
   persistTerminalOverlay(sessionId: string, overlay: SyntheticTerminalOverlay): void;
@@ -270,6 +271,7 @@ export class SessionRunStateController {
     if (state === "idle") {
       if (!current) return;
       this.sessionRuns.delete(sessionId);
+      this.deps.onRunIdle?.(sessionId, now);
       const assistantPreview = this.completedAssistantPreviews.get(sessionId);
       this.completedAssistantPreviews.delete(sessionId);
       if (opts.emitIdle !== false) {

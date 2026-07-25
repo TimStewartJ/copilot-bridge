@@ -210,6 +210,38 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.sessionObjects.has("active")).toBe(false);
   });
 
+  it("starts a fresh idle TTL when a stale active run completes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { manager } = createManager();
+    manager.sessionCacheIdleTtlMs = 1_000;
+    const completed = fakeSession("completed");
+    const expired = fakeSession("expired");
+    await manager.cacheResumedSession("completed", completed);
+    await manager.cacheResumedSession("expired", expired);
+    manager.setSessionRunState("completed", "busy", { now: 0, lastEventAt: 0 });
+
+    vi.setSystemTime(1_001);
+    manager.setSessionRunState("completed", "idle", { now: 1_001 });
+    await manager.trimSessionCache("completion grace period");
+    await manager._drainCacheQueue();
+
+    expect(manager.sessionObjects.has("completed")).toBe(true);
+    expect(completed.disconnect).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.has("expired")).toBe(false);
+    expect(expired.disconnect).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(2_000);
+    await manager.trimSessionCache("inside completion grace period");
+    expect(manager.sessionObjects.has("completed")).toBe(true);
+
+    vi.setSystemTime(2_001);
+    await manager.trimSessionCache("completed grace period");
+    await manager._drainCacheQueue();
+    expect(manager.sessionObjects.has("completed")).toBe(false);
+    expect(completed.disconnect).toHaveBeenCalledTimes(1);
+  });
+
   it("retains cleanup ownership when task removal fails", async () => {
     const { manager } = createManager();
     const session = fakeSessionWithAgent("stuck", "completed");

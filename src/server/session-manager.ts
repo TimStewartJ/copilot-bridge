@@ -689,6 +689,7 @@ export class SessionManager {
       syncRestartWaitingSessions,
       getActiveSessionCount: () => this.getLifecycleBlockingSessionCount(),
       clearPendingInteractionStatus: (sessionId) => this.clearPendingInteractionStatus(sessionId),
+      onRunIdle: (sessionId, at) => this.touchSessionTree(sessionId, at),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
       promptDeliveryShutdownMessage: PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
       persistTerminalOverlay: (sessionId, overlay) => {
