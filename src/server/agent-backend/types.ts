@@ -192,6 +192,8 @@ export interface AgentUserInputRequest {
 export interface AgentUserInputResponse {
   answer: string;
   wasFreeform: boolean;
+  /** Set when the request was dismissed instead of answered. */
+  dismissed?: boolean;
 }
 
 export interface AgentPendingUserInputRequest {

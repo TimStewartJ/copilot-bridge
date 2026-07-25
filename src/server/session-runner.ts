@@ -1057,7 +1057,11 @@ export class SessionRunner {
             console.warn(`[sdk] [${sid}] Ignoring user input completion without requestId`);
             break;
           }
-          if (typeof data.answer === "string" && typeof data.wasFreeform === "boolean") {
+          if (
+            data.dismissed !== true
+            && typeof data.answer === "string"
+            && typeof data.wasFreeform === "boolean"
+          ) {
             bus.emitUserInputAnswered(requestId, {
               answer: data.answer,
               wasFreeform: data.wasFreeform,

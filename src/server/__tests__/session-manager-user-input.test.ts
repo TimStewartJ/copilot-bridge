@@ -178,8 +178,8 @@ describe("SessionManager SDK-owned user input", () => {
     expect(manager.getPendingUserInputCount("session-1")).toBe(0);
   });
 
-  it("clears derived pending status on terminal paths", () => {
-    const { manager, eventBusRegistry } = createManager();
+  it("clears derived status and cancels runtime requests on terminal paths", async () => {
+    const { manager, respondToUserInput, eventBusRegistry } = createManager([pendingRequest()]);
     (Reflect.get(manager, "recordPendingInteractionEvent") as Function).call(
       manager,
       "session-1",
@@ -196,6 +196,15 @@ describe("SessionManager SDK-owned user input", () => {
     controller.completeAborted("");
 
     expect(manager.getPendingUserInputCount("session-1")).toBe(0);
+    await expect(manager.getPendingInteractionSnapshot("session-1")).resolves.toEqual({
+      pendingUserInputs: [],
+      pendingElicitations: [],
+    });
+    expect(respondToUserInput).toHaveBeenCalledWith("request-1", {
+      answer: "",
+      wasFreeform: false,
+      dismissed: true,
+    });
   });
 
   it("bounds unresponsive backend lookups", async () => {
