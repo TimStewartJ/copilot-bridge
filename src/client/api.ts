@@ -1891,10 +1891,22 @@ export async function closeHeadedDiagnosticsBrowser(): Promise<BrowserHeadedClos
   return apiFetch<BrowserHeadedCloseResponse>("/api/browser/diagnostics/close-headed", {});
 }
 
+export interface DeviceHibernateOnIdleStatus {
+  armed: boolean;
+  armedAt: number | null;
+  graceMs: number | null;
+  /** Sessions still active at the server's last idle sample. */
+  activeSessions: number;
+  idleSince: number | null;
+  /** Projected hibernation time while idle, or null while sessions are active. */
+  hibernateAt: number | null;
+}
+
 export interface DeviceHibernateStatus {
   pending: boolean;
   scheduledAt: number | null;
   delayMs: number | null;
+  onIdle?: DeviceHibernateOnIdleStatus;
 }
 
 export interface DeviceHibernateResponse extends DeviceHibernateStatus {
@@ -1907,8 +1919,17 @@ export interface DeviceHibernateCancelResponse extends DeviceHibernateStatus {
   cancelled: boolean;
 }
 
+export interface DeviceHibernateOnIdleResponse extends DeviceHibernateOnIdleStatus {
+  ok: true;
+  disarmed: boolean;
+  message: string;
+}
+
 /** Valid hibernation delays (minutes). 0 means hibernate now. */
 export const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
+
+/** Idle window (minutes) required before hibernate-on-idle fires. */
+export const HIBERNATE_IDLE_GRACE_MINUTES = 2;
 
 export async function hibernateDevice(delayMinutes = 0): Promise<DeviceHibernateResponse> {
   return apiFetch<DeviceHibernateResponse>("/api/device/hibernate", { delayMinutes });
@@ -1920,6 +1941,16 @@ export async function fetchHibernateStatus(): Promise<DeviceHibernateStatus> {
 
 export async function cancelHibernate(): Promise<DeviceHibernateCancelResponse> {
   return apiFetch<DeviceHibernateCancelResponse>("/api/device/hibernate/cancel", {});
+}
+
+export async function setHibernateOnIdle(
+  enabled: boolean,
+  graceMinutes: number = HIBERNATE_IDLE_GRACE_MINUTES,
+): Promise<DeviceHibernateOnIdleResponse> {
+  return apiFetch<DeviceHibernateOnIdleResponse>("/api/device/hibernate/on-idle", {
+    enabled,
+    graceMinutes,
+  });
 }
 
 // ── Push notification API ──────────────────────────────────────────

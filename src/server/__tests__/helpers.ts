@@ -242,6 +242,7 @@ export function createMockSessionManager() {
       pendingElicitations: [],
     }),
     getActiveSessions: () => [],
+    getLifecycleBlockingSessionCount: () => 0,
     isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),
     forkSession: async () => ({ sessionId: "fork-session" }),

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { request, createTestApp, eventually } from "./api-routes-test-helpers.js";
+import { request, createTestApp, createMockSessionManager, eventually } from "./api-routes-test-helpers.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate } from "../platform.js";
-import { cancelHibernate } from "../device-hibernate.js";
+import { cancelHibernate, disarmHibernateOnIdle, getHibernateOnIdleStatus, HIBERNATE_IDLE_POLL_INTERVAL_MS } from "../device-hibernate.js";
 
 vi.mock("../platform.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../platform.js")>();
@@ -19,9 +19,18 @@ const linuxHibernateCommand = {
   command: "systemctl",
   args: ["hibernate"],
 };
+const disarmedOnIdle = {
+  armed: false,
+  armedAt: null,
+  graceMs: null,
+  activeSessions: 0,
+  idleSince: null,
+  hibernateAt: null,
+};
 
 beforeEach(() => {
   cancelHibernate();
+  disarmHibernateOnIdle();
   getDeviceHibernateCommandMock.mockReset();
   getDeviceHibernateCommandMock.mockReturnValue(linuxHibernateCommand);
   requestDeviceHibernateMock.mockReset();
@@ -29,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cancelHibernate();
+  disarmHibernateOnIdle();
   vi.useRealTimers();
 });
 
@@ -82,6 +92,7 @@ describe("Device management routes", () => {
       pending: false,
       scheduledAt: null,
       delayMs: null,
+      onIdle: disarmedOnIdle,
       message: "Hibernate requested. This device may sleep shortly.",
     });
     expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
@@ -130,7 +141,12 @@ describe("Device management routes", () => {
     expect(requestDeviceHibernateMock).toHaveBeenCalledWith(linuxHibernateCommand);
 
     const clearedRes = await request(app).get("/api/device/hibernate");
-    expect(clearedRes.body).toEqual({ pending: false, scheduledAt: null, delayMs: null });
+    expect(clearedRes.body).toEqual({
+      pending: false,
+      scheduledAt: null,
+      delayMs: null,
+      onIdle: disarmedOnIdle,
+    });
   });
 
   it("POST /api/device/hibernate/cancel clears a pending scheduled hibernation", async () => {
@@ -148,6 +164,7 @@ describe("Device management routes", () => {
       pending: false,
       scheduledAt: null,
       delayMs: null,
+      onIdle: disarmedOnIdle,
     });
 
     await vi.advanceTimersByTimeAsync(30 * 60_000);
@@ -184,5 +201,119 @@ describe("Device management routes", () => {
     expect(res.status).toBe(202);
     await vi.advanceTimersByTimeAsync(250);
     await eventually(() => expect(errorSpy).toHaveBeenCalledWith("[device] Hibernate request failed:", error));
+  });
+
+  it("POST /api/device/hibernate/on-idle arms the watcher and hibernates once sessions go idle", async () => {
+    vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
+    requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);
+    let activeSessions = 2;
+    const { app } = createTestApp({
+      sessionManager: {
+        ...createMockSessionManager(),
+        getLifecycleBlockingSessionCount: () => activeSessions,
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/device/hibernate/on-idle")
+      .send({ enabled: true, graceMinutes: 1 });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({
+      ok: true,
+      armed: true,
+      graceMs: 60_000,
+      activeSessions: 2,
+      idleSince: null,
+      hibernateAt: null,
+    });
+
+    const statusRes = await request(app).get("/api/device/hibernate");
+    expect(statusRes.body.onIdle).toMatchObject({ armed: true, activeSessions: 2 });
+
+    // Busy sessions hold hibernation off indefinitely.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+
+    activeSessions = 0;
+    await vi.advanceTimersByTimeAsync(60_000 + 2 * HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    await eventually(() => expect(requestDeviceHibernateMock).toHaveBeenCalledOnce());
+    expect(requestDeviceHibernateMock).toHaveBeenCalledWith(linuxHibernateCommand);
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+  });
+
+  it("POST /api/device/hibernate/on-idle disarms the watcher when disabled", async () => {
+    vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
+    requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);
+    const { app } = createTestApp();
+
+    await request(app).post("/api/device/hibernate/on-idle").send({ enabled: true, graceMinutes: 1 });
+    expect(getHibernateOnIdleStatus().armed).toBe(true);
+
+    const res = await request(app).post("/api/device/hibernate/on-idle").send({ enabled: false });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, disarmed: true, armed: false });
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+
+    const repeatRes = await request(app).post("/api/device/hibernate/on-idle").send({ enabled: false });
+    expect(repeatRes.body).toMatchObject({ ok: true, disarmed: false, armed: false });
+  });
+
+  it("POST /api/device/hibernate/on-idle rejects invalid input", async () => {
+    const { app } = createTestApp();
+
+    const graceRes = await request(app)
+      .post("/api/device/hibernate/on-idle")
+      .send({ enabled: true, graceMinutes: 7 });
+    expect(graceRes.status).toBe(400);
+    expect(graceRes.body.error).toContain("graceMinutes must be one of");
+
+    const enabledRes = await request(app)
+      .post("/api/device/hibernate/on-idle")
+      .send({ enabled: "yes" });
+    expect(enabledRes.status).toBe(400);
+    expect(enabledRes.body).toEqual({ error: "enabled must be a boolean." });
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+  });
+
+  it("POST /api/device/hibernate/on-idle rejects unsupported platforms before arming", async () => {
+    getDeviceHibernateCommandMock.mockImplementation(() => {
+      throw new Error("Device hibernation is not supported on macOS by Copilot Bridge.");
+    });
+    const { app } = createTestApp();
+
+    const res = await request(app).post("/api/device/hibernate/on-idle").send({ enabled: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "Device hibernation is not supported on macOS by Copilot Bridge.",
+    });
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+  });
+
+  it("POST /api/device/hibernate/on-idle is unavailable in staging", async () => {
+    const { app } = createTestApp({ isStaging: true });
+
+    const res = await request(app).post("/api/device/hibernate/on-idle").send({ enabled: true });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Not available in staging" });
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+  });
+
+  it("an immediate hibernate request disarms the idle watcher", async () => {
+    vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
+    requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);
+    const { app } = createTestApp();
+
+    await request(app).post("/api/device/hibernate/on-idle").send({ enabled: true, graceMinutes: 5 });
+    expect(getHibernateOnIdleStatus().armed).toBe(true);
+
+    const res = await request(app).post("/api/device/hibernate").send({});
+    expect(res.body.onIdle).toEqual(disarmedOnIdle);
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
   });
 });
