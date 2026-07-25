@@ -61,7 +61,7 @@ export interface SessionRunStateControllerDeps {
   isRestartPending(): boolean;
   syncRestartWaitingSessions(activeSessionCount: number): void;
   getActiveSessionCount?(): number;
-  clearPendingInteractionStatus(sessionId: string): void;
+  cancelPendingInteractions(sessionId: string): void;
   onRunIdle?(sessionId: string, at: number): void;
   promptDeliveryAbortedMessage: string;
   promptDeliveryShutdownMessage: string;
@@ -150,7 +150,7 @@ export class SessionRunStateController {
       if (completed) return false;
       completed = true;
       clearAbortWait();
-      this.deps.clearPendingInteractionStatus(sessionId);
+      this.deps.cancelPendingInteractions(sessionId);
       emitTerminal?.(new Date().toISOString());
       resolveCompletion();
       return true;

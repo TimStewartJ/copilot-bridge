@@ -209,6 +209,13 @@ export {
 type CopilotModelList = AgentModelInfo[];
 export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
 const PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS = 5_000;
+// Mirrors the payloads the Copilot CLI sends when a user dismisses a prompt.
+const DISMISSED_USER_INPUT_RESPONSE = {
+  answer: "",
+  wasFreeform: false,
+  dismissed: true,
+} as const;
+const CANCELED_ELICITATION_RESPONSE = { action: "cancel" } as const;
 
 // Graceful shutdown must finish before the launcher's force-kill window
 // (GRACEFUL_EXIT_WAIT = 15s) so the server exits on its own. The overall budget
@@ -582,6 +589,7 @@ export class SessionManager {
     elicitation: number;
   }>();
   private readonly pendingInteractionReconcileGeneration = new Map<string, number>();
+  private readonly pendingInteractionCleanups = new Map<string, Promise<void>>();
   private cacheQueue: Promise<void> = Promise.resolve();
   private cleanupQueue: Promise<void> = Promise.resolve();
   private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
@@ -688,7 +696,7 @@ export class SessionManager {
       isRestartPending,
       syncRestartWaitingSessions,
       getActiveSessionCount: () => this.getLifecycleBlockingSessionCount(),
-      clearPendingInteractionStatus: (sessionId) => this.clearPendingInteractionStatus(sessionId),
+      cancelPendingInteractions: (sessionId) => this.cancelPendingInteractions(sessionId),
       onRunIdle: (sessionId, at) => this.touchSessionTree(sessionId, at),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
       promptDeliveryShutdownMessage: PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
@@ -2224,12 +2232,89 @@ export class SessionManager {
     return generation;
   }
 
-  private clearPendingInteractionStatus(sessionId: string): void {
+  /**
+   * Terminal runs leave their interaction requests behind: the Copilot runtime
+   * only drops a pending request when it is answered, so a turn aborted while
+   * `ask_user` waits keeps the request alive and replays it on the next stream
+   * hydration. Clear the derived status synchronously and cancel the
+   * runtime-owned leftovers in the background.
+   */
+  private cancelPendingInteractions(sessionId: string): void {
+    const hadPendingInteractions = this.getPendingInteractionCount(sessionId) > 0;
     this.nextPendingInteractionReconcileGeneration(sessionId);
     this.setPendingInteractionCounts(sessionId, {
       userInput: 0,
       elicitation: 0,
     });
+
+    const session = this.sessionObjects.get(sessionId);
+    if (!hadPendingInteractions || !session || this.shuttingDown) return;
+    const cleanup = this.cancelRuntimePendingInteractions(sessionId, session).finally(() => {
+      if (this.pendingInteractionCleanups.get(sessionId) === cleanup) {
+        this.pendingInteractionCleanups.delete(sessionId);
+      }
+    });
+    this.pendingInteractionCleanups.set(sessionId, cleanup);
+  }
+
+  /**
+   * Cancels runtime-owned pending requests with the same payloads the Copilot
+   * CLI sends when a user dismisses a prompt. Never rejects: every request is
+   * bounded by one shared deadline and failures are isolated per request so a
+   * single unresponsive request cannot strand the others.
+   */
+  private async cancelRuntimePendingInteractions(
+    sessionId: string,
+    session: AgentSession,
+  ): Promise<void> {
+    const deadline = createDeadline(PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS);
+    const warn = (error: unknown) => {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Failed to cancel a pending interaction request:`,
+        error instanceof Error ? error.message : error,
+      );
+    };
+    const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
+      const outcome = await settleByDeadline(operation, deadline);
+      if (outcome.status === "fulfilled") return outcome.value;
+      if (outcome.status === "rejected") throw outcome.error;
+      throw new Error(
+        `Pending interaction cancellation timed out after ${PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS}ms`,
+      );
+    };
+    const cancelKind = async (
+      list: () => Promise<{ requestId: string }[]>,
+      cancel: (requestId: string) => Promise<boolean>,
+    ): Promise<void> => {
+      const requests = await bounded(list).catch((error) => {
+        warn(error);
+        return [];
+      });
+      await Promise.all(requests.map((request) =>
+        bounded(() => cancel(request.requestId)).catch(warn)
+      ));
+    };
+
+    const cancellations: Promise<void>[] = [];
+    if (
+      typeof session.getPendingUserInputRequests === "function"
+      && typeof session.respondToUserInput === "function"
+    ) {
+      cancellations.push(cancelKind(
+        () => session.getPendingUserInputRequests!(),
+        (requestId) => session.respondToUserInput!(requestId, DISMISSED_USER_INPUT_RESPONSE),
+      ));
+    }
+    if (
+      typeof session.getPendingElicitationRequests === "function"
+      && typeof session.tryRespondToElicitation === "function"
+    ) {
+      cancellations.push(cancelKind(
+        () => session.getPendingElicitationRequests!(),
+        (requestId) => session.tryRespondToElicitation!(requestId, CANCELED_ELICITATION_RESPONSE),
+      ));
+    }
+    await Promise.all(cancellations);
   }
 
   private recordPendingInteractionEvent(
@@ -2307,6 +2392,9 @@ export class SessionManager {
   }
 
   async getPendingInteractionSnapshot(sessionId: string): Promise<PendingInteractionSnapshot> {
+    // Terminal cleanup is authoritative for the run that just ended, so let it
+    // settle before reporting what the runtime still considers pending.
+    await this.pendingInteractionCleanups.get(sessionId);
     const session = this.sessionObjects.get(sessionId);
     if (!session) {
       return { pendingUserInputs: [], pendingElicitations: [] };
@@ -3639,7 +3727,6 @@ export class SessionManager {
   }
 
   private completeSessionAbortLocally(sessionId: string, content: string): void {
-    this.clearPendingInteractionStatus(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
     const assistantSourceEventId = bus?.getSnapshot().assistantSegments.at(-1)?.sourceEventId;
     const runController = this.activeRunControllers.get(sessionId);
@@ -3649,6 +3736,7 @@ export class SessionManager {
       });
       return;
     }
+    this.cancelPendingInteractions(sessionId);
     bus?.emit({
       type: "aborted",
       content,
