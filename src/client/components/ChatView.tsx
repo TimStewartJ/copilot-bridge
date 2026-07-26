@@ -328,6 +328,33 @@ function getLatestEntryActivityTimestamp(entries: ChatEntry[]): string | undefin
   return latest;
 }
 
+function getVisibleStreamEntries(canonicalEntries: ChatEntry[], streamEntries: ChatEntry[]): ChatEntry[] {
+  const canonicalKeys = new Set(canonicalEntries.flatMap(getCanonicalEntryReconciliationKeys));
+  let latestOverlapIndex = -1;
+  for (let index = 0; index < streamEntries.length; index += 1) {
+    const key = getLiveEntryReconciliationKey(streamEntries[index]);
+    if (key && canonicalKeys.has(key)) latestOverlapIndex = index;
+  }
+
+  if (latestOverlapIndex >= 0) {
+    return streamEntries.slice(latestOverlapIndex + 1);
+  }
+
+  const latestCanonicalActivityAt = getLatestEntryActivityTimestamp(canonicalEntries);
+  const latestCanonicalTime = latestCanonicalActivityAt
+    ? Date.parse(latestCanonicalActivityAt)
+    : Number.NaN;
+  return streamEntries.filter((entry) => {
+    const key = getLiveEntryReconciliationKey(entry);
+    if (key && canonicalKeys.has(key)) return false;
+    if (!Number.isFinite(latestCanonicalTime)) return true;
+    const activityAt = getEntryActivityTimestamp(entry);
+    if (!activityAt) return true;
+    const activityTime = Date.parse(activityAt);
+    return !Number.isFinite(activityTime) || activityTime > latestCanonicalTime;
+  });
+}
+
 function sortPendingRequests<T extends { requestedAt?: string }>(
   requests: T[],
 ): T[] {
@@ -673,14 +700,10 @@ export default function ChatView({
     activeTurnInstanceId,
   } = useSessionStream(sessionId, handleStreamSettled, onMessageSent);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
-  const canonicalEntryKeys = useMemo(
-    () => new Set(entries.flatMap(getCanonicalEntryReconciliationKeys)),
-    [entries],
+  const visibleStreamLiveEntries = useMemo(
+    () => getVisibleStreamEntries(entries, streamLiveEntries),
+    [entries, streamLiveEntries],
   );
-  const visibleStreamLiveEntries = useMemo(() => streamLiveEntries.filter((entry) => {
-    const key = getLiveEntryReconciliationKey(entry);
-    return !key || !canonicalEntryKeys.has(key);
-  }), [canonicalEntryKeys, streamLiveEntries]);
 
   useLayoutEffect(() => {
     if (!sessionId) return;

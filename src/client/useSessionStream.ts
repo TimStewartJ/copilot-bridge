@@ -788,7 +788,6 @@ export function useSessionStream(
         });
         return;
       }
-
       const eventType = event.type as string;
       if (eventType === "snapshot") {
         const toolState = buildSnapshotToolState(event, sid);

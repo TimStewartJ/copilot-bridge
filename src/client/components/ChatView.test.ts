@@ -1895,6 +1895,79 @@ describe("ChatView steering sends", () => {
     }
   });
 
+  it("does not append older snapshot entries after the canonical tail", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          {
+            id: "canonical-boundary",
+            role: "assistant",
+            content: "canonical boundary",
+            sourceEventId: "assistant-event-2",
+            timestamp: "2026-07-25T22:00:00.000Z",
+          },
+          {
+            id: "canonical-latest",
+            role: "assistant",
+            content: "canonical latest",
+            sourceEventId: "assistant-event-3",
+            timestamp: "2026-07-25T22:01:00.000Z",
+          },
+        ],
+        busy: true,
+        total: 50,
+        warm: true,
+        hasMore: true,
+      },
+      streamOverrides: {
+        liveEntries: [
+          {
+            id: "live-old",
+            role: "assistant",
+            content: "older snapshot message",
+            sourceEventId: "assistant-event-1",
+            timestamp: "2026-07-25T21:00:00.000Z",
+          },
+          {
+            id: "live-boundary",
+            role: "assistant",
+            content: "duplicate boundary",
+            sourceEventId: "assistant-event-2",
+            timestamp: "2026-07-25T22:00:00.000Z",
+          },
+          {
+            id: "live-latest",
+            role: "assistant",
+            content: "duplicate latest",
+            sourceEventId: "assistant-event-3",
+            timestamp: "2026-07-25T22:01:00.000Z",
+          },
+          {
+            id: "live-new",
+            role: "assistant",
+            content: "new live message",
+            sourceEventId: "assistant-event-4",
+            timestamp: "2026-07-25T22:02:00.000Z",
+          },
+        ],
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("new live message") ?? false);
+      const messages = findAllByTag(dom.container, "DIV")
+        .filter((candidate) => candidate.getAttribute?.("data-testid") === "message-bubble")
+        .map((candidate) => candidate.textContent);
+
+      expect(messages).toEqual(["canonical boundary", "canonical latest", "new live message"]);
+      expect(dom.container.textContent).not.toContain("older snapshot message");
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("reconciles a projected final assistant entry when delayed disk history reaches its source event", async () => {
     const onRenderedReadThrough = vi.fn();
     const { dom, act, cleanup } = await renderChatView({
