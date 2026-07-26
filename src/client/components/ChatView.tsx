@@ -16,6 +16,7 @@ import {
   type ChatEntry,
   type ChatMessage,
   type ChatMessageDelivery,
+  type ChatVisualEntry,
   type McpServerStatus,
   type ElicitationResponseEndpointPayload,
   type PendingElicitationRequestView,
@@ -24,7 +25,7 @@ import {
   type ToolCall,
   type UserInputAnswerEndpointPayload,
 } from "../api";
-import { getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
+import { getCachedChatSnapshot, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
@@ -36,6 +37,7 @@ import useLongPressMenu from "../hooks/useLongPressMenu";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
+import type { RunNotice } from "../../shared/session-stream.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
 import ElicitationCard from "./ElicitationCard";
@@ -61,6 +63,14 @@ const MANUAL_LOAD_PAGE_SIZE = 200;
 const AUTO_LOAD_TOP_THRESHOLD = 24;
 const AUTO_LOAD_DELAY_MS = 400;
 const STREAM_RENDER_INTERVAL_MS = 60;
+/**
+ * Minimum spacing between disk-history refreshes driven by `history_advanced`. The first advance
+ * after an idle gap refreshes immediately (leading edge); further advances inside the window
+ * coalesce into one trailing refresh, so a burst of tool events cannot storm the reader.
+ */
+const HISTORY_REFRESH_THROTTLE_MS = 250;
+/** Upper bound on entries re-read when refreshing a paginated window. */
+const HISTORY_REFRESH_MAX_LIMIT = 200;
 const LIVE_STREAMING_MESSAGE_ID = "live-assistant-stream";
 const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
 const FOLLOW_SCROLL_EASE = 0.35;
@@ -145,6 +155,14 @@ type FailedOptimisticChatMessage = ChatMessage & {
   delivery: ChatMessageDelivery & { failed: true };
 };
 
+/** A message this client is delivering (or failed to deliver); never part of disk history. */
+interface PendingSend {
+  id: string;
+  content: string;
+  attachments?: Attachment[];
+  delivery?: ChatMessageDelivery;
+}
+
 function isFailedOptimisticChatMessage(message: ChatMessage): message is FailedOptimisticChatMessage {
   return typeof message.id === "string" && message.delivery?.failed === true;
 }
@@ -153,11 +171,6 @@ function createSendingDelivery(mode?: SendMode): ChatMessageDelivery {
   return mode === undefined ? { failed: false } : { failed: false, mode };
 }
 
-function hasFailedDeliveryEntry(entries: ChatEntry[]): boolean {
-  return entries.some((entry) => (
-    isChatMessageEntry(entry) && entry.delivery?.failed === true
-  ));
-}
 
 function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): string {
   if (message.id) return message.id;
@@ -165,20 +178,7 @@ function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): strin
   return `${message.role}:${fallbackIndex}`;
 }
 
-function getCanonicalEntryReconciliationKeys(entry: ChatEntry): string[] {
-  const keys: string[] = [];
-  if (entry.sourceEventId) keys.push(`event:${entry.sourceEventId}`);
-  if (entry.type === "tool") keys.push(`tool:${entry.toolCall.toolCallId}`);
-  if (entry.type === "visual") keys.push(`visual:${entry.visual.artifactId}`);
-  return keys;
-}
 
-function getLiveEntryReconciliationKey(entry: ChatEntry): string | null {
-  if (entry.sourceEventId) return `event:${entry.sourceEventId}`;
-  if (entry.type === "tool") return `tool:${entry.toolCall.toolCallId}`;
-  if (entry.type === "visual") return `visual:${entry.visual.artifactId}`;
-  return null;
-}
 
 function getLatestMessageAnchorKey(entries: ChatEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -246,32 +246,6 @@ function renderLiveStatusPill(
   );
 }
 
-function renderRefreshingHistoryTailSkeleton(isLoading: boolean) {
-  return (
-    <LoadingSkeletonRegion
-      isLoading={isLoading}
-      label="Loading newer chat content"
-      className="pt-4"
-      delayMs={200}
-    >
-      <div className="space-y-3">
-        <div className={CHAT_RAIL_CLASS}>
-          <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
-            <SkeletonText lines={3} widths={["84%", "68%", "42%"]} />
-          </div>
-        </div>
-        <div className={CHAT_RAIL_CLASS}>
-          <div className="inline-flex w-full max-w-md items-center gap-3 rounded-xl border border-border/70 bg-bg-secondary/70 px-3 py-2">
-            <Skeleton shape="circle" width={16} height={16} className="shrink-0" />
-            <div className="min-w-0 flex-1">
-              <SkeletonText lines={2} widths={["62%", "38%"]} />
-            </div>
-          </div>
-        </div>
-      </div>
-    </LoadingSkeletonRegion>
-  );
-}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -283,20 +257,23 @@ function isAbortError(error: unknown): boolean {
     : error instanceof Error && error.name === "AbortError";
 }
 
-function isNewerActivityTimestamp(currentActivityAt?: string, cachedActivityAt?: string): boolean {
-  if (!currentActivityAt || !cachedActivityAt) return false;
-  const currentTime = Date.parse(currentActivityAt);
-  const cachedTime = Date.parse(cachedActivityAt);
-  return Number.isFinite(currentTime) && Number.isFinite(cachedTime) && currentTime > cachedTime;
+/**
+ * True when `timestamp` is at or before the newest committed entry, meaning disk already carries
+ * this item even if the loaded window does not reach it. Items with no timestamp are treated as
+ * uncommitted, since an accepted-but-unpersisted prompt has none yet.
+ */
+function isAtOrBeforeWatermark(timestamp: string | undefined, watermarkMs: number): boolean {
+  if (!timestamp || !Number.isFinite(watermarkMs)) return false;
+  const itemMs = Date.parse(timestamp);
+  return Number.isFinite(itemMs) && itemMs <= watermarkMs;
 }
 
-function activityTimestampCovers(loadedActivityAt: string | undefined, markerActivityAt: string | undefined): boolean {
-  if (!markerActivityAt) return true;
-  const markerTime = Date.parse(markerActivityAt);
-  if (!Number.isFinite(markerTime)) return true;
-  if (!loadedActivityAt) return false;
-  const loadedTime = Date.parse(loadedActivityAt);
-  return Number.isFinite(loadedTime) && loadedTime >= markerTime;
+function getCommittedSourceEventIds(entries: ChatEntry[]): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (entry.sourceEventId) ids.add(entry.sourceEventId);
+  }
+  return ids;
 }
 
 function maxActivityTimestamp(left?: string | null, right?: string | null): string | undefined {
@@ -328,32 +305,6 @@ function getLatestEntryActivityTimestamp(entries: ChatEntry[]): string | undefin
   return latest;
 }
 
-function getVisibleStreamEntries(canonicalEntries: ChatEntry[], streamEntries: ChatEntry[]): ChatEntry[] {
-  const canonicalKeys = new Set(canonicalEntries.flatMap(getCanonicalEntryReconciliationKeys));
-  let latestOverlapIndex = -1;
-  for (let index = 0; index < streamEntries.length; index += 1) {
-    const key = getLiveEntryReconciliationKey(streamEntries[index]);
-    if (key && canonicalKeys.has(key)) latestOverlapIndex = index;
-  }
-
-  if (latestOverlapIndex >= 0) {
-    return streamEntries.slice(latestOverlapIndex + 1);
-  }
-
-  const latestCanonicalActivityAt = getLatestEntryActivityTimestamp(canonicalEntries);
-  const latestCanonicalTime = latestCanonicalActivityAt
-    ? Date.parse(latestCanonicalActivityAt)
-    : Number.NaN;
-  return streamEntries.filter((entry) => {
-    const key = getLiveEntryReconciliationKey(entry);
-    if (key && canonicalKeys.has(key)) return false;
-    if (!Number.isFinite(latestCanonicalTime)) return true;
-    const activityAt = getEntryActivityTimestamp(entry);
-    if (!activityAt) return true;
-    const activityTime = Date.parse(activityAt);
-    return !Number.isFinite(activityTime) || activityTime > latestCanonicalTime;
-  });
-}
 
 function sortPendingRequests<T extends { requestedAt?: string }>(
   requests: T[],
@@ -384,6 +335,41 @@ function getUserInputSubmitError(err: unknown): string {
 interface UserInputQuestionCardProps {
   request: PendingUserInputRequestView;
   onSubmit: (requestId: string, payload: UserInputAnswerEndpointPayload) => Promise<void>;
+}
+
+const RUN_NOTICE_LABELS: Record<RunNotice["kind"], string> = {
+  stopped: "Stopped",
+  interrupted: "Interrupted",
+  error: "Run failed",
+  command: "Command output",
+};
+
+/**
+ * Renders a run outcome that `events.jsonl` does not contain. Keeping it outside the transcript is
+ * what lets disk history stay the sole authority for committed content.
+ */
+function RunNoticeCard({ notice }: { notice: RunNotice }) {
+  const detail = notice.kind === "error" ? notice.message : notice.content;
+  const isError = notice.kind === "error";
+  return (
+    <div className={CHAT_RAIL_CLASS}>
+      <div
+        className={`max-w-xl rounded-2xl border px-4 py-3 text-sm ${
+          isError
+            ? "border-error/25 bg-error/10 text-error"
+            : "border-border bg-bg-secondary text-text-secondary"
+        }`}
+        role={isError ? "alert" : "status"}
+      >
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] opacity-80">
+          {RUN_NOTICE_LABELS[notice.kind]}
+        </div>
+        {detail && (
+          <div className="mt-1 whitespace-pre-wrap leading-6">{detail}</div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps) {
@@ -532,9 +518,13 @@ export default function ChatView({
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
+  /**
+   * Client-owned optimistic sends (in flight or failed). They live outside `entries` so the
+   * committed window stays purely disk-derived.
+   */
+  const [pendingSends, setPendingSends] = useState<PendingSend[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
-  const [showRefreshingTailSkeleton, setShowRefreshingTailSkeleton] = useState(false);
   const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
@@ -570,6 +560,8 @@ export default function ChatView({
   const totalEntriesRef = useRef(0);
   const historyLastVisibleActivityAtRef = useRef<string | undefined>(undefined);
   const entriesRef = useRef<ChatEntry[]>([]);
+  const pendingSendsRef = useRef<PendingSend[]>([]);
+  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionIdRef = useRef<string | null>(sessionId);
   const activeSessionActivityAtRef = useRef<string | undefined>(activeSessionActivityAt);
   const loadingMoreRef = useRef(false);
@@ -580,8 +572,6 @@ export default function ChatView({
   const autoLoadArmedRef = useRef(false);
   const suppressAutoLoadRef = useRef(false);
   const topAutoFillConsumedRef = useRef(false);
-  const staleTailRefreshRetryRef = useRef<string | undefined>(undefined);
-  const tailSkeletonRefreshEligibleRef = useRef(false);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const followScrollFrameRef = useRef<number | null>(null);
   const resetProgrammaticScrollFrameRef = useRef<number | null>(null);
@@ -603,7 +593,9 @@ export default function ChatView({
     mode?: SendMode;
   } | null>(null);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
-  const loadAndReconnectRef = useRef<(opts?: { background?: boolean; replace?: boolean }) => void>(() => {});
+  const loadAndReconnectRef = useRef<
+    (opts?: { background?: boolean; replace?: boolean; silent?: boolean }) => Promise<void>
+  >(async () => {});
   activeSessionActivityAtRef.current = activeSessionActivityAt;
 
   useEffect(() => () => {
@@ -617,7 +609,6 @@ export default function ChatView({
       firstItemIndex?: number;
       total?: number;
       hasMore?: boolean;
-      isCanonical?: boolean;
       lastVisibleActivityAt?: string | null;
     } = {},
   ) => {
@@ -652,14 +643,10 @@ export default function ChatView({
       total: nextTotal,
       hasMore: nextHasMore,
       fetchedAt: Date.now(),
-      isCanonical: opts.isCanonical ?? false,
-      lastVisibleActivityAt: nextLastVisibleActivityAt,
     });
   }, [queryClient]);
 
   const invalidateHistoryRefresh = useCallback(() => {
-    setShowRefreshingTailSkeleton(false);
-    tailSkeletonRefreshEligibleRef.current = false;
     if (!refreshingHistoryRef.current) return;
     loadRequestIdRef.current += 1;
     refreshingHistoryRef.current = false;
@@ -674,15 +661,17 @@ export default function ChatView({
 
   const handleStreamSettled = useCallback(() => {
     onMessageSent();
-    loadAndReconnectRef.current({ background: true, replace: true });
+    loadAndReconnectRef.current({ background: true, replace: true, silent: true });
   }, [onMessageSent]);
 
   const {
-    liveEntries: streamLiveEntries = [],
     streamingContent,
+    liveAssistantSegments = [],
+    pendingUserMessages = [],
     intentText,
-    activeTools = [],
-    currentTurnTools = [],
+    liveTools = [],
+    liveVisuals = [],
+    liveCompletion,
     isStreaming,
     streamStatus,
     hadVisibleOutput,
@@ -691,6 +680,8 @@ export default function ChatView({
     pendingUserInputs = [],
     pendingElicitations = [],
     elicitationCancellation,
+    runNotice,
+    historyEpoch,
     mcpServers: streamMcpServers,
     contextSummary: streamContextSummary,
     sendMessage,
@@ -700,16 +691,91 @@ export default function ChatView({
     activeTurnInstanceId,
   } = useSessionStream(sessionId, handleStreamSettled, onMessageSent);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
-  const visibleStreamLiveEntries = useMemo(
-    () => getVisibleStreamEntries(entries, streamLiveEntries),
-    [entries, streamLiveEntries],
+  // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
+  // disappears from the overlay the moment its persisted entry is present in the loaded window.
+  const committedSourceEventIds = useMemo(() => getCommittedSourceEventIds(entries), [entries]);
+  // Identity alone is not enough: the loaded window is only a suffix of history, so an item whose
+  // disk entry sits above the window would otherwise re-render at the bottom, out of order. Disk is
+  // append-ordered, so its newest entry is a watermark — anything at or before it is committed.
+  const committedWatermarkMs = useMemo(() => {
+    const latest = getLatestEntryActivityTimestamp(entries);
+    return latest ? Date.parse(latest) : Number.NaN;
+  }, [entries]);
+  const isCommittedByWatermark = useCallback(
+    (timestamp?: string) => isAtOrBeforeWatermark(timestamp, committedWatermarkMs),
+    [committedWatermarkMs],
   );
+  const uncommittedUserMessages = useMemo(
+    () => pendingUserMessages.filter((message) => (
+      (!message.sourceEventId || !committedSourceEventIds.has(message.sourceEventId))
+      && !isCommittedByWatermark(message.timestamp)
+    )),
+    [committedSourceEventIds, isCommittedByWatermark, pendingUserMessages],
+  );
+  const uncommittedAssistantSegments = useMemo(
+    () => liveAssistantSegments.filter((segment) => {
+      // Bridge-native text has no disk counterpart at all, so no watermark applies to it.
+      if (segment.bridgeNative) return true;
+      if (segment.sourceEventId && committedSourceEventIds.has(segment.sourceEventId)) return false;
+      return !isCommittedByWatermark(segment.timestamp);
+    }),
+    [committedSourceEventIds, isCommittedByWatermark, liveAssistantSegments],
+  );
+  /** In-flight tools only — drives the run-status header and the spinner on tool cards. */
+  const activeTools = useMemo(
+    () => liveTools.filter((tool) => !tool.completedAt),
+    [liveTools],
+  );
+  const liveToolsById = useMemo(
+    () => new Map(liveTools.map((tool) => [tool.toolCallId, tool])),
+    [liveTools],
+  );
+  const committedToolCallIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (entry.type === "tool") ids.add(entry.toolCall.toolCallId);
+    }
+    return ids;
+  }, [entries]);
+  /** Tools disk history has not surfaced at all yet; these append to the overlay. */
+  const uncommittedLiveTools = useMemo(
+    () => liveTools.filter((tool) => (
+      !committedToolCallIds.has(tool.toolCallId) && !isCommittedByWatermark(tool.startedAt)
+    )),
+    [committedToolCallIds, isCommittedByWatermark, liveTools],
+  );
+  const committedArtifactIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (entry.type === "visual") ids.add(entry.visual.artifactId);
+    }
+    return ids;
+  }, [entries]);
+  const uncommittedVisuals = useMemo(
+    () => liveVisuals.filter((visual) => (
+      !committedArtifactIds.has(visual.artifactId) && !isCommittedByWatermark(visual.timestamp)
+    )),
+    [committedArtifactIds, isCommittedByWatermark, liveVisuals],
+  );
+  const uncommittedCompletion = useMemo(() => {
+    if (!liveCompletion) return null;
+    const committed = entries.some((entry) => entry.type === "completion"
+      && (!liveCompletion.sourceEventId || entry.sourceEventId === liveCompletion.sourceEventId));
+    if (committed || isCommittedByWatermark(liveCompletion.timestamp)) return null;
+    return liveCompletion;
+  }, [entries, isCommittedByWatermark, liveCompletion]);
 
   useLayoutEffect(() => {
     if (!sessionId) return;
-    const liveReadThrough = getLatestEntryActivityTimestamp(visibleStreamLiveEntries);
+    let liveReadThrough: string | undefined;
+    for (const segment of uncommittedAssistantSegments) {
+      liveReadThrough = maxActivityTimestamp(liveReadThrough, segment.timestamp);
+    }
+    for (const message of uncommittedUserMessages) {
+      liveReadThrough = maxActivityTimestamp(liveReadThrough, message.timestamp);
+    }
     if (liveReadThrough) onRenderedReadThrough?.(sessionId, liveReadThrough);
-  }, [onRenderedReadThrough, sessionId, visibleStreamLiveEntries]);
+  }, [onRenderedReadThrough, sessionId, uncommittedAssistantSegments, uncommittedUserMessages]);
 
   useEffect(() => {
     if (!sessionId || loading || creating) {
@@ -796,7 +862,7 @@ export default function ChatView({
     contextRefreshStreamingRef.current = isStreaming;
     if (!sessionId || !wasStreaming || isStreaming) return;
     void refreshSessionContext(sessionId, { background: true });
-    loadAndReconnectRef.current({ background: true });
+    loadAndReconnectRef.current({ background: true, silent: true });
   }, [isStreaming, refreshSessionContext, sessionId]);
 
   const cancelFollowScroll = useCallback(() => {
@@ -945,6 +1011,8 @@ export default function ChatView({
     setUndoError(null);
     setUndoingEventId(null);
     setLoadMoreError(null);
+    pendingSendsRef.current = [];
+    setPendingSends([]);
     if (!sessionId) {
       // Clear draft-only state when entering draft mode from an existing
       // session or when switching between distinct draft composers.
@@ -954,14 +1022,11 @@ export default function ChatView({
           firstItemIndex: 0,
           total: 0,
           hasMore: false,
-          isCanonical: false,
         });
       }
       setLoading(false);
       refreshingHistoryRef.current = false;
       setRefreshingHistory(false);
-      setShowRefreshingTailSkeleton(false);
-      tailSkeletonRefreshEligibleRef.current = false;
       setWarming(false);
       setCreating(false);
       setLoadingMore(false);
@@ -979,7 +1044,6 @@ export default function ChatView({
       firstItemIndex.current = 0;
       totalEntriesRef.current = 0;
       historyLastVisibleActivityAtRef.current = undefined;
-      staleTailRefreshRetryRef.current = undefined;
       entriesRef.current = [];
       loadingMoreRef.current = false;
       autoLoadArmedRef.current = false;
@@ -1005,88 +1069,75 @@ export default function ChatView({
 
     const controller = new AbortController();
 
-    const loadAndReconnect = ({ background = false, replace = false }: { background?: boolean; replace?: boolean } = {}) => {
+    const loadAndReconnect = ({
+      background = false,
+      replace = false,
+      // Routine disk-tail syncs are the steady state now, not an exceptional catch-up, so they
+      // must not flash a progress pill or disable transcript actions.
+      silent = false,
+    }: { background?: boolean; replace?: boolean; silent?: boolean } = {}): Promise<void> => {
       const requestId = ++loadRequestIdRef.current;
       if (background) {
-        refreshingHistoryRef.current = true;
-        setRefreshingHistory(true);
+        if (!silent) {
+          refreshingHistoryRef.current = true;
+          setRefreshingHistory(true);
+        }
       } else {
         refreshingHistoryRef.current = false;
         setLoading(true);
         setRefreshingHistory(false);
-        setShowRefreshingTailSkeleton(false);
-        tailSkeletonRefreshEligibleRef.current = false;
         setWarming(false);
       }
       const pageLoadStart = performance.now();
 
-      // Phase 1: Fast load messages from disk — don't wait for MCP status
-      fetchMessagesFast(sessionId, { limit: INITIAL_PAGE_SIZE })
+      // Phase 1: Fast load messages from disk — don't wait for MCP status.
+      // Disk is the sole authority for committed transcript ordering, so a refresh reads a window
+      // that covers everything currently loaded and replaces it wholesale.
+      const historyRead = (() => {
+      const requestLimit = background
+        ? Math.min(
+            HISTORY_REFRESH_MAX_LIMIT,
+            Math.max(INITIAL_PAGE_SIZE, entriesRef.current.length),
+          )
+        : INITIAL_PAGE_SIZE;
+      return fetchMessagesFast(sessionId, { limit: requestLimit })
         .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt }) => {
           if (controller.signal.aborted) return;
           if (requestId !== loadRequestIdRef.current) {
             return;
           }
-          const currentEntriesHaveClientState = hasClientGeneratedEntries(entriesRef.current);
-          const shouldReplaceLoadedWindow = !background
-            || (replace && !hasFailedDeliveryEntry(entriesRef.current)
-              && !(busy && currentEntriesHaveClientState));
-          if (shouldReplaceLoadedWindow) {
-            staleTailRefreshRetryRef.current = undefined;
-            if (!background) tailSkeletonRefreshEligibleRef.current = false;
-            const nextFirstItemIndex = Math.max(0, total - msgs.length);
-            const activeActivityAt = activeSessionActivityAtRef.current;
-            const responseCoversActiveActivity = activityTimestampCovers(
-              lastVisibleActivityAt,
-              activeActivityAt,
-            );
-            const responseHasKnownActiveCoverage = !!activeActivityAt && responseCoversActiveActivity;
-            applyHistory(msgs, {
-              ownerSessionId: sessionId,
-              firstItemIndex: nextFirstItemIndex,
+          if (background && !replace) {
+            const merged = replaceHistoryWindow(
+              entriesRef.current,
+              firstItemIndex.current,
+              msgs,
               total,
-              hasMore: nextFirstItemIndex > 0,
-              isCanonical: responseHasKnownActiveCoverage,
-              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
-            });
-          } else {
-            const merged = mergeTailMessages(entriesRef.current, firstItemIndex.current, total, msgs);
-            const activeActivityAt = activeSessionActivityAtRef.current;
-            const responseCoversActiveActivity = activityTimestampCovers(
-              lastVisibleActivityAt,
-              activeActivityAt,
             );
-            const isCanonical = !merged.hasOptimisticTail
-              && !merged.hasClientGeneratedEntries
-              && !!activeActivityAt
-              && responseCoversActiveActivity;
             applyHistory(merged.entries, {
               ownerSessionId: sessionId,
               firstItemIndex: merged.firstItemIndex,
               total: merged.total,
               hasMore: merged.firstItemIndex > 0,
-              isCanonical,
               lastVisibleActivityAt: lastVisibleActivityAt ?? null,
             });
-            if (responseCoversActiveActivity) {
-              staleTailRefreshRetryRef.current = undefined;
-            } else if (activeActivityAt && staleTailRefreshRetryRef.current !== activeActivityAt) {
-              staleTailRefreshRetryRef.current = activeActivityAt;
-              setLoading(false);
-              setShowRefreshingTailSkeleton(
-                tailSkeletonRefreshEligibleRef.current
-                  && entriesRef.current.length > 0
-                  && isNewerActivityTimestamp(activeActivityAt, historyLastVisibleActivityAtRef.current),
-              );
-              loadAndReconnect({ background: true });
+            if (merged.hasGap) {
+              // The window grew past what one refresh covers; reload from the top of the window.
+              loadAndReconnect({ background: true, replace: true, silent });
               return;
             }
+          } else {
+            const nextFirstItemIndex = Math.max(0, total - msgs.length);
+            applyHistory(msgs, {
+              ownerSessionId: sessionId,
+              firstItemIndex: nextFirstItemIndex,
+              total,
+              hasMore: nextFirstItemIndex > 0,
+              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
+            });
           }
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
-          setShowRefreshingTailSkeleton(false);
-          tailSkeletonRefreshEligibleRef.current = false;
 
           // Report time from navigation to messages rendered
           const loadDuration = Math.round(performance.now() - pageLoadStart);
@@ -1125,15 +1176,14 @@ export default function ChatView({
               firstItemIndex: 0,
               total: 0,
               hasMore: false,
-              isCanonical: false,
             });
           }
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
-          setShowRefreshingTailSkeleton(false);
-          tailSkeletonRefreshEligibleRef.current = false;
         });
+
+      })();
 
       // MCP status loads independently — doesn't block message rendering
       fetchMcpStatus(sessionId)
@@ -1143,48 +1193,39 @@ export default function ChatView({
           }
         })
         .catch(() => {});
+
+      return historyRead;
     };
 
     loadAndReconnectRef.current = loadAndReconnect;
 
     loadingMoreRef.current = false;
     setLoadingMore(false);
-    setShowRefreshingTailSkeleton(false);
-    staleTailRefreshRetryRef.current = undefined;
-    tailSkeletonRefreshEligibleRef.current = false;
     autoLoadArmedRef.current = false;
     suppressAutoLoadRef.current = false;
     topAutoFillConsumedRef.current = false;
     clearPendingAutoLoad();
     const cachedSnapshot = getCachedChatSnapshot(queryClient, sessionId);
-    if (cachedSnapshot?.isCanonical) {
+    if (cachedSnapshot && cachedSnapshot.entries.length > 0) {
+      // Cached windows are always disk-derived, so they can be shown immediately and then
+      // replaced by the background read.
       applyHistory(cachedSnapshot.entries, {
         ownerSessionId: sessionId,
         firstItemIndex: cachedSnapshot.firstItemIndex,
         total: cachedSnapshot.total,
         hasMore: cachedSnapshot.hasMore,
-        isCanonical: cachedSnapshot.isCanonical,
-        lastVisibleActivityAt: cachedSnapshot.lastVisibleActivityAt,
       });
       setLoading(false);
       setRefreshingHistory(false);
       setWarming(false);
-      tailSkeletonRefreshEligibleRef.current = cachedSnapshot.entries.length > 0;
-      setShowRefreshingTailSkeleton(
-        cachedSnapshot.entries.length > 0
-          && isNewerActivityTimestamp(activeSessionActivityAtRef.current, cachedSnapshot.lastVisibleActivityAt),
-      );
-      loadAndReconnect({ background: true });
+      loadAndReconnect({ background: true, replace: true });
     } else {
       applyHistory([], {
         ownerSessionId: null,
         firstItemIndex: 0,
         total: 0,
         hasMore: false,
-        isCanonical: false,
       });
-      setShowRefreshingTailSkeleton(false);
-      tailSkeletonRefreshEligibleRef.current = false;
       loadAndReconnect();
     }
 
@@ -1195,15 +1236,13 @@ export default function ChatView({
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
-      loadAndReconnect({ background: true });
+      loadAndReconnect({ background: true, silent: true });
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       controller.abort();
       refreshingHistoryRef.current = false;
-      setShowRefreshingTailSkeleton(false);
-      tailSkeletonRefreshEligibleRef.current = false;
-      loadAndReconnectRef.current = () => {};
+      loadAndReconnectRef.current = async () => {};
       clearPendingAutoLoad();
       document.removeEventListener("visibilitychange", onVisible);
     };
@@ -1247,6 +1286,78 @@ export default function ChatView({
     loadAndReconnectRef.current({ background: true, replace: true });
   }, [historySignal, sessionId]);
 
+  /**
+   * Committed history advanced on the server: re-read the disk window.
+   *
+   * Single-flight with a queued "latest requested epoch" marker so a long autopilot run emitting
+   * an advance per committed event collapses into a bounded refresh rate, while never losing the
+   * final refresh. Failures and load-more collisions reschedule instead of dropping the request.
+   */
+  const requestedHistoryEpochRef = useRef(0);
+  const refreshedHistoryEpochRef = useRef(0);
+  const historyRefreshInFlightRef = useRef(false);
+
+  const lastHistoryRefreshAtRef = useRef(0);
+
+  const runHistoryRefresh = useCallback(() => {
+    if (historyRefreshTimerRef.current != null) return;
+    if (requestedHistoryEpochRef.current <= refreshedHistoryEpochRef.current) return;
+    if (historyRefreshInFlightRef.current || loadingMoreRef.current) return;
+
+    const dispatch = () => {
+      if (!sessionIdRef.current) return;
+      if (historyRefreshInFlightRef.current || loadingMoreRef.current) {
+        // Retry once the reader is free; the marker keeps the pending request alive.
+        historyRefreshTimerRef.current = setTimeout(() => {
+          historyRefreshTimerRef.current = null;
+          runHistoryRefresh();
+        }, HISTORY_REFRESH_THROTTLE_MS);
+        return;
+      }
+      const targetEpoch = requestedHistoryEpochRef.current;
+      historyRefreshInFlightRef.current = true;
+      lastHistoryRefreshAtRef.current = Date.now();
+      void loadAndReconnectRef.current({ background: true, silent: true })
+        .then(() => {
+          refreshedHistoryEpochRef.current = targetEpoch;
+        })
+        .finally(() => {
+          historyRefreshInFlightRef.current = false;
+          runHistoryRefresh();
+        });
+    };
+
+    // Leading edge: the first advance after a quiet period lands immediately.
+    const sinceLast = Date.now() - lastHistoryRefreshAtRef.current;
+    if (sinceLast >= HISTORY_REFRESH_THROTTLE_MS) {
+      dispatch();
+      return;
+    }
+    historyRefreshTimerRef.current = setTimeout(() => {
+      historyRefreshTimerRef.current = null;
+      dispatch();
+    }, HISTORY_REFRESH_THROTTLE_MS - sinceLast);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId || historyEpoch === 0) return;
+    requestedHistoryEpochRef.current = historyEpoch;
+    runHistoryRefresh();
+  }, [historyEpoch, runHistoryRefresh, sessionId]);
+
+  useEffect(() => {
+    requestedHistoryEpochRef.current = 0;
+    refreshedHistoryEpochRef.current = 0;
+    historyRefreshInFlightRef.current = false;
+    lastHistoryRefreshAtRef.current = 0;
+    return () => {
+      if (historyRefreshTimerRef.current != null) {
+        clearTimeout(historyRefreshTimerRef.current);
+        historyRefreshTimerRef.current = null;
+      }
+    };
+  }, [sessionId]);
+
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
@@ -1265,13 +1376,6 @@ export default function ChatView({
     pendingRenderedReadThroughRef.current = null;
     onRenderedReadThrough?.(pending.sessionId, pending.readThroughActivityAt);
   }, [entries, onRenderedReadThrough, sessionId]);
-
-  useEffect(() => {
-    if (!tailSkeletonRefreshEligibleRef.current || !refreshingHistoryRef.current || entriesRef.current.length === 0) return;
-    if (isNewerActivityTimestamp(activeSessionActivityAt, historyLastVisibleActivityAtRef.current)) {
-      setShowRefreshingTailSkeleton(true);
-    }
-  }, [activeSessionActivityAt]);
 
   useEffect(() => {
     if (!sessionId || reloadMcpServers === undefined) return;
@@ -1317,7 +1421,7 @@ export default function ChatView({
     const beforeIndex = firstItemIndex.current;
     const requestSessionId = sessionId;
     fetchMessagesFast(sessionId, { limit, before: beforeIndex })
-      .then(({ messages: older, hasMore: more, total, lastVisibleActivityAt }) => {
+      .then(({ messages: older, hasMore: more, total }) => {
         if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
         const currentEntries = entriesRef.current;
         if (older.length > 0) {
@@ -1326,51 +1430,19 @@ export default function ChatView({
             prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
           }
           const nextFirstItemIndex = beforeIndex - older.length;
-          const nextEntries = normalizeCommittedClientEntries(
-            [...older, ...currentEntries],
-            nextFirstItemIndex,
-            total,
-          );
-          const reachesLatestTail = nextFirstItemIndex + nextEntries.length >= total;
-          const hasOptimisticEntries = hasOptimisticTail(nextFirstItemIndex, nextEntries.length, total);
-          const hasClientEntries = hasClientGeneratedEntries(nextEntries);
-          const loadedTailActivityAt = historyLastVisibleActivityAtRef.current;
-          const activeActivityAt = activeSessionActivityAtRef.current;
-          const loadedTailMatchesKnownActivity = activityTimestampCovers(
-            loadedTailActivityAt,
-            activeActivityAt,
-          ) && activityTimestampCovers(loadedTailActivityAt, lastVisibleActivityAt);
-          const isCanonical = reachesLatestTail && !!activeActivityAt && loadedTailMatchesKnownActivity
-            && !hasOptimisticEntries && !hasClientEntries;
-          if (isCanonical) invalidateHistoryRefresh();
+          const nextEntries = [...older, ...currentEntries];
           applyHistory(nextEntries, {
             ownerSessionId: requestSessionId,
             firstItemIndex: nextFirstItemIndex,
             total: Math.max(total, nextFirstItemIndex + nextEntries.length),
             hasMore: more,
-            isCanonical,
-            ...(isCanonical ? { lastVisibleActivityAt: loadedTailActivityAt ?? lastVisibleActivityAt } : {}),
           });
         } else if (!more) {
-          const nextEntries = normalizeCommittedClientEntries(currentEntries, 0, total);
-          const reachesLatestTail = nextEntries.length >= total;
-          const hasOptimisticEntries = hasOptimisticTail(0, nextEntries.length, total);
-          const hasClientEntries = hasClientGeneratedEntries(nextEntries);
-          const loadedTailActivityAt = historyLastVisibleActivityAtRef.current;
-          const activeActivityAt = activeSessionActivityAtRef.current;
-          const loadedTailMatchesKnownActivity = activityTimestampCovers(
-            loadedTailActivityAt,
-            activeActivityAt,
-          ) && activityTimestampCovers(loadedTailActivityAt, lastVisibleActivityAt);
-          const isCanonical = reachesLatestTail && !!activeActivityAt && loadedTailMatchesKnownActivity
-            && !hasOptimisticEntries && !hasClientEntries;
-          applyHistory(nextEntries, {
+          applyHistory(currentEntries, {
             ownerSessionId: requestSessionId,
             firstItemIndex: 0,
-            total: Math.max(total, nextEntries.length),
+            total: Math.max(total, currentEntries.length),
             hasMore: false,
-            isCanonical,
-            ...(isCanonical ? { lastVisibleActivityAt: loadedTailActivityAt ?? lastVisibleActivityAt } : {}),
           });
         }
       })
@@ -1383,7 +1455,7 @@ export default function ChatView({
         loadingMoreRef.current = false;
         setLoadingMore(false);
       });
-  }, [sessionId, hasMore, invalidateHistoryRefresh, applyHistory]);
+  }, [sessionId, hasMore, applyHistory]);
 
   const handleLoadMoreClick = useCallback(() => {
     clearPendingAutoLoad();
@@ -1455,41 +1527,36 @@ export default function ChatView({
     scheduleAutoLoad({ consumeTopAutoFill: true });
   }, [entries, hasMore, loading, loadingMore, scheduleAutoLoad, sessionId]);
 
+  /**
+   * Keep the ref and state in lockstep so synchronous callers (for example a double-clicked retry)
+   * always observe the latest delivery state.
+   */
+  const updatePendingSends = useCallback((
+    updater: (current: PendingSend[]) => PendingSend[],
+  ) => {
+    const next = updater(pendingSendsRef.current);
+    pendingSendsRef.current = next;
+    setPendingSends(next);
+  }, []);
+
   const updateOptimisticMessageDelivery = useCallback((
     messageId: string,
     ownerSessionId: string | null,
     delivery: ChatMessageDelivery | undefined,
   ) => {
     if (sessionIdRef.current !== ownerSessionId) return;
-    let changed = false;
-    const nextEntries = entriesRef.current.map((entry) => {
-      if (entry.id !== messageId || !isChatMessageEntry(entry)) return entry;
-      changed = true;
-      return { ...entry, delivery };
-    });
-    if (!changed) return;
-    applyHistory(nextEntries, {
-      ownerSessionId,
-      total: totalEntriesRef.current,
-      hasMore: firstItemIndex.current > 0,
-      isCanonical: false,
-    });
-  }, [applyHistory]);
+    updatePendingSends((current) => current.map((send) => send.id === messageId
+      ? { ...send, delivery }
+      : send));
+  }, [updatePendingSends]);
 
   const removeOptimisticMessage = useCallback((
     messageId: string,
     ownerSessionId: string | null,
   ) => {
     if (sessionIdRef.current !== ownerSessionId) return;
-    const nextEntries = entriesRef.current.filter((entry) => entry.id !== messageId);
-    if (nextEntries.length === entriesRef.current.length) return;
-    applyHistory(nextEntries, {
-      ownerSessionId,
-      total: totalEntriesRef.current,
-      hasMore: firstItemIndex.current > 0,
-      isCanonical: false,
-    });
-  }, [applyHistory]);
+    updatePendingSends((current) => current.filter((send) => send.id !== messageId));
+  }, [updatePendingSends]);
 
   const appendFailedMessage = useCallback((
     messageId: string,
@@ -1501,27 +1568,20 @@ export default function ChatView({
   ) => {
     if (sessionIdRef.current !== ownerSessionId) return;
     const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
-    const nextEntries = [
-      ...entriesRef.current,
+    updatePendingSends((current) => [
+      ...current.filter((send) => send.id !== messageId),
       {
-        role: "user",
-        content: prompt,
         id: messageId,
+        content: prompt,
+        ...(attachments?.length ? { attachments } : {}),
         delivery: {
           failed: true,
           ...(mode === undefined ? {} : { mode }),
           error: errorMessage,
         },
-        ...(attachments?.length ? { attachments } : {}),
-      } satisfies ChatEntry,
-    ];
-    applyHistory(nextEntries, {
-      ownerSessionId,
-      total: totalEntriesRef.current,
-      hasMore: firstItemIndex.current > 0,
-      isCanonical: false,
-    });
-  }, [applyHistory]);
+      },
+    ]);
+  }, [updatePendingSends]);
 
   const deliverOptimisticMessage = useCallback(async (
     messageId: string,
@@ -1539,13 +1599,10 @@ export default function ChatView({
       } else {
         await sendMessage(prompt, attachments);
       }
-      if (ownerSessionId === null) {
-        updateOptimisticMessageDelivery(messageId, ownerSessionId, undefined);
-        if (sessionIdRef.current) {
-          loadAndReconnectRef.current({ background: true, replace: true });
-        }
-      } else {
-        removeOptimisticMessage(messageId, ownerSessionId);
+      // The server now owns the prompt: its stream entry carries it until disk history does.
+      removeOptimisticMessage(messageId, ownerSessionId);
+      if (ownerSessionId === null && sessionIdRef.current) {
+        loadAndReconnectRef.current({ background: true, replace: true });
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
@@ -1561,23 +1618,22 @@ export default function ChatView({
   }, [onCreateAndSend, removeOptimisticMessage, sendMessage, updateOptimisticMessageDelivery]);
 
   const handleRetryMessage = useCallback(async (message: FailedOptimisticChatMessage) => {
-    const currentEntry = entriesRef.current.find((entry) => entry.id === message.id);
-    if (!currentEntry || !isChatMessageEntry(currentEntry) || !isFailedOptimisticChatMessage(currentEntry)) return;
-    const currentMessage = currentEntry;
+    const currentSend = pendingSendsRef.current.find((send) => send.id === message.id);
+    if (!currentSend || currentSend.delivery?.failed !== true) return;
 
     const ownerSessionId = sessionId;
     updateOptimisticMessageDelivery(
-      currentMessage.id,
+      currentSend.id,
       ownerSessionId,
-      createSendingDelivery(currentMessage.delivery.mode),
+      createSendingDelivery(currentSend.delivery.mode),
     );
     if (ownerSessionId === null) setCreating(true);
     await deliverOptimisticMessage(
-      currentMessage.id,
+      currentSend.id,
       ownerSessionId,
-      currentMessage.content,
-      currentMessage.attachments,
-      currentMessage.delivery.mode,
+      currentSend.content,
+      currentSend.attachments,
+      currentSend.delivery.mode,
     );
   }, [deliverOptimisticMessage, sessionId, updateOptimisticMessageDelivery]);
 
@@ -1593,19 +1649,12 @@ export default function ChatView({
       const draftMode = mode ?? DEFAULT_SEND_MODE;
       const draftMessageId = "draft-user-0";
       setCreating(true);
-      applyHistory([{
-        role: "user",
-        content: prompt,
+      updatePendingSends(() => [{
         id: draftMessageId,
+        content: prompt,
         delivery: createSendingDelivery(draftMode),
         ...(attachments?.length ? { attachments } : {}),
-      }], {
-        ownerSessionId: null,
-        firstItemIndex: 0,
-        total: 1,
-        hasMore: false,
-        isCanonical: false,
-      });
+      }]);
       await deliverOptimisticMessage(
         draftMessageId,
         null,
@@ -1699,8 +1748,90 @@ export default function ChatView({
   );
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
+  /**
+   * The live overlay, rendered strictly after committed history. It never interleaves with, or is
+   * merged into, the disk-backed transcript: it only holds prompts and assistant text that
+   * `events.jsonl` has not surfaced yet, plus optimistic sends this client owns.
+   */
   const liveEntries = useMemo<ChatEntry[]>(() => {
-    const nextEntries = [...visibleStreamLiveEntries];
+    const nextEntries: ChatEntry[] = [];
+    for (const message of uncommittedUserMessages) {
+      nextEntries.push({
+        id: `live-user-${message.id}`,
+        type: "message",
+        role: "user",
+        content: message.content,
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        ...(message.timestamp ? { timestamp: message.timestamp } : {}),
+      });
+    }
+    for (const segment of uncommittedAssistantSegments) {
+      nextEntries.push({
+        id: `live-assistant-${segment.id}`,
+        type: "message",
+        role: "assistant",
+        content: segment.content,
+        ...(segment.turnId ? { turnId: segment.turnId } : {}),
+        ...(segment.turnInstanceId ? { turnInstanceId: segment.turnInstanceId } : {}),
+        ...(segment.timestamp ? { timestamp: segment.timestamp } : {}),
+      });
+    }
+    for (const tool of uncommittedLiveTools) {
+      nextEntries.push({
+        id: `live-tool-${tool.toolCallId}`,
+        type: "tool",
+        turnId: tool.turnId,
+        turnInstanceId: tool.turnInstanceId,
+        sourceEventId: tool.sourceEventId,
+        toolCall: {
+          toolCallId: tool.toolCallId,
+          name: tool.name,
+          turnId: tool.turnId,
+          turnInstanceId: tool.turnInstanceId,
+          args: tool.args,
+          parentToolCallId: tool.parentToolCallId,
+          isSubAgent: tool.isSubAgent,
+          startedAt: tool.startedAt,
+          progressText: tool.progressText,
+          completedAt: tool.completedAt,
+          success: tool.success,
+          result: tool.result,
+        },
+      });
+    }
+    for (const visual of uncommittedVisuals) {
+      nextEntries.push({
+        id: `live-visual-${visual.artifactId}`,
+        type: "visual",
+        ...(visual.turnId ? { turnId: visual.turnId } : {}),
+        ...(visual.turnInstanceId ? { turnInstanceId: visual.turnInstanceId } : {}),
+        visual: visual as unknown as ChatVisualEntry["visual"],
+        ...(visual.timestamp ? { timestamp: visual.timestamp } : {}),
+      });
+    }
+    if (uncommittedCompletion) {
+      nextEntries.push({
+        id: `live-completion-${uncommittedCompletion.sourceEventId ?? "run"}`,
+        type: "completion",
+        content: uncommittedCompletion.completion.content,
+        completion: uncommittedCompletion.completion,
+        ...(uncommittedCompletion.turnId ? { turnId: uncommittedCompletion.turnId } : {}),
+        ...(uncommittedCompletion.turnInstanceId
+          ? { turnInstanceId: uncommittedCompletion.turnInstanceId }
+          : {}),
+        ...(uncommittedCompletion.timestamp ? { timestamp: uncommittedCompletion.timestamp } : {}),
+      });
+    }
+    for (const send of pendingSends) {
+      nextEntries.push({
+        id: send.id,
+        type: "message",
+        role: "user",
+        content: send.content,
+        delivery: send.delivery,
+        ...(send.attachments?.length ? { attachments: send.attachments } : {}),
+      });
+    }
     if (isStreaming && hasStreamingText) {
       nextEntries.push({
         id: LIVE_STREAMING_MESSAGE_ID,
@@ -1718,11 +1849,42 @@ export default function ChatView({
     displayedStreamingContent,
     hasStreamingText,
     isStreaming,
-    visibleStreamLiveEntries,
+    pendingSends,
+    uncommittedAssistantSegments,
+    uncommittedCompletion,
+    uncommittedLiveTools,
+    uncommittedUserMessages,
+    uncommittedVisuals,
   ]);
+  const committedEntries = useMemo(() => {
+    if (liveToolsById.size === 0) return entries;
+    return entries.map((entry) => {
+      if (entry.type !== "tool") return entry;
+      const live = liveToolsById.get(entry.toolCall.toolCallId);
+      if (!live) return entry;
+      // Disk owns where the tool sits; the stream can only be fresher about its state.
+      const gainsResult = live.completedAt !== undefined && entry.toolCall.completedAt === undefined;
+      const gainsProgress = !!live.progressText && live.progressText !== entry.toolCall.progressText;
+      if (!gainsResult && !gainsProgress) return entry;
+      return {
+        ...entry,
+        toolCall: {
+          ...entry.toolCall,
+          ...(gainsProgress ? { progressText: live.progressText } : {}),
+          ...(gainsResult
+            ? {
+                completedAt: live.completedAt,
+                success: live.success ?? entry.toolCall.success,
+                result: live.result ?? entry.toolCall.result,
+              }
+            : {}),
+        },
+      };
+    });
+  }, [entries, liveToolsById]);
   const displayEntries = useMemo(
-    () => liveEntries.length > 0 ? [...entries, ...liveEntries] : entries,
-    [entries, liveEntries],
+    () => liveEntries.length > 0 ? [...committedEntries, ...liveEntries] : committedEntries,
+    [committedEntries, liveEntries],
   );
   const messageAnchorKeys = useMemo(() => {
     const keys = new WeakMap<object, string>();
@@ -1806,7 +1968,7 @@ export default function ChatView({
     scrollToLatest({ anchorKey: latestMessageAnchorKey });
   }, [
     creating,
-    currentTurnTools,
+    activeTools.length,
     displayedStreamingContent,
     hasPendingInteractions,
     isStreaming,
@@ -1863,6 +2025,10 @@ export default function ChatView({
       );
     }
 
+    if (runNotice) {
+      parts.push(<RunNoticeCard key={`run-notice-${runNotice.kind}`} notice={runNotice} />);
+    }
+
     if (parts.length === 0) return null;
     return <div className="space-y-3 pb-4">{parts}</div>;
   }, [
@@ -1874,6 +2040,7 @@ export default function ChatView({
     pendingElicitationRequests,
     pendingUserInputRequests,
     runHeaderState,
+    runNotice,
   ]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
@@ -1968,7 +2135,6 @@ export default function ChatView({
         applyHistory(nextEntries, {
           total: firstItemIndex.current + nextEntries.length,
           hasMore: firstItemIndex.current > 0,
-          isCanonical: false,
           lastVisibleActivityAt: getLatestEntryActivityTimestamp(nextEntries) ?? null,
         });
       }
@@ -2163,7 +2329,7 @@ export default function ChatView({
         onRefresh={sessionId ? refreshMcpStatus : undefined}
       />
       <SessionAgentsBar sessionId={sessionId} backgroundAgents={backgroundAgents} />
-      {loading && entries.length === 0 ? (
+      {loading && displayEntries.length === 0 ? (
         <LoadingSkeletonRegion
           isLoading
           label="Loading chat history"
@@ -2185,7 +2351,7 @@ export default function ChatView({
             </div>
           </div>
         </LoadingSkeletonRegion>
-      ) : entries.length === 0 && !isStreaming && !creating && !hasPendingInteractions ? (
+      ) : displayEntries.length === 0 && !runNotice && !isStreaming && !creating && !hasPendingInteractions ? (
         emptyState ?? (
           <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
             Send a message to get started
@@ -2234,7 +2400,6 @@ export default function ChatView({
             </div>
           ) : null}
           {renderedEntries}
-          {renderRefreshingHistoryTailSkeleton(showRefreshingTailSkeleton)}
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           {showJumpToLatest && (
             <div className="sticky bottom-3 z-20 flex justify-center px-3 pointer-events-none">

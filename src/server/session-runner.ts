@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
 import { getVisibleEventTimestamp } from "./event-transform.js";
+import { clearEventLogStatsCache } from "./session-disk-reader.js";
 import type { getOrCreateBus } from "./event-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";import type { SessionMetaStore } from "./session-meta-store.js";
@@ -407,7 +408,8 @@ export class SessionRunner {
       }
       const text = slashCommandResultToText(result);
       if (text) {
-        bus.emit({ type: "assistant_partial", content: text });
+        // This never reaches the SDK, so it will never appear in events.jsonl.
+        bus.emit({ type: "assistant_partial", content: text, bridgeNative: true });
       }
       return;
     }
@@ -1417,7 +1419,7 @@ export class SessionRunner {
           const reason = data?.reason ?? "user initiated";
           console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);
           endCurrentContextTurn(event);
-          const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
+          const partialContent = lastAssistantContent ?? bus.getStreamingContent();
           recordRunCompletion(event, context, "aborted", {
             partialContentLength: partialContent.length,
             abortReasonPresent: typeof data?.reason === "string",
@@ -1444,7 +1446,7 @@ export class SessionRunner {
             });
           } else {
             console.log(`[sdk] [${sid}] 🛑 Shutdown${shutdownType ? ` (${shutdownType})` : ""}`);
-            const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
+            const partialContent = lastAssistantContent ?? bus.getStreamingContent();
             recordRunCompletion(event, context, "shutdown", {
               shutdownType,
               partialContentLength: partialContent.length,
@@ -1581,6 +1583,7 @@ export class SessionRunner {
         eventId: result.eventId,
         eventsRemoved: result.eventsRemoved,
       });
+      clearEventLogStatsCache(sessionId);
       this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
     };
 

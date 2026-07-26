@@ -3560,6 +3560,8 @@ export class SessionManager {
       const boundaryOccurredAt = boundaryEvent?.data?.timestamp ?? boundaryEvent?.timestamp;
       try {
         clearEventLogStatsCache(sessionId);
+        // A rewritten transcript invalidates any bridge-native run notice from the removed turns.
+        this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
       } catch (error) {
         console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to clear message stats after undo:`, error);
       }
@@ -3728,7 +3730,7 @@ export class SessionManager {
 
   private completeSessionAbortLocally(sessionId: string, content: string): void {
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
-    const assistantSourceEventId = bus?.getSnapshot().assistantSegments.at(-1)?.sourceEventId;
+    const assistantSourceEventId = bus?.getLastAssistantSegment()?.sourceEventId;
     const runController = this.activeRunControllers.get(sessionId);
     if (runController) {
       runController.completeAborted(content, {
@@ -3755,13 +3757,13 @@ export class SessionManager {
     const runController = this.activeRunControllers.get(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
     const getAbortContent = () => {
-      const snapshot = bus?.getSnapshot();
-      return snapshot?.finalContent
-        ?? snapshot?.assistantSegments.at(-1)?.content
-        ?? snapshot?.accumulatedContent
+      const terminal = bus?.getTerminalState();
+      return terminal?.finalContent
+        ?? bus?.getLastAssistantSegment()?.content
+        ?? bus?.getStreamingContent()
         ?? "";
     };
-    const getAbortAssistantSourceEventId = () => bus?.getSnapshot().assistantSegments.at(-1)?.sourceEventId;
+    const getAbortAssistantSourceEventId = () => bus?.getLastAssistantSegment()?.sourceEventId;
     if (!runController) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Missing run controller during abort — resolving locally`);
       this.completeSessionAbortLocally(sessionId, getAbortContent());

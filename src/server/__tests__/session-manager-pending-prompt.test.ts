@@ -61,7 +61,7 @@ describe("SessionManager projected user message lifecycle", () => {
 
     const bus = eventBusRegistry.getBus("session-1");
     expect(bus?.getSnapshot()).not.toHaveProperty("pendingPrompt");
-    expect(bus?.getSnapshot().userMessages).toMatchObject([
+    expect(bus?.getSnapshot().pendingUserMessages).toMatchObject([
       {
         content: "hello there",
         pending: true,
@@ -70,7 +70,7 @@ describe("SessionManager projected user message lifecycle", () => {
     await vi.waitFor(() => {
       expect(session.send).toHaveBeenCalledTimes(1);
     });
-    expect(bus?.getSnapshot().userMessages).toMatchObject([
+    expect(bus?.getSnapshot().pendingUserMessages).toMatchObject([
       {
         content: "hello there",
         pending: false,

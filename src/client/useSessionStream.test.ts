@@ -13,17 +13,13 @@ vi.mock("./telemetry-batcher", () => ({
   createTelemetryBatcher: () => telemetryBatcherMock,
 }));
 
-import type { ChatEntry } from "./api";
 import {
-  buildSnapshotToolState,
-  buildTerminalToolEntries,
-  bufferPendingToolPrelude,
-  createVisualEntryFromPublishedEvent,
+  dropDiskBackedSegments,
   getKnownToolName,
-  materializePendingTool,
-  resolvePendingToolName,
+  normalizeLiveTools,
+  normalizeRunNotice,
+  upsertLiveTool,
   useSessionStream,
-  type PendingTool,
 } from "./useSessionStream";
 import {
   createReactDomHarness,
@@ -146,6 +142,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+
+/** Build an ephemeral stream snapshot with sensible defaults for the fields under test. */
+function snapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "snapshot",
+    runId: "run-1",
+    complete: false,
+    historySeq: 0,
+    streamingContent: "",
+    liveAssistantSegments: [],
+    pendingUserMessages: [],
+    liveTools: [],
+    liveVisuals: [],
+    intentText: "",
+    contextSummary: null,
+    pendingUserInputs: [],
+    pendingElicitations: [],
+    ...overrides,
+  };
+}
+
 describe("useSessionStream EventSource lifecycle", () => {
   it("sends a message and opens the session EventSource", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
@@ -177,21 +194,11 @@ describe("useSessionStream EventSource lifecycle", () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        runId: "run-1",
-        complete: false,
+      await emitAndWait(act, source, snapshot({
         turnId: "provider-turn-1",
         turnInstanceId: "turn-start-event-1",
-        accumulatedContent: "working",
-        assistantSegments: [],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: [],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-      }, () => getState().streamingContent === "working");
+        streamingContent: "working",
+      }), () => getState().streamingContent === "working");
 
       await act(async () => source.fail());
 
@@ -218,404 +225,21 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
-  it("closes on terminal events and keeps exactly one server-projected final assistant entry", async () => {
-    await withHarness(async ({ getState, getSource, settled, titleChanged, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "thinking",
-        turnId: "provider-turn-1",
-        turnInstanceId: "turn-start-event-1",
-      }, () => getState().streamStatus === "thinking");
-      await emitAndWait(act, source, {
-        type: "delta",
-        turnId: "provider-turn-1",
-        turnInstanceId: "turn-start-event-1",
-        content: "Final answer",
-      }, () => getState().streamingContent === "Final answer");
-      await emitAndWait(act, source, {
-        type: "done",
-        turnId: "provider-turn-1",
-        turnInstanceId: "turn-start-event-1",
-        sourceEventId: "terminal-event-1",
-        content: "Final answer",
-        timestamp: "2026-07-21T17:00:00.000Z",
-        finalAssistantEntry: {
-          id: "assistant-event-1",
-          content: "Final answer",
-          turnId: "provider-turn-1",
-          turnInstanceId: "turn-start-event-1",
-          sourceEventId: "assistant-event-1",
-          timestamp: "2026-07-21T17:00:00.000Z",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(source.close).toHaveBeenCalledOnce();
-      expect(getState().liveEntries).toMatchObject([
-        {
-          id: "live-assistant-assistant-event-1",
-          role: "assistant",
-          content: "Final answer",
-          turnId: "provider-turn-1",
-          turnInstanceId: "turn-start-event-1",
-          sourceEventId: "assistant-event-1",
-        },
-      ]);
-      expect(settled).toHaveBeenCalledOnce();
-      expect(titleChanged).toHaveBeenCalledOnce();
-    });
-  });
-
-  it("reuses the persisted assistant message identity at the terminal boundary", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "delta",
-        turnId: "provider-turn-1",
-        content: "Final answer",
-      }, () => getState().streamingContent === "Final answer");
-      await emitAndWait(act, source, {
-        type: "assistant_partial",
-        turnId: "provider-turn-1",
-        sourceEventId: "assistant-event-1",
-        content: "Final answer",
-        timestamp: "2026-07-21T17:00:00.000Z",
-      }, () => getState().liveEntries.length === 1);
-      await emitAndWait(act, source, {
-        type: "done",
-        turnId: "provider-turn-1",
-        sourceEventId: "terminal-event-1",
-        assistantSourceEventId: "assistant-event-1",
-        content: "Final answer",
-        timestamp: "2026-07-21T17:00:01.000Z",
-        finalAssistantEntry: {
-          id: "assistant-event-1",
-          content: "Final answer",
-          turnId: "provider-turn-1",
-          sourceEventId: "assistant-event-1",
-          timestamp: "2026-07-21T17:00:01.000Z",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().liveEntries).toMatchObject([
-        {
-          id: "live-assistant-assistant-event-1",
-          role: "assistant",
-          content: "Final answer",
-          sourceEventId: "assistant-event-1",
-        },
-      ]);
-    });
-  });
-
-  it.each([
-    {
-      eventType: "aborted",
-      content: "Partial answer\n\n*(stopped)*",
-    },
-    {
-      eventType: "shutdown",
-      content: "Partial answer\n\n*(interrupted)*",
-    },
-  ] as const)("updates the matching assistant entry for $eventType terminal events", async ({ eventType, content }) => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "assistant_partial",
-        turnId: "provider-turn-1",
-        sourceEventId: "assistant-event-1",
-        content: "Partial answer",
-      }, () => getState().liveEntries.length === 1);
-      await emitAndWait(act, source, {
-        type: eventType,
-        turnId: "provider-turn-1",
-        sourceEventId: "terminal-event-1",
-        assistantSourceEventId: "assistant-event-1",
-        content: "Partial answer",
-        finalAssistantEntry: {
-          id: "assistant-event-1",
-          content,
-          turnId: "provider-turn-1",
-          sourceEventId: "assistant-event-1",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().liveEntries).toMatchObject([
-        {
-          id: "live-assistant-assistant-event-1",
-          content,
-          sourceEventId: "assistant-event-1",
-        },
-      ]);
-    });
-  });
-
-  it("renders the server-projected error once and finalizes current-turn tools", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      await emitAndWait(act, source, {
-        type: "thinking",
-        turnId: "provider-turn-1",
-      }, () => getState().streamStatus === "thinking");
-      await emitAndWait(act, source, {
-        type: "tool_start",
-        turnId: "provider-turn-1",
-        sourceEventId: "tool-event-1",
-        toolCallId: "tool-1",
-        name: "bash",
-      }, () => getState().currentTurnTools.length === 1);
-      await emitAndWait(act, source, {
-        type: "error",
-        turnId: "provider-turn-1",
-        sourceEventId: "terminal-error-1",
-        message: "Something broke",
-        timestamp: "2026-07-21T17:00:02.000Z",
-        finalAssistantEntry: {
-          id: "terminal-error-1",
-          content: "⚠️ Error: Something broke",
-          turnId: "provider-turn-1",
-          sourceEventId: "terminal-error-1",
-          timestamp: "2026-07-21T17:00:02.000Z",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().liveEntries.filter((entry) => (
-        entry.type !== "tool"
-        && entry.type !== "visual"
-        && entry.type !== "completion"
-        && entry.type !== "skill"
-        && entry.role === "assistant"
-      ))).toMatchObject([{
-        id: "live-assistant-terminal-error-1",
-        content: "⚠️ Error: Something broke",
-        sourceEventId: "terminal-error-1",
-      }]);
-      expect(getState().currentTurnTools).toMatchObject([{
-        toolCallId: "tool-1",
-        success: false,
-        completedAt: "2026-07-21T17:00:02.000Z",
-      }]);
-      expect(getState().liveEntries.find((entry) => entry.type === "tool")).toMatchObject({
-        toolCall: {
-          toolCallId: "tool-1",
-          success: false,
-          completedAt: "2026-07-21T17:00:02.000Z",
-        },
-      });
-    });
-  });
-
-  it("keeps terminal completion cards mutually exclusive with final assistant messages", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      await emitAndWait(act, source, {
-        type: "done",
-        turnId: "provider-turn-1",
-        sourceEventId: "terminal-event-1",
-        timestamp: "2026-07-21T17:00:03.000Z",
-        terminalCompletion: {
-          content: "Completed the task",
-          title: "Task complete",
-          status: "success",
-          sourceEventType: "session.task_complete",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().liveEntries).toMatchObject([{
-        type: "completion",
-        sourceEventId: "terminal-event-1",
-        content: "Completed the task",
-      }]);
-    });
-  });
-
-  it("deduplicates complete reconnect snapshots by assistant message identity", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        runId: "run-1",
-        complete: true,
-        turnId: "provider-turn-1",
-        accumulatedContent: "",
-        assistantSegments: [{
-          id: "assistant-event-1",
-          sourceEventId: "assistant-event-1",
-          turnId: "provider-turn-1",
-          content: "Final answer",
-        }],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: ["assistant:assistant-event-1"],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-        terminalType: "done",
-        terminalEventId: "terminal-event-1",
-        terminalAssistantEventId: "assistant-event-1",
-        finalContent: "Final answer",
-        finalAssistantEntry: {
-          id: "assistant-event-1",
-          content: "Final answer",
-          turnId: "provider-turn-1",
-          sourceEventId: "assistant-event-1",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().liveEntries).toMatchObject([
-        {
-          id: "live-assistant-assistant-event-1",
-          content: "Final answer",
-          sourceEventId: "assistant-event-1",
-        },
-      ]);
-    });
-  });
-
-  it("uses the persisted assistant identity when a terminal snapshot has no live segment", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        runId: "run-1",
-        complete: true,
-        turnId: "provider-turn-1",
-        accumulatedContent: "",
-        assistantSegments: [],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: [],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-        terminalType: "done",
-        terminalAssistantEventId: "assistant-event-1",
-        finalContent: "Final answer",
-        finalAssistantEntry: {
-          id: "assistant-event-1",
-          content: "Final answer",
-          turnId: "provider-turn-1",
-          sourceEventId: "assistant-event-1",
-        },
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().liveEntries).toMatchObject([
-        {
-          id: "live-assistant-assistant-event-1",
-          content: "Final answer",
-          sourceEventId: "assistant-event-1",
-        },
-      ]);
-    });
-  });
-
-  it("replaces the whole live overlay from reconnect snapshots", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        runId: "run-1",
-        turnId: "provider-turn-1",
-        complete: false,
-        accumulatedContent: "",
-        assistantSegments: [
-          {
-            id: "assistant-event-1",
-            sourceEventId: "assistant-event-1",
-            turnId: "provider-turn-1",
-            content: "Before tool",
-          },
-        ],
-        activeTools: [],
-        currentTurnTools: [
-          {
-            toolCallId: "tool-1",
-            name: "bash",
-            turnId: "provider-turn-1",
-            success: true,
-          },
-        ],
-        visuals: [],
-        entryOrder: ["assistant:assistant-event-1", "tool:tool-1"],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-      }, () => getState().liveEntries.length === 2);
-
-      expect(getState().liveEntries.map((entry) => entry.type ?? "message")).toEqual(["message", "tool"]);
-
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        runId: "run-1",
-        turnId: "provider-turn-1",
-        complete: false,
-        accumulatedContent: "replacement",
-        assistantSegments: [],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: [],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-      }, () => getState().streamingContent === "replacement");
-
-      expect(getState().liveEntries).toEqual([]);
-    });
-  });
-
-  it("settles deterministically when no live projection exists", async () => {
-    await withHarness(async ({ getState, getSource, settled, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      await emitAndWait(act, source, { type: "resync_required" }, () => getState().streamStatus === "idle");
-
-      expect(source.close).toHaveBeenCalledOnce();
-      expect(settled).toHaveBeenCalledOnce();
-      expect(getState().liveEntries).toEqual([]);
-    });
-  });
-
   it("does not replace the active EventSource for steered sends", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      await act(async () => getState().reconnect("session-1"));
+      const original = getSource();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue({
         ok: true,
-        json: async () => ({ status: "accepted", mode: "steered" }),
+        json: async () => ({ status: "steered", mode: "steered" }),
       } as Response);
 
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        complete: false,
-        accumulatedContent: "working",
-        assistantSegments: [],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: [],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-      }, () => getState().streamingContent === "working");
-
       await act(async () => {
-        await getState().sendMessage("adjust");
+        await getState().sendMessage("steer me");
       });
 
-      expect(fetchMock).toHaveBeenCalledOnce();
       expect(MockEventSource.instances).toHaveLength(1);
-      expect(source.close).not.toHaveBeenCalled();
-      expect(getState().streamingContent).toBe("working");
+      expect(getSource()).toBe(original);
     });
   });
 
@@ -649,173 +273,372 @@ describe("useSessionStream EventSource lifecycle", () => {
   });
 });
 
-describe("useSessionStream projection events", () => {
-  it("hydrates reconnect snapshots and applies pending user message lifecycle events", async () => {
+describe("useSessionStream ephemeral state", () => {
+  it("carries only ephemeral run state and never a committed transcript projection", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        complete: false,
-        accumulatedContent: "",
-        userMessages: [
-          {
-            id: "user-1",
-            content: "yes",
-            pending: false,
-            sourceEventId: "user-event-1",
-          },
-          {
-            id: "user-2",
-            content: "yes",
-            pending: true,
-            attachments: [{
-              type: "uploaded",
-              displayName: "example.png",
-              mimeType: "image/png",
-              size: 10,
-            }],
-          },
+
+      await emitAndWait(act, source, snapshot({
+        turnId: "provider-turn-1",
+        streamingContent: "typing",
+        liveAssistantSegments: [
+          { id: "assistant-1", content: "hello", sourceEventId: "assistant-1" },
         ],
-        assistantSegments: [],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: ["user:user-1", "user:user-2"],
-        pendingUserInputs: [],
-        pendingElicitations: [],
-      }, () => getState().liveEntries.length === 2);
+        pendingUserMessages: [{ id: "pending-1", content: "run it" }],
+        liveTools: [{ toolCallId: "tc-1", name: "bash" }],
+        historySeq: 4,
+      }), () => getState().streamingContent === "typing");
 
-      expect(getState().liveEntries).toMatchObject([
-        {
-          id: "live-user-user-1",
-          role: "user",
-          content: "yes",
-          sourceEventId: "user-event-1",
-        },
-        {
-          id: "live-user-user-2",
-          role: "user",
-          content: "yes",
-          attachments: [{ displayName: "example.png" }],
-        },
-      ]);
-
-      await emitAndWait(act, source, {
-        type: "user_message_updated",
-        userMessage: {
-          id: "user-2",
-          content: "steered",
-          pending: true,
-          attachments: [{
-            type: "uploaded",
-            displayName: "example.png",
-            mimeType: "image/png",
-            size: 10,
-          }],
-        },
-      }, () => {
-        const entry = getState().liveEntries[1];
-        return entry?.type === "message" && entry.content === "steered";
-      });
-      expect(getState().liveEntries[1]).toMatchObject({
-        id: "live-user-user-2",
-        content: "steered",
-        attachments: [{ displayName: "example.png" }],
-      });
-
-      await emitAndWait(act, source, {
-        type: "user_message_committed",
-        id: "user-2",
-        sourceEventId: "user-event-2",
-        timestamp: "2026-07-21T21:59:00.000Z",
-      }, () => getState().liveEntries[1]?.sourceEventId === "user-event-2");
-      expect(getState().liveEntries[1]).toMatchObject({
-        id: "live-user-user-2",
-        content: "steered",
-        sourceEventId: "user-event-2",
-        timestamp: "2026-07-21T21:59:00.000Z",
-        attachments: [{ displayName: "example.png" }],
-      });
-
-      await emitAndWait(act, source, {
-        type: "user_message",
-        userMessage: {
-          id: "user-3",
-          content: "next",
-          pending: true,
-        },
-      }, () => getState().liveEntries.length === 3);
-      await emitAndWait(act, source, {
-        type: "user_message_committed",
-        id: "user-3",
-        sourceEventId: "user-event-3",
-        timestamp: "2026-07-21T22:00:00.000Z",
-      }, () => getState().liveEntries[2]?.sourceEventId === "user-event-3");
-
-      expect(getState().liveEntries[2]).toMatchObject({
-        id: "live-user-user-3",
-        content: "next",
-        sourceEventId: "user-event-3",
-        timestamp: "2026-07-21T22:00:00.000Z",
-      });
-
-      await emitAndWait(act, source, {
-        type: "user_message",
-        userMessage: {
-          id: "user-4",
-          content: "failed",
-          pending: true,
-        },
-      }, () => getState().liveEntries.length === 4);
-      await emitAndWait(act, source, {
-        type: "user_message_discarded",
-        id: "user-4",
-      }, () => getState().liveEntries.length === 3);
-      expect(getState().liveEntries.some((entry) => entry.id === "live-user-user-4")).toBe(false);
+      const state = getState();
+      expect(state.liveAssistantSegments).toMatchObject([{ sourceEventId: "assistant-1" }]);
+      expect(state.pendingUserMessages).toMatchObject([{ id: "pending-1", content: "run it" }]);
+      expect(state.liveTools).toMatchObject([{ toolCallId: "tc-1", name: "bash" }]);
+      expect(state.historyEpoch).toBeGreaterThan(0);
+      // Committed transcript content is owned by events.jsonl, not the stream.
+      expect(state).not.toHaveProperty("liveEntries");
+      expect(state).not.toHaveProperty("currentTurnTools");
     });
   });
 
+  it("advances the history epoch so the view can refresh disk history", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      const before = getState().historyEpoch;
+
+      await emitAndWait(
+        act,
+        source,
+        { type: "history_advanced", historySeq: 5 },
+        () => getState().historyEpoch > before,
+      );
+
+      expect(getState().historyEpoch).toBe(before + 1);
+    });
+  });
+
+  it("keeps advancing the epoch across runs even though the server counter restarts", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({ runId: "run-1", historySeq: 9 }),
+        () => getState().streamStatus !== "sending");
+      const afterFirstRun = getState().historyEpoch;
+
+      // A new run restarts the server-side counter at zero; the client epoch must still advance.
+      await emitAndWait(act, source, snapshot({ runId: "run-2", historySeq: 0 }),
+        () => getState().historyEpoch > afterFirstRun);
+      const afterSecondRun = getState().historyEpoch;
+
+      await emitAndWait(act, source, { type: "history_advanced", historySeq: 1 },
+        () => getState().historyEpoch > afterSecondRun);
+
+      expect(getState().historyEpoch).toBe(afterSecondRun + 1);
+    });
+  });
+
+  it("keeps a finished tool with its result so it can render before the next disk read", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "tool_start",
+        toolCallId: "tc-1",
+        name: "bash",
+        timestamp: "2026-07-24T10:00:00.000Z",
+      }, () => getState().liveTools.length === 1);
+
+      await emitAndWait(act, source, {
+        type: "tool_progress",
+        toolCallId: "tc-1",
+        message: "running",
+      }, () => getState().liveTools[0]?.progressText === "running");
+
+      await emitAndWait(act, source, {
+        type: "tool_done",
+        toolCallId: "tc-1",
+        success: true,
+        result: "done output",
+      }, () => getState().liveTools[0]?.completedAt !== undefined);
+
+      // Retained with its result; the view substitutes this onto the disk entry once that lands.
+      expect(getState().liveTools).toMatchObject([
+        { toolCallId: "tc-1", success: true, result: "done output" },
+      ]);
+    });
+  });
+
+  it("ignores hidden tools so they never affect run status", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await act(async () => {
+        source.emit({ type: "tool_start", toolCallId: "tc-hidden", name: "task_complete" });
+        source.emit({ type: "tool_start", toolCallId: "tc-intent", name: "report_intent" });
+      });
+      await waitTick();
+
+      expect(getState().liveTools).toEqual([]);
+    });
+  });
+
+  it("does not un-complete a finished tool from late progress events", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "tool_start",
+        toolCallId: "tc-1",
+        name: "bash",
+      }, () => getState().liveTools.length === 1);
+      await emitAndWait(act, source, {
+        type: "tool_done",
+        toolCallId: "tc-1",
+        success: true,
+      }, () => getState().liveTools[0]?.completedAt !== undefined);
+
+      await act(async () => {
+        source.emit({ type: "tool_progress", toolCallId: "tc-1", message: "late" });
+      });
+      await waitTick();
+
+      // Late progress must not un-complete a finished tool.
+      expect(getState().liveTools[0]?.completedAt).toBeDefined();
+    });
+  });
+
+  it("stamps assistant segments with the source event id they will be committed under", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, { type: "delta", content: "partial " },
+        () => getState().streamingContent === "partial ");
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        content: "partial answer",
+        sourceEventId: "assistant-event-1",
+        turnId: "provider-turn-1",
+      }, () => getState().liveAssistantSegments.length === 1);
+
+      expect(getState().streamingContent).toBe("");
+      expect(getState().liveAssistantSegments[0]).toMatchObject({
+        content: "partial answer",
+        sourceEventId: "assistant-event-1",
+        turnId: "provider-turn-1",
+      });
+    });
+  });
+
+  it("keeps bridge-native assistant output that events.jsonl will never contain", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        content: "/context output",
+        bridgeNative: true,
+      }, () => getState().liveAssistantSegments.length === 1);
+
+      expect(getState().liveAssistantSegments[0]?.sourceEventId).toBeUndefined();
+      expect(getState().liveAssistantSegments[0]?.bridgeNative).toBe(true);
+
+      // A new turn proves persisted segments reached disk; native output must survive it.
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        content: "persisted",
+        sourceEventId: "assistant-1",
+      }, () => getState().liveAssistantSegments.length === 2);
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-2" },
+        () => getState().liveAssistantSegments.length === 1);
+
+      expect(getState().liveAssistantSegments[0]?.content).toBe("/context output");
+    });
+  });
+
+  it("applies the pending user message lifecycle", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "user_message",
+        userMessage: { id: "pending-1", content: "hello there", pending: true },
+      }, () => getState().pendingUserMessages.length === 1);
+
+      await emitAndWait(act, source, {
+        type: "user_message_updated",
+        userMessage: { id: "pending-1", content: "hello there, updated", pending: true },
+      }, () => getState().pendingUserMessages[0]?.content === "hello there, updated");
+
+      await emitAndWait(act, source, {
+        type: "user_message_committed",
+        id: "pending-1",
+        sourceEventId: "user-event-1",
+        timestamp: "2026-07-24T10:00:00.000Z",
+      }, () => getState().pendingUserMessages[0]?.sourceEventId === "user-event-1");
+
+      // The prompt stays on the stream after commit so the view can hand it off to disk history
+      // by identity rather than dropping it into a gap.
+      expect(getState().pendingUserMessages).toMatchObject([
+        { id: "pending-1", sourceEventId: "user-event-1" },
+      ]);
+
+      await emitAndWait(act, source, {
+        type: "user_message_discarded",
+        id: "pending-1",
+      }, () => getState().pendingUserMessages.length === 0);
+    });
+  });
+
+  it("replaces the whole ephemeral overlay from reconnect snapshots", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({
+        streamingContent: "stale",
+        liveTools: [{ toolCallId: "tc-stale", name: "bash" }],
+      }), () => getState().liveTools.length === 1);
+
+      await emitAndWait(act, source, snapshot({
+        streamingContent: "",
+        liveTools: [{ toolCallId: "tc-fresh", name: "view" }],
+      }), () => getState().liveTools[0]?.toolCallId === "tc-fresh");
+
+      expect(getState().liveTools).toHaveLength(1);
+      expect(getState().streamingContent).toBe("");
+    });
+  });
+});
+
+describe("useSessionStream terminal handling", () => {
+  it("closes and surfaces a bridge-native run notice on abort", async () => {
+    await withHarness(async ({ getState, getSource, settled, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "aborted",
+        content: "partial",
+        runNotice: { kind: "stopped", timestamp: "2026-07-24T10:00:00.000Z" },
+      }, () => getState().streamStatus === "idle");
+
+      expect(source.close).toHaveBeenCalled();
+      expect(settled).toHaveBeenCalled();
+      expect(getState().runNotice).toMatchObject({ kind: "stopped" });
+      expect(getState().liveTools).toEqual([]);
+    });
+  });
+
+  it("surfaces an error notice and leaves the transcript to disk history", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "error",
+        message: "boom",
+        runNotice: { kind: "error", message: "boom" },
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().runNotice).toMatchObject({ kind: "error", message: "boom" });
+    });
+  });
+
+  it("emits no notice for a normal done that disk history already covers", async () => {
+    await withHarness(async ({ getState, getSource, titleChanged, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "done",
+        content: "All set",
+        sourceEventId: "terminal-1",
+      }, () => getState().streamStatus === "idle");
+
+      expect(getState().runNotice).toBeNull();
+      expect(titleChanged).toHaveBeenCalled();
+    });
+  });
+
+  it("bumps the history epoch on terminal so the view re-reads the final disk window", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      const before = getState().historyEpoch;
+
+      await emitAndWait(act, source, { type: "done", content: "ok", sourceEventId: "t-1" },
+        () => getState().streamStatus === "idle");
+
+      expect(getState().historyEpoch).toBeGreaterThan(before);
+    });
+  });
+
+  it("bumps the history epoch and clears live segments when history is truncated", async () => {
+    await withHarness(async ({ getState, getSource, settled, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        content: "before truncation",
+        sourceEventId: "assistant-1",
+      }, () => getState().liveAssistantSegments.length === 1);
+      const before = getState().historyEpoch;
+
+      await emitAndWait(act, source, { type: "history_truncated", eventsRemoved: 4 },
+        () => getState().liveAssistantSegments.length === 0);
+
+      expect(getState().historyEpoch).toBeGreaterThan(before);
+      expect(settled).toHaveBeenCalled();
+    });
+  });
+
+  it("replays a completed run from a terminal snapshot", async () => {
+    await withHarness(async ({ getState, getSource, settled, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({
+        complete: true,
+        terminalType: "aborted",
+        runNotice: { kind: "stopped" },
+      }), () => getState().streamStatus === "idle");
+
+      expect(source.close).toHaveBeenCalled();
+      expect(settled).toHaveBeenCalled();
+      expect(getState().runNotice).toMatchObject({ kind: "stopped" });
+    });
+  });
+});
+
+describe("useSessionStream pending interactions", () => {
   it("hydrates and resolves pending interactions", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
-      await emitAndWait(act, source, {
-        type: "snapshot",
-        complete: false,
-        accumulatedContent: "",
-        assistantSegments: [],
-        activeTools: [],
-        currentTurnTools: [],
-        visuals: [],
-        entryOrder: [],
-        pendingUserInputs: [{
-          requestId: "input-1",
-          question: "Continue?",
-          allowFreeform: true,
-        }],
-        pendingElicitations: [{
-          requestId: "el-1",
-          message: "Choose",
-          mode: "url",
-          url: "https://example.com",
-        }],
-      }, () => getState().pendingUserInputs.length === 1);
+
+      await emitAndWait(act, source, snapshot({
+        pendingUserInputs: [
+          { requestId: "input-1", question: "Continue?", allowFreeform: true },
+        ],
+        pendingElicitations: [
+          { requestId: "elicit-1", message: "Pick one", mode: "form", requestedSchema: { properties: {} } },
+        ],
+      }), () => getState().pendingUserInputs.length === 1);
 
       expect(getState().pendingElicitations).toHaveLength(1);
-      await emitAndWait(act, source, {
-        type: "user_input_answered",
-        requestId: "input-1",
-      }, () => getState().pendingUserInputs.length === 0);
-      await emitAndWait(act, source, {
-        type: "elicitation_canceled",
-        requestId: "el-1",
-        reason: "session_ended",
-      }, () => getState().pendingElicitations.length === 0);
-      expect(getState().elicitationCancellation).toMatchObject({
-        requestId: "el-1",
-        question: "Choose",
-      });
+
+      await emitAndWait(act, source, { type: "user_input_answered", requestId: "input-1" },
+        () => getState().pendingUserInputs.length === 0);
+      await emitAndWait(act, source, { type: "elicitation_resolved", requestId: "elicit-1" },
+        () => getState().pendingElicitations.length === 0);
     });
   });
 
@@ -823,25 +646,21 @@ describe("useSessionStream projection events", () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
+
       await emitAndWait(act, source, {
         type: "elicitation_requested",
-        requestId: "el-1",
-        message: "Choose",
-        mode: "url",
-        url: "https://example.com",
+        requestId: "elicit-1",
+        message: "Pick one",
+        mode: "form",
+        requestedSchema: { properties: {} },
       }, () => getState().pendingElicitations.length === 1);
-      await emitAndWait(act, source, {
-        type: "elicitation_resolved",
-        requestId: "el-1",
-        action: "cancel",
-      }, () => getState().pendingElicitations.length === 0);
+      await emitAndWait(act, source, { type: "elicitation_resolved", requestId: "elicit-1" },
+        () => getState().pendingElicitations.length === 0);
 
-      source.emit({
-        type: "elicitation_canceled",
-        requestId: "el-1",
-        reason: "session_ended",
+      await act(async () => {
+        source.emit({ type: "elicitation_canceled", requestId: "elicit-1", reason: "superseded" });
       });
-      await act(async () => {});
+      await waitTick();
 
       expect(getState().elicitationCancellation).toBeNull();
     });
@@ -851,138 +670,70 @@ describe("useSessionStream projection events", () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
+
       await emitAndWait(act, source, {
         type: "elicitation_requested",
-        requestId: "el-1",
-        message: "Choose",
-        mode: "url",
-        url: "https://example.com",
+        requestId: "elicit-1",
+        message: "Pick one",
+        mode: "form",
+        requestedSchema: { properties: {} },
       }, () => getState().pendingElicitations.length === 1);
-      await emitAndWait(act, source, {
-        type: "aborted",
-        timestamp: "2026-07-23T12:00:00.000Z",
-      }, () => getState().streamStatus === "idle");
+
+      await emitAndWait(act, source, { type: "aborted", content: "" },
+        () => getState().streamStatus === "idle");
 
       expect(getState().elicitationCancellation).toMatchObject({
-        requestId: "el-1",
-        question: "Choose",
-        detail: "The request was canceled because the session ended.",
+        requestId: "elicit-1",
+        question: "Pick one",
       });
-    });
-  });
-
-  it("keeps tool, assistant, and visual entries in event order", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      await emitAndWait(act, source, {
-        type: "thinking",
-        turnId: "provider-turn-1",
-      }, () => getState().streamStatus === "thinking");
-      await emitAndWait(act, source, {
-        type: "assistant_partial",
-        turnId: "provider-turn-1",
-        sourceEventId: "assistant-1",
-        content: "Checking",
-      }, () => getState().liveEntries.length === 1);
-      await emitAndWait(act, source, {
-        type: "tool_start",
-        turnId: "provider-turn-1",
-        sourceEventId: "tool-start-1",
-        toolCallId: "tool-1",
-        name: "bash",
-      }, () => getState().currentTurnTools.length === 1);
-      await emitAndWait(act, source, {
-        type: "tool_done",
-        turnId: "provider-turn-1",
-        sourceEventId: "tool-done-1",
-        toolCallId: "tool-1",
-        name: "bash",
-        success: true,
-        result: "ok",
-      }, () => getState().currentTurnTools[0]?.success === true);
-      await emitAndWait(act, source, {
-        type: "visual_published",
-        artifactId: "visual-1",
-        kind: "html",
-        title: "Preview",
-        displayName: "preview.html",
-        mimeType: "text/html",
-        size: 10,
-        url: "/visual-1",
-        downloadUrl: "/visual-1/download",
-      }, () => getState().liveEntries.length === 3);
-
-      expect(getState().liveEntries.map((entry) => entry.type ?? "message")).toEqual([
-        "message",
-        "tool",
-        "visual",
-      ]);
     });
   });
 });
 
-describe("stream projection helpers", () => {
-  it("preserves pre-start tool progress", () => {
-    const prelude = bufferPendingToolPrelude(undefined, {
-      toolCallId: "tool-1",
-      progressText: "Running",
-    });
-    expect(materializePendingTool({
-      toolCallId: "tool-1",
-      name: resolvePendingToolName("bash", prelude),
-    }, prelude)).toMatchObject({
-      name: "bash",
-      progressText: "Running",
-    });
+describe("stream helpers", () => {
+  it("keeps known tool names and rejects placeholders", () => {
+    expect(getKnownToolName("bash")).toBe("bash");
     expect(getKnownToolName("unknown")).toBeUndefined();
+    expect(getKnownToolName("  ")).toBeUndefined();
+    expect(getKnownToolName(42)).toBeUndefined();
   });
 
-  it("builds snapshot tools without hidden tools", () => {
-    const state = buildSnapshotToolState({
-      turnId: "provider-turn-1",
-      activeTools: [
-        { toolCallId: "visible", name: "bash" },
-        { toolCallId: "hidden", name: "report_intent" },
-      ],
-      currentTurnTools: [
-        { toolCallId: "visible", name: "bash", success: true },
-        { toolCallId: "hidden", name: "report_intent", success: true },
-      ],
-    }, "session-1");
-    expect(state.activeTools.map((tool) => tool.toolCallId)).toEqual(["visible"]);
-    expect(state.currentTurnTools).toMatchObject([{ toolCallId: "visible", success: true }]);
-  });
+  it("normalizes live tools and drops hidden ones", () => {
+    const tools = normalizeLiveTools([
+      { toolCallId: "tc-1", name: "bash" },
+      { toolCallId: "tc-2", name: "task_complete" },
+      { toolCallId: "", name: "grep" },
+      { toolCallId: "tc-3", name: "session_rename", args: { sessionId: "session-1" } },
+    ], "session-1", "turn-1", "turn-instance-1");
 
-  it("marks incomplete tools at terminal boundaries", () => {
-    const tools: PendingTool[] = [{ toolCallId: "tool-1", name: "bash" }];
-    expect(buildTerminalToolEntries(tools, "shutdown", "2026-07-21T17:00:00.000Z")).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          success: false,
-          completedAt: "2026-07-21T17:00:00.000Z",
-        },
-      },
+    expect(tools).toMatchObject([
+      { toolCallId: "tc-1", name: "bash", turnId: "turn-1", turnInstanceId: "turn-instance-1" },
     ]);
   });
 
-  it("normalizes live visual events", () => {
-    expect(createVisualEntryFromPublishedEvent({
-      artifactId: "visual-1",
-      kind: "vega-lite",
-      title: "Chart",
-      displayName: "chart.json",
-      url: "/visual-1",
-      source: "{\"mark\":\"bar\"}",
-    })).toMatchObject({
-      id: "live-visual-visual-1",
-      type: "visual",
-      visual: {
-        kind: "vega-lite",
-        source: "{\"mark\":\"bar\"}",
-      },
-    });
+  it("merges tool patches without losing earlier metadata", () => {
+    const merged = upsertLiveTool(
+      [{ toolCallId: "tc-1", name: "bash", args: { command: "ls" }, startedAt: "t0" }],
+      { toolCallId: "tc-1", name: "unknown", progressText: "running" },
+    );
+
+    expect(merged).toMatchObject([
+      { toolCallId: "tc-1", name: "bash", args: { command: "ls" }, startedAt: "t0", progressText: "running" },
+    ]);
+  });
+
+  it("drops only disk-backed segments at a turn boundary", () => {
+    expect(dropDiskBackedSegments([
+      { id: "a", content: "persisted", sourceEventId: "a" },
+      // An SDK event without an id is still disk-backed; only explicit provenance survives.
+      { id: "b", content: "sdk without id" },
+      { id: "c", content: "native", bridgeNative: true },
+    ])).toMatchObject([{ id: "c" }]);
+  });
+
+  it("normalizes run notices and rejects unknown kinds", () => {
+    expect(normalizeRunNotice({ kind: "stopped" })).toMatchObject({ kind: "stopped" });
+    expect(normalizeRunNotice({ kind: "nonsense" })).toBeNull();
+    expect(normalizeRunNotice(null)).toBeNull();
   });
 });

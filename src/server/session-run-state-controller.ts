@@ -122,27 +122,21 @@ export class SessionRunStateController {
       resolvePromptDelivery(result);
     };
     const persistTerminalSnapshot = (sourceEventId?: string) => {
-      if (sourceEventId) {
+      const terminal = bus.getTerminalState();
+      // Only bridge-native outcomes need persisting: everything else is replayable from
+      // events.jsonl, which is the sole authority for committed transcript content.
+      if (!terminal.terminalType || !terminal.runNotice) {
         this.deps.clearTerminalOverlay(sessionId);
         return;
       }
-      const snapshot = bus.getSnapshot();
-      if (!snapshot.terminalType) return;
       this.deps.persistTerminalOverlay(sessionId, {
-        type: snapshot.terminalType,
-        runId: snapshot.runId,
-        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
-        ...(snapshot.turnInstanceId ? { turnInstanceId: snapshot.turnInstanceId } : {}),
-        ...(snapshot.terminalAssistantEventId
-          ? { assistantSourceEventId: snapshot.terminalAssistantEventId }
-          : {}),
-        ...(snapshot.finalContent ? { content: snapshot.finalContent } : {}),
-        ...(snapshot.errorMessage ? { message: snapshot.errorMessage } : {}),
-        ...(snapshot.terminalTimestamp ? { timestamp: snapshot.terminalTimestamp } : {}),
-        ...(snapshot.terminalCompletion ? { terminalCompletion: snapshot.terminalCompletion } : {}),
-        ...(snapshot.finalAssistantEntry
-          ? { finalAssistantEntry: { ...snapshot.finalAssistantEntry } }
-          : {}),
+        type: terminal.terminalType,
+        runId: terminal.runId,
+        ...(terminal.turnId ? { turnId: terminal.turnId } : {}),
+        ...(terminal.turnInstanceId ? { turnInstanceId: terminal.turnInstanceId } : {}),
+        ...(sourceEventId ? { terminalSourceEventId: sourceEventId } : {}),
+        ...(terminal.terminalTimestamp ? { timestamp: terminal.terminalTimestamp } : {}),
+        notice: terminal.runNotice,
       });
     };
 

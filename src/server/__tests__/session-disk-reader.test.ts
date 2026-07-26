@@ -380,7 +380,7 @@ describe("readMessagesFromDisk latest-page path", () => {
     ]);
   });
 
-  it("reuses event-log stats while the event log size and mtime are unchanged", async () => {
+  it("resumes the event-log stats fold from the last scanned offset after an append", async () => {
     const copilotHome = makeTestDir("session-disk-reader-stats-cache");
     const sessionId = "stats-cache";
     const padding = Array.from({ length: 5_000 }, (_, index) => ({
@@ -399,7 +399,7 @@ describe("readMessagesFromDisk latest-page path", () => {
     const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
     const { deps, spans } = createDeps(copilotHome);
 
-    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    const first = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
     await readMessagesFromDisk(deps, sessionId, { limit: 50 });
     appendFileSync(
       eventsPath,
@@ -409,12 +409,146 @@ describe("readMessagesFromDisk latest-page path", () => {
         data: { content: "cache-bust" },
       })}\n`,
     );
-    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    const afterAppend = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
 
-    expect(spans
-      .filter((span) => span.name === "session.readFromDisk.stats")
-      .map((span) => span.metadata?.cacheResult))
-      .toEqual(["miss", "hit", "miss"]);
+    const statsSpans = spans.filter((span) => span.name === "session.readFromDisk.stats");
+    expect(statsSpans.map((span) => span.metadata?.cacheResult))
+      .toEqual(["miss", "hit", "resumed"]);
+    // The append must only cost the appended bytes, not a full rescan.
+    const fullScanBytes = statsSpans[0]?.metadata?.scannedBytes as number;
+    const appendScanBytes = statsSpans[2]?.metadata?.scannedBytes as number;
+    expect(appendScanBytes).toBeLessThan(fullScanBytes / 100);
+    // The resumed fold must produce the same totals as a full rescan would.
+    expect(afterAppend.total).toBe(first.total + 1);
+    clearEventLogStatsCache(sessionId);
+    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    expect(rescanned.total).toBe(afterAppend.total);
+    expect(rescanned.lastVisibleActivityAt).toBe(afterAppend.lastVisibleActivityAt);
+    expect(rescanned.coverage).toEqual(afterAppend.coverage);
+    expect(rescanned.messages).toEqual(afterAppend.messages);
+  });
+
+  it("keeps resumed turn state correct as the tail window moves across turns", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-stats-turnstate");
+    const sessionId = "stats-turnstate";
+    const events: unknown[] = [];
+    for (let turn = 0; turn < 12; turn += 1) {
+      events.push({
+        type: "assistant.turn_start",
+        id: `turn-start-${turn}`,
+        data: { turnId: `provider-turn-${turn}` },
+        timestamp: `2026-05-02T10:${String(turn).padStart(2, "0")}:00.000Z`,
+      });
+      events.push({
+        type: "assistant.message",
+        id: `assistant-${turn}`,
+        data: { content: `reply ${turn}` },
+        timestamp: `2026-05-02T10:${String(turn).padStart(2, "0")}:01.000Z`,
+      });
+      events.push({
+        type: "session.idle",
+        id: `idle-${turn}`,
+        data: {},
+        timestamp: `2026-05-02T10:${String(turn).padStart(2, "0")}:02.000Z`,
+      });
+    }
+    writeSessionFiles(copilotHome, sessionId, { events });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const { deps } = createDeps(copilotHome);
+
+    await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+
+    // Append an unterminated turn, then read again through the resumed fold.
+    appendFileSync(eventsPath, `${JSON.stringify({
+      type: "assistant.turn_start",
+      id: "turn-start-open",
+      data: { turnId: "provider-turn-open" },
+      timestamp: "2026-05-02T11:00:00.000Z",
+    })}\n`);
+    appendFileSync(eventsPath, `${JSON.stringify({
+      type: "assistant.message",
+      id: "assistant-open",
+      data: { content: "open reply" },
+      timestamp: "2026-05-02T11:00:01.000Z",
+    })}\n`);
+    const resumed = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+
+    clearEventLogStatsCache(sessionId);
+    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+
+    expect(resumed.total).toBe(rescanned.total);
+    expect(resumed.messages).toEqual(rescanned.messages);
+    expect(resumed.coverage).toEqual(rescanned.coverage);
+    expect(resumed.lastVisibleActivityAt).toBe(rescanned.lastVisibleActivityAt);
+  });
+
+  it("matches a full rescan across many incremental appends", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-stats-incremental");
+    const sessionId = "stats-incremental";
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [{
+        type: "user.message",
+        id: "user-0",
+        data: { content: "start" },
+        timestamp: "2026-05-03T10:00:00.000Z",
+      }],
+    });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const { deps } = createDeps(copilotHome);
+
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    for (let index = 0; index < 20; index += 1) {
+      appendFileSync(eventsPath, `${JSON.stringify({
+        type: "tool.execution_start",
+        id: `tool-start-${index}`,
+        data: { toolCallId: `tc-${index}`, toolName: "bash", arguments: { command: "ls" } },
+        timestamp: `2026-05-03T10:01:${String(index).padStart(2, "0")}.000Z`,
+      })}\n`);
+      appendFileSync(eventsPath, `${JSON.stringify({
+        type: "tool.execution_complete",
+        id: `tool-done-${index}`,
+        data: { toolCallId: `tc-${index}`, success: true, result: "ok" },
+        timestamp: `2026-05-03T10:01:${String(index).padStart(2, "0")}.500Z`,
+      })}\n`);
+      await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    }
+
+    const resumed = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    clearEventLogStatsCache(sessionId);
+    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(resumed.total).toBe(rescanned.total);
+    expect(resumed.messages).toEqual(rescanned.messages);
+    expect(resumed.coverage).toEqual(rescanned.coverage);
+  });
+
+  it("rescans instead of resuming when the event log is rewritten in place", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-stats-rewrite");
+    const sessionId = "stats-rewrite";
+    const originalEvents = Array.from({ length: 40 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `original-${index}` },
+    }));
+    writeSessionFiles(copilotHome, sessionId, { events: originalEvents });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const { deps } = createDeps(copilotHome);
+
+    const before = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    expect(before.total).toBe(40);
+
+    // Simulate compaction: the log is rewritten with different (longer) content in place.
+    const rewritten = Array.from({ length: 60 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-05-01T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `rewritten-${index}` },
+    }));
+    writeFileSync(eventsPath, `${rewritten.map((event) => JSON.stringify(event)).join("\n")}\n`);
+
+    const after = await readMessagesFromDisk(deps, sessionId, { limit: 100 });
+    expect(after.total).toBe(60);
+    expect(after.messages.map((message) => (message as { content?: string }).content))
+      .toEqual(rewritten.map((event) => event.data.content));
   });
 
   it("clears cached event-log stats for a specific session", async () => {

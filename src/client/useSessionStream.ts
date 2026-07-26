@@ -1,26 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Attachment,
-  ChatCompletionEntry,
-  ChatEntry,
-  ChatVisualEntry,
   ElicitationSchema,
   McpServerStatus,
   PendingElicitationRequestView,
   PendingUserInputRequestView,
   ToolArgs,
-  ToolCall,
-  VisualArtifact,
 } from "./api";
 import { API_BASE, reportTiming, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { RunNotice } from "../shared/session-stream.js";
 import {
   isTerminalCompletionToolName,
   type TerminalCompletion,
-  type TranscriptCompletionStatus,
 } from "../shared/terminal-completion.js";
 
+/**
+ * Live stream state.
+ *
+ * `events.jsonl` (served by `/messages-fast`) is the sole authority for committed transcript
+ * content and ordering. This hook only carries state that is genuinely not on disk yet:
+ * streaming text, in-flight tools, accepted-but-unpersisted prompts, pending interactions, and
+ * bridge-native run notices. Everything disk-backed here carries the `sourceEventId` it will be
+ * committed under, so the view can hand it off to history by exact identity instead of merging.
+ */
+
+/**
+ * A tool call known to the stream, including recently-completed ones. The view substitutes this
+ * state onto the matching disk entry (matched by `toolCallId`) rather than appending a duplicate,
+ * so `events.jsonl` keeps deciding where the tool sits in the transcript.
+ */
 export interface PendingTool {
   toolCallId: string;
   name: string;
@@ -32,21 +42,61 @@ export interface PendingTool {
   isSubAgent?: boolean;
   startedAt?: string;
   progressText?: string;
-}
-
-interface SnapshotTool extends PendingTool {
-  result?: string;
-  success?: boolean;
   completedAt?: string;
+  success?: boolean;
+  result?: string;
 }
 
-export interface PendingToolPrelude {
-  toolCallId: string;
+/** A visual published this run, retired once its `artifactId` appears in loaded disk history. */
+export interface LiveVisual {
+  artifactId: string;
+  kind?: string;
+  title?: string;
+  displayName?: string;
+  mimeType?: string;
+  size?: number;
+  url?: string;
+  downloadUrl?: string;
+  source?: string;
+  caption?: string;
+  altText?: string;
+  timestamp?: string;
   turnId?: string;
   turnInstanceId?: string;
-  name?: string;
-  progressText?: string;
-  isSubAgent?: boolean;
+}
+
+/** A completion card for this run, retired once its source event appears in disk history. */
+export interface LiveCompletion {
+  completion: TerminalCompletion;
+  sourceEventId?: string;
+  timestamp?: string;
+  turnId?: string;
+  turnInstanceId?: string;
+}
+
+/**
+ * Assistant text that has not been observed in loaded disk history yet. A segment with a
+ * `sourceEventId` is disk-backed and is dropped once that id appears in history; a segment without
+ * one is bridge-native (slash-command output) and has no disk representation at all.
+ */
+export interface LiveAssistantSegment {
+  id: string;
+  content: string;
+  sourceEventId?: string;
+  /** Bridge-produced text with no events.jsonl representation; never handed off to history. */
+  bridgeNative?: boolean;
+  turnId?: string;
+  turnInstanceId?: string;
+  timestamp?: string;
+}
+
+/** An accepted prompt held until its persisted `sourceEventId` appears in loaded history. */
+export interface LivePendingUserMessage {
+  id: string;
+  content: string;
+  attachments?: Attachment[];
+  sourceEventId?: string;
+  timestamp?: string;
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
@@ -60,13 +110,17 @@ export interface ElicitationCancellationNotice {
 }
 
 export interface StreamState {
-  liveEntries: ChatEntry[];
   streamingContent: string;
-  activeTools: PendingTool[];
+  liveAssistantSegments: LiveAssistantSegment[];
+  pendingUserMessages: LivePendingUserMessage[];
+  /** In-flight and recently-completed tools; the view derives in-flight ones for run status. */
+  liveTools: PendingTool[];
+  liveVisuals: LiveVisual[];
+  liveCompletion: LiveCompletion | null;
   pendingUserInputs: PendingUserInputRequestView[];
   pendingElicitations: PendingElicitationRequestView[];
   elicitationCancellation: ElicitationCancellationNotice | null;
-  currentTurnTools: ToolCall[];
+  runNotice: RunNotice | null;
   intentText: string;
   streamStatus: StreamStatus;
   isStreaming: boolean;
@@ -77,29 +131,32 @@ export interface StreamState {
   runMode?: SendMode;
   activeTurnId?: string;
   activeTurnInstanceId?: string;
+  /**
+   * Locally monotonic marker that advances whenever committed disk history may have changed.
+   * Derived rather than mirrored: the server's per-run counter restarts with each new bus, so the
+   * view would otherwise stop refreshing after the first run of a session.
+   */
+  historyEpoch: number;
 }
-
-const VISUAL_KIND_MIME_TYPES: Record<VisualArtifact["kind"], string> = {
-  image: "image/png",
-  mermaid: "text/vnd.mermaid",
-  "vega-lite": "application/vnd.vegalite+json",
-  html: "text/html",
-};
 
 function createState(status: StreamStatus, partial: Partial<StreamState> = {}): StreamState {
   return {
-    liveEntries: [],
     streamingContent: "",
-    activeTools: [],
+    liveAssistantSegments: [],
+    pendingUserMessages: [],
+    liveTools: [],
+    liveVisuals: [],
+    liveCompletion: null,
     pendingUserInputs: [],
     pendingElicitations: [],
     elicitationCancellation: null,
-    currentTurnTools: [],
+    runNotice: null,
     intentText: "",
     hadVisibleOutput: false,
     mcpServers: [],
     contextSummary: null,
     pendingOrigin: null,
+    historyEpoch: 0,
     ...partial,
     streamStatus: status,
     isStreaming: status !== "idle",
@@ -126,39 +183,6 @@ function getEventTurnInstanceId(event: Record<string, unknown>): string | undefi
   return optionalString(event.turnInstanceId);
 }
 
-function isVisualArtifactKind(value: unknown): value is VisualArtifact["kind"] {
-  return value === "image" || value === "mermaid" || value === "vega-lite" || value === "html";
-}
-
-export function createVisualEntryFromPublishedEvent(event: Record<string, unknown>): ChatVisualEntry | null {
-  if (typeof event.artifactId !== "string" || typeof event.url !== "string") return null;
-  const kind = isVisualArtifactKind(event.kind) ? event.kind : "image";
-  const displayName = typeof event.displayName === "string" ? event.displayName : event.artifactId;
-  const visual: VisualArtifact = {
-    artifactId: event.artifactId,
-    kind,
-    title: typeof event.title === "string" ? event.title : displayName,
-    displayName,
-    mimeType: typeof event.mimeType === "string" ? event.mimeType : VISUAL_KIND_MIME_TYPES[kind],
-    size: typeof event.size === "number" ? event.size : 0,
-    url: event.url,
-    downloadUrl: typeof event.downloadUrl === "string" ? event.downloadUrl : event.url,
-    ...(typeof event.caption === "string" ? { caption: event.caption } : {}),
-    ...(typeof event.altText === "string" ? { altText: event.altText } : {}),
-    ...(kind !== "image" && typeof event.source === "string" ? { source: event.source } : {}),
-  };
-  return {
-    id: `live-visual-${event.artifactId}`,
-    type: "visual",
-    ...(optionalString(event.turnId) ? { turnId: optionalString(event.turnId) } : {}),
-    ...(optionalString(event.turnInstanceId)
-      ? { turnInstanceId: optionalString(event.turnInstanceId) }
-      : {}),
-    visual,
-    ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
-  };
-}
-
 function getElicitationCancellationDetail(event: Record<string, unknown>): string {
   const message = typeof event.message === "string" && event.message.trim()
     ? event.message.trim()
@@ -176,38 +200,65 @@ function getElicitationCancellationDetail(event: Record<string, unknown>): strin
   }
 }
 
-function isCompletionStatus(value: unknown): value is TranscriptCompletionStatus {
-  return value === "success" || value === "error";
+export function normalizeRunNotice(value: unknown): RunNotice | null {
+  if (!isRecord(value)) return null;
+  const kind = value.kind;
+  if (kind !== "stopped" && kind !== "interrupted" && kind !== "error" && kind !== "command") {
+    return null;
+  }
+  return {
+    kind,
+    ...(optionalString(value.content) ? { content: optionalString(value.content) } : {}),
+    ...(optionalString(value.message) ? { message: optionalString(value.message) } : {}),
+    ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
+  };
 }
 
-function normalizeTerminalCompletion(value: unknown): TerminalCompletion | undefined {
-  if (!isRecord(value) || typeof value.content !== "string" || !value.content.trim()) return undefined;
-  if (typeof value.sourceEventType !== "string" || !value.sourceEventType.trim()) return undefined;
+export function normalizeLiveAssistantSegment(value: unknown): LiveAssistantSegment | undefined {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
+    return undefined;
+  }
+  if (!value.content) return undefined;
   return {
+    id: value.id,
     content: value.content,
-    title: typeof value.title === "string" && value.title.trim() ? value.title : "Task complete",
-    status: isCompletionStatus(value.status) ? value.status : "success",
-    sourceEventType: value.sourceEventType,
+    ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
+    ...(value.bridgeNative === true ? { bridgeNative: true } : {}),
+    ...(optionalString(value.turnId) ? { turnId: optionalString(value.turnId) } : {}),
+    ...(optionalString(value.turnInstanceId)
+      ? { turnInstanceId: optionalString(value.turnInstanceId) }
+      : {}),
+    ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
   };
 }
 
-function createCompletionEntry(
-  completion: TerminalCompletion,
-  timestamp?: string,
-  turnId?: string,
-  turnInstanceId?: string,
-  sourceEventId?: string,
-): ChatCompletionEntry {
+function normalizeLiveAssistantSegments(value: unknown): LiveAssistantSegment[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((segment) => {
+    const normalized = normalizeLiveAssistantSegment(segment);
+    return normalized ? [normalized] : [];
+  });
+}
+
+export function normalizePendingUserMessage(value: unknown): LivePendingUserMessage | undefined {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
+    return undefined;
+  }
   return {
-    id: sourceEventId ? `live-completion-${sourceEventId}` : undefined,
-    type: "completion",
-    content: completion.content,
-    completion,
-    ...(timestamp ? { timestamp } : {}),
-    ...(turnId ? { turnId } : {}),
-    ...(turnInstanceId ? { turnInstanceId } : {}),
-    ...(sourceEventId ? { sourceEventId } : {}),
+    id: value.id,
+    content: value.content,
+    ...(Array.isArray(value.attachments) ? { attachments: value.attachments as Attachment[] } : {}),
+    ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
+    ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
   };
+}
+
+function normalizePendingUserMessages(value: unknown): LivePendingUserMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((message) => {
+    const normalized = normalizePendingUserMessage(message);
+    return normalized ? [normalized] : [];
+  });
 }
 
 function normalizePendingUserInputRequest(
@@ -295,73 +346,6 @@ export function getKnownToolName(name: unknown): string | undefined {
   return normalized && normalized !== "unknown" ? normalized : undefined;
 }
 
-export function bufferPendingToolPrelude(
-  existing: PendingToolPrelude | undefined,
-  patch: PendingToolPrelude,
-): PendingToolPrelude {
-  return {
-    toolCallId: patch.toolCallId,
-    turnId: patch.turnId ?? existing?.turnId,
-    turnInstanceId: patch.turnInstanceId ?? existing?.turnInstanceId,
-    name: patch.name ?? existing?.name,
-    progressText: patch.progressText ?? existing?.progressText,
-    isSubAgent: patch.isSubAgent ?? existing?.isSubAgent,
-  };
-}
-
-export function resolvePendingToolName(name: unknown, prelude?: PendingToolPrelude): string {
-  return getKnownToolName(name) ?? prelude?.name ?? "unknown";
-}
-
-export function materializePendingTool<
-  T extends Pick<PendingTool, "name" | "progressText" | "isSubAgent">
-    & { turnId?: string; turnInstanceId?: string }
->(tool: T, prelude?: PendingToolPrelude): T {
-  if (!prelude) return tool;
-  return {
-    ...tool,
-    turnId: tool.turnId ?? prelude.turnId,
-    turnInstanceId: tool.turnInstanceId ?? prelude.turnInstanceId,
-    progressText: prelude.progressText ?? tool.progressText,
-    isSubAgent: tool.isSubAgent ?? prelude.isSubAgent,
-  };
-}
-
-export function collectTerminalPendingTools(
-  activeTools: Iterable<PendingTool>,
-  renderedTools: PendingTool[],
-  preludes: Iterable<PendingToolPrelude>,
-): PendingTool[] {
-  const collected = new Map<string, PendingTool>();
-  const merge = (tool: PendingTool) => {
-    const existing = collected.get(tool.toolCallId);
-    collected.set(tool.toolCallId, {
-      ...existing,
-      ...tool,
-      name: getKnownToolName(tool.name) ?? getKnownToolName(existing?.name) ?? tool.name,
-      args: tool.args ?? existing?.args,
-      parentToolCallId: tool.parentToolCallId ?? existing?.parentToolCallId,
-      isSubAgent: tool.isSubAgent ?? existing?.isSubAgent,
-      turnId: tool.turnId ?? existing?.turnId,
-      turnInstanceId: tool.turnInstanceId ?? existing?.turnInstanceId,
-      sourceEventId: existing?.sourceEventId ?? tool.sourceEventId,
-      startedAt: tool.startedAt ?? existing?.startedAt,
-      progressText: tool.progressText ?? existing?.progressText,
-    });
-  };
-  for (const tool of renderedTools) merge(tool);
-  for (const tool of activeTools) merge(tool);
-  for (const prelude of preludes) {
-    merge(materializePendingTool({
-      toolCallId: prelude.toolCallId,
-      name: resolvePendingToolName(undefined, prelude),
-      turnId: prelude.turnId,
-      turnInstanceId: prelude.turnInstanceId,
-    }, prelude));
-  }
-  return [...collected.values()];
-}
-
 function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: string): boolean {
   if (isTerminalCompletionToolName(name) || name === "report_intent") return true;
   if (name !== "session_rename") return false;
@@ -370,145 +354,98 @@ function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: strin
   return typeof targetSessionId !== "string" || targetSessionId === sessionId;
 }
 
-function normalizeSnapshotTool(
+export function normalizeActiveTool(
   rawTool: unknown,
-  activeTurnId: string | undefined,
-  activeTurnInstanceId: string | undefined,
-): SnapshotTool | undefined {
+  fallbackTurnId?: string,
+  fallbackTurnInstanceId?: string,
+): PendingTool | undefined {
   if (!isRecord(rawTool)) return undefined;
+  const toolCallId = optionalString(rawTool.toolCallId);
+  if (!toolCallId) return undefined;
   return {
-    toolCallId: optionalString(rawTool.toolCallId) ?? "",
+    toolCallId,
     name: optionalString(rawTool.name) ?? "unknown",
-    turnId: optionalString(rawTool.turnId) ?? activeTurnId,
-    turnInstanceId: optionalString(rawTool.turnInstanceId) ?? activeTurnInstanceId,
+    turnId: optionalString(rawTool.turnId) ?? fallbackTurnId,
+    turnInstanceId: optionalString(rawTool.turnInstanceId) ?? fallbackTurnInstanceId,
     sourceEventId: optionalString(rawTool.sourceEventId),
     args: rawTool.args as ToolArgs | undefined,
     startedAt: optionalString(rawTool.startedAt),
     progressText: optionalString(rawTool.progressText),
     parentToolCallId: optionalString(rawTool.parentToolCallId),
     isSubAgent: optionalBoolean(rawTool.isSubAgent),
-    result: optionalString(rawTool.result),
-    success: optionalBoolean(rawTool.success),
     completedAt: optionalString(rawTool.completedAt),
+    success: optionalBoolean(rawTool.success),
+    result: optionalString(rawTool.result),
   };
 }
 
-function mergeSnapshotTool(existing: SnapshotTool, next: SnapshotTool): SnapshotTool {
+export function normalizeLiveVisual(value: unknown): LiveVisual | undefined {
+  if (!isRecord(value) || typeof value.artifactId !== "string") return undefined;
+  return value as unknown as LiveVisual;
+}
+
+export function normalizeLiveVisuals(value: unknown): LiveVisual[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((visual) => {
+    const normalized = normalizeLiveVisual(visual);
+    return normalized ? [normalized] : [];
+  });
+}
+
+export function normalizeLiveCompletion(value: unknown): LiveCompletion | null {
+  if (!isRecord(value) || !isRecord(value.completion)) return null;
+  const completion = value.completion as unknown as TerminalCompletion;
+  if (typeof completion.content !== "string" || !completion.content) return null;
   return {
-    ...existing,
-    ...next,
-    toolCallId: existing.toolCallId,
-    name: getKnownToolName(next.name) ?? getKnownToolName(existing.name) ?? next.name,
-    turnId: next.turnId ?? existing.turnId,
-    turnInstanceId: next.turnInstanceId ?? existing.turnInstanceId,
-    sourceEventId: existing.sourceEventId ?? next.sourceEventId,
-    args: next.args ?? existing.args,
-    parentToolCallId: next.parentToolCallId ?? existing.parentToolCallId,
-    isSubAgent: next.isSubAgent ?? existing.isSubAgent,
-    startedAt: next.startedAt ?? existing.startedAt,
-    progressText: next.progressText ?? existing.progressText,
-    result: next.result ?? existing.result,
-    success: next.success ?? existing.success,
-    completedAt: next.completedAt ?? existing.completedAt,
+    completion,
+    ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
+    ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
+    ...(optionalString(value.turnId) ? { turnId: optionalString(value.turnId) } : {}),
+    ...(optionalString(value.turnInstanceId)
+      ? { turnInstanceId: optionalString(value.turnInstanceId) }
+      : {}),
   };
 }
 
-function normalizeSnapshotTools(
+export function normalizeLiveTools(
   rawTools: unknown,
-  activeTurnId: string | undefined,
-  activeTurnInstanceId: string | undefined,
   sessionId: string,
-): SnapshotTool[] {
+  fallbackTurnId?: string,
+  fallbackTurnInstanceId?: string,
+): PendingTool[] {
   if (!Array.isArray(rawTools)) return [];
-  const tools = new Map<string, SnapshotTool>();
+  const tools = new Map<string, PendingTool>();
   for (const rawTool of rawTools) {
-    const tool = normalizeSnapshotTool(rawTool, activeTurnId, activeTurnInstanceId);
-    if (!tool?.toolCallId || isHiddenTool(tool.name, tool.args, sessionId)) continue;
-    const existing = tools.get(tool.toolCallId);
-    tools.set(tool.toolCallId, existing ? mergeSnapshotTool(existing, tool) : tool);
+    const tool = normalizeActiveTool(rawTool, fallbackTurnId, fallbackTurnInstanceId);
+    if (!tool || isHiddenTool(tool.name, tool.args, sessionId)) continue;
+    tools.set(tool.toolCallId, tool);
   }
   return [...tools.values()];
 }
 
-function pendingToolToToolCall(tool: PendingTool, partial: Partial<ToolCall> = {}): ToolCall {
-  return {
-    toolCallId: tool.toolCallId,
-    name: tool.name,
-    turnId: tool.turnId,
-    turnInstanceId: tool.turnInstanceId,
-    sourceEventId: tool.sourceEventId,
-    args: tool.args,
-    parentToolCallId: tool.parentToolCallId,
-    isSubAgent: tool.isSubAgent,
-    startedAt: tool.startedAt,
-    progressText: tool.progressText,
-    ...partial,
-  };
-}
-
-function snapshotToolToToolCall(tool: SnapshotTool): ToolCall {
-  return pendingToolToToolCall(tool, {
-    result: tool.result,
-    success: tool.success,
-    completedAt: tool.completedAt,
-  });
-}
-
-export function buildSnapshotToolState(
-  event: {
-    activeTools?: unknown;
-    currentTurnTools?: unknown;
-    turnId?: unknown;
-    turnInstanceId?: unknown;
-  },
-  sessionId: string,
-): { activeTools: PendingTool[]; currentTurnTools: ToolCall[]; toolEntries: ChatEntry[] } {
-  const activeTurnId = typeof event.turnId === "string" ? event.turnId : undefined;
-  const activeTurnInstanceId = typeof event.turnInstanceId === "string"
-    ? event.turnInstanceId
-    : undefined;
-  const activeTools = normalizeSnapshotTools(
-    event.activeTools,
-    activeTurnId,
-    activeTurnInstanceId,
-    sessionId,
-  );
-  const allTools = normalizeSnapshotTools(
-    Array.isArray(event.currentTurnTools) ? event.currentTurnTools : event.activeTools,
-    activeTurnId,
-    activeTurnInstanceId,
-    sessionId,
-  );
-  return {
-    activeTools,
-    currentTurnTools: allTools.map(snapshotToolToToolCall),
-    toolEntries: allTools.map((tool) => ({
-      id: `live-tool-${tool.toolCallId}`,
-      type: "tool",
-      turnId: tool.turnId,
-      turnInstanceId: tool.turnInstanceId,
-      sourceEventId: tool.sourceEventId,
-      toolCall: snapshotToolToToolCall(tool),
-    })),
-  };
-}
-
-export function buildTerminalToolEntries(
-  tools: PendingTool[],
-  terminalType: "done" | "error" | "aborted" | "shutdown",
-  completedAt?: string,
-): ChatEntry[] {
-  return tools.map((tool) => ({
-    id: `live-tool-${tool.toolCallId}`,
-    type: "tool",
-    turnId: tool.turnId,
-    turnInstanceId: tool.turnInstanceId,
-    sourceEventId: tool.sourceEventId,
-    toolCall: pendingToolToToolCall(tool, {
-      success: terminalType === "done",
-      ...(completedAt ? { completedAt } : {}),
-    }),
-  }));
+/** Merge a live tool patch into the active set, creating the entry when the patch arrives first. */
+export function upsertLiveTool(tools: PendingTool[], patch: PendingTool): PendingTool[] {
+  const index = tools.findIndex((tool) => tool.toolCallId === patch.toolCallId);
+  if (index < 0) return [...tools, patch];
+  return tools.map((tool, currentIndex) => currentIndex === index
+    ? {
+        ...tool,
+        ...patch,
+        toolCallId: tool.toolCallId,
+        name: getKnownToolName(patch.name) ?? getKnownToolName(tool.name) ?? patch.name,
+        turnId: patch.turnId ?? tool.turnId,
+        turnInstanceId: patch.turnInstanceId ?? tool.turnInstanceId,
+        sourceEventId: tool.sourceEventId ?? patch.sourceEventId,
+        args: patch.args ?? tool.args,
+        parentToolCallId: patch.parentToolCallId ?? tool.parentToolCallId,
+        isSubAgent: patch.isSubAgent ?? tool.isSubAgent,
+        startedAt: patch.startedAt ?? tool.startedAt,
+        progressText: patch.progressText ?? tool.progressText,
+        completedAt: patch.completedAt ?? tool.completedAt,
+        success: patch.success ?? tool.success,
+        result: patch.result ?? tool.result,
+      }
+    : tool);
 }
 
 function normalizeStreamContextSummary(value: unknown): SessionContextSummary | null {
@@ -524,175 +461,21 @@ function getStreamContextSummary(event: Record<string, unknown>): SessionContext
     ?? normalizeStreamContextSummary(event.context);
 }
 
-function createAssistantEntry(
-  content: string,
-  options: {
-    id: string;
-    turnId?: string;
-    turnInstanceId?: string;
-    sourceEventId?: string;
-    timestamp?: string;
-  },
-): ChatEntry {
-  return {
-    id: options.id,
-    type: "message",
-    role: "assistant",
-    content,
-    ...(options.turnId ? { turnId: options.turnId } : {}),
-    ...(options.turnInstanceId ? { turnInstanceId: options.turnInstanceId } : {}),
-    ...(options.sourceEventId ? { sourceEventId: options.sourceEventId } : {}),
-    ...(options.timestamp ? { timestamp: options.timestamp } : {}),
-  };
+/**
+ * Drop disk-backed segments at a turn boundary. A new turn proves the previous turn's assistant
+ * messages reached `events.jsonl`, while bridge-native segments never will and must survive.
+ */
+export function dropDiskBackedSegments(segments: LiveAssistantSegment[]): LiveAssistantSegment[] {
+  return segments.filter((segment) => segment.bridgeNative === true);
 }
 
-function createProjectedAssistantEntry(value: unknown): ChatEntry | null {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
-    return null;
-  }
-  return createAssistantEntry(value.content, {
-    id: `live-assistant-${value.id}`,
-    turnId: optionalString(value.turnId),
-    turnInstanceId: optionalString(value.turnInstanceId),
-    sourceEventId: optionalString(value.sourceEventId),
-    timestamp: optionalString(value.timestamp),
-  });
-}
-
-function createUserEntry(value: unknown): ChatEntry | null {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") {
-    return null;
-  }
-  return {
-    id: `live-user-${value.id}`,
-    type: "message",
-    role: "user",
-    content: value.content,
-    ...(Array.isArray(value.attachments) ? { attachments: value.attachments as Attachment[] } : {}),
-    ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
-    ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
-  };
-}
-
-function buildSnapshotLiveEntries(event: Record<string, unknown>, sessionId: string): ChatEntry[] {
-  const turnId = getEventTurnId(event);
-  const turnInstanceId = getEventTurnInstanceId(event);
-  const entriesByKey = new Map<string, ChatEntry>();
-  if (Array.isArray(event.userMessages)) {
-    for (const rawMessage of event.userMessages) {
-      if (!isRecord(rawMessage) || typeof rawMessage.id !== "string") continue;
-      const entry = createUserEntry(rawMessage);
-      if (entry) entriesByKey.set(`user:${rawMessage.id}`, entry);
-    }
-  }
-  if (Array.isArray(event.assistantSegments)) {
-    for (const rawSegment of event.assistantSegments) {
-      if (!isRecord(rawSegment) || typeof rawSegment.id !== "string" || typeof rawSegment.content !== "string") continue;
-      entriesByKey.set(`assistant:${rawSegment.id}`, createAssistantEntry(rawSegment.content, {
-        id: `live-assistant-${rawSegment.id}`,
-        turnId: optionalString(rawSegment.turnId) ?? turnId,
-        turnInstanceId: optionalString(rawSegment.turnInstanceId) ?? turnInstanceId,
-        sourceEventId: optionalString(rawSegment.sourceEventId),
-        timestamp: optionalString(rawSegment.timestamp),
-      }));
-    }
-  }
-
-  const toolState = buildSnapshotToolState(event, sessionId);
-  for (const entry of toolState.toolEntries) {
-    if (entry.type === "tool") entriesByKey.set(`tool:${entry.toolCall.toolCallId}`, entry);
-  }
-
-  if (Array.isArray(event.visuals)) {
-    for (const rawVisual of event.visuals) {
-      if (!isRecord(rawVisual)) continue;
-      const entry = createVisualEntryFromPublishedEvent(rawVisual);
-      if (entry) entriesByKey.set(`visual:${entry.visual.artifactId}`, entry);
-    }
-  }
-
-  const result: ChatEntry[] = [];
-  const seen = new Set<string>();
-  if (Array.isArray(event.entryOrder)) {
-    for (const rawKey of event.entryOrder) {
-      if (typeof rawKey !== "string") continue;
-      const entry = entriesByKey.get(rawKey);
-      if (!entry) continue;
-      result.push(entry);
-      seen.add(rawKey);
-    }
-  }
-  for (const [key, entry] of entriesByKey) {
-    if (!seen.has(key)) result.push(entry);
-  }
-
-  if (!event.complete) return result;
-  const sourceEventId = optionalString(event.terminalEventId);
-  const timestamp = optionalString(event.terminalTimestamp);
-  const completion = normalizeTerminalCompletion(event.terminalCompletion);
-  if (completion) {
-    result.push(createCompletionEntry(
-      completion,
-      timestamp,
-      turnId,
-      turnInstanceId,
-      sourceEventId,
-    ));
-  } else {
-    const finalAssistantEntry = createProjectedAssistantEntry(event.finalAssistantEntry);
-    if (finalAssistantEntry) return upsertLiveEntry(result, finalAssistantEntry);
-  }
-  return result;
-}
-
-function upsertTool(tools: ToolCall[], next: ToolCall): ToolCall[] {
-  const index = tools.findIndex((tool) => tool.toolCallId === next.toolCallId);
-  if (index < 0) return [...tools, next];
-  return tools.map((tool, currentIndex) => currentIndex === index
-    ? {
-        ...tool,
-        ...next,
-        toolCallId: tool.toolCallId,
-        name: getKnownToolName(next.name) ?? getKnownToolName(tool.name) ?? next.name,
-        turnId: next.turnId ?? tool.turnId,
-        turnInstanceId: next.turnInstanceId ?? tool.turnInstanceId,
-        sourceEventId: tool.sourceEventId ?? next.sourceEventId,
-        args: next.args ?? tool.args,
-        result: next.result ?? tool.result,
-        progressText: next.progressText ?? tool.progressText,
-        success: next.success ?? tool.success,
-        parentToolCallId: next.parentToolCallId ?? tool.parentToolCallId,
-        isSubAgent: next.isSubAgent ?? tool.isSubAgent,
-        startedAt: next.startedAt ?? tool.startedAt,
-        completedAt: next.completedAt ?? tool.completedAt,
-      }
-    : tool);
-}
-
-function upsertLiveToolEntry(entries: ChatEntry[], tool: ToolCall): ChatEntry[] {
-  const next: ChatEntry = {
-    id: `live-tool-${tool.toolCallId}`,
-    type: "tool",
-    turnId: tool.turnId,
-    turnInstanceId: tool.turnInstanceId,
-    sourceEventId: tool.sourceEventId,
-    toolCall: tool,
-  };
-  const index = entries.findIndex((entry) => entry.type === "tool" && entry.toolCall.toolCallId === tool.toolCallId);
-  if (index < 0) return [...entries, next];
-  return entries.map((entry, currentIndex) => currentIndex === index ? next : entry);
-}
-
-function appendUniqueEntry(entries: ChatEntry[], entry: ChatEntry): ChatEntry[] {
-  if (entry.id && entries.some((candidate) => candidate.id === entry.id)) return entries;
-  return [...entries, entry];
-}
-
-function upsertLiveEntry(entries: ChatEntry[], next: ChatEntry): ChatEntry[] {
-  if (!next.id) return [...entries, next];
-  const index = entries.findIndex((entry) => entry.id === next.id);
-  if (index < 0) return [...entries, next];
-  return entries.map((entry, entryIndex) => entryIndex === index ? next : entry);
+function appendAssistantSegment(
+  segments: LiveAssistantSegment[],
+  next: LiveAssistantSegment,
+): LiveAssistantSegment[] {
+  const index = segments.findIndex((segment) => segment.id === next.id);
+  if (index < 0) return [...segments, next];
+  return segments.map((segment, segmentIndex) => segmentIndex === index ? next : segment);
 }
 
 export function useSessionStream(
@@ -706,8 +489,7 @@ export function useSessionStream(
   const sessionRef = useRef<string | null>(sessionId);
   const eventSourceRef = useRef<EventSource | null>(null);
   const generationRef = useRef(0);
-  const entryCounterRef = useRef(0);
-  const preludesRef = useRef(new Map<string, PendingToolPrelude>());
+  const lastRunIdRef = useRef<string | undefined>(undefined);
   const onSettledRef = useRef(onSettled);
   onSettledRef.current = onSettled;
   const onTitleChangedRef = useRef(onTitleChanged);
@@ -725,17 +507,16 @@ export function useSessionStream(
   ) => {
     closeStream();
     const generation = ++generationRef.current;
-    preludesRef.current.clear();
-    if (pendingOrigin === "message") entryCounterRef.current = 0;
     setStreamState((current) => createState("sending", {
-      liveEntries: pendingOrigin === "reconnect" ? current.liveEntries : [],
       mcpServers: current.mcpServers,
       contextSummary: current.contextSummary,
+      historyEpoch: current.historyEpoch,
       elicitationCancellation: pendingOrigin === "reconnect" ? current.elicitationCancellation : null,
+      runNotice: pendingOrigin === "reconnect" ? current.runNotice : null,
       pendingUserInputs: pendingOrigin === "reconnect" ? current.pendingUserInputs : [],
       pendingElicitations: pendingOrigin === "reconnect" ? current.pendingElicitations : [],
-      currentTurnTools: pendingOrigin === "reconnect" ? current.currentTurnTools : [],
-      activeTools: pendingOrigin === "reconnect" ? current.activeTools : [],
+      liveAssistantSegments: pendingOrigin === "reconnect" ? current.liveAssistantSegments : [],
+      pendingUserMessages: pendingOrigin === "reconnect" ? current.pendingUserMessages : [],
       streamingContent: pendingOrigin === "reconnect" ? current.streamingContent : "",
       pendingOrigin,
       runMode: runMode ?? current.runMode,
@@ -766,10 +547,13 @@ export function useSessionStream(
       if (source.readyState === EventSource.CLOSED) {
         closeCurrent();
         setStreamState((current) => createState("idle", {
-          liveEntries: current.liveEntries,
           mcpServers: current.mcpServers,
           contextSummary: current.contextSummary,
           elicitationCancellation: current.elicitationCancellation,
+          runNotice: current.runNotice,
+          liveAssistantSegments: current.liveAssistantSegments,
+          pendingUserMessages: current.pendingUserMessages,
+          historyEpoch: current.historyEpoch,
         }));
         onSettledRef.current();
       }
@@ -790,47 +574,66 @@ export function useSessionStream(
       }
       const eventType = event.type as string;
       if (eventType === "snapshot") {
-        const toolState = buildSnapshotToolState(event, sid);
-        const liveEntries = buildSnapshotLiveEntries(event, sid);
+        const snapshotRunId = optionalString(event.runId);
+        const turnId = getEventTurnId(event);
+        const turnInstanceId = getEventTurnInstanceId(event);
+        const liveTools = normalizeLiveTools(event.liveTools, sid, turnId, turnInstanceId);
+        const liveVisuals = normalizeLiveVisuals(event.liveVisuals);
+        const liveCompletion = normalizeLiveCompletion(event.liveCompletion);
+        const liveAssistantSegments = normalizeLiveAssistantSegments(event.liveAssistantSegments);
+        const pendingUserMessages = normalizePendingUserMessages(event.pendingUserMessages);
+        const streamingContent = optionalString(event.streamingContent) ?? "";
         const contextSummary = getStreamContextSummary(event);
         const complete = event.complete === true;
+        const previousRunId = lastRunIdRef.current;
+        lastRunIdRef.current = snapshotRunId;
+        const hasLiveOutput = liveAssistantSegments.length > 0
+          || liveTools.length > 0
+          || liveVisuals.length > 0
+          || Boolean(streamingContent);
         if (complete) closeCurrent();
-        setStreamState((current) => complete
-          ? createState("idle", {
-              liveEntries,
-              mcpServers: Array.isArray(event.mcpServers)
-                ? event.mcpServers as McpServerStatus[]
-                : current.mcpServers,
-              contextSummary: contextSummary ?? current.contextSummary,
-              elicitationCancellation: current.elicitationCancellation,
-              hadVisibleOutput: liveEntries.length > 0,
-              activeTurnId: getEventTurnId(event),
-              activeTurnInstanceId: getEventTurnInstanceId(event),
-            })
-          : {
-              ...current,
-              liveEntries,
-              streamingContent: optionalString(event.accumulatedContent) ?? "",
-              activeTools: toolState.activeTools,
-              currentTurnTools: toolState.currentTurnTools,
-              pendingUserInputs: normalizePendingUserInputRequests(event.pendingUserInputs),
-              pendingElicitations: normalizePendingElicitationRequests(event.pendingElicitations),
-              intentText: optionalString(event.intentText) ?? "",
-              mcpServers: Array.isArray(event.mcpServers)
-                ? event.mcpServers as McpServerStatus[]
-                : current.mcpServers,
-              contextSummary: contextSummary ?? current.contextSummary,
-              streamStatus: liveEntries.length > 0 || event.accumulatedContent ? "streaming" : "thinking",
-              isStreaming: true,
-              hadVisibleOutput: liveEntries.length > 0 || Boolean(event.accumulatedContent),
-              activeTurnId: getEventTurnId(event),
-              activeTurnInstanceId: getEventTurnInstanceId(event),
-            });
+        setStreamState((current) => createState(
+          complete ? "idle" : (hasLiveOutput ? "streaming" : "thinking"),
+          {
+            liveAssistantSegments,
+            pendingUserMessages,
+            streamingContent: complete ? "" : streamingContent,
+            // Completed items stay after a terminal snapshot until the disk read confirms them.
+            liveTools,
+            liveVisuals,
+            liveCompletion,
+            pendingUserInputs: complete ? [] : normalizePendingUserInputRequests(event.pendingUserInputs),
+            pendingElicitations: complete
+              ? []
+              : normalizePendingElicitationRequests(event.pendingElicitations),
+            intentText: complete ? "" : optionalString(event.intentText) ?? "",
+            mcpServers: Array.isArray(event.mcpServers)
+              ? event.mcpServers as McpServerStatus[]
+              : current.mcpServers,
+            contextSummary: contextSummary ?? current.contextSummary,
+            elicitationCancellation: current.elicitationCancellation,
+            runNotice: normalizeRunNotice(event.runNotice) ?? (complete ? null : current.runNotice),
+            hadVisibleOutput: hasLiveOutput,
+            pendingOrigin: complete ? null : current.pendingOrigin,
+            runMode: current.runMode,
+            // A snapshot from a different run means committed history moved while disconnected.
+            historyEpoch: snapshotRunId === previousRunId
+              ? current.historyEpoch
+              : current.historyEpoch + 1,
+            activeTurnId: turnId,
+            activeTurnInstanceId: turnInstanceId,
+          },
+        ));
         if (complete) {
           report("stream.terminal", { terminalType: event.terminalType, source: "snapshot" });
           onSettledRef.current();
           if (event.terminalType === "done") onTitleChangedRef.current();
         }
+        return;
+      }
+
+      if (eventType === "history_advanced") {
+        setStreamState((current) => ({ ...current, historyEpoch: current.historyEpoch + 1 }));
         return;
       }
 
@@ -840,6 +643,8 @@ export function useSessionStream(
           mcpServers: current.mcpServers,
           contextSummary: current.contextSummary,
           elicitationCancellation: current.elicitationCancellation,
+          runNotice: current.runNotice,
+          historyEpoch: current.historyEpoch + 1,
         }));
         report("stream.resync_required");
         onSettledRef.current();
@@ -849,21 +654,35 @@ export function useSessionStream(
       if (eventType === "thinking") {
         setStreamState((current) => ({
           ...current,
+          // A new turn proves the previous turn's assistant text reached disk.
+          liveAssistantSegments: dropDiskBackedSegments(current.liveAssistantSegments),
           streamStatus: "thinking",
           isStreaming: true,
+          runNotice: null,
+          // A new turn proves the previous turn's items reached disk.
+          liveTools: [],
+          liveVisuals: [],
+          liveCompletion: null,
           activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
           activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
         }));
         return;
       }
       if (eventType === "user_message" || eventType === "user_message_updated") {
-        const entry = createUserEntry(event.userMessage);
-        if (entry) {
-          setStreamState((current) => ({
-            ...current,
-            liveEntries: upsertLiveEntry(current.liveEntries, entry),
-            hadVisibleOutput: true,
-          }));
+        const message = normalizePendingUserMessage(event.userMessage);
+        if (message) {
+          setStreamState((current) => {
+            const index = current.pendingUserMessages.findIndex((entry) => entry.id === message.id);
+            return {
+              ...current,
+              pendingUserMessages: index < 0
+                ? [...current.pendingUserMessages, message]
+                : current.pendingUserMessages.map((entry, entryIndex) => (
+                    entryIndex === index ? { ...entry, ...message } : entry
+                  )),
+              hadVisibleOutput: true,
+            };
+          });
         }
         return;
       }
@@ -872,7 +691,7 @@ export function useSessionStream(
         if (!id) return;
         setStreamState((current) => ({
           ...current,
-          liveEntries: current.liveEntries.map((entry) => entry.id === `live-user-${id}`
+          pendingUserMessages: current.pendingUserMessages.map((entry) => entry.id === id
             ? {
                 ...entry,
                 ...(optionalString(event.sourceEventId)
@@ -889,7 +708,7 @@ export function useSessionStream(
         if (id) {
           setStreamState((current) => ({
             ...current,
-            liveEntries: current.liveEntries.filter((entry) => entry.id !== `live-user-${id}`),
+            pendingUserMessages: current.pendingUserMessages.filter((entry) => entry.id !== id),
           }));
         }
         return;
@@ -913,19 +732,26 @@ export function useSessionStream(
       }
       if (eventType === "assistant_partial") {
         setStreamState((current) => {
-          const content = optionalString(event.content) ?? current.streamingContent;
+          const eventContent = typeof event.content === "string" ? event.content : "";
+          // Mirror the server rule: an empty assistant message yields no disk entry, so its event
+          // id must never be stamped onto streamed text that would then be unable to retire.
+          if (!eventContent && current.streamingContent) return current;
+          const content = eventContent || current.streamingContent;
           if (!content) return { ...current, streamingContent: "" };
           const sourceEventId = optionalString(event.sourceEventId);
-          const id = sourceEventId ?? `synthetic-${generation}-${++entryCounterRef.current}`;
           return {
             ...current,
-            liveEntries: appendUniqueEntry(current.liveEntries, createAssistantEntry(content, {
-              id: `live-assistant-${id}`,
-              turnId: getEventTurnId(event),
-              turnInstanceId: getEventTurnInstanceId(event),
-              sourceEventId,
-              timestamp: optionalString(event.timestamp),
-            })),
+            liveAssistantSegments: appendAssistantSegment(current.liveAssistantSegments, {
+              id: sourceEventId ?? `segment-${current.liveAssistantSegments.length}-${content.length}`,
+              content,
+              ...(sourceEventId ? { sourceEventId } : {}),
+              ...(event.bridgeNative === true ? { bridgeNative: true } : {}),
+              ...(getEventTurnId(event) ? { turnId: getEventTurnId(event) } : {}),
+              ...(getEventTurnInstanceId(event)
+                ? { turnInstanceId: getEventTurnInstanceId(event) }
+                : {}),
+              ...(optionalString(event.timestamp) ? { timestamp: optionalString(event.timestamp) } : {}),
+            }),
             streamingContent: "",
             hadVisibleOutput: true,
             activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
@@ -934,76 +760,41 @@ export function useSessionStream(
         });
         return;
       }
-      if (eventType === "tool_start") {
+      if (
+        eventType === "tool_start"
+        || eventType === "tool_progress"
+        || eventType === "tool_output"
+        || eventType === "tool_update"
+      ) {
+        const toolCallId = optionalString(event.toolCallId);
+        if (!toolCallId) return;
         setStreamState((current) => {
-          const toolCallId = optionalString(event.toolCallId);
-          if (!toolCallId) return current;
-          const prelude = preludesRef.current.get(toolCallId);
-          preludesRef.current.delete(toolCallId);
-          const pending = materializePendingTool<PendingTool>({
+          const progressText = optionalString(
+            eventType === "tool_output" ? event.content : event.message,
+          );
+          const patch: PendingTool = {
             toolCallId,
-            name: resolvePendingToolName(event.name, prelude),
-            turnId: getEventTurnId(event) ?? prelude?.turnId,
-            turnInstanceId: getEventTurnInstanceId(event) ?? prelude?.turnInstanceId,
+            name: getKnownToolName(event.name) ?? "unknown",
+            turnId: getEventTurnId(event),
+            turnInstanceId: getEventTurnInstanceId(event),
             sourceEventId: optionalString(event.sourceEventId),
             args: event.args as ToolArgs | undefined,
             parentToolCallId: optionalString(event.parentToolCallId),
             isSubAgent: optionalBoolean(event.isSubAgent),
-            startedAt: optionalString(event.timestamp),
-          }, prelude);
-          if (isHiddenTool(pending.name, pending.args, sid)) return current;
-          const tool = pendingToolToToolCall(pending);
+            ...(eventType === "tool_start" ? { startedAt: optionalString(event.timestamp) } : {}),
+            ...(progressText ? { progressText } : {}),
+          };
+          const existing = current.liveTools.find((tool) => tool.toolCallId === toolCallId);
+          const resolvedName = getKnownToolName(patch.name) ?? existing?.name ?? "unknown";
+          if (isHiddenTool(resolvedName, patch.args ?? existing?.args, sid)) return current;
+          // Progress for a tool that already completed must not resurrect it.
+          if (!existing && eventType !== "tool_start" && eventType !== "tool_update") return current;
           return {
             ...current,
-            activeTools: upsertByTool(current.activeTools, pending),
-            currentTurnTools: upsertTool(current.currentTurnTools, tool),
-            liveEntries: upsertLiveToolEntry(current.liveEntries, tool),
+            liveTools: upsertLiveTool(current.liveTools, patch),
             streamStatus: "streaming",
             isStreaming: true,
             hadVisibleOutput: true,
-          };
-        });
-        return;
-      }
-      if (eventType === "tool_progress" || eventType === "tool_output" || eventType === "tool_update") {
-        const toolCallId = optionalString(event.toolCallId);
-        if (!toolCallId) return;
-        setStreamState((current) => {
-          const existing = current.currentTurnTools.find((tool) => tool.toolCallId === toolCallId);
-          if (!existing) {
-            preludesRef.current.set(toolCallId, bufferPendingToolPrelude(preludesRef.current.get(toolCallId), {
-              toolCallId,
-              turnId: getEventTurnId(event),
-              turnInstanceId: getEventTurnInstanceId(event),
-              name: getKnownToolName(event.name),
-              progressText: optionalString(eventType === "tool_output" ? event.content : event.message),
-              isSubAgent: optionalBoolean(event.isSubAgent),
-            }));
-            return current;
-          }
-          const next: ToolCall = {
-            ...existing,
-            turnId: existing.turnId ?? getEventTurnId(event),
-            turnInstanceId: existing.turnInstanceId ?? getEventTurnInstanceId(event),
-            name: getKnownToolName(event.name) ?? existing.name,
-            progressText: optionalString(eventType === "tool_output" ? event.content : event.message)
-              ?? existing.progressText,
-            isSubAgent: optionalBoolean(event.isSubAgent) ?? existing.isSubAgent,
-          };
-          return {
-            ...current,
-            activeTools: current.activeTools.map((tool) => tool.toolCallId === toolCallId
-              ? {
-                  ...tool,
-                  turnId: tool.turnId ?? next.turnId,
-                  turnInstanceId: tool.turnInstanceId ?? next.turnInstanceId,
-                  name: next.name,
-                  progressText: next.progressText,
-                  isSubAgent: next.isSubAgent,
-                }
-              : tool),
-            currentTurnTools: upsertTool(current.currentTurnTools, next),
-            liveEntries: upsertLiveToolEntry(current.liveEntries, next),
           };
         });
         return;
@@ -1012,44 +803,44 @@ export function useSessionStream(
         const toolCallId = optionalString(event.toolCallId);
         if (!toolCallId) return;
         setStreamState((current) => {
-          const existing = current.currentTurnTools.find((tool) => tool.toolCallId === toolCallId);
-          const prelude = preludesRef.current.get(toolCallId);
-          preludesRef.current.delete(toolCallId);
-          const name = existing?.name ?? resolvePendingToolName(event.name, prelude);
-          if (isHiddenTool(name, existing?.args, sid)) return current;
-          const next: ToolCall = {
-            toolCallId,
-            name,
-            turnId: existing?.turnId ?? prelude?.turnId ?? getEventTurnId(event),
-            turnInstanceId: existing?.turnInstanceId
-              ?? prelude?.turnInstanceId
-              ?? getEventTurnInstanceId(event),
-            sourceEventId: existing?.sourceEventId ?? optionalString(event.sourceEventId),
-            args: existing?.args,
-            result: optionalString(event.result),
-            progressText: existing?.progressText ?? prelude?.progressText,
-            success: optionalBoolean(event.success),
-            parentToolCallId: existing?.parentToolCallId ?? optionalString(event.parentToolCallId),
-            isSubAgent: existing?.isSubAgent ?? prelude?.isSubAgent ?? optionalBoolean(event.isSubAgent),
-            startedAt: existing?.startedAt,
-            completedAt: optionalString(event.timestamp),
-          };
+          const existing = current.liveTools.find((tool) => tool.toolCallId === toolCallId);
+          const name = getKnownToolName(event.name) ?? existing?.name ?? "unknown";
+          if (isHiddenTool(name, existing?.args, sid)) {
+            return {
+              ...current,
+              liveTools: current.liveTools.filter((tool) => tool.toolCallId !== toolCallId),
+            };
+          }
+          // Retain the finished tool with its result so it renders immediately; the view drops it
+          // once disk history carries the same completed state.
           return {
             ...current,
-            activeTools: current.activeTools.filter((tool) => tool.toolCallId !== toolCallId),
-            currentTurnTools: upsertTool(current.currentTurnTools, next),
-            liveEntries: upsertLiveToolEntry(current.liveEntries, next),
+            liveTools: upsertLiveTool(current.liveTools, {
+              toolCallId,
+              name,
+              turnId: getEventTurnId(event),
+              turnInstanceId: getEventTurnInstanceId(event),
+              sourceEventId: optionalString(event.sourceEventId),
+              parentToolCallId: optionalString(event.parentToolCallId),
+              isSubAgent: optionalBoolean(event.isSubAgent),
+              completedAt: optionalString(event.timestamp) ?? new Date().toISOString(),
+              success: optionalBoolean(event.success),
+              result: optionalString(event.result),
+            }),
             hadVisibleOutput: true,
           };
         });
         return;
       }
       if (eventType === "visual_published") {
-        const entry = createVisualEntryFromPublishedEvent(event);
-        if (entry) {
+        const visual = normalizeLiveVisual(event);
+        if (visual) {
           setStreamState((current) => ({
             ...current,
-            liveEntries: appendUniqueEntry(current.liveEntries, entry),
+            liveVisuals: [
+              ...current.liveVisuals.filter((candidate) => candidate.artifactId !== visual.artifactId),
+              visual,
+            ],
             hadVisibleOutput: true,
           }));
         }
@@ -1060,7 +851,7 @@ export function useSessionStream(
         if (request) setStreamState((current) => ({
           ...current,
           pendingUserInputs: upsertByRequestId(current.pendingUserInputs, request),
-          streamStatus: current.streamingContent || current.activeTools.length > 0 ? "streaming" : "thinking",
+          streamStatus: current.streamingContent || current.liveTools.length > 0 ? "streaming" : "thinking",
           isStreaming: true,
         }));
         return;
@@ -1079,7 +870,7 @@ export function useSessionStream(
           ...current,
           pendingElicitations: upsertByRequestId(current.pendingElicitations, request),
           elicitationCancellation: null,
-          streamStatus: current.streamingContent || current.activeTools.length > 0 ? "streaming" : "thinking",
+          streamStatus: current.streamingContent || current.liveTools.length > 0 ? "streaming" : "thinking",
           isStreaming: true,
         }));
         return;
@@ -1127,42 +918,33 @@ export function useSessionStream(
         return;
       }
       if (eventType === "history_truncated") {
+        setStreamState((current) => ({
+          ...current,
+          liveAssistantSegments: [],
+          historyEpoch: current.historyEpoch + 1,
+        }));
         onSettledRef.current();
         return;
       }
       if (eventType === "done" || eventType === "error" || eventType === "aborted" || eventType === "shutdown") {
         closeCurrent();
-        const sourceEventId = optionalString(event.sourceEventId);
         setStreamState((current) => {
-          let liveEntries = current.liveEntries;
-          const completedAt = optionalString(event.timestamp);
-          const finalizedTools = current.currentTurnTools.map((tool) => ({
-            ...tool,
-            success: tool.success ?? eventType === "done",
-            completedAt: tool.completedAt ?? completedAt,
-          }));
-          for (const tool of finalizedTools) liveEntries = upsertLiveToolEntry(liveEntries, tool);
-          const completion = normalizeTerminalCompletion(event.terminalCompletion);
-          if (completion) {
-            liveEntries = appendUniqueEntry(liveEntries, createCompletionEntry(
-              completion,
-              completedAt,
-              getEventTurnId(event),
-              getEventTurnInstanceId(event),
-              sourceEventId,
-            ));
-          } else {
-            const finalAssistantEntry = createProjectedAssistantEntry(event.finalAssistantEntry);
-            if (finalAssistantEntry) liveEntries = upsertLiveEntry(liveEntries, finalAssistantEntry);
-          }
           const canceledElicitation = eventType === "done"
             ? undefined
             : current.pendingElicitations[0];
           return createState("idle", {
-            liveEntries,
-            currentTurnTools: finalizedTools,
+            liveAssistantSegments: current.liveAssistantSegments,
+            pendingUserMessages: current.pendingUserMessages,
+            // Results and completion cards remain the freshest copy until the final disk read.
+            liveTools: current.liveTools.map((tool) => tool.completedAt
+              ? tool
+              : { ...tool, completedAt: optionalString(event.timestamp) ?? new Date().toISOString(), success: eventType === "done" }),
+            liveVisuals: current.liveVisuals,
+            liveCompletion: normalizeLiveCompletion(event.liveCompletion) ?? current.liveCompletion,
             mcpServers: current.mcpServers,
             contextSummary: current.contextSummary,
+            runNotice: normalizeRunNotice(event.runNotice),
+            historyEpoch: current.historyEpoch + 1,
             elicitationCancellation: current.elicitationCancellation
               ?? (canceledElicitation
                 ? {
@@ -1174,7 +956,7 @@ export function useSessionStream(
                     ...(optionalString(event.timestamp) ? { timestamp: optionalString(event.timestamp) } : {}),
                   }
                 : null),
-            hadVisibleOutput: liveEntries.length > 0,
+            hadVisibleOutput: current.hadVisibleOutput,
             activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
             activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
           });
@@ -1190,7 +972,7 @@ export function useSessionStream(
     sessionRef.current = sessionId;
     generationRef.current += 1;
     closeStream();
-    preludesRef.current.clear();
+    lastRunIdRef.current = undefined;
     setStreamState(createState("idle"));
     return closeStream;
   }, [closeStream, sessionId]);
@@ -1202,6 +984,7 @@ export function useSessionStream(
       setStreamState((current) => createState("sending", {
         mcpServers: current.mcpServers,
         contextSummary: current.contextSummary,
+        historyEpoch: current.historyEpoch,
         pendingOrigin: "message",
         runMode: mode ?? current.runMode,
       }));
@@ -1220,6 +1003,7 @@ export function useSessionStream(
         setStreamState((current) => createState("idle", {
           mcpServers: current.mcpServers,
           contextSummary: current.contextSummary,
+          historyEpoch: current.historyEpoch,
         }));
       }
       throw error;
@@ -1241,17 +1025,4 @@ export function useSessionStream(
   }, [connectStream]);
 
   return { ...streamState, sendMessage, abortSession, reconnect };
-}
-
-function upsertByTool(tools: PendingTool[], next: PendingTool): PendingTool[] {
-  const index = tools.findIndex((tool) => tool.toolCallId === next.toolCallId);
-  if (index < 0) return [...tools, next];
-  return tools.map((tool, currentIndex) => currentIndex === index
-    ? {
-        ...tool,
-        ...next,
-        sourceEventId: tool.sourceEventId ?? next.sourceEventId,
-        toolCallId: tool.toolCallId,
-      }
-    : tool);
 }

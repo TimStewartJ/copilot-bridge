@@ -206,7 +206,6 @@ function stubWindowConfirm(result: boolean) {
 function createSnapshot(
   sessionId: string,
   entries: ChatEntry[],
-  lastVisibleActivityAt?: string,
 ): ChatHistorySnapshot {
   return {
     sessionId,
@@ -215,8 +214,6 @@ function createSnapshot(
     total: entries.length,
     hasMore: false,
     fetchedAt: Date.now(),
-    isCanonical: true,
-    lastVisibleActivityAt,
   };
 }
 
@@ -367,11 +364,15 @@ async function renderChatView(
     wasFreeform: false,
   });
   const buildStreamState = (nextOptions: RenderChatViewOptions) => ({
-    liveEntries: [],
     streamingContent: "",
+    liveAssistantSegments: [],
+    pendingUserMessages: [],
+    runNotice: null,
+    historyEpoch: 0,
     intentText: "",
-    activeTools: [],
-    currentTurnTools: [],
+    liveTools: [],
+    liveVisuals: [],
+    liveCompletion: null,
     isStreaming: true,
     streamStatus: "thinking",
     hadVisibleOutput: false,
@@ -516,42 +517,6 @@ describe("ChatView cached resume loading state", () => {
     }
   }, 30_000);
 
-  it("does not report newer session-list activity until the rendered tail covers it", async () => {
-    const onRenderedReadThrough = vi.fn();
-    const deferred = createDeferred<FetchMessagesFastResult>();
-    const { act, cleanup, render } = await renderChatView({
-      activeSessionActivityAt: "2026-05-07T21:05:00.000Z",
-      onRenderedReadThrough,
-      fetchMessagesFastResult: deferred.promise,
-      seedQueryClient: (queryClient) => setCachedChatSnapshot(
-        queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")], "2026-05-07T21:00:00.000Z"),
-      ),
-    });
-
-    try {
-      await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
-      expect(onRenderedReadThrough).toHaveBeenCalledWith(
-        "session-1",
-        "2026-05-07T21:00:00.000Z",
-      );
-      expect(onRenderedReadThrough).not.toHaveBeenCalledWith(
-        "session-1",
-        "2026-05-07T21:05:00.000Z",
-      );
-    } finally {
-      deferred.resolve({
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-05-07T21:00:00.000Z",
-      });
-      await cleanup();
-    }
-  }, 30_000);
-
   it("reports live assistant message timestamps as rendered read-through cursors", async () => {
     const onRenderedReadThrough = vi.fn();
     const { act, cleanup, render } = await renderChatView({
@@ -570,15 +535,13 @@ describe("ChatView cached resume loading state", () => {
       await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
       await render({
         streamOverrides: {
-          liveEntries: [{
-            id: "live-assistant-terminal-1",
-            type: "message",
-            turnId: "provider-turn-1",
+          liveAssistantSegments: [{
+            id: "terminal-1",
             sourceEventId: "terminal-1",
-            role: "assistant",
+            turnId: "provider-turn-1",
             content: "Done",
             timestamp: "2026-05-07T21:05:00.000Z",
-          } satisfies ChatEntry],
+          }],
           isStreaming: false,
           streamStatus: "idle",
         },
@@ -594,39 +557,6 @@ describe("ChatView cached resume loading state", () => {
     }
   }, 30_000);
 
-  it("shows the newer-content skeleton for a stale cached resume while the fast refresh is pending", async () => {
-    vi.useFakeTimers();
-    const deferred = createDeferred<FetchMessagesFastResult>();
-    const { dom, act, cleanup } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
-      fetchMessagesFastResult: deferred.promise,
-      seedQueryClient: (queryClient) => setCachedChatSnapshot(
-        queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")], "2026-04-29T12:00:00.000Z"),
-      ),
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await advanceTimersByTimeAct(act, 250);
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Loading newer chat content") ?? false);
-
-      expect(dom.container.textContent).toContain("Refreshing history...");
-      expect(dom.container.textContent).toContain("Loading newer chat content");
-      expect(dom.container.textContent).not.toContain("Loading chat history");
-    } finally {
-      deferred.resolve({
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      });
-      await cleanup();
-    }
-  });
-
   it("suppresses the newer-content skeleton when cached resume freshness matches", async () => {
     vi.useFakeTimers();
     const deferred = createDeferred<FetchMessagesFastResult>();
@@ -635,7 +565,7 @@ describe("ChatView cached resume loading state", () => {
       fetchMessagesFastResult: deferred.promise,
       seedQueryClient: (queryClient) => setCachedChatSnapshot(
         queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")], "2026-04-29T12:00:00.000Z"),
+        createSnapshot("session-1", [createMessage("entry-1")]),
       ),
     });
 
@@ -714,177 +644,6 @@ describe("ChatView cached resume loading state", () => {
     }
   });
 
-  it("does not overwrite a cached canonical snapshot when a resume refresh lacks active metadata", async () => {
-    const { dom, act, cleanup, queryClient } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [createMessage("stale-entry")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      },
-      seedQueryClient: (client) => setCachedChatSnapshot(
-        client,
-        createSnapshot("session-1", [createMessage("fresh-entry")], "2026-04-29T12:05:00.000Z"),
-      ),
-    });
-
-    try {
-      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
-      await act(async () => {
-        await waitTick();
-      });
-      await waitUntilAct(act, () => !(dom.container.textContent?.includes("Refreshing history...") ?? false));
-
-      const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
-      expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:05:00.000Z");
-      expect(getMessageContent(cachedSnapshot?.entries[0])).toBe("fresh-entry");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("does not cache a cold-load fast response as canonical when active metadata is newer", async () => {
-    const { act, cleanup, queryClient } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
-      fetchMessagesFastResult: {
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
-      expect(getCachedChatSnapshot(queryClient, "session-1")).toBeUndefined();
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("does not cache a cold-load fast response as canonical before active metadata is known", async () => {
-    const { act, cleanup, queryClient } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
-      expect(getCachedChatSnapshot(queryClient, "session-1")).toBeUndefined();
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("does not canonicalize load-more history before active metadata is known", async () => {
-    vi.useFakeTimers();
-    const tailEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 50}`));
-    const olderEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index}`));
-    const { dom, act, cleanup, queryClient } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: tailEntries,
-        busy: false,
-        total: 100,
-        warm: true,
-        hasMore: true,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      },
-    });
-
-    fetchOlderMessagesFastMock.mockResolvedValueOnce({
-      messages: olderEntries,
-      hasMore: false,
-      total: 100,
-      lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-      expect(getCachedChatSnapshot(queryClient, "session-1")).toBeUndefined();
-
-      await act(async () => {
-        getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
-        await waitTick();
-      });
-      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
-
-      expect(getCachedChatSnapshot(queryClient, "session-1")).toBeUndefined();
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("does not reuse stale cached freshness after a noncanonical resume refresh", async () => {
-    vi.useFakeTimers();
-    const cachedTailEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`fresh-entry-${index + 50}`));
-    const staleTailEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`stale-entry-${index + 50}`));
-    const olderEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index}`));
-    const { dom, act, cleanup, queryClient, render } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: staleTailEntries,
-        busy: false,
-        total: 100,
-        warm: true,
-        hasMore: true,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      },
-      seedQueryClient: (client) => setCachedChatSnapshot(client, {
-        sessionId: "session-1",
-        entries: cachedTailEntries,
-        firstItemIndex: 50,
-        total: 100,
-        hasMore: true,
-        fetchedAt: Date.now(),
-        isCanonical: true,
-        lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-      }),
-    });
-
-    fetchOlderMessagesFastMock.mockResolvedValueOnce({
-      messages: olderEntries,
-      hasMore: false,
-      total: 100,
-      lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-    });
-
-    try {
-      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
-      await act(async () => {
-        await waitTick();
-      });
-      await waitUntilAct(act, () => !(dom.container.textContent?.includes("Refreshing history...") ?? false));
-
-      await render({ activeSessionActivityAt: "2026-04-29T12:05:00.000Z" });
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-      await act(async () => {
-        getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
-        await waitTick();
-      });
-      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
-
-      const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
-      expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:05:00.000Z");
-      expect(getMessageContent(cachedSnapshot?.entries[0])).toBe("fresh-entry-50");
-    } finally {
-      await cleanup();
-    }
-  });
-
   it("does not show the newer-content skeleton for a non-resume background refresh", async () => {
     vi.useFakeTimers();
     fetchMessagesFastMock.mockResolvedValueOnce({
@@ -901,7 +660,7 @@ describe("ChatView cached resume loading state", () => {
       fetchMessagesFastResult: deferred.promise,
       seedQueryClient: (queryClient) => setCachedChatSnapshot(
         queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")], "2026-04-29T12:00:00.000Z"),
+        createSnapshot("session-1", [createMessage("entry-1")]),
       ),
       streamOverrides: { isStreaming: false, pendingOrigin: null },
     });
@@ -948,264 +707,6 @@ describe("ChatView cached resume loading state", () => {
     }
   });
 
-  it("cleans up the newer-content skeleton after the fast refresh resolves", async () => {
-    vi.useFakeTimers();
-    const deferred = createDeferred<FetchMessagesFastResult>();
-    const { dom, act, cleanup } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
-      fetchMessagesFastResult: deferred.promise,
-      seedQueryClient: (queryClient) => setCachedChatSnapshot(
-        queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")], "2026-04-29T12:00:00.000Z"),
-      ),
-    });
-
-    try {
-      await advanceTimersByTimeAct(act, 250);
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Loading newer chat content") ?? false);
-
-      await act(async () => {
-        deferred.resolve({
-          messages: [createMessage("entry-1"), createMessage("entry-2")],
-          busy: false,
-          total: 2,
-          warm: true,
-          hasMore: false,
-          lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-        });
-        await waitTick();
-      });
-      await waitUntilAct(act, () => !(dom.container.textContent?.includes("Refreshing history...") ?? false));
-
-      expect(dom.container.textContent).not.toContain("Refreshing history...");
-      expect(dom.container.textContent).not.toContain("Loading newer chat content");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("keeps the pending tail refresh when loading older messages without the latest tail", async () => {
-    vi.useFakeTimers();
-    const backgroundRefresh = createDeferred<FetchMessagesFastResult>();
-    const cachedEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 100}`));
-    const olderEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 50}`));
-    const latestTailEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 101}`));
-    const { dom, act, cleanup, queryClient } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:00:00.000Z",
-      fetchMessagesFastResult: backgroundRefresh.promise,
-      seedQueryClient: (client) => setCachedChatSnapshot(client, {
-        sessionId: "session-1",
-        entries: cachedEntries,
-        firstItemIndex: 100,
-        total: 150,
-        hasMore: true,
-        fetchedAt: Date.now(),
-        isCanonical: true,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      }),
-    });
-
-    fetchOlderMessagesFastMock.mockResolvedValueOnce({
-      messages: olderEntries,
-      hasMore: true,
-      total: 151,
-      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-
-      await act(async () => {
-        getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
-        await waitTick();
-      });
-      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
-
-      const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
-      expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
-      expect(cachedSnapshot?.total).toBe(150);
-      expect(cachedSnapshot?.entries).toHaveLength(50);
-
-      await act(async () => {
-        backgroundRefresh.resolve({
-          messages: latestTailEntries,
-          busy: false,
-          total: 151,
-          warm: true,
-          hasMore: true,
-          lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-        });
-        await waitTick();
-      });
-      await waitUntilAct(act, () =>
-        getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt === "2026-04-29T12:05:00.000Z");
-
-      const refreshedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
-      expect(refreshedSnapshot?.firstItemIndex).toBe(50);
-      expect(refreshedSnapshot?.total).toBe(151);
-      expect(getMessageContent(refreshedSnapshot?.entries.at(-1))).toBe("entry-150");
-    } finally {
-      backgroundRefresh.resolve({
-        messages: cachedEntries,
-        busy: false,
-        total: 150,
-        warm: true,
-        hasMore: true,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      });
-      await cleanup();
-    }
-  });
-
-  it("keeps the pending tail refresh when older messages return stale same-count activity", async () => {
-    vi.useFakeTimers();
-    const backgroundRefresh = createDeferred<FetchMessagesFastResult>();
-    const cachedEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 100}`));
-    const olderEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 50}`));
-    const latestTailEntries = Array.from({ length: 50 }, (_, index) => {
-      const entryIndex = index + 100;
-      return createMessage(`entry-${entryIndex}`, entryIndex === 149 ? "updated-entry-149" : `entry-${entryIndex}`);
-    });
-    const { dom, act, cleanup, queryClient } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
-      fetchMessagesFastResult: backgroundRefresh.promise,
-      seedQueryClient: (client) => setCachedChatSnapshot(client, {
-        sessionId: "session-1",
-        entries: cachedEntries,
-        firstItemIndex: 100,
-        total: 150,
-        hasMore: true,
-        fetchedAt: Date.now(),
-        isCanonical: true,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      }),
-    });
-
-    fetchOlderMessagesFastMock.mockResolvedValueOnce({
-      messages: olderEntries,
-      hasMore: true,
-      total: 150,
-      lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-
-      await act(async () => {
-        getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
-        await waitTick();
-      });
-      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
-
-      expect(getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt)
-        .toBe("2026-04-29T12:00:00.000Z");
-
-      await act(async () => {
-        backgroundRefresh.resolve({
-          messages: latestTailEntries,
-          busy: false,
-          total: 150,
-          warm: true,
-          hasMore: true,
-          lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-        });
-        await waitTick();
-      });
-      await waitUntilAct(act, () =>
-        getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt === "2026-04-29T12:05:00.000Z");
-
-      const refreshedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
-      expect(refreshedSnapshot?.firstItemIndex).toBe(50);
-      expect(refreshedSnapshot?.total).toBe(150);
-      expect(getMessageContent(refreshedSnapshot?.entries.at(-1))).toBe("updated-entry-149");
-    } finally {
-      backgroundRefresh.resolve({
-        messages: cachedEntries,
-        busy: false,
-        total: 150,
-        warm: true,
-        hasMore: true,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      });
-      await cleanup();
-    }
-  });
-
-  it("keeps the pending tail refresh when cached tail freshness metadata is missing", async () => {
-    vi.useFakeTimers();
-    const backgroundRefresh = createDeferred<FetchMessagesFastResult>();
-    const cachedEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 100}`));
-    const olderEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 50}`));
-    const latestTailEntries = Array.from({ length: 50 }, (_, index) =>
-      createMessage(`entry-${index + 100}`));
-    const { dom, act, cleanup, queryClient } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
-      fetchMessagesFastResult: backgroundRefresh.promise,
-      seedQueryClient: (client) => setCachedChatSnapshot(client, {
-        sessionId: "session-1",
-        entries: cachedEntries,
-        firstItemIndex: 100,
-        total: 150,
-        hasMore: true,
-        fetchedAt: Date.now(),
-        isCanonical: true,
-      }),
-    });
-
-    fetchOlderMessagesFastMock.mockResolvedValueOnce({
-      messages: olderEntries,
-      hasMore: true,
-      total: 150,
-      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-
-      await act(async () => {
-        getReactProps(findButtonContainingText(dom.container, "Scroll up for more"))?.onClick?.();
-        await waitTick();
-      });
-      await waitUntilAct(act, () => fetchOlderMessagesFastMock.mock.calls.length === 1);
-
-      expect(getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt).toBeUndefined();
-
-      await act(async () => {
-        backgroundRefresh.resolve({
-          messages: latestTailEntries,
-          busy: false,
-          total: 150,
-          warm: true,
-          hasMore: true,
-          lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-        });
-        await waitTick();
-      });
-      await waitUntilAct(act, () =>
-        getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt === "2026-04-29T12:05:00.000Z");
-
-      const refreshedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
-      expect(refreshedSnapshot?.firstItemIndex).toBe(50);
-      expect(refreshedSnapshot?.total).toBe(150);
-      expect(refreshedSnapshot?.entries).toHaveLength(100);
-    } finally {
-      backgroundRefresh.resolve({
-        messages: cachedEntries,
-        busy: false,
-        total: 150,
-        warm: true,
-        hasMore: true,
-      });
-      await cleanup();
-    }
-  });
 });
 
 describe("ChatView history pagination", () => {
@@ -1562,9 +1063,8 @@ describe("ChatView steering sends", () => {
       });
       await render({
         streamOverrides: {
-          liveEntries: [{
-            id: "live-user-1",
-            role: "user",
+          pendingUserMessages: [{
+            id: "user-1",
             content: "waiting for server",
           }],
           isStreaming: true,
@@ -1640,9 +1140,8 @@ describe("ChatView steering sends", () => {
 
       await render({
         streamOverrides: {
-          liveEntries: [{
-            id: "live-retry-user-1",
-            role: "user",
+          pendingUserMessages: [{
+            id: "retry-user-1",
             content: "please retry",
             attachments: [attachment],
             sourceEventId: "retry-user-event-1",
@@ -1732,9 +1231,8 @@ describe("ChatView steering sends", () => {
 
       await render({
         streamOverrides: {
-          liveEntries: [{
-            id: "live-steering-retry-1",
-            role: "user",
+          pendingUserMessages: [{
+            id: "steering-retry-1",
             content: "retry steering",
             sourceEventId: "steering-retry-event-1",
           }],
@@ -1777,14 +1275,13 @@ describe("ChatView steering sends", () => {
       ))).toHaveLength(0);
 
       const streamedUser = {
-        id: "live-user-1",
-        role: "user" as const,
+        id: "user-1",
         content: "please adjust",
         sourceEventId: "canonical-user-event-1",
       };
       await render({
         streamOverrides: {
-          liveEntries: [streamedUser],
+          pendingUserMessages: [streamedUser],
           isStreaming: true,
           streamStatus: "streaming",
         },
@@ -1812,7 +1309,7 @@ describe("ChatView steering sends", () => {
       });
       await render({
         streamOverrides: {
-          liveEntries: [streamedUser],
+          pendingUserMessages: [streamedUser],
           isStreaming: false,
           streamStatus: "idle",
         },
@@ -1864,22 +1361,12 @@ describe("ChatView steering sends", () => {
         hasMore: false,
       },
       streamOverrides: {
-        liveEntries: [
-          {
-            id: "live-assistant",
-            role: "assistant",
-            content: "duplicate live assistant",
-            sourceEventId: "assistant-event-1",
-          },
-          {
-            id: "live-tool",
-            type: "tool",
-            toolCall: {
-              toolCallId: "tool-call-1",
-              name: "duplicate_live_tool",
-            },
-          },
-        ],
+        liveAssistantSegments: [{
+          id: "assistant-event-1",
+          content: "duplicate live assistant",
+          sourceEventId: "assistant-event-1",
+        }],
+        liveTools: [{ toolCallId: "tool-call-1", name: "duplicate_live_tool" }],
         isStreaming: true,
         streamStatus: "streaming",
       },
@@ -1920,31 +1407,29 @@ describe("ChatView steering sends", () => {
         hasMore: true,
       },
       streamOverrides: {
-        liveEntries: [
+        liveAssistantSegments: [
           {
-            id: "live-old",
-            role: "assistant",
+            // Committed, but its disk entry sits above the loaded window — the watermark must
+            // retire it rather than letting it re-render below the canonical tail.
+            id: "assistant-event-1",
             content: "older snapshot message",
             sourceEventId: "assistant-event-1",
             timestamp: "2026-07-25T21:00:00.000Z",
           },
           {
-            id: "live-boundary",
-            role: "assistant",
+            id: "assistant-event-2",
             content: "duplicate boundary",
             sourceEventId: "assistant-event-2",
             timestamp: "2026-07-25T22:00:00.000Z",
           },
           {
-            id: "live-latest",
-            role: "assistant",
+            id: "assistant-event-3",
             content: "duplicate latest",
             sourceEventId: "assistant-event-3",
             timestamp: "2026-07-25T22:01:00.000Z",
           },
           {
-            id: "live-new",
-            role: "assistant",
+            id: "assistant-event-4",
             content: "new live message",
             sourceEventId: "assistant-event-4",
             timestamp: "2026-07-25T22:02:00.000Z",
@@ -1984,9 +1469,8 @@ describe("ChatView steering sends", () => {
         hasMore: false,
       },
       streamOverrides: {
-        liveEntries: [{
-          id: "live-assistant-assistant-message-event",
-          role: "assistant",
+        liveAssistantSegments: [{
+          id: "assistant-message-event",
           content: "Final answer",
           sourceEventId: "assistant-message-event",
           timestamp: "2026-07-23T16:00:00.000Z",
@@ -2083,31 +1567,17 @@ describe("ChatView steering sends", () => {
         hasMore: false,
       },
       streamOverrides: {
-        liveEntries: [
-          {
-            id: "live-user-current",
-            role: "user",
-            content: "current question",
-            sourceEventId: "current-user-event",
-          },
-          {
-            id: "live-tool-current",
-            type: "tool",
-            turnId: "1",
-            sourceEventId: "current-tool-event",
-            toolCall: {
-              toolCallId: "current-tool-call",
-              name: "current_tool",
-            },
-          },
-          {
-            id: "live-assistant-current",
-            role: "assistant",
-            content: "current reply",
-            turnId: "1",
-            sourceEventId: "current-assistant-event",
-          },
-        ],
+        pendingUserMessages: [{
+          id: "user-current",
+          content: "current question",
+          sourceEventId: "current-user-event",
+        }],
+        liveAssistantSegments: [{
+          id: "current",
+          content: "current reply",
+          turnId: "1",
+          sourceEventId: "current-assistant-event",
+        }],
         activeTurnId: "1",
         isStreaming: false,
         streamStatus: "idle",
@@ -2119,13 +1589,13 @@ describe("ChatView steering sends", () => {
       expect(dom.container.textContent).toContain("previous reply");
       expect(dom.container.textContent).toContain("old_tool");
       expect(dom.container.textContent).toContain("current question");
-      expect(dom.container.textContent).toContain("current_tool");
 
+      // Disk history keeps its own ordering; the live overlay is appended after it, even when
+      // provider turn ids repeat across runs.
       const renderedText = dom.container.textContent ?? "";
       expect(renderedText.indexOf("old_tool")).toBeGreaterThan(renderedText.indexOf("previous reply"));
       expect(renderedText.indexOf("current question")).toBeGreaterThan(renderedText.indexOf("old_tool"));
-      expect(renderedText.indexOf("current_tool")).toBeGreaterThan(renderedText.indexOf("current question"));
-      expect(renderedText.indexOf("current reply")).toBeGreaterThan(renderedText.indexOf("current_tool"));
+      expect(renderedText.indexOf("current reply")).toBeGreaterThan(renderedText.indexOf("current question"));
 
       const historicalMessage = findMessageWrapperByAnchorKey(dom.container, "historical-assistant");
       const currentMessage = findMessageWrapperByAnchorKey(dom.container, "live-assistant-current");
@@ -2731,4 +2201,351 @@ describe("ChatView user input question cards", () => {
       await cleanup();
     }
   });
+});
+
+describe("ChatView disk-authoritative synchronization", () => {
+  it("re-reads the disk window when the server reports committed history advanced", async () => {
+    vi.useFakeTimers();
+    try {
+      const { act, cleanup, render } = await renderChatView({
+        fetchMessagesFastResult: {
+          messages: [createMessage("entry-1", "first reply")],
+          busy: true,
+          total: 1,
+          warm: true,
+          hasMore: false,
+        },
+        streamOverrides: { historyEpoch: 0 },
+      });
+
+      try {
+        await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 0);
+        const callsBefore = fetchMessagesFastMock.mock.calls.length;
+
+        await render({ streamOverrides: { historyEpoch: 1 } });
+        await advanceTimersByTimeAct(act, 300);
+
+        expect(fetchMessagesFastMock.mock.calls.length).toBeGreaterThan(callsBefore);
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces a burst of history advances into a single refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const { act, cleanup, render } = await renderChatView({
+        fetchMessagesFastResult: {
+          messages: [createMessage("entry-1", "first reply")],
+          busy: true,
+          total: 1,
+          warm: true,
+          hasMore: false,
+        },
+        streamOverrides: { historyEpoch: 0 },
+      });
+
+      try {
+        await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 0);
+        const callsBefore = fetchMessagesFastMock.mock.calls.length;
+
+        // A long autopilot run emits an advance per committed event; the view must not storm
+        // the disk reader with one refresh per event.
+        for (let seq = 1; seq <= 25; seq += 1) {
+          await render({ streamOverrides: { historyEpoch: seq } });
+          await advanceTimersByTimeAct(act, 5);
+        }
+        await advanceTimersByTimeAct(act, 300);
+
+        const refreshes = fetchMessagesFastMock.mock.calls.length - callsBefore;
+        expect(refreshes).toBeGreaterThan(0);
+        expect(refreshes).toBeLessThan(5);
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not show the refreshing-history pill during routine disk-tail syncs", async () => {
+    vi.useFakeTimers();
+    try {
+      const { dom, act, cleanup, render } = await renderChatView({
+        fetchMessagesFastResult: {
+          messages: [createMessage("entry-1", "assistant reply")],
+          busy: true,
+          total: 1,
+          warm: true,
+          hasMore: false,
+        },
+        streamOverrides: { historyEpoch: 0, isStreaming: true, streamStatus: "streaming" },
+      });
+
+      try {
+        await waitUntilAct(act, () => dom.container.textContent?.includes("assistant reply") ?? false);
+
+        // A busy run emits an advance per committed event; the transcript must stay quiet.
+        for (let epoch = 1; epoch <= 6; epoch += 1) {
+          await render({ streamOverrides: { historyEpoch: epoch, isStreaming: true, streamStatus: "streaming" } });
+          await advanceTimersByTimeAct(act, 260);
+          expect(dom.container.textContent).not.toContain("Refreshing history");
+        }
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders in-flight tools that the disk window has not caught up to yet", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "assistant reply")],
+        busy: true,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveTools: [{ toolCallId: "tc-live", name: "live_tool", progressText: "working" }],
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("live_tool") ?? false);
+      expect(dom.container.textContent).toContain("live_tool");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("shows a tool result immediately without waiting for the disk window", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "committed-tool",
+          type: "tool",
+          sourceEventId: "tool-event-1",
+          // Disk still shows it running: the completion has not been read back yet.
+          toolCall: { toolCallId: "tc-shared", name: "shared_tool" },
+        }],
+        busy: true,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveTools: [{
+          toolCallId: "tc-shared",
+          name: "shared_tool",
+          completedAt: "2026-07-26T10:00:00.000Z",
+          success: true,
+          result: "RESULT-VISIBLE-NOW",
+        }],
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("shared_tool") ?? false);
+      // Substituted onto the disk entry, not appended beside it.
+      const text = dom.container.textContent ?? "";
+      expect(text.indexOf("shared_tool")).toBe(text.lastIndexOf("shared_tool"));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("renders a published visual before disk history carries it, then defers to disk", async () => {
+    const visual = {
+      artifactId: "artifact-1",
+      kind: "mermaid" as const,
+      title: "Live Diagram",
+      displayName: "d.mmd",
+      mimeType: "text/vnd.mermaid",
+      size: 10,
+      url: "/api/v",
+      downloadUrl: "/api/v/download",
+    };
+    const { dom, act, cleanup, render } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "assistant reply")],
+        busy: true,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { liveVisuals: [visual], isStreaming: true, streamStatus: "streaming" },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Live Diagram") ?? false);
+
+      // Once disk carries the same artifactId the overlay copy must retire, not duplicate.
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [
+          createMessage("entry-1", "assistant reply"),
+          { id: "committed-visual", type: "visual", sourceEventId: "visual-event-1", visual },
+        ],
+        busy: true,
+        total: 2,
+        warm: true,
+        hasMore: false,
+      });
+      await render({ streamOverrides: { liveVisuals: [visual], historyEpoch: 1, isStreaming: true, streamStatus: "streaming" } });
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 1);
+
+      const text = dom.container.textContent ?? "";
+      expect(text.indexOf("Live Diagram")).toBe(text.lastIndexOf("Live Diagram"));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("renders a completion card immediately and retires it once disk carries it", async () => {
+    const completion = {
+      content: "Task wrapped up",
+      title: "Task complete",
+      status: "success" as const,
+      sourceEventType: "session.task_complete",
+    };
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "assistant reply")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveCompletion: { completion, sourceEventId: "terminal-1" },
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Task wrapped up") ?? false);
+      const text = dom.container.textContent ?? "";
+      expect(text.indexOf("Task wrapped up")).toBe(text.lastIndexOf("Task wrapped up"));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("does not duplicate a tool that disk history already contains", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "committed-tool",
+          type: "tool",
+          sourceEventId: "tool-event-1",
+          toolCall: { toolCallId: "tc-shared", name: "shared_tool" },
+        }],
+        busy: true,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveTools: [{ toolCallId: "tc-shared", name: "shared_tool" }],
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("shared_tool") ?? false);
+      const text = dom.container.textContent ?? "";
+      expect(text.indexOf("shared_tool")).toBe(text.lastIndexOf("shared_tool"));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("renders a bridge-native run notice below the transcript instead of inside it", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "assistant reply")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+        runNotice: { kind: "error", message: "run blew up" },
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("run blew up") ?? false);
+      const renderedText = dom.container.textContent ?? "";
+      expect(renderedText).toContain("Run failed");
+      // The notice is not a transcript message bubble.
+      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("run blew up")
+      ))).toHaveLength(0);
+      expect(renderedText.indexOf("run blew up")).toBeGreaterThan(renderedText.indexOf("assistant reply"));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps paginated history when a refresh window starts after the loaded window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { dom, act, cleanup, render } = await renderChatView({
+        fetchMessagesFastResult: {
+          messages: [createMessage("entry-2", "newest"), createMessage("entry-3", "newer")],
+          busy: false,
+          total: 4,
+          warm: true,
+          hasMore: true,
+        },
+      });
+
+      try {
+        await waitUntilAct(act, () => dom.container.textContent?.includes("newest") ?? false);
+        fetchOlderMessagesFastMock.mockResolvedValue({
+          messages: [createMessage("entry-0", "oldest"), createMessage("entry-1", "older")],
+          hasMore: false,
+          total: 4,
+        });
+
+        await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
+        await act(async () => {
+          clickButton(findButtonContainingText(dom.container, "Scroll up for more"));
+          await waitTick();
+        });
+        await waitUntilAct(act, () => dom.container.textContent?.includes("oldest") ?? false);
+
+        // A tail refresh that only covers the newest entries must not drop the paginated prefix.
+        await render({ streamOverrides: { historyEpoch: 1 } });
+        await advanceTimersByTimeAct(act, 300);
+        await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 1);
+
+        const renderedText = dom.container.textContent ?? "";
+        expect(renderedText).toContain("oldest");
+        expect(renderedText).toContain("newest");
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
 });

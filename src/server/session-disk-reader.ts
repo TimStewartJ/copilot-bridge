@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import {
   createVisibleActivityTracker,
@@ -8,6 +9,7 @@ import {
   isVisibleMessageEvent,
   transformEventsToMessages,
   type TransformedEntry,
+  type VisibleActivityTrackerState,
 } from "./event-transform.js";
 import {
   extractTerminalCompletion,
@@ -29,8 +31,16 @@ const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
 const RECENT_MESSAGES_MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
-const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 512;
-const EVENT_LOG_STATS_CACHE_VERSION = 1;
+/**
+ * Cached folds are far larger than the plain stats they replaced (they carry turn checkpoints), and
+ * only a handful of sessions are ever read concurrently, so this is deliberately small.
+ */
+const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
+const EVENT_LOG_STATS_CACHE_VERSION = 2;
+/** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
+const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
+/** Backstop bound on retained turn checkpoints when the log has very short turns. */
+const EVENT_LOG_TURN_CHECKPOINT_MAX = 2048;
 const SESSION_LIST_WORKSPACE_READ_CONCURRENCY = 32;
 const SESSION_LIST_EVENT_STAT_CONCURRENCY = 64;
 
@@ -108,25 +118,56 @@ interface TailTurnState {
   initialActiveTurnInstanceId?: string;
 }
 
+interface TurnStateCheckpoint {
+  /** Byte offset of the line that produced this turn state. */
+  offset: number;
+  turnIndex: number;
+  activeTurnId?: string;
+  activeTurnInstanceId?: string;
+}
+
+/**
+ * Serializable fold state for the event-log stats scan. Kept separate from the scanner so a
+ * scan can resume from a previously scanned byte offset when the log only grew.
+ */
+interface EventLogStatsScannerState {
+  eventCount: number;
+  candidateEventCount: number;
+  malformedCandidateCount: number;
+  totalEntries: number;
+  openVisibleToolCallIds: string[];
+  visiblePublishVisualToolCallIds: string[];
+  pendingTerminalCompletionEntry: boolean;
+  latestEventId?: string;
+  latestTurnId?: string;
+  latestTerminalEventId?: string;
+  turnIndex: number;
+  activeTurnId?: string;
+  activeTurnInstanceId?: string;
+  /** Collapsed state for every checkpoint older than the largest possible tail window. */
+  baseTurnCheckpoint: TurnStateCheckpoint;
+  turnCheckpoints: TurnStateCheckpoint[];
+  activity: VisibleActivityTrackerState;
+}
+
 interface EventLogStatsCacheEntry {
   eventsPath: string;
   sessionId: string;
-  fileSize: number;
-  mtimeMs: number;
-  turnStateOffset: number;
-  stats: EventLogStats;
+  /** Byte offset up to (and including) the last complete line folded into `state`. */
+  scannedBytes: number;
+  state: EventLogStatsScannerState;
+  /** sha1 over the head, midpoint, and end of the scanned region; detects in-place rewrites. */
+  fingerprint: string;
+  /** `dev:ino` of the scanned file, so a replaced (not appended) log is never resumed. */
+  fileId: string;
 }
 
 const eventLogStatsCache = new Map<string, EventLogStatsCacheEntry>();
+/** Bumped by {@link clearEventLogStatsCache} so in-flight scans cannot republish stale folds. */
+let eventLogStatsCacheGeneration = 0;
 
-function getEventLogStatsCacheKey(
-  eventsPath: string,
-  sessionId: string,
-  fileSize: number,
-  mtimeMs: number,
-  turnStateOffset: number,
-): string {
-  return `${EVENT_LOG_STATS_CACHE_VERSION}\0${eventsPath}\0${sessionId}\0${fileSize}\0${mtimeMs}\0${turnStateOffset}`;
+function getEventLogStatsCacheKey(eventsPath: string, sessionId: string): string {
+  return `${EVENT_LOG_STATS_CACHE_VERSION}\0${eventsPath}\0${sessionId}`;
 }
 
 function pruneEventLogStatsCache(): void {
@@ -137,35 +178,27 @@ function pruneEventLogStatsCache(): void {
   }
 }
 
-function getCachedEventLogStats(
+function getCachedEventLogStatsEntry(
   eventsPath: string,
   sessionId: string,
-  fileSize: number,
-  mtimeMs: number,
-  turnStateOffset: number,
-): EventLogStats | undefined {
-  const key = getEventLogStatsCacheKey(eventsPath, sessionId, fileSize, mtimeMs, turnStateOffset);
+): EventLogStatsCacheEntry | undefined {
+  const key = getEventLogStatsCacheKey(eventsPath, sessionId);
   const entry = eventLogStatsCache.get(key);
   if (!entry) return undefined;
   eventLogStatsCache.delete(key);
   eventLogStatsCache.set(key, entry);
-  return entry.stats;
+  return entry;
 }
 
-function setCachedEventLogStats(entry: EventLogStatsCacheEntry): void {
-  const key = getEventLogStatsCacheKey(
-    entry.eventsPath,
-    entry.sessionId,
-    entry.fileSize,
-    entry.mtimeMs,
-    entry.turnStateOffset,
-  );
+function setCachedEventLogStatsEntry(entry: EventLogStatsCacheEntry): void {
+  const key = getEventLogStatsCacheKey(entry.eventsPath, entry.sessionId);
   eventLogStatsCache.delete(key);
   eventLogStatsCache.set(key, entry);
   pruneEventLogStatsCache();
 }
 
 export function clearEventLogStatsCache(sessionId?: string): void {
+  eventLogStatsCacheGeneration += 1;
   if (!sessionId) {
     eventLogStatsCache.clear();
     return;
@@ -334,76 +367,109 @@ async function readTailCandidateEvents(
   }
 }
 
-function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) {
-  const openVisibleToolCallIds = new Set<string>();
-  const visiblePublishVisualToolCallIds = new Set<string>();
-  const visibleActivityTracker = createVisibleActivityTracker(sessionId);
-  let eventCount = 0;
-  let candidateEventCount = 0;
-  let malformedCandidateCount = 0;
-  let totalEntries = 0;
-  let initialTurnIndex = 0;
-  let initialActiveTurnId: string | undefined;
-  let initialActiveTurnInstanceId: string | undefined;
-  let pendingTerminalCompletionEntry = false;
-  let latestEventId: string | undefined;
-  let latestTurnId: string | undefined;
-  let latestTerminalEventId: string | undefined;
-  let turnIndex = 0;
+function createEventLogStatsScannerState(): EventLogStatsScannerState {
+  return {
+    eventCount: 0,
+    candidateEventCount: 0,
+    malformedCandidateCount: 0,
+    totalEntries: 0,
+    openVisibleToolCallIds: [],
+    visiblePublishVisualToolCallIds: [],
+    pendingTerminalCompletionEntry: false,
+    turnIndex: 0,
+    baseTurnCheckpoint: { offset: -1, turnIndex: 0 },
+    turnCheckpoints: [],
+    activity: {
+      openVisibleToolCallIds: [],
+      quietTurn: false,
+      pendingTerminalCompletionActivity: false,
+    },
+  };
+}
+
+function cloneEventLogStatsScannerState(
+  state: EventLogStatsScannerState,
+): EventLogStatsScannerState {
+  return {
+    ...state,
+    openVisibleToolCallIds: [...state.openVisibleToolCallIds],
+    visiblePublishVisualToolCallIds: [...state.visiblePublishVisualToolCallIds],
+    baseTurnCheckpoint: { ...state.baseTurnCheckpoint },
+    turnCheckpoints: state.turnCheckpoints.map((checkpoint) => ({ ...checkpoint })),
+    activity: {
+      ...state.activity,
+      openVisibleToolCallIds: [...state.activity.openVisibleToolCallIds],
+    },
+  };
+}
+
+/**
+ * Folds event-log lines into {@link EventLogStatsScannerState}. The fold is resumable: feeding
+ * lines from a byte offset onto a previously captured state is equivalent to scanning the whole
+ * file, so an appended log only costs the appended bytes.
+ */
+function createEventLogStatsScanner(sessionId: string, initialState?: EventLogStatsScannerState) {
+  const state = initialState ?? createEventLogStatsScannerState();
+  const openVisibleToolCallIds = new Set(state.openVisibleToolCallIds);
+  const visiblePublishVisualToolCallIds = new Set(state.visiblePublishVisualToolCallIds);
+  const visibleActivityTracker = createVisibleActivityTracker(sessionId, state.activity);
+
+  const recordTurnCheckpoint = (offset: number): void => {
+    state.turnCheckpoints.push({
+      offset,
+      turnIndex: state.turnIndex,
+      ...(state.activeTurnId ? { activeTurnId: state.activeTurnId } : {}),
+      ...(state.activeTurnInstanceId ? { activeTurnInstanceId: state.activeTurnInstanceId } : {}),
+    });
+  };
 
   const processLine = (lineBuffer: Buffer, lineStartOffset: number): void => {
     const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
       ? lineBuffer.length - 1
       : lineBuffer.length;
     const line = lineBuffer.subarray(0, contentEnd).toString("utf-8").trim();
-    const lineStartsBeforeTail = lineStartOffset < turnStateOffset;
     if (!line) return;
-    eventCount += 1;
+    state.eventCount += 1;
     if (!lineMayAffectMessageTransform(line)) return;
 
-    candidateEventCount += 1;
+    state.candidateEventCount += 1;
     let event: any;
     try {
       event = JSON.parse(line);
     } catch {
-      malformedCandidateCount += 1;
+      state.malformedCandidateCount += 1;
       return;
     }
 
     visibleActivityTracker.observe(event);
     const eventId = getSdkEventId(event);
-    if (eventId) latestEventId = eventId;
+    if (eventId) state.latestEventId = eventId;
     if (event.type === "assistant.turn_start") {
-      turnIndex += 1;
-      latestTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
+      state.turnIndex += 1;
+      state.latestTurnId = getSdkTurnId(event) ?? `turn-${state.turnIndex}`;
+      state.activeTurnId = state.latestTurnId;
+      state.activeTurnInstanceId = getAssistantTurnInstanceId(
+        event,
+        `turn-instance-${state.turnIndex}`,
+      );
+      recordTurnCheckpoint(lineStartOffset);
     }
-    if (isTurnTerminalEvent(event) && eventId) {
-      latestTerminalEventId = eventId;
+    if (isTurnTerminalEvent(event)) {
+      if (eventId) state.latestTerminalEventId = eventId;
+      state.activeTurnId = undefined;
+      state.activeTurnInstanceId = undefined;
+      recordTurnCheckpoint(lineStartOffset);
     }
     if (
       event.type === "tool.execution_start"
       && extractTerminalCompletionFromToolCall(getToolName(event), event?.data?.arguments)
     ) {
-      pendingTerminalCompletionEntry = true;
-    }
-
-    if (lineStartsBeforeTail) {
-      if (event.type === "assistant.turn_start") {
-        initialTurnIndex += 1;
-        initialActiveTurnId = getSdkTurnId(event) ?? `turn-${initialTurnIndex}`;
-        initialActiveTurnInstanceId = getAssistantTurnInstanceId(
-          event,
-          `turn-instance-${initialTurnIndex}`,
-        );
-      } else if (isTurnTerminalEvent(event)) {
-        initialActiveTurnId = undefined;
-        initialActiveTurnInstanceId = undefined;
-      }
+      state.pendingTerminalCompletionEntry = true;
     }
 
     if (isVisibleMessageEvent(event, sessionId)) {
-      totalEntries += 1;
-      if (extractTerminalCompletion(event)) pendingTerminalCompletionEntry = false;
+      state.totalEntries += 1;
+      if (extractTerminalCompletion(event)) state.pendingTerminalCompletionEntry = false;
       if (event.type === "tool.execution_start") {
         const toolCallId = getToolCallId(event);
         if (toolCallId) {
@@ -426,15 +492,15 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
 
       if (visiblePublishVisualToolCallIds.has(toolCallId)) {
         const visual = getVisualArtifactFromToolCompletion(event, "publish_visual", sessionId);
-        if (visual) totalEntries += 1;
+        if (visual) state.totalEntries += 1;
         visiblePublishVisualToolCallIds.delete(toolCallId);
       }
       return;
     }
 
-    if (isTurnTerminalEvent(event) && pendingTerminalCompletionEntry) {
-      totalEntries += 1;
-      pendingTerminalCompletionEntry = false;
+    if (isTurnTerminalEvent(event) && state.pendingTerminalCompletionEntry) {
+      state.totalEntries += 1;
+      state.pendingTerminalCompletionEntry = false;
     }
 
     if (isTurnTerminalEvent(event) && openVisibleToolCallIds.size > 0) {
@@ -442,26 +508,81 @@ function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) 
     }
   };
 
+  const syncState = (): EventLogStatsScannerState => {
+    state.openVisibleToolCallIds = [...openVisibleToolCallIds];
+    state.visiblePublishVisualToolCallIds = [...visiblePublishVisualToolCallIds];
+    state.activity = visibleActivityTracker.getState();
+    return state;
+  };
+
+  return { processLine, syncState };
+}
+
+/**
+ * Collapse checkpoints that can never be selected again into the base checkpoint. Any future
+ * `turnStateOffset` is at least `scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES`, so older
+ * checkpoints only matter through the most recent one below that bound.
+ */
+function pruneTurnCheckpoints(state: EventLogStatsScannerState, scannedBytes: number): void {
+  const minUsefulOffset = scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES;
+  let collapseCount = 0;
+  while (
+    collapseCount < state.turnCheckpoints.length
+    && state.turnCheckpoints[collapseCount]!.offset < minUsefulOffset
+  ) {
+    collapseCount += 1;
+  }
+  // Backstop for logs with very short turns, where the tail window alone bounds nothing useful.
+  const overflow = state.turnCheckpoints.length - collapseCount - EVENT_LOG_TURN_CHECKPOINT_MAX;
+  if (overflow > 0) collapseCount += overflow;
+  if (collapseCount === 0) return;
+  state.baseTurnCheckpoint = state.turnCheckpoints[collapseCount - 1]!;
+  state.turnCheckpoints = state.turnCheckpoints.slice(collapseCount);
+}
+
+function resolveTurnState(
+  state: EventLogStatsScannerState,
+  turnStateOffset: number,
+): TailTurnState {
+  let selected = state.baseTurnCheckpoint;
+  let low = 0;
+  let high = state.turnCheckpoints.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const checkpoint = state.turnCheckpoints[mid]!;
+    if (checkpoint.offset < turnStateOffset) {
+      selected = checkpoint;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
   return {
-    processLine,
-    finish(): EventLogStats {
-      return {
-        eventCount,
-        candidateEventCount,
-        malformedCandidateCount,
-        totalEntries,
-        lastVisibleActivityAt: visibleActivityTracker.getLastVisibleActivityAt(),
-        turnState: {
-          initialTurnIndex,
-          ...(initialActiveTurnId ? { initialActiveTurnId } : {}),
-          ...(initialActiveTurnInstanceId ? { initialActiveTurnInstanceId } : {}),
-        },
-        coverage: {
-          ...(latestEventId ? { latestEventId } : {}),
-          ...(latestTurnId ? { latestTurnId } : {}),
-          ...(latestTerminalEventId ? { latestTerminalEventId } : {}),
-        },
-      };
+    initialTurnIndex: selected.turnIndex,
+    ...(selected.activeTurnId ? { initialActiveTurnId: selected.activeTurnId } : {}),
+    ...(selected.activeTurnInstanceId
+      ? { initialActiveTurnInstanceId: selected.activeTurnInstanceId }
+      : {}),
+  };
+}
+
+function buildEventLogStats(
+  state: EventLogStatsScannerState,
+  turnStateOffset: number,
+): EventLogStats {
+  return {
+    eventCount: state.eventCount,
+    candidateEventCount: state.candidateEventCount,
+    malformedCandidateCount: state.malformedCandidateCount,
+    totalEntries: state.totalEntries,
+    ...(state.activity.lastVisibleActivityAt
+      ? { lastVisibleActivityAt: state.activity.lastVisibleActivityAt }
+      : {}),
+    turnState: resolveTurnState(state, turnStateOffset),
+    coverage: {
+      ...(state.latestEventId ? { latestEventId: state.latestEventId } : {}),
+      ...(state.latestTurnId ? { latestTurnId: state.latestTurnId } : {}),
+      ...(state.latestTerminalEventId ? { latestTerminalEventId: state.latestTerminalEventId } : {}),
     },
   };
 }
@@ -471,7 +592,7 @@ function scanEventLogStatsFromBuffer(
   sessionId: string,
   turnStateOffset: number,
 ): EventLogStats {
-  const scanner = createEventLogStatsScanner(sessionId, turnStateOffset);
+  const scanner = createEventLogStatsScanner(sessionId);
   let lineStart = 0;
 
   while (true) {
@@ -485,24 +606,74 @@ function scanEventLogStatsFromBuffer(
     scanner.processLine(contentBuffer.subarray(lineStart), lineStart);
   }
 
-  return scanner.finish();
+  return buildEventLogStats(scanner.syncState(), turnStateOffset);
 }
 
+/**
+ * Fingerprint the already-scanned region by sampling its head, midpoint, and end. A pure append
+ * leaves all three unchanged; an in-place rewrite almost certainly disturbs at least one.
+ */
+async function readScannedRegionFingerprint(
+  file: Awaited<ReturnType<typeof open>>,
+  scannedBytes: number,
+): Promise<string> {
+  if (scannedBytes <= 0) return "";
+  const sampleLength = Math.min(EVENT_LOG_FINGERPRINT_BYTES, scannedBytes);
+  const positions = [
+    0,
+    Math.max(0, Math.floor(scannedBytes / 2) - Math.floor(sampleLength / 2)),
+    scannedBytes - sampleLength,
+  ];
+  const hash = createHash("sha1").update(`${scannedBytes}`);
+  for (const position of positions) {
+    const buffer = Buffer.alloc(sampleLength);
+    const { bytesRead } = await file.read(buffer, 0, sampleLength, position);
+    hash.update(buffer.subarray(0, bytesRead));
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Scan `eventsPath` up to `upToBytes`, resuming from the cached fold when the log only grew.
+ * Head/tail fingerprints over the already-scanned region detect rewrites (compaction, undo,
+ * fork) that would otherwise make a resumed fold wrong.
+ */
 async function scanEventLogStats(
   eventsPath: string,
   sessionId: string,
-  turnStateOffset: number,
-): Promise<EventLogStats> {
-  const scanner = createEventLogStatsScanner(sessionId, turnStateOffset);
+  upToBytes: number,
+): Promise<{ state: EventLogStatsScannerState; resumedFrom: number; scannedBytes: number }> {
+  const cached = getCachedEventLogStatsEntry(eventsPath, sessionId);
+  const generation = eventLogStatsCacheGeneration;
   const file = await open(eventsPath, "r");
   try {
-    const chunkBuffer = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
-    let fileOffset = 0;
-    let leftover = Buffer.alloc(0);
-    let leftoverStartOffset = 0;
+    const fileStat = await file.stat();
+    const fileId = `${fileStat.dev}:${fileStat.ino}`;
+    let startOffset = 0;
+    let state: EventLogStatsScannerState | undefined;
+    if (
+      cached
+      && cached.scannedBytes > 0
+      && cached.scannedBytes <= upToBytes
+      && cached.fileId === fileId
+    ) {
+      const fingerprint = await readScannedRegionFingerprint(file, cached.scannedBytes);
+      if (fingerprint === cached.fingerprint) {
+        startOffset = cached.scannedBytes;
+        state = cloneEventLogStatsScannerState(cached.state);
+      }
+    }
 
-    while (true) {
-      const { bytesRead } = await file.read(chunkBuffer, 0, chunkBuffer.length, fileOffset);
+    const scanner = createEventLogStatsScanner(sessionId, state);
+    const chunkBuffer = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
+    let fileOffset = startOffset;
+    let leftover = Buffer.alloc(0);
+    let leftoverStartOffset = startOffset;
+    let scannedBytes = startOffset;
+
+    while (fileOffset < upToBytes) {
+      const maxRead = Math.min(chunkBuffer.length, upToBytes - fileOffset);
+      const { bytesRead } = await file.read(chunkBuffer, 0, maxRead, fileOffset);
       if (bytesRead === 0) break;
 
       const chunk = chunkBuffer.subarray(0, bytesRead);
@@ -517,6 +688,7 @@ async function scanEventLogStats(
         if (newlineIndex < 0) break;
         scanner.processLine(combined.subarray(lineStart, newlineIndex), combinedStartOffset + lineStart);
         lineStart = newlineIndex + 1;
+        scannedBytes = combinedStartOffset + lineStart;
       }
 
       if (lineStart < combined.length) {
@@ -529,14 +701,36 @@ async function scanEventLogStats(
       fileOffset += bytesRead;
     }
 
+    // Cache only complete lines: a trailing partial line is completed by a later append.
+    const persistedState = cloneEventLogStatsScannerState(scanner.syncState());
+    pruneTurnCheckpoints(persistedState, scannedBytes);
+    if (scannedBytes > 0 && eventLogStatsCacheGeneration === generation) {
+      const fingerprint = await readScannedRegionFingerprint(file, scannedBytes);
+      const current = getCachedEventLogStatsEntry(eventsPath, sessionId);
+      // Concurrent readers must never move the cache backwards.
+      const isNewer = !current || current.fileId !== fileId || current.scannedBytes <= scannedBytes;
+      if (eventLogStatsCacheGeneration === generation && isNewer) {
+        setCachedEventLogStatsEntry({
+          eventsPath,
+          sessionId,
+          scannedBytes,
+          state: persistedState,
+          fingerprint,
+          fileId,
+        });
+      }
+    }
+
+    // The tail transform also consumes a final line without a trailing newline, so the returned
+    // stats must include it even though it is never folded into the cached state.
     if (leftover.length > 0) {
       scanner.processLine(leftover, leftoverStartOffset);
     }
+
+    return { state: scanner.syncState(), resumedFrom: startOffset, scannedBytes };
   } finally {
     await file.close();
   }
-
-  return scanner.finish();
 }
 
 async function readMessagesFromDiskFull(
@@ -809,12 +1003,16 @@ export async function readMessagesFromDisk(
         hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
       });
     } else {
-      const cachedStats = getCachedEventLogStats(eventsPath, sessionId, tail.fileSize, tail.mtimeMs, tail.startOffset);
       const tStats = Date.now();
-      stats = cachedStats ?? await scanEventLogStats(eventsPath, sessionId, tail.startOffset);
+      const scan = await scanEventLogStats(eventsPath, sessionId, tail.fileSize);
+      stats = buildEventLogStats(scan.state, tail.startOffset);
       const statsMs = Date.now() - tStats;
       deps.recordSpan("session.readFromDisk.stats", statsMs, sessionId, {
-        cacheResult: cachedStats ? "hit" : "miss",
+        cacheResult: scan.resumedFrom > 0
+          ? (scan.scannedBytes > scan.resumedFrom ? "resumed" : "hit")
+          : "miss",
+        resumedFromOffset: scan.resumedFrom,
+        scannedBytes: scan.scannedBytes - scan.resumedFrom,
         eventCount: stats.eventCount,
         candidateEventCount: stats.candidateEventCount,
         malformedCandidateCount: stats.malformedCandidateCount,
@@ -822,28 +1020,6 @@ export async function readMessagesFromDisk(
         initialTurnIndex: stats.turnState.initialTurnIndex,
         hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
       });
-      if (!cachedStats) {
-        const scannedFileStat = await stat(eventsPath);
-        if (scannedFileStat.size === tail.fileSize && scannedFileStat.mtimeMs === tail.mtimeMs) {
-          setCachedEventLogStats({
-            eventsPath,
-            sessionId,
-            fileSize: tail.fileSize,
-            mtimeMs: tail.mtimeMs,
-            turnStateOffset: tail.startOffset,
-            stats,
-          });
-        } else {
-          deps.recordSpan("session.readFromDisk.statsCache", statsMs, sessionId, {
-            result: "skip",
-            reason: "file-changed-during-scan",
-            initialFileSize: tail.fileSize,
-            currentFileSize: scannedFileStat.size,
-            initialMtimeMs: tail.mtimeMs,
-            currentMtimeMs: scannedFileStat.mtimeMs,
-          });
-        }
-      }
     }
   } catch (err) {
     if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
