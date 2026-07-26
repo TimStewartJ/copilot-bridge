@@ -63,7 +63,7 @@ describe("Session manager routes", () => {
     });
   });
 
-  it("GET /api/sessions/:id/stream returns a complete authoritative snapshot", async () => {
+  it("GET /api/sessions/:id/stream returns a complete ephemeral snapshot", async () => {
     const bus = ctx.eventBusRegistry.getOrCreateBus("stream-complete");
     bus.reset();
     bus.emit({ type: "thinking", turnId: "provider-turn-1" });
@@ -74,15 +74,19 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/event-stream");
     expect(res.text).toContain("\"type\":\"snapshot\"");
-    expect(res.text).toContain("\"terminalEventId\":\"terminal-1\"");
+    expect(res.text).toContain("\"complete\":true");
+    expect(res.text).toContain("\"terminalType\":\"done\"");
+    // The terminal event is on disk, so the stream carries no transcript projection for it.
+    expect(res.text).not.toContain("\"terminalEventId\"");
+    expect(res.text).not.toContain("\"finalAssistantEntry\"");
   });
 
   it("GET /api/sessions/:id/stream restores a persisted synthetic terminal overlay", async () => {
     ctx.sessionMetaStore.setTerminalOverlay("synthetic-terminal", {
       type: "aborted",
       runId: "run-synthetic",
-      content: "Partial",
       timestamp: "2026-07-21T17:00:00.000Z",
+      notice: { kind: "stopped", timestamp: "2026-07-21T17:00:00.000Z" },
     });
 
     const res = await request(app).get("/api/sessions/synthetic-terminal/stream");
@@ -90,7 +94,7 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain("\"runId\":\"run-synthetic\"");
     expect(res.text).toContain("\"terminalType\":\"aborted\"");
-    expect(res.text).toContain("\"finalContent\":\"Partial\"");
+    expect(res.text).toContain("\"kind\":\"stopped\"");
   });
 
   it("POST /api/sessions/:id/fork passes safe event boundaries to the session manager", async () => {

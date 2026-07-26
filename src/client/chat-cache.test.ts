@@ -3,10 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ChatEntry } from "./api";
 import {
   getCachedChatSnapshot,
-  hasClientGeneratedEntries,
-  hasOptimisticTail,
-  mergeTailMessages,
-  normalizeCommittedClientEntries,
+  replaceHistoryWindow,
   resetCachedChatSnapshotState,
   setCachedChatSnapshot,
 } from "./chat-cache";
@@ -20,7 +17,7 @@ afterEach(() => {
 });
 
 describe("chat cache", () => {
-  it("clones canonical snapshots and evicts least-recently-used sessions", () => {
+  it("clones cached disk windows and evicts least-recently-used sessions", () => {
     const client = new QueryClient();
     for (let index = 0; index < 6; index += 1) {
       setCachedChatSnapshot(client, {
@@ -30,7 +27,6 @@ describe("chat cache", () => {
         total: 1,
         hasMore: false,
         fetchedAt: index,
-        isCanonical: true,
       });
     }
 
@@ -41,118 +37,88 @@ describe("chat cache", () => {
     expect(getCachedChatSnapshot(client, "session-5")?.entries).toEqual([message("entry-5")]);
   });
 
-  it("does not replace canonical cache with noncanonical state", () => {
+  it("always stores the newest disk window without canonical gating", () => {
     const client = new QueryClient();
     setCachedChatSnapshot(client, {
       sessionId: "session-1",
-      entries: [message("canonical")],
+      entries: [message("older")],
       firstItemIndex: 0,
       total: 1,
       hasMore: false,
       fetchedAt: 1,
-      isCanonical: true,
-      lastVisibleActivityAt: "2026-07-21T17:00:00.000Z",
     });
     setCachedChatSnapshot(client, {
       sessionId: "session-1",
-      entries: [message("optimistic")],
+      entries: [message("newer")],
       firstItemIndex: 0,
       total: 1,
       hasMore: false,
       fetchedAt: 2,
-      isCanonical: false,
     });
 
     expect(getCachedChatSnapshot(client, "session-1")).toMatchObject({
-      entries: [{ content: "canonical" }],
-      lastVisibleActivityAt: "2026-07-21T17:00:00.000Z",
+      entries: [{ content: "newer" }],
     });
   });
 });
 
-describe("canonical tail reconciliation", () => {
-  it("detects optimistic tails and remaining client-generated entries", () => {
-    expect(hasOptimisticTail(5, 3, 7)).toBe(true);
-    expect(hasOptimisticTail(5, 2, 7)).toBe(false);
-    expect(hasClientGeneratedEntries([message("entry-1"), message("draft-user-1")])).toBe(true);
-    expect(hasClientGeneratedEntries([message("entry-1"), message("local-1")])).toBe(true);
-    expect(hasClientGeneratedEntries([message("entry-1")])).toBe(false);
-  });
-
-  it("normalizes committed draft ids but preserves interrupted legacy notices", () => {
-    const normalized = normalizeCommittedClientEntries([
-      message("entry-1"),
-      { id: "draft-user-1", role: "user", content: "Hello" },
-      { id: "err-1", role: "assistant", content: "Partial\n\n*(interrupted)*" },
-    ], 0, 3);
-
-    expect(normalized[1]?.id).toBeUndefined();
-    expect(normalized[2]?.id).toBe("err-1");
-  });
-
-  it("preserves older loaded messages when the refreshed tail overlaps", () => {
-    const merged = mergeTailMessages(
+describe("replaceHistoryWindow", () => {
+  it("replaces the loaded window wholesale when the refreshed window covers it", () => {
+    const result = replaceHistoryWindow(
       [message("entry-0"), message("entry-1"), message("entry-2")],
       0,
-      5,
-      [message("entry-2-new"), message("entry-3"), message("entry-4")],
+      [message("entry-0"), message("entry-1"), message("entry-2"), message("entry-3")],
+      4,
     );
 
-    expect(merged.firstItemIndex).toBe(0);
-    expect(merged.entries.map((entry) => entry.id)).toEqual([
+    expect(result.firstItemIndex).toBe(0);
+    expect(result.entries.map((entry) => entry.id)).toEqual([
       "entry-0",
       "entry-1",
-      "entry-2-new",
+      "entry-2",
       "entry-3",
-      "entry-4",
     ]);
-    expect(merged.hasOptimisticTail).toBe(false);
+    expect(result.total).toBe(4);
+    expect(result.hasGap).toBe(false);
   });
 
-  it("preserves local error entries after a stale background refresh", () => {
-    const merged = mergeTailMessages(
-      [message("entry-0"), { id: "err-1", role: "assistant", content: "⚠️ Error: failed" }],
+  it("keeps the paginated prefix when the refreshed window starts later", () => {
+    const result = replaceHistoryWindow(
+      [message("entry-0"), message("entry-1"), message("entry-2")],
       0,
-      1,
-      [message("entry-0-new")],
+      [message("entry-2"), message("entry-3")],
+      4,
     );
 
-    expect(merged.entries).toMatchObject([
-      { id: "entry-0-new" },
-      { id: "err-1", role: "assistant" },
+    expect(result.firstItemIndex).toBe(0);
+    expect(result.entries.map((entry) => entry.id)).toEqual([
+      "entry-0",
+      "entry-1",
+      "entry-2",
+      "entry-3",
     ]);
-    expect(merged.hasOptimisticTail).toBe(true);
-    expect(merged.hasClientGeneratedEntries).toBe(true);
+    expect(result.hasGap).toBe(false);
   });
 
-  it("preserves a failed local user message as an optimistic tail", () => {
-    const failedMessage = {
-      id: "local-1",
-      role: "user" as const,
-      content: "Retry me",
-      delivery: { failed: true, mode: "interactive" as const, error: "offline" },
-    };
-    const merged = mergeTailMessages(
-      [message("entry-0"), failedMessage],
-      0,
-      1,
-      [message("entry-0-new")],
-    );
-
-    expect(merged.entries).toEqual([message("entry-0-new"), failedMessage]);
-    expect(merged.hasOptimisticTail).toBe(true);
-    expect(merged.hasClientGeneratedEntries).toBe(true);
-  });
-
-  it("replaces a non-overlapping window", () => {
-    const merged = mergeTailMessages(
+  it("reports a gap when the refreshed window starts past the loaded window", () => {
+    const result = replaceHistoryWindow(
       [message("entry-0"), message("entry-1")],
       0,
-      10,
       [message("entry-8"), message("entry-9")],
+      10,
     );
 
-    expect(merged.firstItemIndex).toBe(8);
-    expect(merged.entries.map((entry) => entry.id)).toEqual(["entry-8", "entry-9"]);
+    expect(result.hasGap).toBe(true);
+  });
+
+  it("drops stale client-generated entries from the committed window", () => {
+    const result = replaceHistoryWindow(
+      [message("entry-0"), { id: "local-1", role: "user", content: "Retry me" }],
+      0,
+      [message("entry-0"), message("entry-1")],
+      2,
+    );
+
+    expect(result.entries.map((entry) => entry.id)).toEqual(["entry-0", "entry-1"]);
   });
 });

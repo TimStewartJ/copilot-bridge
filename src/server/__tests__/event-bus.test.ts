@@ -35,7 +35,7 @@ describe("event-bus", () => {
       bus.emit({ type: "delta", content: "Hello " });
       bus.emit({ type: "delta", content: "world" });
       const snap = bus.getSnapshot();
-      expect(snap.accumulatedContent).toBe("Hello world");
+      expect(snap.streamingContent).toBe("Hello world");
     });
 
     it("notifies subscribers to resync when a bus is deleted", () => {
@@ -87,7 +87,7 @@ describe("event-bus", () => {
 
         bus.emit(event);
 
-        expect(bus.getSnapshot().userMessages).toEqual([
+        expect(bus.getSnapshot().pendingUserMessages).toEqual([
           expect.objectContaining({ content: "in flight", pending: false }),
         ]);
       });
@@ -116,11 +116,13 @@ describe("event-bus", () => {
 
         const snap = bus.getSnapshot();
         expect(snap.terminalType).toBe(terminalType);
-        expect(snap.terminalCompletion).toMatchObject({
+        // The completion card itself is replayed from events.jsonl, never re-projected here.
+        expect(snap).not.toHaveProperty("terminalCompletion");
+        expect(snap).not.toHaveProperty("finalAssistantEntry");
+        expect(bus.getTerminalState().terminalCompletion).toMatchObject({
           content: "Wrapped up before the interruption",
           sourceEventType: "tool.execution_complete",
         });
-        expect(snap.finalAssistantEntry).toBeUndefined();
 
         const broadcastTerminal = received.find((event) => event.type === terminalType);
         expect(broadcastTerminal?.terminalCompletion).toMatchObject({
@@ -147,58 +149,20 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().terminalCompletion).toBeUndefined();
     });
 
-    it("projects pending user messages in reconnect snapshots and commits them after persistence", () => {
-      const bus = getOrCreateBus("test-pending-prompt-1");
-      const messageId = bus.setPendingPrompt("recover me", [{
-        type: "uploaded",
-        displayName: "evidence.png",
-        mimeType: "image/png",
-      }]);
-      const reconnectEvents: StreamEvent[] = [];
-      const unsubscribe = bus.subscribe((event) => reconnectEvents.push(event));
-
-      expect(reconnectEvents[0]).not.toHaveProperty("pendingPrompt");
-      expect(reconnectEvents[0]).toMatchObject({
-        type: "snapshot",
-        userMessages: [{
-          id: messageId,
-          content: "recover me",
-          pending: true,
-          attachments: [{
-            displayName: "evidence.png",
-            mimeType: "image/png",
-          }],
-        }],
-      });
-
-      bus.commitPendingPrompt("recover me", "user-event-1", "2026-07-21T22:00:00.000Z");
-
-      expect(bus.getSnapshot()).toMatchObject({
-        userMessages: [{
-          id: messageId,
-          content: "recover me",
-          pending: false,
-          sourceEventId: "user-event-1",
-          timestamp: "2026-07-21T22:00:00.000Z",
-        }],
-      });
-      unsubscribe();
-    });
-
     it("only commits the matching projected user message", () => {
       const bus = getOrCreateBus("test-pending-prompt-match-1");
       bus.setPendingPrompt("steer me");
 
       bus.commitPendingPrompt("original prompt", "wrong-event");
 
-      expect(bus.getSnapshot().userMessages[0]).toMatchObject({
+      expect(bus.getSnapshot().pendingUserMessages[0]).toMatchObject({
         content: "steer me",
         pending: true,
       });
 
       bus.commitPendingPrompt("steer me", "steer-event");
 
-      expect(bus.getSnapshot().userMessages[0]).toMatchObject({
+      expect(bus.getSnapshot().pendingUserMessages[0]).toMatchObject({
         pending: false,
         sourceEventId: "steer-event",
       });
@@ -211,7 +175,7 @@ describe("event-bus", () => {
 
       bus.commitPendingPrompt("yes", "event-1");
 
-      expect(bus.getSnapshot().userMessages).toMatchObject([
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([
         { id: firstId, pending: false, sourceEventId: "event-1" },
         { id: secondId, pending: true },
       ]);
@@ -229,7 +193,7 @@ describe("event-bus", () => {
       }]);
       bus.replacePendingPrompt("updated");
 
-      expect(bus.getSnapshot().userMessages).toMatchObject([{
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([{
         id,
         content: "updated",
         pending: true,
@@ -253,31 +217,7 @@ describe("event-bus", () => {
         }),
         { type: "user_message_discarded", id },
       ]));
-      expect(bus.getSnapshot().userMessages).toEqual([]);
-    });
-
-    it("starts a fresh turn while retaining completed run entries", () => {
-      const bus = getOrCreateBus("test-thinking-reset-1");
-      bus.setPendingPrompt("steer me");
-      bus.emit({ type: "thinking", turnId: "turn-1" });
-      bus.emit({ type: "delta", content: "old text" });
-      bus.emit({ type: "tool_start", toolCallId: "tc-old", name: "bash" });
-      bus.emit({ type: "intent", intent: "Old turn" });
-
-      bus.emit({ type: "thinking", turnId: "turn-2" });
-
-      expect(bus.getSnapshot()).toMatchObject({
-        accumulatedContent: "",
-        activeTools: [],
-        currentTurnTools: [
-          expect.objectContaining({ toolCallId: "tc-old", turnId: "turn-1" }),
-        ],
-        intentText: "",
-        turnId: "turn-2",
-      });
-      expect(bus.getSnapshot().userMessages).toEqual([
-        expect.objectContaining({ content: "steer me", pending: true }),
-      ]);
+      expect(bus.getSnapshot().pendingUserMessages).toEqual([]);
     });
 
     it("does not retain pending interaction lifecycle state", () => {
@@ -356,86 +296,31 @@ describe("event-bus", () => {
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep", timestamp: "2026-04-22T20:00:00.000Z" });
       bus.emit({ type: "tool_start", toolCallId: "tc2", name: "view" });
       bus.emit({ type: "tool_progress", toolCallId: "tc1", message: "Searching..." });
-      expect(bus.getSnapshot().activeTools).toHaveLength(2);
-      expect(bus.getSnapshot().activeTools[0]).toMatchObject({
+      expect(bus.getSnapshot().liveTools).toHaveLength(2);
+      expect(bus.getSnapshot().liveTools[0]).toMatchObject({
         toolCallId: "tc1",
         startedAt: "2026-04-22T20:00:00.000Z",
         progressText: "Searching...",
       });
 
-      bus.emit({ type: "tool_done", toolCallId: "tc1" });
-      expect(bus.getSnapshot().activeTools).toHaveLength(1);
-      expect(bus.getSnapshot().activeTools[0].name).toBe("view");
-    });
-
-    it("keeps completed current-turn tools in snapshots after tool_done", () => {
-      const bus = getOrCreateBus("test-current-turn-tools-complete-1");
-      bus.emit({ type: "thinking", turnId: "turn-1" });
-      bus.emit({
-        type: "tool_start",
-        toolCallId: "tc1",
-        name: "bash",
-        args: { command: "npm test" },
-        timestamp: "2026-04-22T20:00:00.000Z",
-        parentToolCallId: "parent-1",
-      });
-      bus.emit({ type: "tool_progress", toolCallId: "tc1", message: "Running tests" });
-      bus.emit({ type: "tool_output", toolCallId: "tc1", content: "Tests passed" });
-      bus.emit({ type: "tool_update", toolCallId: "tc1", name: "npm test", isSubAgent: true });
-      bus.emit({
-        type: "tool_done",
-        toolCallId: "tc1",
+      // A finished tool keeps its result on the stream so the view can render it before the next
+      // disk read; it is marked complete rather than dropped.
+      bus.emit({ type: "tool_done", toolCallId: "tc1", success: true, result: "found it" });
+      const afterDone = bus.getSnapshot().liveTools;
+      expect(afterDone).toHaveLength(2);
+      expect(afterDone.find((tool) => tool.toolCallId === "tc1")).toMatchObject({
         success: true,
-        result: "ok",
-        timestamp: "2026-04-22T20:00:05.000Z",
+        result: "found it",
       });
-
-      const snap = bus.getSnapshot();
-      expect(snap.activeTools).toEqual([]);
-      expect(snap.currentTurnTools).toMatchObject([
-        {
-          toolCallId: "tc1",
-          name: "npm test",
-          turnId: "turn-1",
-          args: { command: "npm test" },
-          startedAt: "2026-04-22T20:00:00.000Z",
-          progressText: "Tests passed",
-          parentToolCallId: "parent-1",
-          isSubAgent: true,
-          completedAt: "2026-04-22T20:00:05.000Z",
-          success: true,
-          result: "ok",
-        },
-      ]);
-    });
-
-    it("retains run tools in terminal snapshots for reconnects", () => {
-      const terminalEvents: StreamEvent[] = [
-        { type: "done", content: "Done" },
-        { type: "aborted", content: "Stopped" },
-        { type: "shutdown", content: "Interrupted" },
-        { type: "error", message: "Boom" },
-      ];
-
-      terminalEvents.forEach((event, index) => {
-        const bus = getOrCreateBus(`test-terminal-current-turn-tools-${index}`);
-        bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
-        bus.emit({ type: "tool_done", toolCallId: "tc1", success: true });
-        expect(bus.getSnapshot().currentTurnTools).toHaveLength(1);
-
-        bus.emit(event);
-
-        expect(bus.getSnapshot().currentTurnTools).toEqual([
-          expect.objectContaining({ toolCallId: "tc1", success: true }),
-        ]);
-      });
+      expect(afterDone.find((tool) => tool.toolCallId === "tc1")?.completedAt).toBeDefined();
+      expect(afterDone.find((tool) => tool.toolCallId === "tc2")?.completedAt).toBeUndefined();
     });
 
     it("stamps live turn and instance ids on turn-scoped stream events", () => {
       const bus = getOrCreateBus("test-turn-id-1");
       const events: StreamEvent[] = [];
       bus.subscribe((event) => {
-        if (event.type !== "snapshot") events.push(event);
+        if (event.type !== "snapshot" && event.type !== "history_advanced") events.push(event);
       });
 
       bus.emit({ type: "thinking" });
@@ -481,11 +366,24 @@ describe("event-bus", () => {
       expect(secondTurnInstanceId).not.toBe(firstTurnInstanceId);
     });
 
-    it("assistant_partial resets accumulated content", () => {
+    it("assistant_partial finalizes accumulated content when the message carries text", () => {
       const bus = getOrCreateBus("test-partial-1");
       bus.emit({ type: "delta", content: "first message" });
+      bus.emit({ type: "assistant_partial", content: "first message", sourceEventId: "a-1" });
+      expect(bus.getSnapshot().streamingContent).toBe("");
+      expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([
+        { content: "first message", sourceEventId: "a-1" },
+      ]);
+    });
+
+    it("keeps streamed text live when an assistant message carries no content", () => {
+      const bus = getOrCreateBus("test-partial-empty");
+      bus.emit({ type: "delta", content: "first message" });
       bus.emit({ type: "assistant_partial" });
-      expect(bus.getSnapshot().accumulatedContent).toBe("");
+      // Discarding here would lose text the user is already reading, and stamping it would
+      // claim a disk identity that never materializes.
+      expect(bus.getSnapshot().streamingContent).toBe("first message");
+      expect(bus.getSnapshot().liveAssistantSegments).toEqual([]);
     });
 
     it("done marks complete and clears state", () => {
@@ -499,9 +397,8 @@ describe("event-bus", () => {
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("done");
       expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:00.000Z");
-      expect(snap.finalContent).toBe("Final answer");
-      expect(snap.accumulatedContent).toBe("");
-      expect(snap.activeTools).toEqual([]);
+      expect(bus.getTerminalState().finalContent).toBe("Final answer");
+      expect(snap.streamingContent).toBe("");
       expect(snap.pendingUserInputs).toEqual([]);
       expect(bus.complete).toBe(true);
     });
@@ -513,7 +410,7 @@ describe("event-bus", () => {
       const snap = bus.getSnapshot();
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("error");
-      expect(snap.errorMessage).toBe("Something broke");
+      expect(bus.getTerminalState().errorMessage).toBe("Something broke");
     });
 
     it("aborted marks complete with terminal type", () => {
@@ -524,7 +421,7 @@ describe("event-bus", () => {
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("aborted");
       expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:01.000Z");
-      expect(snap.finalContent).toBe("Partial answer");
+      expect(bus.getTerminalState().finalContent).toBe("Partial answer");
     });
 
     it("shutdown marks complete with terminal type", () => {
@@ -536,88 +433,179 @@ describe("event-bus", () => {
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("shutdown");
       expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:02.000Z");
-      expect(snap.finalContent).toBe("Partial answer");
+      expect(bus.getTerminalState().finalContent).toBe("Partial answer");
       expect(snap.intentText).toBe("");
     });
 
-    it.each([
-      {
-        terminalType: "done",
-        terminalEvent: {
-          type: "done",
-          sourceEventId: "terminal-done",
-          assistantSourceEventId: "assistant-done",
-          content: "Final answer",
-          timestamp: "2026-07-23T16:00:00.000Z",
-        },
-        expected: {
-          id: "assistant-done",
-          sourceEventId: "assistant-done",
-          content: "Final answer",
-        },
-      },
-      {
-        terminalType: "error",
-        terminalEvent: {
-          type: "error",
-          sourceEventId: "terminal-error",
-          message: "Something broke",
-          timestamp: "2026-07-23T16:00:01.000Z",
-        },
-        expected: {
-          id: "terminal-error",
-          sourceEventId: "terminal-error",
-          content: "⚠️ Error: Something broke",
-        },
-      },
-      {
-        terminalType: "aborted",
-        terminalEvent: {
-          type: "aborted",
-          sourceEventId: "terminal-aborted",
-          assistantSourceEventId: "assistant-aborted",
-          content: "Partial answer",
-          timestamp: "2026-07-23T16:00:02.000Z",
-        },
-        expected: {
-          id: "assistant-aborted",
-          sourceEventId: "assistant-aborted",
-          content: "Partial answer\n\n*(stopped)*",
-        },
-      },
-      {
-        terminalType: "shutdown",
-        terminalEvent: {
-          type: "shutdown",
-          sourceEventId: "terminal-shutdown",
-          assistantSourceEventId: "assistant-shutdown",
-          content: "Partial answer",
-          timestamp: "2026-07-23T16:00:03.000Z",
-        },
-        expected: {
-          id: "assistant-shutdown",
-          sourceEventId: "assistant-shutdown",
-          content: "Partial answer\n\n*(interrupted)*",
-        },
-      },
-    ] as const)(
-      "projects one authoritative final assistant entry for $terminalType live and snapshot delivery",
-      ({ terminalType, terminalEvent, expected }) => {
-        const bus = getOrCreateBus(`test-final-assistant-projection-${terminalType}`);
-        const received: StreamEvent[] = [];
-        bus.subscribe((event) => received.push(event));
-        bus.emit({ type: "thinking", turnId: "provider-turn-1" });
-        bus.emit(terminalEvent);
+    it("never stamps streamed text with an event id that disk history will not contain", () => {
+      const bus = getOrCreateBus("test-empty-assistant-message");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "delta", content: "Let me check that" });
+      // A tool-only assistant message carries no content, so events.jsonl records no entry for it.
+      bus.emit({ type: "assistant_partial", content: "", sourceEventId: "empty-message-1" });
 
-        const liveTerminal = received.find((event) => event.type === terminalType);
-        expect(liveTerminal?.finalAssistantEntry).toMatchObject({
-          ...expected,
-          turnId: "provider-turn-1",
-          timestamp: terminalEvent.timestamp,
-        });
-        expect(bus.getSnapshot().finalAssistantEntry).toEqual(liveTerminal?.finalAssistantEntry);
-      },
-    );
+      // The streamed text must stay live rather than claiming an id it can never retire against.
+      expect(bus.getSnapshot().liveAssistantSegments).toEqual([]);
+      expect(bus.getSnapshot().streamingContent).toBe("Let me check that");
+
+      // The next real assistant message finalizes it against an id disk will actually carry.
+      bus.emit({ type: "assistant_partial", content: "Checked.", sourceEventId: "real-message-1" });
+      expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([
+        { content: "Checked.", sourceEventId: "real-message-1" },
+      ]);
+    });
+
+    it("holds published visuals on the stream until disk history can carry them", () => {
+      const bus = getOrCreateBus("test-live-visuals");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({
+        type: "visual_published",
+        artifactId: "artifact-1",
+        kind: "mermaid",
+        title: "Diagram",
+        url: "/api/x",
+      });
+
+      expect(bus.getSnapshot().liveVisuals).toMatchObject([
+        { artifactId: "artifact-1", kind: "mermaid", title: "Diagram" },
+      ]);
+
+      // A new turn proves the previous turn's visual reached events.jsonl.
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+      expect(bus.getSnapshot().liveVisuals).toEqual([]);
+    });
+
+    it("surfaces a completion card immediately and retires it on the next turn", () => {
+      const bus = getOrCreateBus("test-live-completion");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({
+        type: "tool_start",
+        toolCallId: "tc-complete",
+        name: "task_complete",
+        args: { summary: "All done" },
+      });
+      bus.emit({ type: "done", content: "All done", sourceEventId: "terminal-1" });
+
+      expect(bus.getSnapshot().liveCompletion).toMatchObject({
+        sourceEventId: "terminal-1",
+        completion: { content: "All done" },
+      });
+      expect(received.find((event) => event.type === "done")?.liveCompletion).toMatchObject({
+        completion: { content: "All done" },
+      });
+
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+      expect(bus.getSnapshot().liveCompletion).toBeUndefined();
+    });
+
+    it("finalizes tools still open at a terminal instead of leaving them running", () => {
+      const bus = getOrCreateBus("test-terminal-open-tools");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "tool_start", toolCallId: "tc-open", name: "bash" });
+      bus.emit({ type: "aborted", content: "stopped", timestamp: "2026-07-26T10:00:00.000Z" });
+
+      expect(bus.getSnapshot().liveTools).toMatchObject([
+        { toolCallId: "tc-open", completedAt: "2026-07-26T10:00:00.000Z", success: false },
+      ]);
+    });
+
+    it("emits a bridge-native run notice only when disk history cannot represent the outcome", () => {
+      const cases = [
+        {
+          id: "notice-error",
+          event: { type: "error", message: "boom", timestamp: "2026-07-23T16:00:00.000Z" },
+          expected: { kind: "error", message: "boom" },
+        },
+        {
+          id: "notice-aborted",
+          event: { type: "aborted", content: "partial", timestamp: "2026-07-23T16:00:01.000Z" },
+          expected: { kind: "stopped" },
+        },
+        {
+          id: "notice-shutdown",
+          event: { type: "shutdown", content: "partial", timestamp: "2026-07-23T16:00:02.000Z" },
+          expected: { kind: "interrupted" },
+        },
+        {
+          // A done run the SDK never saw (local slash command) has no disk entry to replay.
+          id: "notice-command",
+          event: { type: "done", content: "/context output", timestamp: "2026-07-23T16:00:03.000Z" },
+          expected: { kind: "command", content: "/context output" },
+        },
+      ] as const;
+
+      for (const { id, event, expected } of cases) {
+        const bus = getOrCreateBus(`test-run-notice-${id}`);
+        const received: StreamEvent[] = [];
+        bus.subscribe((entry) => received.push(entry));
+        bus.emit({ type: "thinking", turnId: "provider-turn-1" });
+        bus.emit(event as StreamEvent);
+
+        expect(bus.getSnapshot().runNotice).toMatchObject(expected);
+        expect(received.find((entry) => entry.type === event.type)?.runNotice)
+          .toMatchObject(expected);
+      }
+    });
+
+    it("emits no run notice when the terminal event is replayable from disk history", () => {
+      const bus = getOrCreateBus("test-run-notice-none");
+      bus.emit({ type: "thinking", turnId: "provider-turn-1" });
+      bus.emit({
+        type: "done",
+        content: "All set",
+        sourceEventId: "terminal-event-1",
+        assistantSourceEventId: "assistant-event-1",
+      });
+      expect(bus.getSnapshot().runNotice).toBeUndefined();
+    });
+
+    it("announces history advances for events the SDK also persists", () => {
+      const bus = getOrCreateBus("test-history-advanced");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "delta", content: "typing" });
+      expect(received.filter((event) => event.type === "history_advanced")).toHaveLength(0);
+
+      bus.emit({ type: "tool_start", toolCallId: "tc-1", name: "grep" });
+      bus.emit({ type: "tool_done", toolCallId: "tc-1", success: true });
+      bus.emit({ type: "assistant_partial", content: "answer", sourceEventId: "assistant-1" });
+      bus.emit({ type: "done", content: "answer", sourceEventId: "terminal-1" });
+
+      const advances = received.filter((event) => event.type === "history_advanced");
+      expect(advances).toHaveLength(4);
+      expect(advances.map((event) => event.historySeq)).toEqual([1, 2, 3, 4]);
+      expect(bus.getSnapshot().historySeq).toBe(4);
+    });
+
+    it("does not announce a history advance for bridge-native assistant output", () => {
+      const bus = getOrCreateBus("test-history-advanced-native");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+
+      bus.emit({ type: "assistant_partial", content: "/context output", bridgeNative: true });
+
+      expect(received.filter((event) => event.type === "history_advanced")).toHaveLength(0);
+      const segments = bus.getSnapshot().liveAssistantSegments;
+      expect(segments).toHaveLength(1);
+      expect(segments[0]?.content).toBe("/context output");
+      expect(segments[0]?.sourceEventId).toBeUndefined();
+    });
+
+    it("drops disk-backed assistant segments at a turn boundary but keeps bridge-native ones", () => {
+      const bus = getOrCreateBus("test-segment-turn-boundary");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "assistant_partial", content: "persisted", sourceEventId: "assistant-1" });
+      bus.emit({ type: "assistant_partial", content: "local only", bridgeNative: true });
+      expect(bus.getSnapshot().liveAssistantSegments).toHaveLength(2);
+
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+
+      expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([{ content: "local only" }]);
+    });
   });
 
   describe("subscribe", () => {
@@ -693,20 +681,21 @@ describe("event-bus", () => {
       bus.emit({ type: "tool_start", toolCallId: "tc2", name: "view" });
       bus.setPendingPrompt("prompt");
       bus.emitUserInputRequested({ requestId: "request-1", question: "Continue?", allowFreeform: true });
-      expect(bus.getSnapshot().currentTurnTools).toHaveLength(2);
+      expect(bus.getSnapshot().liveTools).toHaveLength(2);
 
       bus.reset();
       const snap = bus.getSnapshot();
-      expect(snap.accumulatedContent).toBe("");
+      expect(snap.streamingContent).toBe("");
       expect(snap.intentText).toBe("");
-      expect(snap.activeTools).toEqual([]);
-      expect(snap.currentTurnTools).toEqual([]);
+      expect(snap.liveTools).toEqual([]);
+      expect(snap.liveVisuals).toEqual([]);
       expect(snap.complete).toBe(false);
       expect(snap.terminalType).toBeUndefined();
-      expect(snap.finalContent).toBeUndefined();
-      expect(snap.errorMessage).toBeUndefined();
+      expect(snap.runNotice).toBeUndefined();
+      // The sequence is session-scoped so a later run still advances past earlier subscribers.
+      expect(snap.historySeq).toBeGreaterThan(0);
       expect(snap).not.toHaveProperty("pendingPrompt");
-      expect(snap.userMessages).toEqual([]);
+      expect(snap.pendingUserMessages).toEqual([]);
       expect(snap.pendingUserInputs).toEqual([]);
     });
   });

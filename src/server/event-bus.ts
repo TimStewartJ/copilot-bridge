@@ -20,7 +20,6 @@ import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
-import type { ProjectedAssistantEntry } from "../shared/session-stream.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
 
 export type {
@@ -66,7 +65,12 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
-export interface ActiveTool {
+/**
+ * A tool call the stream knows about. Includes recently-completed calls so a result can render
+ * immediately; the client substitutes this state onto the matching disk entry rather than
+ * appending a second copy, so `events.jsonl` still decides where the tool sits in the transcript.
+ */
+export interface LiveTool {
   toolCallId: string;
   name: string;
   turnId?: string;
@@ -77,68 +81,13 @@ export interface ActiveTool {
   progressText?: string;
   parentToolCallId?: string;
   isSubAgent?: boolean;
-}
-
-export interface CurrentTurnTool extends ActiveTool {
   completedAt?: string;
   success?: boolean;
   result?: unknown;
 }
 
-export interface BusSnapshot {
-  type: "snapshot";
-  runId: string;
-  accumulatedContent: string;
-  userMessages: ProjectedUserMessage[];
-  assistantSegments: AssistantSegment[];
-  activeTools: ActiveTool[];
-  currentTurnTools: CurrentTurnTool[];
-  visuals: PublishedVisual[];
-  entryOrder: string[];
-  intentText: string;
-  complete: boolean;
-  terminalType?: "done" | "error" | "aborted" | "shutdown";
-  terminalTimestamp?: string;
-  finalContent?: string;
-  terminalCompletion?: TerminalCompletion;
-  errorMessage?: string;
-  terminalEventId?: string;
-  terminalAssistantEventId?: string;
-  finalAssistantEntry?: ProjectedAssistantEntry;
-  turnId?: string;
-  turnInstanceId?: string;
-  contextSummary: SessionContextSummary | null;
-  /** Pending native user input requests only; answered/canceled requests are omitted. */
-  pendingUserInputs: PendingUserInputRequestView[];
-  /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
-  pendingElicitations: PendingElicitationRequestView[];
-  [key: string]: unknown;
-}
-
-export interface PendingInteractionSnapshot {
-  pendingUserInputs: PendingUserInputRequestView[];
-  pendingElicitations: PendingElicitationRequestView[];
-}
-
-export interface AssistantSegment {
-  id: string;
-  content: string;
-  turnId?: string;
-  turnInstanceId?: string;
-  sourceEventId?: string;
-  timestamp?: string;
-}
-
-export interface ProjectedUserMessage {
-  id: string;
-  content: string;
-  attachments?: StartWorkAttachment[];
-  pending: boolean;
-  sourceEventId?: string;
-  timestamp?: string;
-}
-
-export interface PublishedVisual {
+/** A visual published this run, retired once its `artifactId` appears in disk history. */
+export interface LiveVisual {
   artifactId: string;
   kind?: string;
   title?: string;
@@ -154,6 +103,115 @@ export interface PublishedVisual {
   turnId?: string;
   turnInstanceId?: string;
 }
+
+/** A completion card for the current run, retired once its source event appears in disk history. */
+export interface LiveCompletion {
+  completion: TerminalCompletion;
+  sourceEventId?: string;
+  timestamp?: string;
+  turnId?: string;
+  turnInstanceId?: string;
+}
+
+/**
+ * Assistant text held on the stream until `events.jsonl` catches up. A segment with a
+ * `sourceEventId` is disk-backed and the client drops it once that id appears in loaded history.
+ * A segment without one is bridge-native (for example slash-command output that never reaches the
+ * SDK) and therefore has no disk representation at all.
+ */
+export interface LiveAssistantSegment {
+  id: string;
+  content: string;
+  sourceEventId?: string;
+  /**
+   * True only for text the bridge produced itself (for example slash-command output that never
+   * reached the SDK). Such text has no `events.jsonl` representation, so it is never handed off to
+   * disk history and survives turn boundaries.
+   */
+  bridgeNative?: boolean;
+  turnId?: string;
+  turnInstanceId?: string;
+  timestamp?: string;
+}
+
+export type RunNoticeKind = "stopped" | "interrupted" | "error" | "command";
+
+/**
+ * Bridge-native run outcome with no `events.jsonl` representation. Rendered as a notice below the
+ * transcript instead of being injected into it, so disk stays the only transcript authority.
+ */
+export interface RunNotice {
+  kind: RunNoticeKind;
+  content?: string;
+  message?: string;
+  timestamp?: string;
+}
+
+/**
+ * Ephemeral run state only. Committed transcript content and ordering come from `events.jsonl`
+ * via `/messages-fast`; nothing here re-projects it.
+ */
+export interface BusSnapshot {
+  type: "snapshot";
+  runId: string;
+  complete: boolean;
+  /** Monotonic counter of observed events that will become committed history entries. */
+  historySeq: number;
+  /** Assistant text streamed since the last persisted assistant message. */
+  streamingContent: string;
+  liveAssistantSegments: LiveAssistantSegment[];
+  /** Prompts accepted by the bridge; each clears once its `sourceEventId` reaches disk history. */
+  pendingUserMessages: ProjectedUserMessage[];
+  /** In-flight and recently-completed tool calls, keyed by `toolCallId`. */
+  liveTools: LiveTool[];
+  /** Visuals published this run that disk history may not have surfaced yet. */
+  liveVisuals: LiveVisual[];
+  /** Completion card for this run, if one was produced. */
+  liveCompletion?: LiveCompletion;
+  intentText: string;
+  turnId?: string;
+  turnInstanceId?: string;
+  contextSummary: SessionContextSummary | null;
+  /** Pending native user input requests only; answered/canceled requests are omitted. */
+  pendingUserInputs: PendingUserInputRequestView[];
+  /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
+  pendingElicitations: PendingElicitationRequestView[];
+  runNotice?: RunNotice;
+  terminalType?: "done" | "error" | "aborted" | "shutdown";
+  terminalTimestamp?: string;
+  [key: string]: unknown;
+}
+
+/** Server-only terminal detail retained for abort fallback and terminal-overlay persistence. */
+export interface BusTerminalState {
+  runId: string;
+  complete: boolean;
+  terminalType?: "done" | "error" | "aborted" | "shutdown";
+  terminalTimestamp?: string;
+  terminalEventId?: string;
+  terminalAssistantEventId?: string;
+  finalContent?: string;
+  errorMessage?: string;
+  terminalCompletion?: TerminalCompletion;
+  turnId?: string;
+  turnInstanceId?: string;
+  runNotice?: RunNotice;
+}
+
+export interface PendingInteractionSnapshot {
+  pendingUserInputs: PendingUserInputRequestView[];
+  pendingElicitations: PendingElicitationRequestView[];
+}
+
+export interface ProjectedUserMessage {
+  id: string;
+  content: string;
+  attachments?: StartWorkAttachment[];
+  pending: boolean;
+  sourceEventId?: string;
+  timestamp?: string;
+}
+
 
 type Listener = (event: StreamEvent) => void;
 
@@ -171,11 +229,10 @@ interface ElicitationCanceledOptions {
   timestamp?: string;
 }
 
-export interface TerminalAssistantProjectionOptions {
-  runId: string;
+
+
+export interface TerminalNoticeOptions {
   terminalType: "done" | "error" | "aborted" | "shutdown";
-  turnId?: string;
-  turnInstanceId?: string;
   terminalSourceEventId?: string;
   assistantSourceEventId?: string;
   content?: string;
@@ -184,28 +241,33 @@ export interface TerminalAssistantProjectionOptions {
   terminalCompletion?: TerminalCompletion;
 }
 
-export function createProjectedFinalAssistantEntry(
-  options: TerminalAssistantProjectionOptions,
-): ProjectedAssistantEntry | undefined {
-  if (options.terminalCompletion) return undefined;
-  const content = options.terminalType === "error"
-    ? `⚠️ Error: ${options.message || "Unknown session error"}`
-    : options.content;
-  if (!content) return undefined;
-  const formattedContent = options.terminalType === "aborted"
-    ? `${content}\n\n*(stopped)*`
-    : options.terminalType === "shutdown"
-      ? `${content}\n\n*(interrupted)*`
-      : content;
-  const sourceEventId = options.assistantSourceEventId ?? options.terminalSourceEventId;
-  return {
-    id: sourceEventId ?? `terminal-${options.runId}`,
-    content: formattedContent,
-    ...(options.turnId ? { turnId: options.turnId } : {}),
-    ...(options.turnInstanceId ? { turnInstanceId: options.turnInstanceId } : {}),
-    ...(sourceEventId ? { sourceEventId } : {}),
-    ...(options.timestamp ? { timestamp: options.timestamp } : {}),
-  };
+/**
+ * Build the bridge-native run notice for a terminal event. Anything already represented in
+ * `events.jsonl` (normal assistant replies, `task_complete` completion cards) yields no notice —
+ * disk stays the sole transcript authority. Only content the SDK never persisted, or a run outcome
+ * with no disk representation, becomes a notice.
+ */
+export function createRunNotice(options: TerminalNoticeOptions): RunNotice | undefined {
+  const timestamp = options.timestamp ? { timestamp: options.timestamp } : {};
+  if (options.terminalType === "error") {
+    return { kind: "error", message: options.message || "Unknown session error", ...timestamp };
+  }
+  if (options.terminalType === "aborted" || options.terminalType === "shutdown") {
+    const kind = options.terminalType === "aborted" ? "stopped" : "interrupted";
+    // Partial text only reached disk if the SDK persisted an assistant message for it. Otherwise
+    // the stream is its only copy, so carry it on the notice.
+    const unpersistedContent = options.assistantSourceEventId ? undefined : options.content;
+    return {
+      kind,
+      ...(unpersistedContent ? { content: unpersistedContent } : {}),
+      ...timestamp,
+    };
+  }
+  // A `done` run with no SDK terminal event never reached the SDK (for example a slash command
+  // answered locally), so its output exists only here.
+  if (options.terminalSourceEventId || options.terminalCompletion) return undefined;
+  if (!options.content) return undefined;
+  return { kind: "command", content: options.content, ...timestamp };
 }
 
 function getStreamTurnId(event: StreamEvent): string | undefined {
@@ -223,6 +285,18 @@ function isTerminalStreamEvent(event: StreamEvent): boolean {
     || event.type === "error"
     || event.type === "aborted"
     || event.type === "shutdown";
+}
+
+/**
+ * Events the SDK also persists to `events.jsonl` as a visible transcript entry. Observing one means
+ * the disk-backed history has advanced and subscribers should refresh their committed window.
+ */
+function isCommittedHistoryEvent(event: StreamEvent): boolean {
+  if (event.type === "tool_start" || event.type === "tool_done" || event.type === "visual_published") {
+    return true;
+  }
+  if (event.type === "assistant_partial") return typeof event.sourceEventId === "string";
+  return isTerminalStreamEvent(event);
 }
 
 function isTurnScopedStreamEvent(event: StreamEvent): boolean {
@@ -244,7 +318,7 @@ function getToolCallId(event: StreamEvent): string {
   return typeof event.toolCallId === "string" ? event.toolCallId : "";
 }
 
-function buildActiveTool(event: StreamEvent): ActiveTool {
+function buildLiveTool(event: StreamEvent): LiveTool {
   const turnId = getStreamTurnId(event);
   const turnInstanceId = getStreamTurnInstanceId(event);
   return {
@@ -260,8 +334,8 @@ function buildActiveTool(event: StreamEvent): ActiveTool {
   };
 }
 
-function mergeActiveTool(existing: ActiveTool, patch: Partial<ActiveTool>): ActiveTool {
-  const merged: ActiveTool = {
+function mergeLiveTool(existing: LiveTool, patch: Partial<LiveTool>): LiveTool {
+  const merged: LiveTool = {
     ...existing,
     name: patch.name ?? existing.name,
   };
@@ -275,52 +349,43 @@ function mergeActiveTool(existing: ActiveTool, patch: Partial<ActiveTool>): Acti
   if (patch.progressText !== undefined) merged.progressText = patch.progressText;
   if (patch.parentToolCallId !== undefined) merged.parentToolCallId = patch.parentToolCallId;
   if (patch.isSubAgent !== undefined) merged.isSubAgent = patch.isSubAgent;
-  return merged;
-}
-
-function mergeCurrentTurnTool(existing: CurrentTurnTool, patch: Partial<CurrentTurnTool>): CurrentTurnTool {
-  const merged: CurrentTurnTool = mergeActiveTool(existing, patch);
   if (patch.completedAt !== undefined) merged.completedAt = patch.completedAt;
   if (patch.success !== undefined) merged.success = patch.success;
   if (patch.result !== undefined) merged.result = patch.result;
   return merged;
 }
 
-function upsertActiveTool(tools: ActiveTool[], nextTool: ActiveTool): ActiveTool[] {
+
+function upsertLiveTool(tools: LiveTool[], nextTool: LiveTool): LiveTool[] {
   const existingIndex = tools.findIndex((tool) => tool.toolCallId === nextTool.toolCallId);
   if (existingIndex < 0) return [...tools, nextTool];
-  return tools.map((tool, index) => index === existingIndex ? mergeActiveTool(tool, nextTool) : tool);
+  return tools.map((tool, index) => index === existingIndex ? mergeLiveTool(tool, nextTool) : tool);
 }
 
-function upsertCurrentTurnTool(tools: CurrentTurnTool[], nextTool: CurrentTurnTool): CurrentTurnTool[] {
-  const existingIndex = tools.findIndex((tool) => tool.toolCallId === nextTool.toolCallId);
-  if (existingIndex < 0) return [...tools, nextTool];
-  return tools.map((tool, index) => index === existingIndex ? mergeCurrentTurnTool(tool, nextTool) : tool);
+
+function patchLiveTools(tools: LiveTool[], toolCallId: string, patch: Partial<LiveTool>): LiveTool[] {
+  return tools.map((tool) => tool.toolCallId === toolCallId ? mergeLiveTool(tool, patch) : tool);
 }
 
-function patchActiveTools(tools: ActiveTool[], toolCallId: string, patch: Partial<ActiveTool>): ActiveTool[] {
-  return tools.map((tool) => tool.toolCallId === toolCallId ? mergeActiveTool(tool, patch) : tool);
-}
-
-function patchCurrentTurnTools(tools: CurrentTurnTool[], toolCallId: string, patch: Partial<CurrentTurnTool>): CurrentTurnTool[] {
-  return tools.map((tool) => tool.toolCallId === toolCallId ? mergeCurrentTurnTool(tool, patch) : tool);
-}
 
 export class SessionEventBus {
   private listeners = new Set<Listener>();
   private _complete = false;
   private cleanupTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Snapshot state — tracks the current in-flight turn
+  // Ephemeral run state only — committed transcript content comes from events.jsonl.
   private runId = randomUUID();
-  private accumulatedContent = "";
+  private streamingContent = "";
   private userMessages: ProjectedUserMessage[] = [];
-  private assistantSegments: AssistantSegment[] = [];
-  private activeTools: ActiveTool[] = [];
-  private currentTurnTools: CurrentTurnTool[] = [];
-  private visuals: PublishedVisual[] = [];
-  private entryOrder: string[] = [];
+  private liveAssistantSegments: LiveAssistantSegment[] = [];
+  private liveTools: LiveTool[] = [];
+  private liveVisuals: LiveVisual[] = [];
+  private liveCompletion?: LiveCompletion;
   private intentText = "";
+  private historySeq = 0;
+  private runNotice?: RunNotice;
+  /** Server-only: last assistant text observed this run, used for abort/shutdown fallback. */
+  private lastAssistantSegment?: LiveAssistantSegment;
   private finalContent?: string;
   private terminalCompletion?: TerminalCompletion;
   /**
@@ -334,7 +399,6 @@ export class SessionEventBus {
   private terminalTimestamp?: string;
   private terminalEventId?: string;
   private terminalAssistantEventId?: string;
-  private finalAssistantEntry?: ProjectedAssistantEntry;
   private mcpServers: unknown[] = [];
   private currentTurnId?: string;
   private terminalTurnId?: string;
@@ -351,6 +415,48 @@ export class SessionEventBus {
     return this.intentText;
   }
 
+  /** Last assistant text observed on this run, including text not yet persisted to disk. */
+  getLastAssistantSegment(): LiveAssistantSegment | undefined {
+    return this.lastAssistantSegment ? { ...this.lastAssistantSegment } : undefined;
+  }
+
+  /** Streamed assistant text that has not yet been finalized into an assistant message. */
+  getStreamingContent(): string {
+    return this.streamingContent;
+  }
+
+  getTerminalState(): BusTerminalState {
+    return {
+      runId: this.runId,
+      complete: this._complete,
+      ...(this.terminalType ? { terminalType: this.terminalType } : {}),
+      ...(this.terminalTimestamp ? { terminalTimestamp: this.terminalTimestamp } : {}),
+      ...(this.terminalEventId ? { terminalEventId: this.terminalEventId } : {}),
+      ...(this.terminalAssistantEventId
+        ? { terminalAssistantEventId: this.terminalAssistantEventId }
+        : {}),
+      ...(this.finalContent ? { finalContent: this.finalContent } : {}),
+      ...(this.errorMessage ? { errorMessage: this.errorMessage } : {}),
+      ...(this.terminalCompletion ? { terminalCompletion: this.terminalCompletion } : {}),
+      ...(this.currentTurnId ?? this.terminalTurnId
+        ? { turnId: this.currentTurnId ?? this.terminalTurnId }
+        : {}),
+      ...(this.currentTurnInstanceId ?? this.terminalTurnInstanceId
+        ? { turnInstanceId: this.currentTurnInstanceId ?? this.terminalTurnInstanceId }
+        : {}),
+      ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
+    };
+  }
+
+  /**
+   * Announce that an observed event will become a committed history entry, so subscribers can
+   * refresh the disk-backed transcript instead of receiving a duplicate live projection.
+   */
+  private advanceHistory(): void {
+    this.historySeq += 1;
+    this.broadcast({ type: "history_advanced", historySeq: this.historySeq });
+  }
+
   /** Add a server-owned user entry before the SDK persists it. */
   setPendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): string {
     const userMessage: ProjectedUserMessage = {
@@ -360,7 +466,6 @@ export class SessionEventBus {
       ...(attachments?.length ? { attachments: structuredClone(attachments) } : {}),
     };
     this.userMessages = [...this.userMessages, userMessage];
-    this.entryOrder = [...this.entryOrder, `user:${userMessage.id}`];
     this.broadcast({ type: "user_message", userMessage: structuredClone(userMessage) });
     return userMessage.id;
   }
@@ -386,7 +491,10 @@ export class SessionEventBus {
     this.broadcast({ type: "user_message_updated", userMessage: structuredClone(next) });
   }
 
-  /** Commit the oldest matching pending prompt in FIFO order. */
+  /**
+   * Commit the oldest matching pending prompt in FIFO order. The entry stays on the stream until
+   * the client sees its `sourceEventId` in disk history, so the prompt can never flicker out.
+   */
   commitPendingPrompt(expectedPrompt?: string, sourceEventId?: string, timestamp?: string): void {
     const index = this.findPendingPromptIndex(expectedPrompt, false);
     if (index < 0) return;
@@ -405,6 +513,7 @@ export class SessionEventBus {
       sourceEventId,
       timestamp,
     });
+    if (sourceEventId) this.advanceHistory();
   }
 
   /** Remove the newest matching pending prompt when delivery fails. */
@@ -414,7 +523,6 @@ export class SessionEventBus {
     const removed = this.userMessages[index];
     if (!removed) return;
     this.userMessages = this.userMessages.filter((_, entryIndex) => entryIndex !== index);
-    this.entryOrder = this.entryOrder.filter((key) => key !== `user:${removed.id}`);
     this.broadcast({ type: "user_message_discarded", id: removed.id });
   }
 
@@ -513,22 +621,19 @@ export class SessionEventBus {
       this.finalizePendingUserMessages();
     }
 
-    // Update snapshot state based on event type
+    // Update ephemeral run state. Anything that will land in events.jsonl is announced via
+    // `history_advanced` instead of being projected into a parallel transcript.
     switch (event.type) {
       case "delta":
-        this.accumulatedContent += event.content ?? "";
+        this.streamingContent += event.content ?? "";
         break;
       case "intent":
         this.intentText = event.intent ?? "";
         break;
       case "tool_start":
         {
-          const tool = buildActiveTool(event);
-          if (!this.currentTurnTools.some((candidate) => candidate.toolCallId === tool.toolCallId)) {
-            this.entryOrder = [...this.entryOrder, `tool:${tool.toolCallId}`];
-          }
-          this.activeTools = upsertActiveTool(this.activeTools, tool);
-          this.currentTurnTools = upsertCurrentTurnTool(this.currentTurnTools, tool);
+          const tool = buildLiveTool(event);
+          this.liveTools = upsertLiveTool(this.liveTools, tool);
           const pending = extractTerminalCompletionFromToolCall(event.name, event.args);
           if (pending) this.pendingTerminalCompletion = pending;
         }
@@ -537,7 +642,7 @@ export class SessionEventBus {
         // Update an existing active tool's metadata (e.g., when subagent.started upgrades a "task" tool)
         {
           const toolCallId = getToolCallId(event);
-          const patch: Partial<ActiveTool> = {
+          this.liveTools = patchLiveTools(this.liveTools, toolCallId, {
             name: event.name,
             turnId: getStreamTurnId(event),
             turnInstanceId: getStreamTurnInstanceId(event),
@@ -545,109 +650,87 @@ export class SessionEventBus {
             args: event.args,
             parentToolCallId: event.parentToolCallId as string | undefined,
             isSubAgent: event.isSubAgent as boolean | undefined,
-          };
-          this.activeTools = patchActiveTools(this.activeTools, toolCallId, patch);
-          this.currentTurnTools = patchCurrentTurnTools(this.currentTurnTools, toolCallId, patch);
+          });
         }
         break;
       case "tool_progress":
-        {
-          const toolCallId = getToolCallId(event);
-          const patch: Partial<ActiveTool> = {
-            name: event.name,
-            turnId: getStreamTurnId(event),
-            turnInstanceId: getStreamTurnInstanceId(event),
-            sourceEventId: typeof event.sourceEventId === "string" ? event.sourceEventId : undefined,
-            args: event.args,
-            progressText: event.message as string | undefined,
-            parentToolCallId: event.parentToolCallId as string | undefined,
-            isSubAgent: event.isSubAgent as boolean | undefined,
-          };
-          this.activeTools = patchActiveTools(this.activeTools, toolCallId, patch);
-          this.currentTurnTools = patchCurrentTurnTools(this.currentTurnTools, toolCallId, patch);
-        }
+        this.liveTools = patchLiveTools(this.liveTools, getToolCallId(event), {
+          name: event.name,
+          turnId: getStreamTurnId(event),
+          turnInstanceId: getStreamTurnInstanceId(event),
+          args: event.args,
+          progressText: event.message as string | undefined,
+          parentToolCallId: event.parentToolCallId as string | undefined,
+          isSubAgent: event.isSubAgent as boolean | undefined,
+        });
         break;
       case "tool_output":
-        {
-          const toolCallId = getToolCallId(event);
-          const patch: Partial<ActiveTool> = {
-            name: event.name,
-            turnId: getStreamTurnId(event),
-            turnInstanceId: getStreamTurnInstanceId(event),
-            sourceEventId: typeof event.sourceEventId === "string" ? event.sourceEventId : undefined,
-            args: event.args,
-            progressText: event.content as string | undefined,
-            parentToolCallId: event.parentToolCallId as string | undefined,
-            isSubAgent: event.isSubAgent as boolean | undefined,
-          };
-          this.activeTools = patchActiveTools(this.activeTools, toolCallId, patch);
-          this.currentTurnTools = patchCurrentTurnTools(this.currentTurnTools, toolCallId, patch);
-        }
+        this.liveTools = patchLiveTools(this.liveTools, getToolCallId(event), {
+          name: event.name,
+          turnId: getStreamTurnId(event),
+          turnInstanceId: getStreamTurnInstanceId(event),
+          args: event.args,
+          progressText: event.content as string | undefined,
+          parentToolCallId: event.parentToolCallId as string | undefined,
+          isSubAgent: event.isSubAgent as boolean | undefined,
+        });
         break;
       case "tool_done":
         {
           const toolCallId = getToolCallId(event);
-          const priorTool = this.currentTurnTools.find((tool) => tool.toolCallId === toolCallId)
-            ?? this.activeTools.find((tool) => tool.toolCallId === toolCallId);
-          const completedTool: CurrentTurnTool = {
-            toolCallId,
-            name: event.name ?? priorTool?.name ?? "unknown",
-            turnId: getStreamTurnId(event) ?? priorTool?.turnId,
-            turnInstanceId: getStreamTurnInstanceId(event) ?? priorTool?.turnInstanceId,
-            sourceEventId: typeof event.sourceEventId === "string"
-              ? event.sourceEventId
-              : priorTool?.sourceEventId,
-            args: event.args !== undefined ? event.args : priorTool?.args,
-            startedAt: priorTool?.startedAt,
-            progressText: (event.message as string | undefined)
-              ?? (event.content as string | undefined)
-              ?? priorTool?.progressText,
-            parentToolCallId: (event.parentToolCallId as string | undefined) ?? priorTool?.parentToolCallId,
-            isSubAgent: (event.isSubAgent as boolean | undefined) ?? priorTool?.isSubAgent,
-            completedAt: event.timestamp as string | undefined,
+          const patch: Partial<LiveTool> = {
+            name: event.name,
+            turnId: getStreamTurnId(event),
+            turnInstanceId: getStreamTurnInstanceId(event),
+            parentToolCallId: event.parentToolCallId as string | undefined,
+            isSubAgent: event.isSubAgent as boolean | undefined,
+            completedAt: (event.timestamp as string | undefined) ?? new Date().toISOString(),
             success: event.success as boolean | undefined,
             result: event.result,
           };
-          this.activeTools = this.activeTools.filter(
-            (t) => t.toolCallId !== toolCallId,
-          );
-          this.currentTurnTools = upsertCurrentTurnTool(this.currentTurnTools, completedTool);
+          this.liveTools = this.liveTools.some((tool) => tool.toolCallId === toolCallId)
+            ? patchLiveTools(this.liveTools, toolCallId, patch)
+            : upsertLiveTool(this.liveTools, { ...buildLiveTool(event), ...patch });
         }
         break;
       case "assistant_partial":
         {
-          const content = typeof event.content === "string" && event.content
-            ? event.content
-            : this.accumulatedContent;
+          const eventContent = typeof event.content === "string" ? event.content : "";
+          // The SDK only persists an assistant entry when the message carries content, so an
+          // empty message (a tool-only turn) must not stamp streamed text with its event id —
+          // that id would never appear on disk and the segment could never retire. Leave the text
+          // accumulating so the next real assistant message finalizes it.
+          if (!eventContent && this.streamingContent) break;
+          const content = eventContent || this.streamingContent;
           if (content) {
             const sourceEventId = typeof event.sourceEventId === "string"
               ? event.sourceEventId
               : undefined;
+            const bridgeNative = event.bridgeNative === true;
             const id = sourceEventId ?? `assistant-${randomUUID()}`;
-            const prior = this.assistantSegments[this.assistantSegments.length - 1];
+            const prior = this.liveAssistantSegments[this.liveAssistantSegments.length - 1];
             if (!prior || prior.id !== id) {
-              this.entryOrder = [...this.entryOrder, `assistant:${id}`];
-              this.assistantSegments = [
-                ...this.assistantSegments,
-                {
-                  id,
-                  content,
-                  ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
-                  ...(this.currentTurnInstanceId
-                    ? { turnInstanceId: this.currentTurnInstanceId }
-                    : {}),
-                  ...(sourceEventId ? { sourceEventId } : {}),
-                  ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
-                },
-              ];
+              const segment: LiveAssistantSegment = {
+                id,
+                content,
+                ...(sourceEventId ? { sourceEventId } : {}),
+                ...(bridgeNative ? { bridgeNative: true } : {}),
+                ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
+                ...(this.currentTurnInstanceId
+                  ? { turnInstanceId: this.currentTurnInstanceId }
+                  : {}),
+                ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
+              };
+              this.liveAssistantSegments = [...this.liveAssistantSegments, segment];
+              this.lastAssistantSegment = segment;
             }
           }
         }
-        this.accumulatedContent = "";
+        this.streamingContent = "";
         break;
       case "visual_published": {
         if (typeof event.artifactId !== "string") break;
-        const visual: PublishedVisual = {
+        const visual: LiveVisual = {
           artifactId: event.artifactId,
           ...(typeof event.kind === "string" ? { kind: event.kind } : {}),
           ...(typeof event.title === "string" ? { title: event.title } : {}),
@@ -661,119 +744,12 @@ export class SessionEventBus {
           ...(typeof event.altText === "string" ? { altText: event.altText } : {}),
           ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
           ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
-          ...(this.currentTurnInstanceId
-            ? { turnInstanceId: this.currentTurnInstanceId }
-            : {}),
+          ...(this.currentTurnInstanceId ? { turnInstanceId: this.currentTurnInstanceId } : {}),
         };
-        this.visuals = [
-          ...this.visuals.filter((candidate) => candidate.artifactId !== visual.artifactId),
+        this.liveVisuals = [
+          ...this.liveVisuals.filter((candidate) => candidate.artifactId !== visual.artifactId),
           visual,
         ];
-        if (!this.entryOrder.includes(`visual:${visual.artifactId}`)) {
-          this.entryOrder = [...this.entryOrder, `visual:${visual.artifactId}`];
-        }
-        break;
-      }
-      case "done": {
-        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
-          ?? this.pendingTerminalCompletion;
-        if (resolved && event.terminalCompletion !== resolved) {
-          event = { ...event, terminalCompletion: resolved };
-        }
-        this.terminalTurnId = getStreamTurnId(event);
-        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
-        this.terminalType = "done";
-        this.terminalTimestamp = event.timestamp as string | undefined;
-        this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
-        this.terminalAssistantEventId = typeof event.assistantSourceEventId === "string"
-          ? event.assistantSourceEventId
-          : undefined;
-        this.finalContent = event.content;
-        this.terminalCompletion = resolved;
-        this.pendingTerminalCompletion = undefined;
-        this._complete = true;
-        this.accumulatedContent = "";
-        this.intentText = "";
-        this.activeTools = [];
-        this.currentTurnId = undefined;
-        this.currentTurnInstanceId = undefined;
-        this.scheduleCleanup();
-        break;
-      }
-      case "aborted": {
-        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
-          ?? this.pendingTerminalCompletion;
-        if (resolved && event.terminalCompletion !== resolved) {
-          event = { ...event, terminalCompletion: resolved };
-        }
-        this.terminalTurnId = getStreamTurnId(event);
-        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
-        this.terminalType = "aborted";
-        this.terminalTimestamp = event.timestamp as string | undefined;
-        this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
-        this.terminalAssistantEventId = typeof event.assistantSourceEventId === "string"
-          ? event.assistantSourceEventId
-          : undefined;
-        this.finalContent = event.content;
-        this.terminalCompletion = resolved;
-        this.pendingTerminalCompletion = undefined;
-        this._complete = true;
-        this.accumulatedContent = "";
-        this.intentText = "";
-        this.activeTools = [];
-        this.currentTurnId = undefined;
-        this.currentTurnInstanceId = undefined;
-        this.scheduleCleanup();
-        break;
-      }
-      case "shutdown": {
-        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
-          ?? this.pendingTerminalCompletion;
-        if (resolved && event.terminalCompletion !== resolved) {
-          event = { ...event, terminalCompletion: resolved };
-        }
-        this.terminalTurnId = getStreamTurnId(event);
-        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
-        this.terminalType = "shutdown";
-        this.terminalTimestamp = event.timestamp as string | undefined;
-        this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
-        this.terminalAssistantEventId = typeof event.assistantSourceEventId === "string"
-          ? event.assistantSourceEventId
-          : undefined;
-        this.finalContent = event.content;
-        this.terminalCompletion = resolved;
-        this.pendingTerminalCompletion = undefined;
-        this._complete = true;
-        this.accumulatedContent = "";
-        this.intentText = "";
-        this.activeTools = [];
-        this.currentTurnId = undefined;
-        this.currentTurnInstanceId = undefined;
-        this.scheduleCleanup();
-        break;
-      }
-      case "error": {
-        const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
-          ?? this.pendingTerminalCompletion;
-        if (resolved && event.terminalCompletion !== resolved) {
-          event = { ...event, terminalCompletion: resolved };
-        }
-        this.terminalTurnId = getStreamTurnId(event);
-        this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
-        this.terminalType = "error";
-        this.terminalTimestamp = event.timestamp as string | undefined;
-        this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
-        this.terminalAssistantEventId = undefined;
-        this.errorMessage = event.message;
-        this.terminalCompletion = resolved;
-        this.pendingTerminalCompletion = undefined;
-        this._complete = true;
-        this.accumulatedContent = "";
-        this.intentText = "";
-        this.activeTools = [];
-        this.currentTurnId = undefined;
-        this.currentTurnInstanceId = undefined;
-        this.scheduleCleanup();
         break;
       }
       case "mcp_status":
@@ -784,14 +760,52 @@ export class SessionEventBus {
         break;
     }
 
-    if (isTerminalStreamEvent(event) && this.terminalType) {
-      this.finalAssistantEntry = createProjectedFinalAssistantEntry({
-        runId: this.runId,
-        terminalType: this.terminalType,
-        ...(this.terminalTurnId ? { turnId: this.terminalTurnId } : {}),
-        ...(this.terminalTurnInstanceId
-          ? { turnInstanceId: this.terminalTurnInstanceId }
-          : {}),
+    if (isTerminalStreamEvent(event)) {
+      const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
+        ?? this.pendingTerminalCompletion;
+      if (resolved && event.terminalCompletion !== resolved) {
+        event = { ...event, terminalCompletion: resolved };
+      }
+      const terminalType = event.type as "done" | "error" | "aborted" | "shutdown";
+      this.terminalTurnId = getStreamTurnId(event);
+      this.terminalTurnInstanceId = getStreamTurnInstanceId(event);
+      this.terminalType = terminalType;
+      this.terminalTimestamp = event.timestamp as string | undefined;
+      this.terminalEventId = typeof event.sourceEventId === "string" ? event.sourceEventId : undefined;
+      this.terminalAssistantEventId = terminalType === "error"
+        ? undefined
+        : typeof event.assistantSourceEventId === "string"
+          ? event.assistantSourceEventId
+          : undefined;
+      this.finalContent = terminalType === "error" ? undefined : event.content;
+      this.errorMessage = terminalType === "error" ? event.message : undefined;
+      this.terminalCompletion = resolved;
+      this.pendingTerminalCompletion = undefined;
+      this._complete = true;
+      this.streamingContent = "";
+      this.intentText = "";
+      // Tools still open at the terminal never got a result; mark them finished rather than
+      // dropping them, so they don't render as perpetually running before the next disk read.
+      this.liveTools = this.liveTools.map((tool) => tool.completedAt
+        ? tool
+        : {
+            ...tool,
+            completedAt: this.terminalTimestamp ?? new Date().toISOString(),
+            success: terminalType === "done",
+          });
+      if (resolved) {
+        this.liveCompletion = {
+          completion: resolved,
+          ...(this.terminalEventId ? { sourceEventId: this.terminalEventId } : {}),
+          ...(this.terminalTimestamp ? { timestamp: this.terminalTimestamp } : {}),
+          ...(this.terminalTurnId ? { turnId: this.terminalTurnId } : {}),
+          ...(this.terminalTurnInstanceId ? { turnInstanceId: this.terminalTurnInstanceId } : {}),
+        };
+      }
+      this.currentTurnId = undefined;
+      this.currentTurnInstanceId = undefined;
+      this.runNotice = createRunNotice({
+        terminalType,
         ...(this.terminalEventId ? { terminalSourceEventId: this.terminalEventId } : {}),
         ...(this.terminalAssistantEventId
           ? { assistantSourceEventId: this.terminalAssistantEventId }
@@ -801,12 +815,13 @@ export class SessionEventBus {
         ...(this.terminalTimestamp ? { timestamp: this.terminalTimestamp } : {}),
         ...(this.terminalCompletion ? { terminalCompletion: this.terminalCompletion } : {}),
       });
-      if (this.finalAssistantEntry) {
-        event = { ...event, finalAssistantEntry: { ...this.finalAssistantEntry } };
-      }
+      if (this.runNotice) event = { ...event, runNotice: { ...this.runNotice } };
+      if (this.liveCompletion) event = { ...event, liveCompletion: { ...this.liveCompletion } };
+      this.scheduleCleanup();
     }
 
     this.broadcast(event);
+    if (isCommittedHistoryEvent(event)) this.advanceHistory();
   }
 
   private broadcast(event: StreamEvent): void {
@@ -826,29 +841,22 @@ export class SessionEventBus {
     return {
       type: "snapshot",
       runId: this.runId,
-      accumulatedContent: this.accumulatedContent,
-      userMessages: this.userMessages.map((message) => structuredClone(message)),
-      assistantSegments: this.assistantSegments.map((segment) => ({ ...segment })),
-      activeTools: [...this.activeTools],
-      currentTurnTools: [...this.currentTurnTools],
-      visuals: this.visuals.map((visual) => ({ ...visual })),
-      entryOrder: [...this.entryOrder],
-      intentText: this.intentText,
       complete: this._complete,
-      terminalType: this.terminalType,
-      terminalTimestamp: this.terminalTimestamp,
-      finalContent: this.finalContent,
-      terminalCompletion: this.terminalCompletion,
-      errorMessage: this.errorMessage,
-      terminalEventId: this.terminalEventId,
-      terminalAssistantEventId: this.terminalAssistantEventId,
-      finalAssistantEntry: this.finalAssistantEntry
-        ? { ...this.finalAssistantEntry }
-        : undefined,
+      historySeq: this.historySeq,
+      streamingContent: this.streamingContent,
+      liveAssistantSegments: this.liveAssistantSegments.map((segment) => ({ ...segment })),
+      pendingUserMessages: this.userMessages.map((message) => structuredClone(message)),
+      liveTools: this.liveTools.map((tool) => ({ ...tool })),
+      liveVisuals: this.liveVisuals.map((visual) => ({ ...visual })),
+      ...(this.liveCompletion ? { liveCompletion: { ...this.liveCompletion } } : {}),
+      intentText: this.intentText,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
       pendingUserInputs: pendingInteractions.pendingUserInputs.map((request) => structuredClone(request)),
       pendingElicitations: pendingInteractions.pendingElicitations.map((request) => structuredClone(request)),
+      ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
+      ...(this.terminalType ? { terminalType: this.terminalType } : {}),
+      ...(this.terminalTimestamp ? { terminalTimestamp: this.terminalTimestamp } : {}),
       ...(turnId ? { turnId } : {}),
       ...(turnInstanceId ? { turnInstanceId } : {}),
     };
@@ -895,27 +903,27 @@ export class SessionEventBus {
     return this._complete;
   }
 
-  /** Reset snapshot state for a new turn (defense-in-depth) */
+  /** Reset ephemeral state for a new turn (defense-in-depth) */
   reset(): void {
     this.runId = randomUUID();
     this.resetLiveTurnState();
     this.userMessages = [];
-    this.assistantSegments = [];
-    this.visuals = [];
-    this.entryOrder = [];
+    this.liveAssistantSegments = [];
+    this.lastAssistantSegment = undefined;
   }
 
   private resetLiveTurnState(): void {
     this._complete = false;
-    this.accumulatedContent = "";
-    this.activeTools = [];
-    this.currentTurnTools = [];
+    this.streamingContent = "";
+    this.liveTools = [];
+    this.liveVisuals = [];
+    this.liveCompletion = undefined;
     this.intentText = "";
     this.terminalType = undefined;
     this.terminalTimestamp = undefined;
     this.terminalEventId = undefined;
     this.terminalAssistantEventId = undefined;
-    this.finalAssistantEntry = undefined;
+    this.runNotice = undefined;
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
     this.pendingTerminalCompletion = undefined;
@@ -928,24 +936,12 @@ export class SessionEventBus {
   }
 
   private startTurn(): void {
-    this._complete = false;
-    this.accumulatedContent = "";
-    this.activeTools = [];
-    this.intentText = "";
-    this.terminalType = undefined;
-    this.terminalTimestamp = undefined;
-    this.terminalEventId = undefined;
-    this.terminalAssistantEventId = undefined;
-    this.finalAssistantEntry = undefined;
-    this.finalContent = undefined;
-    this.terminalCompletion = undefined;
-    this.pendingTerminalCompletion = undefined;
-    this.errorMessage = undefined;
-    this.currentTurnId = undefined;
-    this.terminalTurnId = undefined;
-    this.currentTurnInstanceId = undefined;
-    this.terminalTurnInstanceId = undefined;
-    this.cancelCleanup();
+    // A new turn proves the previous turn's assistant messages reached disk, so disk-backed
+    // segments can be dropped. Bridge-native segments have no disk copy and must survive.
+    this.liveAssistantSegments = this.liveAssistantSegments.filter(
+      (segment) => segment.bridgeNative === true,
+    );
+    this.resetLiveTurnState();
   }
 
   private findPendingPromptIndex(expectedPrompt: string | undefined, reverse: boolean): number {

@@ -312,11 +312,25 @@ export function getVisibleEventTimestamp(event: any, sessionId?: string): string
   return event?.data?.timestamp ?? event?.timestamp;
 }
 
-export function createVisibleActivityTracker(sessionId?: string) {
-  const openVisibleToolCallIds = new Set<string>();
-  let lastVisibleActivityAt: string | undefined;
-  let quietTurn = false;
-  let pendingTerminalCompletionActivity = false;
+/**
+ * Serializable fold state for {@link createVisibleActivityTracker}. Exposed so incremental
+ * event-log scans can resume from a previously scanned byte offset instead of rescanning.
+ */
+export interface VisibleActivityTrackerState {
+  openVisibleToolCallIds: string[];
+  lastVisibleActivityAt?: string;
+  quietTurn: boolean;
+  pendingTerminalCompletionActivity: boolean;
+}
+
+export function createVisibleActivityTracker(
+  sessionId?: string,
+  initialState?: VisibleActivityTrackerState,
+) {
+  const openVisibleToolCallIds = new Set<string>(initialState?.openVisibleToolCallIds ?? []);
+  let lastVisibleActivityAt: string | undefined = initialState?.lastVisibleActivityAt;
+  let quietTurn = initialState?.quietTurn ?? false;
+  let pendingTerminalCompletionActivity = initialState?.pendingTerminalCompletionActivity ?? false;
 
   function observe(event: any): string | undefined {
     if (event.type === "user.message") {
@@ -374,6 +388,12 @@ export function createVisibleActivityTracker(sessionId?: string) {
   return {
     observe,
     getLastVisibleActivityAt: () => lastVisibleActivityAt,
+    getState: (): VisibleActivityTrackerState => ({
+      openVisibleToolCallIds: [...openVisibleToolCallIds],
+      ...(lastVisibleActivityAt ? { lastVisibleActivityAt } : {}),
+      quietTurn,
+      pendingTerminalCompletionActivity,
+    }),
   };
 }
 

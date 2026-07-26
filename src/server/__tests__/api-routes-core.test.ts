@@ -85,7 +85,7 @@ describe("Shutdown route", () => {
 });
 
 describe("Session stream route", () => {
-  it("GET /api/sessions/:id/stream replays completed runs as authoritative snapshots", async () => {
+  it("GET /api/sessions/:id/stream replays completed runs as ephemeral snapshots", async () => {
     const bus = ctx.eventBusRegistry.getOrCreateBus("session-123");
     bus.emit({ type: "done", content: "Run finished" });
 
@@ -95,12 +95,17 @@ describe("Session stream route", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('"type":"snapshot"');
     expect(res.text).toContain('"terminalType":"done"');
-    expect(res.text).toContain('"finalContent":"Run finished"');
-    expect(res.text).toContain('"finalAssistantEntry"');
+    // A locally-answered run has no SDK terminal event, so its output survives as a run notice.
+    expect(res.text).toContain('"runNotice"');
+    expect(res.text).toContain('"kind":"command"');
     expect(res.text).toContain('"content":"Run finished"');
+    // Nothing that events.jsonl already owns is re-projected onto the stream.
+    expect(res.text).not.toContain('"finalAssistantEntry"');
+    expect(res.text).not.toContain('"currentTurnTools"');
+    expect(res.text).not.toContain('"entryOrder"');
   });
 
-  it("GET /api/sessions/:id/stream preserves terminal completion metadata on replay", async () => {
+  it("GET /api/sessions/:id/stream leaves terminal completion cards to disk history", async () => {
     const bus = ctx.eventBusRegistry.getOrCreateBus("session-123");
     bus.emit({
       type: "done",
@@ -118,8 +123,9 @@ describe("Session stream route", () => {
 
     expect(res.status).toBe(200);
     expect(res.text).toContain('"type":"snapshot"');
-    expect(res.text).toContain('"terminalCompletion"');
-    expect(res.text).toContain('"sourceEventType":"session.task_complete"');
+    // The completion card is replayed from events.jsonl, so the stream carries no copy of it.
+    expect(res.text).not.toContain('"terminalCompletion"');
+    expect(res.text).not.toContain('"runNotice"');
   });
 
   it("GET /api/sessions/:id/stream forwards completed snapshots without transport normalization", async () => {
@@ -200,14 +206,13 @@ describe("Session stream route", () => {
     expect(res.text).toContain('"content":"Wrapped up before abort"');
   });
 
-  it("GET /api/sessions/:id/stream rebuilds the authoritative final entry from a persisted overlay", async () => {
+  it("GET /api/sessions/:id/stream replays a persisted run notice without rebuilding transcript content", async () => {
     ctx.sessionMetaStore.setTerminalOverlay("session-123", {
       type: "shutdown",
       runId: "run-1",
       turnId: "provider-turn-1",
-      assistantSourceEventId: "assistant-event-1",
-      content: "Partial answer",
       timestamp: "2026-07-23T16:00:00.000Z",
+      notice: { kind: "interrupted", timestamp: "2026-07-23T16:00:00.000Z" },
     });
 
     const res = await request(app)
@@ -215,10 +220,10 @@ describe("Session stream route", () => {
 
     expect(res.status).toBe(200);
     expect(res.text).toContain('"type":"snapshot"');
-    expect(res.text).toContain('"finalAssistantEntry"');
-    expect(res.text).toContain('"id":"assistant-event-1"');
-    expect(res.text).toContain('"sourceEventId":"assistant-event-1"');
-    expect(res.text).toContain('"content":"Partial answer\\n\\n*(interrupted)*"');
+    expect(res.text).toContain('"terminalType":"shutdown"');
+    expect(res.text).toContain('"kind":"interrupted"');
+    // The assistant text itself is replayed from disk, never rebuilt here.
+    expect(res.text).not.toContain('"finalAssistantEntry"');
   });
 
   it("GET /api/sessions/:id/stream includes pending user input requests in live snapshots", async () => {

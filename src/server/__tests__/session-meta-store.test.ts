@@ -116,16 +116,16 @@ describe("session-meta-store", () => {
       type: "aborted",
       runId: "run-1",
       turnId: "turn-1",
-      content: "Partial answer",
       timestamp: "2026-07-21T17:00:00.000Z",
+      notice: { kind: "stopped", timestamp: "2026-07-21T17:00:00.000Z" },
     });
 
     expect(store.getTerminalOverlay("session-1")).toEqual({
       type: "aborted",
       runId: "run-1",
       turnId: "turn-1",
-      content: "Partial answer",
       timestamp: "2026-07-21T17:00:00.000Z",
+      notice: { kind: "stopped", timestamp: "2026-07-21T17:00:00.000Z" },
     });
     expect(store.getMeta("session-1")?.terminalOverlay?.type).toBe("aborted");
 

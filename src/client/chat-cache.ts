@@ -4,8 +4,12 @@ import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
 const recentSessionIds: string[] = [];
-const CLIENT_GENERATED_ID_PREFIXES = ["err-", "draft-", "local-"] as const;
 
+/**
+ * A window of committed transcript entries read straight from `events.jsonl`. Cached windows are
+ * always disk-derived, so they can be rendered immediately on revisit and simply replaced by the
+ * next disk read. Optimistic and live content is never stored here.
+ */
 export interface ChatHistorySnapshot {
   sessionId: string;
   entries: ChatEntry[];
@@ -13,8 +17,6 @@ export interface ChatHistorySnapshot {
   total: number;
   hasMore: boolean;
   fetchedAt: number;
-  isCanonical: boolean;
-  lastVisibleActivityAt?: string;
 }
 
 function cloneAttachment(attachment: Attachment): Attachment {
@@ -99,79 +101,40 @@ export function getCachedChatSnapshot(queryClient: QueryClient, sessionId: strin
 }
 
 export function setCachedChatSnapshot(queryClient: QueryClient, snapshot: ChatHistorySnapshot): void {
-  if (!snapshot.isCanonical) return;
   queryClient.setQueryData(queryKeys.chatMessages(snapshot.sessionId), cloneSnapshot(snapshot));
   touchSession(snapshot.sessionId);
   pruneSessions(queryClient);
 }
 
-export function hasOptimisticTail(currentFirstItemIndex: number, entryCount: number, total: number): boolean {
-  return currentFirstItemIndex + entryCount > total;
-}
-
-export function isClientGeneratedEntry(entry: ChatEntry): boolean {
-  const { id } = entry;
-  return typeof id === "string" && CLIENT_GENERATED_ID_PREFIXES.some((prefix) => id.startsWith(prefix));
-}
-
-export function hasClientGeneratedEntries(entries: ChatEntry[]): boolean {
-  return entries.some((entry) => isClientGeneratedEntry(entry));
-}
-
-function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
-  if (!isClientGeneratedEntry(entry)) return false;
-  if (entry.type === "tool") return false;
-  if (entry.type === "visual") return false;
-  if (entry.type === "completion") return false;
-  if (entry.type === "skill") return false;
-  if (entry.role === "user") return entry.delivery !== undefined;
-  if (typeof entry.content !== "string") return false;
-  return entry.content.startsWith("⚠️ Error:")
-    || entry.content.includes("*(stopped)*")
-    || entry.content.includes("*(interrupted)*");
-}
-
-export function normalizeCommittedClientEntries(
-  entries: ChatEntry[],
-  firstItemIndex: number,
-  total: number,
-): ChatEntry[] {
-  return entries.map((entry, index) => {
-    if (firstItemIndex + index >= total) return entry;
-    if (!isClientGeneratedEntry(entry) || isUnsafeCommittedClientEntry(entry)) return entry;
-    if ("role" in entry) return { ...entry, id: undefined, delivery: undefined };
-    return { ...entry, id: undefined };
-  });
-}
-
-export function mergeTailMessages(
+/**
+ * Replace the loaded window with a freshly read disk window.
+ *
+ * Committed entries only ever come from one atomic `transformEventsToMessages` pass, so a refresh
+ * replaces the overlapping range wholesale. When the reader returns a window that starts after the
+ * currently loaded window, the older prefix is kept so pagination is preserved; when it starts at
+ * or before the loaded window, the fetched window fully supersedes it.
+ */
+export function replaceHistoryWindow(
   previousEntries: ChatEntry[],
-  currentFirstItemIndex: number,
-  total: number,
+  previousFirstItemIndex: number,
   nextWindow: ChatEntry[],
-): { entries: ChatEntry[]; firstItemIndex: number; total: number; hasOptimisticTail: boolean; hasClientGeneratedEntries: boolean } {
-  const latestWindowStart = Math.max(0, total - nextWindow.length);
-  const currentLoadedEnd = currentFirstItemIndex + previousEntries.length;
-  const preserveCount = latestWindowStart <= currentLoadedEnd
-    ? Math.max(0, Math.min(previousEntries.length, latestWindowStart - currentFirstItemIndex))
-    : 0;
-  const optimisticTailCount = hasOptimisticTail(currentFirstItemIndex, previousEntries.length, total)
-    ? currentLoadedEnd - total
-    : 0;
-  const optimisticTail = optimisticTailCount > 0
-    ? previousEntries.slice(previousEntries.length - optimisticTailCount)
-    : [];
-  const firstItemIndex = preserveCount > 0 ? currentFirstItemIndex : latestWindowStart;
-  const entries = preserveCount > 0
-    ? [...previousEntries.slice(0, preserveCount), ...nextWindow, ...optimisticTail]
-    : [...nextWindow, ...optimisticTail];
-  const normalizedEntries = normalizeCommittedClientEntries(entries, firstItemIndex, total);
-
+  total: number,
+): { entries: ChatEntry[]; firstItemIndex: number; total: number; hasGap: boolean } {
+  const nextWindowStart = Math.max(0, total - nextWindow.length);
+  if (nextWindowStart <= previousFirstItemIndex) {
+    return {
+      entries: nextWindow,
+      firstItemIndex: nextWindowStart,
+      total: Math.max(total, nextWindowStart + nextWindow.length),
+      hasGap: false,
+    };
+  }
+  const prefixLength = Math.min(previousEntries.length, nextWindowStart - previousFirstItemIndex);
+  const entries = [...previousEntries.slice(0, prefixLength), ...nextWindow];
   return {
-    firstItemIndex,
-    entries: normalizedEntries,
-    total: Math.max(total, firstItemIndex + normalizedEntries.length),
-    hasOptimisticTail: optimisticTailCount > 0,
-    hasClientGeneratedEntries: hasClientGeneratedEntries(normalizedEntries),
+    entries,
+    firstItemIndex: previousFirstItemIndex,
+    total: Math.max(total, previousFirstItemIndex + entries.length),
+    hasGap: prefixLength < nextWindowStart - previousFirstItemIndex,
   };
 }

@@ -220,7 +220,7 @@ describe("SessionManager run state", () => {
       mode: "immediate",
     });
     const bus = eventBusRegistry.getBus("session-1");
-    expect(bus?.getSnapshot().userMessages).toEqual(expect.arrayContaining([
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual(expect.arrayContaining([
       expect.objectContaining({ content: "please adjust", pending: true }),
     ]));
 
@@ -230,7 +230,7 @@ describe("SessionManager run state", () => {
       data: { content: "hello" },
       timestamp: "2026-04-24T12:00:00.000Z",
     });
-    expect(bus?.getSnapshot().userMessages).toEqual(expect.arrayContaining([
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         content: "hello",
         pending: false,
@@ -245,7 +245,7 @@ describe("SessionManager run state", () => {
       data: { content: "please adjust" },
       timestamp: "2026-04-24T12:00:01.000Z",
     });
-    expect(bus?.getSnapshot().userMessages).toEqual(expect.arrayContaining([
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         content: "please adjust",
         pending: false,
@@ -550,7 +550,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       complete: true,
       terminalType: "done",
       finalContent: "Parent continued successfully.",
@@ -593,7 +593,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       complete: true,
       terminalType: "error",
       errorMessage: "Root request failed",
@@ -749,7 +749,7 @@ describe("SessionManager run state", () => {
       timestamp: "2026-04-24T12:00:00.000Z",
     });
     const bus = eventBusRegistry.getBus("session-1");
-    expect(bus?.getSnapshot().userMessages).toEqual([
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual([
       expect.objectContaining({
         content: "Autopilot objective: fix tests",
         pending: false,
@@ -779,7 +779,7 @@ describe("SessionManager run state", () => {
 
     expect(session.invokeSlashCommand).toHaveBeenCalledWith({ name: "context", input: "" });
     expect(session.send).not.toHaveBeenCalled();
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().finalContent).toBe("Command output");
+    expect(eventBusRegistry.getBus("session-1")?.getTerminalState().finalContent).toBe("Command output");
     expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
@@ -923,7 +923,7 @@ describe("SessionManager run state", () => {
     });
 
     await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("ended before steering");
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().userMessages.some((message) => message.pending))
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().pendingUserMessages.some((message) => message.pending))
       .toBe(false);
   });
 
@@ -942,7 +942,7 @@ describe("SessionManager run state", () => {
     session.send.mockRejectedValueOnce(new Error("steer failed"));
     await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("steer failed");
 
-    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().userMessages).toEqual([
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().pendingUserMessages).toEqual([
       expect.objectContaining({ content: "hello" }),
     ]);
 
@@ -2105,9 +2105,11 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
+    // Live segments carry the exact source-event id they will be committed under, so the client
+    // can hand each one off to disk history by identity instead of merging transcripts.
     expect(bus.getSnapshot()).toMatchObject({
-      accumulatedContent: "",
-      assistantSegments: [
+      streamingContent: "",
+      liveAssistantSegments: [
         {
           id: "assistant-event-0",
           sourceEventId: "assistant-event-0",
@@ -2124,6 +2126,8 @@ describe("SessionManager run state", () => {
         },
       ],
     });
+    expect(received.filter((event) => event.type === "history_advanced").length)
+      .toBeGreaterThanOrEqual(2);
 
     getHandler()?.({
       id: "terminal-event-1",
@@ -2133,7 +2137,7 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       complete: true,
       terminalEventId: "terminal-event-1",
       terminalAssistantEventId: "assistant-event-1",
@@ -2323,7 +2327,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       complete: true,
       terminalType: "done",
       finalContent: "final",
@@ -2379,7 +2383,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "done",
       finalContent: "finishing tool output",
     });
@@ -2436,15 +2440,13 @@ describe("SessionManager run state", () => {
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
     expect(resumeSession).toHaveBeenCalledTimes(1);
-    expect(eventBusRegistry.getBus(sessionId)?.getSnapshot()).toMatchObject({
+    expect(eventBusRegistry.getBus(sessionId)?.getTerminalState()).toMatchObject({
       terminalEventId: "terminal-event-persisted-recovery",
       terminalAssistantEventId: "assistant-event-persisted-recovery",
-      finalAssistantEntry: {
-        id: "assistant-event-persisted-recovery",
-        sourceEventId: "assistant-event-persisted-recovery",
-        content: "done from turn_end",
-      },
+      finalContent: "done from turn_end",
     });
+    // The recovered assistant message is already on disk, so no notice duplicates it.
+    expect(eventBusRegistry.getBus(sessionId)?.getSnapshot().runNotice).toBeUndefined();
     expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
       completionSource: "persisted_assistant_turn_end_recovery",
       completionStatus: "done",
@@ -2569,7 +2571,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "done",
       finalContent: "finished",
     });
@@ -2640,7 +2642,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "done",
       finalContent: "Parent recovered.",
     });
@@ -2690,7 +2692,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "error",
       errorMessage: "Root request failed",
       terminalEventId: "persisted-root-error",
@@ -2846,7 +2848,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "done",
       finalContent: "waiting for the reviewer",
     });
@@ -2927,7 +2929,7 @@ describe("SessionManager run state", () => {
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
       expect(resumeSession).toHaveBeenCalledTimes(1);
-      expect(bus.getSnapshot()).toMatchObject({
+      expect(bus.getTerminalState()).toMatchObject({
         terminalType: "done",
         finalContent: "done from turn_end",
       });
@@ -2965,7 +2967,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "shutdown",
       finalContent: "partial response",
     });
@@ -2993,7 +2995,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "error",
       errorMessage: "runtime failed",
     });
@@ -3036,15 +3038,14 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
-    expect(bus.getSnapshot()).toMatchObject({
+    expect(bus.getTerminalState()).toMatchObject({
       terminalType: "aborted",
       terminalAssistantEventId: "assistant-event-1",
       finalContent: "partial response",
     });
     expect(sessionMetaStore.getTerminalOverlay("session-1")).toMatchObject({
       type: "aborted",
-      assistantSourceEventId: "assistant-event-1",
-      content: "partial response",
+      notice: { kind: "stopped" },
     });
   });
 
@@ -3288,7 +3289,7 @@ describe("SessionManager run state", () => {
       await flushMicrotasks();
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(bus.getSnapshot()).toMatchObject({
+      expect(bus.getTerminalState()).toMatchObject({
         terminalType: "shutdown",
         finalContent: "done",
       });
