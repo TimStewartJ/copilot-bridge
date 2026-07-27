@@ -1,5 +1,5 @@
 import type { AppSettings, ThemePreference } from "../../api";
-import { FAVICON_OPTIONS, DEFAULT_FAVICON, type FaviconOption } from "../../faviconOptions";
+import { FAVICON_OPTIONS, DEFAULT_FAVICON, faviconAssetUrl, type FaviconOption } from "../../faviconOptions";
 import { useTheme } from "../../useTheme";
 import ThemePicker from "../ThemePicker";
 import { SettingsSection } from "./SettingsSection";
@@ -76,7 +76,7 @@ function FaviconTile({
   onSelect: (key: string) => void;
   effectiveTheme: "light" | "dark";
 }) {
-  const src = effectiveTheme === "light" ? option.lightPath : option.path;
+  const src = faviconAssetUrl(effectiveTheme === "light" ? option.lightPath : option.path);
   return (
     <button
       onClick={() => onSelect(option.key)}
