@@ -37,8 +37,8 @@ async function handlePush(event) {
   const options = {
     body: typeof payload.body === "string" ? payload.body : undefined,
     tag: typeof payload.tag === "string" ? payload.tag : undefined,
-    icon: payload.icon || "./favicon.svg",
-    badge: payload.badge || "./favicon.svg",
+    icon: payload.icon || "./favicons/v2/app-icon.svg",
+    badge: payload.badge || "./favicons/v2/app-icon.svg",
     data: {
       ...(payload.data && typeof payload.data === "object" ? payload.data : {}),
       url: payload.url || "./",
