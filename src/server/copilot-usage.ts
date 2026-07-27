@@ -158,7 +158,7 @@ interface AssistantUsageAccumulator {
 const DEFAULT_SCAN_CONCURRENCY = 8;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
-export const COPILOT_USAGE_PARSER_VERSION = 1;
+export const COPILOT_USAGE_PARSER_VERSION = 2;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -411,6 +411,7 @@ export async function scanCopilotUsageSession(
   }
 
   const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const previousCumulativeTotals = new Map<string, CopilotUsageTotals>();
   const includedShutdownAts: string[] = [];
   for (const usableShutdown of usableShutdowns) {
     if (usableShutdown.shutdownAt) {
@@ -424,7 +425,9 @@ export async function scanCopilotUsageSession(
       if (existing.sessions === 0) {
         existing.sessions = 1;
       }
-      addTotals(existing, extractTotals(metrics));
+      const cumulative = extractTotals(metrics);
+      addTotals(existing, diffCumulativeTotals(previousCumulativeTotals.get(key), cumulative));
+      previousCumulativeTotals.set(key, cumulative);
       modelTotals.set(key, existing);
     }
   }
@@ -773,6 +776,36 @@ function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void 
   target.cacheWriteTokens += delta.cacheWriteTokens;
   target.reasoningTokens += delta.reasoningTokens;
   target.totalTokens += delta.totalTokens;
+}
+
+// Copilot writes a session.shutdown snapshot every time a session suspends, and each
+// snapshot repeats the running totals for the whole session lifetime. Summing the raw
+// snapshots multiplies usage for every resumed session, so only forward progress counts.
+function diffCumulativeTotals(
+  previous: CopilotUsageTotals | undefined,
+  current: CopilotUsageTotals,
+): CopilotUsageTotals {
+  if (!previous) return current;
+  const delta = {
+    requests: diffCumulativeMetric(previous.requests, current.requests),
+    inputTokens: diffCumulativeMetric(previous.inputTokens, current.inputTokens),
+    outputTokens: diffCumulativeMetric(previous.outputTokens, current.outputTokens),
+    cacheReadTokens: diffCumulativeMetric(previous.cacheReadTokens, current.cacheReadTokens),
+    cacheWriteTokens: diffCumulativeMetric(previous.cacheWriteTokens, current.cacheWriteTokens),
+    reasoningTokens: diffCumulativeMetric(previous.reasoningTokens, current.reasoningTokens),
+    totalTokens: 0,
+  };
+  delta.totalTokens = delta.inputTokens
+    + delta.outputTokens
+    + delta.cacheReadTokens
+    + delta.cacheWriteTokens
+    + delta.reasoningTokens;
+  return delta;
+}
+
+// A decrease means the counter restarted, so the snapshot itself is the new progress.
+function diffCumulativeMetric(previous: number, current: number): number {
+  return current >= previous ? current - previous : current;
 }
 
 function updateCoverageWindow(
