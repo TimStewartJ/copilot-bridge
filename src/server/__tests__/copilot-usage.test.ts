@@ -806,7 +806,7 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.sessions[0].shutdownAt).toBe("2026-02-03T09:02:00.000Z");
   });
 
-  it("accumulates usable shutdowns and ignores empty later shutdowns", async () => {
+  it("counts only forward progress and ignores empty later shutdowns", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
       {
@@ -832,8 +832,8 @@ describe("readCopilotUsageSummary", () => {
         data: {
           modelMetrics: {
             "gpt-4o": {
-              requests: { count: 1 },
-              usage: { outputTokens: 5 },
+              requests: { count: 11 },
+              usage: { inputTokens: 140, outputTokens: 55 },
             },
             "o3": {
               usage: { reasoningTokens: 4 },
@@ -847,19 +847,115 @@ describe("readCopilotUsageSummary", () => {
 
     expect(summary.totals).toMatchObject({
       requests: 11,
-      inputTokens: 100,
+      inputTokens: 140,
       outputTokens: 55,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 4,
-      totalTokens: 159,
+      totalTokens: 199,
     });
     expect(summary.coverage.earliestIncludedAt).toBe("2026-03-01T08:00:00.000Z");
     expect(summary.coverage.latestIncludedAt).toBe("2026-03-01T09:00:00.000Z");
     expect(summary.models.map((row) => row.model)).toEqual(["gpt-4o", "o3"]);
   });
 
-  it("accumulates every usable shutdown summary in a non-active session file", async () => {
+  it("does not double count a resumed session that rewrites cumulative shutdown snapshots", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-03-04T08:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 100 },
+              usage: { inputTokens: 1_000, outputTokens: 200, cacheReadTokens: 500 },
+            },
+          },
+        },
+      },
+      { type: "session.resume", timestamp: "2026-03-04T09:00:00.000Z", data: {} },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-03-04T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 250 },
+              usage: { inputTokens: 3_000, outputTokens: 450, cacheReadTokens: 1_400 },
+            },
+          },
+        },
+      },
+      { type: "session.resume", timestamp: "2026-03-04T11:00:00.000Z", data: {} },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-03-04T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 320 },
+              usage: { inputTokens: 4_100, outputTokens: 600, cacheReadTokens: 1_900 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals).toMatchObject({
+      requests: 320,
+      inputTokens: 4_100,
+      outputTokens: 600,
+      cacheReadTokens: 1_900,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 6_600,
+    });
+    expect(summary.models).toMatchObject([{ model: "gpt-4o", sessions: 1, requests: 320 }]);
+  });
+
+  it("treats a decreasing shutdown snapshot as a restarted counter", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-03-04T08:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 40 },
+              usage: { inputTokens: 900, outputTokens: 120 },
+            },
+          },
+        },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-03-04T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 7 },
+              usage: { inputTokens: 150, outputTokens: 30 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals).toMatchObject({
+      requests: 47,
+      inputTokens: 1_050,
+      outputTokens: 150,
+      totalTokens: 1_200,
+    });
+  });
+
+  it("accumulates forward progress per model in a non-active session file", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
       {
@@ -885,8 +981,8 @@ describe("readCopilotUsageSummary", () => {
         data: {
           modelMetrics: {
             "gpt-4o": {
-              requests: { count: 1 },
-              usage: { outputTokens: 4 },
+              requests: { count: 3 },
+              usage: { inputTokens: 10, outputTokens: 7 },
             },
             "o3": {
               requests: { count: 1 },
