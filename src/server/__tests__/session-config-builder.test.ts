@@ -167,96 +167,39 @@ describe("session-config-builder", () => {
     expect(cfg.reasoningEffort).toBe("high");
   });
 
-  it("does not apply a global reasoning effort unsupported by the scheduled model", () => {
-    const settingsStore = {
-      getSettings: () => ({
-        model: "global-model",
-        reasoningEffort: "high",
-      }),
-      updateSettings: vi.fn(),
-      getMcpServers: () => ({}),
-    } as unknown as SettingsStore;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ settingsStore }),
-      options: {
-        scheduleContext: {
-          name: "Daily review",
-          type: "cron",
-          runCount: 2,
-          model: "schedule-model",
+  it("does not apply a global reasoning effort unsupported by the active model (scheduled or launch)", () => {
+    for (const { label, options } of [
+      {
+        label: "scheduled model",
+        options: {
+          scheduleContext: { name: "Daily review", type: "cron" as const, runCount: 2, model: "schedule-model" },
+          modelMetadata: [{ id: "schedule-model", supportedReasoningEfforts: [] }],
         },
-        modelMetadata: [{
-          id: "schedule-model",
-          supportedReasoningEfforts: [],
-        }],
       },
-      callbacks: createCallbacks(),
-    });
+      {
+        label: "launch model",
+        options: {
+          modelOverride: "launch-model",
+          modelMetadata: [{ id: "launch-model", supportedReasoningEfforts: [] }],
+        },
+      },
+    ]) {
+      const settingsStore = {
+        getSettings: () => ({ model: "global-model", reasoningEffort: "high" }),
+        updateSettings: vi.fn(),
+        getMcpServers: () => ({}),
+      } as unknown as SettingsStore;
 
-    expect(cfg.model).toBe("schedule-model");
-    expect(cfg.reasoningEffort).toBeUndefined();
+      const cfg = buildSessionConfig({
+        deps: createDeps({ settingsStore }),
+        options,
+        callbacks: createCallbacks(),
+      });
+
+      expect(cfg.reasoningEffort, label).toBeUndefined();
+    }
   });
-
   it("lets an explicit launch model override schedule and global models", () => {
-    const settingsStore = {
-      getSettings: () => ({
-        model: "global-model",
-        reasoningEffort: "high",
-      }),
-      updateSettings: vi.fn(),
-      getMcpServers: () => ({}),
-    } as unknown as SettingsStore;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ settingsStore }),
-      options: {
-        modelOverride: "launch-model",
-        scheduleContext: {
-          name: "Daily review",
-          type: "cron",
-          runCount: 2,
-          model: "schedule-model",
-        },
-        modelMetadata: [{
-          id: "launch-model",
-          supportedReasoningEfforts: ["high"],
-        }],
-      },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.model).toBe("launch-model");
-    expect(cfg.reasoningEffort).toBe("high");
-  });
-
-  it("does not apply a global reasoning effort unsupported by a launch model", () => {
-    const settingsStore = {
-      getSettings: () => ({
-        model: "global-model",
-        reasoningEffort: "high",
-      }),
-      updateSettings: vi.fn(),
-      getMcpServers: () => ({}),
-    } as unknown as SettingsStore;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ settingsStore }),
-      options: {
-        modelOverride: "launch-model",
-        modelMetadata: [{
-          id: "launch-model",
-          supportedReasoningEfforts: [],
-        }],
-      },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.model).toBe("launch-model");
-    expect(cfg.reasoningEffort).toBeUndefined();
-  });
-
-  it("applies explicit launch effort and context over global settings", () => {
     const settingsStore = {
       getSettings: () => ({
         model: "gpt-5.5",
@@ -571,78 +514,78 @@ describe("session-config-builder", () => {
     expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
-  it("preserves GitHub Copilot web search MCP when task tags rebuild MCP selection", () => {
-    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
-    const taskServer = mcpServerStore.createMcpServer({
-      name: "Task MCP",
-      config: { command: "task-mcp", args: ["serve"] },
-    });
+  it("preserves GitHub Copilot web search and Bridge-owned MCP servers when task tags rebuild MCP selection", () => {
+    // GitHub Copilot web search MCP is preserved when a copilot token is configured
+    {
+      const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+      const taskServer = mcpServerStore.createMcpServer({
+        name: "Task MCP",
+        config: { command: "task-mcp", args: ["serve"] },
+      });
+      const tag = tagStore.createTag("Task tools");
+      tagStore.addTagMcpServerRef(tag.id, taskServer.id);
+      tagStore.setEntityTags("task", "task-1", [tag.id]);
 
-    const tag = tagStore.createTag("Task tools");
-    tagStore.addTagMcpServerRef(tag.id, taskServer.id);
-    tagStore.setEntityTags("task", "task-1", [tag.id]);
+      const cfg = buildSessionConfig({
+        deps: createDeps({
+          clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "copilot-token" },
+          mcpServerStore,
+          tagStore,
+        }),
+        options: { task: createTask() },
+        callbacks: createCallbacks(),
+      });
 
-    const cfg = buildSessionConfig({
-      deps: createDeps({
-        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "copilot-token" },
-        mcpServerStore,
-        tagStore,
-      }),
-      options: { task: createTask() },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.mcpServers).toEqual({
-      "Task MCP": { command: "task-mcp", args: ["serve"] },
-      [GITHUB_COPILOT_MCP_SERVER_NAME]: {
-        type: "http",
-        url: GITHUB_COPILOT_MCP_READONLY_URL,
-        headers: {
-          Authorization: "Bearer copilot-token",
-          "X-MCP-Host": "copilot-bridge",
-          "X-MCP-Readonly": "true",
-          "X-MCP-Tools": GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
+      expect(cfg.mcpServers).toEqual({
+        "Task MCP": { command: "task-mcp", args: ["serve"] },
+        [GITHUB_COPILOT_MCP_SERVER_NAME]: {
+          type: "http",
+          url: GITHUB_COPILOT_MCP_READONLY_URL,
+          headers: {
+            Authorization: "Bearer copilot-token",
+            "X-MCP-Host": "copilot-bridge",
+            "X-MCP-Readonly": "true",
+            "X-MCP-Tools": GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
+          },
+          tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
         },
-        tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
-      },
-    });
-    expect(cfg.githubMcpToolOptions).toBeUndefined();
+      });
+      expect(cfg.githubMcpToolOptions).toBeUndefined();
+    }
+
+    // Bridge-owned MCP servers are preserved when task tags rebuild MCP selection
+    {
+      const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+      const taskServer = mcpServerStore.createMcpServer({
+        name: "Task MCP",
+        config: { command: "task-mcp", args: ["serve"] },
+      });
+      const tag = tagStore.createTag("Task tools");
+      tagStore.addTagMcpServerRef(tag.id, taskServer.id);
+      tagStore.setEntityTags("task", "task-1", [tag.id]);
+      const bridgeMcp = {
+        type: "stdio" as const,
+        command: "node",
+        args: ["bridge-shim.js"],
+        tools: ["tag_list"],
+      };
+
+      const cfg = buildSessionConfig({
+        deps: createDeps({
+          mcpServerStore,
+          tagStore,
+          builtInMcpServers: { "bridge-tools": bridgeMcp },
+        }),
+        options: { task: createTask() },
+        callbacks: createCallbacks(),
+      });
+
+      expect(cfg.mcpServers).toEqual({
+        "Task MCP": { command: "task-mcp", args: ["serve"] },
+        "bridge-tools": bridgeMcp,
+      });
+    }
   });
-
-  it("preserves Bridge-owned MCP servers when task tags rebuild MCP selection", () => {
-    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
-    const taskServer = mcpServerStore.createMcpServer({
-      name: "Task MCP",
-      config: { command: "task-mcp", args: ["serve"] },
-    });
-    const tag = tagStore.createTag("Task tools");
-    tagStore.addTagMcpServerRef(tag.id, taskServer.id);
-    tagStore.setEntityTags("task", "task-1", [tag.id]);
-    const bridgeMcp = {
-      type: "stdio" as const,
-      command: "node",
-      args: ["bridge-shim.js"],
-      tools: ["tag_list"],
-    };
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({
-        mcpServerStore,
-        tagStore,
-        builtInMcpServers: {
-          "bridge-tools": bridgeMcp,
-        },
-      }),
-      options: { task: createTask() },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.mcpServers).toEqual({
-      "Task MCP": { command: "task-mcp", args: ["serve"] },
-      "bridge-tools": bridgeMcp,
-    });
-  });
-
   it("adds MCP servers selected by inherited group tags", () => {
     const { mcpServerStore, tagStore } = createMcpRegistryDeps();
     const groupServer = mcpServerStore.createMcpServer({
@@ -863,31 +806,29 @@ describe("session-config-builder", () => {
     expect(cfg.reasoningEffort).toBeUndefined();
   });
 
-  it("omits model and reasoningEffort when forResume is true", () => {
+  it("omits model and reasoningEffort when forResume is true, with or without settingsStore", () => {
+    // with settingsStore
     const settingsStore = {
       getSettings: () => ({ model: "gpt-new", reasoningEffort: "high" }),
       getMcpServers: () => ({}),
     } as unknown as SettingsStore;
 
-    const cfg = buildSessionConfig({
+    const cfg1 = buildSessionConfig({
       deps: createDeps({ settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
       options: { forResume: true },
       callbacks: createCallbacks(),
     });
+    expect(cfg1.model, "with settingsStore").toBeUndefined();
+    expect(cfg1.reasoningEffort, "with settingsStore").toBeUndefined();
 
-    expect(cfg.model).toBeUndefined();
-    expect(cfg.reasoningEffort).toBeUndefined();
-  });
-
-  it("omits model and reasoningEffort when forResume is true even without settingsStore", () => {
-    const cfg = buildSessionConfig({
+    // without settingsStore
+    const cfg2 = buildSessionConfig({
       deps: createDeps({ config: { sessionMcpServers: {}, model: "config-fallback" } }),
       options: { forResume: true },
       callbacks: createCallbacks(),
     });
-
-    expect(cfg.model).toBeUndefined();
-    expect(cfg.reasoningEffort).toBeUndefined();
+    expect(cfg2.model, "without settingsStore").toBeUndefined();
+    expect(cfg2.reasoningEffort, "without settingsStore").toBeUndefined();
   });
 
   it("renders task, schedule, staging, checklist, and self-rename prompt context", async () => {

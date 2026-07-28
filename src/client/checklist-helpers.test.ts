@@ -55,16 +55,15 @@ describe("getHomeChecklistIndicator", () => {
 });
 
 describe("dashboardChecklistCountClass", () => {
-  it("uses muted styling when there are no urgent checklist deadlines", () => {
-    expect(dashboardChecklistCountClass("none")).toContain("text-text-faint");
-  });
-
-  it("uses warning styling for due-today checklist deadlines", () => {
-    expect(dashboardChecklistCountClass("due-today")).toContain("text-warning");
-  });
-
-  it("uses error styling for overdue checklist deadlines", () => {
-    expect(dashboardChecklistCountClass("overdue")).toContain("text-error");
+  it("uses muted/warning/error styling based on deadline state", () => {
+    const cases: [Parameters<typeof dashboardChecklistCountClass>[0], string][] = [
+      ["none", "text-text-faint"],
+      ["due-today", "text-warning"],
+      ["overdue", "text-error"],
+    ];
+    for (const [state, expected] of cases) {
+      expect(dashboardChecklistCountClass(state), state).toContain(expected);
+    }
   });
 });
 

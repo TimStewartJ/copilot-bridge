@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { openDatabase } from "../db.js";
 import { listDatabaseMigrations, runDatabaseMigrations } from "../db-migrations.js";
 import { makeTestDir } from "./helpers.js";
+import { createSettingsStore } from "../settings-store.js";
+import { createGlobalBus } from "../global-bus.js";
+import { createTaskStore } from "../task-store.js";
 
 function createTempDataDir(): string {
   return makeTestDir("db-migrations");
@@ -478,5 +483,534 @@ describe("database migration registry", () => {
 
     runDatabaseMigrations(db);
     db.close();
+  });
+});
+
+// ── Merged from db-bridge-session-state-migration.test.ts ────────────────────
+describe("bridge session state legacy backfill (merged)", () => {
+  const bssDirs: string[] = [];
+  function createBssTempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-session-state-migration-"));
+    bssDirs.push(dir);
+    return dir;
+  }
+  function cleanupBssDirs() {
+    for (const dir of bssDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  }
+
+  function createLegacyBssSessionTables(db: DatabaseSync): void {
+    db.exec(`
+      CREATE TABLE session_meta (
+        sessionId TEXT PRIMARY KEY,
+        archived INTEGER NOT NULL DEFAULT 0,
+        archivedAt TEXT,
+        triggeredBy TEXT,
+        scheduleId TEXT,
+        scheduleName TEXT
+      );
+      CREATE TABLE session_titles (
+        sessionId TEXT PRIMARY KEY,
+        title TEXT NOT NULL
+      );
+      CREATE TABLE session_workspace (
+        sessionId TEXT PRIMARY KEY,
+        cwd TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+    `);
+  }
+
+  it("does not create legacy session metadata tables for fresh databases", () => {
+    const dataDir = createBssTempDir();
+    try {
+      const db = openDatabase(dataDir);
+      expect(db.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name IN ('session_meta', 'session_titles', 'session_workspace')
+        ORDER BY name
+      `).all()).toEqual([]);
+      db.close();
+    } finally {
+      cleanupBssDirs();
+    }
+  });
+
+  it("imports legacy session metadata once without letting stale legacy rows overwrite later overlay changes", () => {
+    const dataDir = createBssTempDir();
+    try {
+      const dbPath = join(dataDir, "bridge.db");
+      const legacyDb = new DatabaseSync(dbPath);
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      createLegacyBssSessionTables(legacyDb);
+      legacyDb.prepare(`
+        INSERT INTO session_meta (sessionId, archived, archivedAt, triggeredBy, scheduleId, scheduleName)
+        VALUES (?, 1, ?, 'schedule', ?, ?)
+      `).run("session-1", "2026-05-01T00:00:00.000Z", "sched-1", "Legacy schedule");
+      legacyDb.prepare("INSERT INTO session_titles (sessionId, title) VALUES (?, ?)").run("session-1", "Legacy title");
+      legacyDb.prepare("INSERT INTO session_workspace (sessionId, cwd, updatedAt) VALUES (?, ?, ?)").run("session-1", "D:\\legacy", "2026-05-01T00:00:00.000Z");
+      legacyDb.close();
+
+      let db = openDatabase(dataDir);
+      expect(db.prepare(`
+        SELECT archived, archivedAt, titleOverride, pinnedCwd, scheduleId, scheduleName
+        FROM bridge_session_state WHERE sessionId = ?
+      `).get("session-1")).toEqual({
+        archived: 1, archivedAt: "2026-05-01T00:00:00.000Z",
+        titleOverride: "Legacy title", pinnedCwd: "D:\\legacy",
+        scheduleId: "sched-1", scheduleName: "Legacy schedule",
+      });
+
+      db.prepare(`
+        UPDATE bridge_session_state
+        SET archived = 0, archivedAt = NULL, titleOverride = 'New title',
+            pinnedCwd = 'D:\\new', pinnedCwdUpdatedAt = '2026-05-02T00:00:00.000Z',
+            updatedAt = '2026-05-02T00:00:00.000Z'
+        WHERE sessionId = ?
+      `).run("session-1");
+      db.close();
+
+      db = openDatabase(dataDir);
+      expect(db.prepare(`
+        SELECT archived, archivedAt, titleOverride, pinnedCwd, scheduleId, scheduleName
+        FROM bridge_session_state WHERE sessionId = ?
+      `).get("session-1")).toEqual({
+        archived: 0, archivedAt: null,
+        titleOverride: "New title", pinnedCwd: "D:\\new",
+        scheduleId: "sched-1", scheduleName: "Legacy schedule",
+      });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE id = ?")
+        .get("bridge_session_state_legacy_backfill_v1")).toEqual({ count: 1 });
+      db.close();
+    } finally {
+      cleanupBssDirs();
+    }
+  });
+});
+
+// ── Merged from db-checklist-migration.test.ts ────────────────────────────────
+describe("database checklist migration (merged)", () => {
+  const chkDirs: string[] = [];
+  function createChkTempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-db-migration-"));
+    chkDirs.push(dir);
+    return dir;
+  }
+  function cleanupChkDirs() {
+    for (const dir of chkDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  }
+
+  function createChkLegacyTaskTable(db: DatabaseSync): void {
+    db.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        groupId TEXT,
+        cwd TEXT,
+        notes TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 0,
+        "order" INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+    `);
+  }
+
+  it("migrates legacy todos into checklist_items without losing checklist data", () => {
+    const dataDir = createChkTempDir();
+    try {
+      const dbPath = join(dataDir, "bridge.db");
+      const legacyDb = new DatabaseSync(dbPath);
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      createChkLegacyTaskTable(legacyDb);
+      legacyDb.exec(`
+        CREATE TABLE todos (
+          id TEXT PRIMARY KEY,
+          taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          done INTEGER NOT NULL DEFAULT 0,
+          "order" INTEGER NOT NULL DEFAULT 0,
+          createdAt TEXT NOT NULL,
+          completedAt TEXT,
+          deadline TEXT
+        );
+      `);
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+        VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, ?, ?)
+      `).run("task-1", "Migrated task", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
+      legacyDb.prepare(`
+        INSERT INTO todos (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("task-item", "task-1", "Task-scoped item", 1, 3, "2026-04-02T00:00:00.000Z", "2026-04-03T00:00:00.000Z", "2026-04-10");
+      legacyDb.prepare(`
+        INSERT INTO todos (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("global-item", null, "Global item", 0, 1, "2026-04-04T00:00:00.000Z", null, "2026-04-11");
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      const migratedRows = db.prepare(`
+        SELECT id, taskId, text, done, "order", createdAt, completedAt, deadline
+        FROM checklist_items ORDER BY id
+      `).all() as Array<Record<string, unknown>>;
+
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'todos'").get()).toBeUndefined();
+      expect(migratedRows).toEqual([
+        { id: "global-item", taskId: null, text: "Global item", done: 0, order: 1, createdAt: "2026-04-04T00:00:00.000Z", completedAt: null, deadline: "2026-04-11" },
+        { id: "task-item", taskId: "task-1", text: "Task-scoped item", done: 1, order: 3, createdAt: "2026-04-02T00:00:00.000Z", completedAt: "2026-04-03T00:00:00.000Z", deadline: "2026-04-10" },
+      ]);
+
+      db.prepare("DELETE FROM tasks WHERE id = ?").run("task-1");
+      expect(db.prepare("SELECT id, taskId, text FROM checklist_items ORDER BY id").all()).toEqual([
+        { id: "global-item", taskId: null, text: "Global item" },
+      ]);
+      db.close();
+    } finally {
+      cleanupChkDirs();
+    }
+  });
+
+  it("normalizes partially migrated checklist_items to allow global items and deadlines", () => {
+    const dataDir = createChkTempDir();
+    try {
+      const dbPath = join(dataDir, "bridge.db");
+      const legacyDb = new DatabaseSync(dbPath);
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      createChkLegacyTaskTable(legacyDb);
+      legacyDb.exec(`
+        CREATE TABLE checklist_items (
+          id TEXT PRIMARY KEY,
+          taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          done INTEGER NOT NULL DEFAULT 0,
+          "order" INTEGER NOT NULL DEFAULT 0,
+          createdAt TEXT NOT NULL,
+          completedAt TEXT
+        );
+      `);
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+        VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, ?, ?)
+      `).run("task-2", "Normalized task", "2026-04-05T00:00:00.000Z", "2026-04-05T00:00:00.000Z");
+      legacyDb.prepare(`
+        INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run("existing-item", "task-2", "Existing item", 0, 0, "2026-04-06T00:00:00.000Z", null);
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      const checklistItemCols = db.prepare("PRAGMA table_info(checklist_items)").all() as Array<{ name: string; notnull: number }>;
+      expect(checklistItemCols.some((column) => column.name === "deadline")).toBe(true);
+      expect(checklistItemCols.find((column) => column.name === "taskId")?.notnull).toBe(0);
+
+      db.prepare(`
+        INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("new-global-item", null, "New global item", 0, 1, "2026-04-07T00:00:00.000Z", null, "2026-04-12");
+
+      expect(db.prepare("SELECT id, taskId, text, deadline FROM checklist_items ORDER BY id").all()).toEqual([
+        { id: "existing-item", taskId: "task-2", text: "Existing item", deadline: null },
+        { id: "new-global-item", taskId: null, text: "New global item", deadline: "2026-04-12" },
+      ]);
+      db.close();
+    } finally {
+      cleanupChkDirs();
+    }
+  });
+});
+
+// ── Merged from db-mcp-registry-migration.test.ts ─────────────────────────────
+describe("database MCP registry migration (merged)", () => {
+  const mcpDirs: string[] = [];
+  function createMcpLocalDataDir(): string {
+    const dir = join(process.cwd(), ".mcp-registry-test-data", crypto.randomUUID());
+    mkdirSync(dir, { recursive: true });
+    mcpDirs.push(dir);
+    return dir;
+  }
+  function cleanupMcpDirs() {
+    for (const dir of mcpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    rmSync(join(process.cwd(), ".mcp-registry-test-data"), { recursive: true, force: true });
+  }
+
+  function mcpInsertTag(db: DatabaseSync, id: string, name: string): void {
+    db.prepare(`
+      INSERT INTO tags (id, name, color, instructions, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'slate', '', 0, '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z')
+    `).run(id, name);
+  }
+
+  function mcpSelectServers(db: DatabaseSync) {
+    return db.prepare(`
+      SELECT id, name, config, enabledByDefault, createdAt, updatedAt
+      FROM mcp_servers ORDER BY name COLLATE NOCASE
+    `).all() as Array<{ id: string; name: string; config: string; enabledByDefault: number; createdAt: string; updatedAt: string }>;
+  }
+
+  function mcpSelectRefs(db: DatabaseSync) {
+    return db.prepare(`
+      SELECT refs.tagId, refs.serverId, ms.name AS serverName, ms.config
+      FROM tag_mcp_server_refs refs
+      JOIN mcp_servers ms ON ms.id = refs.serverId
+      ORDER BY refs.tagId, ms.name COLLATE NOCASE
+    `).all() as Array<{ tagId: string; serverId: string; serverName: string; config: string }>;
+  }
+
+  it("promotes legacy settings and tag MCP configs into the canonical registry idempotently", () => {
+    const dataDir = createMcpLocalDataDir();
+    try {
+      const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      legacyDb.exec(`
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE tags (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          color TEXT NOT NULL DEFAULT 'slate', instructions TEXT NOT NULL DEFAULT '',
+          "order" INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+        );
+        CREATE TABLE tag_mcp_servers (
+          tagId TEXT NOT NULL, serverName TEXT NOT NULL, config TEXT NOT NULL,
+          PRIMARY KEY (tagId, serverName),
+          FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
+        );
+      `);
+
+      const globalConfig = { command: "global-mcp", args: ["--global"] };
+      const sharedConfig = { type: "http" as const, url: "https://shared.example/mcp" };
+      const overrideConfig = { command: "override-mcp", args: ["--tag"] };
+      const tagOnlyConfig = { type: "sse" as const, url: "https://tag-only.example/sse" };
+
+      legacyDb.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run(JSON.stringify({
+        theme: "dark", mcpServers: { global: globalConfig, shared: sharedConfig },
+      }));
+      mcpInsertTag(legacyDb, "tag-shared", "Shared");
+      mcpInsertTag(legacyDb, "tag-override", "Override");
+      mcpInsertTag(legacyDb, "tag-only", "Tag only");
+      legacyDb.prepare("INSERT INTO tag_mcp_servers (tagId, serverName, config) VALUES (?, ?, ?)").run("tag-shared", "shared", JSON.stringify(sharedConfig));
+      legacyDb.prepare("INSERT INTO tag_mcp_servers (tagId, serverName, config) VALUES (?, ?, ?)").run("tag-override", "global", JSON.stringify(overrideConfig));
+      legacyDb.prepare("INSERT INTO tag_mcp_servers (tagId, serverName, config) VALUES (?, ?, ?)").run("tag-only", "tag-only", JSON.stringify(tagOnlyConfig));
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      const servers = mcpSelectServers(db);
+      expect(servers).toHaveLength(4);
+      expect(servers.map((server) => [server.name, server.enabledByDefault])).toEqual([
+        ["global", 1],
+        [expect.stringMatching(/^global \(tag override/), 0],
+        ["shared", 1],
+        ["tag-only", 0],
+      ]);
+
+      const global = servers.find((server) => server.name === "global")!;
+      const shared = servers.find((server) => server.name === "shared")!;
+      const override = servers.find((server) => server.name.startsWith("global (tag override"))!;
+      const tagOnly = servers.find((server) => server.name === "tag-only")!;
+      expect(JSON.parse(global.config)).toEqual(globalConfig);
+      expect(JSON.parse(shared.config)).toEqual(sharedConfig);
+      expect(JSON.parse(override.config)).toEqual(overrideConfig);
+      expect(JSON.parse(tagOnly.config)).toEqual(tagOnlyConfig);
+
+      expect(mcpSelectRefs(db).map((ref) => [ref.tagId, ref.serverName])).toEqual([
+        ["tag-only", "tag-only"],
+        ["tag-override", override.name],
+        ["tag-shared", "shared"],
+      ]);
+      expect((db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_servers").get() as any).count).toBe(0);
+
+      const rawSettings = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as any).value);
+      expect(rawSettings).toEqual({ theme: "dark" });
+      expect(createSettingsStore(db).getMcpServers()).toEqual({ global: globalConfig, shared: sharedConfig });
+
+      const beforeServers = mcpSelectServers(db);
+      const beforeRefs = mcpSelectRefs(db);
+      db.close();
+
+      const reopened = openDatabase(dataDir);
+      expect(mcpSelectServers(reopened)).toEqual(beforeServers);
+      expect(mcpSelectRefs(reopened)).toEqual(beforeRefs);
+      reopened.close();
+    } finally {
+      cleanupMcpDirs();
+    }
+  });
+});
+
+// ── Merged from db-task-kind-migration.test.ts ────────────────────────────────
+describe("database task kind migration (merged)", () => {
+  const kindDirs: string[] = [];
+  function createKindLocalDataDir(): string {
+    const dir = join(process.cwd(), ".kind-schema-test-data", crypto.randomUUID());
+    mkdirSync(dir, { recursive: true });
+    kindDirs.push(dir);
+    return dir;
+  }
+  function cleanupKindDirs() {
+    for (const dir of kindDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    rmSync(join(process.cwd(), ".kind-schema-test-data"), { recursive: true, force: true });
+  }
+
+  it("repairs legacy invalid ongoing rows so they can be edited again", () => {
+    const dataDir = createKindLocalDataDir();
+    try {
+      const dbPath = join(dataDir, "bridge.db");
+      const legacyDb = new DatabaseSync(dbPath);
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      legacyDb.exec(`
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'task', status TEXT NOT NULL DEFAULT 'active',
+          groupId TEXT, cwd TEXT, notes TEXT NOT NULL DEFAULT '',
+          doneWhen TEXT, completedAt TEXT,
+          priority INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
+          "order" INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+        );
+      `);
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, completedAt, priority, pinned, "order", createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, NULL, NULL, '', ?, NULL, 0, 0, ?, ?, ?)
+      `).run("legacy-ongoing-done", "Legacy ongoing done", "ongoing", "done", "Already finished", 3, "2026-04-02T00:00:00.000Z", "2026-04-02T00:00:00.000Z");
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, completedAt, priority, pinned, "order", createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, NULL, NULL, '', ?, NULL, 0, 0, ?, ?, ?)
+      `).run("legacy-ongoing-paused", "Legacy ongoing paused", "ongoing", "paused", "Needs cleanup", 4, "2026-04-03T00:00:00.000Z", "2026-04-03T00:00:00.000Z");
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, completedAt, priority, pinned, "order", createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, NULL, NULL, '', NULL, ?, 0, 0, ?, ?, ?)
+      `).run("legacy-ongoing-archived-completed", "Legacy ongoing archived completed", "ongoing", "archived", "2026-04-04T00:00:00.000Z", 5, "2026-04-04T00:00:00.000Z", "2026-04-04T00:00:00.000Z");
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      const repairedRows = db.prepare(`
+        SELECT id, status, doneWhen, completedAt FROM tasks
+        WHERE id IN ('legacy-ongoing-archived-completed', 'legacy-ongoing-done', 'legacy-ongoing-paused')
+        ORDER BY id
+      `).all() as Array<{ id: string; status: string; doneWhen: string | null; completedAt: string | null }>;
+      expect(repairedRows).toEqual([
+        { id: "legacy-ongoing-archived-completed", status: "archived", doneWhen: null, completedAt: null },
+        { id: "legacy-ongoing-done", status: "active", doneWhen: null, completedAt: null },
+        { id: "legacy-ongoing-paused", status: "active", doneWhen: null, completedAt: null },
+      ]);
+
+      const store = createTaskStore(db, createGlobalBus());
+      expect(store.updateTask("legacy-ongoing-done", { notes: "Edited after repair" })).toMatchObject({ kind: "ongoing", status: "active", doneWhen: undefined, notes: "Edited after repair" });
+      expect(store.updateTask("legacy-ongoing-paused", { waitingOn: "Vendor reply" })).toMatchObject({ kind: "ongoing", status: "active", doneWhen: undefined, waitingOn: "Vendor reply" });
+      db.close();
+    } finally {
+      cleanupKindDirs();
+    }
+  });
+
+  it("preserves muted while rebuilding legacy pinned task tables", () => {
+    const dataDir = createKindLocalDataDir();
+    try {
+      const dbPath = join(dataDir, "bridge.db");
+      const legacyDb = new DatabaseSync(dbPath);
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      legacyDb.exec(`
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'task', muted INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'active', groupId TEXT, cwd TEXT,
+          notes TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 0,
+          pinned INTEGER NOT NULL DEFAULT 0, "order" INTEGER NOT NULL DEFAULT 0,
+          createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+        );
+      `);
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, kind, muted, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
+        VALUES (?, ?, 'task', 1, 'active', NULL, NULL, '', 0, 1, 0, ?, ?)
+      `).run("legacy-muted-pinned", "Muted pinned task", "2026-04-03T00:00:00.000Z", "2026-04-03T00:00:00.000Z");
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+      expect(taskCols.some((column) => column.name === "pinned")).toBe(false);
+      expect(taskCols.some((column) => column.name === "muted")).toBe(true);
+      const row = db.prepare("SELECT kind, muted FROM tasks WHERE id = ?").get("legacy-muted-pinned") as any;
+      expect(row).toEqual({ kind: "ongoing", muted: 1 });
+      const store = createTaskStore(db, createGlobalBus());
+      expect(store.getTask("legacy-muted-pinned")).toMatchObject({ kind: "ongoing", muted: true });
+      db.close();
+    } finally {
+      cleanupKindDirs();
+    }
+  });
+});
+
+// ── Merged from db-voice-jobs-migration.test.ts ───────────────────────────────
+describe("voice_jobs task foreign key migration (merged)", () => {
+  function createVoiceLegacyDatabase(dbPath: string): void {
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    legacyDb.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', groupId TEXT, cwd TEXT,
+        notes TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 0,
+        "order" INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+      );
+    `);
+    // Legacy voice_jobs table without a foreign key on taskId.
+    legacyDb.exec(`
+      CREATE TABLE voice_jobs (
+        id TEXT PRIMARY KEY, composerKey TEXT NOT NULL, taskId TEXT, targetSessionId TEXT,
+        status TEXT NOT NULL, audioPath TEXT NOT NULL, transcript TEXT, error TEXT,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX idx_voice_jobs_composer ON voice_jobs(composerKey);
+      CREATE INDEX idx_voice_jobs_target_session ON voice_jobs(targetSessionId);
+      CREATE INDEX idx_voice_jobs_status ON voice_jobs(status);
+      CREATE INDEX idx_voice_jobs_updated ON voice_jobs(updatedAt);
+    `);
+    legacyDb.prepare(`
+      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, ?, ?)
+    `).run("task-keep", "Kept task", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
+    const insertJob = legacyDb.prepare(`
+      INSERT INTO voice_jobs (id, composerKey, taskId, targetSessionId, status, audioPath, transcript, error, createdAt, updatedAt)
+      VALUES (?, ?, ?, NULL, 'accepted', ?, NULL, NULL, ?, ?)
+    `);
+    insertJob.run("voice-keep", "draft:task:task-keep", "task-keep", "voice-keep.wav", "2026-04-02T00:00:00.000Z", "2026-04-02T00:00:00.000Z");
+    // Orphaned row: taskId points at a task that no longer exists.
+    insertJob.run("voice-orphan", "draft:task:task-gone", "task-gone", "voice-orphan.wav", "2026-04-02T00:00:00.000Z", "2026-04-02T00:00:00.000Z");
+    legacyDb.close();
+  }
+
+  function voiceJobsHasTaskSetNullFk(db: DatabaseSync): boolean {
+    const fks = db.prepare("PRAGMA foreign_key_list(voice_jobs)").all() as Array<{ table?: string; from?: string; on_delete?: string }>;
+    return fks.some((fk) => fk.table === "tasks" && fk.from === "taskId" && String(fk.on_delete ?? "").toUpperCase() === "SET NULL");
+  }
+
+  it("rebuilds voice_jobs with an ON DELETE SET NULL task reference and clears orphaned taskIds", () => {
+    const dataDir = makeTestDir("voice-jobs-migration");
+    createVoiceLegacyDatabase(join(dataDir, "bridge.db"));
+
+    const db = openDatabase(dataDir);
+    try {
+      expect(voiceJobsHasTaskSetNullFk(db)).toBe(true);
+
+      const rows = db.prepare("SELECT id, taskId FROM voice_jobs ORDER BY id").all() as Array<{ id: string; taskId: string | null }>;
+      expect(rows).toEqual([
+        { id: "voice-keep", taskId: "task-keep" },
+        { id: "voice-orphan", taskId: null },
+      ]);
+
+      const indexNames = (db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'voice_jobs'"
+      ).all() as Array<{ name: string }>).map((row) => row.name);
+      for (const expected of ["idx_voice_jobs_composer", "idx_voice_jobs_target_session", "idx_voice_jobs_status", "idx_voice_jobs_updated", "idx_voice_jobs_taskId"]) {
+        expect(indexNames).toContain(expected);
+      }
+
+      // Deleting the surviving task should null its voice job taskId via ON DELETE SET NULL.
+      db.prepare("DELETE FROM tasks WHERE id = ?").run("task-keep");
+      const keptRow = db.prepare("SELECT taskId FROM voice_jobs WHERE id = ?").get("voice-keep") as { taskId: string | null };
+      expect(keptRow.taskId).toBeNull();
+    } finally {
+      db.close();
+    }
   });
 });

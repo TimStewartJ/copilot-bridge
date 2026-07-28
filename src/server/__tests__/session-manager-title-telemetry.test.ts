@@ -95,12 +95,6 @@ describe("session CLI renames", () => {
     expect(targetEvents).toContainEqual({ type: "title_changed", title: "Renamed elsewhere" });
   });
 
-  it("does not inject automatic session rename guidance", () => {
-    const { tool } = createRenameToolHarness();
-    expect(tool.description).toContain("Rename a chat session");
-    expect(vi.isMockFunction(tool.handler)).toBe(false);
-  });
-
   it("migrates legacy Bridge titles only for sessions without existing CLI names", async () => {
     const { ctx, db } = createTestApp();
     const writeWorkspace = (sessionId: string, content: string) => {

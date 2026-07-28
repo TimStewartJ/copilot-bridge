@@ -34,13 +34,12 @@ describe("shouldClearUnsupportedContextTier", () => {
 });
 
 describe("describeClientAge", () => {
-  it("returns null when the timestamp is missing", () => {
+  it("returns null when the timestamp is missing or unparseable", () => {
+    // Missing
     expect(describeClientAge(null)).toBeNull();
     expect(describeClientAge(undefined)).toBeNull();
     expect(describeClientAge("")).toBeNull();
-  });
-
-  it("returns null when the timestamp is unparseable", () => {
+    // Unparseable
     expect(describeClientAge("not-a-date")).toBeNull();
   });
 

@@ -29,13 +29,10 @@ function session(
 }
 
 describe("getSessionPath", () => {
-  it("uses the task session route when task context is present", () => {
+  it("uses the task session route when task context is present, quick chat route otherwise", () => {
     expect(getSessionPath({ sessionId: "session-456", taskId: "task-123" })).toBe(
       "/tasks/task-123/sessions/session-456",
     );
-  });
-
-  it("uses the quick chat route when task context is absent", () => {
     expect(getSessionPath({ sessionId: "session-456", taskId: null })).toBe("/sessions/session-456");
     expect(getSessionPath({ sessionId: "session-456" })).toBe("/sessions/session-456");
   });
@@ -102,5 +99,34 @@ describe("task chat navigation", () => {
 
     expect(getTaskActiveChatSessionId(target)).toBe("active");
     expect(getTaskChatPath(target)).toBe("/tasks/task-123/sessions/active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composer key helpers (merged from composer-key.test.ts)
+// ---------------------------------------------------------------------------
+import {
+  getComposerKeyFromPathname,
+  getDraftComposerKey,
+  getTaskIdFromDraftComposerKey,
+  isDraftComposerKey,
+} from "./composer-key";
+
+describe("composer key helpers", () => {
+  it("builds, detects, parses, and derives draft keys from routes in one round-trip", () => {
+    expect(getDraftComposerKey()).toBe("draft:quickchat");
+    expect(getDraftComposerKey("task-123")).toBe("draft:task:task-123");
+
+    expect(isDraftComposerKey("draft:quickchat")).toBe(true);
+    expect(isDraftComposerKey("draft:task:task-123")).toBe(true);
+    expect(isDraftComposerKey("session-123")).toBe(false);
+    expect(getTaskIdFromDraftComposerKey("draft:task:task-123")).toBe("task-123");
+    expect(getTaskIdFromDraftComposerKey("draft:quickchat")).toBeUndefined();
+
+    expect(getComposerKeyFromPathname("/sessions/new")).toBe("draft:quickchat");
+    expect(getComposerKeyFromPathname("/tasks/task-123/sessions/new")).toBe("draft:task:task-123");
+    expect(getComposerKeyFromPathname("/sessions/session-123")).toBe("session-123");
+    expect(getComposerKeyFromPathname("/tasks/task-123/sessions/session-456")).toBe("session-456");
+    expect(getComposerKeyFromPathname("/tasks/task-123")).toBeNull();
   });
 });

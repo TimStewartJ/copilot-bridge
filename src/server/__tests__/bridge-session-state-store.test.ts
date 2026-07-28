@@ -25,16 +25,30 @@ describe("bridge session state store", () => {
     expect(store.getState("session-1")).toBeUndefined();
   });
 
-  it("preserves the latest visible activity timestamp", () => {
+  it("preserves the latest visible and attention timestamps", () => {
+    // visible activity
+    {
     const store = createBridgeSessionStateStore(setupTestDb());
 
     store.setLastVisibleActivityAt("session-1", "2026-05-07T10:00:00.000Z");
     store.setLastVisibleActivityAt("session-1", "2026-05-07T09:00:00.000Z");
 
     expect(store.getState("session-1")?.lastVisibleActivityAt).toBe("2026-05-07T10:00:00.000Z");
-  });
+    }
 
-  it("can replace or clear visible activity after history is rewound", () => {
+    // attention
+    {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
+    store.setLastAttentionAt("session-1", "2026-05-07T09:00:00.000Z");
+
+    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
+    }
+  });
+  it("can replace or clear visible and attention activity after history is rewound", () => {
+    // visible activity
+    {
     const store = createBridgeSessionStateStore(setupTestDb());
 
     store.setLastVisibleActivityAt("session-1", "2026-05-07T10:00:00.000Z");
@@ -43,18 +57,10 @@ describe("bridge session state store", () => {
 
     store.replaceLastVisibleActivityAt("session-1", undefined);
     expect(store.getState("session-1")).toBeUndefined();
-  });
+    }
 
-  it("preserves the latest attention timestamp", () => {
-    const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
-    store.setLastAttentionAt("session-1", "2026-05-07T09:00:00.000Z");
-
-    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
-  });
-
-  it("can replace or clear attention activity after history is rewound", () => {
+    // attention
+    {
     const store = createBridgeSessionStateStore(setupTestDb());
 
     store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
@@ -63,8 +69,8 @@ describe("bridge session state store", () => {
 
     store.replaceLastAttentionAt("session-1", undefined);
     expect(store.getState("session-1")).toBeUndefined();
+    }
   });
-
   it("keeps attention-only rows when other fields are cleared", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
 

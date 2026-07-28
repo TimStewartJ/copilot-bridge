@@ -183,32 +183,30 @@ describe("update service", () => {
     expect(result.update).toBeUndefined();
   });
 
-  it("returns disabled outside release mode", async () => {
-    const runtimePaths = makeTestRuntimePaths("update-dev", { distributionMode: "development" });
-    const result = await checkForUpdate({
+  it("returns disabled outside release mode and not_configured when no trusted public key is available", async () => {
+    // Disabled in development mode
+    const runtimePaths1 = makeTestRuntimePaths("update-dev", { distributionMode: "development" });
+    const result1 = await checkForUpdate({
       appRoot: makeTestDir("update-dev-app"),
-      runtimePaths,
-      env: runtimePaths.env,
+      runtimePaths: runtimePaths1,
+      env: runtimePaths1.env,
     });
+    expect(result1.status).toBe("disabled");
+    expect(result1.enabled).toBe(false);
 
-    expect(result.status).toBe("disabled");
-    expect(result.enabled).toBe(false);
-  });
-
-  it("returns not_configured when no trusted public key is available", async () => {
-    const runtimePaths = makeTestRuntimePaths("update-no-key", { distributionMode: "release" });
-    const appRoot = writeReleaseAppRoot("0.1.0");
-    const result = await checkForUpdate({
-      appRoot,
-      runtimePaths,
+    // Not configured when no public key
+    const runtimePaths2 = makeTestRuntimePaths("update-no-key", { distributionMode: "release" });
+    const appRoot2 = writeReleaseAppRoot("0.1.0");
+    const result2 = await checkForUpdate({
+      appRoot: appRoot2,
+      runtimePaths: runtimePaths2,
       env: {
-        ...runtimePaths.env,
+        ...runtimePaths2.env,
         BRIDGE_UPDATE_MANIFEST_STABLE_URL: "https://updates.example.test/stable-win-x64.manifest.json",
       },
     });
-
-    expect(result.status).toBe("not_configured");
-    expect(result.error).toContain("public key");
+    expect(result2.status).toBe("not_configured");
+    expect(result2.error).toContain("public key");
   });
 
   it("rejects non-HTTPS package URLs", async () => {
@@ -333,9 +331,10 @@ describe("update service", () => {
     expect(resolveReleaseRootForUpdate({}, appRoot)).toBe(join(appRoot, ".."));
   });
 
-  it("lets the launcher complete a staged update status after activation", () => {
-    const runtimePaths = makeTestRuntimePaths("update-activation-status", { distributionMode: "release" });
-    writeInstallStatus(runtimePaths, {
+  it("lets the launcher complete or fail a staged update status after activation", () => {
+    // Succeeded activation
+    const runtimePaths1 = makeTestRuntimePaths("update-activation-status", { distributionMode: "release" });
+    writeInstallStatus(runtimePaths1, {
       id: "activation",
       phase: "staged",
       channel: "stable",
@@ -350,20 +349,19 @@ describe("update service", () => {
     });
 
     expect(markUpdateInstallActivationSucceeded({
-      runtimePaths,
+      runtimePaths: runtimePaths1,
       candidateId: "slot-123",
       now: new Date("2026-05-08T20:02:00.000Z"),
     })).toBe(true);
-    expect(readUpdateInstallStatus({ runtimePaths }).status).toMatchObject({
+    expect(readUpdateInstallStatus({ runtimePaths: runtimePaths1 }).status).toMatchObject({
       phase: "succeeded",
       pendingRestart: false,
       completedAt: "2026-05-08T20:02:00.000Z",
     });
-  });
 
-  it("marks a staged update as failed when launcher activation fails", () => {
-    const runtimePaths = makeTestRuntimePaths("update-activation-failed", { distributionMode: "release" });
-    writeInstallStatus(runtimePaths, {
+    // Failed activation
+    const runtimePaths2 = makeTestRuntimePaths("update-activation-failed", { distributionMode: "release" });
+    writeInstallStatus(runtimePaths2, {
       id: "activation",
       phase: "staged",
       channel: "stable",
@@ -378,17 +376,17 @@ describe("update service", () => {
     });
 
     expect(markUpdateInstallActivationFailed({
-      runtimePaths,
+      runtimePaths: runtimePaths2,
       candidateId: "slot-123",
       message: "health failed",
       now: new Date("2026-05-08T20:02:00.000Z"),
     })).toBe(true);
-    expect(readUpdateInstallStatus({ runtimePaths }).status).toMatchObject({
+    expect(readUpdateInstallStatus({ runtimePaths: runtimePaths2 }).status).toMatchObject({
       phase: "failed",
       pendingRestart: false,
       error: "health failed",
     });
-    expect(readUpdateInstallStatus({ runtimePaths }).status).not.toHaveProperty("rollbackAttempted");
+    expect(readUpdateInstallStatus({ runtimePaths: runtimePaths2 }).status).not.toHaveProperty("rollbackAttempted");
   });
 
   it("returns a sanitized and bounded update log tail", () => {

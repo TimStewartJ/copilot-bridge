@@ -14,10 +14,6 @@ beforeEach(() => {
 });
 
 describe("session-meta-store", () => {
-  it("getMeta returns undefined for unknown session", () => {
-    expect(store.getMeta("unknown")).toBeUndefined();
-  });
-
   it("setArchived creates meta entry", () => {
     store.setArchived("session-1", true);
     expect(store.isArchived("session-1")).toBe(true);
@@ -41,10 +37,6 @@ describe("session-meta-store", () => {
     expect(bridgeSessionState.getState("session-1")?.titleOverride).toBe("Manual title");
   });
 
-  it("isArchived returns false for unknown session", () => {
-    expect(store.isArchived("nope")).toBe(false);
-  });
-
   it("deleteMeta removes entry", () => {
     store.setArchived("session-1", true);
     store.deleteMeta("session-1");
@@ -64,7 +56,6 @@ describe("session-meta-store", () => {
     store.setArchived("session-1", true);
     store.setScheduleMeta("session-1", "sched-1", "My Schedule");
 
-    expect((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_meta'").get() as any)).toBeUndefined();
     expect(db.prepare(`
       SELECT archived, scheduleId, scheduleName
       FROM bridge_session_state

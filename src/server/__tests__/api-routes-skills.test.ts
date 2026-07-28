@@ -62,12 +62,8 @@ describe("skills-registry", () => {
     expect(skills[0]).toMatchObject({ id: "dup", name: "Home Dup", source: "home" });
   });
 
-  it("ignores directories without a SKILL.md", () => {
+  it("ignores directories without a SKILL.md or with unsafe names", () => {
     mkdirSync(join(copilotHome, "skills", "empty"), { recursive: true });
-    expect(listSkills({ copilotHome, repoRoot })).toHaveLength(0);
-  });
-
-  it("ignores directories with unsafe names", () => {
     writeSkill(join(copilotHome, "skills"), "bad name", { name: "Bad" });
     expect(listSkills({ copilotHome, repoRoot })).toHaveLength(0);
   });
@@ -85,30 +81,26 @@ describe("skills-registry", () => {
     expect(readSkill({ copilotHome, repoRoot }, "../escape")).toBeNull();
   });
 
-  it("deletes a home skill directory", async () => {
+  it("deletes home skills only, leaving bundled skills to resurface", async () => {
     writeSkill(join(copilotHome, "skills"), "alpha", { name: "Alpha" });
-    const result = await deleteHomeSkill({ copilotHome, id: "alpha" });
-    expect(result).toBe("deleted");
+    expect(await deleteHomeSkill({ copilotHome, id: "alpha" })).toBe("deleted");
     expect(existsSync(join(copilotHome, "skills", "alpha"))).toBe(false);
-  });
 
-  it("does not delete bundled-only skills via the home path", async () => {
+    // Bundled-only skills are not reachable through the home delete path.
     writeSkill(join(repoRoot, "skills"), "browser", { name: "Browser" });
-    const result = await deleteHomeSkill({ copilotHome, id: "browser" });
-    expect(result).toBe("not-found");
+    expect(await deleteHomeSkill({ copilotHome, id: "browser" })).toBe("not-found");
     expect(existsSync(join(repoRoot, "skills", "browser"))).toBe(true);
-  });
 
-  it("reveals the bundled skill again after deleting a shadowing home skill", async () => {
+    // Deleting a shadowing home skill reveals the bundled one again.
     writeSkill(join(copilotHome, "skills"), "dup", { name: "Home Dup" });
     writeSkill(join(repoRoot, "skills"), "dup", { name: "Bundled Dup" });
-
-    expect(listSkills({ copilotHome, repoRoot })[0]).toMatchObject({ id: "dup", source: "home" });
+    expect(listSkills({ copilotHome, repoRoot }).find((skill) => skill.id === "dup")).toMatchObject({ source: "home" });
     expect(await deleteHomeSkill({ copilotHome, id: "dup" })).toBe("deleted");
-
-    const after = listSkills({ copilotHome, repoRoot });
-    expect(after).toHaveLength(1);
-    expect(after[0]).toMatchObject({ id: "dup", name: "Bundled Dup", source: "bundled" });
+    expect(listSkills({ copilotHome, repoRoot }).find((skill) => skill.id === "dup")).toMatchObject({
+      id: "dup",
+      name: "Bundled Dup",
+      source: "bundled",
+    });
     expect(readSkill({ copilotHome, repoRoot }, "dup")).toMatchObject({ source: "bundled" });
   });
 
@@ -150,14 +142,9 @@ describe("skill routes", () => {
     expect(res.body.skill.body).toContain("# Hello");
   });
 
-  it("GET /api/skills/:id returns 404 for an unknown skill", async () => {
-    const res = await request(app).get("/api/skills/nope");
-    expect(res.status).toBe(404);
-  });
-
-  it("GET /api/skills/:id returns 400 for an invalid id", async () => {
-    const res = await request(app).get("/api/skills/bad%20name");
-    expect(res.status).toBe(400);
+  it("GET /api/skills/:id rejects unknown and invalid ids", async () => {
+    expect((await request(app).get("/api/skills/nope")).status).toBe(404);
+    expect((await request(app).get("/api/skills/bad%20name")).status).toBe(400);
   });
 
   it("DELETE /api/skills/:id removes a home skill", async () => {
@@ -170,13 +157,8 @@ describe("skill routes", () => {
     expect(after.status).toBe(404);
   });
 
-  it("DELETE /api/skills/:id returns 404 for an unknown skill", async () => {
-    const res = await request(app).delete("/api/skills/nope");
-    expect(res.status).toBe(404);
-  });
-
-  it("DELETE /api/skills/:id returns 400 for an invalid id", async () => {
-    const res = await request(app).delete("/api/skills/bad%20name");
-    expect(res.status).toBe(400);
+  it("DELETE /api/skills/:id rejects unknown and invalid ids", async () => {
+    expect((await request(app).delete("/api/skills/nope")).status).toBe(404);
+    expect((await request(app).delete("/api/skills/bad%20name")).status).toBe(400);
   });
 });

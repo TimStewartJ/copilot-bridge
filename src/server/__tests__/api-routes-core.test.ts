@@ -325,36 +325,32 @@ describe("User input response route", () => {
     );
   });
 
-  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps transport validation errors", async () => {
-    ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(
-      new PendingInteractionError("invalid_response", "Response answer cannot be blank"),
-    );
+  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps transport errors to status codes", async () => {
+    const cases = [
+      {
+        label: "validation error",
+        error: new PendingInteractionError("invalid_response", "Response answer cannot be blank"),
+        path: "/api/sessions/session-123/user-input/request-1/respond",
+        body: { answer: " ", wasFreeform: true },
+        status: 400,
+        expected: { error: "Response answer cannot be blank", code: "invalid_response" },
+      },
+      {
+        label: "missing request",
+        error: new PendingInteractionError("request_not_found", "Pending user input request not found", { statusCode: 404 }),
+        path: "/api/sessions/session-123/user-input/missing/respond",
+        body: { answer: "yes", wasFreeform: false },
+        status: 404,
+        expected: { error: "Pending user input request not found", code: "request_not_found" },
+      },
+    ];
 
-    const res = await request(app)
-      .post("/api/sessions/session-123/user-input/request-1/respond")
-      .send({ answer: " ", wasFreeform: true });
-
-    expect(res.status).toBe(400);
-    expect(res.body).toEqual({
-      error: "Response answer cannot be blank",
-      code: "invalid_response",
-    });
-  });
-
-  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps missing requests", async () => {
-    ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(
-      new PendingInteractionError("request_not_found", "Pending user input request not found", { statusCode: 404 }),
-    );
-
-    const res = await request(app)
-      .post("/api/sessions/session-123/user-input/missing/respond")
-      .send({ answer: "yes", wasFreeform: false });
-
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({
-      error: "Pending user input request not found",
-      code: "request_not_found",
-    });
+    for (const { label, error, path, body, status, expected } of cases) {
+      ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(error);
+      const res = await request(app).post(path).send(body);
+      expect(res.status, label).toBe(status);
+      expect(res.body, label).toEqual(expected);
+    }
   });
 });
 
@@ -531,21 +527,20 @@ describe("Status stream", () => {
     }
   });
 
-  it("GET /api/restart-status returns persisted restart state", async () => {
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+  it("GET /api/restart-status reports persisted restart state and falls back to idle", async () => {
+    const pendingPaths = createRestartRuntimePaths();
+    await writeRestartState(join(pendingPaths.dataDir, "restart-state.json"), {
       requestId: "req-restart-status",
       phase: "waiting-for-sessions",
       requestedAt: "2026-04-24T12:00:00.000Z",
       waitingSessions: 2,
       launcherHeartbeatAt: null,
     });
-    ({ app, ctx } = createTestApp({ runtimePaths }));
+    ({ app, ctx } = createTestApp({ runtimePaths: pendingPaths }));
 
-    const res = await request(app).get("/api/restart-status");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    const pending = await request(app).get("/api/restart-status");
+    expect(pending.status).toBe(200);
+    expect(pending.body).toEqual({
       pending: true,
       phase: "waiting-for-sessions",
       requestedAt: "2026-04-24T12:00:00.000Z",
@@ -553,16 +548,13 @@ describe("Status stream", () => {
       waitingSessions: 2,
       canAcceptNewWork: true,
     });
-  });
 
-  it("GET /api/restart-status returns idle state when no restart is pending", async () => {
-    const runtimePaths = createRestartRuntimePaths();
-    ({ app, ctx } = createTestApp({ runtimePaths }));
+    // A fresh runtime with no persisted state reports idle.
+    ({ app, ctx } = createTestApp({ runtimePaths: createRestartRuntimePaths() }));
 
-    const res = await request(app).get("/api/restart-status");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    const idle = await request(app).get("/api/restart-status");
+    expect(idle.status).toBe(200);
+    expect(idle.body).toEqual({
       pending: false,
       phase: "idle",
       requestedAt: null,
@@ -633,18 +625,7 @@ describe("Attachment routes", () => {
     expect(res.text).toBe("hello from dot copilot");
   });
 
-  it("GET /api/sessions/:id/attachments/:attachmentId rejects invalid attachment ids", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
-
-    const res = await request(attachmentApp)
-      .get(`/api/sessions/${sessionId}/attachments/..secret.txt`);
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("invalid");
-  });
-
-  it("GET /api/sessions/:id/attachments/:attachmentId rejects traversal in session ids", async () => {
+  it("GET /api/sessions/:id/attachments/:attachmentId rejects unsafe ids and reports missing files", async () => {
     const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
     const victimSessionId = "11111111-1111-1111-1111-111111111111";
@@ -656,22 +637,19 @@ describe("Attachment routes", () => {
     });
     if (!published.ok) throw new Error(published.error);
 
-    const res = await request(attachmentApp)
-      .get(`/api/sessions/x%2F..%2F${victimSessionId}/attachments/secret.txt`);
+    // Traversal must be rejected in both the attachment id and the session id,
+    // so an encoded path cannot reach another session's published files.
+    const cases: [string, string, number, string][] = [
+      ["invalid attachment id", `/api/sessions/${sessionId}/attachments/..secret.txt`, 400, "invalid"],
+      ["traversal in session id", `/api/sessions/x%2F..%2F${victimSessionId}/attachments/secret.txt`, 400, "sessionId"],
+      ["missing attachment", `/api/sessions/${sessionId}/attachments/missing.txt`, 404, "not found"],
+    ];
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("sessionId");
-  });
-
-  it("GET /api/sessions/:id/attachments/:attachmentId returns 404 for missing attachments", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
-
-    const res = await request(attachmentApp)
-      .get(`/api/sessions/${sessionId}/attachments/missing.txt`);
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain("not found");
+    for (const [label, path, status, errorFragment] of cases) {
+      const res = await request(attachmentApp).get(path);
+      expect(res.status, label).toBe(status);
+      expect(res.body.error, label).toContain(errorFragment);
+    }
   });
 });
 
@@ -730,21 +708,12 @@ describe("Telemetry routes", () => {
 });
 
 describe("Models client-info route", () => {
-  it("GET /api/models/client-info returns the backend creation timestamp", async () => {
-    ctx.sessionManager.getBackendCreatedAt = () => "2026-05-01T12:00:00.000Z";
-
-    const res = await request(app).get("/api/models/client-info");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ createdAt: "2026-05-01T12:00:00.000Z" });
-  });
-
-  it("GET /api/models/client-info returns null when no backend is active", async () => {
-    ctx.sessionManager.getBackendCreatedAt = () => null;
-
-    const res = await request(app).get("/api/models/client-info");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ createdAt: null });
+  it("GET /api/models/client-info reports the backend creation timestamp or null", async () => {
+    for (const createdAt of ["2026-05-01T12:00:00.000Z", null]) {
+      ctx.sessionManager.getBackendCreatedAt = () => createdAt;
+      const res = await request(app).get("/api/models/client-info");
+      expect(res.status, String(createdAt)).toBe(200);
+      expect(res.body, String(createdAt)).toEqual({ createdAt });
+    }
   });
 });

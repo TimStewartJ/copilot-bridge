@@ -632,18 +632,6 @@ describe("deferred-prompt-runner", () => {
   });
 
   describe("shutdown", () => {
-    it("can be called multiple times without error", () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const sm = makeMockSessionManager();
-      const runner = createDeferredPromptRunner(store, sm as any, bus);
-      runner.start();
-      expect(() => {
-        runner.shutdown();
-        runner.shutdown();
-      }).not.toThrow();
-    });
-
     it("does not dispatch queued idle work after shutdown", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();

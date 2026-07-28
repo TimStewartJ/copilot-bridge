@@ -782,31 +782,34 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.modelSwitchingSessions.delete("switching");
   });
 
-  it("rejects concurrent resume admission for the same session id", async () => {
-    const { manager } = createManager();
-    const firstLease = await manager.beginSessionResume("same", { mcpServers: {} });
+  it("rejects concurrent and queued duplicate resumes for the same session id", async () => {
+    // rejects concurrent resume admission for the same session id
+    {
+      const { manager } = createManager();
+      const firstLease = await manager.beginSessionResume("same", { mcpServers: {} });
 
-    await expect(manager.beginSessionResume("same", { mcpServers: {} }))
-      .rejects.toThrow("Session same already has a resume in progress");
+      await expect(manager.beginSessionResume("same", { mcpServers: {} }))
+        .rejects.toThrow("Session same already has a resume in progress");
 
-    manager.endSessionResume(firstLease);
+      manager.endSessionResume(firstLease);
+    }
+
+    // rejects a duplicate resume while the first admission is waiting for capacity
+    {
+      const { manager } = createManager();
+      manager.maxCachedContexts = 1;
+      manager.sessionCapacityWaitTimeoutMs = 5_000;
+      const blockerLease = await manager.beginSessionResume("blocker", { mcpServers: {} });
+      const pendingLease = manager.beginSessionResume("same", { mcpServers: {} });
+      await vi.waitFor(() => expect(manager.pendingSessionResumeAdmissions.has("same")).toBe(true));
+
+      await expect(manager.beginSessionResume("same", { mcpServers: {} }))
+        .rejects.toThrow("Session same already has a resume in progress");
+
+      manager.endSessionResume(blockerLease);
+      manager.endSessionResume(await pendingLease);
+    }
   });
-
-  it("rejects a duplicate resume while the first admission is waiting for capacity", async () => {
-    const { manager } = createManager();
-    manager.maxCachedContexts = 1;
-    manager.sessionCapacityWaitTimeoutMs = 5_000;
-    const blockerLease = await manager.beginSessionResume("blocker", { mcpServers: {} });
-    const pendingLease = manager.beginSessionResume("same", { mcpServers: {} });
-    await vi.waitFor(() => expect(manager.pendingSessionResumeAdmissions.has("same")).toBe(true));
-
-    await expect(manager.beginSessionResume("same", { mcpServers: {} }))
-      .rejects.toThrow("Session same already has a resume in progress");
-
-    manager.endSessionResume(blockerLease);
-    manager.endSessionResume(await pendingLease);
-  });
-
   it("protects a cached session operation without reserving a second context", async () => {
     const { manager } = createManager();
     manager.maxCachedContexts = 1;

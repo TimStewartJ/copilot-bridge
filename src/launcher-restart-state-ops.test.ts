@@ -18,83 +18,31 @@ const emptyInfo: RestartPickupInfo = {
   requestedAt: null,
 };
 
-describe("buildWaitingState", () => {
-  it("produces a waiting-for-sessions state preserving the pickup info", () => {
+describe("launcher restart state builders", () => {
+  it("builds waiting and restarting states from pickup info, session count, and heartbeat", () => {
     expect(buildWaitingState(fullInfo, 3, NOW)).toEqual({
-      requestId: "req-abc123",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T11:59:00.000Z",
-      waitingSessions: 3,
-      launcherHeartbeatAt: NOW,
-      releaseFailure: null,
+      ...fullInfo, phase: "waiting-for-sessions", waitingSessions: 3, launcherHeartbeatAt: NOW, releaseFailure: null,
     });
-  });
-
-  it("handles null requestId / requestedAt (manual trigger)", () => {
     expect(buildWaitingState(emptyInfo, 0, NOW)).toEqual({
-      requestId: null,
-      phase: "waiting-for-sessions",
-      requestedAt: null,
-      waitingSessions: 0,
-      launcherHeartbeatAt: NOW,
-      releaseFailure: null,
+      ...emptyInfo, phase: "waiting-for-sessions", waitingSessions: 0, launcherHeartbeatAt: NOW, releaseFailure: null,
     });
-  });
-
-  it("reflects the updated session count on each heartbeat", () => {
-    const state1 = buildWaitingState(fullInfo, 1, NOW);
-    const state2 = buildWaitingState(fullInfo, 2, "2026-04-24T12:00:03.000Z");
-
-    expect(state1.waitingSessions).toBe(1);
-    expect(state2.waitingSessions).toBe(2);
-    expect(state2.launcherHeartbeatAt).toBe("2026-04-24T12:00:03.000Z");
-  });
-});
-
-describe("buildRestartingState", () => {
-  it("produces a restarting state with zero waitingSessions", () => {
+    // Restarting always zeroes the session count; the second-wait variant preserves it.
     expect(buildRestartingState(fullInfo, NOW)).toEqual({
-      requestId: "req-abc123",
-      phase: "restarting",
-      requestedAt: "2026-04-24T11:59:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: NOW,
-      releaseFailure: null,
+      ...fullInfo, phase: "restarting", waitingSessions: 0, launcherHeartbeatAt: NOW, releaseFailure: null,
     });
-  });
-
-  it("handles null requestId / requestedAt (manual trigger)", () => {
     expect(buildRestartingState(emptyInfo, NOW)).toEqual({
-      requestId: null,
-      phase: "restarting",
-      requestedAt: null,
-      waitingSessions: 0,
-      launcherHeartbeatAt: NOW,
-      releaseFailure: null,
+      ...emptyInfo, phase: "restarting", waitingSessions: 0, launcherHeartbeatAt: NOW, releaseFailure: null,
     });
-  });
-});
-
-describe("buildRestartingWaitingState", () => {
-  it("produces a restarting state with the active session count during second wait", () => {
     expect(buildRestartingWaitingState(fullInfo, 2, NOW)).toEqual({
-      requestId: "req-abc123",
-      phase: "restarting",
-      requestedAt: "2026-04-24T11:59:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: NOW,
-      releaseFailure: null,
+      ...fullInfo, phase: "restarting", waitingSessions: 2, launcherHeartbeatAt: NOW, releaseFailure: null,
     });
-  });
-
-  it("clears session count to zero when idle during second wait", () => {
     expect(buildRestartingWaitingState(fullInfo, 0, NOW)).toEqual({
-      requestId: "req-abc123",
-      phase: "restarting",
-      requestedAt: "2026-04-24T11:59:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: NOW,
-      releaseFailure: null,
+      ...fullInfo, phase: "restarting", waitingSessions: 0, launcherHeartbeatAt: NOW, releaseFailure: null,
     });
+
+    // Each heartbeat reflects the latest session count and timestamp.
+    const later = buildWaitingState(fullInfo, 2, "2026-04-24T12:00:03.000Z");
+    expect(later.waitingSessions).toBe(2);
+    expect(later.launcherHeartbeatAt).toBe("2026-04-24T12:00:03.000Z");
   });
 });

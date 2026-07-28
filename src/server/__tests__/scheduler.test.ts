@@ -30,50 +30,38 @@ afterEach(() => {
 
 // ── Cron math tests ──────────────────────────────────────────────
 
-describe("matchesField", () => {
-  it("matches wildcard", () => {
-    expect(matchesField(5, "*")).toBe(true);
+describe("cron math", () => {
+  it("matches every supported cron field grammar", () => {
+    const cases: [number, string, boolean][] = [
+      [5, "*", true],
+      [8, "8", true],
+      [9, "8", false],
+      [3, "1-5", true],
+      [1, "1-5", true],
+      [5, "1-5", true],
+      [6, "1-5", false],
+      [15, "0,15,30,45", true],
+      [10, "0,15,30,45", false],
+      [0, "*/5", true],
+      [5, "*/5", true],
+      [3, "*/5", false],
+      [2, "2-10/2", true],
+      [4, "2-10/2", true],
+      [3, "2-10/2", false],
+      [12, "2-10/2", false],
+      [2, "1-3,5", true],
+      [5, "1-3,5", true],
+      [4, "1-3,5", false],
+      [0, "*/0", false],
+    ];
+    for (const [value, field, expected] of cases) {
+      expect(matchesField(value, field), `${value} vs ${field}`).toBe(expected);
+    }
   });
-  it("matches exact number", () => {
-    expect(matchesField(8, "8")).toBe(true);
-    expect(matchesField(9, "8")).toBe(false);
-  });
-  it("matches range", () => {
-    expect(matchesField(3, "1-5")).toBe(true);
-    expect(matchesField(6, "1-5")).toBe(false);
-    expect(matchesField(1, "1-5")).toBe(true);
-    expect(matchesField(5, "1-5")).toBe(true);
-  });
-  it("matches list", () => {
-    expect(matchesField(15, "0,15,30,45")).toBe(true);
-    expect(matchesField(10, "0,15,30,45")).toBe(false);
-  });
-  it("matches step */N", () => {
-    expect(matchesField(0, "*/5")).toBe(true);
-    expect(matchesField(5, "*/5")).toBe(true);
-    expect(matchesField(3, "*/5")).toBe(false);
-  });
-  it("matches range with step N-M/S", () => {
-    expect(matchesField(2, "2-10/2")).toBe(true);
-    expect(matchesField(4, "2-10/2")).toBe(true);
-    expect(matchesField(3, "2-10/2")).toBe(false);
-    expect(matchesField(12, "2-10/2")).toBe(false);
-  });
-  it("matches lists that contain ranges and rejects invalid steps", () => {
-    expect(matchesField(2, "1-3,5")).toBe(true);
-    expect(matchesField(5, "1-3,5")).toBe(true);
-    expect(matchesField(4, "1-3,5")).toBe(false);
-    expect(matchesField(0, "*/0")).toBe(false);
-  });
-});
 
-describe("validateSupportedCronExpression", () => {
-  it("accepts the supported five-field and zero-second six-field cron grammars", () => {
+  it("accepts five-field and zero-second six-field grammars and rejects the rest", () => {
     expect(validateSupportedCronExpression("*/5 * * * *")).toEqual({ ok: true });
     expect(validateSupportedCronExpression("0 */5 * * * *")).toEqual({ ok: true });
-  });
-
-  it("rejects unsupported field counts and non-zero seconds fields", () => {
     expect(validateSupportedCronExpression("0 8 * *").ok).toBe(false);
     expect(validateSupportedCronExpression("0 0 8 * * * *").ok).toBe(false);
     expect(validateSupportedCronExpression("30 */5 * * * *")).toEqual({
@@ -81,124 +69,83 @@ describe("validateSupportedCronExpression", () => {
       error: expect.stringContaining("seconds field is 0"),
     });
   });
-});
 
-describe("matchesCron", () => {
-  it("matches a specific time", () => {
+  it("matches cron expressions against times, weekdays, timezones, and names", () => {
     const date = new Date("2026-04-14T08:00:00Z");
     expect(matchesCron("0 8 * * *", date, "UTC")).toBe(true);
     expect(matchesCron("0 9 * * *", date, "UTC")).toBe(false);
-  });
-  it("matches weekday range", () => {
-    // 2026-04-14 is a Tuesday (day 2)
-    const tue = new Date("2026-04-14T08:00:00Z");
-    expect(matchesCron("0 8 * * 1-5", tue, "UTC")).toBe(true);
-    // 2026-04-12 is a Sunday (day 0)
-    const sun = new Date("2026-04-12T08:00:00Z");
-    expect(matchesCron("0 8 * * 1-5", sun, "UTC")).toBe(false);
-  });
-  it("rejects invalid cron (fewer than 5 fields)", () => {
-    expect(matchesCron("0 8 * *", new Date())).toBe(false);
-  });
-  it("respects timezone", () => {
-    // 2026-04-14T15:00:00Z = 8:00 AM in America/Los_Angeles (PDT = UTC-7)
-    const date = new Date("2026-04-14T15:00:00Z");
-    expect(matchesCron("0 8 * * *", date, "America/Los_Angeles")).toBe(true);
-    expect(matchesCron("0 15 * * *", date, "America/Los_Angeles")).toBe(false);
-    expect(matchesCron("0 15 * * *", date, "UTC")).toBe(true);
-  });
-  it("supports month and weekday names", () => {
-    const date = new Date("2026-04-17T08:00:00Z");
-    expect(matchesCron("0 8 * apr fri", date, "UTC")).toBe(true);
-    expect(matchesCron("0 8 * apr mon", date, "UTC")).toBe(false);
-  });
-});
 
-describe("computeNextRunAt", () => {
-  it("computes next run for daily cron", () => {
-    const after = new Date("2026-04-14T07:30:00Z");
-    const next = computeNextRunAt("0 8 * * *", "UTC", after);
-    expect(next).toBe("2026-04-14T08:00:00.000Z");
+    // 2026-04-14 is a Tuesday (day 2); 2026-04-12 is a Sunday (day 0).
+    expect(matchesCron("0 8 * * 1-5", date, "UTC")).toBe(true);
+    expect(matchesCron("0 8 * * 1-5", new Date("2026-04-12T08:00:00Z"), "UTC")).toBe(false);
+
+    expect(matchesCron("0 8 * *", new Date())).toBe(false);
+
+    // 2026-04-14T15:00:00Z = 8:00 AM in America/Los_Angeles (PDT = UTC-7).
+    const pdt = new Date("2026-04-14T15:00:00Z");
+    expect(matchesCron("0 8 * * *", pdt, "America/Los_Angeles")).toBe(true);
+    expect(matchesCron("0 15 * * *", pdt, "America/Los_Angeles")).toBe(false);
+    expect(matchesCron("0 15 * * *", pdt, "UTC")).toBe(true);
+
+    const friday = new Date("2026-04-17T08:00:00Z");
+    expect(matchesCron("0 8 * apr fri", friday, "UTC")).toBe(true);
+    expect(matchesCron("0 8 * apr mon", friday, "UTC")).toBe(false);
   });
-  it("wraps to next day when past today's time", () => {
-    const after = new Date("2026-04-14T08:30:00Z");
-    const next = computeNextRunAt("0 8 * * *", "UTC", after);
-    expect(next).toBe("2026-04-15T08:00:00.000Z");
+
+  it("computes the next run for daily, timezone-aware, and six-field schedules", () => {
+    expect(computeNextRunAt("0 8 * * *", "UTC", new Date("2026-04-14T07:30:00Z")))
+      .toBe("2026-04-14T08:00:00.000Z");
+    // Wraps to the next day once today's time has passed.
+    expect(computeNextRunAt("0 8 * * *", "UTC", new Date("2026-04-14T08:30:00Z")))
+      .toBe("2026-04-15T08:00:00.000Z");
+    // Exactly on a matching minute returns the following run.
+    expect(computeNextRunAt("0 8 * * *", "UTC", new Date("2026-04-14T08:00:00Z")))
+      .toBe("2026-04-15T08:00:00.000Z");
+    // 7:30 AM PDT -> next 8 AM PDT.
+    expect(computeNextRunAt("0 8 * * *", "America/Los_Angeles", new Date("2026-04-14T14:30:00Z")))
+      .toBe("2026-04-14T15:00:00.000Z");
+    expect(computeNextRunAt("0 0 8 * * *", "UTC", new Date("2026-04-14T07:30:00Z")))
+      .toBe("2026-04-14T08:00:00.000Z");
   });
-  it("respects timezone for next run", () => {
-    // After 7:30 AM LA time, next run of "0 8 * * *" should be 8 AM LA time
-    const after = new Date("2026-04-14T14:30:00Z"); // 7:30 AM PDT
-    const next = computeNextRunAt("0 8 * * *", "America/Los_Angeles", after);
-    expect(next).toBe("2026-04-14T15:00:00.000Z"); // 8:00 AM PDT
+
+  it("looks far enough ahead for weekday, sparse, and conjunctive schedules", () => {
+    // 2026-04-16 is a Thursday; "0 8 * * 5" only matches Fridays.
+    expect(computeNextRunAt("0 8 * * 5", "UTC", new Date("2026-04-16T09:00:00Z")))
+      .toBe("2026-04-17T08:00:00.000Z");
+    // Friday after the scheduled time; next Monday is more than 48 hours away.
+    expect(computeNextRunAt("0 8 * * 1", "UTC", new Date("2026-04-17T09:00:00Z")))
+      .toBe("2026-04-20T08:00:00.000Z");
+    // Beyond the old 35-day lookahead window.
+    expect(computeNextRunAt("0 0 29 2 *", "UTC", new Date("2026-03-01T00:00:00Z")))
+      .toBe("2028-02-29T00:00:00.000Z");
+    // Day-of-month and weekday constraints stay conjunctive.
+    expect(computeNextRunAt("0 9 13 * 5", "UTC", new Date("2026-02-14T00:00:00Z")))
+      .toBe("2026-03-13T09:00:00.000Z");
   });
-  it("returns undefined for invalid cron", () => {
+
+  it("returns undefined for invalid crons, invalid timezones, and non-zero seconds", () => {
     expect(computeNextRunAt("invalid", "UTC")).toBeUndefined();
-  });
-  it("returns undefined for invalid timezone", () => {
     expect(computeNextRunAt("0 8 * * *", "Not/A_Zone")).toBeUndefined();
     expect(matchesCron("0 8 * * *", new Date("2026-04-14T08:00:00Z"), "Not/A_Zone")).toBe(false);
-  });
-  it("skips to next matching day of week", () => {
-    // 2026-04-16 is a Thursday, "0 8 * * 5" = only Fridays
-    // next Friday is 2026-04-17 (only ~23 hours gap)
-    const after = new Date("2026-04-16T09:00:00Z");
-    const next = computeNextRunAt("0 8 * * 5", "UTC", after);
-    expect(next).toBe("2026-04-17T08:00:00.000Z");
-  });
-  it("looks far enough ahead for weekday schedules across weekends", () => {
-    // 2026-04-17 is a Friday after the scheduled time; next Monday is more than 48 hours away.
-    const after = new Date("2026-04-17T09:00:00Z");
-    const next = computeNextRunAt("0 8 * * 1", "UTC", after);
-    expect(next).toBe("2026-04-20T08:00:00.000Z");
-  });
-  it("returns the following run when after is exactly on a matching minute", () => {
-    const after = new Date("2026-04-14T08:00:00Z");
-    const next = computeNextRunAt("0 8 * * *", "UTC", after);
-    expect(next).toBe("2026-04-15T08:00:00.000Z");
-  });
-  it("supports zero-second six-field cron expressions", () => {
-    const after = new Date("2026-04-14T07:30:00Z");
-    const next = computeNextRunAt("0 0 8 * * *", "UTC", after);
-    expect(next).toBe("2026-04-14T08:00:00.000Z");
-  });
-  it("does not support non-zero-second six-field cron expressions", () => {
-    const after = new Date("2026-04-14T07:30:00Z");
-    expect(computeNextRunAt("30 */5 * * * *", "UTC", after)).toBeUndefined();
+    expect(computeNextRunAt("30 */5 * * * *", "UTC", new Date("2026-04-14T07:30:00Z"))).toBeUndefined();
     expect(matchesCron("30 */5 * * * *", new Date("2026-04-14T07:30:30Z"), "UTC")).toBe(false);
   });
-  it("looks beyond the old 35-day window for sparse schedules", () => {
-    const after = new Date("2026-03-01T00:00:00Z");
-    const next = computeNextRunAt("0 0 29 2 *", "UTC", after);
-    expect(next).toBe("2028-02-29T00:00:00.000Z");
-  });
-  it("keeps day-of-month and weekday constraints conjunctive", () => {
-    const after = new Date("2026-02-14T00:00:00Z");
-    const next = computeNextRunAt("0 9 13 * 5", "UTC", after);
-    expect(next).toBe("2026-03-13T09:00:00.000Z");
-  });
-  it("skips timezone wall-clock times that do not exist during spring-forward", () => {
-    const after = new Date("2022-03-12T00:00:00Z");
-    const next = computeNextRunAt("0 2 13 3 *", "America/Los_Angeles", after);
-    expect(next).toBe("2023-03-13T09:00:00.000Z");
-  });
-  it("chooses the first timezone wall-clock occurrence during fall-back", () => {
-    const after = new Date("2022-11-06T00:00:00Z");
-    const next = computeNextRunAt("30 1 6 11 *", "America/Los_Angeles", after);
-    expect(next).toBe("2022-11-06T08:30:00.000Z");
-  });
-  it("does not replay the second duplicated fall-back wall-clock occurrence", () => {
-    const after = new Date("2022-11-06T08:45:00Z");
-    const next = computeNextRunAt("30 1 6 11 *", "America/Los_Angeles", after);
-    expect(next).toBe("2023-11-06T09:30:00.000Z");
-  });
-  it("does not replay duplicated fall-back wall-clock slots for stepped schedules", () => {
-    const after = new Date("2022-11-06T08:15:00Z");
-    const next = computeNextRunAt("*/15 1 6 11 *", "America/Los_Angeles", after);
-    expect(next).toBe("2022-11-06T08:30:00.000Z");
 
-    const afterLastFirstOccurrence = new Date("2022-11-06T08:45:00Z");
-    const following = computeNextRunAt("*/15 1 6 11 *", "America/Los_Angeles", afterLastFirstOccurrence);
-    expect(following).toBe("2023-11-06T09:00:00.000Z");
+  it("resolves daylight saving spring-forward and fall-back wall-clock slots", () => {
+    // Spring-forward skips a wall-clock time that never happens.
+    expect(computeNextRunAt("0 2 13 3 *", "America/Los_Angeles", new Date("2022-03-12T00:00:00Z")))
+      .toBe("2023-03-13T09:00:00.000Z");
+    // Fall-back uses the first duplicated occurrence...
+    expect(computeNextRunAt("30 1 6 11 *", "America/Los_Angeles", new Date("2022-11-06T00:00:00Z")))
+      .toBe("2022-11-06T08:30:00.000Z");
+    // ...and never replays the second one.
+    expect(computeNextRunAt("30 1 6 11 *", "America/Los_Angeles", new Date("2022-11-06T08:45:00Z")))
+      .toBe("2023-11-06T09:30:00.000Z");
+    // Stepped schedules follow the same rule.
+    expect(computeNextRunAt("*/15 1 6 11 *", "America/Los_Angeles", new Date("2022-11-06T08:15:00Z")))
+      .toBe("2022-11-06T08:30:00.000Z");
+    expect(computeNextRunAt("*/15 1 6 11 *", "America/Los_Angeles", new Date("2022-11-06T08:45:00Z")))
+      .toBe("2023-11-06T09:00:00.000Z");
   });
 });
 
@@ -1082,11 +1029,11 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.deleteSession).toHaveBeenCalledWith("sched-session");
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).not.toContain("sched-session");
-  });
 
-  it("surfaces cleanup failures when synchronous launch rejection cannot remove the new session", async () => {
-    const { ctx } = createTestApp();
-    const sessionManager = {
+    // When the rollback itself fails, the error is surfaced and the session stays
+    // linked to the task so the orphan is visible rather than silently dropped.
+    const { ctx: failCtx } = createTestApp();
+    const failingManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
       startWork: vi.fn(() => {
@@ -1095,24 +1042,26 @@ describe("scheduler restart gating", () => {
       deleteSession: vi.fn().mockRejectedValue(new Error("delete failed")),
     } as any;
 
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
+    scheduler.initialize(failingManager, {
+      scheduleStore: failCtx.scheduleStore,
+      taskStore: failCtx.taskStore,
+      sessionMetaStore: failCtx.sessionMetaStore,
+      globalBus: failCtx.globalBus,
     });
 
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
+    const failTask = failCtx.taskStore.createTask("Scheduled Task");
+    const failSchedule = failCtx.scheduleStore.createSchedule({
+      taskId: failTask.id,
       name: "Rollback cleanup failure",
       prompt: "run now",
       type: "cron",
       cron: "0 0 * * *",
     });
 
-    await expect(scheduler.triggerSchedule(schedule.id)).rejects.toThrow(/Failed to roll back session .*after launch rejection/);
-    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("sched-session");
+    await expect(scheduler.triggerSchedule(failSchedule.id)).rejects.toThrow(
+      /Failed to roll back session .*after launch rejection/,
+    );
+    expect(failCtx.taskStore.getTask(failTask.id)?.sessionIds).toContain("sched-session");
   });
 
   it("links a newly created scheduled session before startWork runs", async () => {
@@ -1438,99 +1387,101 @@ describe("scheduler startup recovery", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith("far-future-one-shot", "run far in the future");
   });
 
-  it("retries a one-shot timer in-process after a transient pre-launch failure", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+  it("retries a one-shot timer in-process after a transient pre-launch failure or after linkSession fails", async () => {
+    // Case 1: createTaskSession rejects once (transient pre-launch failure)
+    {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn()
-        .mockRejectedValueOnce(new Error("create failed"))
-        .mockResolvedValueOnce({ sessionId: "retried-one-shot-session" }),
-      startWork: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
+      const { ctx } = createTestApp();
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn()
+          .mockRejectedValueOnce(new Error("create failed"))
+          .mockResolvedValueOnce({ sessionId: "retried-one-shot-session" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
 
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Retry failing one-shot",
-      prompt: "run after retry",
-      type: "once",
-      runAt: new Date(Date.now() + 1_000).toISOString(),
-    });
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Retry failing one-shot",
+        prompt: "run after retry",
+        type: "once",
+        runAt: new Date(Date.now() + 1_000).toISOString(),
+      });
 
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-    // Stop the recurring missed-run watchdog so it cannot perturb
-    // vi.advanceTimersByTimeAsync under load and fire the +30s in-process retry
-    // early; the one-shot timer armed by initialize stays armed.
-    scheduler.stopMissedRunWatchdogForTests();
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+      // Stop the recurring missed-run watchdog so it cannot perturb
+      // vi.advanceTimersByTimeAsync under load and fire the +30s in-process retry
+      // early; the one-shot timer armed by initialize stays armed.
+      scheduler.stopMissedRunWatchdogForTests();
 
-    await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sessionManager.createTaskSession, "pre-launch: first attempt fired").toHaveBeenCalledTimes(1);
+      expect(sessionManager.startWork, "pre-launch: not started yet").not.toHaveBeenCalled();
+      expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt, "pre-launch: nextRunAt pushed").toBe("2026-04-16T16:00:31.000Z");
 
-    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    expect(sessionManager.startWork).not.toHaveBeenCalled();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBe("2026-04-16T16:00:31.000Z");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(sessionManager.createTaskSession, "pre-launch: retried").toHaveBeenCalledTimes(2);
+      expect(sessionManager.startWork, "pre-launch: started on retry").toHaveBeenCalledWith("retried-one-shot-session", "run after retry");
 
-    await vi.advanceTimersByTimeAsync(30_000);
+      vi.useRealTimers();
+    }
 
-    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(2);
-    expect(sessionManager.startWork).toHaveBeenCalledWith("retried-one-shot-session", "run after retry");
-  });
+    // Case 2: linkSession throws once (cleanup succeeds and retry fires)
+    {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-  it("retries a one-shot timer after linkSession fails but cleanup succeeds", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+      const { ctx } = createTestApp();
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn()
+          .mockResolvedValueOnce({ sessionId: "link-fail-session-1" })
+          .mockResolvedValueOnce({ sessionId: "link-fail-session-2" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
 
-    const { ctx } = createTestApp();
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn()
-        .mockResolvedValueOnce({ sessionId: "link-fail-session-1" })
-        .mockResolvedValueOnce({ sessionId: "link-fail-session-2" }),
-      startWork: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Retry one-shot link failure",
+        prompt: "run after link retry",
+        type: "once",
+        runAt: new Date(Date.now() + 1_000).toISOString(),
+      });
 
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Retry one-shot link failure",
-      prompt: "run after link retry",
-      type: "once",
-      runAt: new Date(Date.now() + 1_000).toISOString(),
-    });
+      const linkSpy = vi.spyOn(ctx.taskStore, "linkSession").mockImplementationOnce(() => {
+        throw new Error("link failed");
+      });
 
-    const linkSpy = vi.spyOn(ctx.taskStore, "linkSession").mockImplementationOnce(() => {
-      throw new Error("link failed");
-    });
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
 
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sessionManager.createTaskSession, "link-fail: first attempt").toHaveBeenCalledTimes(1);
+      expect(sessionManager.deleteSession, "link-fail: session cleaned up").toHaveBeenCalledWith("link-fail-session-1");
+      expect(sessionManager.startWork, "link-fail: not started yet").not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => { expect(sessionManager.createTaskSession, "link-fail: retried").toHaveBeenCalledTimes(2); });
+      expect(sessionManager.startWork, "link-fail: started on retry").toHaveBeenCalledWith("link-fail-session-2", "run after link retry");
+      linkSpy.mockRestore();
 
-    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    expect(sessionManager.deleteSession).toHaveBeenCalledWith("link-fail-session-1");
-    expect(sessionManager.startWork).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(30_000);
-
-    await vi.waitFor(() => {
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(2);
-    });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("link-fail-session-2", "run after link retry");
-    linkSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("catches up missed one-shot schedules within the grace window", async () => {
@@ -1568,69 +1519,6 @@ describe("scheduler startup recovery", () => {
     const updated = ctx.scheduleStore.getSchedule(schedule.id)!;
     expect(updated.runCount).toBe(1);
     expect(updated.enabled).toBe(false);
-  });
-
-  it("retries missed one-shot catch-up after restart clears", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
-
-    const tempDir = makeTestDir("restart-state-scheduler");
-    const docsDir = join(tempDir, "docs");
-    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
-    const { ctx } = createTestApp({
-      runtimePaths: { dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
-    });
-    try {
-      configureRestartStateStore({ dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
-      await writeRestartState(join(tempDir, "restart-state.json"), {
-        requestId: "req-one-shot-catchup",
-        phase: "waiting-for-sessions",
-        requestedAt: new Date().toISOString(),
-        waitingSessions: 1,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
-
-      const sessionManager = {
-        isSessionBusy: vi.fn().mockReturnValue(false),
-        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "restart-cleared-one-shot" }),
-        startWork: vi.fn(),
-        deleteSession: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Restart deferred one-shot",
-        prompt: "catch up later",
-        type: "once",
-        runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
-      });
-
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      await scheduler.waitForMissedRunCatchUpForTests();
-      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-
-      clearRestartPending();
-      ctx.globalBus.emit({ type: "server:restart-cleared" });
-
-      await scheduler.waitForMissedRunCatchUpForTests();
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-one-shot", "catch up later");
-      expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-        runCount: 1,
-        enabled: false,
-      });
-    } finally {
-      clearRestartPending();
-      configureRestartStateStore(undefined);
-    }
   });
 
   it("polls persisted restart state and catches up after launcher-style restart clears", async () => {

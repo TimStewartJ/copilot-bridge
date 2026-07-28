@@ -15,23 +15,21 @@ function createTaskSessionIndex(...sessionIds: string[]): Pick<Task, "sessionIds
 }
 
 describe("getQuickChatSessions", () => {
-  it("hides sessions linked by server session metadata when tasks are stale", () => {
-    const sessions = [
+  it("hides sessions that are stale via server metadata or task cache", () => {
+    // linked by server session metadata (task cache is stale)
+    const sessionsByMeta = [
       createSession({ sessionId: "scheduled-session", linkedTaskIds: ["task-1"] }),
       createSession({ sessionId: "quick-chat", linkedTaskIds: [] }),
     ];
-
-    expect(getQuickChatSessions(sessions, [createTaskSessionIndex()]).map((session) => session.sessionId))
+    expect(getQuickChatSessions(sessionsByMeta, [createTaskSessionIndex()]).map((s) => s.sessionId))
       .toEqual(["quick-chat"]);
-  });
 
-  it("hides sessions linked by task cache when session metadata is stale", () => {
-    const sessions = [
+    // linked by task cache (session metadata is stale)
+    const sessionsByCache = [
       createSession({ sessionId: "moved-session", linkedTaskIds: [] }),
       createSession({ sessionId: "quick-chat", linkedTaskIds: [] }),
     ];
-
-    expect(getQuickChatSessions(sessions, [createTaskSessionIndex("moved-session")]).map((session) => session.sessionId))
+    expect(getQuickChatSessions(sessionsByCache, [createTaskSessionIndex("moved-session")]).map((s) => s.sessionId))
       .toEqual(["quick-chat"]);
   });
 

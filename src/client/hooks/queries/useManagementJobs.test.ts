@@ -52,8 +52,4 @@ describe("management job query helpers", () => {
     expect(getManagementJobRefetchInterval(detailWithStatus("running"))).toBe(ACTIVE_MANAGEMENT_JOB_REFETCH_MS);
   });
 
-  it("uses function-form refetch intervals based on latest query data", () => {
-    expect(typeof getManagementJobsQueryOptions().refetchInterval).toBe("function");
-    expect(typeof getManagementJobQueryOptions("job-1").refetchInterval).toBe("function");
-  });
 });

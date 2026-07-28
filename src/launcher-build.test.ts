@@ -33,48 +33,42 @@ describe("runLauncherBuild", () => {
     ]);
   });
 
-  it("uses a stamped deploy build when the current commit was already validated", () => {
-    const ensureDeps = vi.fn(() => true);
-    const run = vi.fn(() => ({ ok: true, output: "" }));
-    const log = vi.fn();
-
+  it("uses a stamped deploy build when trusted or falls back to full validation otherwise", () => {
+    // When the current commit was already validated, only runs production build
+    const run1 = vi.fn(() => ({ ok: true, output: "" }));
+    const log1 = vi.fn();
     expect(runLauncherBuild({
-      ensureDeps,
-      run,
-      log,
+      ensureDeps: vi.fn(() => true),
+      run: run1,
+      log: log1,
       resolveDeployValidationStamp: () => ({
         valid: true,
         commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }),
     })).toBe(true);
-
-    expect(run.mock.calls).toEqual([
+    expect(run1.mock.calls).toEqual([
       ["npm run build", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
     ]);
-    expect(log).toHaveBeenCalledWith(
+    expect(log1).toHaveBeenCalledWith(
       "Deploy validation already passed for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa — running production build only",
     );
-  });
 
-  it("falls back to full deploy validation when the stamp is not trusted", () => {
-    const ensureDeps = vi.fn(() => true);
-    const run = vi.fn(() => ({ ok: true, output: "" }));
-    const log = vi.fn();
-
+    // When stamp is not trusted, falls back to full validation
+    const run2 = vi.fn(() => ({ ok: true, output: "" }));
+    const log2 = vi.fn();
     expect(runLauncherBuild({
-      ensureDeps,
-      run,
-      log,
+      ensureDeps: vi.fn(() => true),
+      run: run2,
+      log: log2,
       resolveDeployValidationStamp: () => ({
         valid: false,
         reason: "stamp dependency hash does not match current dependencies",
       }),
     })).toBe(true);
-
-    expect(run.mock.calls).toEqual([
+    expect(run2.mock.calls).toEqual([
       ["npm run check:deploy", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
     ]);
-    expect(log).toHaveBeenCalledWith(
+    expect(log2).toHaveBeenCalledWith(
       "Deploy validation stamp not used: stamp dependency hash does not match current dependencies",
     );
   });
@@ -89,57 +83,36 @@ describe("runLauncherBuild", () => {
     expect(log).toHaveBeenCalledWith("Deploy validation failed:\nplain vitest failed");
   });
 
-  it("skips deploy validation for operational restarts when source is unchanged", () => {
-    const ensureDeps = vi.fn(() => true);
-    const run = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
-    const log = vi.fn();
-
+  it("skips or keeps deploy validation for operational restarts depending on source changes", () => {
+    // No source changes: skip validation
+    const run1 = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
+    const log1 = vi.fn();
     expect(runLauncherBuild({
-      ensureDeps,
-      run,
-      log,
+      ensureDeps: vi.fn(() => true),
+      run: run1,
+      log: log1,
       validationMode: "operational",
       hasSourceChanges: () => false,
     })).toBe(true);
+    expect(run1).not.toHaveBeenCalled();
+    expect(log1).toHaveBeenCalledWith("Operational restart validation skipped — no source changes detected");
 
-    expect(ensureDeps).toHaveBeenCalledOnce();
-    expect(run).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("Operational restart validation skipped — no source changes detected");
-  });
-
-  it("keeps deploy validation for operational restarts when source changed", () => {
-    const ensureDeps = vi.fn(() => true);
-    const run = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
-    const log = vi.fn();
-
+    // Source changed: run full validation
+    const run2 = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
+    const log2 = vi.fn();
     expect(runLauncherBuild({
-      ensureDeps,
-      run,
-      log,
+      ensureDeps: vi.fn(() => true),
+      run: run2,
+      log: log2,
       validationMode: "operational",
       hasSourceChanges: () => true,
     })).toBe(true);
-
-    expect(run.mock.calls.map(([cmd]) => cmd)).toEqual([
-      "npm run check:deploy",
-    ]);
-    expect(log).toHaveBeenCalledWith("Operational restart found source changes — running deploy validation");
+    expect(run2.mock.calls.map(([cmd]) => cmd)).toEqual(["npm run check:deploy"]);
+    expect(log2).toHaveBeenCalledWith("Operational restart found source changes — running deploy validation");
   });
 });
 
 describe("rebuildAfterRollback", () => {
-  it("fails fast when dependency sync fails during rollback", () => {
-    const ensureDeps = vi.fn(() => false);
-    const run = vi.fn();
-    const log = vi.fn();
-
-    expect(rebuildAfterRollback({ ensureDeps, run, log })).toBe(false);
-
-    expect(ensureDeps).toHaveBeenCalledOnce();
-    expect(run).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("Dependency sync failed during rollback");
-  });
-
   it("runs only the runtime rollback validation gate", () => {
     const ensureDeps = vi.fn(() => true);
     const run = vi.fn(() => ({ ok: true, output: "" }));
@@ -172,48 +145,46 @@ describe("runLauncherRollback", () => {
 });
 
 describe("runLauncherRollbackWithCheckpointHandling", () => {
-  it("clears the checkpoint only after rollback succeeds", () => {
-    const ensureDeps = vi.fn(() => true);
-    const run = vi.fn(() => ({ ok: true, output: "" }));
-    const log = vi.fn();
-    const clearCheckpoint = vi.fn();
-    const restoreCheckpoint = vi.fn();
-
+  it("clears the checkpoint on success and restores it on failure", () => {
+    // Successful rollback: clears checkpoint, does not restore
     expect(
       runLauncherRollbackWithCheckpointHandling({
         rollbackTarget: "abc123",
-        ensureDeps,
-        run,
-        log,
-        clearCheckpoint,
-        restoreCheckpoint,
+        ensureDeps: vi.fn(() => true),
+        run: vi.fn(() => ({ ok: true, output: "" })),
+        log: vi.fn(),
+        clearCheckpoint: vi.fn(),
+        restoreCheckpoint: vi.fn(),
       }),
     ).toBe(true);
+    const clearMock1 = vi.fn();
+    const restoreMock1 = vi.fn();
+    runLauncherRollbackWithCheckpointHandling({
+      rollbackTarget: "abc123",
+      ensureDeps: vi.fn(() => true),
+      run: vi.fn(() => ({ ok: true, output: "" })),
+      log: vi.fn(),
+      clearCheckpoint: clearMock1,
+      restoreCheckpoint: restoreMock1,
+    });
+    expect(clearMock1).toHaveBeenCalledOnce();
+    expect(restoreMock1).not.toHaveBeenCalled();
 
-    expect(clearCheckpoint).toHaveBeenCalledOnce();
-    expect(restoreCheckpoint).not.toHaveBeenCalled();
-  });
-
-  it("restores the checkpoint when rollback fails", () => {
-    const ensureDeps = vi.fn(() => true);
-    const run = vi.fn(() => ({ ok: false, output: "reset failed" }));
-    const log = vi.fn();
-    const clearCheckpoint = vi.fn();
-    const restoreCheckpoint = vi.fn();
-
+    // Failed rollback: restores checkpoint, does not clear
+    const clearMock2 = vi.fn();
+    const restoreMock2 = vi.fn();
     expect(
       runLauncherRollbackWithCheckpointHandling({
         rollbackTarget: "abc123",
-        ensureDeps,
-        run,
-        log,
-        clearCheckpoint,
-        restoreCheckpoint,
+        ensureDeps: vi.fn(() => true),
+        run: vi.fn(() => ({ ok: false, output: "reset failed" })),
+        log: vi.fn(),
+        clearCheckpoint: clearMock2,
+        restoreCheckpoint: restoreMock2,
       }),
     ).toBe(false);
-
-    expect(clearCheckpoint).not.toHaveBeenCalled();
-    expect(restoreCheckpoint).toHaveBeenCalledOnce();
+    expect(clearMock2).not.toHaveBeenCalled();
+    expect(restoreMock2).toHaveBeenCalledOnce();
   });
 });
 

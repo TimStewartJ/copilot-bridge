@@ -31,22 +31,14 @@ afterEach(() => {
 });
 
 describe("normalizeStreamOutput", () => {
-  it("trims string output", async () => {
+  it("trims strings, decodes Buffers, and returns empty string for other input", async () => {
     const { normalizeStreamOutput } = await loadGitCommandModule();
-    expect(normalizeStreamOutput("  hello world  ")).toBe("hello world");
-  });
-
-  it("decodes and trims Buffer output", async () => {
-    const { normalizeStreamOutput } = await loadGitCommandModule();
-    expect(normalizeStreamOutput(Buffer.from("  buffered  "))).toBe("buffered");
-  });
-
-  it("returns an empty string for non-string, non-Buffer input", async () => {
-    const { normalizeStreamOutput } = await loadGitCommandModule();
-    expect(normalizeStreamOutput(undefined)).toBe("");
-    expect(normalizeStreamOutput(null)).toBe("");
-    expect(normalizeStreamOutput(42)).toBe("");
-    expect(normalizeStreamOutput({})).toBe("");
+    expect(normalizeStreamOutput("  hello world  "), "string").toBe("hello world");
+    expect(normalizeStreamOutput(Buffer.from("  buffered  ")), "Buffer").toBe("buffered");
+    expect(normalizeStreamOutput(undefined), "undefined").toBe("");
+    expect(normalizeStreamOutput(null), "null").toBe("");
+    expect(normalizeStreamOutput(42), "number").toBe("");
+    expect(normalizeStreamOutput({}), "object").toBe("");
   });
 });
 

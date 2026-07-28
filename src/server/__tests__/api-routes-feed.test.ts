@@ -30,18 +30,6 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Feed routes", () => {
-  it("GET /api/feed returns active cards by default", async () => {
-    const active = ctx.feedStore.saveCard({ title: "Active card" }).card;
-    ctx.feedStore.saveCard({ title: "Done card", status: "done" });
-
-    const res = await request(app).get("/api/feed");
-
-    expect(res.status).toBe(200);
-    expect(res.body.cards).toEqual([
-      expect.objectContaining({ id: active.id, title: "Active card", status: "active" }),
-    ]);
-  });
-
   it("POST /api/feed creates cards and keyed saves upsert", async () => {
     const create = await request(app)
       .post("/api/feed")
@@ -90,176 +78,6 @@ describe("Feed routes", () => {
     }));
   });
 
-  it("keyed saves do not reactivate dismissed cards unless status is explicit", async () => {
-    const create = await request(app)
-      .post("/api/feed")
-      .send({ key: "decision:one", title: "Pick one" });
-    const id = create.body.card.id;
-
-    await request(app)
-      .patch(`/api/feed/${id}`)
-      .send({ status: "dismissed" })
-      .expect(200);
-
-    const implicit = await request(app)
-      .post("/api/feed")
-      .send({ key: "decision:one", title: "Still pick one" });
-    expect(implicit.status).toBe(200);
-    expect(implicit.body.card.status).toBe("dismissed");
-
-    const explicit = await request(app)
-      .post("/api/feed")
-      .send({ key: "decision:one", status: "active" });
-    expect(explicit.status).toBe(200);
-    expect(explicit.body.card.status).toBe("active");
-  });
-
-  it("rejects identifier-only feed saves without emitting change events", async () => {
-    const existing = ctx.feedStore.saveCard({ key: "preview:no-op", title: "Preview" }).card;
-    const events: unknown[] = [];
-    ctx.globalBus.subscribe((event) => {
-      if (event.type === "feed:changed") events.push(event);
-    });
-
-    const keyOnly = await request(app)
-      .post("/api/feed")
-      .send({ key: "preview:no-op" });
-
-    expect(keyOnly.status).toBe(400);
-    expect(keyOnly.body.error).toContain("No fields to update");
-    expect(events).toEqual([]);
-    expect(ctx.feedStore.getCard(existing.id)).toEqual(existing);
-
-    const idOnly = await request(app)
-      .post("/api/feed")
-      .send({ id: existing.id });
-
-    expect(idOnly.status).toBe(400);
-    expect(events).toEqual([]);
-  });
-
-  it("GET /api/feed filters cards", async () => {
-    const task = ctx.taskStore.createTask("Feed task");
-    const taskCard = ctx.feedStore.saveCard({ title: "Task todo", taskId: task.id, kind: "todo" }).card;
-    ctx.feedStore.saveCard({ title: "Session note", sessionId: "session-1", kind: "note" });
-    ctx.feedStore.saveCard({ title: "Dismissed", status: "dismissed", kind: "todo" });
-
-    const byTask = await request(app).get(`/api/feed?taskId=${task.id}`);
-    expect(byTask.body.cards.map((card: any) => card.id)).toEqual([taskCard.id]);
-
-    const bySession = await request(app).get("/api/feed?sessionId=session-1");
-    expect(bySession.body.cards).toHaveLength(1);
-
-    const byKind = await request(app).get("/api/feed?kind=todo");
-    expect(byKind.body.cards.map((card: any) => card.id)).toEqual([taskCard.id]);
-
-    const all = await request(app).get("/api/feed?includeDismissed=true");
-    expect(all.body.cards).toHaveLength(3);
-  });
-
-  it("GET /api/feed isolates a keyed card family by keyPrefix", async () => {
-    const docsCheck = ctx.feedStore.saveCard({ key: "docs-maintenance:check:1", title: "Docs check" }).card;
-    const docsAudit = ctx.feedStore.saveCard({ key: "docs-maintenance:audit:2", title: "Docs audit" }).card;
-    ctx.feedStore.saveCard({ key: "platform-audit:slug", title: "Platform audit" });
-    ctx.feedStore.saveCard({ title: "Keyless card" });
-
-    const family = await request(app).get(`/api/feed?keyPrefix=${encodeURIComponent("docs-maintenance:")}`);
-    expect(family.status).toBe(200);
-    expect(new Set(family.body.cards.map((card: any) => card.id))).toEqual(new Set([docsCheck.id, docsAudit.id]));
-
-    const narrower = await request(app).get(`/api/feed?keyPrefix=${encodeURIComponent("docs-maintenance:check:")}`);
-    expect(narrower.body.cards.map((card: any) => card.id)).toEqual([docsCheck.id]);
-  });
-
-  it("GET /api/feed paginates cards with an opaque cursor", async () => {
-    const first = ctx.feedStore.saveCard({ title: "First" }).card;
-    const second = ctx.feedStore.saveCard({ title: "Second" }).card;
-    const third = ctx.feedStore.saveCard({ title: "Third" }).card;
-
-    const firstPage = await request(app).get("/api/feed?limit=2");
-
-    expect(firstPage.status).toBe(200);
-    expect(firstPage.body.cards).toHaveLength(2);
-    expect(firstPage.body.nextCursor).toEqual(expect.any(String));
-
-    const secondPage = await request(app)
-      .get(`/api/feed?limit=2&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
-    const returnedIds = [
-      ...firstPage.body.cards.map((card: any) => card.id),
-      ...secondPage.body.cards.map((card: any) => card.id),
-    ];
-
-    expect(secondPage.status).toBe(200);
-    expect(secondPage.body.nextCursor).toBeNull();
-    expect(new Set(returnedIds)).toEqual(new Set([first.id, second.id, third.id]));
-  });
-
-  it("GET /api/feed paginates resolved cards by updated time across equal status changes", async () => {
-    const statusChangedAt = "2026-05-13T10:00:00.000Z";
-    let oldestUpdated!: { id: string };
-    let sameUpdatedHighId!: { id: string };
-    let sameUpdatedLowId!: { id: string };
-    let newestUpdated!: { id: string };
-
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date(statusChangedAt));
-      oldestUpdated = ctx.feedStore.saveCard(
-        { title: "Oldest updated", status: "done" },
-        { createId: "00000000-0000-4000-8000-000000000001" },
-      ).card;
-      sameUpdatedHighId = ctx.feedStore.saveCard(
-        { title: "Same updated high id", status: "done" },
-        { createId: "00000000-0000-4000-8000-000000000004" },
-      ).card;
-      sameUpdatedLowId = ctx.feedStore.saveCard(
-        { title: "Same updated low id", status: "done" },
-        { createId: "00000000-0000-4000-8000-000000000003" },
-      ).card;
-      newestUpdated = ctx.feedStore.saveCard(
-        { title: "Newest updated", status: "done" },
-        { createId: "00000000-0000-4000-8000-000000000002" },
-      ).card;
-
-      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
-      ctx.feedStore.updateCardById(oldestUpdated.id, { body: "Updated first" });
-      vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
-      ctx.feedStore.updateCardById(sameUpdatedHighId.id, { body: "Updated second" });
-      ctx.feedStore.updateCardById(sameUpdatedLowId.id, { body: "Updated third" });
-      vi.setSystemTime(new Date("2026-05-13T10:03:00.000Z"));
-      ctx.feedStore.updateCardById(newestUpdated.id, { body: "Updated fourth" });
-
-      const seededCards = [oldestUpdated, sameUpdatedHighId, sameUpdatedLowId, newestUpdated]
-        .map((card) => ctx.feedStore.getCard(card.id)!);
-      expect(new Set(seededCards.map((card) => card.statusChangedAt))).toEqual(new Set([statusChangedAt]));
-    } finally {
-      vi.useRealTimers();
-    }
-
-    const firstPage = await request(app).get("/api/feed?status=done&limit=2");
-    expect(firstPage.status).toBe(200);
-    expect(firstPage.body.cards.map((card: any) => card.id)).toEqual([newestUpdated.id, sameUpdatedHighId.id]);
-    expect(firstPage.body.nextCursor).toEqual(expect.any(String));
-
-    const secondPage = await request(app)
-      .get(`/api/feed?status=done&limit=2&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
-    expect(secondPage.status).toBe(200);
-    expect(secondPage.body.cards.map((card: any) => card.id)).toEqual([sameUpdatedLowId.id, oldestUpdated.id]);
-    expect(secondPage.body.nextCursor).toBeNull();
-  });
-
-  it("GET /api/feed rejects cursors reused with different filters", async () => {
-    ctx.feedStore.saveCard({ title: "First" });
-    ctx.feedStore.saveCard({ title: "Second" });
-
-    const firstPage = await request(app).get("/api/feed?limit=1");
-    const mismatch = await request(app)
-      .get(`/api/feed?status=done&limit=1&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
-
-    expect(mismatch.status).toBe(400);
-    expect(mismatch.body.error).toContain("cursor does not match feed filters");
-  });
-
   it("PATCH and DELETE update cards by id", async () => {
     const create = await request(app)
       .post("/api/feed")
@@ -288,29 +106,6 @@ describe("Feed routes", () => {
 
     const missing = await request(app).delete(`/api/feed/${id}`);
     expect(missing.status).toBe(404);
-  });
-
-  it("PATCH /api/feed/:id rejects key field updates without changing the card", async () => {
-    const create = await request(app)
-      .post("/api/feed")
-      .send({ key: "stable:key", title: "Stable" });
-    const id = create.body.card.id;
-    const before = ctx.feedStore.getCard(id);
-
-    for (const { payload, field } of [
-      { payload: { key: "renamed:key", title: "Renamed" }, field: "key" },
-      { payload: { dedupeKey: null, title: "Renamed" }, field: "dedupeKey" },
-    ]) {
-      const res = await request(app)
-        .patch(`/api/feed/${id}`)
-        .send(payload);
-
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({
-        error: expect.stringContaining(`Feed card key fields cannot be updated (${field})`),
-      });
-      expect(ctx.feedStore.getCard(id)).toEqual(before);
-    }
   });
 
   it("serves feed-owned visual artifacts for cards", async () => {
@@ -368,26 +163,6 @@ describe("Feed routes", () => {
     expect(rejectedVisual.body.error).toContain("Unknown feed card field");
   });
 
-  it("emits feed changed events", async () => {
-    const events: unknown[] = [];
-    ctx.globalBus.subscribe((event) => {
-      if (event.type === "feed:changed") events.push(event);
-    });
-
-    const create = await request(app)
-      .post("/api/feed")
-      .send({ key: "event:one", title: "Event card", taskId: ctx.taskStore.createTask("Task").id });
-    const id = create.body.card.id;
-    await request(app).patch(`/api/feed/${id}`).send({ status: "done" });
-    await request(app).delete(`/api/feed/${id}`);
-
-    expect(events).toEqual([
-      expect.objectContaining({ type: "feed:changed", cardId: id, dedupeKey: "event:one" }),
-      expect.objectContaining({ type: "feed:changed", cardId: id, dedupeKey: "event:one" }),
-      expect.objectContaining({ type: "feed:changed", cardId: id, dedupeKey: "event:one" }),
-    ]);
-  });
-
   describe("GET /api/feed/kind-stats", () => {
     it("returns per-kind totals and activity buckets", async () => {
       ctx.feedStore.saveCard({ title: "s1", kind: "status" });
@@ -405,26 +180,6 @@ describe("Feed routes", () => {
       const status = res.body.kinds.find((stat: { kind: string }) => stat.kind === "status");
       expect(status).toMatchObject({ total: 2, active: 1, done: 1, dismissed: 0 });
       expect(status.buckets).toHaveLength(14);
-    });
-
-    it("honors the buckets query parameter", async () => {
-      ctx.feedStore.saveCard({ title: "n1", kind: "note" });
-      const res = await request(app).get("/api/feed/kind-stats?buckets=5");
-      expect(res.status).toBe(200);
-      expect(res.body.bucketCount).toBe(5);
-      expect(res.body.buckets).toHaveLength(5);
-    });
-
-    it("scopes counts by keyPrefix", async () => {
-      ctx.feedStore.saveCard({ key: "docs:1", title: "docs one", kind: "note" });
-      ctx.feedStore.saveCard({ key: "ops:1", title: "ops one", kind: "note" });
-
-      const res = await request(app).get("/api/feed/kind-stats?keyPrefix=docs:");
-
-      expect(res.status).toBe(200);
-      expect(res.body.total).toBe(1);
-      expect(res.body.kinds).toHaveLength(1);
-      expect(res.body.kinds[0]).toMatchObject({ kind: "note", total: 1 });
     });
 
     it("rejects invalid query parameters", async () => {

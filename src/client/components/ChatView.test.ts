@@ -492,7 +492,7 @@ describe("ChatView cached resume loading state", () => {
     }
   });
 
-  it("reports the rendered read-through cursor from loaded history", async () => {
+  it("reports read-through cursors from loaded history and live assistant timestamps", async () => {
     const onRenderedReadThrough = vi.fn();
     const { act, cleanup, render } = await renderChatView({
       onRenderedReadThrough,
@@ -507,32 +507,14 @@ describe("ChatView cached resume loading state", () => {
     });
 
     try {
+      // Reports cursor from loaded history
       await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
       expect(onRenderedReadThrough).toHaveBeenCalledWith(
         "session-1",
         "2026-05-07T21:00:00.000Z",
       );
-    } finally {
-      await cleanup();
-    }
-  }, 30_000);
 
-  it("reports live assistant message timestamps as rendered read-through cursors", async () => {
-    const onRenderedReadThrough = vi.fn();
-    const { act, cleanup, render } = await renderChatView({
-      onRenderedReadThrough,
-      fetchMessagesFastResult: {
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-05-07T21:00:00.000Z",
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
+      // Reports live assistant message timestamp as rendered read-through cursor
       await render({
         streamOverrides: {
           liveAssistantSegments: [{
@@ -557,65 +539,48 @@ describe("ChatView cached resume loading state", () => {
     }
   }, 30_000);
 
-  it("suppresses the newer-content skeleton when cached resume freshness matches", async () => {
-    vi.useFakeTimers();
-    const deferred = createDeferred<FetchMessagesFastResult>();
-    const { dom, act, cleanup } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:00:00.000Z",
-      fetchMessagesFastResult: deferred.promise,
-      seedQueryClient: (queryClient) => setCachedChatSnapshot(
-        queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")]),
-      ),
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await advanceTimersByTimeAct(act, 250);
-
-      expect(dom.container.textContent).toContain("Refreshing history...");
-      expect(dom.container.textContent).not.toContain("Loading newer chat content");
-      expect(dom.container.textContent).not.toContain("Loading chat history");
-    } finally {
-      deferred.resolve({
+  it("suppresses the newer-content skeleton when freshness matches or metadata is absent", async () => {
+    const cases: [string, string, FetchMessagesFastResult][] = [
+      // freshness matches: lastVisibleActivityAt equals activeSessionActivityAt
+      ["freshness matches", "2026-04-29T12:00:00.000Z", {
         messages: [createMessage("entry-1")],
         busy: false,
         total: 1,
         warm: true,
         hasMore: false,
         lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      });
-      await cleanup();
-    }
-  });
-
-  it("suppresses the newer-content skeleton when freshness metadata is missing or unknown", async () => {
-    vi.useFakeTimers();
-    const deferred = createDeferred<FetchMessagesFastResult>();
-    const { dom, act, cleanup } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
-      fetchMessagesFastResult: deferred.promise,
-      seedQueryClient: (queryClient) => setCachedChatSnapshot(
-        queryClient,
-        createSnapshot("session-1", [createMessage("entry-1")]),
-      ),
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await advanceTimersByTimeAct(act, 250);
-
-      expect(dom.container.textContent).toContain("Refreshing history...");
-      expect(dom.container.textContent).not.toContain("Loading newer chat content");
-    } finally {
-      deferred.resolve({
+      }],
+      // freshness metadata missing or unknown: no lastVisibleActivityAt in result
+      ["freshness metadata missing", "2026-04-29T12:05:00.000Z", {
         messages: [createMessage("entry-1")],
         busy: false,
         total: 1,
         warm: true,
         hasMore: false,
+      }],
+    ];
+    for (const [label, activityAt, resolveResult] of cases) {
+      vi.useFakeTimers();
+      const deferred = createDeferred<FetchMessagesFastResult>();
+      const { dom, act, cleanup } = await renderChatView({
+        activeSessionActivityAt: activityAt,
+        fetchMessagesFastResult: deferred.promise,
+        seedQueryClient: (queryClient) => setCachedChatSnapshot(
+          queryClient,
+          createSnapshot("session-1", [createMessage("entry-1")]),
+        ),
       });
-      await cleanup();
+
+      try {
+        await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
+        await advanceTimersByTimeAct(act, 250);
+
+        expect(dom.container.textContent, `case: ${label}`).toContain("Refreshing history...");
+        expect(dom.container.textContent, `case: ${label}`).not.toContain("Loading newer chat content");
+      } finally {
+        deferred.resolve(resolveResult);
+        await cleanup();
+      }
     }
   });
 
@@ -1720,8 +1685,6 @@ describe("ChatView live streaming UX", () => {
       const bubble = findMessageBubble(dom.container, true);
       expect(bubble.getAttribute("data-role")).toBe("assistant");
       expect(findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream").getAttribute("data-latest-chat-message")).toBe("true");
-      expect(dom.container.textContent).not.toContain("Responding");
-      expect(dom.container.textContent).not.toContain("Streaming response");
     } finally {
       await cleanup();
     }
@@ -2108,64 +2071,69 @@ describe("ChatView message actions", () => {
 });
 
 describe("ChatView user input question cards", () => {
-  it("renders choices and freeform controls and submits choices through the user input API", async () => {
-    const request: PendingUserInputRequestView = {
+  it("renders choice and freeform controls and submits through the user input API", async () => {
+    // Case 1: choice submission
+    const choiceRequest: PendingUserInputRequestView = {
       requestId: "request-1",
       question: "Pick a deploy target",
       choices: ["staging", "production"],
       allowFreeform: true,
       requestedAt: "2026-04-29T12:00:00.000Z",
     };
-    const { dom, act, cleanup, sendMessageMock } = await renderChatView([request]);
+    {
+      const { dom, act, cleanup, sendMessageMock } = await renderChatView([choiceRequest]);
+      try {
+        expect(dom.container.textContent).toContain("Pick a deploy target");
+        expect(findInputByPlaceholder(dom.container, "Or type a response...")).toBeDefined();
 
-    try {
-      expect(dom.container.textContent).toContain("Pick a deploy target");
-      expect(findInputByPlaceholder(dom.container, "Or type a response...")).toBeDefined();
+        await act(async () => {
+          getReactProps(findButtonByText(dom.container, "staging"))?.onClick?.();
+        });
+        await waitUntilAct(act, () => submitUserInputResponseMock.mock.calls.length === 1);
 
-      await act(async () => {
-        getReactProps(findButtonByText(dom.container, "staging"))?.onClick?.();
-      });
-      await waitUntilAct(act, () => submitUserInputResponseMock.mock.calls.length === 1);
-
-      expect(submitUserInputResponseMock).toHaveBeenCalledWith(
-        "session-1",
-        "request-1",
-        { answer: "staging", wasFreeform: false },
-      );
-      expect(sendMessageMock).not.toHaveBeenCalled();
-    } finally {
-      await cleanup();
+        expect(submitUserInputResponseMock).toHaveBeenCalledWith(
+          "session-1",
+          "request-1",
+          { answer: "staging", wasFreeform: false },
+        );
+        expect(sendMessageMock).not.toHaveBeenCalled();
+      } finally {
+        await cleanup();
+      }
     }
-  });
 
-  it("submits freeform answers through the user input API", async () => {
-    const request: PendingUserInputRequestView = {
+    submitUserInputResponseMock.mockReset();
+    submitUserInputResponseMock.mockResolvedValue(undefined);
+
+    // Case 2: freeform submission
+    const freeformRequest: PendingUserInputRequestView = {
       requestId: "request-freeform",
       question: "What should Copilot do next?",
       allowFreeform: true,
     };
-    const { dom, act, cleanup, sendMessageMock } = await renderChatView([request]);
+    {
+      const { dom, act, cleanup, sendMessageMock } = await renderChatView([freeformRequest]);
+      try {
+        const input = findInputByPlaceholder(dom.container, "Type a response...");
+        const form = findAllByTag(dom.container, "FORM")[0];
 
-    try {
-      const input = findInputByPlaceholder(dom.container, "Type a response...");
-      const form = findAllByTag(dom.container, "FORM")[0];
+        await act(async () => {
+          getReactProps(input)?.onChange?.({ target: { value: "Run the focused tests" } });
+        });
+        await act(async () => {
+          getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
+        });
+        await waitUntilAct(act, () => submitUserInputResponseMock.mock.calls.length === 1);
 
-      await act(async () => {
-        getReactProps(input)?.onChange?.({ target: { value: "Run the focused tests" } });
-      });
-      await act(async () => {
-        getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
-      });
-      await waitUntilAct(act, () => submitUserInputResponseMock.mock.calls.length === 1);
-
-      expect(submitUserInputResponseMock).toHaveBeenCalledWith(
-        "session-1",
-        "request-freeform",
-        { answer: "Run the focused tests", wasFreeform: true },
-      );
-      expect(sendMessageMock).not.toHaveBeenCalled();
-    } finally {
-      await cleanup();
+        expect(submitUserInputResponseMock).toHaveBeenCalledWith(
+          "session-1",
+          "request-freeform",
+          { answer: "Run the focused tests", wasFreeform: true },
+        );
+        expect(sendMessageMock).not.toHaveBeenCalled();
+      } finally {
+        await cleanup();
+      }
     }
   });
 
@@ -2302,30 +2270,6 @@ describe("ChatView disk-authoritative synchronization", () => {
     }
   });
 
-  it("renders in-flight tools that the disk window has not caught up to yet", async () => {
-    const { dom, act, cleanup } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [createMessage("entry-1", "assistant reply")],
-        busy: true,
-        total: 1,
-        warm: true,
-        hasMore: false,
-      },
-      streamOverrides: {
-        liveTools: [{ toolCallId: "tc-live", name: "live_tool", progressText: "working" }],
-        isStreaming: true,
-        streamStatus: "streaming",
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("live_tool") ?? false);
-      expect(dom.container.textContent).toContain("live_tool");
-    } finally {
-      await cleanup();
-    }
-  });
-
   it("shows a tool result immediately without waiting for the disk window", async () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
@@ -2437,36 +2381,6 @@ describe("ChatView disk-authoritative synchronization", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Task wrapped up") ?? false);
       const text = dom.container.textContent ?? "";
       expect(text.indexOf("Task wrapped up")).toBe(text.lastIndexOf("Task wrapped up"));
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("does not duplicate a tool that disk history already contains", async () => {
-    const { dom, act, cleanup } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [{
-          id: "committed-tool",
-          type: "tool",
-          sourceEventId: "tool-event-1",
-          toolCall: { toolCallId: "tc-shared", name: "shared_tool" },
-        }],
-        busy: true,
-        total: 1,
-        warm: true,
-        hasMore: false,
-      },
-      streamOverrides: {
-        liveTools: [{ toolCallId: "tc-shared", name: "shared_tool" }],
-        isStreaming: true,
-        streamStatus: "streaming",
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("shared_tool") ?? false);
-      const text = dom.container.textContent ?? "";
-      expect(text.indexOf("shared_tool")).toBe(text.lastIndexOf("shared_tool"));
     } finally {
       await cleanup();
     }

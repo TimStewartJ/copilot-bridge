@@ -222,7 +222,9 @@ describe("SessionManager stale cached session recovery", () => {
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
   });
 
-  it("keeps cached sessions when an unconfigured MCP status regresses", async () => {
+  it("keeps cached sessions when MCP status is not_configured (regress, initial, or bulk)", async () => {
+    // keeps cached sessions when an unconfigured MCP status regresses
+    {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
     const cachedSession = createSession((emit) => {
@@ -262,9 +264,10 @@ describe("SessionManager stale cached session recovery", () => {
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
     expect(manager.sessionObjects.get("session-1")).toBe(cachedSession);
     expect(cachedSession.disconnect).not.toHaveBeenCalled();
-  });
+    }
 
-  it("keeps cached sessions when a configured MCP server begins as not configured", async () => {
+    // keeps cached sessions when a configured MCP server begins as not configured
+    {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
     const cachedSession = createSession((emit) => {
@@ -304,9 +307,10 @@ describe("SessionManager stale cached session recovery", () => {
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
     expect(manager.sessionObjects.get("session-1")).toBe(cachedSession);
     expect(cachedSession.disconnect).not.toHaveBeenCalled();
-  });
+    }
 
-  it("keeps cached sessions when bulk MCP snapshots report not configured", async () => {
+    // keeps cached sessions when bulk MCP snapshots report not configured
+    {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
     const cachedSession = createSession((emit) => {
@@ -340,8 +344,8 @@ describe("SessionManager stale cached session recovery", () => {
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
     expect(manager.sessionObjects.get("session-1")).toBe(cachedSession);
     expect(cachedSession.disconnect).not.toHaveBeenCalled();
+    }
   });
-
   it("evicts regressed configured MCP cached sessions after managed runs settle", async () => {
     const { manager } = createManager();
     const cachedSession = createSession((emit) => {

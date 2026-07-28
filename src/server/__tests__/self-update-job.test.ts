@@ -87,30 +87,31 @@ describe("runSelfUpdateJob active-release drift", () => {
     vi.resetModules();
   });
 
-  it("activates HEAD when the checkout is unchanged but active release is older", async () => {
+  it("activates HEAD when drift is detected and fails when active release is not an ancestor of HEAD", async () => {
+    // Successful drift activation
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     const oldSha = "1111111111111111111111111111111111111111";
     const headSha = "2222222222222222222222222222222222222222";
-    const dataDir = makeTestDir("self-update-drift");
-    activeReleaseMock.value = manifest(oldSha, dataDir);
-    reusableReleaseMock.value = manifest(headSha, dataDir);
+    const dataDir1 = makeTestDir("self-update-drift");
+    activeReleaseMock.value = manifest(oldSha, dataDir1);
+    reusableReleaseMock.value = manifest(headSha, dataDir1);
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
 
     const { runSelfUpdateJob } = await import("../self-update-job.js");
-    const result = await runSelfUpdateJob({}, {
+    const result1 = await runSelfUpdateJob({}, {
       controlRoot: process.cwd(),
       runtimePaths: {
-        dataDir,
-        docsDir: join(dataDir, "docs"),
+        dataDir: dataDir1,
+        docsDir: join(dataDir1, "docs"),
         env: sourceManagedEnv(),
       },
       log: () => {},
     }) as any;
 
-    expect(result.success).toBe(true);
-    expect(result.activeReleaseDrift).toBe(true);
-    expect(result.reusedReleaseSlot).toBe(true);
+    expect(result1.success).toBe(true);
+    expect(result1.activeReleaseDrift).toBe(true);
+    expect(result1.reusedReleaseSlot).toBe(true);
     expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
     expect(writeRestartSignalFileMock).toHaveBeenCalledWith(
       expect.stringContaining("restart.signal"),
@@ -120,13 +121,18 @@ describe("runSelfUpdateJob active-release drift", () => {
         releaseCandidate: expect.objectContaining({ commitSha: headSha }),
       }),
     );
-  });
 
-  it("fails drift activation when active release is not an ancestor of HEAD", async () => {
+    // Failed drift activation when active release is not an ancestor
+    vi.resetModules();
+    activeReleaseMock.value = null;
+    reusableReleaseMock.value = null;
+    prepareReleaseSlotMock.mockReset();
+    writeRestartSignalFileMock.mockReset();
+    runValidationCommandMock.mockClear();
+
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
-    const oldSha = "1111111111111111111111111111111111111111";
-    const dataDir = makeTestDir("self-update-drift-failure");
-    activeReleaseMock.value = manifest(oldSha, dataDir);
+    const dataDir2 = makeTestDir("self-update-drift-failure");
+    activeReleaseMock.value = manifest(oldSha, dataDir2);
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
     runValidationCommandMock.mockImplementation(async (options: { command: string }) => {
@@ -143,19 +149,19 @@ describe("runSelfUpdateJob active-release drift", () => {
       };
     });
 
-    const { runSelfUpdateJob } = await import("../self-update-job.js");
-    const result = await runSelfUpdateJob({}, {
+    const { runSelfUpdateJob: runSelfUpdateJob2 } = await import("../self-update-job.js");
+    const result2 = await runSelfUpdateJob2({}, {
       controlRoot: process.cwd(),
       runtimePaths: {
-        dataDir,
-        docsDir: join(dataDir, "docs"),
+        dataDir: dataDir2,
+        docsDir: join(dataDir2, "docs"),
         env: sourceManagedEnv(),
       },
       log: () => {},
     }) as any;
 
-    expect(result.resultType).toBe("failure");
-    expect(result.textResultForLlm).toContain("Manual recovery is required");
+    expect(result2.resultType).toBe("failure");
+    expect(result2.textResultForLlm).toContain("Manual recovery is required");
     expect(writeRestartSignalFileMock).not.toHaveBeenCalled();
   });
 

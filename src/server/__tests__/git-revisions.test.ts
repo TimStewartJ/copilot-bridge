@@ -279,23 +279,21 @@ describe("gitHash", () => {
     expectNonInteractiveGitCalls();
   });
 
-  it("returns unknown when the current short hash cannot be read", async () => {
+  it("returns unknown when the current short hash cannot be read or is empty", async () => {
+    // Git throws (e.g. not a worktree)
     execFileSyncMock.mockImplementation(() => {
       throw new Error("not a git worktree");
     });
-
-    const revisions = await loadGitRevisionModule();
-
-    expect(revisions.gitHash()).toBe("unknown");
+    const revisions1 = await loadGitRevisionModule();
+    expect(revisions1.gitHash(), "throws").toBe("unknown");
     expectNonInteractiveGitCalls();
-  });
 
-  it("returns unknown when git reports an empty current short hash", async () => {
+    execFileSyncMock.mockReset();
+
+    // Git returns empty output
     execFileSyncMock.mockReturnValue("\n");
-
-    const revisions = await loadGitRevisionModule();
-
-    expect(revisions.gitHash()).toBe("unknown");
+    const revisions2 = await loadGitRevisionModule();
+    expect(revisions2.gitHash(), "empty output").toBe("unknown");
     expectNonInteractiveGitCalls();
   });
 });

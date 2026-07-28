@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
+import { createDeferredPromptStore } from "../deferred-prompt-store.js";
+import { mergeDeferSummaries } from "../defer-summary.js";
 import { parseDeferId, toIntervalDeferId, toOnceDeferId } from "../defer-ids.js";
 import type { DeferLoopStore } from "../defer-loop-store.js";
 import type { DatabaseSync } from "../db.js";
@@ -145,5 +147,38 @@ describe("defer-loop-store", () => {
     expect(store.reclaimExpiredRunning("2026-01-01T00:00:30.000Z")).toBe(0);
     expect(store.reclaimExpiredRunning("2026-01-01T00:01:00.000Z")).toBe(1);
     expect(store.get(loop.id)!.status).toBe("active");
+  });
+});
+
+// ── Merged from defer-summary.test.ts ────────────────────────────────────────
+describe("defer summary (merged)", () => {
+  it("combines one-shot and interval summaries with the earliest next run time", () => {
+    const deferredPromptStore = createDeferredPromptStore(db);
+    deferredPromptStore.create("session-1", "One shot later", "2030-01-01T00:10:00.000Z");
+    deferredPromptStore.create("session-1", "One shot latest", "2030-01-01T00:20:00.000Z");
+    store.create({
+      sessionId: "session-1",
+      name: "interval",
+      prompt: "Interval earlier",
+      intervalSeconds: 60,
+      nextRunAt: "2030-01-01T00:05:00.000Z",
+    });
+    store.create({
+      sessionId: "session-2",
+      name: "other",
+      prompt: "Other",
+      intervalSeconds: 60,
+      nextRunAt: "2030-01-01T00:01:00.000Z",
+    });
+
+    const summary = mergeDeferSummaries(
+      deferredPromptStore.getSummaryForSession("session-1"),
+      store.getSummaryForSession("session-1"),
+    );
+
+    expect(summary).toEqual({
+      count: 3,
+      nextRunAt: "2030-01-01T00:05:00.000Z",
+    });
   });
 });

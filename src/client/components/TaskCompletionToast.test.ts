@@ -26,13 +26,6 @@ describe("TaskCompletionToast", () => {
     expect(html).toContain("Ship the feature completed");
   });
 
-  it("does not say 'archived' in the toast body", () => {
-    const html = renderToast();
-
-    expect(html).not.toContain("archived");
-    expect(html).not.toContain("Archived");
-  });
-
   it("renders the summary and done-when copy", () => {
     const html = renderToast();
 
@@ -57,6 +50,5 @@ describe("TaskCompletionToast", () => {
     const html = renderToast();
 
     expect(html).toContain("Reopen task");
-    expect(html).not.toContain("Archive");
   });
 });

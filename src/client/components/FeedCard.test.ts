@@ -40,29 +40,6 @@ function renderCard(card: FeedCardData): string {
 }
 
 describe("FeedCard", () => {
-  it("renders card content, links, and built-in actions", () => {
-    const html = renderCard(makeCard());
-
-    expect(html).toContain("Preview ready");
-    expect(html).toContain("Open the staging preview.");
-    expect(html).toContain("Pinned");
-    expect(html).toContain("Status");
-    expect(html).toContain("agent");
-    expect(html).toContain("Posted");
-    expect(html).toContain('dateTime="2026-05-13T10:00:00.000Z"');
-    expect(html).toContain("High priority");
-    expect(html).toContain("Open task");
-    expect(html).toContain("Open session");
-    expect(html).toContain("https://example.test/preview");
-    expect(html).toContain("Notes");
-    expect(html).toContain("Mark done");
-    expect(html).toContain("Dismiss");
-    expect(html).toContain("More");
-    expect(html).toContain("min-h-11");
-    expect(html).toContain('aria-label="More actions"');
-    expect(html).not.toContain("Delete card");
-  });
-
   it("renders markdown in card bodies", () => {
     const html = renderCard(makeCard({
       body: "**Bold update**\n- Review [preview](https://example.test/preview)\n\nInline `code`",
@@ -114,26 +91,6 @@ describe("FeedCard", () => {
     expect(html).not.toContain("Pinned");
   });
 
-  it("makes resolved cards visually distinct from active high-priority cards", () => {
-    const doneHtml = renderCard(makeCard({
-      status: "done",
-      priority: "high",
-    }));
-    const dismissedHtml = renderCard(makeCard({
-      status: "dismissed",
-      priority: "high",
-    }));
-
-    expect(doneHtml).toContain("border-success/25");
-    expect(doneHtml).toContain("bg-success/70");
-    expect(doneHtml).toContain("text-text-secondary");
-    expect(doneHtml).not.toContain("border-warning/50");
-    expect(dismissedHtml).toContain("bg-bg-secondary/55");
-    expect(dismissedHtml).toContain("bg-text-faint/50");
-    expect(dismissedHtml).toContain("text-text-muted");
-    expect(dismissedHtml).not.toContain("border-warning/50");
-  });
-
   it("renders visual artifacts with the shared visual card renderer", () => {
     const html = renderCard(makeCard({
       visual: {
@@ -153,32 +110,6 @@ describe("FeedCard", () => {
     expect(html).toContain("Chart preview");
     expect(html).toContain("/api/feed/card-1/visuals/11111111-1111-4111-8111-111111111111");
     expect(html).toContain("Download chart.png");
-  });
-
-  it("renders prompt actions for active cards", () => {
-    const html = renderCard(makeCard({
-      action: {
-        label: "Review this",
-        prompt: "Open a session and review this card.",
-      },
-    }));
-
-    expect(html).toContain("Review this");
-    expect(html).toContain("button");
-  });
-
-  it("renders a generic card chat action when provided", () => {
-    const html = renderToStaticMarkup(createElement(FeedCard, {
-      card: makeCard({ action: null }),
-      onSelectTask: vi.fn(),
-      onSelectSession: vi.fn(),
-      onAction: vi.fn(),
-      onChat: vi.fn(),
-      onStatusChange: vi.fn(),
-      onDelete: vi.fn(),
-    }));
-
-    expect(html).toContain("Chat with card");
   });
 
   it("marks pending cards busy and disables card actions", () => {

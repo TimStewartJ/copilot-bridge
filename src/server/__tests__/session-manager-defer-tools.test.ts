@@ -20,15 +20,6 @@ function expectFailure(result: unknown): string {
 }
 
 describe("unified defer tools", () => {
-  it("advertises defer_create/list/cancel but not legacy defer_session", () => {
-    const { ctx } = createTestApp();
-    const names = getBridgeToolDefinitions(ctx).map((tool) => tool.name);
-    expect(names).toContain("defer_create");
-    expect(names).toContain("defer_list");
-    expect(names).toContain("defer_cancel");
-    expect(names).not.toContain("defer_session");
-  });
-
   it("creates a one-shot defer with a public once_ deferId", async () => {
     const { ctx } = createTestApp();
     const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");

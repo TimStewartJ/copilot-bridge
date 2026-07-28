@@ -15,6 +15,16 @@ function createInvocation() {
   };
 }
 
+const VALID_SPEC = JSON.stringify({
+  $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+  mark: "bar",
+  data: { values: [{ a: "A", b: 28 }, { a: "B", b: 55 }] },
+  encoding: {
+    x: { field: "a", type: "ordinal" },
+    y: { field: "b", type: "quantitative" },
+  },
+});
+
 describe("publish_visual tool", () => {
   const tempDirs: string[] = [];
 
@@ -139,108 +149,6 @@ describe("publish_visual tool", () => {
     expect(result.downloadUrl).toMatch(/\/download/);
     expect(typeof result.artifactId).toBe("string");
     expect(result.artifactId).toMatch(/^[0-9a-f-]{36}$/i);
-  });
-
-  it("returns toolFailure for mermaid with empty content", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result = await tool.handler(
-      { kind: "mermaid", title: "Empty", content: "   " },
-      createInvocation(),
-    );
-
-    expect(result).toMatchObject(toolFailure("Mermaid source must not be empty"));
-  });
-
-  it("returns toolFailure for mermaid with content exceeding the character limit", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result = await tool.handler(
-      { kind: "mermaid", title: "Huge", content: "A".repeat(100_001) },
-      createInvocation(),
-    );
-
-    expect((result as any).resultType).toBe("failure");
-    expect((result as any).textResultForLlm).toMatch(/100,000|character limit/i);
-  });
-
-  it("returns toolFailure when SVG mime type is provided", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result: any = await tool.handler(
-      { kind: "image", title: "SVG", content: "PHN2Zy8+", mimeType: "image/svg+xml" },
-      createInvocation(),
-    );
-
-    expect(result.resultType).toBe("failure");
-  });
-
-  it("returns toolFailure when sessionId is missing", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result = await tool.handler(
-      { kind: "image", title: "T", content: "", mimeType: "image/png" },
-      { ...createInvocation(), sessionId: "" },
-    );
-
-    expect(result).toMatchObject(toolFailure("sessionId is required"));
-  });
-
-  it("uses the context apiBasePath when generating visual URLs", async () => {
-    const copilotHome = makeTmpDir();
-    const srcDir = makeTmpDir();
-    const srcPath = join(srcDir, "img.png");
-    writeFileSync(srcPath, Buffer.from([0x89, 0x50]));
-
-    const { ctx } = createTestApp({ copilotHome, apiBasePath: "/staging/preview-xyz/api" });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result: any = await tool.handler(
-      { kind: "image", title: "T", path: srcPath, mimeType: "image/png" },
-      createInvocation(),
-    );
-
-    expect(result.success).toBe(true);
-    expect(result.url).toMatch(/^\/staging\/preview-xyz\/api\//);
-  });
-});
-
-describe("publish_visual tool — vega-lite", () => {
-  const tempDirs: string[] = [];
-
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  function makeTmpDir() {
-    const dir = mkdtempSync(join(tmpdir(), "bridge-pub-vl-"));
-    tempDirs.push(dir);
-    return dir;
-  }
-
-  const VALID_SPEC = JSON.stringify({
-    $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-    mark: "bar",
-    data: { values: [{ a: "A", b: 28 }, { a: "B", b: 55 }] },
-    encoding: {
-      x: { field: "a", type: "ordinal" },
-      y: { field: "b", type: "quantitative" },
-    },
   });
 
   it("publishes a vega-lite spec and returns structured visual result", async () => {

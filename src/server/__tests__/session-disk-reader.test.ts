@@ -7,7 +7,7 @@ import {
   readMessagesFromDisk,
   type SessionDiskReaderDeps,
 } from "../session-disk-reader.js";
-import { makeTestDir } from "./helpers.js";
+import { createTestBus, makeTestDir, setupTestDb } from "./helpers.js";
 
 function createDeps(copilotHome: string) {
   const spans: Array<{
@@ -601,7 +601,9 @@ describe("readMessagesFromDisk latest-page path", () => {
       .toMatchObject({ readFullFile: true, eventCount: 2, totalMessages: 1 });
   });
 
-  it("falls back to a full read when event log mtime changes without a size change", async () => {
+  it("falls back to a full read when the tail is invalidated by mtime change or appended events", async () => {
+    // falls back to a full read when event log mtime changes without a size change
+    {
     const copilotHome = makeTestDir("session-disk-reader-mtime-race");
     const sessionId = "mtime-race";
     const initialEvent = {
@@ -637,6 +639,44 @@ describe("readMessagesFromDisk latest-page path", () => {
       .toMatchObject({ reason: "file-mtime-changed" });
     expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
       .toMatchObject({ mode: "full", fallbackReason: "file-mtime-changed" });
+    }
+
+    // falls back to a full read when events are appended during a tail read
+    {
+    const copilotHome = makeTestDir("session-disk-reader-append");
+    const sessionId = "append-race";
+    const initialMessages = Array.from({ length: 60 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `initial-${index}` },
+    }));
+    writeSessionFiles(copilotHome, sessionId, { events: initialMessages });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const { deps, spans } = createDeps(copilotHome);
+    let appended = false;
+    deps.recordSpan = (name, duration, spanSessionId, metadata) => {
+      spans.push({ name, duration, sessionId: spanSessionId, metadata });
+      if (name !== "session.readFromDisk.tailRead" || appended) return;
+      appended = true;
+      appendFileSync(
+        eventsPath,
+        `${JSON.stringify({
+          type: "user.message",
+          timestamp: "2026-04-30T11:00:00.000Z",
+          data: { content: "appended" },
+        })}\n`,
+      );
+    };
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
+
+    expect(result.total).toBe(61);
+    expect(result.messages).toMatchObject([{ id: "entry-60", content: "appended" }]);
+    expect(spans.find((span) => span.name === "session.readFromDisk.tailFallback")?.metadata)
+      .toMatchObject({ reason: "file-size-changed" });
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
+      .toMatchObject({ mode: "full", fallbackReason: "file-size-changed" });
+    }
   });
 
   it("preserves full-history turn ids for tailed messages", async () => {
@@ -705,42 +745,6 @@ describe("readMessagesFromDisk latest-page path", () => {
 
     const firstAssistant = result.messages.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
     expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
-  });
-
-  it("falls back to a full read when events are appended during a tail read", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-append");
-    const sessionId = "append-race";
-    const initialMessages = Array.from({ length: 60 }, (_, index) => ({
-      type: "user.message",
-      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
-      data: { content: `initial-${index}` },
-    }));
-    writeSessionFiles(copilotHome, sessionId, { events: initialMessages });
-    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
-    const { deps, spans } = createDeps(copilotHome);
-    let appended = false;
-    deps.recordSpan = (name, duration, spanSessionId, metadata) => {
-      spans.push({ name, duration, sessionId: spanSessionId, metadata });
-      if (name !== "session.readFromDisk.tailRead" || appended) return;
-      appended = true;
-      appendFileSync(
-        eventsPath,
-        `${JSON.stringify({
-          type: "user.message",
-          timestamp: "2026-04-30T11:00:00.000Z",
-          data: { content: "appended" },
-        })}\n`,
-      );
-    };
-
-    const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
-
-    expect(result.total).toBe(61);
-    expect(result.messages).toMatchObject([{ id: "entry-60", content: "appended" }]);
-    expect(spans.find((span) => span.name === "session.readFromDisk.tailFallback")?.metadata)
-      .toMatchObject({ reason: "file-size-changed" });
-    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
-      .toMatchObject({ mode: "full", fallbackReason: "file-size-changed" });
   });
 
   it("returns an empty result if the event log disappears during a tail read", async () => {
@@ -986,3 +990,197 @@ describe("readMessagesFromDisk older-page pagination", () => {
     expect(spans.some((span) => span.name === "session.readFromDisk.tailRead")).toBe(false);
   });
 });
+import { createEventBusRegistry } from "../event-bus.js";
+import { createSessionMetaStore } from "../session-meta-store.js";
+import { SessionManager } from "../session-manager.js";
+import { createSessionTitlesStore } from "../session-titles.js";
+import { createTelemetryStore } from "../telemetry-store.js";
+import { readdir, stat } from "node:fs/promises";
+import {
+  createSessionStorageReader,
+  type SessionStorageFileSystem,
+} from "../session-storage-reader.js";
+
+
+function createManager(copilotHome: string) {
+  const db = setupTestDb();
+  const telemetryStore = createTelemetryStore(db);
+  const manager = new SessionManager({
+    globalBus: createTestBus(),
+    eventBusRegistry: createEventBusRegistry(),
+    sessionTitles: createSessionTitlesStore(db),
+    sessionMetaStore: createSessionMetaStore(db),
+    taskStore: {
+      findTaskBySessionId: vi.fn().mockReturnValue(null),
+    } as any,
+    settingsStore: {
+      getMcpServers: () => ({}),
+      getSettings: () => ({ mcpServers: {} }),
+    } as any,
+    telemetryStore,
+    config: { sessionMcpServers: {} },
+    copilotHome,
+  }) as any;
+  return { manager, telemetryStore };
+}
+
+function writeSession(copilotHome: string, sessionId: string, summary: string) {
+  const sessionDir = join(copilotHome, "session-state", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    join(sessionDir, "workspace.yaml"),
+    `created_at: 2026-04-30T10:00:00.000Z\nsummary: ${summary}\n`,
+  );
+  writeFileSync(
+    join(sessionDir, "events.jsonl"),
+    `${JSON.stringify({
+      type: "user.message",
+      timestamp: "2026-04-30T10:00:01.000Z",
+      data: { content: summary },
+    })}\n`,
+  );
+}
+
+describe("SessionManager disk session list cache", () => {
+  it("coalesces concurrent disk scans and serves fresh cache hits", async () => {
+    const copilotHome = makeTestDir("session-manager-list-cache");
+    writeSession(copilotHome, "session-a", "Alpha");
+    writeSession(copilotHome, "session-b", "Beta");
+    const { manager, telemetryStore } = createManager(copilotHome);
+
+    const [first, second] = await Promise.all([
+      manager.listSessionsFromDisk({ includeArchived: false }),
+      manager.listSessionsFromDisk({ includeArchived: false }),
+    ]);
+    const third = await manager.listSessionsFromDisk({ includeArchived: false });
+
+    expect(first.map((session: any) => session.sessionId).sort()).toEqual(["session-a", "session-b"]);
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+
+    const cacheResults = telemetryStore
+      .querySpans({ name: "session.listFromDisk.cache", limit: 20 })
+      .map((span) => span.metadata?.result);
+    expect(cacheResults).toEqual(expect.arrayContaining(["miss", "coalesced", "hit"]));
+  });
+
+  it("records disposable title cleanup sweep spans with elapsed durations", () => {
+    const copilotHome = makeTestDir("session-manager-cleanup-sweep");
+    const { manager, telemetryStore } = createManager(copilotHome);
+
+    manager.sweepLeakedDisposableTitleSessions();
+
+    const spans = telemetryStore.querySpans({ name: "session.name.cleanupSweep" });
+    expect(spans).toHaveLength(1);
+    expect(spans[0].duration).toBeGreaterThanOrEqual(0);
+    expect(spans[0].duration).toBeLessThan(60_000);
+    expect(spans[0].metadata).toMatchObject({ result: "ok", count: 0 });
+  });
+});
+
+
+describe("session storage reader", () => {
+  it("returns recursive totals for nested session files", async () => {
+    const sessionStateDir = makeTestDir("session-storage-nested");
+    const sessionDir = join(sessionStateDir, "session-1");
+    mkdirSync(join(sessionDir, "files", "deep"), { recursive: true });
+    writeFileSync(join(sessionDir, "events.jsonl"), "events");
+    writeFileSync(join(sessionDir, "files", "artifact.txt"), "artifact");
+    writeFileSync(join(sessionDir, "files", "deep", "trace.json"), "trace");
+
+    const measurement = await createSessionStorageReader(sessionStateDir).measureSession("session-1");
+
+    expect(measurement).toEqual({
+      status: "complete",
+      diskSizeBytes: "events".length + "artifact".length + "trace".length,
+    });
+  });
+
+  it("distinguishes a missing session directory from an empty one", async () => {
+    const sessionStateDir = makeTestDir("session-storage-missing");
+
+    const measurement = await createSessionStorageReader(sessionStateDir).measureSession("missing-session");
+
+    expect(measurement).toEqual({
+      status: "missing",
+      diskSizeBytes: 0,
+      warning: {
+        code: "missing",
+        message: "Session storage directory is missing.",
+      },
+    });
+  });
+
+  it("returns a partial lower bound when a file stat fails", async () => {
+    const sessionStateDir = makeTestDir("session-storage-partial");
+    const sessionDir = join(sessionStateDir, "session-1");
+    const blockedPath = join(sessionDir, "blocked.bin");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "readable.bin"), "readable bytes");
+    writeFileSync(blockedPath, "blocked bytes");
+
+    const reader = createSessionStorageReader(sessionStateDir, {
+      fs: {
+        stat: async (filePath) => {
+          if (filePath === blockedPath) {
+            throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+          }
+          return stat(filePath);
+        },
+      },
+    });
+
+    const measurement = await reader.measureSession("session-1");
+
+    expect(measurement).toMatchObject({
+      status: "partial",
+      diskSizeBytes: "readable bytes".length,
+      warning: {
+        code: "partial",
+        message: expect.stringContaining("EACCES"),
+      },
+    });
+  });
+
+  it("bounds filesystem concurrency across simultaneous session measurements", async () => {
+    const sessionStateDir = makeTestDir("session-storage-concurrency");
+    const sessionIds = Array.from({ length: 12 }, (_, index) => `session-${index}`);
+    for (const sessionId of sessionIds) {
+      const sessionDir = join(sessionStateDir, sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(join(sessionDir, "events.jsonl"), sessionId);
+    }
+
+    let activeOperations = 0;
+    let maxActiveOperations = 0;
+    async function trackOperation<T>(operation: () => Promise<T>): Promise<T> {
+      activeOperations += 1;
+      maxActiveOperations = Math.max(maxActiveOperations, activeOperations);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      try {
+        return await operation();
+      } finally {
+        activeOperations -= 1;
+      }
+    }
+
+    const trackedFileSystem: SessionStorageFileSystem = {
+      readdir: (dirPath) => trackOperation(() => readdir(dirPath, { withFileTypes: true })),
+      stat: (filePath) => trackOperation(() => stat(filePath)),
+    };
+    const reader = createSessionStorageReader(sessionStateDir, {
+      concurrency: 3,
+      fs: trackedFileSystem,
+    });
+
+    const measurements = await Promise.all(
+      sessionIds.map((sessionId) => reader.measureSession(sessionId)),
+    );
+
+    expect(maxActiveOperations).toBe(3);
+    expect(measurements.map((measurement) => measurement.diskSizeBytes)).toEqual(
+      sessionIds.map((sessionId) => sessionId.length),
+    );
+  });
+});
+

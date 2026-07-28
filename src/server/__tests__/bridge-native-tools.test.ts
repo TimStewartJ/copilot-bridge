@@ -115,43 +115,29 @@ describe("bridge-native-tools", () => {
     });
   });
 
-  it("relabels an image whose declared MIME type contradicts its magic bytes", () => {
+  it("relabels mismatched images on both Bridge and SDK-shaped results", () => {
     const jpegData = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]).toString("base64");
 
-    const result = convertBridgeToolResultToSdk({
+    // Bridge-shaped input: declared png but magic bytes say jpeg
+    const bridgeResult = convertBridgeToolResultToSdk({
       type: "image",
       data: jpegData,
       mimeType: "image/png",
     });
-
-    expect(result).toMatchObject({
+    expect(bridgeResult, "bridge-shaped").toMatchObject({
       resultType: "success",
-      binaryResultsForLlm: [
-        {
-          type: "image",
-          data: jpegData,
-          mimeType: "image/jpeg",
-        },
-      ],
+      binaryResultsForLlm: [{ type: "image", data: jpegData, mimeType: "image/jpeg" }],
     });
-  });
 
-  it("relabels mismatched images on SDK-shaped success results", () => {
-    const jpegData = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]).toString("base64");
-
-    const result = convertBridgeToolResultToSdk({
+    // SDK-shaped input: declared png but magic bytes say jpeg
+    const sdkResult = convertBridgeToolResultToSdk({
       textResultForLlm: "",
       resultType: "success",
-      binaryResultsForLlm: [
-        { type: "image", data: jpegData, mimeType: "image/png" },
-      ],
+      binaryResultsForLlm: [{ type: "image", data: jpegData, mimeType: "image/png" }],
     } as any);
-
-    expect(result).toMatchObject({
+    expect(sdkResult, "sdk-shaped").toMatchObject({
       resultType: "success",
-      binaryResultsForLlm: [
-        { type: "image", data: jpegData, mimeType: "image/jpeg" },
-      ],
+      binaryResultsForLlm: [{ type: "image", data: jpegData, mimeType: "image/jpeg" }],
     });
   });
 

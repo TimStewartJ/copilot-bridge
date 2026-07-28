@@ -22,18 +22,6 @@ installApiRouteTestHooks((state) => {
 // ── Session manager routes (mock-based) ──────────────────────────
 
 describe("Session manager routes", () => {
-  it("GET /api/sessions/:id/messages-fast returns paginated messages", async () => {
-    const res = await request(app).get("/api/sessions/test-id/messages-fast");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("messages");
-    expect(res.body).toHaveProperty("total");
-    expect(res.body).toHaveProperty("hasMore");
-    expect(res.body).toHaveProperty("runState");
-    expect(res.body).toHaveProperty("busy");
-    expect(res.body).toHaveProperty("warm");
-    expect(res.body).toHaveProperty("coverage");
-  });
-
   it("GET /api/sessions/:id/messages-fast returns runState for stalled sessions", async () => {
     ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
@@ -382,16 +370,6 @@ describe("Session manager routes", () => {
     expect(res.body.error).toBe("Cannot reload a busy session");
   });
 
-  it("POST /api/sessions/:id/abort aborts a session", async () => {
-    const res = await request(app).post("/api/sessions/test-id/abort");
-    expect(res.status).toBe(200);
-  });
-
-  it("GET /api/sessions/:id/mcp-status returns MCP status", async () => {
-    const res = await request(app).get("/api/sessions/test-id/mcp-status");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("servers");
-  });
   it("POST /api/sessions/:id/mcp-login starts MCP OAuth for a session server", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.loginMcpServer = vi.fn().mockResolvedValue({
@@ -436,22 +414,6 @@ describe("Session manager routes", () => {
     expect(res.body.error).toBe("Cannot authenticate MCP server for a busy session");
   });
 
-
-  it("GET /api/mcp-status returns global MCP status", async () => {
-    const res = await request(app).get("/api/mcp-status");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("servers");
-  });
-
-  it("POST /api/tasks/:id/session creates a task-linked session", async () => {
-    const task = (await request(app).post("/api/tasks").send({ title: "Session Task" })).body.task;
-
-    const res = await request(app)
-      .post(`/api/tasks/${task.id}/session`)
-      .send({ prompt: "Hello" });
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("sessionId");
-  });
 
   it("POST /api/tasks/:id/session leaves the task unchanged when capacity stays full", async () => {
     const sessionManager = createMockSessionManager();

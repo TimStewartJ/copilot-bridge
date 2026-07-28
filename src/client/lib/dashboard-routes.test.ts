@@ -55,18 +55,15 @@ describe("dashboard routes", () => {
     expect(getExplicitDashboardTabFromPathname("/dashboard/feed/")).toBe("feed");
   });
 
-  it("remembers the last explicit dashboard tab", () => {
+  it("remembers the last explicit tab and prefers the current explicit tab over stored state", () => {
     stubLocalStorage();
-
     setLastDashboardTab("feed");
-
     expect(getLastDashboardTab()).toBe("feed");
     expect(getRememberedDashboardPath()).toBe("/dashboard/feed");
-  });
 
-  it("prefers the current explicit dashboard tab over stored state", () => {
+    // current explicit tab overrides stored state
+    expect(getRememberedDashboardPath("/dashboard/feed")).toBe("/dashboard/feed");
     stubLocalStorage({ "bridge-last-dashboard-tab": "checklist" });
-
     expect(getRememberedDashboardPath("/dashboard/feed")).toBe("/dashboard/feed");
   });
 

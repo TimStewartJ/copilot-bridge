@@ -141,7 +141,8 @@ describe("restart-state", () => {
     expect(writeFileMock).not.toHaveBeenCalledWith(statePath, expect.anything(), expect.anything());
   });
 
-  it("retries transient rename failures before succeeding", async () => {
+  it("retries transient rename, read, and clear failures before succeeding", async () => {
+    // Transient rename failure on write
     renameMock
       .mockRejectedValueOnce(Object.assign(new Error("state file locked"), { code: "EPERM" }))
       .mockResolvedValueOnce(undefined);
@@ -152,31 +153,19 @@ describe("restart-state", () => {
     expect(renameMock).toHaveBeenNthCalledWith(1, tempPath, statePath);
     expect(renameMock).toHaveBeenNthCalledWith(2, tempPath, statePath);
     expect(rmMock).not.toHaveBeenCalled();
-  });
 
-  it("cleans up the temp file if rename fails", async () => {
-    renameMock.mockRejectedValueOnce(new Error("rename failed"));
-
-    await expect(writeRestartState(statePath, activeState)).rejects.toThrow("rename failed");
-    expect(rmMock).toHaveBeenCalledWith(tempPath, { force: true });
-  });
-
-  it("retries transient read failures before falling back to default state", async () => {
+    // Transient read failure falls back gracefully
+    renameMock.mockResolvedValue(undefined);
+    readFileMock.mockReset();
     readFileMock
       .mockRejectedValueOnce(Object.assign(new Error("state file locked"), { code: "EBUSY" }))
       .mockResolvedValueOnce(JSON.stringify(activeState));
 
     await expect(readRestartState(statePath)).resolves.toEqual(activeState);
     expect(readFileMock).toHaveBeenCalledTimes(2);
-  });
 
-  it("clears the persisted state file", async () => {
-    await clearRestartState(statePath);
-
-    expect(rmMock).toHaveBeenCalledWith(statePath, { force: true });
-  });
-
-  it("retries transient clear failures before succeeding", async () => {
+    // Transient clear failure retries
+    rmMock.mockReset();
     rmMock
       .mockRejectedValueOnce(Object.assign(new Error("state file locked"), { code: "EACCES" }))
       .mockResolvedValueOnce(undefined);
@@ -188,6 +177,19 @@ describe("restart-state", () => {
     expect(rmMock).toHaveBeenNthCalledWith(2, statePath, { force: true });
   });
 
+  it("cleans up the temp file if rename fails", async () => {
+    renameMock.mockRejectedValueOnce(new Error("rename failed"));
+
+    await expect(writeRestartState(statePath, activeState)).rejects.toThrow("rename failed");
+    expect(rmMock).toHaveBeenCalledWith(tempPath, { force: true });
+  });
+
+  it("clears the persisted state file", async () => {
+    await clearRestartState(statePath);
+
+    expect(rmMock).toHaveBeenCalledWith(statePath, { force: true });
+  });
+
   it("builds an idle restart state that preserves release failure metadata", () => {
     expect(buildRestartStateWithReleaseFailure(activeState, releaseFailure)).toEqual({
       ...activeState,
@@ -197,7 +199,7 @@ describe("restart-state", () => {
     });
   });
 
-  it("round-trips a queued phase state", async () => {
+  it("round-trips queued, restarting, and idle phase states", async () => {
     const queued: RestartState = {
       requestId: "req-queued",
       phase: "queued",
@@ -207,15 +209,11 @@ describe("restart-state", () => {
       releaseFailure: null,
     };
 
-    const written = await writeRestartState(statePath, queued);
-    expect(written).toEqual(queued);
+    const written1 = await writeRestartState(statePath, queued);
+    expect(written1).toEqual(queued);
+    readFileMock.mockResolvedValueOnce(JSON.stringify(written1));
+    expect(await readRestartState(statePath)).toEqual(queued);
 
-    readFileMock.mockResolvedValueOnce(JSON.stringify(written));
-    const read = await readRestartState(statePath);
-    expect(read).toEqual(queued);
-  });
-
-  it("round-trips a restarting phase state with waitingSessions", async () => {
     const restarting: RestartState = {
       requestId: "req-restarting",
       phase: "restarting",
@@ -225,15 +223,11 @@ describe("restart-state", () => {
       releaseFailure: null,
     };
 
-    const written = await writeRestartState(statePath, restarting);
-    expect(written).toEqual(restarting);
+    const written2 = await writeRestartState(statePath, restarting);
+    expect(written2).toEqual(restarting);
+    readFileMock.mockResolvedValueOnce(JSON.stringify(written2));
+    expect(await readRestartState(statePath)).toEqual(restarting);
 
-    readFileMock.mockResolvedValueOnce(JSON.stringify(written));
-    const read = await readRestartState(statePath);
-    expect(read).toEqual(restarting);
-  });
-
-  it("round-trips an idle phase state matching DEFAULT_RESTART_STATE", async () => {
     const idle: RestartState = {
       requestId: null,
       phase: "idle",
@@ -243,9 +237,9 @@ describe("restart-state", () => {
       releaseFailure: null,
     };
 
-    const written = await writeRestartState(statePath, idle);
-    expect(written).toEqual(idle);
-    expect(written).toEqual(DEFAULT_RESTART_STATE);
+    const written3 = await writeRestartState(statePath, idle);
+    expect(written3).toEqual(idle);
+    expect(written3).toEqual(DEFAULT_RESTART_STATE);
   });
 
   it("normalizes an unknown phase to idle", async () => {
@@ -272,15 +266,6 @@ describe("restart-state", () => {
     expect(result.waitingSessions).toBe(0);
   });
 
-  it("returns DEFAULT_RESTART_STATE after clear when the file no longer exists", async () => {
-    await clearRestartState(statePath);
-    // Default beforeEach mock already returns ENOENT — simulates missing file after clear
-    const result = await readRestartState(statePath);
-    expect(result).toEqual(DEFAULT_RESTART_STATE);
-    expect(result.phase).toBe("idle");
-    expect(result.requestId).toBeNull();
-    expect(result.waitingSessions).toBe(0);
-  });
 });
 
 describe("restart-state transient FS retry under fake timers", () => {

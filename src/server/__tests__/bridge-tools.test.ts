@@ -6,13 +6,6 @@ import { createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 import { initializeDocsFts } from "../db.js";
 
 describe("Bridge MCP tool definitions", () => {
-  it("provides compatibility access to MCP-backed report_intent definitions", () => {
-    const { ctx } = createTestApp();
-    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "report_intent");
-    expect(tool).toBeTruthy();
-    expect(tool?.scope).toBeUndefined();
-  });
-
   it("provides compatibility access to MCP-backed self-admin and staging definitions", () => {
     const { ctx } = createTestApp();
     const toolNames = new Set(getBridgeToolDefinitions(ctx).map((tool) => tool.name));

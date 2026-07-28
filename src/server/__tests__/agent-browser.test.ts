@@ -124,43 +124,34 @@ describe("agent-browser wrapper", () => {
     vi.useRealTimers();
   });
 
-  it("passes explicit bridge session env to browser commands", async () => {
+  it("passes env (session, profile, executable, headed flag) to browser commands based on target config", async () => {
     execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
       cb(null, { stdout: "ok", stderr: "" });
       return {} as any;
     });
     const mod = await import("../agent-browser.js");
+
+    // basic target: AGENT_BROWSER_SESSION and default profile
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-
     await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
+    const [, , opts1] = execFileMock.mock.calls[0];
+    expect(opts1.env.AGENT_BROWSER_SESSION, "session env").toMatch(/^copilot-bridge-/);
+    expect(normalizePath(opts1.env.AGENT_BROWSER_PROFILE), "profile env").toContain(normalizePath(BROWSER_PROFILE));
 
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    const [, , options] = execFileMock.mock.calls[0];
-    expect(options.env.AGENT_BROWSER_SESSION).toMatch(/^copilot-bridge-/);
-    expect(normalizePath(options.env.AGENT_BROWSER_PROFILE)).toContain(normalizePath(BROWSER_PROFILE));
-  });
-
-  it("applies configured browser paths and headed launches to browser command env", async () => {
-    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
-      cb(null, { stdout: "ok", stderr: "" });
-      return {} as any;
-    });
-    const mod = await import("../agent-browser.js");
+    // configured target: custom executable, profile dir, and headed flag
+    execFileMock.mockClear();
     const executablePath = testExecutablePath("chrome");
     const profileDir = testPath("browser-master-profile");
-    const target = mod.getBridgeBrowserTarget(COPILOT_HOME, {
+    const configuredTarget = mod.getBridgeBrowserTarget(COPILOT_HOME, {
       executablePath,
       masterProfileDirectory: profileDir,
       headed: true,
     });
-
-    await mod.ab(["open", "about:blank"], undefined, { browserTarget: target });
-
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    const [, , options] = execFileMock.mock.calls[0];
-    expect(normalizePath(options.env.AGENT_BROWSER_EXECUTABLE_PATH)).toBe(normalizePath(executablePath));
-    expect(normalizePath(options.env.AGENT_BROWSER_PROFILE)).toBe(normalizePath(profileDir));
-    expect(options.env.AGENT_BROWSER_HEADED).toBe("true");
+    await mod.ab(["open", "about:blank"], undefined, { browserTarget: configuredTarget });
+    const [, , opts2] = execFileMock.mock.calls[0];
+    expect(normalizePath(opts2.env.AGENT_BROWSER_EXECUTABLE_PATH), "executable path env").toBe(normalizePath(executablePath));
+    expect(normalizePath(opts2.env.AGENT_BROWSER_PROFILE), "profile dir env").toBe(normalizePath(profileDir));
+    expect(opts2.env.AGENT_BROWSER_HEADED, "headed env").toBe("true");
   });
 
   it("does not leak inherited headed browser env when the target is not headed", async () => {
@@ -382,103 +373,66 @@ describe("agent-browser wrapper", () => {
     });
   });
 
-  it("kills exact profile-bound clone processes when clone close fails", async () => {
+  it("sweeps exact profile-bound clone processes regardless of whether clone close fails or succeeds", async () => {
     setPlatform("linux");
-    let cloneProfile = "";
-    const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
-    const terminated = new Set<number>();
-    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (file === "agent-browser") {
-        cb({ stderr: "close failed" });
-        return {} as any;
-      }
-      if (file === "ps") {
-        const normalizedProfile = normalizePath(cloneProfile);
-        cb(null, {
-          stdout: [
-            `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
-            `4343 chrome chrome --user-data-dir=${normalizedProfile}-other`,
-          ].join("\n"),
-          stderr: "",
-        });
-        return {} as any;
-      }
-      throw new Error(`Unexpected execFile command: ${file}`);
-    });
-    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-      if (signal === 0) {
-        if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
-        return true as never;
-      }
-      signals.push({ pid, signal });
-      if (signal === "SIGTERM") terminated.add(pid);
-      return true as never;
-    }) as any);
-
     const mod = await import("../agent-browser.js");
     expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
-    await runWithAdvancedFakeTimers(() => (
-      mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
-        cloneProfile = lane.browserTarget.profileDir;
-        return "ok";
-      })
-    ));
 
-    expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
-    expect(unlinkSyncMock).toHaveBeenCalledWith(join(cloneProfile, "DevToolsActivePort"));
-    expect(rmMock).toHaveBeenCalledWith(cloneProfile, {
-      recursive: true,
-      force: true,
-    });
-  });
-
-  it("sweeps exact profile-bound clone processes even when clone close succeeds", async () => {
-    setPlatform("linux");
-    let cloneProfile = "";
-    const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
-    const terminated = new Set<number>();
-    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (file === "agent-browser") {
-        cb(null, { stdout: "ok", stderr: "" });
-        return {} as any;
-      }
-      if (file === "ps") {
-        const normalizedProfile = normalizePath(cloneProfile);
-        cb(null, {
-          stdout: [
-            `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
-            `4343 chrome chrome --user-data-dir=${normalizedProfile}-other`,
-          ].join("\n"),
-          stderr: "",
-        });
-        return {} as any;
-      }
-      throw new Error(`Unexpected execFile command: ${file}`);
-    });
-    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-      if (signal === 0) {
-        if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+    for (const { label, closeSucceeds } of [
+      { label: "close fails", closeSucceeds: false },
+      { label: "close succeeds", closeSucceeds: true },
+    ]) {
+      let cloneProfile = "";
+      const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
+      const terminated = new Set<number>();
+      execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        if (file === "agent-browser") {
+          if (closeSucceeds) cb(null, { stdout: "ok", stderr: "" });
+          else cb({ stderr: "close failed" });
+          return {} as any;
+        }
+        if (file === "ps") {
+          const normalizedProfile = normalizePath(cloneProfile);
+          cb(null, {
+            stdout: [
+              `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
+              `4343 chrome chrome --user-data-dir=${normalizedProfile}-other`,
+            ].join("\n"),
+            stderr: "",
+          });
+          return {} as any;
+        }
+        throw new Error(`Unexpected execFile command: ${file}`);
+      });
+      killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal === 0) {
+          if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+          return true as never;
+        }
+        signals.push({ pid, signal });
+        if (signal === "SIGTERM") terminated.add(pid);
         return true as never;
+      }) as any);
+
+      await runWithAdvancedFakeTimers(() => (
+        mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
+          cloneProfile = lane.browserTarget.profileDir;
+          return "ok";
+        })
+      ));
+
+      expect(signals, label).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+      expect(rmMock, label).toHaveBeenCalledWith(cloneProfile, { recursive: true, force: true });
+      // close failure also triggers DevToolsActivePort cleanup to unblock next launch
+      if (!closeSucceeds) {
+        expect(unlinkSyncMock, `${label}: unlinkSync DevToolsActivePort`).toHaveBeenCalledWith(join(cloneProfile, "DevToolsActivePort"));
       }
-      signals.push({ pid, signal });
-      if (signal === "SIGTERM") terminated.add(pid);
-      return true as never;
-    }) as any);
 
-    const mod = await import("../agent-browser.js");
-    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
-    await runWithAdvancedFakeTimers(() => (
-      mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
-        cloneProfile = lane.browserTarget.profileDir;
-        return "ok";
-      })
-    ));
-
-    expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
-    expect(rmMock).toHaveBeenCalledWith(cloneProfile, {
-      recursive: true,
-      force: true,
-    });
+      execFileMock.mockReset();
+      killMock.mockReset();
+      rmMock.mockReset();
+      unlinkSyncMock.mockReset();
+    }
   });
 
   it("retries clone copy while skipping locked cookie stores", async () => {
@@ -626,95 +580,53 @@ describe("agent-browser wrapper", () => {
     }));
   });
 
-  it("returns shutdown failure details when agent-browser close fails", async () => {
+  it("returns shutdown failure details when agent-browser close fails or when profile-bound processes remain", async () => {
     setPlatform("linux");
-    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (file === "agent-browser") {
-        cb({ stderr: `timed out closing ${BROWSER_PROFILE}` });
-        return {} as any;
-      }
-      if (file === "ps") {
-        cb(null, { stdout: "", stderr: "" });
-        return {} as any;
-      }
-      throw new Error(`Unexpected execFile command: ${file}`);
-    });
-
-    const telemetryStore = { recordSpan: vi.fn() };
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
-    const result = await runWithAdvancedFakeTimers(() => (
-      mod.shutdownBridgeBrowser(target, telemetryStore as any)
-    ));
 
-    expect(result).toMatchObject({
-      ok: false,
-      closeOk: false,
-      failureCode: "launch.timeout",
-      closeFailureCode: "launch.timeout",
-      remainingPids: [],
-    });
-    expect(result.closeOutputSummary).toContain("<browser-profile>");
-    expect(result.closeOutputSummary).not.toContain(BROWSER_PROFILE);
-    expect(telemetryStore.recordSpan).toHaveBeenCalledWith(expect.objectContaining({
-      name: "browser.lifecycle.shutdown",
-      metadata: expect.objectContaining({
-        success: false,
-        closeOk: false,
-        failureCode: "launch.timeout",
-        closeFailureCode: "launch.timeout",
-        remainingPids: [],
-      }),
-    }));
-  });
+    // Case 1: close fails (launch.timeout)
+    {
+      execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        if (file === "agent-browser") { cb({ stderr: `timed out closing ${BROWSER_PROFILE}` }); return {} as any; }
+        if (file === "ps") { cb(null, { stdout: "", stderr: "" }); return {} as any; }
+        throw new Error(`Unexpected execFile command: ${file}`);
+      });
+      const telemetryStore = { recordSpan: vi.fn() };
+      const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+      expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
+      const result = await runWithAdvancedFakeTimers(() => mod.shutdownBridgeBrowser(target, telemetryStore as any));
+      expect(result, "close fails result").toMatchObject({ ok: false, closeOk: false, failureCode: "launch.timeout", closeFailureCode: "launch.timeout", remainingPids: [] });
+      expect(result.closeOutputSummary, "close fails: path redacted").toContain("<browser-profile>");
+      expect(result.closeOutputSummary, "close fails: no raw path").not.toContain(BROWSER_PROFILE);
+      expect(telemetryStore.recordSpan, "close fails telemetry").toHaveBeenCalledWith(expect.objectContaining({
+        name: "browser.lifecycle.shutdown",
+        metadata: expect.objectContaining({ success: false, closeOk: false, failureCode: "launch.timeout", closeFailureCode: "launch.timeout", remainingPids: [] }),
+      }));
+      execFileMock.mockReset();
+    }
 
-  it("returns shutdown failure details when profile-bound processes remain", async () => {
-    setPlatform("linux");
-    const normalizedProfile = normalizePath(BROWSER_PROFILE);
-    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (file === "agent-browser") {
-        cb(null, { stdout: "ok", stderr: "" });
-        return {} as any;
-      }
-      if (file === "ps") {
-        cb(null, {
-          stdout: `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
-          stderr: "",
-        });
-        return {} as any;
-      }
-      throw new Error(`Unexpected execFile command: ${file}`);
-    });
-    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-      if (pid !== 4242) throw Object.assign(new Error("unexpected pid"), { code: "ESRCH" });
-      if (signal === "SIGKILL") throw Object.assign(new Error("permission denied"), { code: "EPERM" });
-      return true as never;
-    }) as any);
-
-    const telemetryStore = { recordSpan: vi.fn() };
-    const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    const result = await mod.shutdownBridgeBrowser(target, telemetryStore as any);
-
-    expect(result).toMatchObject({
-      ok: false,
-      closeOk: true,
-      failureCode: "profile_processes_remaining",
-      terminatedPids: [4242],
-      killedPids: [],
-      remainingPids: [4242],
-      clearedRuntimeFiles: 5,
-    });
-    expect(telemetryStore.recordSpan).toHaveBeenCalledWith(expect.objectContaining({
-      name: "browser.lifecycle.shutdown",
-      metadata: expect.objectContaining({
-        success: false,
-        closeOk: true,
-        failureCode: "profile_processes_remaining",
-        remainingPids: [4242],
-      }),
-    }));
+    // Case 2: close succeeds but profile-bound processes remain
+    {
+      const normalizedProfile = normalizePath(BROWSER_PROFILE);
+      execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        if (file === "agent-browser") { cb(null, { stdout: "ok", stderr: "" }); return {} as any; }
+        if (file === "ps") { cb(null, { stdout: `4242 chrome chrome --user-data-dir=${normalizedProfile}`, stderr: "" }); return {} as any; }
+        throw new Error(`Unexpected execFile command: ${file}`);
+      });
+      killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+        if (pid !== 4242) throw Object.assign(new Error("unexpected pid"), { code: "ESRCH" });
+        if (signal === "SIGKILL") throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+        return true as never;
+      }) as any);
+      const telemetryStore = { recordSpan: vi.fn() };
+      const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+      const result = await runWithAdvancedFakeTimers(() => mod.shutdownBridgeBrowser(target, telemetryStore as any));
+      expect(result, "process remains result").toMatchObject({ ok: false, closeOk: true, failureCode: "profile_processes_remaining", terminatedPids: [4242], killedPids: [], remainingPids: [4242], clearedRuntimeFiles: 5 });
+      expect(telemetryStore.recordSpan, "process remains telemetry").toHaveBeenCalledWith(expect.objectContaining({
+        name: "browser.lifecycle.shutdown",
+        metadata: expect.objectContaining({ success: false, closeOk: true, failureCode: "profile_processes_remaining", remainingPids: [4242] }),
+      }));
+    }
   });
 
   it("keeps the primary lane pinned to the caller copilotHome", async () => {
@@ -853,78 +765,50 @@ describe("agent-browser wrapper", () => {
     }));
   });
 
-  it("falls back to primary through the shared helper when clone setup throws", async () => {
-    cpMock.mockRejectedValueOnce(Object.assign(new Error("clone copy failed"), { code: "EIO" }));
-    const telemetryStore = { recordSpan: vi.fn() };
+  it("falls back to primary when clone setup throws and fallback is enabled, rethrows when fallback is disabled", async () => {
     const mod = await import("../agent-browser.js");
-    const state = mod.createBrowserLaneFallbackState();
-    const lanes: string[] = [];
 
-    const result = await mod.withBrowserLaneFallback({
-      copilotHome: COPILOT_HOME,
-      telemetryStore: telemetryStore as any,
-      metadata: {
-        browserOpId: "op-clone-fallback",
-        toolName: "browser_fetch",
-        urlHost: "example.com",
-      },
-      tryClone: true,
-      fallbackToPrimaryOnCloneException: true,
-      state,
-    }, async (lane) => {
-      lanes.push(lane.laneType);
-      return lane.laneType;
-    });
+    // fallback enabled: use primary lane and record telemetry
+    {
+      cpMock.mockRejectedValueOnce(Object.assign(new Error("clone copy failed"), { code: "EIO" }));
+      const telemetryStore = { recordSpan: vi.fn() };
+      const state = mod.createBrowserLaneFallbackState();
+      const lanes: string[] = [];
+      const result = await mod.withBrowserLaneFallback({
+        copilotHome: COPILOT_HOME,
+        telemetryStore: telemetryStore as any,
+        metadata: { browserOpId: "op-clone-fallback", toolName: "browser_fetch", urlHost: "example.com" },
+        tryClone: true,
+        fallbackToPrimaryOnCloneException: true,
+        state,
+      }, async (lane) => { lanes.push(lane.laneType); return lane.laneType; });
+      const fallbackSpan = telemetryStore.recordSpan.mock.calls.map(([span]) => span).find((span) => span.name === "browser.clone.fallback_to_primary");
+      expect(result, "fallback: result is primary").toBe("primary");
+      expect(lanes, "fallback: lane is primary").toEqual(["primary"]);
+      expect(state, "fallback: state").toEqual({ attemptedClone: true, fallbackToPrimary: true });
+      expect(fallbackSpan, "fallback: span").toMatchObject({
+        name: "browser.clone.fallback_to_primary",
+        metadata: { browserOpId: "op-clone-fallback", toolName: "browser_fetch", urlHost: "example.com", reason: "exception", error: "clone copy failed" },
+        source: "server",
+      });
+    }
 
-    const fallbackSpan = telemetryStore.recordSpan.mock.calls
-      .map(([span]) => span)
-      .find((span) => span.name === "browser.clone.fallback_to_primary");
-    expect(result).toBe("primary");
-    expect(lanes).toEqual(["primary"]);
-    expect(state).toEqual({
-      attemptedClone: true,
-      fallbackToPrimary: true,
-    });
-    expect(fallbackSpan).toMatchObject({
-      name: "browser.clone.fallback_to_primary",
-      metadata: {
-        browserOpId: "op-clone-fallback",
-        toolName: "browser_fetch",
-        urlHost: "example.com",
-        reason: "exception",
-        error: "clone copy failed",
-      },
-      source: "server",
-    });
-  });
-
-  it("rethrows clone setup errors through the shared helper when fallback is disabled", async () => {
-    cpMock.mockRejectedValueOnce(Object.assign(new Error("clone requested explicitly"), { code: "EIO" }));
-    const telemetryStore = { recordSpan: vi.fn() };
-    const mod = await import("../agent-browser.js");
-    const state = mod.createBrowserLaneFallbackState();
-
-    await expect(mod.withBrowserLaneFallback({
-      copilotHome: COPILOT_HOME,
-      telemetryStore: telemetryStore as any,
-      metadata: {
-        browserOpId: "op-no-fallback",
-        toolName: "browser_exec",
-        requestedLane: "clone",
-        resolvedLane: "clone",
-      },
-      tryClone: true,
-      fallbackToPrimaryOnCloneException: false,
-      state,
-    }, async (lane) => lane.laneType)).rejects.toThrow("clone requested explicitly");
-
-    expect(state).toEqual({
-      attemptedClone: true,
-      fallbackToPrimary: false,
-    });
-    expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
-      name: "browser.clone.fallback_to_primary",
-    }));
+    // fallback disabled: rethrow the clone error
+    {
+      cpMock.mockRejectedValueOnce(Object.assign(new Error("clone requested explicitly"), { code: "EIO" }));
+      const telemetryStore = { recordSpan: vi.fn() };
+      const state = mod.createBrowserLaneFallbackState();
+      await expect(mod.withBrowserLaneFallback({
+        copilotHome: COPILOT_HOME,
+        telemetryStore: telemetryStore as any,
+        metadata: { browserOpId: "op-no-fallback", toolName: "browser_exec", requestedLane: "clone", resolvedLane: "clone" },
+        tryClone: true,
+        fallbackToPrimaryOnCloneException: false,
+        state,
+      }, async (lane) => lane.laneType)).rejects.toThrow("clone requested explicitly");
+      expect(state, "rethrow: state").toEqual({ attemptedClone: true, fallbackToPrimary: false });
+      expect(telemetryStore.recordSpan, "rethrow: no fallback span").not.toHaveBeenCalledWith(expect.objectContaining({ name: "browser.clone.fallback_to_primary" }));
+    }
   });
 
   it("uses the primary lane through the shared helper when clone is not eligible", async () => {
@@ -953,99 +837,83 @@ describe("agent-browser wrapper", () => {
     });
   });
 
-  it("does not let queue telemetry break primary-lane progress", async () => {
-    const telemetryStore = {
-      recordSpan: vi.fn((span: { name: string }) => {
-        if (span.name === "browser.queue.wait.primary") throw new Error("db offline");
-      }),
-    };
+  it("does not let telemetry errors break primary-lane progress, clone-pool slots, or successful clone work", async () => {
     const mod = await import("../agent-browser.js");
-    const order: string[] = [];
-    let releaseOne!: () => void;
-    const oneCanFinish = new Promise<void>((resolve) => {
-      releaseOne = resolve;
-    });
 
-    const one = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
-      order.push("one:start");
-      await oneCanFinish;
-      order.push("one:end");
-    });
-    const two = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
-      order.push("two:start");
-      order.push("two:end");
-    });
-
-    await flushUntil(() => order.includes("one:start"), "primary browser lane one started");
-    expect(order).toEqual(["one:start"]);
-    releaseOne();
-
-    await Promise.all([one, two]);
-    expect(order).toEqual(["one:start", "one:end", "two:start", "two:end"]);
-  });
-
-  it("does not let queue telemetry leak clone-pool slots", async () => {
-    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
-      cb(null, { stdout: "ok", stderr: "" });
-      return {} as any;
-    });
-
-    const telemetryStore = {
-      recordSpan: vi.fn((span: { name: string }) => {
-        if (span.name === "browser.queue.wait.clone") throw new Error("db offline");
-      }),
-    };
-    const mod = await import("../agent-browser.js");
-    const started: string[] = [];
-    let releaseResolve!: () => void;
-    const release = new Promise<void>((resolve) => {
-      releaseResolve = resolve;
-    });
-    const makeLane = (toolName: string, hold: boolean) =>
-      mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName }, async (lane) => {
-        started.push(toolName);
-        if (hold) await release;
-        return lane.cloneId;
+    // primary-lane queue telemetry throws: progress must still complete in order
+    {
+      const telemetryStore = {
+        recordSpan: vi.fn((span: { name: string }) => {
+          if (span.name === "browser.queue.wait.primary") throw new Error("db offline");
+        }),
+      };
+      const order: string[] = [];
+      let releaseOne!: () => void;
+      const oneCanFinish = new Promise<void>((resolve) => { releaseOne = resolve; });
+      const one = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
+        order.push("one:start");
+        await oneCanFinish;
+        order.push("one:end");
       });
+      const two = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
+        order.push("two:start");
+        order.push("two:end");
+      });
+      await flushUntil(() => order.includes("one:start"), "primary browser lane one started");
+      expect(order, "primary: one started first").toEqual(["one:start"]);
+      releaseOne();
+      await Promise.all([one, two]);
+      expect(order, "primary: serial order preserved").toEqual(["one:start", "one:end", "two:start", "two:end"]);
+    }
 
-    const resultsPromise = Promise.all([
-      makeLane("a", true),
-      makeLane("b", true),
-      makeLane("c", true),
-      makeLane("d", true),
-      makeLane("e", true),
-      makeLane("f", false),
-    ]);
+    // clone queue telemetry throws: pool slots must not leak
+    {
+      execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      });
+      const telemetryStore = {
+        recordSpan: vi.fn((span: { name: string }) => {
+          if (span.name === "browser.queue.wait.clone") throw new Error("db offline");
+        }),
+      };
+      const started: string[] = [];
+      let releaseResolve!: () => void;
+      const release = new Promise<void>((resolve) => { releaseResolve = resolve; });
+      const makeLane = (toolName: string, hold: boolean) =>
+        mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName }, async (lane) => {
+          started.push(toolName);
+          if (hold) await release;
+          return lane.cloneId;
+        });
+      const resultsPromise = Promise.all([
+        makeLane("a", true), makeLane("b", true), makeLane("c", true),
+        makeLane("d", true), makeLane("e", true), makeLane("f", false),
+      ]);
+      await flushUntil(() => started.length === 5, "first five clone lanes started");
+      expect(started, "clone: first 5 run concurrently").toEqual(["a", "b", "c", "d", "e"]);
+      releaseResolve();
+      const results = await resultsPromise;
+      expect(started, "clone: 6th lane eventually runs").toContain("f");
+      expect(results, "clone: all 6 returned").toHaveLength(6);
+      expect(results.every(Boolean), "clone: all results truthy").toBe(true);
+      execFileMock.mockReset();
+    }
 
-    await flushUntil(() => started.length === 5, "first five clone lanes started");
-    expect(started).toEqual(["a", "b", "c", "d", "e"]);
-    releaseResolve();
-
-    const results = await resultsPromise;
-    expect(started).toContain("f");
-    expect(results).toHaveLength(6);
-    expect(results.every(Boolean)).toBe(true);
-  });
-
-  it("does not let clone lifecycle telemetry fail successful clone work", async () => {
-    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
-      cb(null, { stdout: "ok", stderr: "" });
-      return {} as any;
-    });
-
-    const telemetryStore = {
-      recordSpan: vi.fn((span: { name: string }) => {
-        if (span.name.startsWith("browser.clone.")) throw new Error("db offline");
-      }),
-    };
-    const mod = await import("../agent-browser.js");
-
-    const result = await mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName: "browser_web_search" }, async (lane) => lane.cloneId);
-
-    expect(result).toBeTruthy();
-    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
-      recursive: true,
-      force: true,
-    });
+    // clone lifecycle telemetry throws: successful clone work must still complete
+    {
+      execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      });
+      const telemetryStore = {
+        recordSpan: vi.fn((span: { name: string }) => {
+          if (span.name.startsWith("browser.clone.")) throw new Error("db offline");
+        }),
+      };
+      const result = await mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName: "browser_web_search" }, async (lane) => lane.cloneId);
+      expect(result, "clone lifecycle: result truthy").toBeTruthy();
+      expect(rmMock, "clone lifecycle: profile cleaned up").toHaveBeenCalledWith(expect.stringContaining("browser-clones"), { recursive: true, force: true });
+    }
   });
 });

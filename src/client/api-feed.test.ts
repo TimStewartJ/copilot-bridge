@@ -7,7 +7,7 @@ describe("fetchFeedPage query building", () => {
     vi.resetModules();
   });
 
-  it("serializes kind and keyPrefix filters into the request URL", async () => {
+  it("serializes kind and keyPrefix filters into the URL, omits keyPrefix when not provided", async () => {
     vi.useFakeTimers();
     let requestedUrl = "";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -34,16 +34,29 @@ describe("fetchFeedPage query building", () => {
     expect(requestedUrl).toContain("limit=50");
 
     await vi.runOnlyPendingTimersAsync();
+
+    requestedUrl = "";
+    await fetchFeedPage({ status: "active" });
+
+    expect(requestedUrl).not.toContain("keyPrefix");
+
+    await vi.runOnlyPendingTimersAsync();
+  });
+});
+
+describe("fetchSchedules", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    vi.resetModules();
   });
 
-  it("omits keyPrefix when not provided", async () => {
+  it("requests schedules for an explicit task scope", async () => {
     vi.useFakeTimers();
-    let requestedUrl = "";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith("/api/feed")) {
-        requestedUrl = url;
-        return { ok: true, json: async () => ({ cards: [], nextCursor: null }) };
+      if (url === "/api/schedules?taskId=task+1") {
+        return { ok: true, json: async () => [] };
       }
       if (url === "/api/telemetry/batch") {
         return { ok: true, json: async () => ({}) };
@@ -52,11 +65,10 @@ describe("fetchFeedPage query building", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { fetchFeedPage } = await import("./api.js");
+    const { fetchSchedules } = await import("./api.js");
 
-    await fetchFeedPage({ status: "active" });
-
-    expect(requestedUrl).not.toContain("keyPrefix");
+    await expect(fetchSchedules("task 1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/schedules?taskId=task+1");
 
     await vi.runOnlyPendingTimersAsync();
   });

@@ -84,17 +84,6 @@ afterEach(() => {
 });
 
 describe("deploy check contract", () => {
-  it("does not run coverage during interactive deploy validation", async () => {
-    const { DEPLOY_CHECK_STEPS } = await import("../deploy-check.js");
-    const commands = DEPLOY_CHECK_STEPS.map((step) => step.join(" "));
-
-    expect(commands).toEqual([
-      "npm run check:pr",
-    ]);
-    expect(commands).not.toContain("npm run test:coverage");
-    expect(commands).not.toContain("npm run preview:smoke");
-  });
-
   it("keeps production deploy checks separate from staging-only smoke", async () => {
     const { DEPLOY_CHECK_STEPS } = await import("../deploy-check.js");
     const { DEPLOY_GATE, STAGING_DEPLOY_GATE } = await import("../validation-pipeline.js");

@@ -73,7 +73,7 @@ describe("evaluateHealthPoll", () => {
 });
 
 describe("shouldIgnoreHealthPollResult", () => {
-  it("ignores stale poll results after the polled child changes", () => {
+  it("ignores stale poll results after the polled child changes and applies results for the same child", () => {
     expect(
       shouldIgnoreHealthPollResult({
         pollTargetChanged: true,
@@ -81,10 +81,8 @@ describe("shouldIgnoreHealthPollResult", () => {
         shuttingDown: false,
         recoveringServer: false,
       }),
+      "target changed",
     ).toBe(true);
-  });
-
-  it("applies poll results when the same child is still active", () => {
     expect(
       shouldIgnoreHealthPollResult({
         pollTargetChanged: false,
@@ -92,6 +90,7 @@ describe("shouldIgnoreHealthPollResult", () => {
         shuttingDown: false,
         recoveringServer: false,
       }),
+      "same target",
     ).toBe(false);
   });
 });

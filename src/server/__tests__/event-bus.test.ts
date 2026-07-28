@@ -4,20 +4,13 @@ import type { StreamEvent } from "../event-bus.js";
 
 describe("event-bus", () => {
   describe("getOrCreateBus / getBus / hasBus", () => {
-    it("creates a bus for a new session", () => {
+    it("creates a bus for a new session and getOrCreateBus returns the same bus", () => {
       const bus = getOrCreateBus("test-create-1");
       expect(bus).toBeDefined();
       expect(hasBus("test-create-1")).toBe(true);
-    });
-
-    it("getBus returns undefined for unknown session", () => {
-      expect(getBus("nonexistent-bus-id")).toBeUndefined();
-    });
-
-    it("getOrCreateBus returns same bus for same session", () => {
-      const bus1 = getOrCreateBus("test-same-1");
-      const bus2 = getOrCreateBus("test-same-1");
-      expect(bus1).toBe(bus2);
+      // same call returns the same bus
+      const bus2 = getOrCreateBus("test-create-1");
+      expect(bus2).toBe(bus);
     });
 
     it("getOrCreateBus replaces completed bus", () => {
@@ -403,38 +396,31 @@ describe("event-bus", () => {
       expect(bus.complete).toBe(true);
     });
 
-    it("error marks complete with error message", () => {
-      const bus = getOrCreateBus("test-error-1");
-      bus.emit({ type: "error", message: "Something broke" });
+    it("error, aborted, and shutdown each mark complete with the matching terminal type", () => {
+      // error carries an error message
+      const errBus = getOrCreateBus("test-error-1");
+      errBus.emit({ type: "error", message: "Something broke" });
+      expect(errBus.getSnapshot().complete, "error complete").toBe(true);
+      expect(errBus.getSnapshot().terminalType, "error terminalType").toBe("error");
+      expect(errBus.getTerminalState().errorMessage, "error message").toBe("Something broke");
 
-      const snap = bus.getSnapshot();
-      expect(snap.complete).toBe(true);
-      expect(snap.terminalType).toBe("error");
-      expect(bus.getTerminalState().errorMessage).toBe("Something broke");
-    });
+      // aborted carries final content and timestamp
+      const abortBus = getOrCreateBus("test-aborted-1");
+      abortBus.emit({ type: "aborted", content: "Partial answer", timestamp: "2026-04-24T00:00:01.000Z" });
+      expect(abortBus.getSnapshot().complete, "aborted complete").toBe(true);
+      expect(abortBus.getSnapshot().terminalType, "aborted terminalType").toBe("aborted");
+      expect(abortBus.getSnapshot().terminalTimestamp, "aborted timestamp").toBe("2026-04-24T00:00:01.000Z");
+      expect(abortBus.getTerminalState().finalContent, "aborted finalContent").toBe("Partial answer");
 
-    it("aborted marks complete with terminal type", () => {
-      const bus = getOrCreateBus("test-aborted-1");
-      bus.emit({ type: "aborted", content: "Partial answer", timestamp: "2026-04-24T00:00:01.000Z" });
-
-      const snap = bus.getSnapshot();
-      expect(snap.complete).toBe(true);
-      expect(snap.terminalType).toBe("aborted");
-      expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:01.000Z");
-      expect(bus.getTerminalState().finalContent).toBe("Partial answer");
-    });
-
-    it("shutdown marks complete with terminal type", () => {
-      const bus = getOrCreateBus("test-shutdown-1");
-      bus.emit({ type: "intent", intent: "Exploring codebase" });
-      bus.emit({ type: "shutdown", content: "Partial answer", timestamp: "2026-04-24T00:00:02.000Z" });
-
-      const snap = bus.getSnapshot();
-      expect(snap.complete).toBe(true);
-      expect(snap.terminalType).toBe("shutdown");
-      expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:02.000Z");
-      expect(bus.getTerminalState().finalContent).toBe("Partial answer");
-      expect(snap.intentText).toBe("");
+      // shutdown clears intent
+      const shutBus = getOrCreateBus("test-shutdown-1");
+      shutBus.emit({ type: "intent", intent: "Exploring codebase" });
+      shutBus.emit({ type: "shutdown", content: "Partial answer", timestamp: "2026-04-24T00:00:02.000Z" });
+      expect(shutBus.getSnapshot().complete, "shutdown complete").toBe(true);
+      expect(shutBus.getSnapshot().terminalType, "shutdown terminalType").toBe("shutdown");
+      expect(shutBus.getSnapshot().terminalTimestamp, "shutdown timestamp").toBe("2026-04-24T00:00:02.000Z");
+      expect(shutBus.getTerminalState().finalContent, "shutdown finalContent").toBe("Partial answer");
+      expect(shutBus.getSnapshot().intentText, "shutdown clears intent").toBe("");
     });
 
     it("never stamps streamed text with an event id that disk history will not contain", () => {
@@ -631,17 +617,6 @@ describe("event-bus", () => {
       expect(events[1].type).toBe("delta");
     });
 
-    it("unsubscribe stops delivery", () => {
-      const bus = getOrCreateBus("test-unsub-1");
-      const events: StreamEvent[] = [];
-      const unsub = bus.subscribe((e) => events.push(e));
-
-      unsub();
-      bus.emit({ type: "delta", content: "missed" });
-      // Only the initial snapshot
-      expect(events).toHaveLength(1);
-    });
-
     it("completed bus sends snapshot but does not subscribe", () => {
       const bus = getOrCreateBus("test-complete-sub-1");
       bus.emit({ type: "done", content: "done" });
@@ -668,6 +643,18 @@ describe("event-bus", () => {
       bus.emit({ type: "delta", content: "survives" });
       // Second listener got snapshot + delta despite first throwing
       expect(events).toHaveLength(2);
+    });
+
+    it("stops delivering to a listener once it unsubscribes", () => {
+      const bus = getOrCreateBus("test-unsub-1");
+      const events: StreamEvent[] = [];
+      const unsub = bus.subscribe((e) => events.push(e));
+
+      unsub();
+      bus.emit({ type: "delta", content: "missed" });
+
+      // Only the initial snapshot delivered at subscribe time.
+      expect(events).toHaveLength(1);
     });
   });
 

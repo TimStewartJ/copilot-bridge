@@ -1106,27 +1106,22 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.coverage.latestSkippedAt).toBeNull();
   });
 
-  it("keeps persisted shutdown summaries when malformed tail lines are present", async () => {
-    const copilotHome = createCopilotHome();
-    writeRawEvents(copilotHome, "session-1", [
+  it("keeps persisted shutdown summaries around malformed lines wherever they appear", async () => {
+    const shutdown = (timestamp: string, model: string, usage: Record<string, number>, count = 1) =>
       JSON.stringify({
         type: "session.shutdown",
-        timestamp: "2026-04-01T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 12 },
-            },
-          },
-        },
-      }),
+        timestamp,
+        data: { modelMetrics: { [model]: { requests: { count }, usage } } },
+      });
+
+    // Malformed trailing line after a valid shutdown summary.
+    const trailing = createCopilotHome();
+    writeRawEvents(trailing, "session-1", [
+      shutdown("2026-04-01T10:00:00.000Z", "gpt-4o", { inputTokens: 12 }, 2),
       "{not valid json",
     ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals).toMatchObject({
+    const trailingSummary = await readCopilotUsageSummary({ copilotHome: trailing });
+    expect(trailingSummary.totals).toMatchObject({
       requests: 2,
       inputTokens: 12,
       outputTokens: 0,
@@ -1135,46 +1130,21 @@ describe("readCopilotUsageSummary", () => {
       reasoningTokens: 0,
       totalTokens: 12,
     });
-    expect(summary.coverage.sessionsIncluded).toBe(1);
-    expect(summary.coverage.sessionsSkipped).toBe(0);
-    expect(summary.coverage.skippedByReason.parse_error).toBe(0);
-    expect(summary.coverage.earliestIncludedAt).toBe("2026-04-01T10:00:00.000Z");
-    expect(summary.coverage.latestIncludedAt).toBe("2026-04-01T10:00:00.000Z");
-  });
+    expect(trailingSummary.coverage.sessionsIncluded).toBe(1);
+    expect(trailingSummary.coverage.sessionsSkipped).toBe(0);
+    expect(trailingSummary.coverage.skippedByReason.parse_error).toBe(0);
+    expect(trailingSummary.coverage.earliestIncludedAt).toBe("2026-04-01T10:00:00.000Z");
+    expect(trailingSummary.coverage.latestIncludedAt).toBe("2026-04-01T10:00:00.000Z");
 
-  it("ignores malformed lines before later shutdown summaries", async () => {
-    const copilotHome = createCopilotHome();
-    writeRawEvents(copilotHome, "session-1", [
-      JSON.stringify({
-        type: "session.shutdown",
-        timestamp: "2026-04-02T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 1 },
-              usage: { inputTokens: 5 },
-            },
-          },
-        },
-      }),
+    // Malformed line sandwiched between two valid shutdown summaries.
+    const sandwiched = createCopilotHome();
+    writeRawEvents(sandwiched, "session-1", [
+      shutdown("2026-04-02T10:00:00.000Z", "gpt-4o", { inputTokens: 5 }),
       "{not valid json",
-      JSON.stringify({
-        type: "session.shutdown",
-        timestamp: "2026-04-02T11:00:00.000Z",
-        data: {
-          modelMetrics: {
-            o3: {
-              requests: { count: 1 },
-              usage: { reasoningTokens: 4 },
-            },
-          },
-        },
-      }),
+      shutdown("2026-04-02T11:00:00.000Z", "o3", { reasoningTokens: 4 }),
     ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals).toMatchObject({
+    const sandwichedSummary = await readCopilotUsageSummary({ copilotHome: sandwiched });
+    expect(sandwichedSummary.totals).toMatchObject({
       requests: 2,
       inputTokens: 5,
       outputTokens: 0,
@@ -1183,9 +1153,9 @@ describe("readCopilotUsageSummary", () => {
       reasoningTokens: 4,
       totalTokens: 9,
     });
-    expect(summary.coverage.sessionsIncluded).toBe(1);
-    expect(summary.coverage.earliestIncludedAt).toBe("2026-04-02T10:00:00.000Z");
-    expect(summary.coverage.latestIncludedAt).toBe("2026-04-02T11:00:00.000Z");
+    expect(sandwichedSummary.coverage.sessionsIncluded).toBe(1);
+    expect(sandwichedSummary.coverage.earliestIncludedAt).toBe("2026-04-02T10:00:00.000Z");
+    expect(sandwichedSummary.coverage.latestIncludedAt).toBe("2026-04-02T11:00:00.000Z");
   });
 
   it("returns an empty summary when session-state is missing", async () => {

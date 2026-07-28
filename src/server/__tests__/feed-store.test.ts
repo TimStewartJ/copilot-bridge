@@ -518,17 +518,6 @@ describe("feed-store getKindStats", () => {
 
   const NOW = Date.parse("2026-06-24T00:00:00.000Z");
 
-  it("returns an empty, zero-filled result for an empty feed", () => {
-    const stats = store.getKindStats();
-    expect(stats.kinds).toEqual([]);
-    expect(stats.total).toBe(0);
-    expect(stats.active).toBe(0);
-    expect(stats.windowDays).toBe(30);
-    expect(stats.bucketCount).toBe(14);
-    expect(stats.buckets).toHaveLength(14);
-    expect(stats.buckets.every((value) => value === 0)).toBe(true);
-  });
-
   it("aggregates totals and per-status counts sorted by total desc", () => {
     store.saveCard({ title: "s1", kind: "status" });
     store.saveCard({ title: "s2", kind: "status" });

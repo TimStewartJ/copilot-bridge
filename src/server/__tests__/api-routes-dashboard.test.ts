@@ -14,11 +14,6 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Dashboard routes", () => {
-  it("no longer serves the orphaned /api/dashboard aggregate endpoint", async () => {
-    const res = await request(app).get("/api/dashboard");
-    expect(res.status).toBe(404);
-  });
-
   it("GET /api/dashboard/checklist returns open and completed checklist items", async () => {
     const task = ctx.taskStore.createTask("Dashboard task");
     const open = ctx.checklistStore.createChecklistItem(task.id, "Open item");

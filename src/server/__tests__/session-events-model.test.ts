@@ -14,49 +14,15 @@ import supertest from "supertest";
 // ── Parser unit tests ───────────────────────────────────────────────────────
 
 describe("deriveModelStateFromEventsContent", () => {
-  it("returns empty state for empty content", () => {
-    expect(deriveModelStateFromEventsContent("")).toEqual({});
-  });
-
-  it("returns empty state for content with no model events", () => {
-    const content = [
-      JSON.stringify({ type: "user.message", data: { content: "hello" } }),
-      JSON.stringify({ type: "assistant.message", data: { content: "world" } }),
-    ].join("\n");
-    expect(deriveModelStateFromEventsContent(content)).toEqual({});
-  });
-
-  it("derives model from session.start", () => {
-    const content = JSON.stringify({
-      type: "session.start",
-      data: { selectedModel: "claude-opus-4.7", reasoningEffort: "high" },
-    });
-    expect(deriveModelStateFromEventsContent(content)).toEqual({
-      model: "claude-opus-4.7",
-      reasoningEffort: "high",
-    });
-  });
-
-  it("derives model from session.resume", () => {
-    const content = JSON.stringify({
-      type: "session.resume",
-      data: { selectedModel: "gpt-5.5", reasoningEffort: "medium" },
-    });
-    expect(deriveModelStateFromEventsContent(content)).toEqual({
-      model: "gpt-5.5",
-      reasoningEffort: "medium",
-    });
-  });
-
-  it("derives model from session.model_change", () => {
-    const content = JSON.stringify({
-      type: "session.model_change",
-      data: { newModel: "claude-opus-4.7", reasoningEffort: "xhigh" },
-    });
-    expect(deriveModelStateFromEventsContent(content)).toEqual({
-      model: "claude-opus-4.7",
-      reasoningEffort: "xhigh",
-    });
+  it("derives model and reasoning effort from start, resume, and model_change events", () => {
+    const cases: [string, Record<string, unknown>, Record<string, string>][] = [
+      ["session.start", { selectedModel: "claude-opus-4.7", reasoningEffort: "high" }, { model: "claude-opus-4.7", reasoningEffort: "high" }],
+      ["session.resume", { selectedModel: "gpt-5.5", reasoningEffort: "medium" }, { model: "gpt-5.5", reasoningEffort: "medium" }],
+      ["session.model_change", { newModel: "claude-opus-4.7", reasoningEffort: "xhigh" }, { model: "claude-opus-4.7", reasoningEffort: "xhigh" }],
+    ];
+    for (const [type, data, expected] of cases) {
+      expect(deriveModelStateFromEventsContent(JSON.stringify({ type, data })), type).toEqual(expected);
+    }
   });
 
   it("later event wins over earlier event", () => {

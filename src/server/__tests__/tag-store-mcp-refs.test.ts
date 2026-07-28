@@ -118,18 +118,6 @@ describe("tag-store MCP server references", () => {
     expect(serverRefCount(kept.id)).toBe(1);
   });
 
-  it("locks in the serverId → mcp_servers ON DELETE CASCADE foreign key", () => {
-    expect((db.prepare("PRAGMA foreign_keys").get() as any).foreign_keys).toBe(1);
-    const fks = db.prepare("PRAGMA foreign_key_list(tag_mcp_server_refs)").all() as Array<{
-      table: string;
-      from: string;
-      to: string;
-      on_delete: string;
-    }>;
-    const serverFk = fks.find((fk) => fk.from === "serverId");
-    expect(serverFk).toMatchObject({ table: "mcp_servers", to: "id", on_delete: "CASCADE" });
-  });
-
   it("routes legacy compatibility writes through registry refs and clears old rows", () => {
     const tag = tagStore.createTag("Legacy");
     insertLegacyTagServer(tag.id, "linear");

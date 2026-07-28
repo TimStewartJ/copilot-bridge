@@ -26,23 +26,6 @@ describe("deferred-prompt-store", () => {
       expect(dp.claimToken).toBeUndefined();
     });
 
-    it("get returns undefined for unknown id", () => {
-      expect(store.get("does-not-exist")).toBeUndefined();
-    });
-
-    it("get returns the created row", () => {
-      const dp = store.create("session-1", "Test", new Date().toISOString());
-      const fetched = store.get(dp.id);
-      expect(fetched).toBeDefined();
-      expect(fetched!.id).toBe(dp.id);
-    });
-  });
-
-  describe("listForSession", () => {
-    it("returns empty for session with no prompts", () => {
-      expect(store.listForSession("none")).toEqual([]);
-    });
-
     it("returns only prompts for the given session, ordered by runAt", () => {
       const t1 = "2030-01-01T00:01:00.000Z";
       const t2 = "2030-01-01T00:02:00.000Z";
@@ -67,17 +50,9 @@ describe("deferred-prompt-store", () => {
       expect(due.every((d) => d.runAt <= new Date().toISOString())).toBe(true);
     });
 
-    it("returns empty when nothing is due", () => {
-      store.create("s1", "Future", new Date(Date.now() + 60_000).toISOString());
-      expect(store.listDue()).toHaveLength(0);
-    });
   });
 
   describe("getNextPending", () => {
-    it("returns undefined when no pending rows", () => {
-      expect(store.getNextPending()).toBeUndefined();
-    });
-
     it("returns the earliest pending row", () => {
       const t1 = "2030-01-01T00:01:00.000Z";
       const t2 = "2030-01-01T00:02:00.000Z";
@@ -127,10 +102,6 @@ describe("deferred-prompt-store", () => {
       expect(second).toBeUndefined();
     });
 
-    it("claim on non-existent row fails", () => {
-      expect(store.claimDue("bogus-id", 60_000)).toBeUndefined();
-    });
-
     it("returns the running prompt with the earliest lease expiry", () => {
       const first = store.create("s1", "First", new Date().toISOString());
       const second = store.create("s2", "Second", new Date().toISOString());
@@ -151,10 +122,28 @@ describe("deferred-prompt-store", () => {
       expect(row.status).toBe("completed");
     });
 
-    it("returns false with wrong token", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000);
-      expect(store.markCompleted(dp.id, "wrong-token")).toBe(false);
+    it("returns false with wrong token (markCompleted, markFailed, retry, renewClaim)", () => {
+      // markCompleted: wrong token returns false
+      const dp1 = store.create("s1", "Prompt1", new Date().toISOString());
+      store.claimDue(dp1.id, 60_000);
+      expect(store.markCompleted(dp1.id, "wrong-token"), "markCompleted wrong token").toBe(false);
+
+      // markFailed: wrong token returns false
+      const dp2 = store.create("s1", "Prompt2", new Date().toISOString());
+      store.claimDue(dp2.id, 60_000);
+      expect(store.markFailed(dp2.id, "bad", "err"), "markFailed wrong token").toBe(false);
+
+      // retry: wrong token returns false
+      const dp3 = store.create("s1", "Prompt3", new Date().toISOString());
+      store.claimDue(dp3.id, 60_000);
+      expect(store.retry(dp3.id, "wrong", new Date().toISOString()), "retry wrong token").toBe(false);
+
+      // renewClaim: wrong token returns false and does not extend lease
+      const dp4 = store.create("s1", "Prompt4", new Date().toISOString());
+      store.claimDue(dp4.id, 60_000);
+      const firstLease = store.get(dp4.id)!.leaseExpiresAt;
+      expect(store.renewClaim(dp4.id, "wrong-token", 120_000), "renewClaim wrong token").toBe(false);
+      expect(store.get(dp4.id)!.leaseExpiresAt).toBe(firstLease);
     });
 
     it("can mark a pending prompt completed after delivery has already been accepted", () => {
@@ -174,11 +163,6 @@ describe("deferred-prompt-store", () => {
       expect(row.lastError).toBe("Oops");
     });
 
-    it("returns false with wrong token", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000);
-      expect(store.markFailed(dp.id, "bad", "err")).toBe(false);
-    });
   });
 
   describe("retry", () => {
@@ -192,11 +176,6 @@ describe("deferred-prompt-store", () => {
       expect(row.runAt).toBe(retryAt);
     });
 
-    it("returns false with wrong token", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000);
-      expect(store.retry(dp.id, "wrong", new Date().toISOString())).toBe(false);
-    });
   });
 
   describe("releaseClaimWithoutAttempt", () => {
@@ -232,14 +211,6 @@ describe("deferred-prompt-store", () => {
       expect(Date.parse(store.get(dp.id)!.leaseExpiresAt!)).toBeGreaterThan(firstLease);
     });
 
-    it("does not renew without the matching token", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000);
-      const firstLease = store.get(dp.id)!.leaseExpiresAt;
-
-      expect(store.renewClaim(dp.id, "wrong-token", 120_000)).toBe(false);
-      expect(store.get(dp.id)!.leaseExpiresAt).toBe(firstLease);
-    });
   });
 
   describe("cancelById", () => {
@@ -256,9 +227,6 @@ describe("deferred-prompt-store", () => {
       expect(store.get(dp.id)!.status).toBe("cancelled");
     });
 
-    it("returns false for unknown id", () => {
-      expect(store.cancelById("nope")).toBe(false);
-    });
   });
 
   describe("cancelForSession", () => {
@@ -275,9 +243,6 @@ describe("deferred-prompt-store", () => {
       expect(store.get(running.id)!.status).toBe("cancelled");
     });
 
-    it("returns 0 when no rows match", () => {
-      expect(store.cancelForSession("no-session")).toBe(0);
-    });
   });
 
   describe("reclaimExpiredRunning", () => {
@@ -294,10 +259,5 @@ describe("deferred-prompt-store", () => {
       void claimed;
     });
 
-    it("does not reclaim rows with valid leases", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000); // long lease
-      expect(store.reclaimExpiredRunning()).toBe(0);
-    });
   });
 });

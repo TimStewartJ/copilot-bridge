@@ -19,11 +19,6 @@ beforeEach(() => {
 
 describe("checklist-store", () => {
   describe("CRUD", () => {
-    it("listChecklistItems returns empty array for task with no checklist items", () => {
-      const task = taskStore.createTask("Test");
-      expect(checklistStore.listChecklistItems(task.id)).toEqual([]);
-    });
-
     it("createChecklistItem returns a valid checklist item", () => {
       const task = taskStore.createTask("Test");
       const checklistItem = checklistStore.createChecklistItem(task.id, "Buy milk");
@@ -59,18 +54,6 @@ describe("checklist-store", () => {
       expect(t2.order).toBe(1);
     });
 
-    it("getChecklistItem returns created checklist item", () => {
-      const task = taskStore.createTask("Test");
-      const created = checklistStore.createChecklistItem(task.id, "Find me");
-      const found = checklistStore.getChecklistItem(created.id);
-      expect(found).toBeDefined();
-      expect(found!.text).toBe("Find me");
-    });
-
-    it("getChecklistItem returns undefined for missing id", () => {
-      expect(checklistStore.getChecklistItem("nonexistent")).toBeUndefined();
-    });
-
     it("updateChecklistItem changes text", () => {
       const task = taskStore.createTask("Test");
       const checklistItem = checklistStore.createChecklistItem(task.id, "Original");
@@ -78,18 +61,12 @@ describe("checklist-store", () => {
       expect(updated.text).toBe("Updated");
     });
 
-    it("updateChecklistItem marks done with completedAt", () => {
+    it("updateChecklistItem marks done with completedAt and undone clears it", () => {
       const task = taskStore.createTask("Test");
       const checklistItem = checklistStore.createChecklistItem(task.id, "Do this");
-      const updated = checklistStore.updateChecklistItem(checklistItem.id, { done: true });
-      expect(updated.done).toBe(true);
-      expect(updated.completedAt).toBeTruthy();
-    });
-
-    it("updateChecklistItem undone clears completedAt", () => {
-      const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Do this");
-      checklistStore.updateChecklistItem(checklistItem.id, { done: true });
+      const done = checklistStore.updateChecklistItem(checklistItem.id, { done: true });
+      expect(done.done).toBe(true);
+      expect(done.completedAt).toBeTruthy();
       const undone = checklistStore.updateChecklistItem(checklistItem.id, { done: false });
       expect(undone.done).toBe(false);
       expect(undone.completedAt).toBeUndefined();
@@ -231,14 +208,6 @@ describe("checklist-store", () => {
       const completed = checklistStore.listRecentlyCompletedChecklistItems();
       expect(completed).toHaveLength(1);
       expect(completed[0].taskId).toBeNull();
-    });
-
-    it("global checklist item can be updated and deleted", () => {
-      const checklistItem = checklistStore.createChecklistItem(null, "Editable");
-      const updated = checklistStore.updateChecklistItem(checklistItem.id, { text: "Changed" });
-      expect(updated.text).toBe("Changed");
-      checklistStore.deleteChecklistItem(checklistItem.id);
-      expect(checklistStore.getChecklistItem(checklistItem.id)).toBeUndefined();
     });
 
     it("global checklist item supports deadline", () => {

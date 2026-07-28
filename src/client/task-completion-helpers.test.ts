@@ -295,66 +295,72 @@ describe("shouldShowTaskArchiveToggle", () => {
   });
 });
 
-describe("getTaskLifecycleDisplayState", () => {
-  it("returns 'completed' for done status", () => {
-    expect(getTaskLifecycleDisplayState({ status: "done", completedAt: undefined })).toBe("completed");
-  });
+describe("task lifecycle display", () => {
+  const DONE = { status: "done" as const, completedAt: undefined };
+  const COMPLETED_ARCHIVED = { status: "archived" as const, completedAt: "2026-04-01T00:00:00.000Z" };
+  const MANUALLY_ARCHIVED = { status: "archived" as const, completedAt: undefined };
+  const ACTIVE = { status: "active" as const, completedAt: undefined };
 
-  it("returns 'completed' for archived task with completedAt", () => {
-    expect(getTaskLifecycleDisplayState({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toBe("completed");
-  });
-
-  it("returns 'archived' for archived task without completedAt", () => {
-    expect(getTaskLifecycleDisplayState({ status: "archived", completedAt: undefined })).toBe("archived");
-  });
-
-  it("returns 'active' for active task", () => {
-    expect(getTaskLifecycleDisplayState({ status: "active", completedAt: undefined })).toBe("active");
-  });
-});
-
-describe("getTaskStatusLabel", () => {
-  it("labels done tasks as Completed", () => {
-    expect(getTaskStatusLabel({ status: "done", completedAt: undefined })).toBe("Completed");
-  });
-
-  it("labels archived+completedAt tasks as Completed", () => {
-    expect(getTaskStatusLabel({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toBe("Completed");
-  });
-
-  it("labels manually archived tasks as Archived", () => {
-    expect(getTaskStatusLabel({ status: "archived", completedAt: undefined })).toBe("Archived");
-  });
-
-  it("labels active tasks as Active", () => {
-    expect(getTaskStatusLabel({ status: "active", completedAt: undefined })).toBe("Active");
+  it("derives display state, label, badge class, and text class from status and completedAt", () => {
+    const cases = [
+      { task: DONE, state: "completed", label: "Completed", badge: "text-success", text: "text-success" },
+      { task: COMPLETED_ARCHIVED, state: "completed", label: "Completed", badge: "text-success", text: "text-success" },
+      { task: MANUALLY_ARCHIVED, state: "archived", label: "Archived", badge: "text-text-muted", text: "text-text-faint" },
+      { task: ACTIVE, state: "active", label: "Active", badge: "text-info", text: "text-info" },
+    ];
+    for (const { task, state, label, badge, text } of cases) {
+      const where = `${task.status}/${task.completedAt ? "completed" : "no completedAt"}`;
+      expect(getTaskLifecycleDisplayState(task), where).toBe(state);
+      expect(getTaskStatusLabel(task), where).toBe(label);
+      expect(getTaskLifecycleBadgeClass(task), where).toContain(badge);
+      expect(getTaskStatusTextClass(task), where).toBe(text);
+    }
   });
 });
 
-describe("getTaskLifecycleBadgeClass", () => {
-  it("uses success colour for completed tasks", () => {
-    expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toContain("text-success");
+// ---------------------------------------------------------------------------
+// task completion feedback (merged from lib/task-completion-feedback.test.ts)
+// ---------------------------------------------------------------------------
+import { createTaskCompletionFeedback } from "./lib/task-completion-feedback";
+
+describe("createTaskCompletionFeedback", () => {
+  it("builds concise completion copy and keeps done-when separate", () => {
+    expect(createTaskCompletionFeedback({
+      task: {
+        id: "task-1",
+        title: "Ship task",
+        doneWhen: "Merged and deployed",
+        pullRequests: [{ provider: "github", repoName: "repo", prId: 42 }],
+      },
+      previousStatus: "active",
+      checklistItems: [{ done: true }, { done: true }],
+      linkedSessions: [{ busy: false, runState: "idle" }, { busy: false, runState: "idle" }],
+      pullRequests: [{ status: "completed" }],
+    })).toEqual({
+      taskId: "task-1",
+      taskTitle: "Ship task",
+      previousStatus: "active",
+      summary: "2 of 2 checklist items complete • 2 linked sessions • 1 linked PR",
+      doneWhenCopy: "Done when: Merged and deployed",
+    });
   });
 
-  it("uses muted colour for archived tasks", () => {
-    expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: undefined })).toContain("text-text-muted");
-  });
-
-  it("uses info colour for active tasks", () => {
-    expect(getTaskLifecycleBadgeClass({ status: "active", completedAt: undefined })).toContain("text-info");
-  });
-});
-
-describe("getTaskStatusTextClass", () => {
-  it("returns faint class for archived tasks", () => {
-    expect(getTaskStatusTextClass({ status: "archived", completedAt: undefined })).toBe("text-text-faint");
-  });
-
-  it("returns success class for completed tasks", () => {
-    expect(getTaskStatusTextClass({ status: "done", completedAt: undefined })).toBe("text-success");
-  });
-
-  it("returns info class for active tasks", () => {
-    expect(getTaskStatusTextClass({ status: "active", completedAt: undefined })).toBe("text-info");
+  it("falls back to raw linked PR counts when enrichment is unavailable", () => {
+    expect(createTaskCompletionFeedback({
+      task: {
+        id: "task-2",
+        title: "Close loop",
+        doneWhen: undefined,
+        pullRequests: [
+          { provider: "github", repoName: "repo", prId: 1 },
+          { provider: "github", repoName: "repo", prId: 2 },
+        ],
+      },
+      previousStatus: "paused",
+    })).toMatchObject({
+      summary: "No checklist items • 0 linked sessions • 2 linked PRs",
+      doneWhenCopy: undefined,
+      previousStatus: "paused",
+    });
   });
 });

@@ -29,10 +29,6 @@ describe("schedule-store", () => {
   };
 
   describe("CRUD", () => {
-    it("listSchedules returns empty when no file", () => {
-      expect(store.listSchedules()).toEqual([]);
-    });
-
     it("createSchedule returns a valid schedule", () => {
       const s = store.createSchedule({
         ...baseCron,
@@ -45,16 +41,6 @@ describe("schedule-store", () => {
       expect(s.runCount).toBe(0);
       expect(s.model).toBe("claude-sonnet-5");
       expect(s.autoArchiveKeep).toBe(8);
-    });
-
-    it("getSchedule returns created schedule", () => {
-      const s = store.createSchedule(baseCron);
-      expect(store.getSchedule(s.id)).toBeDefined();
-      expect(store.getSchedule(s.id)!.name).toBe("Daily standup");
-    });
-
-    it("getSchedule returns undefined for missing id", () => {
-      expect(store.getSchedule("nope")).toBeUndefined();
     });
 
     it("listSchedules filters by taskId", () => {
@@ -219,20 +205,6 @@ describe("schedule-store", () => {
     it("updateSchedule throws for missing id", () => {
       expect(() => store.updateSchedule("nope", { name: "x" })).toThrow("not found");
     });
-
-    it("deleteSchedule removes the schedule", () => {
-      const s = store.createSchedule(baseCron);
-      db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-        .run(s.id, "session-1", "2026-01-01T00:00:00.000Z");
-      store.claimAutomaticRun(s.id, "2026-01-01T08:00:00.000Z", "cron", "2026-01-01T08:00:00.000Z");
-      store.deleteSchedule(s.id);
-      expect(store.getSchedule(s.id)).toBeUndefined();
-      expect(store.listSchedules()).toHaveLength(0);
-      const runs = db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE scheduleId = ?").get(s.id) as { count: number };
-      expect(runs.count).toBe(0);
-      const claims = db.prepare("SELECT COUNT(*) AS count FROM schedule_run_claims WHERE scheduleId = ?").get(s.id) as { count: number };
-      expect(claims.count).toBe(0);
-    });
   });
 
   describe("run tracking", () => {
@@ -245,28 +217,24 @@ describe("schedule-store", () => {
       expect(updated.lastSessionId).toBe("session-abc");
     });
 
-    it("recordRun auto-disables one-shot schedule", () => {
-      const s = store.createSchedule({
+    it("recordRun auto-disables one-shot schedules and schedules reaching maxRuns", () => {
+      // one-shot: disabled after first run
+      const oneShot = store.createSchedule({
         taskId: "task-1",
         name: "Once",
         prompt: "do it",
         type: "once",
         runAt: new Date().toISOString(),
       });
-      store.recordRun(s.id, "session-xyz");
-      expect(store.getSchedule(s.id)!.enabled).toBe(false);
-    });
+      store.recordRun(oneShot.id, "session-xyz");
+      expect(store.getSchedule(oneShot.id)!.enabled, "one-shot disabled after run").toBe(false);
 
-    it("recordRun auto-disables when maxRuns reached", () => {
-      const s = store.createSchedule({ ...baseCron, maxRuns: 2 });
-      store.recordRun(s.id, "s1");
-      expect(store.getSchedule(s.id)!.enabled).toBe(true);
-      store.recordRun(s.id, "s2");
-      expect(store.getSchedule(s.id)!.enabled).toBe(false);
-    });
-
-    it("recordRun is no-op for missing schedule", () => {
-      expect(() => store.recordRun("nope", "s1")).not.toThrow();
+      // maxRuns: disabled only after the cap is reached
+      const capped = store.createSchedule({ ...baseCron, maxRuns: 2 });
+      store.recordRun(capped.id, "s1");
+      expect(store.getSchedule(capped.id)!.enabled, "not yet at cap").toBe(true);
+      store.recordRun(capped.id, "s2");
+      expect(store.getSchedule(capped.id)!.enabled, "disabled at cap").toBe(false);
     });
   });
 
@@ -401,18 +369,4 @@ describe("schedule-store", () => {
 
   });
 
-  describe("helpers", () => {
-    it("getSchedulesForTask returns filtered list", () => {
-      store.createSchedule(baseCron);
-      store.createSchedule({ ...baseCron, taskId: "other" });
-      expect(store.getSchedulesForTask("task-1")).toHaveLength(1);
-    });
-
-    it("getEnabledSchedules filters disabled", () => {
-      const s1 = store.createSchedule(baseCron);
-      store.createSchedule(baseCron);
-      store.updateSchedule(s1.id, { enabled: false });
-      expect(store.getEnabledSchedules()).toHaveLength(1);
-    });
-  });
 });

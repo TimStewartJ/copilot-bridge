@@ -55,16 +55,18 @@ async function withOverlayHarness(
 }
 
 describe("useOverlayParam search helpers", () => {
-  it("removes the overlay parameter without leaving an empty query marker", () => {
-    expect(getSearchWithoutParam("?sheet=plan", "sheet")).toBe("");
-  });
-
-  it("preserves unrelated parameters when closing the overlay", () => {
-    expect(getSearchWithoutParam("?task=one&sheet=plan&view=chat", "sheet")).toBe("?task=one&view=chat");
-  });
-
-  it("adds or updates the overlay parameter when opening the overlay", () => {
-    expect(getSearchWithParam("?task=one&sheet=notes", "sheet", "plan")).toBe("?task=one&sheet=plan");
+  it("removes, preserves, or updates overlay parameters via buildOverlaySearch", () => {
+    const cases: [string, string, string][] = [
+      // removes without leaving empty query marker
+      ["?sheet=plan", "", "getSearchWithoutParam removes sole param"],
+      // preserves unrelated params when closing
+      ["?task=one&sheet=plan&view=chat", "?task=one&view=chat", "getSearchWithoutParam preserves unrelated params"],
+    ];
+    for (const [input, expected, label] of cases) {
+      expect(getSearchWithoutParam(input, "sheet"), `case: ${label}`).toBe(expected);
+    }
+    // adds or updates the overlay parameter when opening
+    expect(getSearchWithParam("?task=one&sheet=notes", "sheet", "plan"), "case: getSearchWithParam updates").toBe("?task=one&sheet=plan");
   });
 });
 

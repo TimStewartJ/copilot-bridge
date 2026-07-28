@@ -42,19 +42,20 @@ function findToggleButton(root: any, title: "Pause" | "Resume") {
 }
 
 describe("ScheduleRow", () => {
-  it("renders a Pause icon for active schedules", async () => {
-    const harness = await renderScheduleRow(makeSchedule(true));
-    const button = findToggleButton(harness.dom.container, "Pause");
-    const [icon] = findAllByTag(button, "SVG");
-
-    expect(icon?.getAttribute("class")).toContain("lucide-pause");
-  });
-
-  it("renders a Play icon for paused schedules", async () => {
-    const harness = await renderScheduleRow(makeSchedule(false));
-    const button = findToggleButton(harness.dom.container, "Resume");
-    const [icon] = findAllByTag(button, "SVG");
-
-    expect(icon?.getAttribute("class")).toContain("lucide-play");
+  it("renders a Pause icon for active schedules and a Play icon for paused schedules", async () => {
+    const cases: [boolean, "Pause" | "Resume", string][] = [
+      [true, "Pause", "lucide-pause"],
+      [false, "Resume", "lucide-play"],
+    ];
+    for (const [enabled, buttonTitle, expectedClass] of cases) {
+      const harness = await renderScheduleRow(makeSchedule(enabled));
+      try {
+        const button = findToggleButton(harness.dom.container, buttonTitle);
+        const [icon] = findAllByTag(button, "SVG");
+        expect(icon?.getAttribute("class"), `case: enabled=${enabled}`).toContain(expectedClass);
+      } finally {
+        await harness.cleanup();
+      }
+    }
   });
 });

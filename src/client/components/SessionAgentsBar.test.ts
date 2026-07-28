@@ -41,22 +41,20 @@ async function clickButton(act: ReactDomHarness["act"], button: any): Promise<vo
 }
 
 describe("SessionAgentsBar", () => {
-  it("renders nothing when background agents are only last-seen (stale)", async () => {
-    const stale = await mount({
-      sessionId: "s1",
-      backgroundAgents: { running: 2, idle: 0, failed: 0, total: 2, source: "lastSeen" },
-    });
-    expect(stale.dom.container.textContent ?? "").not.toContain("background agent");
-  });
-
-  it("renders nothing when there is no summary", async () => {
-    const none = await mount({ sessionId: "s1", backgroundAgents: undefined });
-    expect(none.dom.container.textContent ?? "").toBe("");
-  });
-
-  it("renders nothing when there is no session", async () => {
-    const noSession = await mount({ sessionId: null, backgroundAgents: liveSummary() });
-    expect(noSession.dom.container.textContent ?? "").toBe("");
+  it("renders nothing for stale, missing, or session-less inputs", async () => {
+    const cases: [string, Parameters<typeof SessionAgentsBar>[0]][] = [
+      ["stale source", { sessionId: "s1", backgroundAgents: { running: 2, idle: 0, failed: 0, total: 2, source: "lastSeen" } }],
+      ["no summary", { sessionId: "s1", backgroundAgents: undefined }],
+      ["no session", { sessionId: null, backgroundAgents: liveSummary() }],
+    ];
+    for (const [label, props] of cases) {
+      const harness = await mount(props);
+      try {
+        expect(harness.dom.container.textContent ?? "", `case: ${label}`).toBe("");
+      } finally {
+        await harness.cleanup();
+      }
+    }
   });
 
   it("shows the banner with a count when live background agents are present", async () => {

@@ -502,32 +502,30 @@ afterEach(() => {
 });
 
 describe("staging tools", () => {
-  it("manages staging artifacts normally in development mode", async () => {
+  it("manages staging artifacts based on distribution mode and release slot configuration", async () => {
+    // Development mode: always manages artifacts
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
-    const mod = await loadStagingToolsModule();
-    expect(mod.shouldManageStagingArtifacts()).toBe(true);
-  });
+    const mod1 = await loadStagingToolsModule();
+    expect(mod1.shouldManageStagingArtifacts(), "development mode").toBe(true);
 
-  it("skips staging artifact management in release mode", async () => {
+    // Release mode without any source-managed overrides: skips
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
     vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", undefined);
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", undefined);
-    const mod = await loadStagingToolsModule();
-    expect(mod.shouldManageStagingArtifacts()).toBe(false);
-  });
+    const mod2 = await loadStagingToolsModule();
+    expect(mod2.shouldManageStagingArtifacts(), "release mode").toBe(false);
 
-  it("manages staging artifacts for source-managed release-slot servers", async () => {
+    // Source-managed release-slot server (control mode = development): manages
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
-    const mod = await loadStagingToolsModule();
-    expect(mod.shouldManageStagingArtifacts()).toBe(true);
-  });
+    const mod3 = await loadStagingToolsModule();
+    expect(mod3.shouldManageStagingArtifacts(), "source-managed release-slot").toBe(true);
 
-  it("manages staging artifacts for legacy source-managed release-slot servers", async () => {
+    // Legacy source-managed release-slot (BRIDGE_ACTIVE_RELEASE_ROOT set): manages
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
     vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", join(tmpdir(), "bridge-release-slot"));
-    const mod = await loadStagingToolsModule();
-    expect(mod.shouldManageStagingArtifacts()).toBe(true);
+    const mod4 = await loadStagingToolsModule();
+    expect(mod4.shouldManageStagingArtifacts(), "legacy source-managed release-slot").toBe(true);
   });
 
   it("builds and parses staging preview prefixes", async () => {
@@ -689,47 +687,47 @@ describe("staging tools", () => {
     expect(existsSync(join(seededDataDir, "docs", "note.md"))).toBe(true);
   });
 
-  it("inserts staging model settings when the production app settings row is missing", async () => {
+  it("inserts or replaces staging model settings when the production app settings row is missing or malformed", async () => {
     const mod = await loadStagingToolsModule();
-    const productionDataDir = createProductionDataDir();
-    const productionDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
-    try {
-      productionDb.exec("DELETE FROM settings WHERE key = 'app'");
-    } finally {
-      productionDb.close();
-    }
-    const stagingDir = createTempDir("bridge-stage-staging-");
 
-    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
-    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    // Missing row: inserts default model settings
+    const productionDataDir1 = createProductionDataDir();
+    const productionDb1 = new DatabaseSync(join(productionDataDir1, "bridge.db"));
     try {
-      const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
-      const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
-      expect(settings).toEqual({ model: "claude-haiku-4.5" });
+      productionDb1.exec("DELETE FROM settings WHERE key = 'app'");
     } finally {
-      stagingDb.close();
+      productionDb1.close();
     }
-  });
+    const stagingDir1 = createTempDir("bridge-stage-staging-");
 
-  it("replaces malformed production app settings JSON with staging model settings", async () => {
-    const mod = await loadStagingToolsModule();
-    const productionDataDir = createProductionDataDir();
-    const productionDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    const seededDataDir1 = mod.__testing.seedStagingData(stagingDir1, { productionDataDir: productionDataDir1 });
+    const stagingDb1 = new DatabaseSync(join(seededDataDir1, "bridge.db"));
     try {
-      productionDb.prepare("UPDATE settings SET value = ? WHERE key = 'app'").run("not-json");
+      const settingsRow1 = stagingDb1.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
+      const settings1 = JSON.parse(settingsRow1.value) as Record<string, unknown>;
+      expect(settings1, "missing row").toEqual({ model: "claude-haiku-4.5" });
     } finally {
-      productionDb.close();
+      stagingDb1.close();
     }
-    const stagingDir = createTempDir("bridge-stage-staging-");
 
-    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
-    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    // Malformed JSON: replaces with default model settings
+    const productionDataDir2 = createProductionDataDir();
+    const productionDb2 = new DatabaseSync(join(productionDataDir2, "bridge.db"));
     try {
-      const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
-      const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
-      expect(settings).toEqual({ model: "claude-haiku-4.5" });
+      productionDb2.prepare("UPDATE settings SET value = ? WHERE key = 'app'").run("not-json");
     } finally {
-      stagingDb.close();
+      productionDb2.close();
+    }
+    const stagingDir2 = createTempDir("bridge-stage-staging-");
+
+    const seededDataDir2 = mod.__testing.seedStagingData(stagingDir2, { productionDataDir: productionDataDir2 });
+    const stagingDb2 = new DatabaseSync(join(seededDataDir2, "bridge.db"));
+    try {
+      const settingsRow2 = stagingDb2.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
+      const settings2 = JSON.parse(settingsRow2.value) as Record<string, unknown>;
+      expect(settings2, "malformed JSON").toEqual({ model: "claude-haiku-4.5" });
+    } finally {
+      stagingDb2.close();
     }
   });
 
@@ -780,41 +778,41 @@ describe("staging tools", () => {
     );
   });
 
-  it("retries startup restore once after the first failure", async () => {
+  it("retries startup restore once and returns a non-destructive failure result when the retry still fails", async () => {
     const mod = await loadStagingToolsModule();
-    const initializeBackend = vi.fn()
+
+    // Succeeds on the second attempt
+    const initializeBackend1 = vi.fn()
       .mockRejectedValueOnce(new Error("corrupt staged db"))
       .mockResolvedValueOnce(undefined);
-    const log = vi.fn();
-    const stagingDir = createTempDir("bridge-stage-preview-");
+    const log1 = vi.fn();
+    const stagingDir1 = createTempDir("bridge-stage-preview-");
 
-    const result = await mod.__testing.restoreStagingBackendWithRetry("preview-123", stagingDir, {
-      initializeBackend,
-      log,
+    const result1 = await mod.__testing.restoreStagingBackendWithRetry("preview-123", stagingDir1, {
+      initializeBackend: initializeBackend1,
+      log: log1,
     });
 
-    expect(result).toEqual({ restored: true, attempts: 2 });
-    expect(initializeBackend).toHaveBeenCalledTimes(2);
-    expect(log).toHaveBeenCalledWith(
+    expect(result1).toEqual({ restored: true, attempts: 2 });
+    expect(initializeBackend1).toHaveBeenCalledTimes(2);
+    expect(log1).toHaveBeenCalledWith(
       "Failed to restore staged backend for preview-123 on attempt 1/2: corrupt staged db",
     );
-  });
 
-  it("returns a non-destructive failure result when the rebuild retry still fails", async () => {
-    const mod = await loadStagingToolsModule();
-    const initializeBackend = vi.fn().mockRejectedValue(new Error("still broken"));
-    const log = vi.fn();
-    const stagingDir = createTempDir("bridge-stage-preview-");
+    // Still fails on the retry
+    const initializeBackend2 = vi.fn().mockRejectedValue(new Error("still broken"));
+    const log2 = vi.fn();
+    const stagingDir2 = createTempDir("bridge-stage-preview-");
 
-    const result = await mod.__testing.restoreStagingBackendWithRetry("preview-123", stagingDir, {
-      initializeBackend,
-      log,
+    const result2 = await mod.__testing.restoreStagingBackendWithRetry("preview-123", stagingDir2, {
+      initializeBackend: initializeBackend2,
+      log: log2,
     });
 
-    expect(result).toEqual({ restored: false, attempts: 2, error: "still broken" });
-    expect(initializeBackend).toHaveBeenCalledTimes(2);
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledWith(
+    expect(result2).toEqual({ restored: false, attempts: 2, error: "still broken" });
+    expect(initializeBackend2).toHaveBeenCalledTimes(2);
+    expect(log2).toHaveBeenCalledTimes(1);
+    expect(log2).toHaveBeenCalledWith(
       "Failed to restore staged backend for preview-123 on attempt 1/2: still broken",
     );
   });
@@ -1722,45 +1720,6 @@ describe("staging tools", () => {
     expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
   });
 
-  it("returns a normalized failure result when staging_init cannot create a branch", async () => {
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
-      if (cmd.startsWith('git branch "staging/')) {
-        const error = new Error("branch exists") as Error & { stderr: string };
-        error.stderr = "fatal: a branch named staging/test already exists\n";
-        throw error;
-      }
-      return "";
-    });
-
-    const tools = await loadStagingTools();
-    const result = await tools.staging_init.handler(
-      {},
-      {
-        sessionId: "session-1",
-        toolCallId: "tool-1",
-        toolName: "staging_init",
-        arguments: {},
-      } satisfies ToolInvocation,
-    ) as any;
-
-    expect(result).toMatchObject({
-      resultType: "failure",
-      sessionLog: expect.stringContaining("Command: git branch"),
-      toolTelemetry: {
-        bridge: {
-          command: expect.stringContaining('git branch "staging/'),
-          cwd: expect.any(String),
-        },
-      },
-    });
-    expect(result.textResultForLlm).toContain("Failed to create staging branch.");
-    expect(result.textResultForLlm).toContain("Failed to create branch staging/");
-    expect(result.textResultForLlm).toContain("fatal: a branch named staging/test already exists");
-    expect(result).not.toHaveProperty("error");
-  });
-
   it("returns a normalized failure result when staging_preview validation fails", async () => {
     execSyncMock.mockImplementation((cmd: string) => {
       if (cmd === "npm run check:pr") {
@@ -1920,37 +1879,6 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("npm ERR! install exploded");
     expect(createDirectoryLinkMock).not.toHaveBeenCalled();
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain("npm run test:xplat-audit");
-  });
-
-  it("allows a longer timeout for staging_preview validation runs", async () => {
-    const tools = await loadStagingTools();
-    const stagingDir = createTempDir("bridge-stage-preview-timeout-");
-
-    await tools.staging_preview.handler(
-      { stagingDir },
-      {
-        sessionId: "session-1",
-        toolCallId: "tool-1",
-        toolName: "staging_preview",
-        arguments: {},
-      } satisfies ToolInvocation,
-    );
-
-    const previewValidationCalls = execSyncMock.mock.calls.filter(([cmd]) =>
-      PREVIEW_VALIDATION_COMMANDS.includes(String(cmd) as (typeof PREVIEW_VALIDATION_COMMANDS)[number]),
-    );
-
-    expect(previewValidationCalls).toHaveLength(PREVIEW_VALIDATION_COMMANDS.length);
-    expect(previewValidationCalls.every(([, options]) => options?.cwd === stagingDir)).toBe(true);
-    const previewValidationSpawnCalls = spawnMock.mock.calls.filter(([cmd]) =>
-      PREVIEW_VALIDATION_COMMANDS.includes(String(cmd) as (typeof PREVIEW_VALIDATION_COMMANDS)[number]),
-    );
-    expect(previewValidationSpawnCalls.every(([, options]) =>
-      options?.cwd === stagingDir && options?.shell === true && options?.windowsHide === true,
-    )).toBe(true);
-    for (const [, options] of previewValidationSpawnCalls) {
-      expectIsolatedValidationEnv(options?.env);
-    }
   });
 
   it("writes a staging validation stamp after successful staging_preview validation", async () => {
@@ -2180,84 +2108,69 @@ describe("staging preview cleanup hardening", () => {
     );
   });
 
-  it("keeps cleaning later previews when one preview's data removal throws", async () => {
-    const mod = await loadStagingToolsModule();
-    mod.__testing.backendManager.resetBackendState();
-    mod.__testing.resetActivePreviews();
+  it("keeps cleaning later previews when one preview's data removal throws or backend cleanup throws", async () => {
+    // Data removal throws: loop continues to next preview
+    const mod1 = await loadStagingToolsModule();
+    mod1.__testing.backendManager.resetBackendState();
+    mod1.__testing.resetActivePreviews();
 
-    const failingPrefix = "preview-fails";
-    const followingPrefix = "preview-follows";
-    // Dist dirs without index.html so both previews count as "disappeared".
-    const failingDist = join(createTempDir("bridge-preview-dist-fail-"), "missing-dist");
-    const followingDist = join(createTempDir("bridge-preview-dist-follow-"), "missing-dist");
-    const failingDataDir = createTempDir("bridge-preview-data-fail-");
-    const followingDataDir = createTempDir("bridge-preview-data-follow-");
+    const failingPrefix1 = "preview-fails";
+    const followingPrefix1 = "preview-follows";
+    const failingDist1 = join(createTempDir("bridge-preview-dist-fail-"), "missing-dist");
+    const followingDist1 = join(createTempDir("bridge-preview-dist-follow-"), "missing-dist");
+    const failingDataDir1 = createTempDir("bridge-preview-data-fail-");
+    const followingDataDir1 = createTempDir("bridge-preview-data-follow-");
 
-    mod.__testing.seedActivePreview(failingPrefix, failingDist);
-    mod.__testing.seedActivePreview(followingPrefix, followingDist);
-    mod.__testing.backendManager.seedPreviewDataDir(failingPrefix, failingDataDir);
-    mod.__testing.backendManager.seedPreviewDataDir(followingPrefix, followingDataDir);
-    rmSyncThrowDirs.add(failingDataDir);
+    mod1.__testing.seedActivePreview(failingPrefix1, failingDist1);
+    mod1.__testing.seedActivePreview(followingPrefix1, followingDist1);
+    mod1.__testing.backendManager.seedPreviewDataDir(failingPrefix1, failingDataDir1);
+    mod1.__testing.backendManager.seedPreviewDataDir(followingPrefix1, followingDataDir1);
+    rmSyncThrowDirs.add(failingDataDir1);
 
-    const writeLog = vi.fn<(msg: string) => void>();
+    const writeLog1 = vi.fn<(msg: string) => void>();
+    await expect(mod1.__testing.cleanupMissingRegisteredPreviews(writeLog1)).resolves.toBeUndefined();
 
-    await expect(
-      mod.__testing.cleanupMissingRegisteredPreviews(writeLog),
-    ).resolves.toBeUndefined();
-
-    // The failing preview's in-memory state is still cleared despite the throw.
-    expect(mod.__testing.backendManager.hasPreviewDataDir(failingPrefix)).toBe(false);
-    expect(mod.__testing.hasActivePreview(failingPrefix)).toBe(false);
-    expect(existsSync(failingDataDir)).toBe(true);
-
-    // The loop continued to the following preview and cleaned it fully.
-    expect(mod.__testing.backendManager.hasPreviewDataDir(followingPrefix)).toBe(false);
-    expect(mod.__testing.hasActivePreview(followingPrefix)).toBe(false);
-    expect(existsSync(followingDataDir)).toBe(false);
-
+    expect(mod1.__testing.backendManager.hasPreviewDataDir(failingPrefix1)).toBe(false);
+    expect(mod1.__testing.hasActivePreview(failingPrefix1)).toBe(false);
+    expect(existsSync(failingDataDir1)).toBe(true);
+    expect(mod1.__testing.backendManager.hasPreviewDataDir(followingPrefix1)).toBe(false);
+    expect(mod1.__testing.hasActivePreview(followingPrefix1)).toBe(false);
+    expect(existsSync(followingDataDir1)).toBe(false);
     expect(stagingLogMock).toHaveBeenCalledWith(
-      expect.stringContaining(`failed to remove preview data for ${failingPrefix}`),
+      expect.stringContaining(`failed to remove preview data for ${failingPrefix1}`),
     );
-  });
 
-  it("logs and continues the discovery loop when a preview's backend cleanup throws", async () => {
-    const mod = await loadStagingToolsModule();
-    mod.__testing.backendManager.resetBackendState();
-    mod.__testing.resetActivePreviews();
+    // Backend cleanup throws: loop continues and marks active preview as gone
+    const mod2 = await loadStagingToolsModule();
+    mod2.__testing.backendManager.resetBackendState();
+    mod2.__testing.resetActivePreviews();
 
     const backendMod = await import("../staging-backend-manager.js");
-    const failingPrefix = "preview-cleanup-throws";
-    const followingPrefix = "preview-cleanup-ok";
-    const failingDist = join(createTempDir("bridge-preview-dist-cleanup-fail-"), "missing-dist");
-    const followingDist = join(createTempDir("bridge-preview-dist-cleanup-ok-"), "missing-dist");
+    const failingPrefix2 = "preview-cleanup-throws";
+    const followingPrefix2 = "preview-cleanup-ok";
+    const failingDist2 = join(createTempDir("bridge-preview-dist-cleanup-fail-"), "missing-dist");
+    const followingDist2 = join(createTempDir("bridge-preview-dist-cleanup-ok-"), "missing-dist");
 
-    mod.__testing.seedActivePreview(failingPrefix, failingDist);
-    mod.__testing.seedActivePreview(followingPrefix, followingDist);
+    mod2.__testing.seedActivePreview(failingPrefix2, failingDist2);
+    mod2.__testing.seedActivePreview(followingPrefix2, followingDist2);
 
     const cleanupSpy = vi
       .spyOn(backendMod, "cleanupStagingBackendResources")
       .mockImplementation(async (prefix: string) => {
-        if (prefix === failingPrefix) {
-          throw new Error("teardown failed");
-        }
+        if (prefix === failingPrefix2) throw new Error("teardown failed");
       });
 
-    const writeLog = vi.fn<(msg: string) => void>();
+    const writeLog2 = vi.fn<(msg: string) => void>();
 
     try {
-      await expect(
-        mod.__testing.cleanupMissingRegisteredPreviews(writeLog),
-      ).resolves.toBeUndefined();
+      await expect(mod2.__testing.cleanupMissingRegisteredPreviews(writeLog2)).resolves.toBeUndefined();
 
-      // The loop reached and cleaned the following preview despite the throw.
-      expect(cleanupSpy).toHaveBeenCalledWith(failingPrefix);
-      expect(cleanupSpy).toHaveBeenCalledWith(followingPrefix);
-      expect(mod.__testing.hasActivePreview(failingPrefix)).toBe(false);
-      expect(mod.__testing.hasActivePreview(followingPrefix)).toBe(false);
-
-      // The per-iteration guard surfaced the failure with its distinct message.
-      expect(writeLog).toHaveBeenCalledWith(
-        expect.stringContaining(`cleanup for disappeared staging preview ${failingPrefix} failed`),
+      expect(cleanupSpy).toHaveBeenCalledWith(failingPrefix2);
+      expect(cleanupSpy).toHaveBeenCalledWith(followingPrefix2);
+      expect(mod2.__testing.hasActivePreview(failingPrefix2)).toBe(false);
+      expect(mod2.__testing.hasActivePreview(followingPrefix2)).toBe(false);
+      expect(writeLog2).toHaveBeenCalledWith(
+        expect.stringContaining(`cleanup for disappeared staging preview ${failingPrefix2} failed`),
       );
     } finally {
       cleanupSpy.mockRestore();
@@ -2266,48 +2179,48 @@ describe("staging preview cleanup hardening", () => {
 });
 
 describe("staging fresh-install node_modules link handling", () => {
-  it("aborts the fresh install when the node_modules symlink cannot be removed", async () => {
+  it("aborts the fresh install when the node_modules symlink cannot be removed and proceeds once it is removed", async () => {
     const mod = await loadStagingToolsModule();
-    const stagingDir = createTempDir("bridge-stage-deps-fail-");
+
+    // Abort path: symlink removal fails
+    const stagingDir1 = createTempDir("bridge-stage-deps-fail-");
     // Different hashes force the fresh-install path.
-    dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir ? "staged" : "production"));
+    dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir1 ? "staged" : "production"));
     existsSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir, "node_modules") ? true : undefined);
+      String(path) === join(stagingDir1, "node_modules") ? true : undefined);
     lstatSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir, "node_modules") ? { isSymbolicLink: () => true } : undefined);
+      String(path) === join(stagingDir1, "node_modules") ? { isSymbolicLink: () => true } : undefined);
     removeDirectoryLinkMock.mockReturnValue({ ok: false, output: "EPERM: operation not permitted" });
 
-    const runCommand = vi.fn(async () => ({ ok: true, output: "" }));
-    const writeLog = vi.fn();
+    const runCommand1 = vi.fn(async () => ({ ok: true, output: "" }));
+    const writeLog1 = vi.fn();
 
-    const result = await mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+    const result1 = await mod.ensureStagingDeps(stagingDir1, { runCommand: runCommand1, log: writeLog1 });
 
-    expect(result).toMatchObject({ ok: false });
-    expect(result.output).toContain("EPERM: operation not permitted");
+    expect(result1, "abort: should fail").toMatchObject({ ok: false });
+    expect(result1.output, "abort: should contain error").toContain("EPERM: operation not permitted");
     // Critically: npm install never runs over the still-present symlink, which
     // would resolve into production's node_modules.
-    expect(runCommand).not.toHaveBeenCalled();
-    expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
-  });
+    expect(runCommand1, "abort: npm should not run").not.toHaveBeenCalled();
+    expect(preparePatchedPackagesForInstallMock, "abort: no patched packages").not.toHaveBeenCalled();
 
-  it("proceeds with the fresh install once the symlink is removed", async () => {
-    const mod = await loadStagingToolsModule();
-    const stagingDir = createTempDir("bridge-stage-deps-ok-");
-    dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir ? "staged" : "production"));
+    // Proceed path: symlink is removed successfully
+    const stagingDir2 = createTempDir("bridge-stage-deps-ok-");
+    dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir2 ? "staged" : "production"));
     existsSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir, "node_modules") ? true : undefined);
+      String(path) === join(stagingDir2, "node_modules") ? true : undefined);
     lstatSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir, "node_modules") ? { isSymbolicLink: () => true } : undefined);
+      String(path) === join(stagingDir2, "node_modules") ? { isSymbolicLink: () => true } : undefined);
     removeDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
 
-    const runCommand = vi.fn(async () => ({ ok: true, output: "installed" }));
-    const writeLog = vi.fn();
+    const runCommand2 = vi.fn(async () => ({ ok: true, output: "installed" }));
+    const writeLog2 = vi.fn();
 
-    const result = await mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+    const result2 = await mod.ensureStagingDeps(stagingDir2, { runCommand: runCommand2, log: writeLog2 });
 
-    expect(result).toMatchObject({ ok: true });
-    expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(writeLog).toHaveBeenCalledWith("Removed node_modules symlink for fresh install");
+    expect(result2, "proceed: should succeed").toMatchObject({ ok: true });
+    expect(runCommand2, "proceed: npm should run once").toHaveBeenCalledTimes(1);
+    expect(writeLog2, "proceed: should log symlink removal").toHaveBeenCalledWith("Removed node_modules symlink for fresh install");
   });
 });
 

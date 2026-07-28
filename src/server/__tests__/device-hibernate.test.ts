@@ -175,41 +175,46 @@ describe("device-hibernate idle watcher", () => {
     errorSpy.mockRestore();
   });
 
-  it("disarming stops the watcher from firing", async () => {
+  it("disarming stops the watcher from firing and re-arming replaces the previous watcher without double firing", async () => {
+    // Disarming stops the watcher
     arm(() => 0);
     expect(disarmHibernateOnIdle()).toBe(true);
     expect(disarmHibernateOnIdle()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
-    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
-  });
+    expect(requestDeviceHibernateMock, "disarmed: no fire").not.toHaveBeenCalled();
 
-  it("re-arming replaces the previous watcher without double firing", async () => {
+    // Re-arming replaces the previous watcher without double firing
     arm(() => 0);
     arm(() => 0);
 
     await vi.advanceTimersByTimeAsync(GRACE_MS + HIBERNATE_IDLE_POLL_INTERVAL_MS);
-    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+    expect(requestDeviceHibernateMock, "re-armed: exactly once").toHaveBeenCalledOnce();
   });
 
-  it("idle hibernation drops a redundant scheduled hibernation", async () => {
+  it("idle hibernation drops a redundant scheduled hibernation and scheduled hibernation disarms the idle watcher", async () => {
+    // Idle hibernation cancels a pending scheduled hibernation
     scheduleHibernate(command, 60 * 60_000);
     arm(() => 0);
 
     await vi.advanceTimersByTimeAsync(GRACE_MS + HIBERNATE_IDLE_POLL_INTERVAL_MS);
-    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
-    expect(getHibernateStatus().pending).toBe(false);
+    expect(requestDeviceHibernateMock, "idle fires once").toHaveBeenCalledOnce();
+    expect(getHibernateStatus().pending, "scheduled cleared by idle").toBe(false);
 
     await vi.advanceTimersByTimeAsync(60 * 60_000);
-    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
-  });
+    expect(requestDeviceHibernateMock, "no second fire").toHaveBeenCalledOnce();
 
-  it("a scheduled hibernation disarms the idle watcher when it fires", async () => {
+    // Scheduled hibernation disarms the idle watcher when it fires
+    requestDeviceHibernateMock.mockReset();
+    requestDeviceHibernateMock.mockResolvedValue(command);
+    cancelHibernate();
+    disarmHibernateOnIdle();
+
     arm(() => 1);
     scheduleHibernate(command, 30_000);
 
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
-    expect(getHibernateOnIdleStatus().armed).toBe(false);
+    expect(requestDeviceHibernateMock, "scheduled fires once").toHaveBeenCalledOnce();
+    expect(getHibernateOnIdleStatus().armed, "idle watcher disarmed").toBe(false);
   });
 });
