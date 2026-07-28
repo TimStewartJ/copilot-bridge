@@ -105,6 +105,7 @@ const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
   },
 })));
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
+const lstatSyncOverrideMock = vi.hoisted(() => vi.fn<(path: unknown) => { isSymbolicLink(): boolean } | undefined>());
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
 const renameSyncCallMock = vi.hoisted(() => vi.fn<(...args: RenameSyncArgs) => void>());
 const readFileSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ReadFileSyncPath) => string | undefined>());
@@ -211,6 +212,11 @@ vi.mock("node:fs", async (importOriginal) => {
         return JSON.stringify({ phase: "idle" });
       }
       return actual.readFileSync(path, ...(args as []));
+    },
+    lstatSync: (path: Parameters<typeof actual.lstatSync>[0], ...args: unknown[]) => {
+      const override = lstatSyncOverrideMock(path);
+      if (override) return override as unknown as ReturnType<typeof actual.lstatSync>;
+      return actual.lstatSync(path, ...(args as []));
     },
     unlinkSync: (path: Parameters<typeof actual.unlinkSync>[0], ...args: unknown[]) => {
       unlinkSyncCallMock(path);
@@ -479,6 +485,7 @@ afterEach(() => {
   createDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
   removeDirectoryLinkMock.mockReset();
   removeDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
+  lstatSyncOverrideMock.mockReset();
   buildPublicUrlMock.mockReset();
   buildPublicUrlMock.mockReturnValue(undefined);
   execSyncMock.mockReset();
@@ -2254,6 +2261,92 @@ describe("staging preview cleanup hardening", () => {
       );
     } finally {
       cleanupSpy.mockRestore();
+    }
+  });
+});
+
+describe("staging fresh-install node_modules link handling", () => {
+  it("aborts the fresh install when the node_modules symlink cannot be removed", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-deps-fail-");
+    // Different hashes force the fresh-install path.
+    dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir ? "staged" : "production"));
+    existsSyncOverrideMock.mockImplementation((path) =>
+      String(path) === join(stagingDir, "node_modules") ? true : undefined);
+    lstatSyncOverrideMock.mockImplementation((path) =>
+      String(path) === join(stagingDir, "node_modules") ? { isSymbolicLink: () => true } : undefined);
+    removeDirectoryLinkMock.mockReturnValue({ ok: false, output: "EPERM: operation not permitted" });
+
+    const runCommand = vi.fn(async () => ({ ok: true, output: "" }));
+    const writeLog = vi.fn();
+
+    const result = await mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(result.output).toContain("EPERM: operation not permitted");
+    // Critically: npm install never runs over the still-present symlink, which
+    // would resolve into production's node_modules.
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with the fresh install once the symlink is removed", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-deps-ok-");
+    dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir ? "staged" : "production"));
+    existsSyncOverrideMock.mockImplementation((path) =>
+      String(path) === join(stagingDir, "node_modules") ? true : undefined);
+    lstatSyncOverrideMock.mockImplementation((path) =>
+      String(path) === join(stagingDir, "node_modules") ? { isSymbolicLink: () => true } : undefined);
+    removeDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
+
+    const runCommand = vi.fn(async () => ({ ok: true, output: "installed" }));
+    const writeLog = vi.fn();
+
+    const result = await mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(writeLog).toHaveBeenCalledWith("Removed node_modules symlink for fresh install");
+  });
+});
+
+describe("staging seed runtime isolation", () => {
+  it("aborts seeding and discards the snapshot when runtime isolation fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const stagingDir = createTempDir("bridge-stage-isolation-fail-");
+
+    // A production database without a `schedules` table makes the required
+    // isolation statement fail. Previously this was downgraded to a warning and
+    // the preview started with live push subscriptions still present.
+    const prodDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    try {
+      prodDb.exec("DROP TABLE schedules");
+    } finally {
+      prodDb.close();
+    }
+
+    expect(() => mod.__testing.seedStagingData(stagingDir, { productionDataDir }))
+      .toThrow(/Unable to isolate staging runtime state/);
+
+    // The half-isolated snapshot must not be left behind for a preview to use.
+    expect(existsSync(join(stagingDir, "data", "bridge.db"))).toBe(false);
+  });
+
+  it("clears push subscriptions and disables schedules atomically", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const stagingDir = createTempDir("bridge-stage-isolation-ok-");
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    try {
+      expect(stagingDb.prepare("SELECT enabled FROM schedules").all()).toEqual([{ enabled: 0 }]);
+      expect(stagingDb.prepare("SELECT COUNT(*) AS count FROM push_subscriptions").get())
+        .toEqual({ count: 0 });
+    } finally {
+      stagingDb.close();
     }
   });
 });

@@ -31,6 +31,10 @@ function Invoke-BridgeProcessCleanup {
 
   $workDirPattern = [regex]::Escape($workDir) + "[\\/]"
   $bridgeEntryPattern = "(?:src[\\/]+launcher\.ts|src[\\/]+server[\\/]+index\.ts|src[\\/]+management-job-runner\.ts)"
+  # Legacy cleanup: older installs launched an always-on scripts\keep-alive.ps1
+  # loop that no longer exists. Anchored to this install's work directory so it
+  # can never match another Bridge install or an unrelated PowerShell process.
+  $legacyKeepAlivePattern = "scripts[\\/]+keep-alive\.ps1"
   $processesToStop = @{}
   $orderedProcessIds = New-Object System.Collections.Generic.List[int]
 
@@ -54,7 +58,7 @@ function Invoke-BridgeProcessCleanup {
     $_.ProcessId -ne $PID -and
     $_.CommandLine -and
     $_.CommandLine -match $workDirPattern -and
-    $_.CommandLine -match $bridgeEntryPattern
+    ($_.CommandLine -match $bridgeEntryPattern -or $_.CommandLine -match $legacyKeepAlivePattern)
   } | ForEach-Object {
     Add-BridgeProcessTree $_
   }

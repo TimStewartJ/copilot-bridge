@@ -225,7 +225,6 @@ describe("CopilotUsageSection", () => {
           pricingKey: "gpt-5.4",
           pricedAs: "gpt-5.4",
           pricingStatus: "exact",
-          pricingSource: "exact",
           normalizedPricingModel: "gpt-5.4",
         },
         {
@@ -236,7 +235,6 @@ describe("CopilotUsageSection", () => {
           pricingKey: null,
           pricedAs: null,
           pricingStatus: "unpriced",
-          pricingSource: "unpriced",
           normalizedPricingModel: "unknown-model",
         },
       ],
@@ -248,7 +246,6 @@ describe("CopilotUsageSection", () => {
           pricingKey: null,
           pricedAs: null,
           pricingStatus: "unpriced",
-          pricingSource: "unpriced",
           normalizedPricingModel: "unknown-model",
         },
       ],

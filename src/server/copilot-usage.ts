@@ -57,7 +57,6 @@ export interface CopilotUsageModelPricingMetadata {
   pricingKey: string | null;
   pricedAs: string | null;
   pricingStatus: CopilotPricingModelResolutionStatus;
-  pricingSource: CopilotPricingModelResolutionStatus;
   normalizedPricingModel: string | null;
   contextTier?: CopilotContextTier;
   contextTierLabel?: string;
@@ -69,7 +68,6 @@ export interface CopilotUsageUnpricedModelRow extends CopilotUsageTotals, Copilo
   pricingKey: null;
   pricedAs: null;
   pricingStatus: "unpriced";
-  pricingSource: "unpriced";
 }
 
 export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCostEstimate, CopilotUsageModelPricingMetadata {
@@ -546,7 +544,6 @@ function applyCostEstimateToModelRow(
     pricingKey,
     pricedAs: pricingKey,
     pricingStatus: priced ? resolution.status : "unpriced",
-    pricingSource: priced ? resolution.source : "unpriced",
     normalizedPricingModel: resolution.normalizedModel,
     ...(row.contextTier ? { contextTier: row.contextTier } : {}),
     ...(contextTierLabel ? { contextTierLabel } : {}),
@@ -629,7 +626,6 @@ function createUnpricedModelReportRow(row: CopilotUsageModelRow): CopilotUsageUn
     pricingKey: null,
     pricedAs: null,
     pricingStatus: "unpriced",
-    pricingSource: "unpriced",
     normalizedPricingModel: row.normalizedPricingModel,
     ...(row.contextTier ? { contextTier: row.contextTier } : {}),
     ...(row.contextTierLabel ? { contextTierLabel: row.contextTierLabel } : {}),
@@ -709,7 +705,6 @@ function createUnpricedPricingMetadata(normalizedPricingModel: string | null = n
     pricingKey: null,
     pricedAs: null,
     pricingStatus: "unpriced",
-    pricingSource: "unpriced",
     normalizedPricingModel,
   };
 }

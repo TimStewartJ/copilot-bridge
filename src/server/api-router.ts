@@ -26,6 +26,7 @@ import {
   ModelRefreshBlockedError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
+  SessionBackendDeleteError,
   SessionCapacityError,
   SessionHistoryUndoError,
   triggerRestartPendingForExternalRequest,
@@ -80,6 +81,8 @@ import {
 } from "../shared/session-agents.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
+import { deleteTaskWithOwnedState } from "./task-deletion.js";
+import { InvalidTagColorError } from "./tag-store.js";
 import { TaskGroupValidationError } from "./task-group-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
@@ -96,7 +99,6 @@ import {
   getHibernateStatus,
   scheduleHibernate,
 } from "./device-hibernate.js";
-import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import {
@@ -1308,17 +1310,32 @@ export function createApiRouter(
   }
 
   async function deleteSessionWithOwnedState(sessionId: string, cacheInvalidationReason: string): Promise<void> {
-    await ctx.sessionManager.deleteSession(sessionId);
+    let backendDeleteError: SessionBackendDeleteError | undefined;
+    try {
+      await ctx.sessionManager.deleteSession(sessionId);
+    } catch (err) {
+      // A backend-only failure still leaves the session locally deleted, so the
+      // Bridge-owned rows below must be cleaned up or they orphan permanently.
+      // Any other error means local deletion did not complete — leave state alone.
+      if (!(err instanceof SessionBackendDeleteError)) throw err;
+      backendDeleteError = err;
+    }
+
     invalidateEnrichedCache(cacheInvalidationReason);
     ctx.sessionMetaStore.deleteMeta(sessionId);
     ctx.readStateStore.markUnread(sessionId);
+    ctx.sessionContextStore?.deleteSessionContext(sessionId);
 
-    const tasks = ctx.taskStore.listTasks();
-    for (const task of tasks) {
-      if (task.sessionIds.includes(sessionId)) {
-        ctx.taskStore.unlinkSession(task.id, sessionId);
-      }
-    }
+    // Cancel first so any in-flight due-delivery observes a terminal row, then
+    // hard-delete: a deleted session can never receive a deferred prompt again.
+    ctx.deferredPromptStore?.cancelForSession(sessionId);
+    ctx.deferLoopStore?.cancelForSession(sessionId);
+    ctx.deferredPromptStore?.deleteForSession(sessionId);
+    ctx.deferLoopStore?.deleteForSession(sessionId);
+
+    ctx.taskStore.unlinkSessionFromAllTasks(sessionId);
+
+    if (backendDeleteError) throw backendDeleteError;
   }
 
   function setSessionArchived(sessionId: string, archived: boolean) {
@@ -1646,33 +1663,6 @@ export function createApiRouter(
       ok: true,
       ...(ctx.docsIndex ? { docsFts: ctx.docsIndex.getFtsHealth() } : {}),
     });
-  });
-
-  router.post("/maintenance/session-overlay-reaper", (req, res) => {
-    try {
-      const body = req.body ?? {};
-      const minimumAgeMs = typeof body.minimumAgeMs === "number" && Number.isFinite(body.minimumAgeMs) && body.minimumAgeMs >= 0
-        ? body.minimumAgeMs
-        : undefined;
-      const minimumAgeHours = typeof body.minimumAgeHours === "number" && Number.isFinite(body.minimumAgeHours) && body.minimumAgeHours >= 0
-        ? body.minimumAgeHours
-        : undefined;
-      const report = runSessionOverlayReaper(ctx, {
-        dryRun: body.dryRun !== false,
-        cleanupDeletedScheduleRuns: body.cleanupDeletedScheduleRuns === true,
-        minimumAgeMs: minimumAgeMs ?? (minimumAgeHours === undefined ? undefined : minimumAgeHours * 60 * 60 * 1000),
-      });
-
-      if (!report.dryRun && (report.reaped > 0 || report.deletedScheduleRuns.deleted > 0)) {
-        invalidateEnrichedCache("maintenance:session-overlay-reaper");
-        ctx.globalBus.emit({ type: "sessions:changed" });
-      }
-
-      res.json(report);
-    } catch (err) {
-      console.error("[maintenance] Session overlay reaper failed:", err);
-      res.status(500).json({ error: "Failed to run session overlay reaper" });
-    }
   });
 
   router.get("/push/status", (_req, res) => {
@@ -3110,7 +3100,7 @@ export function createApiRouter(
   router.delete("/task-groups/:id", (req, res) => {
     // Ungroup any tasks that belong to this group
     const tasks = ctx.taskStore.listTasks().filter((t) => t.groupId === req.params.id);
-    for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: undefined });
+    for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: null });
     ctx.tagStore?.setEntityTags("task_group", req.params.id, []);
     ctx.taskGroupStore.deleteGroup(req.params.id);
     res.json({ success: true });
@@ -3274,13 +3264,15 @@ export function createApiRouter(
       }
       res.json({ tag });
     } catch (err) {
+      if (err instanceof InvalidTagColorError) return res.status(400).json({ error: err.message });
       res.status(404).json({ error: String(err) });
     }
   });
 
   router.delete("/tags/:id", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    ctx.tagStore.deleteTag(req.params.id);
+    const deleted = ctx.tagStore.deleteTag(req.params.id);
+    if (!deleted) return res.status(404).json({ error: `Tag ${req.params.id} not found` });
     console.log("[tags] Tag deleted — evicting cached sessions");
     void ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
@@ -3547,8 +3539,7 @@ export function createApiRouter(
   });
 
   router.delete("/tasks/:id", (req, res) => {
-    ctx.tagStore?.setEntityTags("task", req.params.id, []);
-    ctx.taskStore.deleteTask(req.params.id);
+    deleteTaskWithOwnedState(ctx, req.params.id);
     res.json({ ok: true });
   });
 
@@ -3973,227 +3964,6 @@ export function createApiRouter(
       ctx.telemetryStore?.recordSpan({ name: "dashboard.checklist", duration: Date.now() - t0, source: "server" });
     } catch (err) {
       console.error("[dashboard:checklist] Error:", err);
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  router.get("/dashboard", async (_req, res) => {
-    try {
-      if (!ctx.taskGroupStore || !ctx.scheduleStore || !ctx.checklistStore) {
-        throw new Error("Dashboard stores are not configured.");
-      }
-      const t0 = Date.now();
-      const readState = ctx.readStateStore.getReadState();
-      const tasks = ctx.taskStore.listTasks();
-      const taskLookup = createSessionListTaskLookup(ctx, tasks);
-
-      const enrichedSessions = materializeSessionList(
-        await getEnrichedSessionList(false),
-        false,
-        taskLookup,
-      );
-
-      const sessionById = new Map(enrichedSessions.map((s: any) => [s.sessionId, s]));
-
-      // Helper: is session unread?
-      const isUnread = (sessionId: string, activityTime?: string): boolean => {
-        if (!activityTime) return false;
-        const lastRead = readState[sessionId];
-        if (!lastRead) return true;
-        return new Date(activityTime).getTime() > new Date(lastRead).getTime();
-      };
-      // Busy sessions
-      const busySessions = enrichedSessions
-        .filter((s: any) => s.busy)
-        .map((s: any) => {
-          const taskId = taskLookup.resolveTask(s.sessionId)?.id;
-          const bus = ctx.eventBusRegistry.getBus(s.sessionId);
-          return {
-            sessionId: s.sessionId,
-            title: s.summary,
-            taskId: taskId ?? null,
-            intentText: bus?.getIntentText() ?? null,
-            runState: s.runState,
-            busy: s.busy,
-          };
-        });
-
-      // Active tasks with enrichment
-      const activeTasks = tasks.filter((t) => t.status === "active");
-
-      // Batch-fetch all work items across all active tasks
-      const allWorkItemRefs = activeTasks.flatMap((t) => t.workItems);
-      const uniqueWIRefs = allWorkItemRefs.filter((ref, i, arr) =>
-        arr.findIndex((r) => r.id === ref.id && r.provider === ref.provider) === i,
-      );
-      const allPRs = activeTasks.flatMap((t) => t.pullRequests);
-      const uniquePRs = allPRs.filter((pr, i, arr) =>
-        arr.findIndex((p) => p.repoId === pr.repoId && p.prId === pr.prId && p.provider === pr.provider) === i,
-      );
-
-      const [allWorkItems, allEnrichedPRs] = await Promise.all([
-        enrichWorkItems(uniqueWIRefs),
-        enrichPullRequests(uniquePRs),
-      ]);
-
-      const wiMap = new Map(allWorkItems.map((wi) => [`${wi.provider}:${wi.id}`, wi]));
-      const prMap = new Map(allEnrichedPRs.map((pr) => [`${pr.provider}:${pr.repoId}:${pr.prId}`, pr]));
-
-      const activeTaskEntries = activeTasks.map((task) => {
-        // Work item state summary
-        const byState: Record<string, number> = {};
-        for (const wiRef of task.workItems) {
-          const wi = wiMap.get(`${wiRef.provider}:${wiRef.id}`);
-          const state = wi?.state ?? "Unknown";
-          byState[state] = (byState[state] ?? 0) + 1;
-        }
-
-        // PR status summary
-        let prActive = 0;
-        let prCompleted = 0;
-        let prUnknown = 0;
-        for (const pr of task.pullRequests) {
-          const enriched = prMap.get(`${pr.provider}:${pr.repoId}:${pr.prId}`);
-          if (enriched?.status === "active") prActive++;
-          else if (enriched?.status === "completed") prCompleted++;
-          else if (enriched?.status === null || enriched === undefined) prUnknown++;
-        }
-
-        // Last activity across task sessions
-        const sessionTimes = task.sessionIds
-          .map((sid) => sessionById.get(sid)?.lastActivityAt)
-          .filter(Boolean) as string[];
-        const lastActivity = sessionTimes.length > 0
-          ? sessionTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
-          : task.updatedAt;
-
-        // Has busy session?
-        const hasBusySession = task.sessionIds.some((sid) =>
-          sessionById.get(sid)?.busy,
-        );
-
-        // Checklist summary
-        const checklistItems = ctx.checklistStore.listChecklistItems(task.id);
-        const checklistDone = checklistItems.filter((t) => t.done).length;
-        const today = new Date().toISOString().slice(0, 10);
-        const checklistOverdue = checklistItems.filter((t) => !t.done && t.deadline && t.deadline < today).length;
-
-        return {
-          task,
-          workItemSummary: { total: task.workItems.length, byState },
-          prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted, unknown: prUnknown },
-          checklistSummary: {
-            total: checklistItems.length,
-            done: checklistDone,
-            open: checklistItems.length - checklistDone,
-            overdue: checklistOverdue,
-          },
-          hasBusySession,
-          lastActivity,
-        };
-      });
-
-      // Sort: busy first, then most recent
-      activeTaskEntries.sort((a, b) => {
-        if (a.hasBusySession !== b.hasBusySession) return a.hasBusySession ? -1 : 1;
-        return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
-      });
-
-      // Last active task (most recently updated active task)
-      const lastActiveTask = activeTaskEntries[0] ?? null;
-
-      const nowMs = Date.now();
-      const staleCutoffMs = nowMs - 7 * 24 * 60 * 60 * 1000;
-      const isDueNow = (nextTouchAt?: string) => {
-        if (!nextTouchAt) return false;
-        const dueAt = Date.parse(nextTouchAt);
-        return Number.isFinite(dueAt) && dueAt <= nowMs;
-      };
-      const isStale = (lastActivity: string) => {
-        const lastActivityMs = Date.parse(lastActivity);
-        return Number.isFinite(lastActivityMs) && lastActivityMs < staleCutoffMs;
-      };
-      const closeableMomentumTasks = activeTaskEntries.filter((entry) => entry.task.kind === "task");
-      const taskMomentum = {
-        needsDecision: activeTaskEntries.filter((entry) =>
-          !entry.task.nextAction
-          && !entry.task.waitingOn
-          && !entry.task.nextTouchAt,
-        ),
-        followUpNow: activeTaskEntries.filter((entry) => isDueNow(entry.task.nextTouchAt)),
-        waiting: activeTaskEntries.filter((entry) => !!entry.task.waitingOn),
-        candidateToClose: closeableMomentumTasks.filter((entry) =>
-          entry.checklistSummary.open === 0
-          && !entry.hasBusySession
-          && entry.prSummary.active === 0
-          && entry.prSummary.unknown === 0,
-        ),
-        stale: activeTaskEntries.filter((entry) =>
-          !entry.hasBusySession
-          && !entry.task.nextTouchAt
-          && isStale(entry.lastActivity),
-        ),
-      };
-
-      // Orphan sessions: not linked to any task, unread or active in last 24h
-      const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-      const orphanSessions = enrichedSessions
-        .filter((s: any) => {
-          const linkedTaskIds = Array.isArray(s.linkedTaskIds)
-            ? s.linkedTaskIds
-            : taskLookup.getLinkedTasks(s.sessionId).map((task) => task.id);
-          if (linkedTaskIds.length > 0) return false;
-          const unread = isUnread(s.sessionId, s.lastActivityAt);
-          const recent = s.lastActivityAt && new Date(s.lastActivityAt).getTime() > oneDayAgo;
-          return s.busy || unread || recent;
-        })
-        .map((s: any) => ({
-          sessionId: s.sessionId,
-          title: s.summary,
-          lastVisibleActivityAt: s.lastVisibleActivityAt,
-          lastAttentionAt: s.lastAttentionAt,
-          lastActivityAt: s.lastActivityAt,
-          branch: s.context?.branch ?? null,
-          runState: s.runState ?? "idle",
-          busy: s.busy ?? false,
-          unread: isUnread(s.sessionId, s.lastActivityAt),
-        }));
-      const dashboardChecklistData = buildDashboardChecklistData(tasks);
-
-      // Active schedules
-      const allSchedules = ctx.scheduleStore.listSchedules();
-      const dashboardSchedules = allSchedules.map((sched) => {
-        const task = tasks.find((t) => t.id === sched.taskId);
-        return {
-          ...sched,
-          taskTitle: task?.title ?? null,
-          taskGroupColor: task?.groupId
-            ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
-            : null,
-        };
-      });
-
-      res.json({
-        busySessions,
-        lastActiveTask,
-        orphanSessions,
-        openChecklistItems: dashboardChecklistData.openChecklistItems,
-        completedChecklistItems: dashboardChecklistData.completedChecklistItems,
-        schedules: dashboardSchedules,
-        taskMomentum: {
-          summary: {
-            needsDecision: taskMomentum.needsDecision.length,
-            followUpNow: taskMomentum.followUpNow.length,
-            waiting: taskMomentum.waiting.length,
-            candidateToClose: taskMomentum.candidateToClose.length,
-            stale: taskMomentum.stale.length,
-          },
-          ...taskMomentum,
-        },
-      });
-      ctx.telemetryStore?.recordSpan({ name: "dashboard", duration: Date.now() - t0, source: "server" });
-    } catch (err) {
-      console.error("[dashboard] Error:", err);
       res.status(500).json({ error: String(err) });
     }
   });
@@ -5192,30 +4962,6 @@ export function createApiRouter(
       source: "client",
     })));
     res.json({ ok: true, accepted: parsed.length });
-  });
-
-  router.get("/telemetry", (_req, res) => {
-    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
-    const { name, sessionId, source, limit, since } = _req.query as Record<string, string>;
-    const spans = ctx.telemetryStore.querySpans({
-      name, sessionId, source: source as any,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      since,
-    });
-    res.json(spans);
-  });
-
-  router.get("/telemetry/stats", (_req, res) => {
-    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
-    const { since } = _req.query as Record<string, string>;
-    const stats = ctx.telemetryStore.getStats({ since });
-    res.json(stats);
-  });
-
-  router.delete("/telemetry", (_req, res) => {
-    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
-    const pruned = ctx.telemetryStore.pruneOldSpans(0);
-    res.json({ pruned });
   });
 
   return router;

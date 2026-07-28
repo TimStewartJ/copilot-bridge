@@ -683,6 +683,47 @@ describe("SessionManager bounded session lifecycle", () => {
     });
   });
 
+  it("retains the creation capacity profile when a mismatched session is rejected", async () => {
+    const { manager } = createManager();
+    manager.maxCachedSessions = 10;
+    manager.maxCachedContexts = 10;
+    manager.maxSessionCapacityUnits = 10;
+    manager.localMcpCapacityWeight = 0.25;
+
+    const sessionConfig = {
+      mcpServers: {
+        localOne: { command: "one", args: [] },
+        remote: { type: "http", url: "https://example.test/mcp" },
+      },
+    };
+
+    // The backend hands back a different session ID than requested, and its
+    // disconnect never settles, so cleanup ownership stays pending.
+    const rejected = {
+      sessionId: "backend-chose-this",
+      disconnect: vi.fn(() => new Promise<void>(() => {})),
+    };
+
+    manager.rejectMismatchedCreatedSession(
+      "bridge-requested-this",
+      rejected,
+      { deleteSession: vi.fn().mockResolvedValue(undefined) },
+      sessionConfig,
+    ).catch(() => {});
+
+    await vi.waitFor(() => {
+      const state = manager.getSessionCacheState();
+      expect(state.cleanupOwnershipCount ?? manager.cleanupOwnership.size).toBeGreaterThan(0);
+    });
+
+    const state = manager.getSessionCacheState();
+    // One context plus one local MCP (the remote server never counts):
+    // 1 + 1 * 0.25 = 1.25 retained units, not the bare 1.0 an empty profile
+    // would have produced.
+    expect(state.retainedLocalMcpInstances).toBe(1);
+    expect(state.retainedCapacityUnits).toBe(1.25);
+  });
+
   it("blocks on weighted capacity before the hard context limit", async () => {
     const { manager } = createManager();
     manager.sessionCapacityWaitTimeoutMs = 0;

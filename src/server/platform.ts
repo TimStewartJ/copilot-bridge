@@ -480,7 +480,9 @@ export function removeDirectoryLink(
     } else if (stat.isDirectory()) {
       return { ok: false, output: `Refusing to delete real directory: ${linkPath}` };
     }
-    return { ok: true, output: "" };
+    // Exists but is neither a link nor a directory (e.g. a regular file):
+    // nothing was removed, so reporting success would mask a no-op.
+    return { ok: false, output: `Refusing to delete non-link path: ${linkPath}` };
   } catch (err: any) {
     if (err.code === "ENOENT") return { ok: true, output: "already removed" };
     return { ok: false, output: String(err) };

@@ -5,6 +5,7 @@ import type { DatabaseSync } from "./db.js";
 import { toIntervalDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
+import { DEFAULT_TERMINAL_PRUNE_LIMIT } from "./deferred-prompt-store.js";
 
 export type DeferLoopStatus = "active" | "running" | "cancelled" | "completed" | "failed" | "expired";
 
@@ -137,6 +138,16 @@ export function createDeferLoopStore(db: DatabaseSync) {
     UPDATE defer_loops
     SET status = 'cancelled', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE sessionId = ? AND status IN ('active', 'running')
+  `);
+  const deleteForSessionStmt = db.prepare("DELETE FROM defer_loops WHERE sessionId = ?");
+  const pruneTerminalStmt = db.prepare(`
+    DELETE FROM defer_loops
+    WHERE id IN (
+      SELECT id FROM defer_loops
+      WHERE status IN ('cancelled', 'completed', 'failed', 'expired') AND updatedAt < ?
+      ORDER BY updatedAt ASC
+      LIMIT ?
+    )
   `);
   const markCompletedStmt = db.prepare(`
     UPDATE defer_loops
@@ -331,6 +342,26 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes as number;
   }
 
+  /**
+   * Hard-delete every loop owned by a session. Used when the session itself is
+   * deleted, so no orphaned loop rows survive its owner.
+   */
+  function deleteForSession(sessionId: string): number {
+    const result = deleteForSessionStmt.run(sessionId);
+    return (result as any).changes as number;
+  }
+
+  /**
+   * Bounded hard-delete of terminal loops older than `olderThanIso`. Terminal
+   * loops can never run again, so without pruning the table grows for the
+   * lifetime of the install.
+   */
+  function pruneTerminalRows(olderThanIso: string, limit = DEFAULT_TERMINAL_PRUNE_LIMIT): number {
+    const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_TERMINAL_PRUNE_LIMIT;
+    const result = pruneTerminalStmt.run(olderThanIso, boundedLimit);
+    return (result as any).changes as number;
+  }
+
   function reclaimExpiredRunning(now = new Date().toISOString()): number {
     const result = reclaimExpiredStmt.run(now, now);
     return (result as any).changes as number;
@@ -358,6 +389,8 @@ export function createDeferLoopStore(db: DatabaseSync) {
     markExpired,
     cancelById,
     cancelForSession,
+    deleteForSession,
+    pruneTerminalRows,
     reclaimExpiredRunning,
   };
 }

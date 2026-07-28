@@ -534,6 +534,21 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Shared DELETE helper. Rejects with an `ApiError` on any non-OK response so
+ * mutation hooks never treat a 4xx/5xx as a successful removal.
+ */
+async function requestDelete(path: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+  if (res.ok) return;
+  const err = await res.json().catch(() => ({ error: res.statusText }));
+  const message = err && typeof err === "object" && "error" in err && typeof err.error === "string"
+    ? err.error
+    : res.statusText;
+  const details = err && typeof err === "object" && "details" in err ? err.details : undefined;
+  throw new ApiError(message || res.statusText, res.status, details);
+}
+
 export async function uploadFile(sessionId: string, file: File): Promise<UploadedAttachment> {
   const form = new FormData();
   form.append("sessionId", sessionId);
@@ -591,21 +606,6 @@ export async function reportTiming(
   opts?: { sessionId?: string; metadata?: Record<string, unknown> },
 ): Promise<void> {
   telemetryBatcher.enqueue({ name, duration, sessionId: opts?.sessionId, metadata: opts?.metadata });
-}
-
-export interface TelemetryStats {
-  name: string;
-  count: number;
-  avg: number;
-  min: number;
-  max: number;
-  p50: number;
-  p95: number;
-}
-
-export async function fetchTelemetryStats(since?: string): Promise<TelemetryStats[]> {
-  const qs = since ? `?since=${encodeURIComponent(since)}` : "";
-  return apiFetch<TelemetryStats[]>(`/api/telemetry/stats${qs}`);
 }
 
 export async function fetchRestartStatus(): Promise<RestartStatus> {
@@ -955,17 +955,6 @@ export async function fetchTaskGitStatus(
   return apiFetch<TaskGitStatus>(`/api/tasks/${id}/git-status${suffix}`, undefined, options);
 }
 
-export async function updateTask(
-  id: string,
-  updates: TaskPatch,
-): Promise<Task> {
-  const data = await apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
-    ...updates,
-    _method: "PATCH",
-  });
-  return data.task;
-}
-
 export async function patchTask(
   id: string,
   updates: TaskPatch,
@@ -984,7 +973,7 @@ export async function patchTask(
 }
 
 export async function deleteTask(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/tasks/${id}`, { method: "DELETE" });
+  await requestDelete(`/api/tasks/${id}`);
 }
 
 export async function reorderTasks(taskIds: string[]): Promise<Task[]> {
@@ -1071,7 +1060,7 @@ export async function patchTaskGroup(
 }
 
 export async function deleteTaskGroup(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/task-groups/${id}`, { method: "DELETE" });
+  await requestDelete(`/api/task-groups/${id}`);
 }
 
 export async function reorderTaskGroups(groupIds: string[]): Promise<TaskGroup[]> {
@@ -1188,7 +1177,7 @@ export async function patchTag(
 }
 
 export async function deleteTag(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/tags/${id}`, { method: "DELETE" });
+  await requestDelete(`/api/tags/${id}`);
 }
 
 export async function setTaskTags(taskId: string, tagIds: string[]): Promise<Tag[]> {
@@ -1254,18 +1243,6 @@ export async function setTagMcpServerRefs(tagId: string, serverIds: string[]): P
   return setTagMcpServers(tagId, serverIds);
 }
 
-export async function addTagMcpServerRef(tagId: string, serverId: string): Promise<TagMcpServer> {
-  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp-refs/${encodeURIComponent(serverId)}`, {
-    method: "POST",
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  const data = await res.json();
-  return data.server;
-}
-
 export async function reorderTags(tagIds: string[]): Promise<Tag[]> {
   const res = await fetch(`${API_BASE}/api/tags/reorder`, {
     method: "PUT",
@@ -1278,20 +1255,6 @@ export async function reorderTags(tagIds: string[]): Promise<Tag[]> {
   }
   const data = await res.json();
   return data.tags;
-}
-
-export async function removeTagMcpServer(tagId: string, serverName: string): Promise<void> {
-  await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, { method: "DELETE" });
-}
-
-export async function removeTagMcpServerRef(tagId: string, serverId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp-refs/${encodeURIComponent(serverId)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
 }
 
 export interface RelatedDoc {
@@ -1376,7 +1339,7 @@ export function markSessionReadOnPageHide(
 }
 
 export async function markSessionUnread(sessionId: string): Promise<void> {
-  await fetch(`${API_BASE}/api/read-state/${sessionId}`, { method: "DELETE" });
+  await requestDelete(`/api/read-state/${sessionId}`);
 }
 
 // ── Feed API ──────────────────────────────────────────────────────
@@ -1527,36 +1490,6 @@ export async function deleteFeedCard(id: string): Promise<void> {
 
 // ── Dashboard API ─────────────────────────────────────────────────
 
-export interface DashboardBusySession {
-  sessionId: string;
-  title: string;
-  taskId: string | null;
-  intentText: string | null;
-  runState: SessionRunState;
-  busy: boolean;
-}
-
-export interface DashboardActiveTask {
-  task: Task;
-  workItemSummary: { total: number; byState: Record<string, number> };
-  prSummary: { total: number; active: number; completed: number };
-  checklistSummary: { total: number; done: number; open: number; overdue: number };
-  hasBusySession: boolean;
-  lastActivity: string;
-}
-
-export interface DashboardOrphanSession {
-  sessionId: string;
-  title: string;
-  lastVisibleActivityAt?: string;
-  lastAttentionAt?: string;
-  lastActivityAt?: string;
-  branch: string | null;
-  runState: SessionRunState;
-  busy: boolean;
-  unread: boolean;
-}
-
 export interface DashboardChecklistItem {
   id: string;
   taskId: string | null;
@@ -1573,41 +1506,9 @@ export interface DashboardChecklistItem {
   taskGroupOrder: number | null;
 }
 
-export interface DashboardSchedule extends Schedule {
-  taskTitle: string | null;
-  taskGroupColor: string | null;
-}
-
-export interface DashboardData {
-  busySessions: DashboardBusySession[];
-  lastActiveTask: DashboardActiveTask | null;
-  orphanSessions: DashboardOrphanSession[];
-  openChecklistItems: DashboardChecklistItem[];
-  completedChecklistItems: DashboardChecklistItem[];
-  schedules: DashboardSchedule[];
-  taskMomentum: DashboardTaskMomentum;
-}
-
 export interface DashboardChecklistData {
   openChecklistItems: DashboardChecklistItem[];
   completedChecklistItems: DashboardChecklistItem[];
-}
-
-export interface DashboardTaskMomentumSummary {
-  needsDecision: number;
-  followUpNow: number;
-  waiting: number;
-  candidateToClose: number;
-  stale: number;
-}
-
-export interface DashboardTaskMomentum {
-  summary: DashboardTaskMomentumSummary;
-  needsDecision: DashboardActiveTask[];
-  followUpNow: DashboardActiveTask[];
-  waiting: DashboardActiveTask[];
-  candidateToClose: DashboardActiveTask[];
-  stale: DashboardActiveTask[];
 }
 
 export async function fetchDashboard(): Promise<DashboardChecklistData> {
@@ -1654,7 +1555,6 @@ export interface CopilotUsageModelPricingMetadata {
   pricingKey: string | null;
   pricedAs: string | null;
   pricingStatus: CopilotPricingModelResolutionStatus;
-  pricingSource: CopilotPricingModelResolutionStatus;
   normalizedPricingModel: string | null;
   contextTier?: CopilotContextTier;
   contextTierLabel?: string;
@@ -1666,7 +1566,6 @@ export interface CopilotUsageUnpricedModelRow extends CopilotUsageTotals, Copilo
   pricingKey: null;
   pricedAs: null;
   pricingStatus: "unpriced";
-  pricingSource: "unpriced";
 }
 
 export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCostEstimate, CopilotUsageModelPricingMetadata {
@@ -2327,7 +2226,7 @@ export async function patchSchedule(id: string, updates: ScheduleUpdateInput): P
 }
 
 export async function deleteSchedule(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/schedules/${id}`, { method: "DELETE" });
+  await requestDelete(`/api/schedules/${id}`);
 }
 
 export async function triggerSchedule(id: string): Promise<{ sessionId?: string; skipped?: string }> {
@@ -2399,7 +2298,7 @@ export async function patchChecklistItem(
 }
 
 export async function deleteChecklistItem(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/checklist-items/${id}`, { method: "DELETE" });
+  await requestDelete(`/api/checklist-items/${id}`);
 }
 
 export async function reorderChecklistItems(taskId: string, checklistItemIds: string[]): Promise<ChecklistItem[]> {

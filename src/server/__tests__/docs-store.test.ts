@@ -69,7 +69,6 @@ describe("docs store path hardening", () => {
     expect(() => store.writeSchema(input, { name: "Unsafe", fields: [] })).toThrow(/Invalid folder/);
     expect(() => store.readSchema(input)).toThrow(/Invalid folder/);
     expect(() => store.listDbEntries(input)).toThrow(/Invalid folder/);
-    expect(() => store.deleteFolder(input)).toThrow(/Invalid folder/);
   });
 
   it.each(["CON", "nul.md", "notes/foo.", "notes/foo ", "notes/foo:bar"])(

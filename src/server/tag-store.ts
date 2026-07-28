@@ -11,6 +11,14 @@ export const TAG_COLORS = [
 
 export type TagColor = (typeof TAG_COLORS)[number];
 
+export class InvalidTagColorError extends Error {
+  constructor(readonly color: string) {
+    super(`Invalid tag color "${color}". Expected one of: ${TAG_COLORS.join(", ")}`);
+    this.name = "InvalidTagColorError";
+  }
+}
+
+
 export interface Tag {
   id: string;
   name: string;
@@ -108,7 +116,12 @@ export function createTagStore(db: DatabaseSync) {
       fields.push("name = ?", "nameKey = ?");
       values.push(updates.name, normalizeTagNameKey(updates.name));
     }
-    if (updates.color !== undefined && TAG_COLORS.includes(updates.color)) {
+    if (updates.color !== undefined) {
+      // Silently dropping an unknown colour made REST/tool callers report
+      // success for a change that was never persisted.
+      if (!TAG_COLORS.includes(updates.color)) {
+        throw new InvalidTagColorError(updates.color);
+      }
       fields.push("color = ?"); values.push(updates.color);
     }
     if (updates.instructions !== undefined) { fields.push("instructions = ?"); values.push(updates.instructions); }
@@ -118,12 +131,15 @@ export function createTagStore(db: DatabaseSync) {
     return getTag(id)!;
   }
 
-  function deleteTag(id: string): void {
-    db.prepare("DELETE FROM tags WHERE id = ?").run(id);
+  /** Returns true when a tag row was actually removed. */
+  function deleteTag(id: string): boolean {
+    const result = db.prepare("DELETE FROM tags WHERE id = ?").run(id) as { changes?: number };
+    if ((result.changes ?? 0) === 0) return false;
     // Re-order remaining tags
     const remaining = db.prepare('SELECT id FROM tags ORDER BY "order"').all() as any[];
     const stmt = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
     remaining.forEach((r, i) => stmt.run(i, r.id));
+    return true;
   }
 
   function reorderTags(tagIds: string[]): Tag[] {

@@ -14,6 +14,15 @@
 //      agents AND a live session object is cached. It stops as soon as all
 //      background agents are terminal, the session object is gone, or a hard
 //      safety cap elapses — so it can never leak or churn idle sessions.
+//
+// The poll is NOT redundant with (1). `SessionRunner` subscribes to SDK session
+// events for the duration of a run and unsubscribes in its `finally`, so
+// `session.background_tasks_changed` is only delivered while a parent turn is
+// active. Background agents routinely outlive their parent run; without the
+// poll their snapshot would age past FRESHNESS_WINDOW_MS, `hasRunningAgents()`
+// would report false, and the session manager would become free to evict a
+// session with genuinely running agents. Deleting the poll therefore requires
+// first giving the registry a subscription that outlives the run.
 
 import type { GlobalBus } from "./global-bus.js";
 import type { AgentBackgroundTask, AgentSession } from "./agent-backend/index.js";

@@ -30,6 +30,7 @@ import {
   initializeSchedulerAndDeferredRunners,
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
+import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -143,6 +144,13 @@ async function main(): Promise<void> {
 
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);
+
+  try {
+    defaultContext.sessionOverlayMaintenance = createSessionOverlayMaintenance(defaultContext);
+    defaultContext.sessionOverlayMaintenance.start();
+  } catch (error) {
+    console.error("[session-overlay] Initial maintenance failed:", error);
+  }
 
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();

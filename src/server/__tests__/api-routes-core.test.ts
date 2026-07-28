@@ -729,34 +729,6 @@ describe("Telemetry routes", () => {
   });
 });
 
-describe("Dashboard route", () => {
-  it("overlays fresh session meta activity onto cached disk sessions", async () => {
-    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    ctx.sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId,
-        summary: "Cached session",
-        lastVisibleActivityAt: "2026-04-30T10:00:00.000Z",
-        modifiedTime: "2026-04-30T10:00:00.000Z",
-      },
-    ]);
-    ctx.sessionMetaStore.setLastVisibleActivityAt(sessionId, "2026-04-30T11:00:00.000Z");
-
-    const res = await request(app).get("/api/dashboard");
-
-    expect(res.status).toBe(200);
-    expect(res.body.orphanSessions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sessionId,
-          lastVisibleActivityAt: "2026-04-30T11:00:00.000Z",
-          unread: true,
-        }),
-      ]),
-    );
-  });
-});
-
 describe("Models client-info route", () => {
   it("GET /api/models/client-info returns the backend creation timestamp", async () => {
     ctx.sessionManager.getBackendCreatedAt = () => "2026-05-01T12:00:00.000Z";

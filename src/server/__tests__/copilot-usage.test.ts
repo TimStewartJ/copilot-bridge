@@ -306,7 +306,6 @@ describe("readCopilotUsageSummary", () => {
     expect(model).toMatchObject({
       model: "claude-sonnet-4.6",
       pricingStatus: "exact",
-      pricingSource: "exact",
       pricingKey: "claude-sonnet-4.6",
       pricedAs: "claude-sonnet-4.6",
       billableOutputTokens: 1_000_000,
@@ -416,7 +415,6 @@ describe("readCopilotUsageSummary", () => {
     expect(model).toMatchObject({
       model: "claude-opus-4.7-context-low",
       pricingStatus: "sdk-name",
-      pricingSource: "sdk-name",
       pricingKey: "claude-opus-4.7",
       pricedAs: "claude-opus-4.7",
       normalizedPricingModel: "claude-opus-4.7",
@@ -454,7 +452,6 @@ describe("readCopilotUsageSummary", () => {
     expect(model).toMatchObject({
       model: "opaque-sdk-id",
       pricingStatus: "sdk-name",
-      pricingSource: "sdk-name",
       pricingKey: "claude-opus-4.7",
       pricedAs: "claude-opus-4.7",
       normalizedPricingModel: "claude-opus-4.7",
@@ -516,7 +513,6 @@ describe("readCopilotUsageSummary", () => {
     expect(known?.estimatedCostUsd).toBeCloseTo(30);
     expect(unknown).toMatchObject({
       pricingStatus: "unpriced",
-      pricingSource: "unpriced",
       pricingKey: null,
       pricedAs: null,
       normalizedPricingModel: "unknown-model",

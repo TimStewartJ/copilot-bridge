@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { rename } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -256,6 +257,57 @@ describe("release slots", () => {
     expect(existsSync(staleTemp)).toBe(false);
     expect(existsSync(finalizedSlot)).toBe(true);
     expect(existsSync(liveTemp)).toBe(true);
+  });
+
+  it("prunes a stale temp directory whose recorded PID was reused by another process", () => {
+    const dataDir = makeTestDir("release-slot-prune-pid-reuse");
+    const releaseParent = getReleaseSlotsDir(dataDir);
+    // A live process that did not create this directory — exactly what PID
+    // reuse looks like from the pruner's point of view.
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    try {
+      const reusedPidTemp = join(releaseParent, `.abandoned.${child.pid}.tmp`);
+      const recentTemp = join(releaseParent, `.building.${child.pid}.tmp`);
+
+      mkdirSync(join(reusedPidTemp, "node_modules"), { recursive: true });
+      writeFileSync(join(reusedPidTemp, "node_modules", "big.js"), "abandoned");
+      mkdirSync(join(recentTemp, "src"), { recursive: true });
+      writeFileSync(join(recentTemp, "src", "index.ts"), "building");
+
+      const staleSeconds = (Date.now() - 3 * 60 * 60_000) / 1000;
+      utimesSync(reusedPidTemp, staleSeconds, staleSeconds);
+
+      expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(1);
+      // PID liveness alone no longer pins an abandoned tree...
+      expect(existsSync(reusedPidTemp)).toBe(false);
+      // ...but a live PID with recent progress is still protected.
+      expect(existsSync(recentTemp)).toBe(true);
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("keeps a temp directory whose PID is alive and whose tree was touched recently", () => {
+    const dataDir = makeTestDir("release-slot-prune-live-build");
+    const releaseParent = getReleaseSlotsDir(dataDir);
+    const liveTemp = join(releaseParent, `.building.${process.pid}.tmp`);
+    mkdirSync(join(liveTemp, "src"), { recursive: true });
+    writeFileSync(join(liveTemp, "src", "index.ts"), "building");
+
+    expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(0);
+    expect(existsSync(liveTemp)).toBe(true);
+  });
+
+  it("prunes a temp directory whose recorded PID is not alive regardless of age", () => {
+    const dataDir = makeTestDir("release-slot-prune-dead-pid");
+    const releaseParent = getReleaseSlotsDir(dataDir);
+    // PID 2^22 is above the default Linux pid_max and never allocated here.
+    const deadPidTemp = join(releaseParent, ".crashed.4194303.tmp");
+    mkdirSync(deadPidTemp, { recursive: true });
+    writeFileSync(join(deadPidTemp, "marker"), "crashed");
+
+    expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(1);
+    expect(existsSync(deadPidTemp)).toBe(false);
   });
 
   it("rejects candidate metadata outside the release slot directory", () => {

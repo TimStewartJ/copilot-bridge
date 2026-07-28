@@ -39,6 +39,7 @@ import {
   STAGING_BACKEND_LIVE_LIMIT,
   STAGING_BACKEND_REQUEST_START_WAIT_MS,
   STAGING_BACKEND_STARTUP_RESTORE_LIMIT,
+  STAGING_BACKEND_START_MAX_ATTEMPTS,
   STAGING_BACKEND_STARTUP_TIMEOUT_MS,
   STAGING_PREVIEW_MODEL,
   FAILURE_SESSION_LOG_OUTPUT_LIMIT,
@@ -88,6 +89,12 @@ const restorablePreviewTargets = new Map<string, PreviewTarget>();
 const lazyStagingRouters = new Map<string, RequestHandler>();
 const pendingStagingBackendStarts = new Map<string, Promise<StagingBackendStartResult>>();
 const stagingBackendStartFailures = new Map<string, StagingBackendStartFailure>();
+/**
+ * Previews whose backend failed to start too many times. Keyed by prefix, valued
+ * with the moment the preview was retired, so a rebuilt preview (newer dist
+ * mtime) clears the tombstone and is registered again.
+ */
+const terminallyFailedPreviews = new Map<string, number>();
 
 let backendIdleReaper: ReturnType<typeof setInterval> | null = null;
 let _expressApp: express.Application | null = null;
@@ -105,6 +112,7 @@ export function getStagingRouter(prefix: string): RequestHandler | undefined {
 }
 
 export function rememberRestorablePreviewTarget(target: PreviewTarget): void {
+  terminallyFailedPreviews.delete(target.prefix);
   restorablePreviewTargets.set(target.prefix, target);
 }
 
@@ -115,6 +123,10 @@ export function hasStagingBackendState(prefix: string): boolean {
     || lazyStagingRouters.has(prefix)
     || pendingStagingBackendStarts.has(prefix)
     || stagingBackendStartFailures.has(prefix);
+}
+
+export function hasRestorablePreviewTarget(prefix: string): boolean {
+  return restorablePreviewTargets.has(prefix);
 }
 
 export function hasPendingStagingBackendStart(prefix: string): boolean {
@@ -133,6 +145,7 @@ export async function cleanupStagingBackendResources(
   restorablePreviewTargets.delete(prefix);
   lazyStagingRouters.delete(prefix);
   stagingBackendStartFailures.delete(prefix);
+  terminallyFailedPreviews.delete(prefix);
 
   const pendingStart = pendingStagingBackendStarts.get(prefix);
   if (pendingStart) {
@@ -162,6 +175,7 @@ export function forgetStagingPreviewBackend(prefix: string): void {
   restorablePreviewTargets.delete(prefix);
   lazyStagingRouters.delete(prefix);
   stagingBackendStartFailures.delete(prefix);
+  terminallyFailedPreviews.delete(prefix);
 }
 
 export function scheduleStartupBackendWarmup(
@@ -240,87 +254,64 @@ export function writeRestartSignalOrRollback(
   return otherBusy;
 }
 
-function forceStagingModelSettings(dbPath: string): void {
+/**
+ * Apply every staging-only override to the freshly seeded database over a single
+ * connection: one open, one WAL setup, one transaction for runtime-state
+ * isolation, one close.
+ *
+ * Isolation is required, not best-effort. A staging preview that keeps the
+ * production model, live schedules, or live push subscriptions would act on the
+ * user's real devices and workspaces, so any failure here aborts preview
+ * seeding rather than being downgraded to a warning. Only the Copilot usage
+ * index — cosmetic, and absent on older databases — is cleaned best-effort.
+ */
+function applyStagingSeedOverrides(dbPath: string): void {
   let stagingDb: DatabaseSync | null = null;
   try {
     stagingDb = new DatabaseSync(dbPath);
     stagingDb.exec("PRAGMA journal_mode = WAL");
+
     createSettingsStore(stagingDb).updateSettings({
       model: STAGING_PREVIEW_MODEL,
       reasoningEffort: undefined,
     });
-  } finally {
-    if (stagingDb) {
-      stagingDb.close();
-    }
-  }
-}
 
-function disableSchedulesInStagingDb(dbPath: string): void {
-  let stagingDb: DatabaseSync | null = null;
-  try {
-    stagingDb = new DatabaseSync(dbPath);
-    stagingDb.exec("PRAGMA journal_mode = WAL");
-    stagingDb.exec("UPDATE schedules SET enabled = 0");
-  } catch (err) {
-    log(`Warning: could not disable schedules in staging DB: ${err}`);
-  } finally {
-    if (stagingDb) {
+    const db = stagingDb;
+    const hasTable = (name: string): boolean =>
+      !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+
+    db.exec("BEGIN");
+    try {
+      db.exec("UPDATE schedules SET enabled = 0");
+      if (hasTable("push_subscriptions")) db.exec("DELETE FROM push_subscriptions");
+      db.exec("COMMIT");
+    } catch (err) {
+      try { db.exec("ROLLBACK"); } catch {}
+      throw new Error(
+        `Unable to isolate staging runtime state (schedules/push subscriptions): ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+
+    try {
+      db.exec("BEGIN");
       try {
-        stagingDb.close();
-      } catch (closeErr) {
-        log(`Warning: could not close staging DB after schedule disable: ${closeErr}`);
+        if (hasTable("copilot_usage_sessions")) db.exec("DELETE FROM copilot_usage_sessions");
+        if (hasTable("copilot_usage_scan_state")) db.exec("DELETE FROM copilot_usage_scan_state");
+        db.exec("COMMIT");
+      } catch (err) {
+        try { db.exec("ROLLBACK"); } catch {}
+        throw err;
       }
+    } catch (err) {
+      log(`Warning: could not clear the Copilot usage index in the staging DB: ${err}`);
     }
-  }
-}
-
-function clearPushSubscriptionsInStagingDb(dbPath: string): void {
-  let stagingDb: DatabaseSync | null = null;
-  try {
-    stagingDb = new DatabaseSync(dbPath);
-    const table = stagingDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'push_subscriptions'").get();
-    if (table) {
-      stagingDb.exec("DELETE FROM push_subscriptions");
-    }
-  } catch (err) {
-    log(`Warning: could not clear push subscriptions in staging DB: ${err}`);
   } finally {
     if (stagingDb) {
       try {
         stagingDb.close();
       } catch (closeErr) {
-        log(`Warning: could not close staging DB after push subscription cleanup: ${closeErr}`);
-      }
-    }
-  }
-}
-
-function clearCopilotUsageIndexInStagingDb(dbPath: string): void {
-  let stagingDb: DatabaseSync | null = null;
-  try {
-    stagingDb = new DatabaseSync(dbPath);
-    const tables = new Set(
-      (stagingDb.prepare(`
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table' AND name IN ('copilot_usage_sessions', 'copilot_usage_scan_state')
-      `).all() as Array<{ name: string }>).map((row) => row.name),
-    );
-    if (tables.has("copilot_usage_sessions")) {
-      stagingDb.exec("DELETE FROM copilot_usage_sessions");
-    }
-    if (tables.has("copilot_usage_scan_state")) {
-      stagingDb.exec("DELETE FROM copilot_usage_scan_state");
-    }
-  } catch (err) {
-    log(`Warning: could not clear Copilot usage index in staging DB: ${err}`);
-  } finally {
-    if (stagingDb) {
-      try {
-        stagingDb.close();
-      } catch (closeErr) {
-        log(`Warning: could not close staging DB after Copilot usage index cleanup: ${closeErr}`);
+        log(`Warning: could not close staging DB after seed overrides: ${closeErr}`);
       }
     }
   }
@@ -360,10 +351,14 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
       `Staging preview aborted to avoid copying a live SQLite database non-atomically.`,
     );
   }
-  disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
-  clearPushSubscriptionsInStagingDb(join(dataDir, "bridge.db"));
-  clearCopilotUsageIndexInStagingDb(join(dataDir, "bridge.db"));
-  forceStagingModelSettings(join(dataDir, "bridge.db"));
+  try {
+    applyStagingSeedOverrides(join(dataDir, "bridge.db"));
+  } catch (err) {
+    // A partially isolated staging database is worse than no preview: it could
+    // fire real schedules or push notifications. Discard the snapshot.
+    clearSeededSqliteFiles(dataDir);
+    throw err;
+  }
 
   // Copy docs directory (source of truth is filesystem, not SQLite)
   const docsSrc = join(productionDataDir, "docs");
@@ -603,30 +598,49 @@ async function waitForStagingBackendStart(
   });
 }
 
+export interface StartRestorableStagingBackendDeps {
+  enforceLimits?: typeof enforceStagingBackendResourceLimits;
+  restore?: typeof restoreStagingBackendWithRetry;
+}
+
 async function startRestorableStagingBackend(
   prefix: string,
   target: PreviewTarget,
   reason: string,
+  deps: StartRestorableStagingBackendDeps = {},
 ): Promise<StagingBackendStartResult> {
   if (activeStagingBackends.has(prefix)) return { ok: true };
 
-  await enforceStagingBackendResourceLimits(`before starting ${prefix}`, {
-    targetSize: Math.max(0, STAGING_BACKEND_LIVE_LIMIT - 1),
-  });
+  const enforceLimits = deps.enforceLimits ?? enforceStagingBackendResourceLimits;
+  const restore = deps.restore ?? restoreStagingBackendWithRetry;
 
-  log(`Starting staged backend for ${prefix} (${reason})...`);
-  const restoreResult = await restoreStagingBackendWithRetry(prefix, target.stagingDir, { profile: target.profile });
-  if (restoreResult.restored) {
-    stagingBackendStartFailures.delete(prefix);
-    const backend = activeStagingBackends.get(prefix);
-    if (backend) backend.lastAccessAt = Date.now();
-    await enforceStagingBackendResourceLimits(`after starting ${prefix}`);
-    return { ok: true };
+  // Every failure path — including resource-limit enforcement and restore
+  // rejections — must land in the bounded backoff below. Otherwise a thrown
+  // startup error is converted to a plain failure response by the caller and
+  // the next request immediately re-spawns the backend in a hot loop.
+  try {
+    await enforceLimits(`before starting ${prefix}`, {
+      targetSize: Math.max(0, STAGING_BACKEND_LIVE_LIMIT - 1),
+    });
+
+    log(`Starting staged backend for ${prefix} (${reason})...`);
+    const restoreResult = await restore(prefix, target.stagingDir, { profile: target.profile });
+    if (restoreResult.restored) {
+      stagingBackendStartFailures.delete(prefix);
+      const backend = activeStagingBackends.get(prefix);
+      if (backend) backend.lastAccessAt = Date.now();
+      await enforceLimits(`after starting ${prefix}`);
+      return { ok: true };
+    }
+
+    const error = restoreResult.error ?? "Unknown staging backend startup failure";
+    recordStagingBackendStartFailure(prefix, error);
+    return { ok: false, error };
+  } catch (thrown) {
+    const error = thrown instanceof Error ? thrown.message : String(thrown);
+    recordStagingBackendStartFailure(prefix, error);
+    return { ok: false, error };
   }
-
-  const error = restoreResult.error ?? "Unknown staging backend startup failure";
-  recordStagingBackendStartFailure(prefix, error);
-  return { ok: false, error };
 }
 
 function recordStagingBackendStartFailure(
@@ -643,6 +657,39 @@ function recordStagingBackendStartFailure(
   const nextRetryAt = Date.now() + delayMs;
   stagingBackendStartFailures.set(prefix, { error, attempts, nextRetryAt });
   log(`Staging backend start failed for ${prefix}; retry allowed in ${Math.ceil(delayMs / 1_000)}s: ${error}`);
+
+  if (attempts >= STAGING_BACKEND_START_MAX_ATTEMPTS) {
+    // Permanently dead preview: stop keeping a registered route that can only
+    // ever answer 502, and release the restorable target so the prefix falls
+    // through to the normal 404 path.
+    log(
+      `Staging backend for ${prefix} failed ${attempts} times; removing the dead preview route. `
+      + `Re-create the preview to retry. Last error: ${error}`,
+    );
+    restorablePreviewTargets.delete(prefix);
+    lazyStagingRouters.delete(prefix);
+    stagingBackendStartFailures.delete(prefix);
+    terminallyFailedPreviews.set(prefix, Date.now());
+  }
+}
+
+/**
+ * Whether preview discovery should skip re-registering this prefix. A retired
+ * preview stays retired until its build artifacts are newer than the failure,
+ * which is exactly the "the user rebuilt it" signal.
+ */
+export function isPreviewRetiredAfterStartFailures(prefix: string, distMtimeMs: number): boolean {
+  const retiredAt = terminallyFailedPreviews.get(prefix);
+  if (retiredAt === undefined) return false;
+  if (distMtimeMs > retiredAt) {
+    terminallyFailedPreviews.delete(prefix);
+    return false;
+  }
+  return true;
+}
+
+export function clearPreviewStartFailureTombstone(prefix: string): void {
+  terminallyFailedPreviews.delete(prefix);
 }
 
 function installStagingBackendIdleReaper(): void {
@@ -1088,6 +1135,29 @@ export const __testing = {
   seedPreviewDataDir(prefix: string, dataDir: string): void {
     activePreviewDataDirs.set(prefix, dataDir);
   },
+  recordStartFailure(prefix: string, error: string): void {
+    recordStagingBackendStartFailure(prefix, error);
+  },
+  getStartFailure(prefix: string): StagingBackendStartFailure | undefined {
+    return stagingBackendStartFailures.get(prefix);
+  },
+  hasRestorableTarget(prefix: string): boolean {
+    return restorablePreviewTargets.has(prefix);
+  },
+  hasLazyRouter(prefix: string): boolean {
+    return lazyStagingRouters.has(prefix);
+  },
+  ensureLazyRouter(prefix: string): boolean {
+    return getLazyStagingRouter(prefix) !== undefined;
+  },
+  async startRestorableBackend(
+    prefix: string,
+    target: PreviewTarget,
+    reason: string,
+    deps: StartRestorableStagingBackendDeps = {},
+  ) {
+    return startRestorableStagingBackend(prefix, target, reason, deps);
+  },
   hasPreviewDataDir(prefix: string): boolean {
     return activePreviewDataDirs.has(prefix);
   },
@@ -1099,5 +1169,9 @@ export const __testing = {
     lazyStagingRouters.clear();
     pendingStagingBackendStarts.clear();
     stagingBackendStartFailures.clear();
+    terminallyFailedPreviews.clear();
+  },
+  isRetired(prefix: string, distMtimeMs = Date.now()): boolean {
+    return isPreviewRetiredAfterStartFailures(prefix, distMtimeMs);
   },
 };

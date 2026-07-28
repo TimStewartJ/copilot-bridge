@@ -120,7 +120,6 @@ describe("resolveCopilotPricingModel", () => {
     const result = resolveCopilotPricingModel("model-x", { sdkModels: [priceableModel("model-x")] });
     expect(result).toMatchObject({
       status: "exact",
-      source: "exact",
       observedModel: "model-x",
       normalizedModel: "model-x",
       sku: "model-x",
@@ -137,7 +136,6 @@ describe("resolveCopilotPricingModel", () => {
     });
     expect(result).toMatchObject({
       status: "sdk-name",
-      source: "sdk-name",
       observedModel: "opaque-id",
       normalizedModel: "model-x-pro",
       sku: "model-x-pro",
@@ -169,7 +167,7 @@ describe("resolveCopilotPricingModel", () => {
     const optionSets = [undefined, { sdkModels: [] }, { sdkModels: [{ id: "model-x" }] }];
     for (const options of optionSets) {
       const result = resolveCopilotPricingModel("model-x", options);
-      expect(result).toMatchObject({ status: "unpriced", source: "unpriced", sku: null, sdkModel: null });
+      expect(result).toMatchObject({ status: "unpriced", sku: null, sdkModel: null });
     }
   });
 

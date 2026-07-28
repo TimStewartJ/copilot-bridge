@@ -359,6 +359,18 @@ export class ModelRefreshClientRotationTimeoutError extends Error {
   }
 }
 
+/**
+ * The agent backend refused to delete a session, but every piece of local state
+ * Bridge owns for it was already removed. Callers should finish their own
+ * cleanup and then surface the underlying backend failure.
+ */
+export class SessionBackendDeleteError extends Error {
+  constructor(readonly sessionId: string, override readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "SessionBackendDeleteError";
+  }
+}
+
 export class ModelRefreshBlockedError extends Error {
   constructor(readonly activeSessions: number) {
     super(`Cannot refresh model list while ${activeSessions} active session(s) are running. Try again after active turns finish.`);
@@ -621,14 +633,11 @@ export class SessionManager {
   private readonly sessionRunner: SessionRunner;
   readonly sessionRuns: Map<string, SessionRunRecord>;
 
-  // listSessions cache — avoids expensive SDK filesystem scan on every call
-  private sessionListCache: { data: any[]; timestamp: number } | null = null;
   private sessionDiskListCache = new Map<string, { data: any[]; timestamp: number; generation: number }>();
   private sessionDiskListBuilds = new Map<string, { generation: number; promise: Promise<any[]> }>();
   private sessionDiskListCacheGeneration = 0;
   private warmSessionPromises = new Map<string, Promise<void>>();
   private slashCommandListCache = new Map<string, AgentSlashCommandInfo[]>();
-  private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
   private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
   // Parent sessions and their tracked background agents form one cache tree.
@@ -1314,7 +1323,7 @@ export class SessionManager {
     try {
       session = await client.createSession(sessionConfig);
       if (expectedSessionId && session.sessionId !== expectedSessionId) {
-        await this.rejectMismatchedCreatedSession(expectedSessionId, session, client);
+        await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
       }
 
       try {
@@ -2634,7 +2643,15 @@ export class SessionManager {
     expectedSessionId: string,
     session: AgentSession,
     backend: AgentBackend,
+    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<never> {
+    // The rejected session was never cached, so it has no capacity profile and
+    // cleanup ownership would otherwise account for it with zero local MCPs —
+    // under-counting retained capacity while its disconnect is still in flight
+    // (and permanently, if that cleanup fails and is retained for retry).
+    // Record the profile the creation reservation was sized from before
+    // disposal so cleanup carries the same weight the reservation did.
+    this.trackSessionCapacityProfile(session, sessionConfig);
     try {
       await this.disposeSession(session.sessionId, session, "rejecting mismatched created session");
     } catch (error) {
@@ -2796,21 +2813,6 @@ export class SessionManager {
     }
   }
 
-  async listSessions() {
-    const client = await this.getBackendAfterRotation();
-
-    const now = Date.now();
-    if (this.sessionListCache && (now - this.sessionListCache.timestamp) < SessionManager.SESSION_LIST_TTL) {
-      return this.sessionListCache.data;
-    }
-
-    const t0 = Date.now();
-    const sessions = await client.listSessions();
-    this.recordSpan("session.listSessions", Date.now() - t0);
-    this.sessionListCache = { data: sessions, timestamp: Date.now() };
-    return sessions;
-  }
-
   /** List available models from the Copilot SDK */
   async listModels() {
     const client = await this.getBackendAfterRotation();
@@ -2917,11 +2919,10 @@ export class SessionManager {
     return build;
   }
 
-  /** Invalidate the listSessions cache (call after create/delete) */
+  /** Invalidate the disk session-list cache (call after create/delete) */
   invalidateSessionListCache(reason = "unknown"): void {
     const cacheKeys = [...this.sessionDiskListCache.keys()];
     const buildKeys = [...this.sessionDiskListBuilds.keys()];
-    this.sessionListCache = null;
     this.sessionDiskListCache.clear();
     this.sessionDiskListBuilds.clear();
     this.sessionDiskListCacheGeneration += 1;
@@ -2997,11 +2998,6 @@ export class SessionManager {
       invalidateSessionListCache: (reason) => this.invalidateSessionListCache(reason),
       logger: console,
     });
-  }
-
-  async getSessionMetadata(sessionId: string) {
-    const client = this.getBackend();
-    return client.getSessionMetadata(sessionId);
   }
 
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
@@ -4028,7 +4024,11 @@ export class SessionManager {
         console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
       }
       this.invalidateSessionListCache("session:delete:removed");
-      if (sdkDeleteError) throw sdkDeleteError;
+      // Local state is fully removed at this point. Signal that explicitly so
+      // callers that own additional Bridge-side state (session context, defers,
+      // task links) can still clean it up instead of orphaning those rows
+      // forever behind a backend-only failure.
+      if (sdkDeleteError) throw new SessionBackendDeleteError(sessionId, sdkDeleteError);
 
       console.log(`[sdk] Deleted session ${sessionId}`);
     } finally {

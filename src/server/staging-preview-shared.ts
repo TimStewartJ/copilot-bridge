@@ -26,6 +26,11 @@ export const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
 export const STAGING_BACKEND_REQUEST_START_WAIT_MS = 2_000;
 export const STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS = 30_000;
 export const STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
+/**
+ * Consecutive lazy-start failures after which a preview is treated as
+ * permanently dead: its route is removed instead of answering 502 forever.
+ */
+export const STAGING_BACKEND_START_MAX_ATTEMPTS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_START_MAX_ATTEMPTS", 5);
 export const STAGING_BACKEND_LIVE_LIMIT = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_LIVE_LIMIT", 3);
 export const STAGING_BACKEND_STARTUP_RESTORE_LIMIT = parseNonNegativeIntegerEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", 1);
 export const STAGING_BACKEND_IDLE_TTL_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_IDLE_TTL_MS", 30 * 60_000);

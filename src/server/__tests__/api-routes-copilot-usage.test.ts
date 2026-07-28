@@ -225,7 +225,6 @@ describe("Copilot usage routes", () => {
       pricingKey: "gpt-5.4",
       pricedAs: "gpt-5.4",
       pricingStatus: "exact",
-      pricingSource: "exact",
       normalizedPricingModel: "gpt-5.4",
     };
     const unpricedModelRow = {
@@ -236,7 +235,6 @@ describe("Copilot usage routes", () => {
       pricingKey: null,
       pricedAs: null,
       pricingStatus: "unpriced",
-      pricingSource: "unpriced",
       normalizedPricingModel: "unknown-model",
     };
     const unpricedModelReportRow = {
@@ -246,7 +244,6 @@ describe("Copilot usage routes", () => {
       pricingKey: null,
       pricedAs: null,
       pricingStatus: "unpriced",
-      pricingSource: "unpriced",
       normalizedPricingModel: "unknown-model",
     };
 
@@ -357,7 +354,6 @@ describe("Copilot usage routes", () => {
       pricingKey: "claude-opus-4.7",
       pricedAs: "claude-opus-4.7",
       pricingStatus: "sdk-name",
-      pricingSource: "sdk-name",
       normalizedPricingModel: "claude-opus-4.7",
     });
     expect(res.body.models[0].estimatedCostUsd).toBeCloseTo(30);
@@ -484,7 +480,6 @@ describe("Copilot usage routes", () => {
       pricingKey: "claude-opus-4.7",
       pricedAs: "claude-opus-4.7",
       pricingStatus: "sdk-name",
-      pricingSource: "sdk-name",
       normalizedPricingModel: "claude-opus-4.7",
     });
     expect(res.body.models[0].estimatedCostUsd).toBeCloseTo(0.00025);
@@ -535,7 +530,6 @@ describe("Copilot usage routes", () => {
         pricingKey: null,
         pricedAs: null,
         pricingStatus: "unpriced",
-        pricingSource: "unpriced",
         normalizedPricingModel: "opaque-sdk-id",
         estimatedCostUsd: 0,
       });

@@ -266,26 +266,6 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     return { indexed: true };
   }
 
-  /** Remove all pages under a folder from the index */
-  function removeFolder(folder: string): DocsFtsMutationResult {
-    const skipped = skippedFtsMutation("remove docs folder from search index");
-    if (skipped) {
-      db.prepare("DELETE FROM docs_pages WHERE path LIKE ? || '%'").run(folder);
-      return skipped;
-    }
-
-    withFtsRepair("remove docs folder from search index", () => {
-      runInTransaction(() => {
-        const rows = db.prepare("SELECT rowid FROM docs_pages WHERE path LIKE ? || '%'").all(folder) as any[];
-        for (const row of rows) {
-          db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(row.rowid);
-        }
-        db.prepare("DELETE FROM docs_pages WHERE path LIKE ? || '%'").run(folder);
-      });
-    });
-    return { indexed: true };
-  }
-
   // ── Search ────────────────────────────────────────────────────
 
   function search(query: string, limit = 50, offset = 0): { results: SearchResult[]; total: number } {
@@ -465,7 +445,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
   }
 
   return {
-    reindex, indexPage, removePage, removeFolder,
+    reindex, indexPage, removePage,
     search, queryByFolder, resolveWikilink, resolveWikilinks,
     findDocsByTagNames, getFtsHealth,
   };

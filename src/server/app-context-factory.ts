@@ -247,6 +247,7 @@ export function shutdownAppContextServices(
 
   const operation = (async () => {
     ctx.scheduler?.setGlobalPause(true);
+    ctx.sessionOverlayMaintenance?.stop();
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
 

@@ -401,6 +401,68 @@ export function createTaskStore(
     emitChange(id);
   }
 
+  /**
+   * Delete a task and every child schedule (plus that schedule's run history and
+   * claims) in one transaction, returning the deleted schedule IDs so the caller
+   * can unregister their timers.
+   *
+   * `schedules.taskId` has no foreign key, so schedule rows do not cascade with
+   * the task. Neither do `entity_tags` rows. Both are deleted here — rather than
+   * through `ScheduleStore`/`TagStore` — so the parent and everything it owns
+   * commit or roll back together; SQLite has no nested transactions, so the
+   * cascade cannot be split across stores that each own a transaction.
+   */
+  function deleteTaskCascade(id: string): { deletedScheduleIds: string[] } {
+    db.exec("BEGIN");
+    let deletedScheduleIds: string[];
+    try {
+      deletedScheduleIds = (db
+        .prepare("SELECT id FROM schedules WHERE taskId = ?")
+        .all(id) as Array<{ id: string }>).map((row) => row.id);
+      for (const scheduleId of deletedScheduleIds) {
+        db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(scheduleId);
+        db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(scheduleId);
+      }
+      db.prepare("DELETE FROM schedules WHERE taskId = ?").run(id);
+      db.prepare("DELETE FROM entity_tags WHERE entityType = 'task' AND entityId = ?").run(id);
+      db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    emitChange(id);
+    return { deletedScheduleIds };
+  }
+
+  /**
+   * Remove a session link from every task that has it, in one transaction, and
+   * return the affected task IDs. Replaces the caller-side
+   * `listTasks()` → filter → per-task `unlinkSession()` loop, which rehydrated
+   * every task (three relation queries each) just to find matches.
+   */
+  function unlinkSessionFromAllTasks(sessionId: string): string[] {
+    const affectedTaskIds = (db
+      .prepare("SELECT taskId FROM task_sessions WHERE sessionId = ?")
+      .all(sessionId) as Array<{ taskId: string }>).map((row) => row.taskId);
+    if (affectedTaskIds.length === 0) return [];
+
+    const now = new Date().toISOString();
+    db.exec("BEGIN");
+    try {
+      db.prepare("DELETE FROM task_sessions WHERE sessionId = ?").run(sessionId);
+      const touch = db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?");
+      for (const taskId of affectedTaskIds) touch.run(now, taskId);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+
+    for (const taskId of affectedTaskIds) emitChange(taskId);
+    return affectedTaskIds;
+  }
+
   function reorderTasks(taskIds: string[]): Task[] {
     const stmt = db.prepare('UPDATE tasks SET "order" = ? WHERE id = ?');
     for (let i = 0; i < taskIds.length; i++) {
@@ -498,8 +560,8 @@ export function createTaskStore(
   }
 
   return {
-    listTasks, getTask, createTask, updateTask, deleteTask, reorderTasks,
-    linkSession, unlinkSession, linkWorkItem, unlinkWorkItem,
+    listTasks, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
+    linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
     findTaskBySessionId, linkPR, unlinkPR,
   };
 }

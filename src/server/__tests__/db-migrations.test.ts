@@ -140,6 +140,7 @@ describe("database migration registry", () => {
       "feed-cards-action-json-column",
       "schedule-reuse-columns-drop-v1",
       "schedule_runs_legacy_backfill_v1",
+      "legacy_session_overlay_tables_drop_v1",
       "checklist-items-from-legacy-todos",
       "task-groups-notes-column",
       "tasks-kind-momentum-and-status-repair",
@@ -235,6 +236,91 @@ describe("database migration registry", () => {
       scheduleId: null,
     });
     expect(scheduleRunCount).toBe(0);
+  });
+
+  it("drops orphaned legacy session tables only after their backfills land", () => {
+    const dataDir = createTempDataDir();
+    const sessionId = "drop-legacy-session";
+    const now = "2026-05-09T00:00:00.000Z";
+
+    // Seed a pre-migration database so the one-time backfills see legacy rows.
+    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    createLegacySessionTables(legacyDb);
+    legacyDb.exec(`
+      CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        name TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        type TEXT NOT NULL,
+        cron TEXT,
+        runAt TEXT,
+        timezone TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        lastSessionId TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastRunAt TEXT,
+        nextRunAt TEXT,
+        runCount INTEGER NOT NULL DEFAULT 0,
+        maxRuns INTEGER,
+        expiresAt TEXT
+      );
+    `);
+    legacyDb.prepare(`
+      INSERT INTO session_meta (sessionId, archived, archivedAt, triggeredBy, scheduleId, scheduleName, lastVisibleActivityAt)
+      VALUES (?, 1, ?, 'schedule', 'legacy-schedule', 'Legacy schedule', ?)
+    `).run(sessionId, now, now);
+    legacyDb.prepare("INSERT INTO session_workspace (sessionId, cwd, updatedAt) VALUES (?, '/legacy-workspace', ?)")
+      .run(sessionId, now);
+    legacyDb.prepare(`
+      INSERT INTO schedules (id, taskId, name, prompt, type, lastSessionId, createdAt, updatedAt)
+      VALUES ('legacy-schedule', 'task-id', 'Legacy schedule', 'prompt', 'once', ?, ?, ?)
+    `).run(sessionId, now, now);
+    legacyDb.close();
+
+    let db = openDatabase(dataDir);
+    const state = db.prepare(`
+      SELECT archived, archivedAt, pinnedCwd, scheduleId, scheduleName
+      FROM bridge_session_state
+      WHERE sessionId = ?
+    `).get(sessionId);
+    const scheduleRunCount = (db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE sessionId = ?")
+      .get(sessionId) as { count: number }).count;
+    const legacyMetaExists = sqliteTableExists(db, "session_meta");
+    const legacyWorkspaceExists = sqliteTableExists(db, "session_workspace");
+    db.close();
+
+    // Backfilled data survived the drop.
+    expect(state).toMatchObject({
+      archived: 1,
+      archivedAt: now,
+      pinnedCwd: "/legacy-workspace",
+      scheduleId: "legacy-schedule",
+      scheduleName: "Legacy schedule",
+    });
+    expect(scheduleRunCount).toBe(1);
+    expect(legacyMetaExists).toBe(false);
+    expect(legacyWorkspaceExists).toBe(false);
+
+    // Idempotent: reopening does not recreate or re-drop the tables.
+    db = openDatabase(dataDir);
+    expect(sqliteTableExists(db, "session_meta")).toBe(false);
+    expect(sqliteTableExists(db, "session_workspace")).toBe(false);
+    db.close();
+
+    expect(listRecordedMigrations(dataDir).map((row) => row.id))
+      .toContain("legacy_session_overlay_tables_drop_v1");
+  });
+
+  it("is a no-op on a fresh database that never had the legacy tables", () => {
+    const dataDir = createTempDataDir();
+    const db = openDatabase(dataDir);
+    expect(sqliteTableExists(db, "session_meta")).toBe(false);
+    expect(sqliteTableExists(db, "session_workspace")).toBe(false);
+    db.close();
+    expect(listRecordedMigrations(dataDir).map((row) => row.id))
+      .toContain("legacy_session_overlay_tables_drop_v1");
   });
 
   it("adds lastAttentionAt before creating its index on existing bridge session state tables", () => {

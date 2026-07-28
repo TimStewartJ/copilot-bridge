@@ -1,4 +1,3 @@
-import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -90,8 +89,8 @@ describe("session overlay reaper", () => {
     expect(ctx.bridgeSessionStateStore.getState("catalog-unknown")).toBeDefined();
   });
 
-  it("reports deleted-schedule run groups and deletes them only on explicit apply", async () => {
-    const { app, db } = createTestApp({
+  it("reports deleted-schedule run groups and deletes them only on explicit apply", () => {
+    const { ctx, db } = createTestApp({
       cliSessionCatalog: { listSessions: () => [] } as any,
     });
     db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
@@ -99,26 +98,22 @@ describe("session overlay reaper", () => {
     db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
       .run("deleted-schedule", "run-2", oldIso);
 
-    const dryRun = await request(app)
-      .post("/api/maintenance/session-overlay-reaper")
-      .send({ dryRun: true, cleanupDeletedScheduleRuns: true, minimumAgeMs: 0 })
-      .expect(200);
-
-    expect(dryRun.body.deletedScheduleRuns).toMatchObject({
-      wouldDelete: 2,
-      deleted: 0,
+    const dryRun = runSessionOverlayReaper(ctx, {
+      dryRun: true,
+      cleanupDeletedScheduleRuns: true,
+      minimumAgeMs: 0,
     });
+
+    expect(dryRun.deletedScheduleRuns).toMatchObject({ wouldDelete: 2, deleted: 0 });
     expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs").get() as any).count).toBe(2);
 
-    const applied = await request(app)
-      .post("/api/maintenance/session-overlay-reaper")
-      .send({ dryRun: false, cleanupDeletedScheduleRuns: true, minimumAgeMs: 0 })
-      .expect(200);
-
-    expect(applied.body.deletedScheduleRuns).toMatchObject({
-      wouldDelete: 2,
-      deleted: 2,
+    const applied = runSessionOverlayReaper(ctx, {
+      dryRun: false,
+      cleanupDeletedScheduleRuns: true,
+      minimumAgeMs: 0,
     });
+
+    expect(applied.deletedScheduleRuns).toMatchObject({ wouldDelete: 2, deleted: 2 });
     expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs").get() as any).count).toBe(0);
   });
 });
