@@ -31,6 +31,7 @@ import {
   buildValidationCommandLogPath,
   formatCommandFailureStreams,
   isCommandTimeoutResult,
+  scheduleValidationCommandLogSweep,
   writeValidationCommandLog,
 } from "./validation-command-log.js";
 
@@ -509,6 +510,9 @@ export async function runStreamingValidationCommand(
       settled = true;
       if (timeout) clearTimeout(timeout);
       closeLog();
+      void scheduleValidationCommandLogSweep(dirname(logPath)).catch(() => {
+        // Retention is best-effort; the next sweep retries.
+      });
 
       const elapsedMs = Date.now() - startedAt;
       const reason = formatValidationCommandExitReason({

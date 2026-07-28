@@ -7,7 +7,9 @@ import {
   buildValidationCommandLogPath,
   formatCommandDuration,
   formatValidationCommandLogError,
+  getValidationCommandLogDir,
   tryReadValidationCommandLogTail,
+  VALIDATION_LOG_DIR_ENV,
 } from "./validation-command-log.js";
 import { runStreamingValidationCommand } from "./validation-command-runner.js";
 
@@ -18,7 +20,6 @@ export const DEPLOY_CHECK_STEPS = [
 ] as const;
 
 const LOG_TAIL_BYTES = 24_000;
-const VALIDATION_LOG_DIR_ENV = "BRIDGE_VALIDATION_LOG_DIR";
 type DeployCheckStep = typeof DEPLOY_CHECK_STEPS[number];
 type DeployCheckStepResult = {
   step: DeployCheckStep;
@@ -31,9 +32,12 @@ function npmCommand(): string {
 }
 
 function resolveLogDir(cwd: string): string {
+  // Explicit operator override; deploy validation points its child processes at
+  // the production data dir. Only this entry point honors it, so an ambient value
+  // can never redirect a caller that passed its own root directory.
   const configured = process.env[VALIDATION_LOG_DIR_ENV]?.trim();
   if (configured) return resolve(configured);
-  return join(resolveBridgeControlRoot(cwd), "data", "validation-logs");
+  return getValidationCommandLogDir(resolveBridgeControlRoot(cwd));
 }
 
 function ensureLogDir(cwd: string): string {

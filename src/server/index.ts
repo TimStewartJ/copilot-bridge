@@ -31,6 +31,11 @@ import {
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
+import { PRODUCTION_ROOT } from "./staging-preview-shared.js";
+import {
+  getValidationCommandLogDir,
+  scheduleValidationCommandLogSweep,
+} from "./validation-command-log.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -109,6 +114,46 @@ app.get("/{*splat}", (_req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────
 
+/**
+ * Sweeps Bridge-written log artifacts that would otherwise grow forever:
+ * validation command logs (control root, plus the data dir deploy validation
+ * uses when they differ) and management job logs/rows.
+ */
+async function pruneBridgeLogArtifacts(): Promise<void> {
+  const validationLogDirs = new Set([
+    getValidationCommandLogDir(PRODUCTION_ROOT),
+    join(runtimePaths.dataDir, "validation-logs"),
+  ]);
+  for (const logDir of validationLogDirs) {
+    try {
+      const result = await scheduleValidationCommandLogSweep(logDir, { force: true });
+      if (result && (result.deleted > 0 || result.failed > 0)) {
+        console.log(
+          `[validation-logs] Pruned ${result.deleted} log file(s) in ${logDir}`
+          + (result.failed > 0 ? ` (${result.failed} failed, retried on the next sweep)` : ""),
+        );
+      }
+    } catch (error) {
+      console.error(`[validation-logs] Prune failed for ${logDir}:`, error);
+    }
+  }
+
+  try {
+    const result = await defaultContext.managementJobStore?.pruneRetention();
+    if (result && (result.deletedJobIds.length > 0 || result.deletedLogPaths.length > 0)) {
+      console.log(
+        `[management-jobs] Pruned ${result.deletedJobIds.length} job row(s) `
+        + `and ${result.deletedLogPaths.length} log file(s)`
+        + (result.failedLogDeletions > 0
+          ? ` (${result.failedLogDeletions} log deletion(s) failed, retried on the next sweep)`
+          : ""),
+      );
+    }
+  } catch (error) {
+    console.error("[management-jobs] Retention prune failed:", error);
+  }
+}
+
 async function main(): Promise<void> {
   console.log("╔════════════════════════════════════════╗");
   console.log("║      Copilot Web Bridge                ║");
@@ -141,6 +186,10 @@ async function main(): Promise<void> {
   const pruned = defaultContext.telemetryStore?.pruneOldSpans(7) ?? 0;
   if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
   startRequestTelemetryInflightReporter(defaultContext.telemetryStore);
+
+  // Bounded on-disk log artifacts. Deliberately not awaited: the first sweep on a
+  // long-unpruned host can delete tens of thousands of files.
+  void pruneBridgeLogArtifacts();
 
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);

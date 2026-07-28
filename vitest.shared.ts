@@ -3,6 +3,12 @@ export const sharedTestConfig = {
   environment: "node",
   env: {
     NODE_ENV: "test",
+    // Retention sweeps fire in the background as a side effect of writing a log.
+    // Deploy validation runs this suite with BRIDGE_VALIDATION_LOG_DIR pointed at
+    // the live data dir, so without this guard a test exercising a real code path
+    // would delete real logs. Tests that assert sweep behavior call the prune
+    // functions directly or clear this var explicitly.
+    BRIDGE_DISABLE_BACKGROUND_LOG_RETENTION: "1",
   },
   // Deploy validation runs the full suite in parallel while the live bridge
   // server is still serving, so wall-clock work (SQLite migrations, docs FTS
