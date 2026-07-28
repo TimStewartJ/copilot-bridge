@@ -86,7 +86,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           prompt: { type: "string", description: "Prompt to send to this same session." },
           delaySeconds: { type: "number", description: "One-shot same-session follow-up: seconds from now. Provide exactly one timing mode." },
           runAt: { type: "string", description: "One-shot same-session follow-up: ISO timestamp. Provide exactly one timing mode." },
-          intervalSeconds: { type: "number", description: "Same-session polling/recurrence interval in seconds. Use instead of chained one-shots; cannot be combined with delaySeconds or runAt." },
+          intervalSeconds: { type: "number", description: `Same-session polling/recurrence interval in seconds. Must be an integer of at least ${DEFER_MIN_INTERVAL_SECONDS} seconds (${DEFER_MIN_INTERVAL_SECONDS / 60} minutes). Use instead of chained one-shots; cannot be combined with delaySeconds or runAt.` },
           name: { type: "string", description: "Optional recurring defer name. Valid only with intervalSeconds." },
           maxRuns: { type: "number", description: "Optional recurring stop condition. Valid only with intervalSeconds." },
           expiresAt: { type: "string", description: "Optional recurring expiry ISO timestamp. Valid only with intervalSeconds." },
