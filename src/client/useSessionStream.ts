@@ -637,7 +637,7 @@ export function useSessionStream(
         return;
       }
 
-      if (eventType === "resync_required" || eventType === "idle") {
+      if (eventType === "resync_required") {
         closeCurrent();
         setStreamState((current) => createState("idle", {
           mcpServers: current.mcpServers,
@@ -912,7 +912,7 @@ export function useSessionStream(
         }));
         return;
       }
-      if (eventType === "context_update" || eventType === "context_status" || eventType === "context") {
+      if (eventType === "context_update") {
         const summary = getStreamContextSummary(event);
         if (summary) setStreamState((current) => ({ ...current, contextSummary: summary }));
         return;

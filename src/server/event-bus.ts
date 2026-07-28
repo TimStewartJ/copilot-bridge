@@ -155,8 +155,6 @@ export interface BusSnapshot {
   type: "snapshot";
   runId: string;
   complete: boolean;
-  /** Monotonic counter of observed events that will become committed history entries. */
-  historySeq: number;
   /** Assistant text streamed since the last persisted assistant message. */
   streamingContent: string;
   liveAssistantSegments: LiveAssistantSegment[];
@@ -382,7 +380,6 @@ export class SessionEventBus {
   private liveVisuals: LiveVisual[] = [];
   private liveCompletion?: LiveCompletion;
   private intentText = "";
-  private historySeq = 0;
   private runNotice?: RunNotice;
   /** Server-only: last assistant text observed this run, used for abort/shutdown fallback. */
   private lastAssistantSegment?: LiveAssistantSegment;
@@ -450,11 +447,11 @@ export class SessionEventBus {
 
   /**
    * Announce that an observed event will become a committed history entry, so subscribers can
-   * refresh the disk-backed transcript instead of receiving a duplicate live projection.
+   * refresh the disk-backed transcript instead of receiving a duplicate live projection. The
+   * signal carries no payload: the client owns its own refresh epoch.
    */
   private advanceHistory(): void {
-    this.historySeq += 1;
-    this.broadcast({ type: "history_advanced", historySeq: this.historySeq });
+    this.broadcast({ type: "history_advanced" });
   }
 
   /** Add a server-owned user entry before the SDK persists it. */
@@ -842,7 +839,6 @@ export class SessionEventBus {
       type: "snapshot",
       runId: this.runId,
       complete: this._complete,
-      historySeq: this.historySeq,
       streamingContent: this.streamingContent,
       liveAssistantSegments: this.liveAssistantSegments.map((segment) => ({ ...segment })),
       pendingUserMessages: this.userMessages.map((message) => structuredClone(message)),
