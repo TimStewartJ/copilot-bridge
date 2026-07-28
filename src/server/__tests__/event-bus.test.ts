@@ -577,8 +577,8 @@ describe("event-bus", () => {
 
       const advances = received.filter((event) => event.type === "history_advanced");
       expect(advances).toHaveLength(4);
-      expect(advances.map((event) => event.historySeq)).toEqual([1, 2, 3, 4]);
-      expect(bus.getSnapshot().historySeq).toBe(4);
+      // The signal is payload-free; the client owns its own refresh epoch.
+      expect(advances).toEqual(Array.from({ length: 4 }, () => ({ type: "history_advanced" })));
     });
 
     it("does not announce a history advance for bridge-native assistant output", () => {
@@ -692,8 +692,8 @@ describe("event-bus", () => {
       expect(snap.complete).toBe(false);
       expect(snap.terminalType).toBeUndefined();
       expect(snap.runNotice).toBeUndefined();
-      // The sequence is session-scoped so a later run still advances past earlier subscribers.
-      expect(snap.historySeq).toBeGreaterThan(0);
+      // History ordering belongs to events.jsonl; the snapshot carries no server-side counter.
+      expect(snap).not.toHaveProperty("historySeq");
       expect(snap).not.toHaveProperty("pendingPrompt");
       expect(snap.pendingUserMessages).toEqual([]);
       expect(snap.pendingUserInputs).toEqual([]);

@@ -149,7 +149,6 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     type: "snapshot",
     runId: "run-1",
     complete: false,
-    historySeq: 0,
     streamingContent: "",
     liveAssistantSegments: [],
     pendingUserMessages: [],
@@ -287,7 +286,6 @@ describe("useSessionStream ephemeral state", () => {
         ],
         pendingUserMessages: [{ id: "pending-1", content: "run it" }],
         liveTools: [{ toolCallId: "tc-1", name: "bash" }],
-        historySeq: 4,
       }), () => getState().streamingContent === "typing");
 
       const state = getState();
@@ -310,7 +308,7 @@ describe("useSessionStream ephemeral state", () => {
       await emitAndWait(
         act,
         source,
-        { type: "history_advanced", historySeq: 5 },
+        { type: "history_advanced" },
         () => getState().historyEpoch > before,
       );
 
@@ -318,24 +316,60 @@ describe("useSessionStream ephemeral state", () => {
     });
   });
 
-  it("keeps advancing the epoch across runs even though the server counter restarts", async () => {
+  it("keeps advancing the epoch across runs even though the signal carries no sequence", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
 
-      await emitAndWait(act, source, snapshot({ runId: "run-1", historySeq: 9 }),
+      await emitAndWait(act, source, snapshot({ runId: "run-1" }),
         () => getState().streamStatus !== "sending");
       const afterFirstRun = getState().historyEpoch;
 
-      // A new run restarts the server-side counter at zero; the client epoch must still advance.
-      await emitAndWait(act, source, snapshot({ runId: "run-2", historySeq: 0 }),
+      // A snapshot from a different run means committed history moved while disconnected.
+      await emitAndWait(act, source, snapshot({ runId: "run-2" }),
         () => getState().historyEpoch > afterFirstRun);
       const afterSecondRun = getState().historyEpoch;
 
-      await emitAndWait(act, source, { type: "history_advanced", historySeq: 1 },
+      await emitAndWait(act, source, { type: "history_advanced" },
         () => getState().historyEpoch > afterSecondRun);
 
       expect(getState().historyEpoch).toBe(afterSecondRun + 1);
+    });
+  });
+
+  it("resets to idle and bumps the epoch when the server requires a resync", async () => {
+    await withHarness(async ({ getState, getSource, settled, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({ streamingContent: "typing" }),
+        () => getState().streamingContent === "typing");
+      const before = getState().historyEpoch;
+
+      await emitAndWait(act, source, { type: "resync_required" },
+        () => getState().streamStatus === "idle");
+
+      const state = getState();
+      expect(state.streamingContent).toBe("");
+      expect(state.isStreaming).toBe(false);
+      expect(state.historyEpoch).toBe(before + 1);
+      expect(settled).toHaveBeenCalled();
+    });
+  });
+
+  it("updates the context summary from a context_update event", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(
+        act,
+        source,
+        { type: "context_update", summary: { sessionId: "session-1", tokensUsed: 4200, usageRatio: 0.42 } },
+        () => getState().contextSummary !== null,
+      );
+
+      expect(getState().contextSummary).toMatchObject({ sessionId: "session-1", tokensUsed: 4200 });
     });
   });
 

@@ -2762,7 +2762,6 @@ export function createApiRouter(
         type: "snapshot",
         runId: terminalOverlay?.runId ?? sessionId,
         complete: true,
-        historySeq: 0,
         streamingContent: "",
         liveAssistantSegments: [],
         pendingUserMessages: [],
