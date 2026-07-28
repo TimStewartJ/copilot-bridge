@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { BridgeToolsMcpServer, registerAllBridgeTools } from "../agent-tools-mcp/index.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
-import { createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { initializeDocsFts } from "../db.js";
 
 describe("Bridge MCP tool definitions", () => {

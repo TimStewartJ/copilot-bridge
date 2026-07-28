@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { parseDeferId } from "../defer-ids.js";
 
 function findTool(tools: ReturnType<typeof getBridgeToolDefinitions>, name: string) {

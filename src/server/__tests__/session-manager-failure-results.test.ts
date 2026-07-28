@@ -6,7 +6,7 @@ import { createChecklistToolDefinitions } from "../tools/checklist-tools.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
 import { createTagToolDefinitions } from "../tools/tag-tools.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
 

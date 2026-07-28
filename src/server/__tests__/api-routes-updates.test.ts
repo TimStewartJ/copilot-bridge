@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { request } from "./api-routes-test-helpers.js";
-import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
+import { makeTestRuntimePaths } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();

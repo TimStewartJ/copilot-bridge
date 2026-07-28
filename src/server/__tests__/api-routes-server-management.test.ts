@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { request } from "./api-routes-test-helpers.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import {
   clearRestartPending,

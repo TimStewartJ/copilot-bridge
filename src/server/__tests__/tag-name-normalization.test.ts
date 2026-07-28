@@ -10,7 +10,8 @@ import { createTagStore } from "../tag-store.js";
 import { createTagToolDefinitions } from "../tools/tag-tools.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { toolFailure } from "../tool-results.js";
-import { createTestApp, makeTestDir, setupTestDb } from "./helpers.js";
+import { makeTestDir, setupTestDb } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 const NFC_CAFE = "Café";
 const NFD_CAFE = "Cafe\u0301";

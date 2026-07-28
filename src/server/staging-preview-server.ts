@@ -65,12 +65,13 @@ async function main(): Promise<void> {
     {
       createAppContext,
       initializeSchedulerAndDeferredRunners,
-      shutdownAppContextServices,
     },
+    { shutdownAppContextServices },
     { resolveRuntimePaths },
   ] = await Promise.all([
     import("./api-router.js"),
     import("./app-context-factory.js"),
+    import("./app-context-shutdown.js"),
     import("./runtime-paths.js"),
   ]);
 

@@ -6,7 +6,8 @@ import {
   deriveModelStateFromEventsFile,
 } from "../session-events-model.js";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, createTestApp, makeTestDir } from "./helpers.js";
+import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import supertest from "supertest";

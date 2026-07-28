@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createTestApp, setupTestDb } from "./helpers.js";
+import { setupTestDb } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import {
   clearRequestTelemetryForTests,

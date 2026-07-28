@@ -13,7 +13,8 @@ import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager
 import * as scheduler from "../scheduler.js";
 import * as providers from "../providers/index.js";
 import { PendingInteractionError } from "../pending-interaction-validation.js";
-import { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { createMockSessionManager, createMockTranscriptionService, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 export { request, get, mkdirSync, writeFileSync, join };
 export { publishOutboundAttachment, writeRestartState, RESTART_PENDING_MESSAGE, scheduler, providers, PendingInteractionError };

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
 import type { Express } from "express";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 let app: Express;
 let tempDir: string;

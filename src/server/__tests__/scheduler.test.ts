@@ -17,7 +17,8 @@ import {
   matchesField,
   validateSupportedCronExpression,
 } from "../scheduler.js";
-import { createTestApp, makeTestDir } from "./helpers.js";
+import { makeTestDir } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {

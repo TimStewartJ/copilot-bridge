@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import * as scheduler from "../scheduler.js";
 import { createScheduleToolDefinitions } from "../tools/schedule-tools.js";
-import { createMockSessionManager, createTestApp } from "./helpers.js";
+import { createMockSessionManager } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 function getTool(ctx: ReturnType<typeof createTestApp>["ctx"], name: string) {
   const tool = [

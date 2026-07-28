@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { request } from "./api-routes-test-helpers.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { testPath } from "./test-paths.js";
 import { BrowserHeadedCloseError, closeHeadedDiagnosticsBrowser } from "../browser-diagnostics.js";
 

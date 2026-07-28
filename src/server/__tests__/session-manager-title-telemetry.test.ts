@@ -5,7 +5,8 @@ import { SessionManager } from "../session-manager.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus, createTestApp } from "./helpers.js";
+import { setupTestDb, createTestBus } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 class MigrationTestSessionManager extends SessionManager {
   readonly setCalls: Array<{ sessionId: string; name: string; opts: any }> = [];
