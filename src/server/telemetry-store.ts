@@ -100,45 +100,6 @@ export function createTelemetryStore(db: DatabaseSync) {
     return rows.map(hydrate);
   }
 
-  /** Get aggregate stats grouped by span name */
-  function getStats(opts: { since?: string } = {}): Array<{
-    name: string;
-    count: number;
-    avg: number;
-    min: number;
-    max: number;
-    p50: number;
-    p95: number;
-  }> {
-    const since = opts.since ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const rows = db.prepare(`
-      SELECT name, duration FROM telemetry_spans WHERE createdAt >= ? ORDER BY name, duration
-    `).all(since) as any[];
-
-    // Group by name
-    const groups = new Map<string, number[]>();
-    for (const row of rows) {
-      const arr = groups.get(row.name) ?? [];
-      arr.push(row.duration);
-      groups.set(row.name, arr);
-    }
-
-    return Array.from(groups.entries()).map(([name, durations]) => {
-      durations.sort((a, b) => a - b);
-      const count = durations.length;
-      const sum = durations.reduce((a, b) => a + b, 0);
-      return {
-        name,
-        count,
-        avg: Math.round(sum / count),
-        min: durations[0],
-        max: durations[count - 1],
-        p50: durations[Math.floor(count * 0.5)],
-        p95: durations[Math.min(count - 1, Math.floor(count * 0.95))],
-      };
-    });
-  }
-
   /** Remove entries older than the given number of days */
   function pruneOldSpans(days: number = 7): number {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -159,7 +120,7 @@ export function createTelemetryStore(db: DatabaseSync) {
     };
   }
 
-  return { recordSpan, recordSpans, querySpans, getStats, pruneOldSpans };
+  return { recordSpan, recordSpans, querySpans, pruneOldSpans };
 }
 
 export type TelemetryStore = ReturnType<typeof createTelemetryStore>;

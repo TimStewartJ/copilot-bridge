@@ -51,6 +51,8 @@ import {
   hasStagingBackendState,
   initializeStagingBackend,
   registerExpressApp,
+  hasRestorablePreviewTarget,
+  isPreviewRetiredAfterStartFailures,
   rememberRestorablePreviewTarget,
   restoreStagingBackendWithRetry,
   scheduleStartupBackendWarmup,
@@ -155,7 +157,8 @@ export async function cleanupPreviewTarget(
  * If package files or patch-package files differ, replace the node_modules
  * symlink with a real npm install so builds use the correct dependency state.
  */
-async function ensureStagingDeps(
+/** Exported for focused tests of the fresh-install guard. */
+export async function ensureStagingDeps(
   stagingDir: string,
   options: { runCommand?: StagingCommandRunner; log?: (message: string) => void } = {},
 ): Promise<{ ok: boolean; command?: string; output?: string }> {
@@ -174,7 +177,14 @@ async function ensureStagingDeps(
     try {
       const stat = lstatSync(stagingModules);
       if (stat.isSymbolicLink()) {
-        removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
+        const removal = removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
+        if (!removal.ok) {
+          // The link still points at production's node_modules. Installing over
+          // it would resolve into the live install and can corrupt it.
+          const output = `Unable to remove staging node_modules symlink at ${stagingModules}: ${removal.output}`;
+          writeLog(output);
+          return { ok: false, command: "remove staging node_modules symlink", output };
+        }
         writeLog("Removed node_modules symlink for fresh install");
       } else {
         writeLog("node_modules is a real directory — running incremental install");
@@ -263,18 +273,29 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
         const distDir = join(stagingPreviewParent, entry.name);
         if (!existsSync(join(distDir, "index.html"))) continue;
 
-        if (!previewMap.has(entry.name)) {
-          const target = createRestorablePreviewTarget(
-            stagingParent,
-            parsed.stagingName,
-            parsed.profile,
-            distDir,
-          );
+        const isNewFrontend = !previewMap.has(entry.name);
+        const target = createRestorablePreviewTarget(
+          stagingParent,
+          parsed.stagingName,
+          parsed.profile,
+          distDir,
+        );
+
+        if (isNewFrontend) {
           previewMap.set(entry.name, distDir);
-          if (shouldRegisterBackends) {
-            rememberRestorablePreviewTarget(target);
-          }
           registeredPreviewDirs++;
+        }
+
+        // Backend registration is tracked separately from the frontend entry:
+        // a preview retired after repeated backend start failures keeps serving
+        // its built assets, and its backend is only re-registered once the dist
+        // directory is rebuilt (newer mtime than the retirement).
+        if (
+          shouldRegisterBackends
+          && !hasRestorablePreviewTarget(entry.name)
+          && !isPreviewRetiredAfterStartFailures(entry.name, target.updatedAtMs)
+        ) {
+          rememberRestorablePreviewTarget(target);
         }
       }
     } catch (err) {

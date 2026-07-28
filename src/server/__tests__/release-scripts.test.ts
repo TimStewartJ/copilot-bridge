@@ -350,6 +350,31 @@ describe("release scripts", () => {
     expect(script).toContain("Stop-BridgeVerifiedProcessIdentities $processesToStop $orderedProcessIds");
   });
 
+  it("cleans up legacy Bridge-owned keep-alive processes without matching unrelated PowerShell", () => {
+    const stopScript = readScript("stop-bridge.ps1");
+    const releaseStopScript = readScript("stop-release.ps1");
+
+    for (const script of [stopScript, releaseStopScript]) {
+      expect(script).toContain('$legacyKeepAlivePattern = "scripts[\\\\/]+keep-alive\\.ps1"');
+    }
+
+    // stop-bridge scopes every match to this install's work directory, so the
+    // keep-alive pattern can never match another install or a bare powershell.
+    expect(stopScript).toContain(
+      "($_.CommandLine -match $bridgeEntryPattern -or $_.CommandLine -match $legacyKeepAlivePattern)",
+    );
+    expect(stopScript).toContain("$_.CommandLine -match $workDirPattern -and");
+
+    // stop-release keeps the release-root ownership gate in front of it.
+    expect(releaseStopScript).toContain(
+      "($_.CommandLine -match $releaseProcessPattern -or $_.CommandLine -match $legacyKeepAlivePattern)",
+    );
+    expect(releaseStopScript).toContain("(Test-ReleaseInstallProcess $_) -and");
+
+    // The always-on keep-alive itself stays deleted.
+    expect(() => readScript("keep-alive.ps1")).toThrow();
+  });
+
   it("revalidates process creation identity while launcher child cleanup covers the tunnel", () => {
     const stopScript = readScript("stop-bridge.ps1");
     const releaseStopScript = readScript("stop-release.ps1");

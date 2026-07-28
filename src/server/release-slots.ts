@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
-  writeFileSync,
   type Dirent,
 } from "node:fs";
 import { cp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -22,6 +19,12 @@ const RELEASE_SLOT_MANIFEST = "release-slot.json";
 const ACTIVE_RELEASE_FILE = "active-release.json";
 const RELEASE_SLOT_KEEP_RECENT = 5;
 const TEMP_DIR_SUFFIX = ".tmp";
+/**
+ * Upper bound on how long a release temp directory may sit untouched while its
+ * recorded PID is still alive before we treat that PID as reused. Generously
+ * larger than the default 10-minute build timeout.
+ */
+const TEMP_DIR_MAX_LIVE_AGE_MS = 60 * 60_000;
 const RELEASE_SLOT_RENAME_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 1_500] as const;
 const RETRYABLE_RELEASE_SLOT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
@@ -134,6 +137,48 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return getErrorCode(error) === "EPERM";
   }
+}
+
+/**
+ * Last time the release temp directory itself changed. A build in progress adds
+ * and removes entries in this directory (dependency install, dist output), so
+ * this doubles as a progress signal that does not depend on the recorded PID.
+ *
+ * Deliberately `mtime` only: `ctime` advances on any metadata touch and
+ * `birthtime` is unreliable across filesystems, so neither reflects progress.
+ */
+function tempDirectoryLastActivityMs(root: string): number | undefined {
+  try {
+    const { mtimeMs } = statSync(root);
+    return Number.isFinite(mtimeMs) && mtimeMs > 0 ? mtimeMs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Decide whether a release temp directory still belongs to a live build.
+ *
+ * PID existence alone is not proof of ownership: the operating system reuses
+ * PIDs, so an unrelated long-lived process can inherit the number recorded in
+ * `.<slot>.<pid>.tmp` and pin a large abandoned tree forever. We therefore
+ * combine the PID check with a bounded activity age — a real build is bounded by
+ * the build timeout, so a "live" PID whose tree has been untouched for far
+ * longer is PID reuse, not an in-flight build.
+ */
+function isReleaseTempDirectoryProtected(
+  root: string,
+  pid: number | undefined,
+  now: number,
+): boolean {
+  if (pid === undefined) return false;
+  // Our own in-flight build: identity is exact, never prune it.
+  if (pid === process.pid) return true;
+  if (!isProcessAlive(pid)) return false;
+  const lastActivityMs = tempDirectoryLastActivityMs(root);
+  // Unreadable timestamps: fall back to the previous PID-only behaviour.
+  if (lastActivityMs === undefined) return true;
+  return now - lastActivityMs <= TEMP_DIR_MAX_LIVE_AGE_MS;
 }
 
 function releaseSlotManifestPath(slotRoot: string): string {
@@ -403,10 +448,12 @@ export function pruneReleaseSlots(
     keepRecent?: number;
     extraKeepIds?: Iterable<string | undefined>;
     log?: (message: string) => void;
+    now?: () => number;
   } = {},
 ): number {
   const releaseParent = getReleaseSlotsDir(dataDir);
   if (!existsSync(releaseParent)) return 0;
+  const now = (options.now ?? Date.now)();
   const active = readActiveRelease(dataDir);
   const keep = new Set<string>();
   if (active) keep.add(active.id);
@@ -427,11 +474,9 @@ export function pruneReleaseSlots(
     .map((entry) => {
       const temp = parseReleaseSlotTempDirectoryName(entry.name);
       if (!temp) return null;
-      if (temp.pid !== undefined && isProcessAlive(temp.pid)) return null;
-      return {
-        id: entry.name,
-        root: join(releaseParent, entry.name),
-      };
+      const root = join(releaseParent, entry.name);
+      if (isReleaseTempDirectoryProtected(root, temp.pid, now)) return null;
+      return { id: entry.name, root };
     })
     .filter((entry): entry is { id: string; root: string } => entry !== null);
 
@@ -483,12 +528,4 @@ export function pruneReleaseSlots(
     }
   }
   return removed;
-}
-
-export function writeActiveReleaseSync(dataDir: string, manifest: ReleaseSlotManifest): void {
-  mkdirSync(dataDir, { recursive: true });
-  const activePath = getActiveReleaseFile(dataDir);
-  const tempPath = join(dirname(activePath), `.${basename(activePath)}.${randomUUID()}.tmp`);
-  writeFileSync(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
-  renameSync(tempPath, activePath);
 }

@@ -175,10 +175,22 @@ export function createScheduleStore(db: DatabaseSync) {
     return getSchedule(id)!;
   }
 
+  /**
+   * Delete a schedule with its run history and claims atomically, so a failure
+   * mid-cascade cannot strand claims/runs or leave the schedule behind after its
+   * history was removed.
+   */
   function deleteSchedule(id: string): void {
-    db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(id);
-    db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(id);
-    db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
+    db.exec("BEGIN");
+    try {
+      db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(id);
+      db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(id);
+      db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   function applyRecordedRun(schedule: Schedule, sessionId: string, nextRunAt?: string, now = new Date().toISOString()): void {

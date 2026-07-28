@@ -71,22 +71,6 @@ describe("telemetry-store", () => {
     expect(spans).toHaveLength(3);
   });
 
-  it("getStats returns aggregated stats", () => {
-    store.recordSpan({ name: "session.create", duration: 100, source: "server" });
-    store.recordSpan({ name: "session.create", duration: 200, source: "server" });
-    store.recordSpan({ name: "session.create", duration: 300, source: "server" });
-    store.recordSpan({ name: "session.resume", duration: 500, source: "server" });
-
-    const stats = store.getStats();
-    expect(stats).toHaveLength(2);
-
-    const createStats = stats.find((s) => s.name === "session.create")!;
-    expect(createStats.count).toBe(3);
-    expect(createStats.avg).toBe(200);
-    expect(createStats.min).toBe(100);
-    expect(createStats.max).toBe(300);
-  });
-
   it("pruneOldSpans removes old entries", () => {
     store.recordSpan({ name: "old", duration: 100, source: "server" });
 

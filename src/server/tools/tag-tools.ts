@@ -1,6 +1,7 @@
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTag, ensureTagStore } from "./helpers.js";
+import { InvalidTagColorError } from "../tag-store.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -49,8 +50,17 @@ export function createTagToolDefinitions(ctx: AppContext): BridgeToolDefinition[
       if (args.color !== undefined) updates.color = args.color;
       if (args.instructions !== undefined) updates.instructions = args.instructions;
       if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: name, color, instructions");
-      tagStore.value.updateTag(args.tagId, updates);
-      await ctx.sessionManager.evictAllCachedSessions();
+      try {
+        tagStore.value.updateTag(args.tagId, updates);
+      } catch (error) {
+        if (error instanceof InvalidTagColorError) return toolFailure(error.message);
+        throw error;
+      }
+      // Only name/instructions feed session prompts, so a colour-only change
+      // must not nuke every cached session.
+      if (updates.name !== undefined || updates.instructions !== undefined) {
+        await ctx.sessionManager.evictAllCachedSessions();
+      }
       return { success: true, message: `Tag updated` };
     },
   }),
@@ -58,7 +68,8 @@ export function createTagToolDefinitions(ctx: AppContext): BridgeToolDefinition[
     description: "Delete a tag. Removes it from all entities.",
     parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID to delete" } }, required: ["tagId"] },
     handler: async (args: any) => {
-      ctx.tagStore?.deleteTag(args.tagId);
+      const deleted = ctx.tagStore?.deleteTag(args.tagId) ?? false;
+      if (!deleted) return toolFailure(`Tag ${args.tagId} not found`);
       await ctx.sessionManager.evictAllCachedSessions();
       return { success: true, message: "Tag deleted" };
     },

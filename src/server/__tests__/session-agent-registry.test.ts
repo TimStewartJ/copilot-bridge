@@ -278,6 +278,34 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
+  it("dispose stops every session's poll and issues no further SDK calls", async () => {
+    const { bus } = makeBus();
+    let calls = 0;
+    const session = fakeSession(async () => {
+      calls++;
+      return { tasks: [agentTask({ id: "a", status: "running" })] };
+    });
+    const registry = new SessionAgentRegistry({
+      globalBus: bus,
+      getLiveSession: () => session,
+      pollIntervalMs: 1_000,
+    });
+
+    await registry.refresh("s1", "test");
+    await registry.refresh("s2", "test");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(calls).toBeGreaterThan(2);
+
+    registry.dispose();
+    const callsAtShutdown = calls;
+
+    // No registry timer survives shutdown, so no RPC polling continues.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls).toBe(callsAtShutdown);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(registry.getSummary("s1")).toMatchObject({ source: "unknown" });
+  });
+
   it("does not poll when the only background agents are terminal", async () => {
     const { bus } = makeBus();
     let call = 0;

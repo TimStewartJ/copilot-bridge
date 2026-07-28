@@ -58,6 +58,14 @@ export interface BackfillSessionContextEventsOptions {
   events: readonly unknown[];
 }
 
+/** Per-table row counts removed by {@link SessionContextStore.deleteSessionContext}. */
+export interface SessionContextDeleteResult {
+  summary: number;
+  turns: number;
+  events: number;
+  backfills: number;
+}
+
 interface SummaryRow {
   sessionId: string;
   provider: string;
@@ -419,6 +427,10 @@ export function createSessionContextStore(db: DatabaseSync) {
     ORDER BY COALESCE(startedAt, latestEventAt, updatedAt) ASC, bridgeTurnId ASC
   `);
   const selectBackfill = db.prepare("SELECT * FROM session_context_backfills WHERE sessionId = ?");
+  const deleteSummaryForSession = db.prepare("DELETE FROM session_context_summary WHERE sessionId = ?");
+  const deleteTurnsForSession = db.prepare("DELETE FROM session_context_turns WHERE sessionId = ?");
+  const deleteEventsForSession = db.prepare("DELETE FROM session_context_events WHERE sessionId = ?");
+  const deleteBackfillsForSession = db.prepare("DELETE FROM session_context_backfills WHERE sessionId = ?");
   const upsertBackfill = db.prepare(`
     INSERT INTO session_context_backfills (sessionId, provider, providerSessionId, eventsPath, fileSize, mtimeMs, backfilledAt)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -663,6 +675,26 @@ export function createSessionContextStore(db: DatabaseSync) {
     }
   }
 
+  /**
+   * Delete every row this store owns for a session, in one transaction. Called
+   * when the session itself is deleted so context rows cannot outlive their
+   * owner. Returns per-table delete counts for observability.
+   */
+  function deleteSessionContext(sessionId: string): SessionContextDeleteResult {
+    db.exec("BEGIN");
+    try {
+      const events = (deleteEventsForSession.run(sessionId) as unknown as { changes?: number }).changes ?? 0;
+      const turns = (deleteTurnsForSession.run(sessionId) as unknown as { changes?: number }).changes ?? 0;
+      const backfills = (deleteBackfillsForSession.run(sessionId) as unknown as { changes?: number }).changes ?? 0;
+      const summary = (deleteSummaryForSession.run(sessionId) as unknown as { changes?: number }).changes ?? 0;
+      db.exec("COMMIT");
+      return { summary, turns, events, backfills };
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async function backfillSessionContextFromEventsFile({
     sessionId,
     provider = "copilot",
@@ -726,6 +758,7 @@ export function createSessionContextStore(db: DatabaseSync) {
     recordContextEvent,
     getSummary,
     getSessionContext,
+    deleteSessionContext,
     backfillSessionContextEvents,
     backfillSessionContextFromEventsFile,
   };

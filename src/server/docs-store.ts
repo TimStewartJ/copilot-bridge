@@ -824,18 +824,8 @@ export function createDocsStore(docsDir: string) {
     return updated;
   }
 
-  // ── Folder operations ─────────────────────────────────────────
-
-  function deleteFolder(folder: string): boolean {
-    const segments = validateDocsPathSegments(folder, "folder");
-    const folderPath = resolveContainedDocsPath(docsRoot, segments, [], "folder");
-    if (!existsSync(folderPath)) return false;
-    rmSync(folderPath, { recursive: true });
-    return true;
-  }
-
   return {
-    readPage, readUserPage, writePage, previewEditPageContent, editPage, deletePage, deleteUserPage, listTree, scanAllPages, deleteFolder,
+    readPage, readUserPage, writePage, previewEditPageContent, editPage, deletePage, deleteUserPage, listTree, scanAllPages,
     readSchema, writeSchema, isDbFolder,
     normalizeDbEntryInput,
     addDbEntry, updateDbEntry, deleteDbEntry, listDbEntries,

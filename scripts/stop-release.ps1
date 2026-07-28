@@ -60,6 +60,10 @@ function Invoke-ReleaseProcessCleanup {
     }
   }
   $releaseProcessPattern = "dist[\\/]+launcher\.js|dist[\\/]+server[\\/]+index\.js|dist[\\/]+management-job-runner\.js"
+  # Legacy cleanup: older installs launched an always-on scripts\keep-alive.ps1
+  # loop that no longer exists. Still gated on Test-ReleaseInstallProcess, so it
+  # only matches keep-alive processes owned by this install/release root.
+  $legacyKeepAlivePattern = "scripts[\\/]+keep-alive\.ps1"
   $updaterProcessPattern = $installRootPattern + 'update\.ps1(?:"|''|\s|$)'
 
   $allProcesses = @(Get-CimInstance Win32_Process)
@@ -114,7 +118,7 @@ function Invoke-ReleaseProcessCleanup {
     $_.ProcessId -ne $PID -and
     (Test-ReleaseInstallProcess $_) -and
     -not (Test-ReleaseUpdaterProcess $_) -and
-    $_.CommandLine -match $releaseProcessPattern
+    ($_.CommandLine -match $releaseProcessPattern -or $_.CommandLine -match $legacyKeepAlivePattern)
   } | ForEach-Object {
     Add-ProcessTree $_
   }

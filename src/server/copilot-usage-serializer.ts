@@ -13,7 +13,7 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
   >;
   type PricingMetadataLike = Pick<
     CopilotUsageSummary["models"][number],
-    "pricingKey" | "pricedAs" | "pricingStatus" | "pricingSource" | "normalizedPricingModel"
+    "pricingKey" | "pricedAs" | "pricingStatus" | "normalizedPricingModel"
   >;
   const serializeTokenTotals = (row: TokenTotalsLike) => ({
     requests: row.requests,
@@ -43,7 +43,6 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     pricingKey: row.pricingKey,
     pricedAs: row.pricedAs,
     pricingStatus: row.pricingStatus,
-    pricingSource: row.pricingSource,
     normalizedPricingModel: row.normalizedPricingModel,
   });
   const serializeUnpricedModelRow = (row: CopilotUsageSummary["unpricedModels"][number]) => ({

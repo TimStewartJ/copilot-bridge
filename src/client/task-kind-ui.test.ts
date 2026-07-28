@@ -179,7 +179,6 @@ function createPricedModelMetadata(model: string) {
     pricingKey: model,
     pricedAs: model,
     pricingStatus: "exact" as const,
-    pricingSource: "exact" as const,
     normalizedPricingModel: model,
   };
 }
@@ -189,7 +188,6 @@ function createUnpricedModelMetadata() {
     pricingKey: null,
     pricedAs: null,
     pricingStatus: "unpriced" as const,
-    pricingSource: "unpriced" as const,
     normalizedPricingModel: null,
   };
 }

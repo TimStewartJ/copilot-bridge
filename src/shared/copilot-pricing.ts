@@ -24,7 +24,6 @@ export type CopilotPricingModelResolutionStatus = "exact" | "sdk-name" | "unpric
 
 export interface PricedCopilotPricingModelResolution {
   readonly status: Exclude<CopilotPricingModelResolutionStatus, "unpriced">;
-  readonly source: Exclude<CopilotPricingModelResolutionStatus, "unpriced">;
   readonly observedModel: string;
   readonly normalizedModel: string;
   readonly sku: string;
@@ -35,7 +34,6 @@ export interface PricedCopilotPricingModelResolution {
 
 export interface UnpricedCopilotPricingModelResolution {
   readonly status: "unpriced";
-  readonly source: "unpriced";
   readonly observedModel: string;
   readonly normalizedModel: string | null;
   readonly sku: null;
@@ -234,7 +232,6 @@ function createPricedCopilotPricingResolution(
 ): PricedCopilotPricingModelResolution {
   return {
     status,
-    source: status,
     observedModel,
     normalizedModel: sdkModel.id,
     sku: sdkModel.id,
@@ -250,7 +247,6 @@ function createUnpricedCopilotPricingResolution(
 ): UnpricedCopilotPricingModelResolution {
   return {
     status: "unpriced",
-    source: "unpriced",
     observedModel,
     normalizedModel,
     sku: null,

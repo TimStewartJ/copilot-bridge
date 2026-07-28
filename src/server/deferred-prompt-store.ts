@@ -10,6 +10,9 @@ import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
 
 export type DeferredPromptStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
+/** Upper bound on rows removed by a single terminal-row prune pass. */
+export const DEFAULT_TERMINAL_PRUNE_LIMIT = 500;
+
 export interface DeferredPrompt {
   id: string;
   deferId: string;
@@ -147,6 +150,18 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     UPDATE deferred_prompts
     SET status = 'cancelled', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE sessionId = ? AND status IN ('pending', 'running')
+  `);
+
+  const deleteForSessionStmt = db.prepare("DELETE FROM deferred_prompts WHERE sessionId = ?");
+
+  const pruneTerminalStmt = db.prepare(`
+    DELETE FROM deferred_prompts
+    WHERE id IN (
+      SELECT id FROM deferred_prompts
+      WHERE status IN ('completed', 'failed', 'cancelled') AND updatedAt < ?
+      ORDER BY updatedAt ASC
+      LIMIT ?
+    )
   `);
 
   const reclaimExpiredStmt = db.prepare(`
@@ -291,6 +306,26 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes as number;
   }
 
+  /**
+   * Hard-delete every row owned by a session. Used when the session itself is
+   * deleted, so no orphaned deferral rows survive its owner.
+   */
+  function deleteForSession(sessionId: string): number {
+    const result = deleteForSessionStmt.run(sessionId);
+    return (result as any).changes as number;
+  }
+
+  /**
+   * Bounded hard-delete of terminal rows older than `olderThanIso`. Terminal
+   * rows can never run again, so they exist only as history; without pruning
+   * the table grows for the lifetime of the install.
+   */
+  function pruneTerminalRows(olderThanIso: string, limit = DEFAULT_TERMINAL_PRUNE_LIMIT): number {
+    const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_TERMINAL_PRUNE_LIMIT;
+    const result = pruneTerminalStmt.run(olderThanIso, boundedLimit);
+    return (result as any).changes as number;
+  }
+
   /** Move expired running rows back to pending so they can be retried. Returns count. */
   function reclaimExpiredRunning(now = new Date().toISOString()): number {
     const result = reclaimExpiredStmt.run(now, now);
@@ -317,6 +352,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     renewClaim,
     cancelById,
     cancelForSession,
+    deleteForSession,
+    pruneTerminalRows,
     reclaimExpiredRunning,
   };
 }

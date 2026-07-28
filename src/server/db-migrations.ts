@@ -13,6 +13,7 @@ const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 const BRIDGE_SESSION_STATE_LEGACY_BACKFILL = "bridge_session_state_legacy_backfill_v1";
 const SCHEDULE_REUSE_COLUMNS_DROP = "schedule-reuse-columns-drop-v1";
 const SCHEDULE_RUNS_LEGACY_BACKFILL = "schedule_runs_legacy_backfill_v1";
+const LEGACY_SESSION_OVERLAY_TABLES_DROP = "legacy_session_overlay_tables_drop_v1";
 
 type DatabaseMigrationCategory =
   | "schema-upgrade"
@@ -428,6 +429,33 @@ function backfillBridgeSessionState(db: DatabaseSync): void {
         pinnedCwdUpdatedAt = COALESCE((SELECT updatedAt FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwdUpdatedAt)
       WHERE EXISTS (SELECT 1 FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId);
     `);
+  }
+}
+
+/**
+ * Drop `session_meta` and `session_workspace` once every migration that reads
+ * them has run. `bridge_session_state` is the sole runtime owner of that state;
+ * the legacy tables are only ever read by the two backfills below, so dropping
+ * them before those have applied would silently lose data on a leapfrog
+ * upgrade.
+ *
+ * The table names stay in `SQLITE_STATE_TABLES` on purpose: that list is
+ * consulted before migrations run to detect whether an install has any
+ * persisted SQLite state at all, and it tolerates missing tables.
+ */
+function dropLegacySessionOverlayTables(db: DatabaseSync): void {
+  const requiredBackfills = [BRIDGE_SESSION_STATE_LEGACY_BACKFILL, SCHEDULE_RUNS_LEGACY_BACKFILL];
+  const missing = requiredBackfills.filter((id) => !hasSchemaMigration(db, id));
+  if (missing.length > 0) {
+    throw new Error(
+      `Refusing to drop legacy session overlay tables before required backfill(s): ${missing.join(", ")}`,
+    );
+  }
+
+  for (const table of ["session_meta", "session_workspace"]) {
+    if (sqliteTableExists(db, table)) {
+      db.exec(`DROP TABLE ${table}`);
+    }
   }
 }
 
@@ -1164,6 +1192,13 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     runMode: "once",
     description: "One-time backfill of schedule_runs from legacy lastSessionId and session_meta schedule metadata.",
     apply: backfillScheduleRuns,
+  },
+  {
+    id: LEGACY_SESSION_OVERLAY_TABLES_DROP,
+    category: "legacy-data",
+    runMode: "once",
+    description: "Drop orphaned session_meta and session_workspace tables after their backfills into bridge_session_state.",
+    apply: dropLegacySessionOverlayTables,
   },
   {
     id: "checklist-items-from-legacy-todos",

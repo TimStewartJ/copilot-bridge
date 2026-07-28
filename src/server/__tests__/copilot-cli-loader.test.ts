@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   patchCopilotAppSource,
@@ -47,6 +50,34 @@ const PENDING_INTERACTION_PERMISSIONS_FACADE = `
 function permissions(t){return{pendingRequests(){return{items:jbr(t)}}}}
 `;
 const NATIVE_ASK_USER_SOURCE = `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_RUNTIME}${PENDING_INTERACTION_PERMISSIONS_FACADE}`;
+
+describe("copilot-cli-loader installed-package contract", () => {
+  // The Copilot bundle patches are regex-driven, so a dependency bump can break
+  // them. `@github/copilot` is exact-pinned, which makes drift a controlled CI
+  // event — but only if CI actually runs the patches against the installed
+  // bundle instead of synthetic fixtures. This test is that gate: it fails on
+  // upgrade here rather than at app-mode launch.
+  const installedAppSources = findInstalledCopilotAppSources();
+
+  it("resolves at least one installed @github/copilot app bundle", () => {
+    expect(
+      installedAppSources.length,
+      "No installed @github/copilot app.js found. Run `npm ci` before the server test lane.",
+    ).toBeGreaterThan(0);
+  });
+
+  it.each(installedAppSources)("patches the installed bundle at %s", (appPath) => {
+    const source = readFileSync(appPath, "utf-8");
+
+    const patched = patchCopilotAppSource(source);
+
+    expect(patched).not.toBe(source);
+    expect(patched).toContain("__bridgeGithubMcpOptions");
+    expect(patched).toContain("this.supportsElicitation()");
+    expect(patched).toContain("pendingUserInputs:");
+    expect(patched).toContain("pendingElicitations:");
+  });
+});
 
 describe("copilot-cli-loader", () => {
   it("patches the current simple GitHub MCP config method shape", () => {
@@ -187,3 +218,30 @@ describe("copilot-cli-loader", () => {
     );
   });
 });
+
+/**
+ * Locate every installed Copilot application bundle. Platform-specific packages
+ * (`@github/copilot-<variant>-<arch>`) and the monolithic `@github/copilot`
+ * layout are both supported, mirroring `copilot-cli-wrapper.js`.
+ */
+function findInstalledCopilotAppSources(): string[] {
+  const scopeDir = findGithubScopeDir();
+  if (!scopeDir) return [];
+  return readdirSync(scopeDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("copilot"))
+    .map((entry) => join(scopeDir, entry.name, "app.js"))
+    .filter((appPath) => existsSync(appPath))
+    .sort();
+}
+
+function findGithubScopeDir(): string | undefined {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 10; depth++) {
+    const candidate = join(dir, "node_modules", "@github");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}

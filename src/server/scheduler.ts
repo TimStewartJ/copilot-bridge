@@ -152,6 +152,11 @@ export function stopMissedRunWatchdogForTests(): void {
   clearMissedRunWatchdog();
 }
 
+/** Schedule IDs with a live cron job or armed one-shot timer. Test-only. */
+export function getRegisteredScheduleIdsForTests(): { cron: string[]; oneShot: string[] } {
+  return { cron: [...cronJobs.keys()], oneShot: [...oneShotTimers.keys()] };
+}
+
 /**
  * Test-only: wait for all currently requested missed-run catch-up checks.
  * Retry timers still need to be advanced by the caller before awaiting.
@@ -416,7 +421,13 @@ export async function triggerSchedule(
 
   const task = taskStore.getTask(schedule.taskId);
   if (!task) {
-    console.error(`[scheduler] Task ${schedule.taskId} not found for schedule "${schedule.name}"`);
+    // The parent task is gone but the schedule survived (schedules.taskId has no
+    // foreign key). Disable and unregister so an orphan cannot keep waking and
+    // logging forever; task deletion normally removes children up front.
+    console.error(`[scheduler] Task ${schedule.taskId} not found for schedule "${schedule.name}" — disabling orphaned schedule`);
+    scheduleStore.updateSchedule(scheduleId, { enabled: false });
+    unregisterSchedule(scheduleId);
+    bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
     return { skipped: "Parent task not found" };
   }
 
