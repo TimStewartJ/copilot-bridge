@@ -5,7 +5,7 @@ import type { AppContext } from "../app-context.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createFeedToolDefinitions } from "../tools/feed-tools.js";
 import { toolFailure } from "../tool-results.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 function getTool(ctx: AppContext, name: string) {
   const tool = [

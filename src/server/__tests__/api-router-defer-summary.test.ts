@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
-import { createMockSessionManager, createTestApp } from "./helpers.js";
+import { createMockSessionManager } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 describe("session list defer summaries", () => {
   it("materializes combined defer summaries without prompt text or defer identifiers", async () => {

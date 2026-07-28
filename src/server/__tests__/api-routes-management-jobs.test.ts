@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { rmSync, writeFileSync } from "node:fs";
 import { request } from "./api-routes-test-helpers.js";
-import { createTestApp, makeTestDir } from "./helpers.js";
+import { makeTestDir } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import {
   createManagementJobStore,
   ManagementJobNotCancellableError,

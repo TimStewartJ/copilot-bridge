@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { registerReportIntentTool } from "../tools/report-intent-tool.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import type { AppContext } from "../app-context.js";
 

@@ -1,7 +1,8 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createTestApp, makeTestDir, makeTestRuntimePaths, withTestEnv } from "./helpers.js";
+import { makeTestDir, makeTestRuntimePaths, withTestEnv } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 describe("test helper runtime isolation", () => {
   let previousDir: string | undefined;

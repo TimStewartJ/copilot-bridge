@@ -4,7 +4,8 @@ import type { Express } from "express";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createTestApp, createMockSessionManager } from "./helpers.js";
+import { createMockSessionManager } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 const readGitWorktreeStatusMock = vi.hoisted(() => vi.fn());
 

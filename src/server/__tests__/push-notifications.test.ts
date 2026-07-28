@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPushNotificationService, initPushEventNotifications } from "../push-notification-service.js";
 import { createPushSubscriptionStore, type PushSubscriptionInput } from "../push-subscription-store.js";
-import { createTestApp, setupTestDb, withTestEnv } from "./helpers.js";
+import { setupTestDb, withTestEnv } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 const TEST_SUBSCRIPTION: PushSubscriptionInput = {
   endpoint: "https://push.example.test/send/subscription-id",

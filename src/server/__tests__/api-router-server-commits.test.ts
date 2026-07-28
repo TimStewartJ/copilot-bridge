@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 const getBridgeGitRevisionsMock = vi.hoisted(() => vi.fn());
 const createBridgeGitRevisionReaderMock = vi.hoisted(() => vi.fn(() => getBridgeGitRevisionsMock));

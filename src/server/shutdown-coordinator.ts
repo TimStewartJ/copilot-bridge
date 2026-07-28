@@ -2,7 +2,7 @@ import type { AppContext } from "./app-context.js";
 import {
   SERVER_SHUTDOWN_BUDGET_MS,
   shutdownAppContextServices,
-} from "./app-context-factory.js";
+} from "./app-context-shutdown.js";
 import {
   createDeadline,
   deadlineFromUnixMs,

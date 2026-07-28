@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 
 function createInvocation() {
   return {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createMockSessionManager, createTestApp } from "./helpers.js";
+import { createMockSessionManager } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
 import { runSessionOverlayReaper } from "../session-overlay-reaper.js";
 import type { DatabaseSync } from "../db.js";
 
