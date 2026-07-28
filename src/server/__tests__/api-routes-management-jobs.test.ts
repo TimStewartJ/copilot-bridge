@@ -116,6 +116,33 @@ describe("management job API routes", () => {
     expect((await request(app).post("/api/management-jobs/missing/retry")).status).toBe(404);
   });
 
+  it("degrades cleanly once retention has pruned a job log or its row", async () => {
+    const { app, store } = createManagementJobApiTestApp();
+    const job = store.enqueue("staging_preview", { stagingDir: "pruned-log" });
+    if (!job.logPath) throw new Error("expected job log path");
+    writeFileSync(job.logPath, "about to be pruned", "utf-8");
+    store.succeed(job.id, {});
+    rmSync(job.logPath, { force: true });
+
+    const prunedLog = await request(app).get(`/api/management-jobs/${job.id}/log`);
+    expect(prunedLog.status).toBe(200);
+    expect(prunedLog.body).toEqual({ jobId: job.id, logTail: "" });
+
+    const detail = await request(app).get(`/api/management-jobs/${job.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.logTail).toBe("");
+
+    const pruned = await store.pruneRetention({
+      policy: { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxCount: 0 },
+      graceMs: 0,
+    });
+    expect(pruned.deletedJobIds).toEqual([job.id]);
+
+    const prunedRow = await request(app).get(`/api/management-jobs/${job.id}/log`);
+    expect(prunedRow.status).toBe(404);
+    expect(prunedRow.body.error).toBe("Management job not found.");
+  });
+
   it("returns 409 when queued cancellation loses a status race", async () => {
     const { app, store } = createManagementJobApiTestApp();
     const queued = store.enqueue("staging_preview", { stagingDir: "cancel-race" });

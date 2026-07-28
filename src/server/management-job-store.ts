@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readSync, statSync, closeSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { DatabaseSync } from "./db.js";
+import {
+  pruneRetainedLogFiles,
+  removeRetainedFiles,
+  resolveLogRetentionPolicy,
+  selectRetentionDeletions,
+  type LogRetentionPolicy,
+} from "./log-retention.js";
+import { isPathAtOrUnder } from "./path-utils.js";
 
 export const MANAGEMENT_JOB_TYPES = ["self_update", "staging_preview", "staging_deploy"] as const;
 export const MANAGEMENT_JOB_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled"] as const;
@@ -37,6 +45,20 @@ export interface ManagementJobStore {
   fail(id: string, error: string, result?: unknown): ManagementJob;
   cancel(id: string, reason?: string): ManagementJob | null;
   readLogTail(jobOrId: ManagementJob | string, maxBytes?: number): string;
+  pruneRetention(options?: ManagementJobRetentionOptions): Promise<ManagementJobRetentionResult>;
+}
+
+export interface ManagementJobRetentionOptions {
+  policy?: Partial<LogRetentionPolicy>;
+  env?: NodeJS.ProcessEnv;
+  nowMs?: number;
+  graceMs?: number;
+}
+
+export interface ManagementJobRetentionResult {
+  deletedJobIds: string[];
+  deletedLogPaths: string[];
+  failedLogDeletions: number;
 }
 
 export interface CreateManagementJobStoreOptions {
@@ -98,6 +120,10 @@ const EXCLUSIVE_DEPLOY_TYPES: readonly ManagementJobType[] = ["self_update", "st
 export const DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
 export const DEFAULT_MANAGEMENT_JOB_LIST_LIMIT = 50;
 export const MAX_MANAGEMENT_JOB_LIST_LIMIT = 200;
+export const MANAGEMENT_JOB_MAX_AGE_DAYS_ENV = "BRIDGE_MANAGEMENT_JOB_MAX_AGE_DAYS";
+export const MANAGEMENT_JOB_MAX_COUNT_ENV = "BRIDGE_MANAGEMENT_JOB_MAX_COUNT";
+export const DEFAULT_MANAGEMENT_JOB_MAX_AGE_DAYS = 30;
+export const DEFAULT_MANAGEMENT_JOB_MAX_COUNT = 200;
 const DEFAULT_STALE_AFTER_MS = DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS;
 const DEFAULT_LOG_TAIL_BYTES = 16 * 1024;
 
@@ -291,6 +317,38 @@ export function sanitizeManagementJobLogTail(value: string): string {
   return value
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "�");
+}
+
+function isActiveStatus(status: string): boolean {
+  return (ACTIVE_STATUSES as readonly string[]).includes(status);
+}
+
+function retentionTimestampMs(value: string | null, fallbackMs: number): number {
+  const parsed = value === null ? Number.NaN : Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallbackMs;
+}
+
+/**
+ * Deletes the selected rows in one transaction, re-checking terminal status so a
+ * job another process just claimed or re-queued is never removed. Rows go first
+ * so a crash can only leave an orphan log for the next sweep — never a surviving
+ * row whose log has already been deleted.
+ */
+function deleteTerminalManagementJobRows(db: DatabaseSync, ids: readonly string[]): Set<string> {
+  if (ids.length === 0) return new Set();
+  return runImmediateTransaction(db, () => {
+    const statement = db.prepare(`
+      DELETE FROM management_jobs
+      WHERE id = ?
+        AND status NOT IN (${placeholders(ACTIVE_STATUSES)})
+    `);
+    const deleted = new Set<string>();
+    for (const id of ids) {
+      const result = statement.run(id, ...ACTIVE_STATUSES) as { changes?: number | bigint };
+      if (Number(result.changes ?? 0) > 0) deleted.add(id);
+    }
+    return deleted;
+  });
 }
 
 export function createManagementJobStore(
@@ -489,6 +547,70 @@ export function createManagementJobStore(
       const job = typeof jobOrId === "string" ? store.get(jobOrId) : jobOrId;
       if (!job?.logPath) return "";
       return sanitizeManagementJobLogTail(readFileTail(job.logPath, maxBytes));
+    },
+
+    async pruneRetention(retentionOptions = {}) {
+      const policy = resolveLogRetentionPolicy({
+        env: retentionOptions.env,
+        maxAgeDaysEnvKey: MANAGEMENT_JOB_MAX_AGE_DAYS_ENV,
+        maxCountEnvKey: MANAGEMENT_JOB_MAX_COUNT_ENV,
+        defaultMaxAgeDays: DEFAULT_MANAGEMENT_JOB_MAX_AGE_DAYS,
+        defaultMaxCount: DEFAULT_MANAGEMENT_JOB_MAX_COUNT,
+        overrides: retentionOptions.policy,
+      });
+      const nowMs = retentionOptions.nowMs ?? now().getTime();
+
+      const rows = db.prepare(`
+        SELECT id, status, logPath, COALESCE(completedAt, updatedAt, createdAt) AS retentionAt
+        FROM management_jobs
+      `).all() as unknown as Array<{
+        id: string;
+        status: string;
+        logPath: string | null;
+        retentionAt: string | null;
+      }>;
+
+      const entries = rows.map((row) => ({
+        id: row.id,
+        timestampMs: retentionTimestampMs(row.retentionAt, nowMs),
+        protected: isActiveStatus(row.status),
+        logPath: row.logPath,
+      }));
+      const selected = selectRetentionDeletions(entries, policy, nowMs);
+      const deletedIds = deleteTerminalManagementJobRows(db, selected.map((entry) => entry.id));
+
+      const removableLogPaths = selected
+        .filter((entry) => deletedIds.has(entry.id))
+        .map((entry) => entry.logPath)
+        .filter((logPath): logPath is string =>
+          typeof logPath === "string" && isPathAtOrUnder(logDir, logPath));
+      const removed = await removeRetainedFiles(removableLogPaths, {
+        nowMs,
+        graceMs: retentionOptions.graceMs,
+      });
+
+      const survivingLogNames = new Set(
+        (db.prepare("SELECT logPath FROM management_jobs WHERE logPath IS NOT NULL")
+          .all() as unknown as Array<{ logPath: string }>)
+          .map((row) => basename(row.logPath)),
+      );
+      // Unreferenced logs have no reason to exist, so they are all removed rather
+      // than retained under the job caps. That also retries anything the row pass
+      // above skipped for the grace window or failed to unlink.
+      const orphans = await pruneRetainedLogFiles({
+        dir: logDir,
+        policy: { maxAgeMs: 0, maxCount: 0 },
+        nowMs,
+        graceMs: retentionOptions.graceMs,
+        isEligible: (name) => name.endsWith(".log"),
+        isProtected: (name) => survivingLogNames.has(name),
+      });
+
+      return {
+        deletedJobIds: [...deletedIds],
+        deletedLogPaths: [...removed.deleted, ...orphans.deleted],
+        failedLogDeletions: removed.failed + orphans.failed,
+      };
     },
   };
   return store;

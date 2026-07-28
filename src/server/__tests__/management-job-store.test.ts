@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openMemoryDatabase } from "../db.js";
 import {
   ActiveManagementJobError,
   createManagementJobStore,
   ManagementJobNotCancellableError,
+  type ManagementJob,
 } from "../management-job-store.js";
+import { RETENTION_DAY_MS } from "../log-retention.js";
 import {
   ManagementJobExecutionError,
   type ManagementJobDispatchOptions,
@@ -30,6 +32,17 @@ function createStore(name: string, now: () => Date = () => new Date()) {
   const db = openMemoryDatabase();
   const store = createManagementJobStore(db, { dataDir, now });
   return { db, store, dataDir };
+}
+
+const RETENTION_START_MS = Date.parse("2026-05-18T20:00:00.000Z");
+const RETENTION_NOW_MS = RETENTION_START_MS + 60 * RETENTION_DAY_MS;
+
+function seedJobLog(job: ManagementJob, writtenAt: Date): string {
+  const logPath = job.logPath;
+  if (!logPath) throw new Error("expected enqueued job to have a log path");
+  writeFileSync(logPath, `log for ${job.id}`);
+  utimesSync(logPath, writtenAt, writtenAt);
+  return logPath;
 }
 
 describe("management job store", () => {
@@ -165,6 +178,151 @@ describe("management job store", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  it("prunes aged and excess terminal jobs with their logs but never active ones", async () => {
+    let current = new Date(RETENTION_START_MS);
+    const { db, store, dataDir } = createStore("retention", () => current);
+    try {
+      const succeedAt = (label: string, at: number): ManagementJob => {
+        current = new Date(at);
+        const job = store.enqueue("staging_preview", { stagingDir: label });
+        seedJobLog(job, current);
+        store.succeed(job.id, { label });
+        return job;
+      };
+
+      const agedFirst = succeedAt("aged-1", RETENTION_START_MS);
+      const agedSecond = succeedAt("aged-2", RETENTION_START_MS + 60_000);
+      const excess = succeedAt("recent-1", RETENTION_NOW_MS - 180_000);
+      const keptOlder = succeedAt("recent-2", RETENTION_NOW_MS - 120_000);
+      const keptNewest = succeedAt("recent-3", RETENTION_NOW_MS - 60_000);
+
+      current = new Date(RETENTION_START_MS);
+      const running = store.enqueue("staging_preview", { stagingDir: "running" });
+      seedJobLog(running, current);
+      expect(store.claimNext({ runnerPid: 11 })?.id).toBe(running.id);
+      const queued = store.enqueue("self_update", { source: "test" });
+      seedJobLog(queued, current);
+
+      const result = await store.pruneRetention({
+        policy: { maxAgeMs: 30 * RETENTION_DAY_MS, maxCount: 2 },
+        nowMs: RETENTION_NOW_MS,
+        graceMs: 0,
+      });
+
+      expect([...result.deletedJobIds].sort())
+        .toEqual([agedFirst.id, agedSecond.id, excess.id].sort());
+      expect(result.failedLogDeletions).toBe(0);
+      for (const job of [agedFirst, agedSecond, excess]) {
+        expect(store.get(job.id)).toBeNull();
+        expect(existsSync(job.logPath as string)).toBe(false);
+      }
+
+      for (const job of [keptOlder, keptNewest, running, queued]) {
+        expect(store.get(job.id)).not.toBeNull();
+        expect(existsSync(job.logPath as string)).toBe(true);
+      }
+      expect(store.get(running.id)?.status).toBe("running");
+      expect(store.get(queued.id)?.status).toBe("queued");
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sweeps orphan log files while keeping referenced and freshly written ones", async () => {
+    let current = new Date(RETENTION_NOW_MS - 60_000);
+    const { db, store, dataDir } = createStore("retention-orphans", () => current);
+    try {
+      const job = store.enqueue("staging_preview", { stagingDir: "kept" });
+      seedJobLog(job, new Date(RETENTION_START_MS));
+      store.succeed(job.id, {});
+
+      const logDir = join(dataDir, "management-jobs", "logs");
+      const agedOrphan = join(logDir, "aged-orphan.log");
+      const freshOrphan = join(logDir, "fresh-orphan.log");
+      const notALog = join(logDir, "orphan.txt");
+      for (const path of [agedOrphan, freshOrphan, notALog]) {
+        writeFileSync(path, "orphan");
+      }
+      const aged = new Date(RETENTION_START_MS);
+      utimesSync(agedOrphan, aged, aged);
+      utimesSync(notALog, aged, aged);
+      utimesSync(freshOrphan, current, current);
+
+      const result = await store.pruneRetention({
+        policy: { maxAgeMs: RETENTION_DAY_MS, maxCount: 200 },
+        nowMs: RETENTION_NOW_MS,
+      });
+
+      expect(result.deletedJobIds).toEqual([]);
+      expect(result.deletedLogPaths).toEqual([agedOrphan]);
+      expect(existsSync(freshOrphan)).toBe(true);
+      expect(existsSync(notALog)).toBe(true);
+      expect(existsSync(job.logPath as string)).toBe(true);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a log left behind when its row was pruned in an earlier pass", async () => {
+    let current = new Date(RETENTION_START_MS);
+    const { db, store, dataDir } = createStore("retention-orphan-retry", () => current);
+    try {
+      const job = store.enqueue("staging_preview", { stagingDir: "left-behind" });
+      const logPath = seedJobLog(job, new Date(RETENTION_START_MS));
+      store.succeed(job.id, {});
+
+      // First pass deletes the row but the log is still inside the grace window.
+      const first = await store.pruneRetention({
+        policy: { maxAgeMs: RETENTION_DAY_MS, maxCount: 200 },
+        nowMs: RETENTION_NOW_MS,
+        graceMs: 90 * RETENTION_DAY_MS,
+      });
+      expect(first.deletedJobIds).toEqual([job.id]);
+      expect(first.deletedLogPaths).toEqual([]);
+      expect(existsSync(logPath)).toBe(true);
+
+      const second = await store.pruneRetention({
+        policy: { maxAgeMs: RETENTION_DAY_MS, maxCount: 200 },
+        nowMs: RETENTION_NOW_MS,
+        graceMs: 0,
+      });
+      expect(second.deletedJobIds).toEqual([]);
+      expect(second.deletedLogPaths).toEqual([logPath]);
+      expect(existsSync(logPath)).toBe(false);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("never deletes a log path outside the store log directory", async () => {
+    let current = new Date(RETENTION_START_MS);
+    const { db, store, dataDir } = createStore("retention-foreign-log", () => current);
+    try {
+      const job = store.enqueue("staging_preview", { stagingDir: "foreign" });
+      store.succeed(job.id, {});
+      const foreignLog = join(dataDir, "not-a-job-log.log");
+      writeFileSync(foreignLog, "keep me");
+      utimesSync(foreignLog, new Date(RETENTION_START_MS), new Date(RETENTION_START_MS));
+      db.prepare("UPDATE management_jobs SET logPath = ? WHERE id = ?").run(foreignLog, job.id);
+
+      const result = await store.pruneRetention({
+        policy: { maxAgeMs: RETENTION_DAY_MS, maxCount: 200 },
+        nowMs: RETENTION_START_MS + 60 * RETENTION_DAY_MS,
+        graceMs: 0,
+      });
+
+      expect(result.deletedJobIds).toEqual([job.id]);
+      expect(result.deletedLogPaths).toEqual([]);
+      expect(existsSync(foreignLog)).toBe(true);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("management job runner", () => {
@@ -269,6 +427,50 @@ describe("management job runner", () => {
     } finally {
       db.close();
       rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes retention after a job but skips it when stepping aside for a restart", async () => {
+    const continued = createStore("runner-retention");
+    try {
+      const prune = vi.spyOn(continued.store, "pruneRetention");
+      continued.store.enqueue("staging_preview", { index: 1 });
+      let stopping = false;
+      await runManagementJobRunnerLoop({
+        store: continued.store,
+        heartbeatIntervalMs: 10,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch: async () => {
+          stopping = true;
+          return { success: true };
+        },
+        shouldStop: () => stopping,
+      });
+
+      expect(prune).toHaveBeenCalledTimes(1);
+    } finally {
+      continued.db.close();
+      rmSync(continued.dataDir, { recursive: true, force: true });
+    }
+
+    const stopped = createStore("runner-retention-stop");
+    try {
+      const prune = vi.spyOn(stopped.store, "pruneRetention");
+      stopped.store.enqueue("staging_deploy", { stagingDir: "/x", message: "deploy" });
+      await runManagementJobRunnerLoop({
+        store: stopped.store,
+        heartbeatIntervalMs: 10,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch: async () => ({ success: true }),
+        shouldStopAfterJob: () => true,
+      });
+
+      expect(prune).not.toHaveBeenCalled();
+    } finally {
+      stopped.db.close();
+      rmSync(stopped.dataDir, { recursive: true, force: true });
     }
   });
 

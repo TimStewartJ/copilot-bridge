@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -459,6 +459,16 @@ function createStagingPreviewTestApp(mod: StagingToolsModule) {
 
   return app;
 }
+
+beforeEach(() => {
+  // Validation log writes are intercepted through the node:fs mock above, but the
+  // retention sweep they trigger uses node:fs/promises. Point every writer and
+  // sweep at a temp directory so no test can touch the real validation log dir.
+  vi.stubEnv(
+    "BRIDGE_VALIDATION_LOG_DIR",
+    join(createTempDir("bridge-staging-validation-"), "data", "validation-logs"),
+  );
+});
 
 afterEach(() => {
   rmSyncThrowDirs.clear();

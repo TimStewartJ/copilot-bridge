@@ -70,6 +70,28 @@ function wait(ms: number): Promise<void> {
   });
 }
 
+/**
+ * Keeps management job rows and their logs bounded in long-lived runner
+ * processes. Skipped when the loop is stepping aside for a restart so retention
+ * never delays a deploy cutover — the restarted server sweeps at startup.
+ */
+async function pruneManagementJobArtifacts(
+  store: ManagementJobStore,
+  log: (message: string) => void,
+): Promise<void> {
+  try {
+    const result = await store.pruneRetention();
+    if (result.deletedJobIds.length > 0 || result.deletedLogPaths.length > 0) {
+      log(
+        `Pruned ${result.deletedJobIds.length} old job row(s) `
+        + `and ${result.deletedLogPaths.length} log file(s)`,
+      );
+    }
+  } catch (error) {
+    log(`Retention prune failed: ${formatError(error)}`);
+  }
+}
+
 export async function runClaimedManagementJob(
   store: ManagementJobStore,
   job: ManagementJob,
@@ -123,6 +145,7 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
       log(`Stopping after ${job.type} job so the launcher can respawn the runner on fresh code`);
       break;
     }
+    await pruneManagementJobArtifacts(options.store, log);
   }
   log("Runner stopping");
 }

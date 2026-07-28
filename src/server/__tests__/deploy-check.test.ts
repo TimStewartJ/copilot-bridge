@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
 import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeTestDir } from "./helpers.js";
+import { normalizePath } from "./test-paths.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const captureProcessIdentityMock = vi.hoisted(() => vi.fn(async (pid: number) => ({
@@ -41,6 +43,11 @@ const tempDirs: string[] = [];
 function createTempDir(): string {
   const dir = makeTestDir("deploy-check");
   tempDirs.push(dir);
+  // Deploy-check resolves its log directory from the control root, which a running
+  // Bridge exports into the environment — mocking process.cwd() alone is not enough.
+  // Pin the log directory to this temp dir so tests never write to, or prune, the
+  // real validation log directory.
+  vi.stubEnv("BRIDGE_VALIDATION_LOG_DIR", join(dir, "data", "validation-logs"));
   return dir;
 }
 
@@ -143,6 +150,7 @@ describe("deploy check contract", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0].logPath).toContain("validation-logs");
+    expect(normalizePath(results[0].logPath).startsWith(normalizePath(cwd))).toBe(true);
     expect(readFileSync(results[0].logPath, "utf-8")).toBe("pr ok\n");
     expect(spawnMock).toHaveBeenCalledWith(
       process.platform === "win32" ? "npm.cmd" : "npm",
