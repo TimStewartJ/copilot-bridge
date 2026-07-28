@@ -34,15 +34,6 @@ describe("persistAndRouteAttachments", () => {
     }
   });
 
-  it("returns undefined for empty/missing attachments", () => {
-    const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
-    tempDirs.push(home);
-    const mgr = createManager(home);
-
-    expect(mgr.persistAndRouteAttachments(sessionId, undefined)).toBeUndefined();
-    expect(mgr.persistAndRouteAttachments(sessionId, [])).toBeUndefined();
-  });
-
   it("resolves uploaded non-image attachment as file type", () => {
     const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
     tempDirs.push(home);

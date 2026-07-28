@@ -128,48 +128,52 @@ describe("SessionManager SDK-owned elicitation", () => {
     expect(tryRespondToElicitation).not.toHaveBeenCalled();
   });
 
-  it("maps first-responder races to the stale request contract", async () => {
-    const { manager, tryRespondToElicitation } = createManager([pendingRequest()]);
-    tryRespondToElicitation.mockResolvedValueOnce(false);
+  it("maps first-responder races, hydrates reconnect snapshots, and surfaces unsupported backends", async () => {
+    // maps first-responder races to the stale request contract
+    {
+      const { manager, tryRespondToElicitation } = createManager([pendingRequest()]);
+      tryRespondToElicitation.mockResolvedValueOnce(false);
 
-    await expect(manager.submitElicitationResponse("session-1", "el-request", {
-      action: "cancel",
-    })).rejects.toMatchObject({
-      code: "request_not_found",
-      statusCode: 404,
-    } satisfies Partial<PendingInteractionError>);
+      await expect(manager.submitElicitationResponse("session-1", "el-request", {
+        action: "cancel",
+      })).rejects.toMatchObject({
+        code: "request_not_found",
+        statusCode: 404,
+      } satisfies Partial<PendingInteractionError>);
+    }
+
+    // hydrates reconnect snapshots from the SDK-owned pending store
+    {
+      const { manager } = createManager([pendingRequest()]);
+
+      await expect(manager.getPendingInteractionSnapshot("session-1")).resolves.toEqual({
+        pendingUserInputs: [],
+        pendingElicitations: [{
+          requestId: "el-request",
+          message: "Configure deployment",
+          mode: "form",
+          elicitationSource: "deployment-mcp",
+          requestedSchema: pendingRequest().request.requestedSchema,
+        }],
+      });
+    }
+
+    // surfaces unsupported backends clearly
+    {
+      const { manager } = createManager([pendingRequest()]);
+      (Reflect.get(manager, "sessionObjects") as Map<string, AgentSession>).set("session-1", {
+        sessionId: "session-1",
+      } as AgentSession);
+
+      await expect(manager.submitElicitationResponse("session-1", "el-request", {
+        action: "cancel",
+      })).rejects.toMatchObject({
+        code: "unsupported",
+        statusCode: 501,
+        message: "Pending elicitation is not supported by this agent backend",
+      } satisfies Partial<PendingInteractionError>);
+    }
   });
-
-  it("hydrates reconnect snapshots from the SDK-owned pending store", async () => {
-    const { manager } = createManager([pendingRequest()]);
-
-    await expect(manager.getPendingInteractionSnapshot("session-1")).resolves.toEqual({
-      pendingUserInputs: [],
-      pendingElicitations: [{
-        requestId: "el-request",
-        message: "Configure deployment",
-        mode: "form",
-        elicitationSource: "deployment-mcp",
-        requestedSchema: pendingRequest().request.requestedSchema,
-      }],
-    });
-  });
-
-  it("surfaces unsupported backends clearly", async () => {
-    const { manager } = createManager([pendingRequest()]);
-    (Reflect.get(manager, "sessionObjects") as Map<string, AgentSession>).set("session-1", {
-      sessionId: "session-1",
-    } as AgentSession);
-
-    await expect(manager.submitElicitationResponse("session-1", "el-request", {
-      action: "cancel",
-    })).rejects.toMatchObject({
-      code: "unsupported",
-      statusCode: 501,
-      message: "Pending elicitation is not supported by this agent backend",
-    } satisfies Partial<PendingInteractionError>);
-  });
-
   it("cancels requests the runtime still holds when a run ends", async () => {
     const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
 

@@ -153,13 +153,10 @@ describe("serializeSettingsPatch", () => {
     });
   });
 
-  it("preserves explicit reasoning effort clears", () => {
-    expect(serializeSettingsPatch({ reasoningEffort: undefined })).toBe(
-      JSON.stringify({ reasoningEffort: "" }),
-    );
-  });
-
-  it("leaves other setting updates unchanged", () => {
+  it("preserves explicit clears and leaves other updates unchanged", () => {
+    // undefined values for model/reasoningEffort are serialized as empty strings to signal clear intent
+    expect(serializeSettingsPatch({ model: undefined })).toBe(JSON.stringify({ model: "" }));
+    expect(serializeSettingsPatch({ reasoningEffort: undefined })).toBe(JSON.stringify({ reasoningEffort: "" }));
     expect(serializeSettingsPatch({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" })).toBe(
       JSON.stringify({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" }),
     );

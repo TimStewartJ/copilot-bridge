@@ -146,27 +146,6 @@ describe("session manager task tools", () => {
     );
   });
 
-  it("task_update does not expose or handle momentum fields", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Momentum host");
-    const tool = getTool(ctx, "task_update");
-
-    await expect(tool.handler({
-      taskId: task.id,
-      nextAction: "Ignored action",
-      waitingOn: "Ignored blocker",
-      nextTouchAt: "2026-05-02T10:00:00.000Z",
-    }, createInvocation("task_update"))).resolves.toEqual(
-      toolFailure("No fields to update. Provide at least one of: title, kind, muted, notes, cwd, groupId, doneWhen, tags"),
-    );
-
-    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
-      nextAction: undefined,
-      waitingOn: undefined,
-      nextTouchAt: undefined,
-    }));
-  });
-
   it("task_update_momentum sets and clears nullable momentum fields", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum host");

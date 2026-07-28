@@ -8,80 +8,39 @@ import {
 } from "./voice-accepted-flash";
 
 describe("voice accepted flash helpers", () => {
-  it("flashes when an uploading job becomes accepted in the same composer", () => {
+  it("flashes for upload→accepted transitions in same or remapped composer, not for recovered jobs", () => {
+    // same composer: uploading → accepted → flash
     expect(shouldFlashAcceptedStatus(
-      {
-        composerKey: "session-1",
-        status: "uploading",
-        serverOwned: true,
-        originComposerKey: "session-1",
-      },
-      {
-        composerKey: "session-1",
-        status: "accepted",
-        serverOwned: true,
-        serverJobId: "job-1",
-        originComposerKey: "session-1",
-      },
+      { composerKey: "session-1", status: "uploading", serverOwned: true, originComposerKey: "session-1" },
+      { composerKey: "session-1", status: "accepted", serverOwned: true, serverJobId: "job-1", originComposerKey: "session-1" },
     )).toBe(true);
-  });
 
-  it("flashes when a draft upload is remapped into its target session", () => {
+    // draft remapped to target session → flash
     expect(shouldFlashAcceptedStatus(
-      {
-        composerKey: "draft:task-1",
-        status: "uploading",
-        serverOwned: true,
-        originComposerKey: "draft:task-1",
-      },
-      {
-        composerKey: "session-2",
-        status: "accepted",
-        serverOwned: true,
-        serverJobId: "job-2",
-        originComposerKey: "draft:task-1",
-      },
+      { composerKey: "draft:task-1", status: "uploading", serverOwned: true, originComposerKey: "draft:task-1" },
+      { composerKey: "session-2", status: "accepted", serverOwned: true, serverJobId: "job-2", originComposerKey: "draft:task-1" },
     )).toBe(true);
-  });
 
-  it("does not flash for recovered accepted jobs without a local upload transition", () => {
+    // no previous local job (recovered accepted) → no flash
     expect(shouldFlashAcceptedStatus(
       null,
-      {
-        composerKey: "session-1",
-        status: "accepted",
-        serverOwned: true,
-        serverJobId: "job-1",
-        originComposerKey: "session-1",
-      },
+      { composerKey: "session-1", status: "accepted", serverOwned: true, serverJobId: "job-1", originComposerKey: "session-1" },
     )).toBe(false);
   });
 
-  it("flashes after a draft-to-session handoff when the first visible state is already transcribing", () => {
+  it("flashes after a draft-to-session handoff when the first visible state is already transcribing, not for unrelated session changes", () => {
+    // draft origin → target session with transcribing job → flash
     expect(shouldFlashAcceptedHandoff(
       "draft:quickchat",
       "session-1",
-      {
-        composerKey: "session-1",
-        status: "transcribing",
-        serverOwned: true,
-        serverJobId: "job-1",
-        originComposerKey: "draft:quickchat",
-      },
+      { composerKey: "session-1", status: "transcribing", serverOwned: true, serverJobId: "job-1", originComposerKey: "draft:quickchat" },
     )).toBe(true);
-  });
 
-  it("does not flash for unrelated session changes", () => {
+    // unrelated session change → no flash
     expect(shouldFlashAcceptedHandoff(
       "session-1",
       "session-2",
-      {
-        composerKey: "session-2",
-        status: "transcribing",
-        serverOwned: true,
-        serverJobId: "job-1",
-        originComposerKey: "draft:quickchat",
-      },
+      { composerKey: "session-2", status: "transcribing", serverOwned: true, serverJobId: "job-1", originComposerKey: "draft:quickchat" },
     )).toBe(false);
   });
 

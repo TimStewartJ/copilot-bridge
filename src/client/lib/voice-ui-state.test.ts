@@ -15,116 +15,56 @@ const baseState = {
 };
 
 describe("deriveVoiceUiState", () => {
-  it("shows immediate feedback while starting and finishing the recorder", () => {
-    expect(deriveVoiceUiState({
-      ...baseState,
-      recorderPhase: "starting",
-    })).toMatchObject({
-      buttonState: "spinner",
-      buttonDisabled: true,
-      message: "Starting mic…",
-      tone: "accent",
+  it("derives button state and message across recorder and server job phases", () => {
+    // starting/finishing → spinner + disabled
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "starting" })).toMatchObject({
+      buttonState: "spinner", buttonDisabled: true, message: "Starting mic…", tone: "accent",
+    });
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "finishing" })).toMatchObject({
+      buttonState: "spinner", buttonDisabled: true, message: "Finishing…", tone: "accent",
     });
 
-    expect(deriveVoiceUiState({
-      ...baseState,
-      recorderPhase: "finishing",
-    })).toMatchObject({
-      buttonState: "spinner",
-      buttonDisabled: true,
-      message: "Finishing…",
-      tone: "accent",
+    // recording — message differs by auto-send eligibility
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", canAutoSendStoppedRecording: true })).toMatchObject({
+      buttonState: "stop", buttonDisabled: false, message: "Recording… stop to send.", tone: "accent",
     });
-  });
-
-  it("keeps the recording prompt concise and mode-aware", () => {
-    expect(deriveVoiceUiState({
-      ...baseState,
-      recorderPhase: "recording",
-      canAutoSendStoppedRecording: true,
-    })).toMatchObject({
-      buttonState: "stop",
-      buttonDisabled: false,
-      message: "Recording… stop to send.",
-      tone: "accent",
-    });
-
-    expect(deriveVoiceUiState({
-      ...baseState,
-      recorderPhase: "recording",
-      canAutoSendStoppedRecording: false,
-    })).toMatchObject({
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", canAutoSendStoppedRecording: false })).toMatchObject({
       message: "Recording… stop to transcribe.",
     });
-  });
 
-  it("distinguishes uploading from accepted and server processing states", () => {
-    expect(deriveVoiceUiState({
-      ...baseState,
-      activeVoiceJob: { status: "uploading", submitMode: "autosend", serverOwned: true },
-    })).toMatchObject({
-      message: "Uploading… stay here.",
-      buttonTitle: "Uploading voice audio",
+    // server job phases
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: { status: "uploading", submitMode: "autosend", serverOwned: true } })).toMatchObject({
+      message: "Uploading… stay here.", buttonTitle: "Uploading voice audio",
     });
-
-    expect(deriveVoiceUiState({
-      ...baseState,
-      activeVoiceJob: { status: "accepted", submitMode: "autosend", serverOwned: true },
-    })).toMatchObject({
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: { status: "accepted", submitMode: "autosend", serverOwned: true } })).toMatchObject({
       message: "Uploaded. Transcribing…",
     });
-
-    expect(deriveVoiceUiState({
-      ...baseState,
-      activeVoiceJob: { status: "transcribing", submitMode: "autosend", serverOwned: true },
-    })).toMatchObject({
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: { status: "transcribing", submitMode: "autosend", serverOwned: true } })).toMatchObject({
       message: "Uploaded. Transcribing…",
     });
-
-    expect(deriveVoiceUiState({
-      ...baseState,
-      activeVoiceJob: { status: "sending", submitMode: "autosend", serverOwned: true },
-    })).toMatchObject({
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: { status: "sending", submitMode: "autosend", serverOwned: true } })).toMatchObject({
       message: "Uploaded. Sending…",
     });
-  });
 
-  it("shows a temporary green accepted confirmation ahead of later server states", () => {
-    expect(deriveVoiceUiState({
-      ...baseState,
-      showAcceptedConfirmation: true,
-      activeVoiceJob: { status: "transcribing", submitMode: "autosend", serverOwned: true },
-    })).toMatchObject({
-      message: "Upload accepted. Safe to leave.",
-      tone: "success",
+    // accepted confirmation flash takes priority over later server state
+    expect(deriveVoiceUiState({ ...baseState, showAcceptedConfirmation: true, activeVoiceJob: { status: "transcribing", submitMode: "autosend", serverOwned: true } })).toMatchObject({
+      message: "Upload accepted. Safe to leave.", tone: "success",
     });
   });
 
-  it("falls back to local transcription copy for insert mode", () => {
-    expect(deriveVoiceUiState({
-      ...baseState,
-      activeVoiceJob: { status: "transcribing", submitMode: "insert" },
-    })).toMatchObject({
-      message: "Transcribing…",
-      tone: "accent",
-    });
-  });
-
-  it("surfaces error states ahead of idle status messages", () => {
-    expect(deriveVoiceUiState({
-      ...baseState,
-      voiceJobError: "Upload failed",
-      statusError: "stale status error",
-    })).toMatchObject({
-      message: "Upload failed",
-      tone: "error",
+  it("falls back to local transcription copy for insert mode and surfaces errors ahead of idle", () => {
+    // insert mode → local transcription label
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: { status: "transcribing", submitMode: "insert" } })).toMatchObject({
+      message: "Transcribing…", tone: "accent",
     });
 
-    expect(deriveVoiceUiState({
-      ...baseState,
-      statusError: "Whisper unavailable",
-      statusAvailable: false,
-    })).toMatchObject({
+    // job error takes priority over status error
+    expect(deriveVoiceUiState({ ...baseState, voiceJobError: "Upload failed", statusError: "stale status error" })).toMatchObject({
+      message: "Upload failed", tone: "error",
+    });
+
+    // status error with unavailable status
+    expect(deriveVoiceUiState({ ...baseState, statusError: "Whisper unavailable", statusAvailable: false })).toMatchObject({
       message: "Voice status check failed. Click the mic to retry. (Whisper unavailable)",
       tone: "error",
       showButton: true,

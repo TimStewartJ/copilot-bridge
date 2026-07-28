@@ -19,7 +19,8 @@ describe("cross-platform test audit", () => {
     rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("reports known Unix-only bridge test patterns", () => {
+  it("reports known Unix-only bridge test patterns and formats results with file paths", () => {
+    // Standard test file with violations
     writeFileSync(
       join(srcDir, "bad.test.ts"),
       [
@@ -30,19 +31,19 @@ describe("cross-platform test audit", () => {
       ].join("\n"),
     );
 
-    const result = auditCrossPlatformTests(rootDir);
+    const result1 = auditCrossPlatformTests(rootDir);
 
-    expect(result.scannedFiles).toBe(1);
-    expect(result.violations.map((violation) => violation.ruleId)).toEqual([
+    expect(result1.scannedFiles).toBe(1);
+    expect(result1.violations.map((violation) => violation.ruleId)).toEqual([
       "unix-temp-path",
       "unix-bin-path",
       "windows-skip",
       "unix-chmod",
     ]);
-    expect(formatCrossPlatformAuditResult(result)).toContain("bad.test.ts:3");
-  });
+    expect(formatCrossPlatformAuditResult(result1)).toContain("bad.test.ts:3");
 
-  it("scans helper modules under __tests__ and ignores comment-only matches", () => {
+    // Helper modules under __tests__ are scanned; comment-only matches are ignored
+    rmSync(join(srcDir, "bad.test.ts"));
     const helperDir = join(srcDir, "server", "__tests__");
     mkdirSync(helperDir, { recursive: true });
     writeFileSync(
@@ -53,11 +54,11 @@ describe("cross-platform test audit", () => {
       ].join("\n"),
     );
 
-    const result = auditCrossPlatformTests(rootDir);
+    const result2 = auditCrossPlatformTests(rootDir);
 
-    expect(result.scannedFiles).toBe(1);
-    expect(result.violations.map((violation) => violation.ruleId)).toEqual(["unix-temp-path"]);
-    expect(formatCrossPlatformAuditResult(result)).toContain("server/__tests__/helper.ts:2");
+    expect(result2.scannedFiles).toBe(1);
+    expect(result2.violations.map((violation) => violation.ruleId)).toEqual(["unix-temp-path"]);
+    expect(formatCrossPlatformAuditResult(result2)).toContain("server/__tests__/helper.ts:2");
   });
 
   it("ignores non-test files, portable helper usage, and suppressed fixture lines", () => {

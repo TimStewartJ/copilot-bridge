@@ -359,79 +359,47 @@ describe("DashboardFeed feed mutations", () => {
     expect(onRefetchFeed).toHaveBeenCalledTimes(2);
   });
 
-  it("anchors the scroll position to the next card when marking a card done", async () => {
-    setPointerType("coarse");
-    let resolvePatch!: (card: FeedCardData) => void;
-    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
-      resolvePatch = resolve;
-    }));
-    await renderDashboardFeed({
-      feedCards: [
-        makeCard({ id: "card-1", title: "First card" }),
-        makeCard({ id: "card-2", title: "Second card" }),
-      ],
-    });
-    const container = dom!.container as any;
-    setScrollContainerGeometry(container, {
-      scrollTop: 300,
-      scrollHeight: 1_200,
-      clientHeight: 400,
-      top: 100,
-    });
-    const nextCard = findFeedCardElement(container, "card-2");
-    expect(nextCard).toBeTruthy();
-    // Anchor card sits at 200 before the resolve and shifts up to 100 after it.
-    setElementTopSequence(nextCard, [200, 100]);
+  it("anchors the scroll position to the next card when marking a card done or dismissing", async () => {
+    for (const [buttonLabel, resolvedStatus] of [
+      ["Mark done", "done"],
+      ["Dismiss", "dismissed"],
+    ] as const) {
+      setPointerType("coarse");
+      let resolvePatch!: (card: FeedCardData) => void;
+      apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
+        resolvePatch = resolve;
+      }));
+      await renderDashboardFeed({
+        feedCards: [
+          makeCard({ id: "card-1", title: "First card" }),
+          makeCard({ id: "card-2", title: "Second card" }),
+        ],
+      });
+      const container = dom!.container as any;
+      setScrollContainerGeometry(container, {
+        scrollTop: 300,
+        scrollHeight: 1_200,
+        clientHeight: 400,
+        top: 100,
+      });
+      const nextCard = findFeedCardElement(container, "card-2");
+      expect(nextCard, `case: ${buttonLabel}`).toBeTruthy();
+      // Anchor card sits at 200 before the resolve and shifts up to 100 after it.
+      setElementTopSequence(nextCard, [200, 100]);
 
-    await act(async () => {
-      clickButton(findButtonByLabel(container, "Mark done"));
-      await waitTick();
-    });
+      await act(async () => {
+        clickButton(findButtonByLabel(container, buttonLabel));
+        await waitTick();
+      });
 
-    await waitUntilAct(() => container.scrollTop === 200);
-    expect(container.scrollTo).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
+      await waitUntilAct(() => container.scrollTop === 200);
+      expect(container.scrollTo, `case: ${buttonLabel}`).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
 
-    await act(async () => {
-      resolvePatch(makeCard({ id: "card-1", status: "done" }));
-      await waitTick();
-    });
-  });
-
-  it("anchors the scroll position to the next card when dismissing a card", async () => {
-    setPointerType("coarse");
-    let resolvePatch!: (card: FeedCardData) => void;
-    apiMocks.patchFeedCard.mockImplementationOnce(() => new Promise((resolve) => {
-      resolvePatch = resolve;
-    }));
-    await renderDashboardFeed({
-      feedCards: [
-        makeCard({ id: "card-1", title: "First card" }),
-        makeCard({ id: "card-2", title: "Second card" }),
-      ],
-    });
-    const container = dom!.container as any;
-    setScrollContainerGeometry(container, {
-      scrollTop: 300,
-      scrollHeight: 1_200,
-      clientHeight: 400,
-      top: 100,
-    });
-    const nextCard = findFeedCardElement(container, "card-2");
-    expect(nextCard).toBeTruthy();
-    setElementTopSequence(nextCard, [200, 100]);
-
-    await act(async () => {
-      clickButton(findButtonByLabel(container, "Dismiss"));
-      await waitTick();
-    });
-
-    await waitUntilAct(() => container.scrollTop === 200);
-    expect(container.scrollTo).toHaveBeenCalledWith({ top: 200, behavior: "auto" });
-
-    await act(async () => {
-      resolvePatch(makeCard({ id: "card-1", status: "dismissed" }));
-      await waitTick();
-    });
+      await act(async () => {
+        resolvePatch(makeCard({ id: "card-1", status: resolvedStatus }));
+        await waitTick();
+      });
+    }
   });
 
   it("does not adjust the scroll when the anchor card has not moved", async () => {

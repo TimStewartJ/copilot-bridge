@@ -37,25 +37,25 @@ afterEach(() => {
 });
 
 describe("sweepStaleRestartStateTempFiles", () => {
-  it("removes orphaned temp files older than the age threshold", () => {
-    const dataDir = freshDataDir();
-    const old1 = writeTempArtifact(dataDir, "aaaaaaaa", 120_000);
-    const old2 = writeTempArtifact(dataDir, "bbbbbbbb", 120_000);
+  it("removes orphaned temp files older than the age threshold but never deletes fresh in-flight temps", () => {
+    // Stale temps are removed
+    const dataDir1 = freshDataDir();
+    const old1 = writeTempArtifact(dataDir1, "aaaaaaaa", 120_000);
+    const old2 = writeTempArtifact(dataDir1, "bbbbbbbb", 120_000);
 
-    const removed = sweepStaleRestartStateTempFiles(stateFile(dataDir));
+    const removed = sweepStaleRestartStateTempFiles(stateFile(dataDir1));
 
     expect(removed).toBe(2);
     expect(() => rmSync(old1)).toThrow();
     expect(() => rmSync(old2)).toThrow();
-  });
 
-  it("never deletes a fresh in-flight temp (age guard)", () => {
-    const dataDir = freshDataDir();
-    const fresh = writeTempArtifact(dataDir, "cccccccc", 0);
+    // Fresh temp is preserved (age guard)
+    const dataDir2 = freshDataDir();
+    const fresh = writeTempArtifact(dataDir2, "cccccccc", 0);
 
-    const removed = sweepStaleRestartStateTempFiles(stateFile(dataDir));
+    const removedFresh = sweepStaleRestartStateTempFiles(stateFile(dataDir2));
 
-    expect(removed).toBe(0);
+    expect(removedFresh).toBe(0);
     // Still present — removable without throwing.
     expect(() => rmSync(fresh)).not.toThrow();
   });
@@ -88,31 +88,27 @@ describe("isRestartAlreadyInFlight", () => {
     expect(isRestartAlreadyInFlight(dataDir)).toBe(false);
   });
 
-  it("returns true when the queued restart signal file is present", () => {
-    const dataDir = freshDataDir();
-    writeFileSync(join(dataDir, "restart.signal"), "{}", "utf8");
-    expect(isRestartAlreadyInFlight(dataDir)).toBe(true);
+  it("returns true when the queued restart signal file or the in-progress marker is present", () => {
+    const dataDir1 = freshDataDir();
+    writeFileSync(join(dataDir1, "restart.signal"), "{}", "utf8");
+    expect(isRestartAlreadyInFlight(dataDir1), "signal file").toBe(true);
+
+    const dataDir2 = freshDataDir();
+    writeFileSync(join(dataDir2, "restart-in-progress.json"), "{}", "utf8");
+    expect(isRestartAlreadyInFlight(dataDir2), "in-progress file").toBe(true);
   });
 
-  it("returns true when the in-progress marker is present", () => {
-    const dataDir = freshDataDir();
-    writeFileSync(join(dataDir, "restart-in-progress.json"), "{}", "utf8");
-    expect(isRestartAlreadyInFlight(dataDir)).toBe(true);
-  });
-
-  it("returns true when restart-state.json reports a non-idle phase", () => {
-    const dataDir = freshDataDir();
+  it("returns true for non-idle restart-state.json and false for idle", () => {
+    const dataDir1 = freshDataDir();
     writeFileSync(
-      stateFile(dataDir),
+      stateFile(dataDir1),
       JSON.stringify({ phase: "queued", requestId: "r1", waitingSessions: 0 }),
       "utf8",
     );
-    expect(isRestartAlreadyInFlight(dataDir)).toBe(true);
-  });
+    expect(isRestartAlreadyInFlight(dataDir1), "queued phase").toBe(true);
 
-  it("returns false when restart-state.json reports idle", () => {
-    const dataDir = freshDataDir();
-    writeFileSync(stateFile(dataDir), JSON.stringify({ phase: "idle" }), "utf8");
-    expect(isRestartAlreadyInFlight(dataDir)).toBe(false);
+    const dataDir2 = freshDataDir();
+    writeFileSync(stateFile(dataDir2), JSON.stringify({ phase: "idle" }), "utf8");
+    expect(isRestartAlreadyInFlight(dataDir2), "idle phase").toBe(false);
   });
 });

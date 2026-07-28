@@ -72,25 +72,17 @@ describe("voice job map helpers", () => {
     });
   });
 
-  it("blocks stale draft remaps once the reused draft key has new local content", () => {
+  it("allows or blocks draft remaps based on ownership, empty draft, and content state", () => {
+    // reused draft key has new local content → block
     expect(shouldHandleDraftVoiceTarget(undefined, "job-1", null, false, true)).toBe(false);
-  });
 
-  it("allows draft remaps while the local upload still belongs to the same server job", () => {
+    // local upload belongs to same server job → allow
     expect(shouldHandleDraftVoiceTarget(
-      createJob({
-        composerKey: "draft:quickchat",
-        status: "uploading",
-        submitMode: "autosend",
-      }),
-      "job-1",
-      "job-1",
-      false,
-      false,
+      createJob({ composerKey: "draft:quickchat", status: "uploading", submitMode: "autosend" }),
+      "job-1", "job-1", false, false,
     )).toBe(true);
-  });
 
-  it("allows trusted draft recovery when the draft is still empty", () => {
+    // trusted draft recovery when draft is still empty → allow
     expect(shouldHandleDraftVoiceTarget(undefined, "job-1", null, true, false)).toBe(true);
   });
 

@@ -32,17 +32,10 @@ function createTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe("getFollowUpState", () => {
-  const now = new Date("2026-05-01T12:00:00.000Z");
-
-  it("treats future follow-ups as upcoming even later the same day", () => {
+  it("classifies follow-ups as upcoming, due, or overdue relative to now", () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
     expect(getFollowUpState("2026-05-01T13:00:00.000Z", now)).toBe("upcoming");
-  });
-
-  it("treats past-due follow-ups from today as due", () => {
     expect(getFollowUpState("2026-05-01T11:00:00.000Z", now)).toBe("due");
-  });
-
-  it("treats prior-day follow-ups as overdue", () => {
     expect(getFollowUpState("2026-04-30T23:00:00.000Z", now)).toBe("overdue");
   });
 });
@@ -63,41 +56,25 @@ describe("follow-up datetime conversions", () => {
 });
 
 describe("getPanelFieldTone", () => {
-  const now = new Date("2026-05-01T12:00");
-
-  it("uses warning tone for same-day passed follow-ups", () => {
+  it("tones follow-up fields by urgency and leaves other fields neutral", () => {
+    const now = new Date("2026-05-01T12:00");
     expect(getPanelFieldTone("nextTouchAt", "2026-05-01T11:00", now)).toBe("warning");
-  });
-
-  it("uses danger tone for prior-day follow-ups", () => {
     expect(getPanelFieldTone("nextTouchAt", "2026-04-30T23:00", now)).toBe("danger");
-  });
-
-  it("keeps upcoming follow-ups neutral", () => {
     expect(getPanelFieldTone("nextTouchAt", "2026-05-01T13:00", now)).toBeNull();
-  });
-
-  it("keeps non-follow-up fields neutral", () => {
     expect(getPanelFieldTone("nextAction", "Ship preview polish", now)).toBeNull();
   });
 });
 
 describe("getVisibleMomentumFieldKeys", () => {
-  it("keeps doneWhen for normal tasks", () => {
+  it("keeps doneWhen for normal tasks and hides it for ongoing items", () => {
     expect(getVisibleMomentumFieldKeys("task")).toContain("doneWhen");
-  });
-
-  it("hides doneWhen for ongoing items", () => {
     expect(getVisibleMomentumFieldKeys("ongoing")).toEqual(["nextAction", "waitingOn", "nextTouchAt"]);
   });
 });
 
 describe("isExpandablePanelValue", () => {
-  it("keeps short values static", () => {
+  it("expands only long or multiline values", () => {
     expect(isExpandablePanelValue("Ship the preview")).toBe(false);
-  });
-
-  it("expands long values and multiline values", () => {
     expect(isExpandablePanelValue("x".repeat(97))).toBe(true);
     expect(isExpandablePanelValue("Line one\nLine two")).toBe(true);
   });

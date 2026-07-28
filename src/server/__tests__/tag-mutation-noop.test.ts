@@ -72,34 +72,25 @@ describe("tag mutations reject silent no-ops", () => {
 });
 
 describe("tag tools mirror the REST no-op rules", () => {
-  it("tag_update fails on an invalid colour without evicting", async () => {
-    const tag = ctx.tagStore!.createTag("release", "blue");
+  it("tag tool operations: invalid colour fails, colour-only change does not evict, missing tag delete fails", async () => {
     const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
 
-    const result = await toolHandler("tag_update")({ tagId: tag.id, color: "chartreuse" });
-
-    expect(result).toMatchObject({ resultType: "failure" });
-    expect(ctx.tagStore!.getTag(tag.id)!.color).toBe("blue");
-    expect(evict).not.toHaveBeenCalled();
-  });
-
-  it("tag_update does not evict for a colour-only change", async () => {
+    // tag_update fails on an invalid colour without evicting
     const tag = ctx.tagStore!.createTag("release", "blue");
-    const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
+    const invalidResult = await toolHandler("tag_update")({ tagId: tag.id, color: "chartreuse" });
+    expect(invalidResult, "invalid colour").toMatchObject({ resultType: "failure" });
+    expect(ctx.tagStore!.getTag(tag.id)!.color, "colour unchanged").toBe("blue");
+    expect(evict, "no evict on invalid colour").not.toHaveBeenCalled();
 
+    // tag_update does not evict for a colour-only change
     await toolHandler("tag_update")({ tagId: tag.id, color: "amber" });
+    expect(ctx.tagStore!.getTag(tag.id)!.color, "colour updated").toBe("amber");
+    expect(evict, "no evict for colour-only").not.toHaveBeenCalled();
 
-    expect(ctx.tagStore!.getTag(tag.id)!.color).toBe("amber");
-    expect(evict).not.toHaveBeenCalled();
-  });
-
-  it("tag_delete fails without evicting when the tag is missing", async () => {
-    const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
-
-    const result = await toolHandler("tag_delete")({ tagId: "missing-tag-id" });
-
-    expect(result).toMatchObject({ resultType: "failure" });
-    expect(evict).not.toHaveBeenCalled();
+    // tag_delete fails without evicting when the tag is missing
+    const deleteResult = await toolHandler("tag_delete")({ tagId: "missing-tag-id" });
+    expect(deleteResult, "missing tag delete").toMatchObject({ resultType: "failure" });
+    expect(evict, "no evict on missing delete").not.toHaveBeenCalled();
   });
 });
 

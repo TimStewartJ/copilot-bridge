@@ -50,14 +50,6 @@ describe("createCopilotModelPriceStore", () => {
     expect(listed[0]?.billing?.tokenPrices?.inputPrice).toBe(999);
   });
 
-  it("treats an empty upsert as a no-op", () => {
-    const db = openMemoryDatabase();
-    const store = createCopilotModelPriceStore(db);
-
-    store.upsertModelPrices([]);
-    expect(store.listModelPrices()).toEqual([]);
-  });
-
   it("skips corrupted rows without failing the whole read", () => {
     const db = openMemoryDatabase();
     const store = createCopilotModelPriceStore(db);

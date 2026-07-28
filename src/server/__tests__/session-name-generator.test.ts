@@ -38,7 +38,9 @@ describe("session name generator helpers", () => {
     ] as any)).toBeUndefined();
   });
 
-  it("selects the cheapest small model from token price billing", () => {
+  it("selects cheapest and prefers free models from token price billing", () => {
+    // selects the cheapest small model
+    {
     const model = selectSessionTitleModel([
       { id: "auto" },
       { id: "aaa-mini-expensive", billing: { tokenPrices: { inputPrice: 200_000_000_000, outputPrice: 800_000_000_000, cachePrice: 20_000_000_000, batchSize: 1_000_000 } } },
@@ -49,9 +51,10 @@ describe("session name generator helpers", () => {
     ] as any);
 
     expect(model).toBe("gpt-5-mini");
-  });
+    }
 
-  it("preserves free-model preference with token price billing", () => {
+    // preserves free-model preference
+    {
     const model = selectSessionTitleModel([
       { id: "free-large", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
       { id: "free-haiku", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
@@ -59,8 +62,8 @@ describe("session name generator helpers", () => {
     ] as any);
 
     expect(model).toBe("free-haiku");
+    }
   });
-
   it("uses multiplier when both billing shapes are present", () => {
     const model = selectSessionTitleModel([
       { id: "mixed-free-looking-mini", billing: { multiplier: 1, tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
@@ -92,7 +95,9 @@ describe("session name generator helpers", () => {
     expect(model).toBe("enabled-mini");
   });
 
-  it("ignores token-price records without a positive batch size", () => {
+  it("ignores token-price records without a positive batch size or with only batch-less zero-price", () => {
+    // ignores token-price records without a positive batch size
+    {
     const model = selectSessionTitleModel([
       { id: "placeholder-mini", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 0 } } },
       { id: "placeholder-large", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0 } } },
@@ -100,14 +105,15 @@ describe("session name generator helpers", () => {
     ] as any);
 
     expect(model).toBe("real-mini");
-  });
+    }
 
-  it("does not select a model whose only billing is a batch-less zero-price record", () => {
+    // does not select a model whose only billing is a batch-less zero-price record
+    {
     expect(selectSessionTitleModel([
       { id: "placeholder-mini", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 0 } } },
     ] as any)).toBeUndefined();
+    }
   });
-
   it("uses only recent non-empty user messages in the title prompt", () => {
     const prompt = buildSessionTitleUserPrompt([
       "",

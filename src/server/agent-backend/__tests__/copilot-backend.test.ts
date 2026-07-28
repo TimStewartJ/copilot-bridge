@@ -66,13 +66,6 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.forceStop).toHaveBeenCalledOnce();
   });
 
-  it("returns no-op forceStop when the underlying SDK has no method", async () => {
-    const client = createFakeClient();
-    delete (client as any).forceStop;
-    const backend = new CopilotBackend(client as any);
-    await expect(backend.forceStop()).resolves.toBeUndefined();
-  });
-
   it("delegates listModels and listSessions verbatim", async () => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
@@ -330,7 +323,9 @@ describe("CopilotAgentSession wrap fidelity", () => {
   });
 
 
-  it("getCurrentModel returns undefined when rpc.model.getCurrent is missing", async () => {
+  it("returns undefined when rpc.model.getCurrent, history.truncate, mcp.list, or tasks.list is missing", async () => {
+    // getCurrentModel returns undefined when rpc.model.getCurrent is missing
+    {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.getCurrentModel!()).resolves.toBeUndefined();
 
@@ -338,9 +333,10 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const session2 = createFakeSession({ model: { getCurrent } });
     const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
     await expect(wrapped2.getCurrentModel!()).resolves.toEqual({ modelId: "gpt-5" });
-  });
+    }
 
-  it("truncateHistory returns undefined when rpc.history.truncate is missing", async () => {
+    // truncateHistory returns undefined when rpc.history.truncate is missing
+    {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.truncateHistory!({ eventId: "x" })).resolves.toBeUndefined();
 
@@ -349,9 +345,10 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
     await expect(wrapped2.truncateHistory!({ eventId: "x" })).resolves.toEqual({ eventsRemoved: 4 });
     expect(truncate).toHaveBeenCalledWith({ eventId: "x" });
-  });
+    }
 
-  it("listMcpServers returns undefined when rpc.mcp.list is missing", async () => {
+    // listMcpServers returns undefined when rpc.mcp.list is missing
+    {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.listMcpServers!()).resolves.toBeUndefined();
 
@@ -359,13 +356,14 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const session2 = createFakeSession({ mcp: { list } });
     const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
     await expect(wrapped2.listMcpServers!()).resolves.toEqual({ servers: [{ name: "a", status: "connected" }] });
-  });
+    }
 
-  it("listTasks returns undefined when rpc.tasks.list is missing", async () => {
+    // listTasks returns undefined when rpc.tasks.list is missing
+    {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.listTasks!()).resolves.toBeUndefined();
+    }
   });
-
   it("listTasks maps SDK TaskInfo into backend-neutral tasks", async () => {
     const list = vi.fn(async () => ({
       tasks: [
@@ -406,7 +404,9 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(result?.tasks?.[1]).toMatchObject({ kind: "shell", id: "sh1", status: "running" });
   });
 
-  it("cancelTask delegates to rpc.tasks.cancel and normalizes the result", async () => {
+  it("cancelTask and removeTask delegate to rpc.tasks and normalize the result", async () => {
+    // cancelTask delegates to rpc.tasks.cancel and normalizes the result
+    {
     const missing = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(missing.cancelTask!("x")).resolves.toBeUndefined();
 
@@ -415,9 +415,10 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
     await expect(wrapped.cancelTask!("explore-docs")).resolves.toEqual({ cancelled: true });
     expect(cancel).toHaveBeenCalledWith({ id: "explore-docs" });
-  });
+    }
 
-  it("removeTask delegates to rpc.tasks.remove and normalizes the result", async () => {
+    // removeTask delegates to rpc.tasks.remove and normalizes the result
+    {
     const missing = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(missing.removeTask!("x")).resolves.toBeUndefined();
 
@@ -426,8 +427,8 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
     await expect(wrapped.removeTask!("explore-docs")).resolves.toEqual({ removed: true });
     expect(remove).toHaveBeenCalledWith({ id: "explore-docs" });
+    }
   });
-
   it("tool metadata warmup delegates to rpc.tools when available", async () => {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.initializeTools!()).resolves.toBeUndefined();

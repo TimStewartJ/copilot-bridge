@@ -82,28 +82,22 @@ describe("SessionManager.setSessionModel", () => {
     clearRestartPending();
   });
 
-  it("calls setModel on a cached session and returns model info", async () => {
+  it("calls setModel on a cached session and returns model info, including reasoningEffort", async () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.5");
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
-    const result = await manager.setSessionModel("session-1", "gpt-5.5");
-
+    // without reasoningEffort
+    const result1 = await manager.setSessionModel("session-1", "gpt-5.5");
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", undefined);
-    expect(result).toEqual({ model: "gpt-5.5", modelId: "gpt-5.5" });
-  });
+    expect(result1).toEqual({ model: "gpt-5.5", modelId: "gpt-5.5" });
 
-  it("passes reasoningEffort to setModel", async () => {
-    const manager = createManager();
-    const session = createMockSession("gpt-5.5");
-    manager.backend = {};
-    manager.sessionObjects.set("session-1", session);
-
-    const result = await manager.setSessionModel("session-1", "claude-opus-4.7", "high");
-
+    // with reasoningEffort
+    session.setModel.mockClear();
+    const result2 = await manager.setSessionModel("session-1", "claude-opus-4.7", "high");
     expect(session.setModel).toHaveBeenCalledWith("claude-opus-4.7", { reasoningEffort: "high" });
-    expect(result).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
+    expect(result2).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
   });
 
   it("caps tiered models when selecting the default context tier", async () => {
@@ -414,16 +408,12 @@ describe("PATCH /api/sessions/:id/model route", () => {
     expect(res.body.error).toMatch(/model/i);
   });
 
-  it("returns 400 when model is empty string", async () => {
+  it("returns 400 when model is empty string or only whitespace", async () => {
     const { app } = createTestApp();
-    const res = await supertest(app).patch(`/api/sessions/${sessionId}/model`).send({ model: "" });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 400 when model is only whitespace", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app).patch(`/api/sessions/${sessionId}/model`).send({ model: "   " });
-    expect(res.status).toBe(400);
+    for (const model of ["", "   "]) {
+      const res = await supertest(app).patch(`/api/sessions/${sessionId}/model`).send({ model });
+      expect(res.status, `model=${JSON.stringify(model)}`).toBe(400);
+    }
   });
 
   it("returns 400 when reasoningEffort is not advertised by the SDK", async () => {

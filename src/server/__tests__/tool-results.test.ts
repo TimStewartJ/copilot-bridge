@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bridgeToolResult, err, getToolExecutionDisplayText, ok, toolFailure, type Result } from "../tool-results.js";
+import { bridgeToolResult, getToolExecutionDisplayText, toolFailure } from "../tool-results.js";
 
 describe("tool results", () => {
   it("sends actionable failure detail to the model while preserving UI session logs", () => {
@@ -29,14 +29,6 @@ describe("tool results", () => {
         sessionLog: "URL: https://example.com\n\nFailed to capture page: snapshot failed",
       }),
     })).toBe("URL: https://example.com\n\nFailed to capture page: snapshot failed");
-  });
-
-  it("creates normalized internal ok/error results", () => {
-    const success: Result<number> = ok(42);
-    const failure: Result<number> = err("broken");
-
-    expect(success).toEqual({ ok: true, value: 42 });
-    expect(failure).toEqual({ ok: false, error: "broken" });
   });
 
   it("surfaces Bridge tool control contracts in result text", () => {

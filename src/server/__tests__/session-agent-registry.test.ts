@@ -412,7 +412,9 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
-  it("clears heavy free-text fields on eviction while preserving counts/status", async () => {
+  it("clears heavy free-text fields on eviction and preserves freshness (live -> lastSeen)", async () => {
+    // clears heavy free-text fields while preserving counts/status
+    {
     const { bus } = makeBus();
     let session: AgentSession | undefined = fakeSession(async () => ({
       tasks: [
@@ -453,9 +455,10 @@ describe("SessionAgentRegistry", () => {
     expect(registry.getSummary("s1")).toMatchObject({ running: 1, idle: 1, total: 2 });
     expect(after.tasks.find((t) => t.id === "a")?.status).toBe("running");
     registry.dispose();
-  });
+    }
 
-  it("preserves freshness (live -> lastSeen) after clearing text on eviction", async () => {
+    // preserves freshness (live -> lastSeen) after clearing text on eviction
+    {
     const { bus } = makeBus();
     let session: AgentSession | undefined = fakeSession(async () => ({
       tasks: [agentTask({ id: "a", status: "idle", prompt: "p" })],
@@ -469,8 +472,8 @@ describe("SessionAgentRegistry", () => {
     vi.setSystemTime(61_000);
     expect(registry.getSummary("s1").source).toBe("lastSeen");
     registry.dispose();
+    }
   });
-
   it("does not repopulate heavy text when the session is evicted mid-refresh", async () => {
     const { bus, events } = makeBus();
     let resolveList!: (value: { tasks: AgentBackgroundTask[] }) => void;

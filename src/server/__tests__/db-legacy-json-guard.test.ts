@@ -5,45 +5,30 @@ import { openDatabase } from "../db.js";
 import { makeTestDir } from "./helpers.js";
 
 describe("legacy JSON state guard", () => {
-  it("refuses to create an empty database when legacy JSON state exists", () => {
-    const dataDir = makeTestDir("legacy-json-guard");
-    writeFileSync(join(dataDir, "tasks.json"), JSON.stringify([{ id: "task-1" }]));
+  // Opening an empty database next to populated legacy JSON would silently discard
+  // the user's pre-migration state, so every such combination must throw.
+  it("refuses to open an empty database whenever legacy JSON still holds state", () => {
+    const cases: { label: string; json: string; preCreateDb: boolean }[] = [
+      { label: "populated JSON, no database yet", json: JSON.stringify([{ id: "task-1" }]), preCreateDb: false },
+      { label: "populated JSON, empty database exists", json: JSON.stringify([{ id: "task-1" }]), preCreateDb: true },
+      { label: "malformed JSON, no database yet", json: "[", preCreateDb: false },
+      { label: "malformed JSON, empty database exists", json: "[", preCreateDb: true },
+    ];
 
-    expect(() => openDatabase(dataDir)).toThrow(/legacy JSON state files contain data/);
-    expect(existsSync(join(dataDir, "bridge.db"))).toBe(false);
+    for (const { label, json, preCreateDb } of cases) {
+      const dataDir = makeTestDir(`legacy-json-${label.replace(/[^a-z]+/gi, "-")}`);
+      if (preCreateDb) openDatabase(dataDir).close();
+      writeFileSync(join(dataDir, "tasks.json"), json);
+
+      expect(() => openDatabase(dataDir), label).toThrow(/legacy JSON state files contain data/);
+      expect(existsSync(join(dataDir, "bridge.db")), label).toBe(preCreateDb);
+    }
   });
 
-  it("refuses to use an empty existing database when legacy JSON state exists", () => {
-    const dataDir = makeTestDir("legacy-json-empty-db");
-    const db = openDatabase(dataDir);
-    db.close();
-    writeFileSync(join(dataDir, "tasks.json"), JSON.stringify([{ id: "task-1" }]));
-
-    expect(() => openDatabase(dataDir)).toThrow(/legacy JSON state files contain data/);
-    expect(existsSync(join(dataDir, "bridge.db"))).toBe(true);
-  });
-
-  it("treats malformed legacy JSON as state to avoid creating an empty database", () => {
-    const dataDir = makeTestDir("legacy-json-malformed");
-    writeFileSync(join(dataDir, "tasks.json"), "[");
-
-    expect(() => openDatabase(dataDir)).toThrow(/legacy JSON state files contain data/);
-    expect(existsSync(join(dataDir, "bridge.db"))).toBe(false);
-  });
-
-  it("treats malformed legacy JSON as state next to an empty existing database", () => {
-    const dataDir = makeTestDir("legacy-json-malformed-empty-db");
-    const db = openDatabase(dataDir);
-    db.close();
-    writeFileSync(join(dataDir, "tasks.json"), "[");
-
-    expect(() => openDatabase(dataDir)).toThrow(/legacy JSON state files contain data/);
-    expect(existsSync(join(dataDir, "bridge.db"))).toBe(true);
-  });
-
-  it("allows migrated empty databases when leftover JSON backups are also empty", () => {
+  it("allows migrated databases when leftover JSON backups are empty", () => {
     const dataDir = makeTestDir("legacy-json-empty-backups");
     const db = openDatabase(dataDir);
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("app", "{}");
     db.close();
     writeFileSync(join(dataDir, "tasks.json"), "[]");
     writeFileSync(join(dataDir, "settings.json"), "{}");
@@ -51,28 +36,13 @@ describe("legacy JSON state guard", () => {
     const reopenedDb = openDatabase(dataDir);
     try {
       expect(reopenedDb.prepare("SELECT COUNT(*) as count FROM tasks").get()).toEqual({ count: 0 });
-      expect(reopenedDb.prepare("SELECT COUNT(*) as count FROM settings").get()).toEqual({ count: 0 });
-    } finally {
-      reopenedDb.close();
-    }
-  });
-
-  it("allows existing SQLite databases with migrated state even if old JSON backups remain", () => {
-    const dataDir = makeTestDir("legacy-json-backups");
-    const db = openDatabase(dataDir);
-    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("app", "{}");
-    db.close();
-    writeFileSync(join(dataDir, "tasks.json"), "[]");
-
-    const reopenedDb = openDatabase(dataDir);
-    try {
       expect(reopenedDb.prepare("SELECT COUNT(*) as count FROM settings").get()).toEqual({ count: 1 });
     } finally {
       reopenedDb.close();
     }
   });
 
-  it("allows existing SQLite databases whose only state is in newer tables", () => {
+  it("allows existing databases whose only state lives in newer tables", () => {
     const dataDir = makeTestDir("legacy-json-newer-state");
     const db = openDatabase(dataDir);
     db.prepare(`

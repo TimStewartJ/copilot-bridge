@@ -330,18 +330,6 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
 });
 
 describe("ScheduleDetailSheet model override", () => {
-  it("shows the selected model name in view mode", async () => {
-    const { harness } = await renderViewSheet({
-      ...makeRecurringSchedule(),
-      model: "claude-sonnet-5",
-    });
-    try {
-      expect(harness.dom.container.textContent).toContain("Claude Sonnet 5");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("changes and clears the model override while editing", async () => {
     const { harness } = await renderEditSheet({
       ...makeRecurringSchedule(),

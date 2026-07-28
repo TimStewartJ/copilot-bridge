@@ -10,24 +10,30 @@ afterEach(() => {
 });
 
 describe("safeSetTimeout", () => {
-  it("does not fire a delay beyond Node's max before its real deadline and fires once at it", async () => {
-    const callback = vi.fn();
-    const delay = MAX_SAFE_TIMEOUT_DELAY_MS + 60_000; // > 24.8 days
-    const handle = safeSetTimeout(callback, delay);
+  it("does not fire a delay beyond Node's max before its real deadline and re-arms across multiple chunks", async () => {
+    // Single extra chunk: must not fire at the Node max, fires after
+    const callback1 = vi.fn();
+    const delay1 = MAX_SAFE_TIMEOUT_DELAY_MS + 60_000;
+    const handle = safeSetTimeout(callback1, delay1);
 
-    // Advancing exactly to the first chunk boundary must not fire the callback.
-    // A raw setTimeout(callback, delay) would have fired ~immediately here.
     await vi.advanceTimersByTimeAsync(MAX_SAFE_TIMEOUT_DELAY_MS);
-    expect(callback).not.toHaveBeenCalled();
-
-    // Advancing the remaining time across the chunk boundary fires exactly once.
+    expect(callback1, "not yet (1-chunk)").not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(callback).toHaveBeenCalledTimes(1);
-
-    // It does not re-fire afterwards.
+    expect(callback1, "fired once (1-chunk)").toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(MAX_SAFE_TIMEOUT_DELAY_MS);
-    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback1, "no re-fire").toHaveBeenCalledTimes(1);
     handle.cancel();
+
+    // Three chunks: fires exactly once at the end
+    const callback2 = vi.fn();
+    safeSetTimeout(callback2, MAX_SAFE_TIMEOUT_DELAY_MS * 2 + 123);
+
+    await vi.advanceTimersByTimeAsync(MAX_SAFE_TIMEOUT_DELAY_MS);
+    expect(callback2, "not yet (chunk 1)").not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(MAX_SAFE_TIMEOUT_DELAY_MS);
+    expect(callback2, "not yet (chunk 2)").not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(123);
+    expect(callback2, "fired once (3 chunks)").toHaveBeenCalledTimes(1);
   });
 
   it("fires at exactly the Node max boundary in a single chunk", async () => {
@@ -38,21 +44,6 @@ describe("safeSetTimeout", () => {
     expect(callback).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(callback).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-arms across three chunks for very long delays and fires once", async () => {
-    const callback = vi.fn();
-    const delay = MAX_SAFE_TIMEOUT_DELAY_MS * 2 + 123;
-    safeSetTimeout(callback, delay);
-
-    await vi.advanceTimersByTimeAsync(MAX_SAFE_TIMEOUT_DELAY_MS);
-    expect(callback).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(MAX_SAFE_TIMEOUT_DELAY_MS);
-    expect(callback).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(123);
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
@@ -71,21 +62,19 @@ describe("safeSetTimeout", () => {
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
-  it("fires a non-finite delay on the next tick instead of never or looping", async () => {
-    const callback = vi.fn();
-    safeSetTimeout(callback, Number.POSITIVE_INFINITY);
-
+  it("fires non-finite and zero/negative delays asynchronously on the next tick", async () => {
+    // Non-finite delay fires on the next tick instead of never or looping
+    const callback1 = vi.fn();
+    safeSetTimeout(callback1, Number.POSITIVE_INFINITY);
     await vi.advanceTimersByTimeAsync(0);
-    expect(callback).toHaveBeenCalledTimes(1);
-  });
+    expect(callback1, "non-finite").toHaveBeenCalledTimes(1);
 
-  it("fires a zero/negative delay asynchronously on the next tick, not synchronously", async () => {
-    const callback = vi.fn();
-    safeSetTimeout(callback, -5_000);
-    expect(callback).not.toHaveBeenCalled();
-
+    // Zero/negative delay fires asynchronously (not synchronously)
+    const callback2 = vi.fn();
+    safeSetTimeout(callback2, -5_000);
+    expect(callback2, "negative (sync check)").not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(0);
-    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback2, "negative (async tick)").toHaveBeenCalledTimes(1);
   });
 
   it("cancel stops a chunked long timer before it fires", async () => {

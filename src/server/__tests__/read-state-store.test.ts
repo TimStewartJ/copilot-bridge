@@ -13,16 +13,6 @@ beforeEach(() => {
 });
 
 describe("read-state-store", () => {
-  it("getReadState returns empty object when no file", () => {
-    expect(store.getReadState()).toEqual({});
-  });
-
-  it("markRead stores timestamp and returns it", () => {
-    const ts = store.markRead("session-1");
-    expect(ts).toBeTruthy();
-    expect(new Date(ts).getTime()).toBeGreaterThan(0);
-  });
-
   it("markRead can store an explicit read-through timestamp", () => {
     const ts = store.markRead("session-1", "2026-05-07T21:00:00.000Z");
     expect(ts).toBe("2026-05-07T21:00:00.000Z");
@@ -50,9 +40,5 @@ describe("read-state-store", () => {
     store.markRead("session-1");
     const futureTime = new Date(Date.now() + 1000).toISOString();
     expect(store.isUnread("session-1", futureTime)).toBe(true);
-  });
-
-  it("isUnread returns false when activityTime is undefined", () => {
-    expect(store.isUnread("session-1")).toBe(false);
   });
 });

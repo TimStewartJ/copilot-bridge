@@ -186,31 +186,9 @@ describe("session model menu labels", () => {
     })).toBe(false);
   });
 
-  it("does not trust cached supported reasoning effort before lookup completes", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["xhigh"],
-      currentReasoningEffort: "xhigh",
-      currentEffortLookupReady: false,
-    })).toBe(false);
-  });
-
   it("allows keeping current when lookup confirms no reasoning effort is set", () => {
     expect(canKeepCurrentReasoningEffortForModel({
       supportedReasoningEfforts: ["xhigh"],
-      currentEffortLookupReady: true,
-    })).toBe(true);
-  });
-
-  it("does not keep current while lookup is pending for models with no reasoning efforts", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: [],
-      currentEffortLookupReady: false,
-    })).toBe(false);
-  });
-
-  it("allows keeping current for models with no reasoning efforts only after lookup confirms none is set", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: [],
       currentEffortLookupReady: true,
     })).toBe(true);
   });

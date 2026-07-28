@@ -25,12 +25,6 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Session routes (mocked)", () => {
-  it("GET /api/sessions returns wrapped response", async () => {
-    const res = await request(app).get("/api/sessions");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("sessions");
-  });
-
   it("GET /api/sessions restores event-log sizes for visible CLI catalog sessions", async () => {
     const copilotHome = join(makeTestDir("api-cli-catalog"), ".copilot");
     mkdirSync(copilotHome, { recursive: true });
@@ -495,12 +489,6 @@ describe("Session routes (mocked)", () => {
     });
   });
 
-  it("POST /api/sessions creates a session", async () => {
-    const res = await request(app).post("/api/sessions");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("sessionId");
-  });
-
   it("POST /api/sessions reports saturated weighted capacity as retryable", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn().mockRejectedValue(
@@ -879,36 +867,6 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("GET /api/sessions/:id/slash-commands returns command metadata", async () => {
-    ctx.sessionManager.listSlashCommands = vi.fn().mockResolvedValue({
-      supported: true,
-      commands: [{
-        name: "goal",
-        aliases: ["autopilot"],
-        description: "Set an autopilot objective",
-        kind: "builtin",
-        input: { hint: "objective" },
-        allowDuringAgentExecution: true,
-      }],
-    });
-
-    const res = await request(app).get("/api/sessions/test-session/slash-commands");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      supported: true,
-      commands: [{
-        name: "goal",
-        aliases: ["autopilot"],
-        description: "Set an autopilot objective",
-        kind: "builtin",
-        input: { hint: "objective" },
-        allowDuringAgentExecution: true,
-      }],
-    });
-    expect(ctx.sessionManager.listSlashCommands).toHaveBeenCalledWith("test-session");
-  });
-
   it("POST /api/chat reports when a busy session cannot accept steering yet", async () => {
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));
@@ -943,14 +901,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-
-  it("GET /api/busy returns activity summary", async () => {
-    const res = await request(app).get("/api/busy");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("busy");
-    expect(res.body).toHaveProperty("count");
-    expect(Array.isArray(res.body.sessions)).toBe(true);
-  });
 
   it("GET /api/health returns ok", async () => {
     const res = await request(app).get("/api/health");

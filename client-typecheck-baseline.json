@@ -350,34 +350,6 @@
     "message": "'activeTab' is specified more than once, so this usage will be overwritten."
   },
   {
-    "code": 2741,
-    "file": "src/client/lib/task-completion-feedback.test.ts",
-    "line": 11,
-    "character": 24,
-    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
-  },
-  {
-    "code": 2741,
-    "file": "src/client/lib/task-completion-feedback.test.ts",
-    "line": 33,
-    "character": 11,
-    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
-  },
-  {
-    "code": 2741,
-    "file": "src/client/lib/task-completion-feedback.test.ts",
-    "line": 34,
-    "character": 11,
-    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/lib/task-completion-feedback.test.ts",
-    "line": 37,
-    "character": 7,
-    "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\"'."
-  },
-  {
     "code": 2345,
     "file": "src/client/lib/tool-args.ts",
     "line": 34,
@@ -404,6 +376,34 @@
     "line": 71,
     "character": 9,
     "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'."
+  },
+  {
+    "code": 2741,
+    "file": "src/client/task-completion-helpers.test.ts",
+    "line": 333,
+    "character": 24,
+    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
+  },
+  {
+    "code": 2741,
+    "file": "src/client/task-completion-helpers.test.ts",
+    "line": 355,
+    "character": 11,
+    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
+  },
+  {
+    "code": 2741,
+    "file": "src/client/task-completion-helpers.test.ts",
+    "line": 356,
+    "character": 11,
+    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
+  },
+  {
+    "code": 2322,
+    "file": "src/client/task-completion-helpers.test.ts",
+    "line": 359,
+    "character": 7,
+    "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\"'."
   },
   {
     "code": 2307,

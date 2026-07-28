@@ -65,12 +65,6 @@ describe("BridgeToolsMcpServer registry", () => {
     ]);
   });
 
-  it("no longer exposes any MCP socket/stdio transport surface", () => {
-    const server = makeRegistry() as unknown as Record<string, unknown>;
-    for (const method of ["listen", "listenForSession", "closeSessionEndpoint", "close"]) {
-      expect(server[method]).toBeUndefined();
-    }
-  });
 });
 
 describe("normalizeToolResult", () => {

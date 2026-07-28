@@ -106,31 +106,18 @@ describe("SessionManager reloadSession", () => {
     }
   });
 
-  it("rejects busy sessions", async () => {
-    const manager = createManager();
-    manager.backend = { resumeSession: vi.fn() };
-    manager.sessionRuns.set("busy-session", {
-      state: "busy",
-      startedAt: Date.now(),
-      lastEventAt: Date.now(),
-    });
+  it("rejects busy or stalled sessions", async () => {
+    for (const { label, runState } of [
+      { label: "busy", runState: { state: "busy" as const, startedAt: Date.now(), lastEventAt: Date.now() } },
+      { label: "stalled", runState: { state: "stalled" as const, startedAt: Date.now() - 5_000, lastEventAt: Date.now() - 5_000, stalledAt: Date.now() - 1_000 } },
+    ]) {
+      const manager = createManager();
+      manager.backend = { resumeSession: vi.fn() };
+      manager.sessionRuns.set(`${label}-session`, runState);
 
-    await expect(manager.reloadSession("busy-session")).rejects.toThrow("Cannot reload a busy session");
-    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
-  });
-
-  it("rejects stalled sessions", async () => {
-    const manager = createManager();
-    manager.backend = { resumeSession: vi.fn() };
-    manager.sessionRuns.set("stalled-session", {
-      state: "stalled",
-      startedAt: Date.now() - 5_000,
-      lastEventAt: Date.now() - 5_000,
-      stalledAt: Date.now() - 1_000,
-    });
-
-    await expect(manager.reloadSession("stalled-session")).rejects.toThrow("Cannot reload a busy session");
-    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+      await expect(manager.reloadSession(`${label}-session`)).rejects.toThrow("Cannot reload a busy session");
+      expect(manager.backend.resumeSession, label).not.toHaveBeenCalled();
+    }
   });
 
   it("starts MCP OAuth on an already cached session", async () => {
@@ -198,41 +185,45 @@ describe("SessionManager reloadSession", () => {
     expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
   });
 
-  it("releases MCP login resume cleanup exactly once on timeout", async () => {
-    vi.useFakeTimers();
-    const manager = createManager();
-    manager.backend = {
-      resumeSession: vi.fn(() => new Promise(() => {})),
-    };
-    const cleanup = spyOnResumeCleanup(manager);
+  it("releases MCP login resume cleanup exactly once on timeout or resume failure", async () => {
+    // timeout case
+    {
+      vi.useFakeTimers();
+      const manager = createManager();
+      manager.backend = {
+        resumeSession: vi.fn(() => new Promise(() => {})),
+      };
+      const cleanup = spyOnResumeCleanup(manager);
 
-    try {
-      const login = manager.loginMcpServer("session-auth-timeout", "demo");
-      const rejection = expect(login).rejects.toThrow("MCP auth resume timed out after 60s");
-      await vi.advanceTimersByTimeAsync(60_000);
-      await rejection;
+      try {
+        const login = manager.loginMcpServer("session-auth-timeout", "demo");
+        const rejection = expect(login).rejects.toThrow("MCP auth resume timed out after 60s");
+        await vi.advanceTimersByTimeAsync(60_000);
+        await rejection;
+
+        expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
+        expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
+        expect(manager.isSessionBusy("session-auth-timeout")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
+    // resume failure case
+    {
+      const manager = createManager();
+      const resumeError = new Error("MCP auth resume failed");
+      manager.backend = {
+        resumeSession: vi.fn().mockRejectedValue(resumeError),
+      };
+      const cleanup = spyOnResumeCleanup(manager);
+
+      await expect(manager.loginMcpServer("session-auth-failure", "demo")).rejects.toBe(resumeError);
 
       expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
       expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-      expect(manager.isSessionBusy("session-auth-timeout")).toBe(false);
-    } finally {
-      vi.useRealTimers();
+      expect(manager.isSessionBusy("session-auth-failure")).toBe(false);
     }
-  });
-
-  it("releases MCP login resume cleanup exactly once on resume failure", async () => {
-    const manager = createManager();
-    const resumeError = new Error("MCP auth resume failed");
-    manager.backend = {
-      resumeSession: vi.fn().mockRejectedValue(resumeError),
-    };
-    const cleanup = spyOnResumeCleanup(manager);
-
-    await expect(manager.loginMcpServer("session-auth-failure", "demo")).rejects.toBe(resumeError);
-
-    expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
-    expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-    expect(manager.isSessionBusy("session-auth-failure")).toBe(false);
   });
 
   it("rejects MCP OAuth for servers not configured on the session", async () => {
@@ -300,41 +291,45 @@ describe("SessionManager warmSession", () => {
     expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
   });
 
-  it("releases warm resume cleanup exactly once on timeout", async () => {
-    vi.useFakeTimers();
-    const manager = createManager();
-    manager.backend = {
-      resumeSession: vi.fn(() => new Promise(() => {})),
-    };
-    const cleanup = spyOnResumeCleanup(manager);
+  it("releases warm resume cleanup exactly once on timeout or resume failure", async () => {
+    // timeout case
+    {
+      vi.useFakeTimers();
+      const manager = createManager();
+      manager.backend = {
+        resumeSession: vi.fn(() => new Promise(() => {})),
+      };
+      const cleanup = spyOnResumeCleanup(manager);
 
-    try {
-      const warming = manager.warmSession("session-warm-timeout");
-      const rejection = expect(warming).rejects.toThrow("warmSession timed out after 60s");
-      await vi.advanceTimersByTimeAsync(60_000);
-      await rejection;
+      try {
+        const warming = manager.warmSession("session-warm-timeout");
+        const rejection = expect(warming).rejects.toThrow("warmSession timed out after 60s");
+        await vi.advanceTimersByTimeAsync(60_000);
+        await rejection;
+
+        expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
+        expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
+        expect(manager.isSessionBusy("session-warm-timeout")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
+    // resume failure case
+    {
+      const manager = createManager();
+      const resumeError = new Error("warm resume failed");
+      manager.backend = {
+        resumeSession: vi.fn().mockRejectedValue(resumeError),
+      };
+      const cleanup = spyOnResumeCleanup(manager);
+
+      await expect(manager.warmSession("session-warm-failure")).rejects.toBe(resumeError);
 
       expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
       expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-      expect(manager.isSessionBusy("session-warm-timeout")).toBe(false);
-    } finally {
-      vi.useRealTimers();
+      expect(manager.isSessionBusy("session-warm-failure")).toBe(false);
     }
-  });
-
-  it("releases warm resume cleanup exactly once on resume failure", async () => {
-    const manager = createManager();
-    const resumeError = new Error("warm resume failed");
-    manager.backend = {
-      resumeSession: vi.fn().mockRejectedValue(resumeError),
-    };
-    const cleanup = spyOnResumeCleanup(manager);
-
-    await expect(manager.warmSession("session-warm-failure")).rejects.toBe(resumeError);
-
-    expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
-    expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-    expect(manager.isSessionBusy("session-warm-failure")).toBe(false);
   });
 
   it("coalesces concurrent warm resumes for the same session", async () => {

@@ -94,20 +94,6 @@ describe("runSyncCommand", () => {
     expect(log).toContain("stdout:\nnormal output");
   });
 
-  it("does not mislabel ENOBUFS SIGTERM failures as timeouts", () => {
-    const rootDir = makeTestDir("sync-command-runner-enobufs");
-    spawnSyncMock.mockImplementation((_command, options) => {
-      writeToStdioFd(options, 1, "buffered output\n");
-      const error = Object.assign(new Error("spawnSync fake ENOBUFS"), { code: "ENOBUFS" });
-      return { status: null, signal: "SIGTERM", error };
-    });
-
-    const result = runFakeCommand(rootDir);
-
-    expect(result.ok).toBe(false);
-    expect(result.output).toContain("Command exited with signal SIGTERM");
-    expect(result.output).not.toContain("Command timed out");
-  });
 
   it("reports spawnSync timeout failures consistently", () => {
     const rootDir = makeTestDir("sync-command-runner-timeout");

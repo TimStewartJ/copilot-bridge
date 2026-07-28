@@ -21,11 +21,8 @@ describe("sniffImageMime", () => {
     expect(sniffImageMime(Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 0x00]))).toBe("image/gif");
   });
 
-  it("returns undefined for unknown bytes", () => {
+  it("returns undefined for unknown, short, or empty byte sequences", () => {
     expect(sniffImageMime(Uint8Array.from([0x70, 0x6e, 0x67, 0x00]))).toBeUndefined();
-  });
-
-  it("returns undefined for too-short input", () => {
     expect(sniffImageMime(Uint8Array.from([0xff, 0xd8]))).toBeUndefined();
     expect(sniffImageMime(Uint8Array.from([]))).toBeUndefined();
   });
@@ -47,10 +44,6 @@ describe("sniffImageMimeFromBase64", () => {
     }
   });
 
-  it("identifies the real format when the label would be wrong (jpeg bytes)", () => {
-    expect(sniffImageMimeFromBase64(b64(SAMPLES["image/jpeg"]))).toBe("image/jpeg");
-  });
-
   it("strips a data URI prefix (case-insensitive)", () => {
     const data = `DATA:image/png;BASE64,${b64(SAMPLES["image/jpeg"])}`;
     expect(sniffImageMimeFromBase64(data)).toBe("image/jpeg");
@@ -60,17 +53,14 @@ describe("sniffImageMimeFromBase64", () => {
     expect(sniffImageMimeFromBase64(`  \n${b64(SAMPLES["image/png"])}\n`)).toBe("image/png");
   });
 
-  it("returns undefined for non-image base64", () => {
-    expect(sniffImageMimeFromBase64(Buffer.from("hello world payload").toString("base64"))).toBeUndefined();
-  });
-
   it("detects format despite internal line-wrapping whitespace", () => {
     const raw = b64(SAMPLES["image/jpeg"]);
     const wrapped = `${raw.slice(0, 4)}\n${raw.slice(4, 8)}\r\n${raw.slice(8)}`;
     expect(sniffImageMimeFromBase64(wrapped)).toBe("image/jpeg");
   });
 
-  it("returns undefined for empty or tiny input", () => {
+  it("returns undefined for non-image, empty, or tiny base64 input", () => {
+    expect(sniffImageMimeFromBase64(Buffer.from("hello world payload").toString("base64"))).toBeUndefined();
     expect(sniffImageMimeFromBase64("")).toBeUndefined();
     expect(sniffImageMimeFromBase64("AA==")).toBeUndefined();
   });

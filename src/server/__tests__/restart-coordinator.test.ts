@@ -85,7 +85,8 @@ describe("fetchRestartBusyState", () => {
     } as unknown as Response;
   }
 
-  it("returns the busy endpoint payload", async () => {
+  it("returns the busy endpoint payload or throws on failure", async () => {
+    // Success path
     const log = vi.fn();
     const fetch = vi.fn().mockResolvedValue(response(200, {
       busy: false,
@@ -102,16 +103,13 @@ describe("fetchRestartBusyState", () => {
       count: 0,
       sessions: [],
     });
-
     expect(fetch).toHaveBeenCalledWith("http://bridge/api/busy");
     expect(log).not.toHaveBeenCalled();
-  });
 
-  it("throws when the busy endpoint fails", async () => {
-    const fetch = vi.fn().mockResolvedValue(response(503, { error: "unavailable" }));
-
+    // Failure path
+    const fetch2 = vi.fn().mockResolvedValue(response(503, { error: "unavailable" }));
     await expect(fetchRestartBusyState({
-      fetch,
+      fetch: fetch2,
       busyUrl: "http://bridge/api/busy",
       log: vi.fn(),
     })).rejects.toThrow("Busy check failed: 503");

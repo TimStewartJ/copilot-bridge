@@ -412,22 +412,20 @@ describe("readGitWorktreeStatus", () => {
     });
   });
 
-  it("returns unavailable when git status cannot be read safely", async () => {
+  it("returns unavailable when git status cannot be read safely or worktree metadata cannot be parsed", async () => {
+    // git status fails
     mockLinkedWorktreeGitCommandsWithOverrides({
       [gitArgsKey(["status", "--porcelain=v1", "--branch"])]: new Error("spawn git ENOENT"),
     });
 
     const { readGitWorktreeStatus } = await loadGitWorktreeStatusModule();
-    const result = await readGitWorktreeStatus("/workspace/feature-worktree");
-
-    expect(result).toEqual({
+    expect(await readGitWorktreeStatus("/workspace/feature-worktree"), "status fails").toEqual({
       status: "unavailable",
       cwd: "/workspace/feature-worktree",
       error: "spawn git ENOENT",
     });
-  });
 
-  it("returns unavailable when worktree metadata cannot be parsed", async () => {
+    // worktree metadata cannot be parsed
     mockExecFileImplementation((args) => {
       const key = gitArgsKey(args);
       if (key === gitArgsKey(["rev-parse", "--show-toplevel"])) {
@@ -445,10 +443,8 @@ describe("readGitWorktreeStatus", () => {
       throw new Error(`Unexpected git args: ${args.join(" ")}`);
     });
 
-    const { readGitWorktreeStatus } = await loadGitWorktreeStatusModule();
-    const result = await readGitWorktreeStatus("/workspace/copilot-bridge");
-
-    expect(result).toEqual({
+    const { readGitWorktreeStatus: read2 } = await loadGitWorktreeStatusModule();
+    expect(await read2("/workspace/copilot-bridge"), "metadata parse fails").toEqual({
       status: "unavailable",
       cwd: "/workspace/copilot-bridge",
       error: "Unable to parse git worktree list.",

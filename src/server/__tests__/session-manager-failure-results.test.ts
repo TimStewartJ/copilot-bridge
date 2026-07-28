@@ -44,14 +44,6 @@ describe("session manager failure results", () => {
       .resolves.toEqual(toolFailure("Task missing-task not found"));
   });
 
-  it("does not expose removed todo tools", () => {
-    const { ctx } = createTestApp();
-    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_add")).toBe(false);
-    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_list")).toBe(false);
-    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_update")).toBe(false);
-    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_remove")).toBe(false);
-  });
-
   it("normalizes duplicate tag creation failures", async () => {
     const { ctx } = createTestApp();
     const tagCreateTool = getTool(ctx, "tag_create");
@@ -81,7 +73,9 @@ describe("session manager failure results", () => {
       });
   });
 
-  it("rejects tagged docs_write pages without a description", async () => {
+  it("enforces tagged docs_write/docs_edit description requirements", async () => {
+    // rejects tagged docs_write pages without a description
+    {
     const { ctx } = createTestApp();
     const docsWriteTool = getTool(ctx, "docs_write");
 
@@ -97,9 +91,10 @@ tags:
 `,
     }, createInvocation("docs_write")))
       .resolves.toEqual(toolFailure(TAGGED_DOC_DESCRIPTION_ERROR));
-  });
+    }
 
-  it("allows tagged docs_write pages when a description is present", async () => {
+    // allows tagged docs_write pages when a description is present
+    {
     const { ctx } = createTestApp();
     const docsWriteTool = getTool(ctx, "docs_write");
 
@@ -116,9 +111,10 @@ tags:
 `,
     }, createInvocation("docs_write")))
       .resolves.toMatchObject({ path: "notes/tagged-with-description", success: true });
-  });
+    }
 
-  it("rejects docs_edit changes that leave a tagged page without a description", async () => {
+    // rejects docs_edit changes that leave a tagged page without a description
+    {
     const { ctx } = createTestApp();
     const docsEditTool = getTool(ctx, "docs_edit");
     ctx.docsStore!.writePage("notes/tagged-edit-without-description", `---
@@ -137,9 +133,10 @@ tags:
       new_str: "description:   ",
     }, createInvocation("docs_edit")))
       .resolves.toEqual(toolFailure(TAGGED_DOC_DESCRIPTION_ERROR));
-  });
+    }
 
-  it("allows docs_edit changes that preserve a tagged page description", async () => {
+    // allows docs_edit changes that preserve a tagged page description
+    {
     const { ctx } = createTestApp();
     const docsEditTool = getTool(ctx, "docs_edit");
     ctx.docsStore!.writePage("notes/tagged-edit-with-description", `---
@@ -159,8 +156,8 @@ Original body
     }, createInvocation("docs_edit")))
       .resolves.toMatchObject({ path: "notes/tagged-edit-with-description", success: true });
     expect(ctx.docsStore!.readPage("notes/tagged-edit-with-description")?.body).toBe("Updated body");
+    }
   });
-
   it("rejects docs_delete for database entries", async () => {
     const { ctx } = createTestApp();
     const docsDeleteTool = getTool(ctx, "docs_delete");

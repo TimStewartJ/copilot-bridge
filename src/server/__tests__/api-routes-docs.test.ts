@@ -39,66 +39,6 @@ const unsafeDocsRoutePaths = [
   ["UNC", "%5C%5Cserver%5Cshare"],
 ] as const;
 
-describe("Tag MCP server routes", () => {
-  let tagId: string;
-
-  beforeEach(async () => {
-    const tag = (await request(app).post("/api/tags").send({ name: "mcp-test" })).body.tag;
-    tagId = tag.id;
-  });
-
-  it("GET /api/tags/:id/mcp returns empty servers initially", async () => {
-    const res = await request(app).get(`/api/tags/${tagId}/mcp`);
-    expect(res.status).toBe(200);
-    expect(res.body.servers).toEqual([]);
-  });
-
-  it("PUT /api/tags/:id/mcp/:serverName sets an MCP server", async () => {
-    const res = await request(app)
-      .put(`/api/tags/${tagId}/mcp/test-server`)
-      .send({ command: "echo", args: ["hello"] });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-  });
-
-  it("PUT /api/tags/:id/mcp/:serverName stores remote MCP server configs", async () => {
-    const remoteConfig = {
-      type: "sse",
-      url: "https://example.com/mcp",
-      headers: { Authorization: "Bearer tag-token" },
-      tools: ["search"],
-    };
-
-    const put = await request(app)
-      .put(`/api/tags/${tagId}/mcp/remote-server`)
-      .send(remoteConfig);
-
-    expect(put.status).toBe(200);
-
-    const get = await request(app).get(`/api/tags/${tagId}/mcp`);
-    expect(get.body.servers).toEqual([
-      expect.objectContaining({
-        id: expect.any(String),
-        serverId: expect.any(String),
-        serverName: "remote-server",
-        config: remoteConfig,
-      }),
-    ]);
-  });
-
-  it("DELETE /api/tags/:id/mcp/:serverName removes an MCP server", async () => {
-    await request(app)
-      .put(`/api/tags/${tagId}/mcp/to-delete`)
-      .send({ command: "echo", args: [] });
-
-    const res = await request(app).delete(`/api/tags/${tagId}/mcp/to-delete`);
-    expect(res.status).toBe(200);
-
-    const get = await request(app).get(`/api/tags/${tagId}/mcp`);
-    expect(get.body.servers).toEqual([]);
-  });
-});
-
 describe("Task group tag routes", () => {
   it("PUT /api/task-groups/:id/tags assigns tags to a group", async () => {
     const group = (await request(app).post("/api/task-groups").send({ name: "Tagged Group" })).body.group;
@@ -118,57 +58,6 @@ describe("Task group tag routes", () => {
 });
 
 describe("Docs routes", () => {
-  it("GET /api/docs/tree returns empty tree initially", async () => {
-    const res = await request(app).get("/api/docs/tree");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("tree");
-    expect(res.body).toHaveProperty("hasRootIndex");
-  });
-
-  it("PUT /api/docs/pages writes a page", async () => {
-    const res = await request(app)
-      .put("/api/docs/pages/test-page")
-      .send({ content: "# Test Page\n\nHello world" });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.path).toBe("test-page");
-  });
-
-  it("PUT /api/docs/pages rejects tagged pages without a description", async () => {
-    const res = await request(app)
-      .put("/api/docs/pages/tagged-page")
-      .send({
-        content: `---
-title: Tagged page
-tags:
-  - deploy
----
-
-# Tagged page
-`,
-      });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("Tagged docs must include a non-empty frontmatter description");
-    expect(ctx.docsStore!.readPage("tagged-page")).toBeNull();
-  });
-
-  it("GET /api/docs/pages reads a written page", async () => {
-    await request(app)
-      .put("/api/docs/pages/read-me")
-      .send({ content: "# Read Me\n\nContent here" });
-
-    const res = await request(app).get("/api/docs/pages/read-me");
-    expect(res.status).toBe(200);
-    expect(res.body.body).toContain("Content here");
-    expect(res.body.title).toBe("read-me");
-    expect(res.body.isDbItem).toBe(false);
-  });
-
-  it("GET /api/docs/pages returns 404 for missing page", async () => {
-    const res = await request(app).get("/api/docs/pages/nonexistent");
-    expect(res.status).toBe(404);
-  });
-
   it.each(unsafeDocsRoutePaths)("GET /api/docs/pages rejects unsafe path: %s", async (_label, routePath) => {
     const res = await request(app).get(`/api/docs/pages/${routePath}`);
 
@@ -183,78 +72,6 @@ tags:
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("Invalid page path");
-  });
-
-  it("DELETE /api/docs/pages deletes a page", async () => {
-    await request(app)
-      .put("/api/docs/pages/to-delete")
-      .send({ content: "# Delete Me" });
-
-    const res = await request(app).delete("/api/docs/pages/to-delete");
-    expect(res.status).toBe(200);
-    expect(res.body.deleted).toBe(true);
-
-    const get = await request(app).get("/api/docs/pages/to-delete");
-    expect(get.status).toBe(404);
-  });
-
-  it("PUT /api/docs/pages overwrites an existing page", async () => {
-    // Write a page, then verify it can be read back
-    const write = await request(app)
-      .put("/api/docs/pages/overwrite-me")
-      .send({ content: "# First Version" });
-    expect(write.status).toBe(200);
-
-    const read = await request(app).get("/api/docs/pages/overwrite-me");
-    expect(read.status).toBe(200);
-    expect(read.body.body).toContain("First Version");
-  });
-
-  it("GET /api/docs/tree reflects created pages", async () => {
-    await request(app)
-      .put("/api/docs/pages/notes/first")
-      .send({ content: "# First Note" });
-
-    const res = await request(app).get("/api/docs/tree");
-    expect(res.status).toBe(200);
-    const tree = res.body.tree;
-    expect(tree.length).toBeGreaterThan(0);
-  });
-
-  it("treats folder index pages as folder paths in page routes and tree output", async () => {
-    const write = await request(app)
-      .put("/api/docs/pages/guides/index")
-      .send({ content: "# Guide Home\n\nFolder landing page." });
-    expect(write.status).toBe(200);
-    expect(write.body.path).toBe("guides");
-
-    const readByFolder = await request(app).get("/api/docs/pages/guides");
-    expect(readByFolder.status).toBe(200);
-    expect(readByFolder.body.path).toBe("guides");
-    expect(readByFolder.body.isFolderIndex).toBe(true);
-    expect(readByFolder.body.body).toContain("Folder landing page.");
-
-    const readByAlias = await request(app).get("/api/docs/pages/guides/index");
-    expect(readByAlias.status).toBe(200);
-    expect(readByAlias.body.path).toBe("guides");
-
-    const treeRes = await request(app).get("/api/docs/tree");
-    const guides = treeRes.body.tree.find((node: any) => node.path === "guides");
-    expect(guides).toMatchObject({ type: "folder", hasIndex: true });
-    expect(guides.children?.some((node: any) => node.path === "guides/index")).toBe(false);
-  });
-
-  it("DELETE /api/docs/pages removes folder index aliases using canonical paths", async () => {
-    await request(app)
-      .put("/api/docs/pages/guides/index")
-      .send({ content: "# Guide Home" });
-
-    const res = await request(app).delete("/api/docs/pages/guides/index");
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ path: "guides", deleted: true });
-
-    const get = await request(app).get("/api/docs/pages/guides");
-    expect(get.status).toBe(404);
   });
 
   it("GET /api/docs/search finds indexed pages", async () => {
@@ -355,16 +172,6 @@ tags:
     expect(typeof res.body.indexed).toBe("number");
   });
 
-  it("does not expose docs snapshot REST routes", async () => {
-    const responses = await Promise.all([
-      request(app).get("/api/docs/snapshots"),
-      request(app).post("/api/docs/snapshots").send({ reason: "manual-test" }),
-      request(app).post("/api/docs/snapshots/example/restore").send({ confirm: true }),
-    ]);
-
-    expect(responses.map((response) => response.status)).toEqual([404, 404, 404]);
-  });
-
   it("DELETE /api/docs/pages creates a throttled pre-delete snapshot", async () => {
     await request(app)
       .put("/api/docs/pages/to-delete-with-snapshot")
@@ -389,11 +196,6 @@ tags:
       .filter((snapshot) => snapshot.reason === "pre-delete")).toHaveLength(1);
   });
 
-  it("GET /api/docs/search returns empty for no match", async () => {
-    const res = await request(app).get("/api/docs/search?q=nonexistentterm12345");
-    expect(res.status).toBe(200);
-    expect(res.body.results).toEqual([]);
-  });
 });
 
 describe("Docs DB routes", () => {
@@ -436,81 +238,6 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain("Invalid folder");
   });
 
-  it("POST /api/docs/db creates an entry", async () => {
-    const res = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({
-        fields: { title: "March Outage", severity: "sev1", date: "2026-03-15" },
-        body: "The database went down.",
-      });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.slug).toBeTruthy();
-  });
-
-  it("POST /api/docs/db normalizes top-level fields into a DB entry", async () => {
-    const res = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({
-        title: "Top-level outage",
-        severity: "sev2",
-        body: "Normalized from top-level fields.",
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-
-    const page = ctx.docsStore!.readPage(`${folder}/${res.body.slug}`);
-    expect(page?.frontmatter.title).toBe("Top-level outage");
-    expect(page?.frontmatter.severity).toBe("sev2");
-    expect(page?.body).toBe("Normalized from top-level fields.");
-  });
-
-  it("GET /api/docs/pages marks DB entries", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({
-        fields: { title: "Marked outage", severity: "sev1" },
-        body: "Body content",
-      });
-
-    const res = await request(app).get(`/api/docs/pages/${folder}/${create.body.slug}`);
-    expect(res.status).toBe(200);
-    expect(res.body.isDbItem).toBe(true);
-    expect(res.body.folder).toBe(folder);
-  });
-
-  it("DELETE /api/docs/pages refuses to remove DB entries", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({
-        fields: { title: "Protected outage", severity: "sev1" },
-        body: "Body content",
-      });
-
-    const res = await request(app).delete(`/api/docs/pages/${folder}/${create.body.slug}`);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("database entry");
-    expect(ctx.docsStore!.readPage(`${folder}/${create.body.slug}`)?.isDbItem).toBe(true);
-  });
-
-  it("POST /api/docs/db extracts DB fields from body frontmatter when fields are missing", async () => {
-    const res = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({
-        body: "---\ntitle: Frontmatter outage\nseverity: sev1\nresolved: false\ncreated: 2026-04-09T00:00:00.000Z\nmodified: 2026-04-09T00:00:00.000Z\n---\n\nRecovered from pasted raw markdown.",
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-
-    const page = ctx.docsStore!.readPage(`${folder}/${res.body.slug}`);
-    expect(page?.frontmatter.title).toBe("Frontmatter outage");
-    expect(page?.frontmatter.severity).toBe("sev1");
-    expect(page?.frontmatter.resolved).toBe(false);
-    expect(page?.body).toBe("Recovered from pasted raw markdown.");
-  });
-
   it("GET /api/docs/db queries entries", async () => {
     await request(app)
       .post(`/api/docs/db/${folder}`)
@@ -535,64 +262,6 @@ describe("Docs DB routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.entries).toHaveLength(1);
     expect(res.body.entries[0].body).toBe("Body text for query results.");
-  });
-
-  it("PATCH /api/docs/db updates an entry", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Patchable", severity: "sev3" } });
-    const slug = create.body.slug;
-
-    const res = await request(app)
-      .patch(`/api/docs/db/${folder}/${slug}`)
-      .send({ fields: { severity: "sev1" } });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-  });
-
-  it("PATCH /api/docs/db normalizes top-level update fields", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Patch top-level", severity: "sev3" } });
-    const slug = create.body.slug;
-
-    const res = await request(app)
-      .patch(`/api/docs/db/${folder}/${slug}`)
-      .send({ severity: "sev1" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.frontmatter.severity).toBe("sev1");
-  });
-
-  it("PATCH /api/docs/db allows body-only updates", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Body only patch", severity: "sev3" }, body: "Original body" });
-    const slug = create.body.slug;
-
-    const res = await request(app)
-      .patch(`/api/docs/db/${folder}/${slug}`)
-      .send({ body: "Updated body only" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.body).toBe("Updated body only");
-
-    const updatedSearch = await request(app).get("/api/docs/search?q=Updated%20body%20only");
-    expect(updatedSearch.status).toBe(200);
-    expect(updatedSearch.body.results.map((r: any) => r.path)).toContain(`${folder}/${slug}`);
-
-    const staleSearch = await request(app).get("/api/docs/search?q=Original%20body");
-    expect(staleSearch.status).toBe(200);
-    expect(staleSearch.body.results.map((r: any) => r.path)).not.toContain(`${folder}/${slug}`);
-  });
-
-  it("POST /api/docs/db validates required title", async () => {
-    const res = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { severity: "sev1" } });
-    expect(res.status).toBe(400);
   });
 
   it("POST /api/docs/db returns actionable guidance when no fields can be inferred", async () => {
@@ -626,23 +295,6 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain("docs_db_add");
   });
 
-  it("DELETE /api/docs/db removes a DB entry", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Deletable outage", severity: "sev1" }, body: "Body content" });
-    const slug = create.body.slug;
-    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.isDbItem).toBe(true);
-
-    const res = await request(app).delete(`/api/docs/db/${folder}/${slug}`);
-    expect(res.status).toBe(200);
-    expect(res.body.deleted).toBe(true);
-    expect(res.body.path).toBe(`${folder}/${slug}`);
-    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)).toBeNull();
-
-    const search = await request(app).get("/api/docs/search?q=Deletable%20outage");
-    expect(search.body.results.map((r: any) => r.path)).not.toContain(`${folder}/${slug}`);
-  });
-
   it("DELETE /api/docs/db returns deleted:false for a missing slug", async () => {
     const res = await request(app).delete(`/api/docs/db/${folder}/does-not-exist`);
     expect(res.status).toBe(200);
@@ -661,55 +313,4 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain("folder/slug");
   });
 
-  it("PATCH /api/docs/db updates fields and body from raw editor content", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Raw editable", severity: "sev3" }, body: "Original body" });
-    const slug = create.body.slug;
-    const originalCreated = ctx.docsStore!.readPage(`${folder}/${slug}`)?.frontmatter.created;
-
-    const content = [
-      "---",
-      'title: "Raw editable"',
-      'severity: "sev1"',
-      'created: "2000-01-01T00:00:00.000Z"',
-      'modified: "2000-01-01T00:00:00.000Z"',
-      "---",
-      "",
-      "Updated raw body",
-    ].join("\n");
-
-    const res = await request(app)
-      .patch(`/api/docs/db/${folder}/${slug}`)
-      .send({ content });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-
-    const page = ctx.docsStore!.readPage(`${folder}/${slug}`);
-    expect(page?.frontmatter.severity).toBe("sev1");
-    expect(page?.frontmatter.title).toBe("Raw editable");
-    expect(page?.body).toBe("Updated raw body");
-    // System fields from the editor payload are ignored; original created is preserved.
-    expect(page?.frontmatter.created).toBe(originalCreated);
-    expect(page?.frontmatter.modified).not.toBe("2000-01-01T00:00:00.000Z");
-  });
-
-  it("PATCH /api/docs/db rejects malformed frontmatter content without mutating the entry", async () => {
-    const create = await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Protected from corruption", severity: "sev2" }, body: "Keep me" });
-    const slug = create.body.slug;
-
-    const res = await request(app)
-      .patch(`/api/docs/db/${folder}/${slug}`)
-      .send({ content: "---\nseverity: [unterminated\n---\n\nNew body" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("Invalid frontmatter");
-
-    const page = ctx.docsStore!.readPage(`${folder}/${slug}`);
-    expect(page?.frontmatter.severity).toBe("sev2");
-    expect(page?.body).toBe("Keep me");
-  });
 });

@@ -725,14 +725,12 @@ describe("useSessionStream pending interactions", () => {
 });
 
 describe("stream helpers", () => {
-  it("keeps known tool names and rejects placeholders", () => {
+  it("keeps known tool names, rejects placeholders, normalizes live tools, and drops hidden ones", () => {
     expect(getKnownToolName("bash")).toBe("bash");
     expect(getKnownToolName("unknown")).toBeUndefined();
     expect(getKnownToolName("  ")).toBeUndefined();
     expect(getKnownToolName(42)).toBeUndefined();
-  });
 
-  it("normalizes live tools and drops hidden ones", () => {
     const tools = normalizeLiveTools([
       { toolCallId: "tc-1", name: "bash" },
       { toolCallId: "tc-2", name: "task_complete" },

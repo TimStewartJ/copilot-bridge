@@ -9,105 +9,80 @@ import {
 } from "./launcher-restart.js";
 
 describe("rollbackRecoveryRequiresServerStart", () => {
-  it("does not restart a rolled-back server when the original server was still running", () => {
-    expect(rollbackRecoveryRequiresServerStart({ hadRunningServerAtStart: true })).toBe(false);
-  });
-
-  it("restarts a rolled-back server when recovery began from a stopped state", () => {
-    expect(rollbackRecoveryRequiresServerStart({ hadRunningServerAtStart: false })).toBe(true);
+  it("restarts only when recovery began from a stopped state", () => {
+    expect(rollbackRecoveryRequiresServerStart({ hadRunningServerAtStart: true }), "was running").toBe(false);
+    expect(rollbackRecoveryRequiresServerStart({ hadRunningServerAtStart: false }), "was stopped").toBe(true);
   });
 });
 
 describe("resolveRollbackRecoveryOutcome", () => {
-  it("treats rollback as successful recovery when the original server stayed running", () => {
+  it("maps rollback outcome and health to the correct recovery result", () => {
+    // Server stayed running: rollback alone means recovered
     expect(
-      resolveRollbackRecoveryOutcome({
-        rollbackSucceeded: true,
-        hadRunningServerAtStart: true,
-      }),
+      resolveRollbackRecoveryOutcome({ rollbackSucceeded: true, hadRunningServerAtStart: true }),
+      "running at start, healthy",
     ).toBe("recovered-via-rollback");
-  });
-
-  it("treats rollback as successful recovery after a stopped-state restart only when the rolled-back server is healthy", () => {
+    // Stopped at start: need the rolled-back server to come up healthy
     expect(
-      resolveRollbackRecoveryOutcome({
-        rollbackSucceeded: true,
-        hadRunningServerAtStart: false,
-        rolledBackServerHealthy: true,
-      }),
+      resolveRollbackRecoveryOutcome({ rollbackSucceeded: true, hadRunningServerAtStart: false, rolledBackServerHealthy: true }),
+      "stopped at start, now healthy",
     ).toBe("recovered-via-rollback");
-  });
-
-  it("treats rollback recovery as failed when the rolled-back server never becomes healthy", () => {
     expect(
-      resolveRollbackRecoveryOutcome({
-        rollbackSucceeded: true,
-        hadRunningServerAtStart: false,
-        rolledBackServerHealthy: false,
-      }),
+      resolveRollbackRecoveryOutcome({ rollbackSucceeded: true, hadRunningServerAtStart: false, rolledBackServerHealthy: false }),
+      "stopped at start, never healthy",
     ).toBe("failed");
   });
 });
 
 describe("didRestartRecover", () => {
-  it("recognizes rollback recovery as a successful explicit recovery", () => {
-    expect(didRestartRecover("recovered-via-rollback")).toBe(true);
-  });
-
-  it("recognizes failed recovery as unsuccessful", () => {
-    expect(didRestartRecover("failed")).toBe(false);
-  });
-
-  it("recognizes invalid release candidates as unsuccessful", () => {
-    expect(didRestartRecover("invalid-release-candidate")).toBe(false);
+  it("recognizes each outcome's recovery status", () => {
+    expect(didRestartRecover("recovered-via-rollback"), "recovered-via-rollback").toBe(true);
+    expect(didRestartRecover("failed"), "failed").toBe(false);
+    expect(didRestartRecover("invalid-release-candidate"), "invalid-release-candidate").toBe(false);
   });
 });
 
 describe("shouldPersistReleaseFailureState", () => {
-  it("persists release failure state for failed outcomes with pending failure metadata", () => {
+  it("persists only when outcome is failed and failure metadata is pending", () => {
     expect(
-      shouldPersistReleaseFailureState({
-        outcome: "failed",
-        hasPendingReleaseFailure: true,
-      }),
+      shouldPersistReleaseFailureState({ outcome: "failed", hasPendingReleaseFailure: true }),
+      "failed + pending",
     ).toBe(true);
-  });
 
-  it("clears stale pending release failure state for invalid candidate signals", () => {
+    // invalid-release-candidate clears stale pending state
     const outcome = resolveReleaseCandidateRestartOutcome({
       releaseCandidateRequested: true,
       releaseCandidateResolved: false,
     });
-
     expect(outcome).toBe("invalid-release-candidate");
-    if (outcome === null) {
-      throw new Error("Expected invalid release candidate outcome");
-    }
+    if (outcome === null) throw new Error("Expected invalid release candidate outcome");
     expect(
-      shouldPersistReleaseFailureState({
-        outcome,
-        hasPendingReleaseFailure: true,
-      }),
+      shouldPersistReleaseFailureState({ outcome, hasPendingReleaseFailure: true }),
+      "invalid-candidate + pending",
     ).toBe(false);
-  });
 
-  it("clears failed restart state when no release failure metadata is pending", () => {
     expect(
-      shouldPersistReleaseFailureState({
-        outcome: "failed",
-        hasPendingReleaseFailure: false,
-      }),
+      shouldPersistReleaseFailureState({ outcome: "failed", hasPendingReleaseFailure: false }),
+      "failed + no pending",
     ).toBe(false);
   });
 });
 
 describe("resolveReleaseCandidateRestartOutcome", () => {
-  it("returns no terminal outcome when no release candidate was requested", () => {
+  it("returns no terminal outcome when no release candidate was requested or when it resolves", () => {
     expect(
       resolveReleaseCandidateRestartOutcome({
         releaseCandidateRequested: false,
         releaseCandidateResolved: false,
       }),
+      "not requested",
+    ).toBeNull();
+    expect(
+      resolveReleaseCandidateRestartOutcome({
+        releaseCandidateRequested: true,
+        releaseCandidateResolved: true,
+      }),
+      "requested and resolved",
     ).toBeNull();
   });
 
@@ -140,12 +115,5 @@ describe("resolveReleaseCandidateRestartOutcome", () => {
     });
   });
 
-  it("returns no terminal outcome when the requested release candidate resolves", () => {
-    expect(
-      resolveReleaseCandidateRestartOutcome({
-        releaseCandidateRequested: true,
-        releaseCandidateResolved: true,
-      }),
-    ).toBeNull();
   });
-});
+

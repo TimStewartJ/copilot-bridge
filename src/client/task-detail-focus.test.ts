@@ -5,78 +5,47 @@ import {
 } from "./task-detail-focus";
 
 describe("isChecklistItemsReadyForFocus", () => {
-  it("treats fresh cached data as ready", () => {
-    expect(isChecklistItemsReadyForFocus({
-      isFetched: true,
-      isFetchedAfterMount: false,
-      isStale: false,
-      isFetching: false,
-      isSuccess: true,
-    })).toBe(true);
-  });
-
-  it("waits for a post-mount fetch when cached data is stale", () => {
-    expect(isChecklistItemsReadyForFocus({
-      isFetched: true,
-      isFetchedAfterMount: false,
-      isStale: true,
-      isFetching: true,
-      isSuccess: true,
-    })).toBe(false);
-  });
-
-  it("becomes ready after the current mount fetch completes", () => {
-    expect(isChecklistItemsReadyForFocus({
-      isFetched: true,
-      isFetchedAfterMount: true,
-      isStale: true,
-      isFetching: false,
-      isSuccess: true,
-    })).toBe(true);
-  });
-
-  it("does not become ready after a failed post-mount fetch", () => {
-    expect(isChecklistItemsReadyForFocus({
-      isFetched: true,
-      isFetchedAfterMount: true,
-      isStale: true,
-      isFetching: false,
-      isSuccess: false,
-    })).toBe(false);
+  it("is ready when data is fresh or post-mount fetch succeeded, not ready while fetching or after failed fetch", () => {
+    const cases: [Parameters<typeof isChecklistItemsReadyForFocus>[0], boolean, string][] = [
+      // fresh cached data — ready immediately
+      [{ isFetched: true, isFetchedAfterMount: false, isStale: false, isFetching: false, isSuccess: true }, true, "fresh cached"],
+      // stale cached data with in-progress post-mount fetch — wait
+      [{ isFetched: true, isFetchedAfterMount: false, isStale: true, isFetching: true, isSuccess: true }, false, "stale fetching"],
+      // post-mount fetch completed successfully — ready
+      [{ isFetched: true, isFetchedAfterMount: true, isStale: true, isFetching: false, isSuccess: true }, true, "fetched after mount"],
+      // post-mount fetch failed — not ready
+      [{ isFetched: true, isFetchedAfterMount: true, isStale: true, isFetching: false, isSuccess: false }, false, "failed after mount"],
+    ];
+    for (const [state, expected, label] of cases) {
+      expect(isChecklistItemsReadyForFocus(state), label).toBe(expected);
+    }
   });
 });
 
 describe("resolveTaskPanelChecklistHighlight", () => {
-  it("waits for checklist data before consuming panel checklist focus", () => {
-    expect(resolveTaskPanelChecklistHighlight({
-      focusedChecklistItemId: "item-123",
-      checklistItems: [],
-      checklistItemsReady: false,
-    })).toEqual({
-      highlightId: null,
-      consumeParam: false,
-    });
-  });
-
-  it("keeps the highlighted checklist item when it exists", () => {
-    expect(resolveTaskPanelChecklistHighlight({
-      focusedChecklistItemId: "item-123",
-      checklistItems: [{ id: "item-123" }],
-      checklistItemsReady: true,
-    })).toEqual({
-      highlightId: "item-123",
-      consumeParam: true,
-    });
-  });
-
-  it("drops invalid checklist focus once the checklist has loaded", () => {
-    expect(resolveTaskPanelChecklistHighlight({
-      focusedChecklistItemId: "item-123",
-      checklistItems: [{ id: "item-999" }],
-      checklistItemsReady: true,
-    })).toEqual({
-      highlightId: null,
-      consumeParam: true,
-    });
+  it("waits for data before consuming, highlights existing items, drops invalid focus once loaded", () => {
+    const cases: [Parameters<typeof resolveTaskPanelChecklistHighlight>[0], ReturnType<typeof resolveTaskPanelChecklistHighlight>, string][] = [
+      // not ready — hold off consuming
+      [
+        { focusedChecklistItemId: "item-123", checklistItems: [], checklistItemsReady: false },
+        { highlightId: null, consumeParam: false },
+        "not ready",
+      ],
+      // ready + item exists — highlight and consume
+      [
+        { focusedChecklistItemId: "item-123", checklistItems: [{ id: "item-123" }], checklistItemsReady: true },
+        { highlightId: "item-123", consumeParam: true },
+        "item found",
+      ],
+      // ready + item missing — drop and consume
+      [
+        { focusedChecklistItemId: "item-123", checklistItems: [{ id: "item-999" }], checklistItemsReady: true },
+        { highlightId: null, consumeParam: true },
+        "item missing",
+      ],
+    ];
+    for (const [input, expected, label] of cases) {
+      expect(resolveTaskPanelChecklistHighlight(input), label).toEqual(expected);
+    }
   });
 });

@@ -14,52 +14,23 @@ const baseContext = {
 } as const;
 
 describe("shouldReconnectForExternalSessionWork", () => {
-  it("reconnects when an idle active session receives a new external busy signal", () => {
+  it("reconnects, ignores, or defers based on signal and loading state", () => {
+    // new external signal on idle session → reconnect
     expect(resolveExternalSessionWorkAction(baseContext)).toBe("reconnect");
-  });
 
-  it("ignores unchanged or missing session signals", () => {
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      nextBusySignal: 1,
-    })).toBe("ignore");
+    // unchanged signal or missing session → ignore
+    expect(resolveExternalSessionWorkAction({ ...baseContext, nextBusySignal: 1 })).toBe("ignore");
+    expect(resolveExternalSessionWorkAction({ ...baseContext, sessionId: null })).toBe("ignore");
 
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      sessionId: null,
-    })).toBe("ignore");
-  });
+    // local message already owns the stream → ignore
+    expect(resolveExternalSessionWorkAction({ ...baseContext, isStreaming: true, pendingOrigin: "message" })).toBe("ignore");
 
-  it("ignores local send work that already owns the stream", () => {
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      isStreaming: true,
-      pendingOrigin: "message",
-    })).toBe("ignore");
-  });
+    // reconnect already in progress → ignore
+    expect(resolveExternalSessionWorkAction({ ...baseContext, isStreaming: true, pendingOrigin: "reconnect" })).toBe("ignore");
 
-  it("defers reconnects while history loading is still in progress", () => {
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      isRefreshingHistory: true,
-    })).toBe("defer");
-
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      isLoadingHistory: true,
-    })).toBe("defer");
-
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      isLoadingOlderMessages: true,
-    })).toBe("defer");
-  });
-
-  it("ignores reconnect churn while a reconnect is already in progress", () => {
-    expect(resolveExternalSessionWorkAction({
-      ...baseContext,
-      isStreaming: true,
-      pendingOrigin: "reconnect",
-    })).toBe("ignore");
+    // history loading still in progress → defer
+    expect(resolveExternalSessionWorkAction({ ...baseContext, isRefreshingHistory: true })).toBe("defer");
+    expect(resolveExternalSessionWorkAction({ ...baseContext, isLoadingHistory: true })).toBe("defer");
+    expect(resolveExternalSessionWorkAction({ ...baseContext, isLoadingOlderMessages: true })).toBe("defer");
   });
 });

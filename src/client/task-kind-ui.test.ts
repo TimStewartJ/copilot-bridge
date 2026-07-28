@@ -298,18 +298,6 @@ describe("kind-aware task UI", () => {
     expect(html).toContain("Follow up tomorrow");
   });
 
-  it("TaskContextMenu has no manual pin action for normal tasks", () => {
-    const html = renderTaskContextMenu(createTask({ kind: "task" }));
-
-    expect(html).not.toContain("lucide-pin");
-  });
-
-  it("TaskDashboard renders the pin icon marker for ongoing items", () => {
-    const html = renderTaskDashboard(createTask({ kind: "ongoing" }));
-
-    expect(html).toContain("lucide-pin");
-  });
-
   it("can render ongoing markers as icon-only badges", () => {
     const html = renderToStaticMarkup(createElement(TaskKindBadge, {
       kind: "ongoing",

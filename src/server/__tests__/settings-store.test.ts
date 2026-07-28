@@ -14,12 +14,6 @@ beforeEach(() => {
 });
 
 describe("settings-store", () => {
-  it("getSettings returns defaults when no file exists", () => {
-    const settings = store.getSettings();
-    expect(settings.mcpServers).toBeDefined();
-    expect(settings.mcpServers).toEqual({});
-  });
-
   it("updateSettings persists and returns updated settings", () => {
     const updated = store.updateSettings({
       mcpServers: {
@@ -72,36 +66,22 @@ describe("settings-store", () => {
     expect(servers.ado).toBeUndefined();
   });
 
-  it("updateSettings persists and clears reasoningEffort", () => {
-    // Set a value
+  it("updateSettings persists and clears reasoningEffort and model", () => {
+    // reasoningEffort
     const updated = store.updateSettings({ reasoningEffort: "high" });
     expect(updated.reasoningEffort).toBe("high");
-
-    // Verify persistence
-    const reloaded = store.getSettings();
-    expect(reloaded.reasoningEffort).toBe("high");
-
-    // Clear by explicitly setting undefined
+    expect(store.getSettings().reasoningEffort).toBe("high");
     const cleared = store.updateSettings({ reasoningEffort: undefined });
     expect(cleared.reasoningEffort).toBeUndefined();
+    expect(store.getSettings().reasoningEffort).toBeUndefined();
 
-    // Verify cleared
-    const reloadedAgain = store.getSettings();
-    expect(reloadedAgain.reasoningEffort).toBeUndefined();
-  });
-
-  it("updateSettings persists and clears model", () => {
-    const updated = store.updateSettings({ model: "gpt-5.4" });
-    expect(updated.model).toBe("gpt-5.4");
-
-    const reloaded = store.getSettings();
-    expect(reloaded.model).toBe("gpt-5.4");
-
-    const cleared = store.updateSettings({ model: undefined });
-    expect(cleared.model).toBeUndefined();
-
-    const reloadedAgain = store.getSettings();
-    expect(reloadedAgain.model).toBeUndefined();
+    // model
+    const updated2 = store.updateSettings({ model: "gpt-5.4" });
+    expect(updated2.model).toBe("gpt-5.4");
+    expect(store.getSettings().model).toBe("gpt-5.4");
+    const cleared2 = store.updateSettings({ model: undefined });
+    expect(cleared2.model).toBeUndefined();
+    expect(store.getSettings().model).toBeUndefined();
   });
 
   it("updateSettings persists and clears browser diagnostics settings", () => {

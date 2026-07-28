@@ -153,118 +153,103 @@ describe("browser diagnostics", () => {
     expect(closeCalls[0].env?.AGENT_BROWSER_SESSION).toContain("copilot-bridge-");
   });
 
-  it("fails headed diagnostics close when agent-browser close fails", async () => {
-    const db = setupTestDb();
-    const settingsStore = createSettingsStore(db);
-    const telemetryStore = createTelemetryStore(db);
+  it("fails headed diagnostics close when agent-browser close fails or profile-bound PIDs remain", async () => {
     const profileDir = testPath("browser-master-profile");
-    settingsStore.updateSettings({
-      browser: {
-        masterProfileDirectory: profileDir,
-      },
-    });
-    execFileMock.mockImplementation((file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (file === "agent-browser" && args[0] === "close") {
-        cb({ stderr: `timed out closing ${profileDir}` });
-        return {} as any;
-      }
-      if (file === "ps" || file === "powershell.exe") {
-        cb(null, { stdout: "", stderr: "" });
-        return {} as any;
-      }
-      throw new Error(`Unexpected execFile command: ${file}`);
-    });
 
-    const mod = await import("../browser-diagnostics.js");
-    await expect(mod.closeHeadedDiagnosticsBrowser({
-      settingsStore,
-      telemetryStore,
-      copilotHome: testPath(".copilot"),
-    } as AppContext)).rejects.toMatchObject({
-      name: "BrowserHeadedCloseError",
-      message: expect.stringContaining("agent-browser close failed (launch.timeout)"),
-      details: expect.objectContaining({
+    // Case 1: agent-browser close fails
+    {
+      const db = setupTestDb();
+      const settingsStore = createSettingsStore(db);
+      const telemetryStore = createTelemetryStore(db);
+      settingsStore.updateSettings({ browser: { masterProfileDirectory: profileDir } });
+      execFileMock.mockImplementation((file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        if (file === "agent-browser" && args[0] === "close") {
+          cb({ stderr: `timed out closing ${profileDir}` });
+          return {} as any;
+        }
+        if (file === "ps" || file === "powershell.exe") {
+          cb(null, { stdout: "", stderr: "" });
+          return {} as any;
+        }
+        throw new Error(`Unexpected execFile command: ${file}`);
+      });
+
+      const mod = await import("../browser-diagnostics.js");
+      await expect(mod.closeHeadedDiagnosticsBrowser({
+        settingsStore,
+        telemetryStore,
+        copilotHome: testPath(".copilot"),
+      } as AppContext)).rejects.toMatchObject({
+        name: "BrowserHeadedCloseError",
+        message: expect.stringContaining("agent-browser close failed (launch.timeout)"),
+        details: expect.objectContaining({
+          failureCode: "launch.timeout",
+          closeFailureCode: "launch.timeout",
+          remainingPids: [],
+        }),
+      });
+      const closeSpans = telemetryStore.querySpans({ name: "browser.tool.browser_diagnostics_close_headed", limit: 1 });
+      expect(closeSpans[0]?.metadata, "close fails telemetry").toMatchObject({
+        success: false,
         failureCode: "launch.timeout",
         closeFailureCode: "launch.timeout",
         remainingPids: [],
-      }),
-    });
+      });
+    }
 
-    const closeSpans = telemetryStore.querySpans({
-      name: "browser.tool.browser_diagnostics_close_headed",
-      limit: 1,
-    });
-    expect(closeSpans[0]?.metadata).toMatchObject({
-      success: false,
-      failureCode: "launch.timeout",
-      closeFailureCode: "launch.timeout",
-      remainingPids: [],
-    });
-  });
+    // Case 2: close succeeds but profile-bound PIDs remain
+    {
+      const db = setupTestDb();
+      const settingsStore = createSettingsStore(db);
+      const telemetryStore = createTelemetryStore(db);
+      settingsStore.updateSettings({ browser: { masterProfileDirectory: profileDir } });
+      execFileMock.mockImplementation((file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        if (file === "agent-browser" && args[0] === "close") {
+          cb(null, { stdout: "", stderr: "" });
+          return {} as any;
+        }
+        if (file === "powershell.exe") {
+          cb(null, {
+            stdout: JSON.stringify({
+              ProcessId: 4242,
+              Name: "chrome.exe",
+              CommandLine: `"chrome.exe" --user-data-dir="${profileDir}"`,
+            }),
+            stderr: "",
+          });
+          return {} as any;
+        }
+        if (file === "ps") {
+          cb(null, { stdout: `4242 chrome chrome --user-data-dir=${normalizePath(profileDir)}`, stderr: "" });
+          return {} as any;
+        }
+        throw new Error(`Unexpected execFile command: ${file}`);
+      });
+      killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+        if (pid !== 4242) throw Object.assign(new Error("unexpected pid"), { code: "ESRCH" });
+        if (signal === "SIGKILL") throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+        return true as never;
+      }) as any);
 
-  it("fails headed diagnostics close when profile-bound PIDs remain", async () => {
-    const db = setupTestDb();
-    const settingsStore = createSettingsStore(db);
-    const telemetryStore = createTelemetryStore(db);
-    const profileDir = testPath("browser-master-profile");
-    settingsStore.updateSettings({
-      browser: {
-        masterProfileDirectory: profileDir,
-      },
-    });
-    execFileMock.mockImplementation((file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (file === "agent-browser" && args[0] === "close") {
-        cb(null, { stdout: "", stderr: "" });
-        return {} as any;
-      }
-      if (file === "powershell.exe") {
-        cb(null, {
-          stdout: JSON.stringify({
-            ProcessId: 4242,
-            Name: "chrome.exe",
-            CommandLine: `"chrome.exe" --user-data-dir="${profileDir}"`,
-          }),
-          stderr: "",
-        });
-        return {} as any;
-      }
-      if (file === "ps") {
-        cb(null, {
-          stdout: `4242 chrome chrome --user-data-dir=${normalizePath(profileDir)}`,
-          stderr: "",
-        });
-        return {} as any;
-      }
-      throw new Error(`Unexpected execFile command: ${file}`);
-    });
-    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-      if (pid !== 4242) throw Object.assign(new Error("unexpected pid"), { code: "ESRCH" });
-      if (signal === "SIGKILL") throw Object.assign(new Error("permission denied"), { code: "EPERM" });
-      return true as never;
-    }) as any);
-
-    const mod = await import("../browser-diagnostics.js");
-    await expect(mod.closeHeadedDiagnosticsBrowser({
-      settingsStore,
-      telemetryStore,
-      copilotHome: testPath(".copilot"),
-    } as AppContext)).rejects.toMatchObject({
-      name: "BrowserHeadedCloseError",
-      message: expect.stringContaining("remaining profile-bound browser process PIDs: 4242"),
-      details: expect.objectContaining({
+      const mod = await import("../browser-diagnostics.js");
+      await expect(mod.closeHeadedDiagnosticsBrowser({
+        settingsStore,
+        telemetryStore,
+        copilotHome: testPath(".copilot"),
+      } as AppContext)).rejects.toMatchObject({
+        name: "BrowserHeadedCloseError",
+        message: expect.stringContaining("remaining profile-bound browser process PIDs: 4242"),
+        details: expect.objectContaining({
+          failureCode: "profile_processes_remaining",
+          remainingPids: [4242],
+        }),
+      });
+      const closeSpans = telemetryStore.querySpans({ name: "browser.tool.browser_diagnostics_close_headed", limit: 1 });
+      expect(closeSpans[0]?.metadata, "pids remain telemetry").toMatchObject({
+        success: false,
         failureCode: "profile_processes_remaining",
         remainingPids: [4242],
-      }),
-    });
-
-    const closeSpans = telemetryStore.querySpans({
-      name: "browser.tool.browser_diagnostics_close_headed",
-      limit: 1,
-    });
-    expect(closeSpans[0]?.metadata).toMatchObject({
-      success: false,
-      failureCode: "profile_processes_remaining",
-      remainingPids: [4242],
-    });
+      });
+    }
   });
 });

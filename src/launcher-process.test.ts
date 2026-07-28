@@ -30,8 +30,11 @@ describe("isChildProcessActive", () => {
 });
 
 describe("resolveServerLaunchDistributionMode", () => {
-  it("preserves development mode for source launches", () => {
-    expect(resolveServerLaunchDistributionMode("development", false)).toBe("development");
+  it("preserves source mode and forces release for release-slot launches", () => {
+    expect(resolveServerLaunchDistributionMode("development", false), "dev source").toBe("development");
+    expect(resolveServerLaunchDistributionMode("development", true), "dev + release slot").toBe("release");
+    expect(resolveServerLaunchDistributionMode("release", false), "release source").toBe("release");
+    expect(resolveServerLaunchDistributionMode("release", true), "release + release slot").toBe("release");
   });
 
   describe("spawnLauncherChildIfRunning", () => {
@@ -48,15 +51,8 @@ describe("resolveServerLaunchDistributionMode", () => {
     });
   });
 
-  it("forces release mode for release-slot launches from a development launcher", () => {
-    expect(resolveServerLaunchDistributionMode("development", true)).toBe("release");
-  });
-
-  it("preserves release mode for packaged release launches", () => {
-    expect(resolveServerLaunchDistributionMode("release", false)).toBe("release");
-    expect(resolveServerLaunchDistributionMode("release", true)).toBe("release");
-  });
 });
+
 
 describe("waitForChildExit", () => {
   it("returns immediately when the child is already exited", async () => {

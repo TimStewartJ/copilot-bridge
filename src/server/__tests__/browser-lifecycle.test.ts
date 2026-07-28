@@ -61,28 +61,21 @@ describe("browser-lifecycle", () => {
       expect(shutdownBridgeBrowserMock).not.toHaveBeenCalled();
     });
 
-    it("runs full shutdown when SingletonLock is present", async () => {
-      const env = makeTempCopilotHome();
-      writeFileSync(join(env.profileDir, "SingletonLock"), "");
-      const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
+    it("runs full shutdown when SingletonLock or DevToolsActivePort is present", async () => {
+      for (const { label, marker, content } of [
+        { label: "SingletonLock", marker: "SingletonLock", content: "" },
+        { label: "DevToolsActivePort", marker: "DevToolsActivePort", content: "12345\n" },
+      ]) {
+        const env = makeTempCopilotHome();
+        writeFileSync(join(env.profileDir, marker), content);
+        const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
 
-      const outcome = await lifecycle.shutdown();
+        const outcome = await lifecycle.shutdown();
 
-      expect(outcome.skipped).toBe(false);
-      expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
-      const [target] = shutdownBridgeBrowserMock.mock.calls[0];
-      expect(target.profileDir).toBe(env.profileDir);
-    });
-
-    it("runs full shutdown when DevToolsActivePort is present", async () => {
-      const env = makeTempCopilotHome();
-      writeFileSync(join(env.profileDir, "DevToolsActivePort"), "12345\n");
-      const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
-
-      const outcome = await lifecycle.shutdown();
-
-      expect(outcome.skipped).toBe(false);
-      expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
+        expect(outcome.skipped, label).toBe(false);
+        expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
+        shutdownBridgeBrowserMock.mockClear();
+      }
     });
 
     it("detects dangling SingletonLock symlinks on POSIX without following them", async () => {

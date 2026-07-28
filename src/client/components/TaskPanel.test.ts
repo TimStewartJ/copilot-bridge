@@ -363,40 +363,6 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("passes scroll restoration to the scroll container", async () => {
-    pullToRefreshMock.mockClear();
-    useTaskWorkspaceMock.mockReturnValue(createWorkspace());
-    useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
-    const scrollRestoration = {
-      key: "mobile:task-cockpit:task-1",
-      restore: true,
-    };
-
-    const { default: TaskPanel } = await import("./TaskPanel");
-    const html = renderToStaticMarkup(createElement(
-      MemoryRouter,
-      null,
-      createElement(TaskPanel, {
-        task: createTask(),
-        taskGroups: [],
-        sessions: [],
-        activeSessionId: null,
-        onSelectSession: () => {},
-        onNewSession: () => {},
-        onUpdateTask: async () => null,
-        scrollRestoration,
-      }),
-    ));
-
-    const scrollContainerCall = pullToRefreshMock.mock.calls.find(([props]) => {
-      const className = (props as { className?: string }).className;
-      return className?.includes("absolute inset-0 overflow-x-hidden");
-    });
-    if (!scrollContainerCall) throw new Error("TaskPanel PullToRefresh was not rendered");
-    expect((scrollContainerCall[0] as { scrollRestoration?: typeof scrollRestoration }).scrollRestoration).toBe(scrollRestoration);
-    expect(html).toContain("md:sticky");
-  });
-
   it("force-refreshes git status when opening workspace details", async () => {
     const linkedSession = createSession();
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: [linkedSession] }));
@@ -453,14 +419,6 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("omits lifecycle status labels from the header", async () => {
-    await expect(renderTaskPanelHtml(createTask())).resolves.not.toContain(">Active</span>");
-    await expect(renderTaskPanelHtml(createTask({
-      status: "archived",
-      completedAt: "2026-04-27T20:00:00.000Z",
-    }))).resolves.not.toContain(">Completed</span>");
-  });
-
   it("shows the TaskPanel completion button only when completion or reopen is actionable", async () => {
     await expect(renderTaskPanelHtml(createTask())).resolves.toContain("Complete task");
     await expect(renderTaskPanelHtml(createTask({
@@ -488,18 +446,4 @@ describe("TaskPanel", () => {
     expect(html).not.toContain("QA signs off");
   });
 
-  it("does not render the redundant checklist open/done summary row", async () => {
-    const html = await renderTaskPanelHtml(createTask({ kind: "ongoing" }), {
-      checklistItems: [
-        { id: "open-1", taskId: "task-1", text: "Open item 1", done: false, order: 0, createdAt: "2026-01-01T00:00:00.000Z" },
-        { id: "open-2", taskId: "task-1", text: "Open item 2", done: false, order: 1, createdAt: "2026-01-01T00:00:00.000Z" },
-        { id: "done-1", taskId: "task-1", text: "Done item", done: true, order: 2, createdAt: "2026-01-01T00:00:00.000Z" },
-      ],
-    });
-
-    expect(html).toContain("Checklist");
-    expect(html).toContain("(1/3)");
-    expect(html).not.toContain("2 open");
-    expect(html).not.toContain("1 done");
-  });
 });

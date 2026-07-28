@@ -47,70 +47,36 @@ describe("event-transform visible activity", () => {
     expect(lastVisibleActivityAt).toBe("2026-04-10T10:00:02.000Z");
   });
 
-  it("hides self-renames that omit sessionId", () => {
-    const events = [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          toolCallId: "tool-1",
-          toolName: "session_rename",
-          arguments: { title: "Local rename" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
-      },
-    ];
+  it("hides self-renames (no sessionId, exact match, and trailing-whitespace match)", () => {
+    // omit sessionId: treated as self-rename
+    expect(getLastVisibleActivityAt([
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { title: "Local rename" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
+    ], "session-1"), "omit sessionId: no visible activity").toBeUndefined();
+    expect(transformEventsToMessages([
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { title: "Local rename" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
+    ], "session-1"), "omit sessionId: empty messages").toEqual([]);
 
-    expect(getLastVisibleActivityAt(events, "session-1")).toBeUndefined();
-    expect(transformEventsToMessages(events, "session-1")).toEqual([]);
-  });
+    // explicit match
+    expect(getLastVisibleActivityAt([
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1", title: "Local rename" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
+    ], "session-1"), "explicit match: no visible activity").toBeUndefined();
+    expect(transformEventsToMessages([
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1", title: "Local rename" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
+    ], "session-1"), "explicit match: empty messages").toEqual([]);
 
-  it("hides self-renames that explicitly target the current session", () => {
-    const events = [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          toolCallId: "tool-1",
-          toolName: "session_rename",
-          arguments: { sessionId: "session-1", title: "Local rename" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
-      },
-    ];
-
-    expect(getLastVisibleActivityAt(events, "session-1")).toBeUndefined();
-    expect(transformEventsToMessages(events, "session-1")).toEqual([]);
-  });
-
-  it("hides self-renames whose target only differs by trailing whitespace", () => {
-    const events = [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          toolCallId: "tool-1",
-          toolName: "session_rename",
-          arguments: { sessionId: "session-1   ", title: "Local rename" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-1", success: true, result: { content: "ok" } },
-      },
-    ];
-
-    expect(getLastVisibleActivityAt(events, "session-1")).toBeUndefined();
-    expect(transformEventsToMessages(events, "session-1")).toEqual([]);
+    // trailing whitespace
+    expect(getLastVisibleActivityAt([
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1   ", title: "Local rename" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
+    ], "session-1"), "trailing whitespace: no visible activity").toBeUndefined();
+    expect(transformEventsToMessages([
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1   ", title: "Local rename" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
+    ], "session-1"), "trailing whitespace: empty messages").toEqual([]);
   });
 
   it("keeps explicit cross-session renames visible", () => {
@@ -566,17 +532,14 @@ describe("event-transform tool results", () => {
     ]);
   });
 
-  it("flushes a pending terminal completion when the turn aborts before a completion event", () => {
-    const entries = transformEventsToMessages([
+  it("flushes a pending terminal completion when the turn aborts, shuts down, or errors", () => {
+    // abort before a completion event: uses the abort timestamp
+    const abortEntries = transformEventsToMessages([
       { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:00.000Z", data: {} },
       {
         type: "tool.execution_start",
         timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tool-1",
-          toolName: "task_complete",
-          arguments: { summary: "Stopped after wrapping up" },
-        },
+        data: { toolCallId: "tool-1", toolName: "task_complete", arguments: { summary: "Stopped after wrapping up" } },
       },
       {
         type: "tool.execution_complete",
@@ -586,28 +549,21 @@ describe("event-transform tool results", () => {
       { type: "abort", timestamp: "2026-04-10T10:00:03.000Z", data: { reason: "user cancelled" } },
     ]);
 
-    expect(entries).toMatchObject([
-      {
-        type: "completion",
-        content: "Stopped after wrapping up",
-        timestamp: "2026-04-10T10:00:03.000Z",
-        turnId: "turn-1",
-        completion: { sourceEventType: "tool.execution_complete" },
-      },
-    ]);
-  });
+    expect(abortEntries, "abort").toMatchObject([{
+      type: "completion",
+      content: "Stopped after wrapping up",
+      timestamp: "2026-04-10T10:00:03.000Z",
+      turnId: "turn-1",
+      completion: { sourceEventType: "tool.execution_complete" },
+    }]);
 
-  it("flushes a pending terminal completion on shutdown and on error terminals", () => {
+    // shutdown and error terminals
     for (const terminal of ["session.shutdown", "session.error"]) {
       const entries = transformEventsToMessages([
         {
           type: "tool.execution_start",
           timestamp: "2026-04-10T10:00:00.000Z",
-          data: {
-            toolCallId: "tool-1",
-            toolName: "task_complete",
-            arguments: { summary: "Final summary" },
-          },
+          data: { toolCallId: "tool-1", toolName: "task_complete", arguments: { summary: "Final summary" } },
         },
         {
           type: "tool.execution_complete",
@@ -617,13 +573,11 @@ describe("event-transform tool results", () => {
         { type: terminal, timestamp: "2026-04-10T10:00:02.000Z", data: {} },
       ]);
 
-      expect(entries).toMatchObject([
-        {
-          type: "completion",
-          content: "Final summary",
-          completion: { sourceEventType: "tool.execution_complete" },
-        },
-      ]);
+      expect(entries, terminal).toMatchObject([{
+        type: "completion",
+        content: "Final summary",
+        completion: { sourceEventType: "tool.execution_complete" },
+      }]);
     }
   });
 
@@ -801,70 +755,30 @@ describe("event-transform tool results", () => {
     ]);
   });
 
-  it("marks open tools as failed when the turn terminates before completion", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-3", toolName: "bash", arguments: { command: "npm test" } },
-      },
-      {
-        type: "tool.execution_progress",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-3", progressMessage: "Running tests..." },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: { shutdownType: "graceful" },
-      },
-    ]);
+  it("marks open tools as failed when the turn terminates (shutdown, session.error, abort)", () => {
+    for (const { label, terminalEvent } of [
+      { label: "shutdown", terminalEvent: { type: "session.shutdown", timestamp: "2026-04-10T10:00:02.000Z", data: { shutdownType: "graceful" } } },
+      { label: "session.error", terminalEvent: { type: "session.error", timestamp: "2026-04-10T10:00:02.000Z", data: { message: "runtime failed" } } },
+      { label: "abort", terminalEvent: { type: "abort", timestamp: "2026-04-10T10:00:02.000Z", data: { reason: "user cancelled" } } },
+    ]) {
+      const toolCallId = `tool-${label}`;
+      const entries = transformEventsToMessages([
+        { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId, toolName: "bash", arguments: { command: "npm test" } } },
+        { type: "tool.execution_progress", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId, progressMessage: "Running tests..." } },
+        terminalEvent,
+      ]);
 
-    expect(entries).toMatchObject([
-      {
+      expect(entries, label).toMatchObject([{
         type: "tool",
         toolCall: {
-          toolCallId: "tool-3",
+          toolCallId,
           name: "bash",
           progressText: "Running tests...",
           success: false,
           completedAt: "2026-04-10T10:00:02.000Z",
         },
-      },
-    ]);
-  });
-
-  it("marks open tools as failed when the turn ends with session.error", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-4", toolName: "bash", arguments: { command: "npm test" } },
-      },
-      {
-        type: "tool.execution_progress",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-4", progressMessage: "Running tests..." },
-      },
-      {
-        type: "session.error",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: { message: "runtime failed" },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-4",
-          name: "bash",
-          progressText: "Running tests...",
-          success: false,
-          completedAt: "2026-04-10T10:00:02.000Z",
-        },
-      },
-    ]);
+      }]);
+    }
   });
 
   it("keeps subagent session.error scoped to the agent tool", () => {
@@ -938,38 +852,6 @@ describe("event-transform tool results", () => {
     ]);
   });
 
-  it("marks open tools as failed when the turn ends with abort", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-5", toolName: "bash", arguments: { command: "npm test" } },
-      },
-      {
-        type: "tool.execution_progress",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-5", progressMessage: "Running tests..." },
-      },
-      {
-        type: "abort",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: { reason: "user cancelled" },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-5",
-          name: "bash",
-          progressText: "Running tests...",
-          success: false,
-          completedAt: "2026-04-10T10:00:02.000Z",
-        },
-      },
-    ]);
-  });
 });
 
 describe("event-transform turn grouping", () => {
@@ -1083,46 +965,23 @@ describe("event-transform turn grouping", () => {
 });
 
 describe("event-transform file attachment display names", () => {
-  it("derives the basename from a Windows-style backslash path", () => {
-    const entries = transformEventsToMessages([
-      {
+  it("derives the basename from both Windows-style backslash and POSIX-style forward-slash paths", () => {
+    for (const { label, path, displayName } of [
+      { label: "Windows", path: "C:\\Users\\me\\report.png", displayName: "report.png" },
+      { label: "POSIX", path: "/home/me/report.png", displayName: "report.png" },
+    ]) {
+      const entries = transformEventsToMessages([{
         type: "user.message",
         timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          content: "See attached",
-          attachments: [{ type: "file", path: "C:\\Users\\me\\report.png" }],
-        },
-      },
-    ]);
+        data: { content: "See attached", attachments: [{ type: "file", path }] },
+      }]);
 
-    expect(entries).toMatchObject([
-      {
+      expect(entries, label).toMatchObject([{
         type: "message",
         role: "user",
-        attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "report.png" }],
-      },
-    ]);
-  });
-
-  it("derives the basename from a POSIX-style forward-slash path", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          content: "See attached",
-          attachments: [{ type: "file", path: "/home/me/report.png" }],
-        },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "message",
-        role: "user",
-        attachments: [{ type: "file", path: "/home/me/report.png", displayName: "report.png" }],
-      },
-    ]);
+        attachments: [{ type: "file", path, displayName }],
+      }]);
+    }
   });
 
   it("prefers an explicit displayName over the derived basename", () => {

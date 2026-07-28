@@ -159,7 +159,8 @@ describe("process tree platform helpers", () => {
     expect(execFileMock.mock.calls.some(([command]) => command === "wmic")).toBe(false);
   });
 
-  it("drops child-before-parent PID reuse edges from the captured tree", async () => {
+  it("drops child-before-parent PID reuse edges and never runs destructive commands when root PID is reused", async () => {
+    // Child-before-parent edge dropping
     setPlatform("win32");
     let snapshots = 0;
     mockExec((command, _args, _options, callback) => {
@@ -177,16 +178,14 @@ describe("process tree platform helpers", () => {
       callback(null, "", "");
     });
 
-    const result = await terminateProcessTree(
+    const result1 = await terminateProcessTree(
       { pid: 100, startMarker: "2000" },
       createDeadline(15_000),
     );
+    expect(result1.snapshot?.descendants).toEqual([{ pid: 300, startMarker: "2500" }]);
 
-    expect(result.snapshot?.descendants).toEqual([{ pid: 300, startMarker: "2500" }]);
-  });
-
-  it("never runs a destructive command when the root PID was reused", async () => {
-    setPlatform("win32");
+    // No destructive command when root PID was reused
+    execFileMock.mockReset();
     mockExec((command, _args, _options, callback) => {
       expect(command).toBe("powershell.exe");
       callback(null, "100 1 2222", "");
@@ -343,36 +342,29 @@ describe("sampleProcessTree", () => {
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns null when the root PID is absent from the snapshot", async () => {
+  it("returns null when the root PID is absent, has no start marker, or the snapshot fails", async () => {
+    // Root PID absent from snapshot
     setPlatform("win32");
     mockExec((_command, _args, _options, callback) => {
       callback(null, "9999 1 5000", "");
     });
+    expect(await sampleProcessTree(1234, createDeadline(5_000)), "absent root").toBeNull();
 
-    const result = await sampleProcessTree(1234, createDeadline(5_000));
-    expect(result).toBeNull();
-  });
-
-  it("returns null when the root PID has no start marker in the snapshot", async () => {
+    // Root PID has no start marker (POSIX — line won't match the regex)
+    execFileMock.mockReset();
     setPlatform("linux");
     mockExec((_command, _args, _options, callback) => {
-      // Entry for root has no lstart — line won't match the POSIX regex, so
-      // the PID is absent from the parsed table.
       callback(null, "  4000     1", "");
     });
+    expect(await sampleProcessTree(4000, createDeadline(5_000)), "no start marker").toBeNull();
 
-    const result = await sampleProcessTree(4000, createDeadline(5_000));
-    expect(result).toBeNull();
-  });
-
-  it("returns null when the process-table snapshot fails", async () => {
+    // Snapshot command fails
+    execFileMock.mockReset();
     setPlatform("linux");
     mockExec((_command, _args, _options, callback) => {
       callback(new Error("ps: command not found"), "", "");
     });
-
-    const result = await sampleProcessTree(5000, createDeadline(5_000));
-    expect(result).toBeNull();
+    expect(await sampleProcessTree(5000, createDeadline(5_000)), "snapshot fails").toBeNull();
   });
 
   it("issues exactly one snapshot read and no side-effecting commands", async () => {

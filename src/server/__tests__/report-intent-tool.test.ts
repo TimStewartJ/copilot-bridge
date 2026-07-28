@@ -31,34 +31,23 @@ function createAppWithActiveSessions(sessionIds: string[]): AppContext {
 }
 
 describe("registerReportIntentTool (MCP)", () => {
-  it("registers report_intent in the MCP server", () => {
-    const { ctx } = createTestApp();
-    const server = new BridgeToolsMcpServer(ctx);
-    registerReportIntentTool(server, ctx);
-    expect(server.getToolNames()).toContain("report_intent");
-  });
-
-  it("returns isError for blank intent", async () => {
+  it("returns isError for blank or missing intent", async () => {
     const { ctx } = createTestApp();
     const server = new BridgeToolsMcpServer(ctx);
     registerReportIntentTool(server, ctx);
 
     const tool = (server as any).tools.get("report_intent");
-    const result = await tool.handler({ intent: "   " }, makeHandlerExtra());
-    expect(result).toMatchObject({
+
+    // blank intent
+    const blankResult = await tool.handler({ intent: "   " }, makeHandlerExtra());
+    expect(blankResult).toMatchObject({
       isError: true,
       content: [{ type: "text", text: "Intent must not be blank" }],
     });
-  });
 
-  it("returns isError for missing intent", async () => {
-    const { ctx } = createTestApp();
-    const server = new BridgeToolsMcpServer(ctx);
-    registerReportIntentTool(server, ctx);
-
-    const tool = (server as any).tools.get("report_intent");
-    const result = await tool.handler({}, makeHandlerExtra());
-    expect(result).toMatchObject({ isError: true });
+    // missing intent
+    const missingResult = await tool.handler({}, makeHandlerExtra());
+    expect(missingResult).toMatchObject({ isError: true });
   });
 
   it("returns success text for valid intent when no sessions are active", async () => {

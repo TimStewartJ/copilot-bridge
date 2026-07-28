@@ -187,21 +187,24 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
   });
 
-  it("rejects a single helper-based config call site", () => {
+  it("rejects single-helper-based and mixed legacy/helper config call sites", () => {
+    // rejects a single helper-based config call site
+    {
     const oneCallSite = CONFIG_CALL_SITES_1_0_70.trim().split(/\r?\n/)[0];
     const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}${oneCallSite}${NATIVE_ASK_USER_SOURCE}}`;
 
     expect(() => patchCopilotAppSource(source)).toThrow("found 0 legacy and 1 helper");
-  });
+    }
 
-  it("rejects mixed legacy and helper-based config call sites", () => {
+    // rejects mixed legacy and helper-based config call sites
+    {
     const legacyCallSite = CONFIG_CALL_SITES.trim().split(/\r?\n/)[0];
     const helperCallSite = CONFIG_CALL_SITES_1_0_70.trim().split(/\r?\n/)[0];
     const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}${legacyCallSite}${helperCallSite}${NATIVE_ASK_USER_SOURCE}}`;
 
     expect(() => patchCopilotAppSource(source)).toThrow("found 1 legacy and 1 helper");
+    }
   });
-
   it("rejects SDK drift that removes the runtime pending getters", () => {
     const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_PERMISSIONS_FACADE}}`;
 

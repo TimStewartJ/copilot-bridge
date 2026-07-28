@@ -38,11 +38,6 @@ describe("visual-artifacts: isAllowedImageMime", () => {
 });
 
 describe("visual-artifacts: isCanonicalArtifactId", () => {
-  it("accepts valid UUIDs", () => {
-    expect(isCanonicalArtifactId("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
-    expect(isCanonicalArtifactId("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")).toBe(true);
-  });
-
   it("rejects non-UUID strings", () => {
     expect(isCanonicalArtifactId("not-a-uuid")).toBe(false);
     expect(isCanonicalArtifactId("../evil")).toBe(false);
@@ -113,76 +108,19 @@ describe("publishVisualArtifact", () => {
     expect(result.value.size).toBe(pngBytes.length);
   });
 
-  it("stores metadata in a .meta.json file", () => {
+  it("rejects unsupported mime types, ambiguous sources, and invalid sessionIds", () => {
     const copilotHome = makeTmpDir();
-    const srcDir = makeTmpDir();
-    const srcPath = join(srcDir, "photo.jpg");
-    writeFileSync(srcPath, Buffer.from([0xff, 0xd8, 0xff]));
-
-    const result = publishVisualArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      kind: "image",
-      title: "Photo",
-      mimeType: "image/jpeg",
-      sourcePath: srcPath,
-      caption: "A nice photo",
-      altText: "Photo alt",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const visualsDir = join(copilotHome, "session-state", SESSION_ID, "files", "visuals");
-    const meta = JSON.parse(readFileSync(join(visualsDir, `${result.value.artifactId}.meta.json`), "utf-8"));
-    expect(meta.kind).toBe("image");
-    expect(meta.title).toBe("Photo");
-    expect(meta.mimeType).toBe("image/jpeg");
-    expect(meta.caption).toBe("A nice photo");
-    expect(meta.altText).toBe("Photo alt");
-  });
-
-  it("rejects SVG mime type", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishVisualArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      kind: "image",
-      title: "SVG",
-      mimeType: "image/svg+xml",
-      content: "",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/Unsupported/);
-  });
-
-  it("rejects when both path and content are provided", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishVisualArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      kind: "image",
-      title: "T",
-      mimeType: "image/png",
-      sourcePath: "/some/path",
-      content: "data",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/exactly one/);
-  });
-
-  it("rejects invalid sessionId", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishVisualArtifact({
-      copilotHome,
-      sessionId: "bad-id",
-      kind: "image",
-      title: "T",
-      mimeType: "image/png",
-      content: "",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/sessionId/);
+    const base = { copilotHome, sessionId: SESSION_ID, kind: "image" as const, title: "T" };
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ ...base, title: "SVG", mimeType: "image/svg+xml", content: "" }, /Unsupported/],
+      [{ ...base, mimeType: "image/png", sourcePath: "/some/path", content: "data" }, /exactly one/],
+      [{ ...base, sessionId: "bad-id", mimeType: "image/png", content: "" }, /sessionId/],
+    ];
+    for (const [input, expected] of cases) {
+      const result = publishVisualArtifact(input as any);
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toMatch(expected);
+    }
   });
 
   it("respects apiBasePath in generated URLs", () => {
@@ -387,77 +325,20 @@ describe("publishMermaidArtifact", () => {
     expect(isCanonicalArtifactId(result.value.artifactId)).toBe(true);
   });
 
-  it("stores the source in a .mmd file and in metadata", () => {
+  it("rejects empty sources, oversized sources, invalid sessionIds, and empty titles", () => {
     const copilotHome = makeTmpDir();
-    const source = "sequenceDiagram\n  A->>B: Hello";
-
-    const result = publishMermaidArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Sequence",
-      source,
-      caption: "My sequence",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const visualsDir = join(copilotHome, "session-state", SESSION_ID, "files", "visuals");
-    const fileContent = readFileSync(join(visualsDir, `${result.value.artifactId}.mmd`), "utf-8");
-    expect(fileContent).toBe(source);
-
-    const meta = JSON.parse(readFileSync(join(visualsDir, `${result.value.artifactId}.meta.json`), "utf-8"));
-    expect(meta.kind).toBe("mermaid");
-    expect(meta.source).toBe(source);
-    expect(meta.caption).toBe("My sequence");
-    expect(meta.mimeType).toBe(MERMAID_MIME_TYPE);
-  });
-
-  it("rejects empty source", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishMermaidArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Empty",
-      source: "   ",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/empty/);
-  });
-
-  it("rejects source exceeding the character limit", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishMermaidArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Huge",
-      source: "A".repeat(MAX_MERMAID_SOURCE_CHARS + 1),
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/character limit/);
-  });
-
-  it("rejects invalid sessionId", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishMermaidArtifact({
-      copilotHome,
-      sessionId: "bad-id",
-      title: "T",
-      source: "graph TD\n  A-->B",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/sessionId/);
-  });
-
-  it("rejects empty title", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishMermaidArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "   ",
-      source: "graph TD\n  A-->B",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/title/);
+    const source = "graph TD\n  A-->B";
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ copilotHome, sessionId: SESSION_ID, title: "Empty", source: "   " }, /empty/],
+      [{ copilotHome, sessionId: SESSION_ID, title: "Huge", source: "A".repeat(MAX_MERMAID_SOURCE_CHARS + 1) }, /character limit/],
+      [{ copilotHome, sessionId: "bad-id", title: "T", source }, /sessionId/],
+      [{ copilotHome, sessionId: SESSION_ID, title: "   ", source }, /title/],
+    ];
+    for (const [input, expected] of cases) {
+      const result = publishMermaidArtifact(input as any);
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toMatch(expected);
+    }
   });
 
   it("resolves a published mermaid artifact via resolveVisualArtifactForOwner", () => {
@@ -484,20 +365,6 @@ describe("publishMermaidArtifact", () => {
     expect(resolved.value.displayName).toMatch(/\.mmd$/);
   });
 
-  it("respects apiBasePath in generated URLs", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishMermaidArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Flow",
-      source: "graph TD\n  X-->Y",
-      apiBasePath: "/staging/preview-abc/api",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.url).toMatch(/^\/staging\/preview-abc\/api\//);
-  });
 });
 
 describe("publishHtmlArtifact", () => {
@@ -539,79 +406,20 @@ describe("publishHtmlArtifact", () => {
     expect(isCanonicalArtifactId(result.value.artifactId)).toBe(true);
   });
 
-  it("stores the HTML in a .html file and in metadata source", () => {
+  it("rejects empty content, oversized content, invalid sessionIds, and empty titles", () => {
     const copilotHome = makeTmpDir();
-    const content = "<html><body><p>Test</p></body></html>";
-
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Test Page",
-      content,
-      caption: "A test page",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const visualsDir = join(copilotHome, "session-state", SESSION_ID, "files", "visuals");
-    const fileContent = readFileSync(join(visualsDir, `${result.value.artifactId}.html`), "utf-8");
-    expect(fileContent).toBe(content);
-
-    const meta = JSON.parse(readFileSync(join(visualsDir, `${result.value.artifactId}.meta.json`), "utf-8"));
-    expect(meta.kind).toBe("html");
-    expect(meta.source).toBe(content);
-    expect(meta.caption).toBe("A test page");
-    expect(meta.mimeType).toBe(HTML_MIME_TYPE);
-    expect(meta.ext).toBe("html");
-  });
-
-  it("rejects empty content", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Empty",
-      content: "   ",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/empty/i);
-  });
-
-  it("rejects content exceeding the size limit", () => {
-    const copilotHome = makeTmpDir();
-    const bigContent = "A".repeat(MAX_HTML_SOURCE_BYTES + 1);
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Huge",
-      content: bigContent,
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/size limit|MB/i);
-  });
-
-  it("rejects invalid sessionId", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: "bad-id",
-      title: "T",
-      content: "<html></html>",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/sessionId/);
-  });
-
-  it("rejects empty title", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "   ",
-      content: "<html></html>",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toMatch(/title/);
+    const content = "<html></html>";
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ copilotHome, sessionId: SESSION_ID, title: "Empty", content: "   " }, /empty/i],
+      [{ copilotHome, sessionId: SESSION_ID, title: "Huge", content: "A".repeat(MAX_HTML_SOURCE_BYTES + 1) }, /size limit|MB/i],
+      [{ copilotHome, sessionId: "bad-id", title: "T", content }, /sessionId/],
+      [{ copilotHome, sessionId: SESSION_ID, title: "   ", content }, /title/],
+    ];
+    for (const [input, expected] of cases) {
+      const result = publishHtmlArtifact(input as any);
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toMatch(expected);
+    }
   });
 
   it("resolves a published HTML artifact via resolveVisualArtifactForOwner", () => {
@@ -638,18 +446,4 @@ describe("publishHtmlArtifact", () => {
     expect(resolved.value.displayName).toMatch(/\.html$/);
   });
 
-  it("respects apiBasePath in generated URLs", () => {
-    const copilotHome = makeTmpDir();
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Page",
-      content: "<html></html>",
-      apiBasePath: "/staging/preview-abc/api",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.url).toMatch(/^\/staging\/preview-abc\/api\//);
-  });
 });

@@ -7,21 +7,20 @@ function model(id: string, supportedReasoningEfforts?: string[]): ModelInfo {
 }
 
 describe("formatReasoningEffortLabel", () => {
-  it("returns undefined for empty input", () => {
+  it("formats efforts as title-cased words and returns undefined for empty input", () => {
     expect(formatReasoningEffortLabel()).toBeUndefined();
     expect(formatReasoningEffortLabel("")).toBeUndefined();
-  });
-
-  it("title-cases single-token efforts", () => {
-    expect(formatReasoningEffortLabel("low")).toBe("Low");
-    expect(formatReasoningEffortLabel("xhigh")).toBe("Xhigh");
-    expect(formatReasoningEffortLabel("max")).toBe("Max");
-    expect(formatReasoningEffortLabel("none")).toBe("None");
-  });
-
-  it("splits separators into spaced words", () => {
-    expect(formatReasoningEffortLabel("extra_high")).toBe("Extra High");
-    expect(formatReasoningEffortLabel("extra-high")).toBe("Extra High");
+    const cases: [string, string][] = [
+      ["low", "Low"],
+      ["xhigh", "Xhigh"],
+      ["max", "Max"],
+      ["none", "None"],
+      ["extra_high", "Extra High"],
+      ["extra-high", "Extra High"],
+    ];
+    for (const [input, expected] of cases) {
+      expect(formatReasoningEffortLabel(input), input).toBe(expected);
+    }
   });
 });
 
@@ -46,16 +45,9 @@ describe("getModelReasoningEfforts", () => {
     expect(getModelReasoningEfforts(models, "plain")).toEqual([]);
   });
 
-  it("falls back to the union across models when no model is selected", () => {
-    expect(getModelReasoningEfforts(models).sort()).toEqual(
-      ["high", "low", "max", "medium", "none", "xhigh"],
-    );
-  });
-
-  it("falls back to the union when the model is unknown", () => {
-    expect(getModelReasoningEfforts(models, "missing").sort()).toEqual(
-      ["high", "low", "max", "medium", "none", "xhigh"],
-    );
+  it("falls back to the union across models when none is selected or the model is unknown", () => {
+    expect(getModelReasoningEfforts(models).sort()).toEqual(["high", "low", "max", "medium", "none", "xhigh"]);
+    expect(getModelReasoningEfforts(models, "missing").sort()).toEqual(["high", "low", "max", "medium", "none", "xhigh"]);
   });
 
   it("handles null/undefined model lists", () => {

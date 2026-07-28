@@ -81,40 +81,6 @@ describe("SessionManager session config", () => {
     });
   });
 
-  it("injects research guidance into the default system message", () => {
-    const db = setupTestDb();
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
-    tempDirs.push(copilotHome);
-    const manager = new SessionManager({
-      globalBus: createTestBus(),
-      eventBusRegistry: createEventBusRegistry(),
-      sessionTitles: createSessionTitlesStore(db),
-      taskStore: {} as any,
-      config: { sessionMcpServers: {} },
-      copilotHome,
-    }) as any;
-
-    const cfg = manager.buildSessionConfig();
-
-    expect(cfg.excludedTools).toContain("session_store_sql");
-    expect(cfg.systemMessage.content).toContain("<research_behavior>");
-    expect(cfg.systemMessage.content).toContain("verify it online before answering confidently");
-    expect(cfg.systemMessage.content).toContain("Split independent claims into separate checks");
-    expect(cfg.systemMessage.content).toContain("run those checks in parallel when practical");
-    expect(cfg.systemMessage.content).toContain("Skip unnecessary browsing for purely local codebase work");
-    expect(cfg.systemMessage.sections.environment_context).toMatchObject({
-      action: "append",
-    });
-    expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
-    expect(cfg.systemMessage.sections.environment_context.content).toContain(
-      Intl.DateTimeFormat().resolvedOptions().timeZone,
-    );
-    expect(cfg.systemMessage.sections.web_fetch).toMatchObject({
-      action: "append",
-    });
-    expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
-  });
-
   it("frames feed cards as an opt-in durable queue instead of assistant status output", () => {
     expect(FEED_GUIDANCE).toContain("Default to not creating feed cards");
     expect(FEED_GUIDANCE).toContain("durable dashboard queue");

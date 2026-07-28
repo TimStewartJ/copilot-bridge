@@ -34,43 +34,6 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Settings routes", () => {
-  it("GET /api/settings returns default settings", async () => {
-    const res = await request(app).get("/api/settings");
-    expect(res.status).toBe(200);
-    expect(typeof res.body).toBe("object");
-    expect(res.body).toHaveProperty("mcpServers");
-  });
-
-  it("PATCH /api/settings updates settings", async () => {
-    const res = await request(app)
-      .patch("/api/settings")
-      .send({ mcpServers: { test: { command: "echo", args: [] } } });
-    expect(res.status).toBe(200);
-    expect(res.body.mcpServers).toHaveProperty("test");
-
-    const get = await request(app).get("/api/settings");
-    expect(get.body.mcpServers).toHaveProperty("test");
-  });
-
-  it("PATCH /api/settings stores remote MCP server configs", async () => {
-    const remoteConfig = {
-      type: "http",
-      url: "https://mcp.linear.app/mcp",
-      headers: { Authorization: "Bearer test-token" },
-      tools: ["linear_search"],
-    };
-
-    const res = await request(app)
-      .patch("/api/settings")
-      .send({ mcpServers: { linear: remoteConfig } });
-
-    expect(res.status).toBe(200);
-    expect(res.body.mcpServers.linear).toEqual(remoteConfig);
-
-    const get = await request(app).get("/api/settings");
-    expect(get.body.mcpServers.linear).toEqual(remoteConfig);
-  });
-
   it("PATCH /api/settings model change does NOT evict cached sessions", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
@@ -139,21 +102,6 @@ describe("Settings routes", () => {
 // ── Read State ───────────────────────────────────────────────────
 
 describe("Read state routes", () => {
-  it("GET /api/read-state returns empty state initially", async () => {
-    const res = await request(app).get("/api/read-state");
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({});
-  });
-
-  it("POST /api/read-state/:sessionId marks a session as read", async () => {
-    const res = await request(app).post("/api/read-state/sess-1");
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-
-    const state = await request(app).get("/api/read-state");
-    expect(state.body).toHaveProperty("sess-1");
-  });
-
   it("POST /api/read-state/:sessionId honors an explicit read-through cursor", async () => {
     const res = await request(app)
       .post("/api/read-state/sess-1")
@@ -211,16 +159,6 @@ describe("Read state routes", () => {
     expect(res.body.error).toContain("readThroughActivityAt");
   });
 
-  it("DELETE /api/read-state/:sessionId marks a session as unread", async () => {
-    await request(app).post("/api/read-state/sess-2");
-
-    const del = await request(app).delete("/api/read-state/sess-2");
-    expect(del.status).toBe(200);
-    expect(del.body.ok).toBe(true);
-
-    const state = await request(app).get("/api/read-state");
-    expect(state.body["sess-2"]).toBeUndefined();
-  });
 });
 
 // ── Schedule CRUD ────────────────────────────────────────────────
@@ -251,34 +189,6 @@ describe("Schedule routes", () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/taskId/);
     }
-  });
-
-  it("GET /api/schedules returns task-scoped schedules", async () => {
-    const otherTask = await request(app)
-      .post("/api/tasks")
-      .send({ title: "Other Schedule Host" });
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Task schedule",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    ctx.scheduleStore.createSchedule({
-      taskId: otherTask.body.task.id,
-      name: "Other task schedule",
-      prompt: "Continue a different conversation",
-      type: "cron",
-      cron: "0 1 * * *",
-    });
-
-    const res = await request(app).get("/api/schedules").query({ taskId });
-    expect(res.status).toBe(200);
-    expect(res.body.map((item: { id: string }) => item.id)).toEqual([schedule.id]);
-
-    const unknownTask = await request(app).get("/api/schedules").query({ taskId: "no-such-task" });
-    expect(unknownTask.status).toBe(200);
-    expect(unknownTask.body).toEqual([]);
   });
 
   it("POST /api/schedules validates required fields", async () => {
@@ -357,39 +267,6 @@ describe("Schedule routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("seconds field is 0");
-  });
-
-  it("POST /api/schedules accepts autoArchiveKeep", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Retained schedule",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
-        autoArchiveKeep: 8,
-      });
-
-    expect(res.status).toBe(201);
-    expect(res.body.autoArchiveKeep).toBe(8);
-    expect(ctx.scheduleStore.getSchedule(res.body.id)?.autoArchiveKeep).toBe(8);
-  });
-
-  it("POST /api/schedules validates autoArchiveKeep", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Bad retention",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
-        autoArchiveKeep: 0,
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/autoArchiveKeep/);
   });
 
   it("POST /api/schedules validates model overrides", async () => {

@@ -9,11 +9,7 @@ import {
 } from "./settings-layout.js";
 
 describe("SETTINGS_CATEGORIES", () => {
-  it("has exactly 5 categories", () => {
-    expect(SETTINGS_CATEGORIES).toHaveLength(5);
-  });
-
-  it("has expected category ids in order", () => {
+  it("declares every category and section exactly once, in order", () => {
     expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual([
       "general",
       "integrations",
@@ -21,26 +17,7 @@ describe("SETTINGS_CATEGORIES", () => {
       "management",
       "usage",
     ]);
-  });
 
-  it("each category has a non-empty label", () => {
-    for (const cat of SETTINGS_CATEGORIES) {
-      expect(cat.label.length).toBeGreaterThan(0);
-    }
-  });
-
-  it("covers all 16 sections across categories", () => {
-    const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
-    expect(allSections).toHaveLength(16);
-  });
-
-  it("sections are non-overlapping across categories", () => {
-    const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
-    const unique = new Set(allSections);
-    expect(unique.size).toBe(allSections.length);
-  });
-
-  it("contains all expected section ids", () => {
     const expected: SectionId[] = [
       "system-prompt",
       "model",
@@ -61,91 +38,45 @@ describe("SETTINGS_CATEGORIES", () => {
     ];
     const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
     expect(new Set(allSections)).toEqual(new Set(expected));
+    expect(new Set(allSections).size).toBe(allSections.length);
   });
 
-  it("shows updates first in general settings", () => {
+  it("places sections in the categories that own them", () => {
     const general = getCategoryMeta("general");
+    const integrations = getCategoryMeta("integrations");
     const diagnostics = getCategoryMeta("diagnostics");
     const management = getCategoryMeta("management");
     const usage = getCategoryMeta("usage");
 
+    expect(general!.label).toBe("General");
     expect(general!.sections[0]).toBe("updates");
+    expect(general!.sections).toContain("system-prompt");
+    expect(integrations!.sections).toContain("mcp-servers");
+    expect(diagnostics!.sections[0]).toBe("bridge-status");
+    expect(diagnostics!.sections).toContain("browser-diagnostics");
     expect(diagnostics!.sections).not.toContain("updates");
-    expect(management!.sections).toEqual(["management-jobs"]);
-    expect(usage!.sections).toEqual(["local-copilot-usage"]);
     expect(diagnostics!.sections).not.toContain("management-jobs");
     expect(diagnostics!.sections).not.toContain("local-copilot-usage");
-  });
-});
-
-describe("DEFAULT_CATEGORY", () => {
-  it("is 'general'", () => {
-    expect(DEFAULT_CATEGORY).toBe("general");
+    expect(management!.label).toBe("Management");
+    expect(management!.sections).toEqual(["management-jobs"]);
+    expect(usage!.label).toBe("Copilot Usage");
+    expect(usage!.sections).toEqual(["local-copilot-usage"]);
   });
 });
 
 describe("normalizeCategory", () => {
-  it("returns valid category ids as-is", () => {
-    expect(normalizeCategory("general")).toBe("general");
-    expect(normalizeCategory("integrations")).toBe("integrations");
-    expect(normalizeCategory("management")).toBe("management");
-    expect(normalizeCategory("usage")).toBe("usage");
-    expect(normalizeCategory("diagnostics")).toBe("diagnostics");
-  });
-
-  it("falls back to default for null", () => {
-    expect(normalizeCategory(null)).toBe(DEFAULT_CATEGORY);
-  });
-
-  it("falls back to default for undefined", () => {
-    expect(normalizeCategory(undefined)).toBe(DEFAULT_CATEGORY);
-  });
-
-  it("falls back to default for empty string", () => {
-    expect(normalizeCategory("")).toBe(DEFAULT_CATEGORY);
-  });
-
-  it("falls back to default for unknown string", () => {
-    expect(normalizeCategory("unknown-category")).toBe(DEFAULT_CATEGORY);
-    expect(normalizeCategory("GENERAL")).toBe(DEFAULT_CATEGORY);
-    expect(normalizeCategory("  general  ")).toBe(DEFAULT_CATEGORY);
+  it("passes through known ids and falls back to the default otherwise", () => {
+    expect(DEFAULT_CATEGORY).toBe("general");
+    for (const id of ["general", "integrations", "management", "usage", "diagnostics"]) {
+      expect(normalizeCategory(id)).toBe(id);
+    }
+    for (const bad of [null, undefined, "", "unknown-category", "GENERAL", "  general  "]) {
+      expect(normalizeCategory(bad), String(bad)).toBe(DEFAULT_CATEGORY);
+    }
   });
 });
 
 describe("getCategoryMeta", () => {
-  it("returns correct meta for each valid category", () => {
-    const general = getCategoryMeta("general");
-    expect(general).toBeDefined();
-    expect(general!.id).toBe("general");
-    expect(general!.label).toBe("General");
-    expect(general!.sections).toContain("system-prompt");
-
-    const integrations = getCategoryMeta("integrations");
-    expect(integrations).toBeDefined();
-    expect(integrations!.id).toBe("integrations");
-    expect(integrations!.sections).toContain("mcp-servers");
-
-    const management = getCategoryMeta("management");
-    expect(management).toBeDefined();
-    expect(management!.id).toBe("management");
-    expect(management!.label).toBe("Management");
-    expect(management!.sections).toContain("management-jobs");
-
-    const usage = getCategoryMeta("usage");
-    expect(usage).toBeDefined();
-    expect(usage!.id).toBe("usage");
-    expect(usage!.label).toBe("Copilot Usage");
-    expect(usage!.sections).toContain("local-copilot-usage");
-
-    const diagnostics = getCategoryMeta("diagnostics");
-    expect(diagnostics).toBeDefined();
-    expect(diagnostics!.id).toBe("diagnostics");
-    expect(diagnostics!.sections[0]).toBe("bridge-status");
-    expect(diagnostics!.sections).toContain("browser-diagnostics");
-    expect(diagnostics!.sections).not.toContain("management-jobs");
-    expect(diagnostics!.sections).not.toContain("local-copilot-usage");
-  });
-
   it("returns undefined for an invalid cast", () => {
     expect(getCategoryMeta("nonexistent" as CategoryId)).toBeUndefined();
   });

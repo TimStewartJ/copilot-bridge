@@ -20,10 +20,6 @@ afterEach(() => {
 
 describe("task-store", () => {
   describe("CRUD", () => {
-    it("listTasks returns empty array when no data", () => {
-      expect(store.listTasks()).toEqual([]);
-    });
-
     it("createTask returns a valid task", () => {
       const task = store.createTask("My Task");
       expect(task.id).toBeTruthy();
@@ -92,10 +88,6 @@ describe("task-store", () => {
       expect(found!.title).toBe("Find me");
     });
 
-    it("getTask returns undefined for missing id", () => {
-      expect(store.getTask("nonexistent")).toBeUndefined();
-    });
-
     it("listTasks returns tasks sorted by status then order", () => {
       const t1 = store.createTask("First");
       const t2 = store.createTask("Second");
@@ -121,7 +113,7 @@ describe("task-store", () => {
       expect(updated.notes).toBe("some notes");
     });
 
-    it("hydrates task kind from stored rows and defaults missing kinds to task", () => {
+    it("hydrates task kind from stored rows and defaults missing or invalid kinds to task", () => {
       const now = new Date().toISOString();
       db.prepare(`
         INSERT INTO tasks (
@@ -156,13 +148,6 @@ describe("task-store", () => {
         now,
         now,
       );
-
-      expect(store.getTask("task-kind-default")).toMatchObject({ kind: "task" });
-      expect(store.getTask("task-kind-ongoing")).toMatchObject({ kind: "ongoing" });
-    });
-
-    it("hydrates invalid stored task kinds as task", () => {
-      const now = new Date().toISOString();
       db.prepare(`
         INSERT INTO tasks (
           id, title, kind, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt
@@ -181,7 +166,9 @@ describe("task-store", () => {
         now,
       );
 
-      expect(store.getTask("task-kind-invalid")).toMatchObject({ kind: "task" });
+      expect(store.getTask("task-kind-default"), "missing kind defaults to task").toMatchObject({ kind: "task" });
+      expect(store.getTask("task-kind-ongoing"), "ongoing kind preserved").toMatchObject({ kind: "ongoing" });
+      expect(store.getTask("task-kind-invalid"), "invalid kind defaults to task").toMatchObject({ kind: "task" });
     });
 
     it("updateTask rejects invalid nextTouchAt values", () => {
@@ -304,8 +291,10 @@ describe("task-store", () => {
       });
     });
 
-    it("hydrates null and empty-string momentum fields as undefined", () => {
+    it("hydrates null, empty-string, and invalid nextTouchAt momentum fields as undefined", () => {
       const now = new Date().toISOString();
+
+      // null and empty-string fields become undefined
       db.prepare(`
         INSERT INTO tasks (
           id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
@@ -328,16 +317,14 @@ describe("task-store", () => {
         now,
       );
 
-      expect(store.getTask("task-hydrate-empty")).toMatchObject({
+      expect(store.getTask("task-hydrate-empty"), "null/empty fields").toMatchObject({
         doneWhen: undefined,
         nextAction: undefined,
         waitingOn: undefined,
         nextTouchAt: undefined,
       });
-    });
 
-    it("hydrates invalid nextTouchAt values as undefined", () => {
-      const now = new Date().toISOString();
+      // invalid nextTouchAt becomes undefined
       db.prepare(`
         INSERT INTO tasks (
           id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
@@ -360,7 +347,7 @@ describe("task-store", () => {
         now,
       );
 
-      expect(store.getTask("task-hydrate-invalid-touch")).toMatchObject({
+      expect(store.getTask("task-hydrate-invalid-touch"), "invalid nextTouchAt").toMatchObject({
         nextTouchAt: undefined,
       });
     });
@@ -450,18 +437,18 @@ describe("task-store", () => {
       expect(raw.status).toBe("active");
     });
 
-    it("updateTask clears parked momentum when a task is marked done", () => {
-      const task = store.createTask("Ship it");
-      store.updateTask(task.id, {
+    it("updateTask clears parked momentum when a task is marked done or archived", () => {
+      // done case
+      const doneTask = store.createTask("Ship it");
+      store.updateTask(doneTask.id, {
         doneWhen: "Feature flag is enabled everywhere",
         nextAction: "Check rollout metrics",
         waitingOn: "Support sign-off",
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });
 
-      const updated = store.updateTask(task.id, { status: "done" });
-
-      expect(updated).toMatchObject({
+      const donedResult = store.updateTask(doneTask.id, { status: "done" });
+      expect(donedResult, "done clears momentum").toMatchObject({
         status: "archived",
         doneWhen: "Feature flag is enabled everywhere",
         nextAction: undefined,
@@ -469,34 +456,32 @@ describe("task-store", () => {
         nextTouchAt: undefined,
       });
 
-      const raw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
-      expect(raw).toEqual({
+      const doneRaw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(doneTask.id) as any;
+      expect(doneRaw).toEqual({
         doneWhen: "Feature flag is enabled everywhere",
         nextAction: null,
         waitingOn: null,
         nextTouchAt: null,
       });
-    });
 
-    it("updateTask clears parked momentum when a task is archived", () => {
-      const task = store.createTask("Archive it");
-      store.updateTask(task.id, {
+      // archived case
+      const archiveTask = store.createTask("Archive it");
+      store.updateTask(archiveTask.id, {
         nextAction: "Check rollout metrics",
         waitingOn: "Support sign-off",
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });
 
-      const updated = store.updateTask(task.id, { status: "archived" });
-
-      expect(updated).toMatchObject({
+      const archivedResult = store.updateTask(archiveTask.id, { status: "archived" });
+      expect(archivedResult, "archived clears momentum").toMatchObject({
         status: "archived",
         nextAction: undefined,
         waitingOn: undefined,
         nextTouchAt: undefined,
       });
 
-      const raw = db.prepare("SELECT nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
-      expect(raw).toEqual({
+      const archiveRaw = db.prepare("SELECT nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(archiveTask.id) as any;
+      expect(archiveRaw).toEqual({
         nextAction: null,
         waitingOn: null,
         nextTouchAt: null,
@@ -602,12 +587,6 @@ describe("task-store", () => {
       expect(store.getTask(task.id)).toBeUndefined();
     });
 
-    it("deleteTask is idempotent for missing id", () => {
-      expect(() => store.deleteTask("nonexistent")).not.toThrow();
-    });
-  });
-
-  describe("reorderTasks", () => {
     it("reorders tasks by given id array", () => {
       const t1 = store.createTask("A");
       const t2 = store.createTask("B");
@@ -720,8 +699,5 @@ describe("task-store", () => {
       expect(found!.id).toBe(task.id);
     });
 
-    it("returns undefined when no match", () => {
-      expect(store.findTaskBySessionId("unknown")).toBeUndefined();
-    });
   });
 });

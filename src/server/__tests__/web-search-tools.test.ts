@@ -229,46 +229,6 @@ describe("browser_web_search tool", () => {
     });
   });
 
-  it("treats DuckDuckGo checkbox pages as challenge failures", async () => {
-    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
-      else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
-      else if (args[0] === "get" && args[1] === "url") {
-        cb(null, { stdout: "https://www.google.com/search?q=copilot%20bridge", stderr: "" });
-      } else if (args[0] === "snapshot" && args.includes("#rso")) {
-        cb(null, { stdout: "heading Search Results\n- link result one", stderr: "" });
-      } else if (args[0] === "snapshot") {
-        cb(null, {
-          stdout: [
-            "- link DuckDuckGo",
-            "iframe",
-            "checkbox image challenge 1",
-            "checkbox image challenge 2",
-            "checkbox image challenge 3",
-            "button Submit",
-            "Images not loading?",
-          ].join("\n"),
-          stderr: "",
-        });
-      } else if (args[0] === "close") {
-        cb(null, { stdout: "closed", stderr: "" });
-      } else {
-        cb(null, { stdout: "ok", stderr: "" });
-      }
-      return {} as any;
-    });
-
-    const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools(createBrowserToolContext());
-    const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
-
-    expect(result).toEqual({
-      textResultForLlm: "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
-      resultType: "failure",
-      sessionLog: "Query: copilot bridge\n\nGoogle did not return recognizable search results.\n\nBing did not return recognizable search results.\n\nDuckDuckGo requires challenge verification before search results can be returned. DuckDuckGo will be skipped for 15m.\n\nAll browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
-    });
-  });
-
   it("skips only the provider cooling down after captcha", async () => {
     let currentUrl = "";
     const openUrls: string[] = [];

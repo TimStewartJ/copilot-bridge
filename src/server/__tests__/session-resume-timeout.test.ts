@@ -55,52 +55,63 @@ describe("resumeSessionWithTimeout", () => {
     expect(session.disconnect).not.toHaveBeenCalled();
   });
 
-  it("disconnects a session that resolves after the timeout", async () => {
-    vi.useFakeTimers();
-    const disconnect = vi.fn().mockResolvedValue(undefined);
-    const session = { sessionId: "late", disconnect };
-    let resolveResume!: (value: typeof session) => void;
-    const resume = new Promise<typeof session>((resolve) => {
-      resolveResume = resolve;
-    });
+  it("disconnects the session after timeout, using default or custom disconnectLateSession hook", async () => {
+    // disconnects a session that resolves after the timeout (default disconnect method)
+    {
+      vi.useFakeTimers();
+      try {
+        const disconnect = vi.fn().mockResolvedValue(undefined);
+        const session = { sessionId: "late", disconnect };
+        let resolveResume!: (value: typeof session) => void;
+        const resume = new Promise<typeof session>((resolve) => {
+          resolveResume = resolve;
+        });
 
-    const result = resumeSessionWithTimeout(resume, "resumeSession timed out after 60s");
-    const rejection = expect(result).rejects.toThrow("resumeSession timed out after 60s");
-    await vi.advanceTimersByTimeAsync(SESSION_RESUME_TIMEOUT_MS);
-    await rejection;
+        const result = resumeSessionWithTimeout(resume, "resumeSession timed out after 60s");
+        const rejection = expect(result).rejects.toThrow("resumeSession timed out after 60s");
+        await vi.advanceTimersByTimeAsync(SESSION_RESUME_TIMEOUT_MS);
+        await rejection;
 
-    resolveResume(session);
-    await flush();
+        resolveResume(session);
+        await flush();
 
-    expect(disconnect).toHaveBeenCalledTimes(1);
+        expect(disconnect).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
+    // uses a custom disconnectLateSession hook for late resolves
+    {
+      vi.useFakeTimers();
+      try {
+        const disconnectLateSession = vi.fn().mockResolvedValue(undefined);
+        const session = { sessionId: "late-custom" };
+        let resolveResume!: (value: typeof session) => void;
+        const resume = new Promise<typeof session>((resolve) => {
+          resolveResume = resolve;
+        });
+
+        const result = resumeSessionWithTimeout(
+          resume,
+          "resumeSession timed out after 60s",
+          SESSION_RESUME_TIMEOUT_MS,
+          { disconnectLateSession },
+        );
+        const rejection = expect(result).rejects.toThrow("resumeSession timed out after 60s");
+        await vi.advanceTimersByTimeAsync(SESSION_RESUME_TIMEOUT_MS);
+        await rejection;
+
+        resolveResume(session);
+        await flush();
+
+        expect(disconnectLateSession).toHaveBeenCalledTimes(1);
+        expect(disconnectLateSession).toHaveBeenCalledWith(session);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
-
-  it("uses a custom disconnectLateSession hook for late resolves", async () => {
-    vi.useFakeTimers();
-    const disconnectLateSession = vi.fn().mockResolvedValue(undefined);
-    const session = { sessionId: "late-custom" };
-    let resolveResume!: (value: typeof session) => void;
-    const resume = new Promise<typeof session>((resolve) => {
-      resolveResume = resolve;
-    });
-
-    const result = resumeSessionWithTimeout(
-      resume,
-      "resumeSession timed out after 60s",
-      SESSION_RESUME_TIMEOUT_MS,
-      { disconnectLateSession },
-    );
-    const rejection = expect(result).rejects.toThrow("resumeSession timed out after 60s");
-    await vi.advanceTimersByTimeAsync(SESSION_RESUME_TIMEOUT_MS);
-    await rejection;
-
-    resolveResume(session);
-    await flush();
-
-    expect(disconnectLateSession).toHaveBeenCalledTimes(1);
-    expect(disconnectLateSession).toHaveBeenCalledWith(session);
-  });
-
   it("observes a late rejection without disconnecting", async () => {
     vi.useFakeTimers();
     const onLateError = vi.fn();

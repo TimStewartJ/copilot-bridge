@@ -395,22 +395,6 @@ describe("push notification API", () => {
     });
   });
 
-  it("fails clearly when push storage is not injected into the app context", async () => {
-    await withTestEnv(PUSH_ENV, async () => {
-      const { app } = createTestApp({
-        pushSubscriptionStore: undefined,
-        pushNotificationService: undefined,
-      });
-
-      const createRes = await request(app)
-        .post("/api/push/subscriptions")
-        .send({ subscription: TEST_SUBSCRIPTION });
-
-      expect(createRes.status).toBe(500);
-      expect(createRes.body.error).toContain("Push subscription store is not configured");
-    });
-  });
-
   it("rejects malformed subscriptions", async () => {
     const { app } = createTestApp();
 

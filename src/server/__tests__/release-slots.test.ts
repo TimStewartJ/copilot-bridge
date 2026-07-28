@@ -57,7 +57,8 @@ describe("release slots", () => {
     expect(readActiveRelease(dataDir)).toBeNull();
   });
 
-  it("prepares an inactive slot with owned dependencies and copied source exclusions", async () => {
+  it("prepares an inactive slot and also when the data directory is inside the source tree", async () => {
+    // Standard prepare: owned dependencies and copied source exclusions
     const sourceDir = makeTestDir("release-slot-source");
     const dataDir = makeTestDir("release-slot-data");
     writeSourceFixture(sourceDir);
@@ -114,19 +115,18 @@ describe("release slots", () => {
     expect(JSON.parse(readFileSync(join(dataDir, "active-release.json"), "utf-8"))).toMatchObject({
       id: result.manifest.id,
     });
-  });
 
-  it("prepares when the data directory is inside the source tree", async () => {
-    const sourceDir = makeTestDir("release-slot-source-with-nested-data");
-    const dataDir = join(sourceDir, "data");
-    writeSourceFixture(sourceDir);
-    mkdirSync(join(dataDir, "release-slots", ".orphan.tmp", "src"), { recursive: true });
-    writeFileSync(join(dataDir, "release-slots", ".orphan.tmp", "src", "stale.ts"), "do-not-copy");
-    const commands: Array<{ command: string; cwd: string }> = [];
+    // Data directory inside source tree: must still exclude the data dir and orphan tmps
+    const sourceDir2 = makeTestDir("release-slot-source-with-nested-data");
+    const dataDir2 = join(sourceDir2, "data");
+    writeSourceFixture(sourceDir2);
+    mkdirSync(join(dataDir2, "release-slots", ".orphan.tmp", "src"), { recursive: true });
+    writeFileSync(join(dataDir2, "release-slots", ".orphan.tmp", "src", "stale.ts"), "do-not-copy");
+    const commands2: Array<{ command: string; cwd: string }> = [];
 
-    const result = await prepareReleaseSlot({
-      sourceDir,
-      dataDir,
+    const result2 = await prepareReleaseSlot({
+      sourceDir: sourceDir2,
+      dataDir: dataDir2,
       commitSha: "fedcba9876543210",
       source: "release_update",
       validationMode: "deploy",
@@ -134,7 +134,7 @@ describe("release slots", () => {
       installTimeoutMs: 30_000,
       now: new Date("2026-05-18T21:00:00.000Z"),
       run: async (command, cwd) => {
-        commands.push({ command, cwd });
+        commands2.push({ command, cwd });
         if (command === "npm run build") {
           mkdirSync(join(cwd, "dist", "server"), { recursive: true });
           writeFileSync(join(cwd, "dist", "server", "index.js"), "console.log('built');\n");
@@ -143,29 +143,30 @@ describe("release slots", () => {
       },
     });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.output);
-    expect(commands.map((entry) => entry.command)).toEqual(["npm install --test", "npm run build"]);
-    expect(existsSync(join(result.manifest.root, "src", "server", "index.ts"))).toBe(true);
-    expect(existsSync(join(result.manifest.root, "src", "data", "fixture.ts"))).toBe(true);
-    expect(existsSync(join(result.manifest.root, ".github", "workflows", "ci.yml"))).toBe(true);
-    expect(existsSync(join(result.manifest.root, "data"))).toBe(false);
-    expect(existsSync(join(result.manifest.root, "coverage"))).toBe(false);
-    expect(existsSync(join(result.manifest.root, ".vitest-slowest.json"))).toBe(false);
-    expect(existsSync(join(result.manifest.root, ".git"))).toBe(false);
-    expect(existsSync(join(result.manifest.root, "dist", "stale.txt"))).toBe(false);
+    expect(result2.ok).toBe(true);
+    if (!result2.ok) throw new Error(result2.output);
+    expect(commands2.map((entry) => entry.command)).toEqual(["npm install --test", "npm run build"]);
+    expect(existsSync(join(result2.manifest.root, "src", "server", "index.ts"))).toBe(true);
+    expect(existsSync(join(result2.manifest.root, "src", "data", "fixture.ts"))).toBe(true);
+    expect(existsSync(join(result2.manifest.root, ".github", "workflows", "ci.yml"))).toBe(true);
+    expect(existsSync(join(result2.manifest.root, "data"))).toBe(false);
+    expect(existsSync(join(result2.manifest.root, "coverage"))).toBe(false);
+    expect(existsSync(join(result2.manifest.root, ".vitest-slowest.json"))).toBe(false);
+    expect(existsSync(join(result2.manifest.root, ".git"))).toBe(false);
+    expect(existsSync(join(result2.manifest.root, "dist", "stale.txt"))).toBe(false);
   });
 
-  it("retries transient Windows rename failures before finalizing the slot", async () => {
-    const sourceDir = makeTestDir("release-slot-rename-retry-source");
-    const dataDir = makeTestDir("release-slot-rename-retry-data");
-    writeSourceFixture(sourceDir);
+  it("retries transient Windows rename failures and does not retry non-transient failures", async () => {
+    // Transient (EPERM/EACCES/EBUSY) failures are retried
+    const sourceDir1 = makeTestDir("release-slot-rename-retry-source");
+    const dataDir1 = makeTestDir("release-slot-rename-retry-data");
+    writeSourceFixture(sourceDir1);
     const waits: number[] = [];
     let attempts = 0;
 
-    const result = await prepareReleaseSlot({
-      sourceDir,
-      dataDir,
+    const result1 = await prepareReleaseSlot({
+      sourceDir: sourceDir1,
+      dataDir: dataDir1,
       commitSha: "abcdef1234567890",
       source: "staging_deploy",
       validationMode: "deploy",
@@ -193,20 +194,19 @@ describe("release slots", () => {
       },
     });
 
-    expect(result.ok).toBe(true);
+    expect(result1.ok).toBe(true);
     expect(attempts).toBe(4);
     expect(waits).toEqual([100, 250, 500]);
-  });
 
-  it("does not retry non-transient release slot rename failures", async () => {
-    const sourceDir = makeTestDir("release-slot-rename-failure-source");
-    const dataDir = makeTestDir("release-slot-rename-failure-data");
-    writeSourceFixture(sourceDir);
-    let attempts = 0;
+    // Non-transient (ENOENT) failures are not retried
+    const sourceDir2 = makeTestDir("release-slot-rename-failure-source");
+    const dataDir2 = makeTestDir("release-slot-rename-failure-data");
+    writeSourceFixture(sourceDir2);
+    let attempts2 = 0;
 
-    const result = await prepareReleaseSlot({
-      sourceDir,
-      dataDir,
+    const result2 = await prepareReleaseSlot({
+      sourceDir: sourceDir2,
+      dataDir: dataDir2,
       commitSha: "abcdef1234567890",
       source: "staging_deploy",
       validationMode: "deploy",
@@ -221,7 +221,7 @@ describe("release slots", () => {
         return { ok: true, output: "" };
       },
       renamePath: async () => {
-        attempts++;
+        attempts2++;
         const error = new Error("missing source") as NodeJS.ErrnoException;
         error.code = "ENOENT";
         throw error;
@@ -231,12 +231,12 @@ describe("release slots", () => {
       },
     });
 
-    expect(result).toMatchObject({
+    expect(result2).toMatchObject({
       ok: false,
       command: "prepare release slot",
       output: "missing source",
     });
-    expect(attempts).toBe(1);
+    expect(attempts2).toBe(1);
   });
 
   it("prunes stale dotted temp directories without removing finalized or live slots", () => {
@@ -259,15 +259,14 @@ describe("release slots", () => {
     expect(existsSync(liveTemp)).toBe(true);
   });
 
-  it("prunes a stale temp directory whose recorded PID was reused by another process", () => {
-    const dataDir = makeTestDir("release-slot-prune-pid-reuse");
-    const releaseParent = getReleaseSlotsDir(dataDir);
-    // A live process that did not create this directory — exactly what PID
-    // reuse looks like from the pruner's point of view.
+  it("prunes a stale temp directory whose recorded PID was reused or is not alive", () => {
+    // PID reuse: a live process that did not create this directory
+    const dataDir1 = makeTestDir("release-slot-prune-pid-reuse");
+    const releaseParent1 = getReleaseSlotsDir(dataDir1);
     const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
     try {
-      const reusedPidTemp = join(releaseParent, `.abandoned.${child.pid}.tmp`);
-      const recentTemp = join(releaseParent, `.building.${child.pid}.tmp`);
+      const reusedPidTemp = join(releaseParent1, `.abandoned.${child.pid}.tmp`);
+      const recentTemp = join(releaseParent1, `.building.${child.pid}.tmp`);
 
       mkdirSync(join(reusedPidTemp, "node_modules"), { recursive: true });
       writeFileSync(join(reusedPidTemp, "node_modules", "big.js"), "abandoned");
@@ -277,7 +276,7 @@ describe("release slots", () => {
       const staleSeconds = (Date.now() - 3 * 60 * 60_000) / 1000;
       utimesSync(reusedPidTemp, staleSeconds, staleSeconds);
 
-      expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(1);
+      expect(pruneReleaseSlots(dataDir1, { keepRecent: 1 }), "reused PID").toBe(1);
       // PID liveness alone no longer pins an abandoned tree...
       expect(existsSync(reusedPidTemp)).toBe(false);
       // ...but a live PID with recent progress is still protected.
@@ -285,6 +284,17 @@ describe("release slots", () => {
     } finally {
       child.kill();
     }
+
+    // Dead PID (above Linux pid_max, never allocated): pruned regardless of age
+    const dataDir2 = makeTestDir("release-slot-prune-dead-pid");
+    const releaseParent2 = getReleaseSlotsDir(dataDir2);
+    // PID 2^22 is above the default Linux pid_max and never allocated here.
+    const deadPidTemp = join(releaseParent2, ".crashed.4194303.tmp");
+    mkdirSync(deadPidTemp, { recursive: true });
+    writeFileSync(join(deadPidTemp, "marker"), "crashed");
+
+    expect(pruneReleaseSlots(dataDir2, { keepRecent: 1 }), "dead PID").toBe(1);
+    expect(existsSync(deadPidTemp)).toBe(false);
   });
 
   it("keeps a temp directory whose PID is alive and whose tree was touched recently", () => {
@@ -296,18 +306,6 @@ describe("release slots", () => {
 
     expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(0);
     expect(existsSync(liveTemp)).toBe(true);
-  });
-
-  it("prunes a temp directory whose recorded PID is not alive regardless of age", () => {
-    const dataDir = makeTestDir("release-slot-prune-dead-pid");
-    const releaseParent = getReleaseSlotsDir(dataDir);
-    // PID 2^22 is above the default Linux pid_max and never allocated here.
-    const deadPidTemp = join(releaseParent, ".crashed.4194303.tmp");
-    mkdirSync(deadPidTemp, { recursive: true });
-    writeFileSync(join(deadPidTemp, "marker"), "crashed");
-
-    expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(1);
-    expect(existsSync(deadPidTemp)).toBe(false);
   });
 
   it("rejects candidate metadata outside the release slot directory", () => {

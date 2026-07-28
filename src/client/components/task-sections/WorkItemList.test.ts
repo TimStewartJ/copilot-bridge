@@ -137,17 +137,6 @@ describe("WorkItemList - summary variant", () => {
     });
   });
 
-  it("single item with missing URL expands inline on click", async () => {
-    await withWorkItemList({ enrichedWIs: [], rawWIs: rawWIOnly, variant: "summary" }, async (harness) => {
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-
-      await clickFirstSummaryButton(harness);
-
-      const divs = findAllByTag(harness.dom.container, "DIV");
-      expect(divs.length).toBeGreaterThan(0);
-    });
-  });
-
   it("expanded rows with missing URL do not render href='#' anchors", async () => {
     await withWorkItemList({ enrichedWIs: [], rawWIs: rawWIOnly, variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);

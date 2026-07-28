@@ -489,3 +489,56 @@ describe("tool call tree helpers", () => {
     expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-b", "bash-a"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// tool-args helpers (merged from tool-args.test.ts)
+// ---------------------------------------------------------------------------
+import { formatToolArgsDetails, hasToolArgs, summarizeToolArgs } from "./tool-args";
+import { testPath } from "../../server/__tests__/test-paths.js";
+
+describe("tool arg helpers", () => {
+  it("summarizes freeform string arguments without splitting characters", () => {
+    expect(summarizeToolArgs("*** Begin Patch\n*** Update File: foo.ts")).toBe("*** Begin Patch\n*** Update File: foo.ts");
+  });
+
+  it("keeps object-backed summaries focused on common keys", () => {
+    expect(summarizeToolArgs({ command: "npm run build -- --watch" }, { maxLength: 12 })).toBe("npm run b...");
+    expect(summarizeToolArgs({ path: testPath("a", "b", "c", "file.ts") })).toBe("b/c/file.ts");
+  });
+
+  it("formats detail output for both strings and objects", () => {
+    expect(formatToolArgsDetails("line 1\nline 2")).toBe("line 1\nline 2");
+    expect(formatToolArgsDetails({ shellId: "123", delay: 10 })).toBe('{\n  "shellId": "123",\n  "delay": 10\n}');
+  });
+
+  it("detects whether any arguments are present", () => {
+    expect(hasToolArgs(undefined)).toBe(false);
+    expect(hasToolArgs("")).toBe(false);
+    expect(hasToolArgs([])).toBe(false);
+    expect(hasToolArgs({})).toBe(false);
+    expect(hasToolArgs(false)).toBe(true);
+    expect(hasToolArgs("patch")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tool-call-status helpers (merged from tool-call-status.test.ts)
+// ---------------------------------------------------------------------------
+import { getToolCallStatus, getToolCallStatusLabel } from "./tool-call-status";
+
+describe("tool call status helpers", () => {
+  it("maps tool call state to status and label: running, done, failed, partial running", () => {
+    // incomplete → running
+    expect(getToolCallStatus({})).toBe("running");
+    expect(getToolCallStatusLabel("running")).toBe("Running");
+    // completedAt or success:true → done
+    expect(getToolCallStatus({ completedAt: "2026-04-22T20:00:00.000Z" })).toBe("done");
+    expect(getToolCallStatus({ success: true })).toBe("done");
+    // success:false → failed (even with completedAt and result)
+    expect(getToolCallStatus({ success: false })).toBe("failed");
+    expect(getToolCallStatus({ success: false, completedAt: "2026-04-22T20:00:00.000Z", result: "traceback" })).toBe("failed");
+    expect(getToolCallStatusLabel("failed")).toBe("Failed");
+    // partial output without explicit completion → still running
+    expect(getToolCallStatus({ result: "Agent summary" })).toBe("running");
+  });
+});

@@ -85,33 +85,29 @@ describe("launcher managed-child shutdown", () => {
     expect(terminateProcessTree).toHaveBeenCalledTimes(1);
   });
 
-  it("fails closed when forced stop cannot be verified", async () => {
-    const server = managed("server", 300);
+  it("fails closed when forced stop cannot be verified or child identity was not captured", async () => {
+    // Unverifiable stop: survivors remain
+    const server1 = managed("server", 300);
     const root = identity(300);
-    const deps = dependencies({
+    await expect(stopLauncherChild(server1, dependencies({
       terminateProcessTree: vi.fn(async () => ({
         ok: false as const,
         status: "survivors" as const,
         root,
         survivors: [root],
       })),
-    });
-
-    await expect(stopLauncherChild(server, deps, {
+    }), {
       deadline: createDeadline(5_000),
     })).resolves.toEqual({ ok: false, reason: "survivors" });
-  });
 
-  it("refuses destructive work when child identity was not captured", async () => {
-    const server: LauncherChild = {
+    // Identity not captured: no destructive work should run
+    const server2: LauncherChild = {
       label: "server",
       process: child(400),
       identity: Promise.resolve(null),
     };
     const terminateProcessTree = vi.fn();
-    const deps = dependencies({ terminateProcessTree });
-
-    await expect(stopLauncherChild(server, deps, {
+    await expect(stopLauncherChild(server2, dependencies({ terminateProcessTree }), {
       deadline: createDeadline(5_000),
     })).resolves.toEqual({ ok: false, reason: "identity-unavailable" });
     expect(terminateProcessTree).not.toHaveBeenCalled();

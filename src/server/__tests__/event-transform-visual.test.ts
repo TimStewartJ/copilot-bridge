@@ -70,19 +70,16 @@ describe("event-transform: visual entries", () => {
     expect(v.visual?.altText).toBe("chart alt");
   });
 
-  it("emits a visual entry when the persisted tool result is a JSON string", () => {
-    const entries = transformEventsToMessages(
+  it("emits a visual entry when the persisted tool result is a JSON string or wraps JSON in content", () => {
+    // JSON string form (persisted as serialized result)
+    const entriesStr = transformEventsToMessages(
       makePublishVisualEvents({ result: JSON.stringify(SAMPLE_VISUAL_RESULT) }),
       SESSION_ID,
     );
+    expect(entriesStr.filter((e) => e.type === "visual")[0].visual?.artifactId, "JSON string form").toBe("550e8400-e29b-41d4-a716-446655440000");
 
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
-    expect(visualEntries[0].visual?.artifactId).toBe("550e8400-e29b-41d4-a716-446655440000");
-  });
-
-  it("emits a visual entry when the persisted tool result wraps JSON in content", () => {
-    const entries = transformEventsToMessages(
+    // content-wrapped form (persisted with content key)
+    const entriesWrapped = transformEventsToMessages(
       makePublishVisualEvents({
         result: {
           content: JSON.stringify(SAMPLE_VISUAL_RESULT),
@@ -91,10 +88,7 @@ describe("event-transform: visual entries", () => {
       }),
       SESSION_ID,
     );
-
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
-    expect(visualEntries[0].visual?.artifactId).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(entriesWrapped.filter((e) => e.type === "visual")[0].visual?.artifactId, "content-wrapped form").toBe("550e8400-e29b-41d4-a716-446655440000");
   });
 
   it("also emits the tool entry for the publish_visual call", () => {
@@ -133,46 +127,30 @@ describe("event-transform: visual entries", () => {
     expect(visualEntries).toHaveLength(0);
   });
 
-  it("does not emit a visual entry when the result URL only matches in a query string", () => {
+  it("does not emit a visual entry when the result URL contains the artifactId only in a query string, fragment, or other origin", () => {
     const artifactId = "550e8400-e29b-41d4-a716-446655440000";
-    const entries = transformEventsToMessages(makePublishVisualEvents({
-      result: {
-        ...SAMPLE_VISUAL_RESULT,
-        artifactId,
+    const cases = [
+      {
+        label: "query string",
         url: `/api/admin/dangerous?fake=/sessions/${SESSION_ID}/visuals/${artifactId}`,
       },
-    }), SESSION_ID);
-
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(0);
-  });
-
-  it("does not emit a visual entry when the result URL only matches in a fragment", () => {
-    const artifactId = "550e8400-e29b-41d4-a716-446655440000";
-    const entries = transformEventsToMessages(makePublishVisualEvents({
-      result: {
-        ...SAMPLE_VISUAL_RESULT,
-        artifactId,
+      {
+        label: "fragment",
         url: `/api/admin/dangerous#/sessions/${SESSION_ID}/visuals/${artifactId}`,
       },
-    }), SESSION_ID);
-
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(0);
-  });
-
-  it("does not emit a visual entry when URL parsing resolves to another origin", () => {
-    const artifactId = "550e8400-e29b-41d4-a716-446655440000";
-    const entries = transformEventsToMessages(makePublishVisualEvents({
-      result: {
-        ...SAMPLE_VISUAL_RESULT,
-        artifactId,
+      {
+        // URL parser may resolve /\\ as a different origin
+        label: "other origin",
         url: `/\\evil.example/api/sessions/${SESSION_ID}/visuals/${artifactId}`,
       },
-    }), SESSION_ID);
-
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(0);
+    ];
+    for (const { label, url } of cases) {
+      const entries = transformEventsToMessages(
+        makePublishVisualEvents({ result: { ...SAMPLE_VISUAL_RESULT, artifactId, url } }),
+        SESSION_ID,
+      );
+      expect(entries.filter((e) => e.type === "visual"), label).toHaveLength(0);
+    }
   });
 
   it("does not emit a visual entry for other tools with __kind field", () => {
@@ -301,17 +279,49 @@ describe("event-transform: mermaid visual entries", () => {
     ];
   }
 
-  it("emits a mermaid visual entry with metadata only", () => {
-    const entries = transformEventsToMessages(makeMermaidEvents(), SESSION_ID);
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
+  it("emits a mermaid, vega-lite, and html visual entry each with metadata only (no source)", () => {
+    // mermaid
+    const mermaidEntries = transformEventsToMessages(makeMermaidEvents(), SESSION_ID);
+    const mv = mermaidEntries.filter((e) => e.type === "visual")[0];
+    expect(mv.visual?.kind, "mermaid kind").toBe("mermaid");
+    expect(mv.visual?.artifactId, "mermaid artifactId").toBe("770e8400-e29b-41d4-a716-446655440000");
+    expect(mv.visual?.title, "mermaid title").toBe("My Diagram");
+    expect(mv.visual?.mimeType, "mermaid mimeType").toBe("text/vnd.mermaid");
+    expect(mv.visual?.source, "mermaid no source").toBeUndefined();
 
-    const v = visualEntries[0];
-    expect(v.visual?.kind).toBe("mermaid");
-    expect(v.visual?.artifactId).toBe("770e8400-e29b-41d4-a716-446655440000");
-    expect(v.visual?.title).toBe("My Diagram");
-    expect(v.visual?.mimeType).toBe("text/vnd.mermaid");
-    expect(v.visual?.source).toBeUndefined();
+    // vega-lite
+    const vegaEvents = [
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tc-vl-meta", toolName: "publish_visual", arguments: { kind: "vega-lite", title: "My Bar Chart" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:02.000Z", data: { toolCallId: "tc-vl-meta", success: true, result: {
+        __kind: "visual.published", success: true, artifactId: "990e8400-e29b-41d4-a716-446655440000", kind: "vega-lite", title: "My Bar Chart",
+        displayName: "My_Bar_Chart.vl.json", mimeType: "application/vnd.vegalite+json", size: 200,
+        url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/990e8400-e29b-41d4-a716-446655440000",
+        downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/990e8400-e29b-41d4-a716-446655440000/download",
+        source: JSON.stringify({ mark: "bar" }),
+      } } },
+    ];
+    const vegaEntries = transformEventsToMessages(vegaEvents, SESSION_ID);
+    const vv = vegaEntries.filter((e) => e.type === "visual")[0];
+    expect(vv.visual?.kind, "vega-lite kind").toBe("vega-lite");
+    expect(vv.visual?.mimeType, "vega-lite mimeType").toBe("application/vnd.vegalite+json");
+    expect(vv.visual?.source, "vega-lite no source").toBeUndefined();
+
+    // html
+    const htmlEvents = [
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tc-html-meta", toolName: "publish_visual", arguments: { kind: "html", title: "My Page" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:02.000Z", data: { toolCallId: "tc-html-meta", success: true, result: {
+        __kind: "visual.published", success: true, artifactId: "aa0e8400-e29b-41d4-a716-446655440000", kind: "html", title: "My Page",
+        displayName: "My_Page.html", mimeType: "text/html", size: 40,
+        url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440000",
+        downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440000/download",
+        source: "<html></html>",
+      } } },
+    ];
+    const htmlEntries = transformEventsToMessages(htmlEvents, SESSION_ID);
+    const hv = htmlEntries.filter((e) => e.type === "visual")[0];
+    expect(hv.visual?.kind, "html kind").toBe("html");
+    expect(hv.visual?.mimeType, "html mimeType").toBe("text/html");
+    expect(hv.visual?.source, "html no source").toBeUndefined();
   });
 
   it("does not include source field for image entries", () => {
@@ -388,93 +398,28 @@ describe("event-transform: vega-lite visual entries", () => {
     ];
   }
 
-  it("emits a vega-lite visual entry with metadata only", () => {
-    const entries = transformEventsToMessages(makeVegaLiteEvents(), SESSION_ID);
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
+  it("uses default mime types when mimeType is omitted: vega-lite and html", () => {
+    // vega-lite defaults to application/vnd.vegalite+json
+    const vegaEvents = makeVegaLiteEvents();
+    const vegaComplete = vegaEvents[1] as any;
+    const vegaResultWithoutMime = { ...vegaComplete.data.result } as any;
+    delete vegaResultWithoutMime.mimeType;
+    vegaComplete.data = { ...vegaComplete.data, result: vegaResultWithoutMime };
+    const vegaEntries = transformEventsToMessages(vegaEvents, SESSION_ID);
+    expect(vegaEntries.filter((e) => e.type === "visual")[0].visual?.mimeType, "vega-lite default mime").toBe("application/vnd.vegalite+json");
 
-    const v = visualEntries[0];
-    expect(v.visual?.kind).toBe("vega-lite");
-    expect(v.visual?.artifactId).toBe("990e8400-e29b-41d4-a716-446655440000");
-    expect(v.visual?.title).toBe("My Bar Chart");
-    expect(v.visual?.mimeType).toBe("application/vnd.vegalite+json");
-    expect(v.visual?.source).toBeUndefined();
-  });
-
-  it("uses default vega-lite mime type when not provided", () => {
-    const events = makeVegaLiteEvents();
-    const completeEvent = events[1] as any;
-    const resultWithoutMime = { ...completeEvent.data.result } as any;
-    delete resultWithoutMime.mimeType;
-    completeEvent.data = { ...completeEvent.data, result: resultWithoutMime };
-
-    const entries = transformEventsToMessages(events, SESSION_ID);
-    const v = entries.filter((e) => e.type === "visual")[0];
-    expect(v.visual?.mimeType).toBe("application/vnd.vegalite+json");
-  });
-});
-
-describe("event-transform: html visual entries", () => {
-  const HTML_RESULT = {
-    __kind: "visual.published",
-    success: true,
-    artifactId: "aa0e8400-e29b-41d4-a716-446655440000",
-    kind: "html",
-    title: "My Page",
-    displayName: "My_Page.html",
-    mimeType: "text/html",
-    size: 40,
-    url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440000",
-    downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440000/download",
-    source: "<html><body>Hello</body></html>",
-    content: "HTML sandbox published",
-  };
-
-  function makeHtmlEvents() {
-    return [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tc-html-1",
-          toolName: "publish_visual",
-          arguments: { kind: "html", title: "My Page" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: {
-          toolCallId: "tc-html-1",
-          success: true,
-          result: HTML_RESULT,
-        },
-      },
+    // html defaults to text/html
+    const htmlEvents = [
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tc-html-mime", toolName: "publish_visual", arguments: { kind: "html", title: "My Page" } } },
+      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:02.000Z", data: { toolCallId: "tc-html-mime", success: true, result: {
+        __kind: "visual.published", success: true, artifactId: "aa0e8400-e29b-41d4-a716-446655440001", kind: "html",
+        title: "My Page", displayName: "My_Page.html", size: 40,
+        url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440001",
+        downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440001/download",
+        source: "<html></html>",
+      } } },
     ];
-  }
-
-  it("emits an html visual entry with metadata only", () => {
-    const entries = transformEventsToMessages(makeHtmlEvents(), SESSION_ID);
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
-
-    const v = visualEntries[0];
-    expect(v.visual?.kind).toBe("html");
-    expect(v.visual?.artifactId).toBe("aa0e8400-e29b-41d4-a716-446655440000");
-    expect(v.visual?.title).toBe("My Page");
-    expect(v.visual?.mimeType).toBe("text/html");
-    expect(v.visual?.source).toBeUndefined();
-  });
-
-  it("uses text/html mime type when not provided", () => {
-    const events = makeHtmlEvents();
-    const completeEvent = events[1] as any;
-    const resultWithoutMime = { ...completeEvent.data.result } as any;
-    delete resultWithoutMime.mimeType;
-    completeEvent.data = { ...completeEvent.data, result: resultWithoutMime };
-
-    const entries = transformEventsToMessages(events, SESSION_ID);
-    const v = entries.filter((e) => e.type === "visual")[0];
-    expect(v.visual?.mimeType).toBe("text/html");
+    const htmlEntries = transformEventsToMessages(htmlEvents, SESSION_ID);
+    expect(htmlEntries.filter((e) => e.type === "visual")[0].visual?.mimeType, "html default mime").toBe("text/html");
   });
 });

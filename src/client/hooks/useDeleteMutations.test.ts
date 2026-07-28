@@ -10,7 +10,6 @@ import {
   markSessionUnread,
 } from "../api";
 import { queryKeys } from "../queryClient";
-import { useDeleteScheduleMutation } from "./queries/useSchedules";
 
 const originalFetch = globalThis.fetch;
 
@@ -43,23 +42,27 @@ const DELETE_HELPERS: Array<[string, () => Promise<void>]> = [
 ];
 
 describe("client delete helpers reject on non-OK responses", () => {
-  for (const [name, run] of DELETE_HELPERS) {
-    it(`${name} rejects with an ApiError on 400`, async () => {
+  it("all delete helpers reject with ApiError on 4xx/5xx and resolve on 200", async () => {
+    for (const [name, run] of DELETE_HELPERS) {
+      // 400 → ApiError with correct status and message
       mockFetchStatus(400, { error: "Cannot delete" });
-      await expect(run()).rejects.toBeInstanceOf(ApiError);
-      await expect(run()).rejects.toMatchObject({ status: 400, message: "Cannot delete" });
-    });
+      const err400 = await run().catch((e: unknown) => e);
+      expect(err400, `case: ${name} → 400`).toBeInstanceOf(ApiError);
+      expect((err400 as ApiError).status, `case: ${name} → 400 status`).toBe(400);
+      expect((err400 as ApiError).message, `case: ${name} → 400 message`).toBe("Cannot delete");
 
-    it(`${name} rejects with an ApiError on 503`, async () => {
+      // 503 → ApiError with correct status
       mockFetchStatus(503, { error: "Unavailable" });
-      await expect(run()).rejects.toMatchObject({ status: 503 });
-    });
+      const err503 = await run().catch((e: unknown) => e);
+      expect(err503, `case: ${name} → 503`).toBeInstanceOf(ApiError);
+      expect((err503 as ApiError).status, `case: ${name} → 503 status`).toBe(503);
 
-    it(`${name} resolves on 200`, async () => {
+      // 200 → resolves undefined
       mockFetchStatus(200, { ok: true });
-      await expect(run()).resolves.toBeUndefined();
-    });
-  }
+      const result = await run();
+      expect(result, `case: ${name} → 200`).toBeUndefined();
+    }
+  });
 
   it("falls back to the status text when the error body is not JSON", async () => {
     globalThis.fetch = vi.fn(async () => ({
@@ -128,8 +131,5 @@ describe("delete mutations do not evict cache entries on failure", () => {
     expect(queryClient.getQueryData(queryKeys.taskSchedules("task-1"))).toEqual([schedules[1]]);
   });
 
-  it("exposes the schedule delete mutation used by the app", () => {
-    // Guards against the hook being renamed away from the audited surface.
-    expect(typeof useDeleteScheduleMutation).toBe("function");
-  });
+
 });
