@@ -18,28 +18,6 @@ function formatMessageTimestamp(timestamp?: string): { primary: string; detail?:
   };
 }
 
-export async function writeClipboardText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textArea = document.createElement("textarea");
-  textArea.value = text;
-  textArea.setAttribute("readonly", "");
-  textArea.style.position = "fixed";
-  textArea.style.left = "-9999px";
-  textArea.style.top = "0";
-  document.body.appendChild(textArea);
-  textArea.select();
-  try {
-    const copied = document.execCommand("copy");
-    if (!copied) throw new Error("Browser copy command returned false");
-  } finally {
-    document.body.removeChild(textArea);
-  }
-}
-
 interface MessageActionToolbarProps {
   messageKey: string;
   message: ChatMessage;

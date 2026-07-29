@@ -15,6 +15,7 @@ import {
   type Task,
 } from "../api";
 import { queryClient, queryKeys } from "../queryClient";
+import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
@@ -319,8 +320,14 @@ export default function SessionList({
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
   const sessionModelLookupVersionRef = useRef<Record<string, number>>({});
+  const copyRequestRef = useRef(0);
 
-  const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); setMenuError(null); }, [rawCloseMenu]);
+  const closeMenu = useCallback(() => {
+    copyRequestRef.current += 1;
+    rawCloseMenu();
+    setCopied(false);
+    setMenuError(null);
+  }, [rawCloseMenu]);
 
   const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.id) : null;
 
@@ -850,9 +857,22 @@ export default function SessionList({
           <button
             className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
             onClick={() => {
-              navigator.clipboard.writeText(ctxMenu.id);
-              setCopied(true);
-              setTimeout(closeMenu, 600);
+              const sessionId = ctxMenu.id;
+              const requestId = copyRequestRef.current + 1;
+              copyRequestRef.current = requestId;
+              setCopied(false);
+              setMenuError(null);
+              void writeClipboardText(sessionId).then(() => {
+                if (copyRequestRef.current !== requestId) return;
+                setCopied(true);
+                setTimeout(() => {
+                  if (copyRequestRef.current !== requestId) return;
+                  closeMenu();
+                }, 600);
+              }, (error) => {
+                if (copyRequestRef.current !== requestId) return;
+                setMenuError(`Copy failed: ${getErrorMessage(error)}`);
+              });
             }}
           >
             {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}

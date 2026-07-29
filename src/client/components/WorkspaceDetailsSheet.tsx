@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, Copy, FolderOpen, RotateCcw, X } from "lucide-react";
 import { patchTask, type Session, type SessionWorkspaceWorktree, type Task, type TaskGitStatus } from "../api";
@@ -9,6 +9,7 @@ import {
   useSetSessionWorkspacePathMutation,
 } from "../hooks/queries/useSessionWorkspace";
 import { queryKeys } from "../queryClient";
+import { writeClipboardText } from "../lib/clipboard";
 import {
   areWorkspacePathsEqual,
   buildWorkspaceChoices,
@@ -29,11 +30,6 @@ interface WorkspaceDetailsSheetProps {
   taskGitStatus?: TaskGitStatus | null;
   onClose: () => void;
   onTaskUpdated?: () => void;
-}
-
-function copyPath(path?: string) {
-  if (!path) return;
-  void navigator.clipboard.writeText(path);
 }
 
 function pathLabel(path?: string) {
@@ -133,6 +129,15 @@ export default function WorkspaceDetailsSheet({
   const [draftPath, setDraftPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const copyRequestRef = useRef(0);
+  const copyFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    copyRequestRef.current += 1;
+    if (copyFlashTimerRef.current) clearTimeout(copyFlashTimerRef.current);
+    copyFlashTimerRef.current = null;
+  }, []);
 
   const selectSessionWorkspace = useSelectSessionWorkspaceMutation(sessionId, task.id);
   const setSessionWorkspacePath = useSetSessionWorkspacePathMutation(sessionId, task.id);
@@ -164,11 +169,24 @@ export default function WorkspaceDetailsSheet({
 
   const copyAndFlash = (path?: string) => {
     if (!path) return;
-    copyPath(path);
-    setCopiedPath(path);
-    window.setTimeout(() => {
-      setCopiedPath((current) => current === path ? null : current);
-    }, 1200);
+    const requestId = copyRequestRef.current + 1;
+    copyRequestRef.current = requestId;
+    if (copyFlashTimerRef.current) clearTimeout(copyFlashTimerRef.current);
+    copyFlashTimerRef.current = null;
+    setCopyError(null);
+    setCopiedPath(null);
+    void writeClipboardText(path).then(() => {
+      if (copyRequestRef.current !== requestId) return;
+      setCopiedPath(path);
+      copyFlashTimerRef.current = setTimeout(() => {
+        copyFlashTimerRef.current = null;
+        if (copyRequestRef.current !== requestId) return;
+        setCopiedPath((current) => current === path ? null : current);
+      }, 1200);
+    }, () => {
+      if (copyRequestRef.current !== requestId) return;
+      setCopyError("Failed to copy the workspace path to the clipboard.");
+    });
   };
 
   const refreshWorkspaceViews = async () => {
@@ -425,6 +443,11 @@ export default function WorkspaceDetailsSheet({
                 {copiedPath && areWorkspacePathsEqual(copiedPath, draftPath) ? <Check size={14} /> : <Copy size={14} />}
               </button>
             </div>
+            {copyError && (
+              <div className="mt-2 text-[11px] text-error" role="alert">
+                {copyError}
+              </div>
+            )}
             <div className="mt-2 text-[11px] text-text-muted">
               Use a discovered worktree above, or enter a custom path for a one-off session override.
             </div>

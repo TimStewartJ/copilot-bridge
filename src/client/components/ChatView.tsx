@@ -27,6 +27,7 @@ import {
 } from "../api";
 import { getCachedChatSnapshot, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import { writeClipboardText } from "../lib/clipboard";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
@@ -45,7 +46,6 @@ import ElicitationCancellationNotice from "./ElicitationCancellationNotice";
 import {
   MessageActionsMenu,
   MessageActionToolbar,
-  writeClipboardText,
   type MessageActionMenuTarget,
 } from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
