@@ -663,6 +663,16 @@ describe("task-store", () => {
       const found = store.getTask(task.id)!;
       expect(found.workItems).toEqual([{ id: "ENG-123", provider: "linear" }]);
     });
+
+    it("canonicalizes GitHub references so aliases link and unlink as one item", () => {
+      const task = store.createTask("GitHub task");
+      store.linkWorkItem(task.id, "https://github.com/octo/bridge/issues/12", "github");
+      store.linkWorkItem(task.id, "octo/bridge#12", "github");
+      expect(store.getTask(task.id)!.workItems).toEqual([{ id: "octo/bridge#12", provider: "github" }]);
+
+      store.unlinkWorkItem(task.id, "https://github.com/octo/bridge/pull/12", "github");
+      expect(store.getTask(task.id)!.workItems).toHaveLength(0);
+    });
   });
 
   describe("link/unlink PRs", () => {
