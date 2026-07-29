@@ -1276,6 +1276,23 @@ export function listDatabaseMigrations(): readonly DatabaseMigrationInfo[] {
   }));
 }
 
+/**
+ * Mark every one-time migration as applied without running it.
+ *
+ * Only valid for a database this process just created from nothing: every
+ * migration here repairs legacy state, so a database born at the current schema
+ * has nothing for them to do. `db-fresh-schema.test.ts` enforces that by
+ * asserting a fresh database is identical to a fully migrated one, so a future
+ * migration that *does* change a fresh database fails the build instead of
+ * being silently skipped.
+ */
+export function recordFreshDatabaseMigrations(db: DatabaseSync): void {
+  for (const migration of DATABASE_MIGRATIONS) {
+    if (migration.runMode !== "once") continue;
+    markSchemaMigration(db, migration.id);
+  }
+}
+
 export function runDatabaseMigrations(db: DatabaseSync): void {
   for (const migration of DATABASE_MIGRATIONS) {
     try {

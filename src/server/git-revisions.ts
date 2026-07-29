@@ -63,6 +63,13 @@ let cachedRemoteCommit:
     }
   | null = null;
 
+// The running commit is a process-lifetime boot snapshot, so it is read once per
+// module instance instead of once per reader. Re-reading it would spawn a
+// synchronous `git log` on every `createApiRouter` call, and a later read could
+// capture a commit newer than the one this process actually started from — which
+// is exactly the drift `runningVsLocal` exists to report.
+let cachedRunningCommit: GitCommitSnapshot | null = null;
+
 function runGitSync(args: string[], timeoutMs?: number): GitCommandResult {
   return runGitSyncInDir(ROOT, args, timeoutMs);
 }
@@ -239,7 +246,7 @@ async function compareCommitSnapshots(left: GitCommitSnapshot, right: GitCommitS
 }
 
 export function createBridgeGitRevisionReader(): BridgeGitRevisionReader {
-  const runningCommit = readCommitAtRefSync("HEAD", "HEAD @ server start");
+  const runningCommit = (cachedRunningCommit ??= readCommitAtRefSync("HEAD", "HEAD @ server start"));
 
   return async (options = {}) => {
     const [local, remote] = await Promise.all([
