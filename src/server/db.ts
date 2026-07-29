@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runDatabaseMigrations } from "./db-migrations.js";
+import { recordFreshDatabaseMigrations, runDatabaseMigrations } from "./db-migrations.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 const LEGACY_JSON_STATE_FILES = [
@@ -410,16 +410,31 @@ export function openDatabase(dataDir: string): DatabaseSync {
   return db;
 }
 
-/** Open an in-memory database (for tests) */
+/**
+ * Open an in-memory database (for tests).
+ *
+ * A `:memory:` database is always brand new, so the compatibility migrations
+ * have nothing to migrate. They are skipped and recorded instead of executed,
+ * which is enforced by the fresh-vs-migrated parity test in db-fresh-schema.test.ts.
+ */
 export function openMemoryDatabase(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
-  initSchema(db);
+  initSchema(db, { freshDatabase: true });
   return db;
 }
 
-function initSchema(db: DatabaseSync): void {
+interface InitSchemaOptions {
+  /**
+   * Set only for databases this call is creating from nothing. Persistent
+   * databases always run the full migration set, because "the file did not
+   * exist" is not a safe proxy for "no legacy state".
+   */
+  freshDatabase?: boolean;
+}
+
+function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
   db.exec(`
     -- Tasks
     CREATE TABLE IF NOT EXISTS tasks (
@@ -438,6 +453,7 @@ function initSchema(db: DatabaseSync): void {
       priority INTEGER NOT NULL DEFAULT 0,
       "order" INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
+      completedAt TEXT,
       updatedAt TEXT NOT NULL
     );
 
@@ -886,11 +902,45 @@ function initSchema(db: DatabaseSync): void {
       ON management_jobs(type, status, createdAt);
     CREATE INDEX IF NOT EXISTS idx_management_jobs_heartbeat
       ON management_jobs(status, heartbeatAt);
+
+    -- Last-known-good cache of SDK-provided model token prices.
+    CREATE TABLE IF NOT EXISTS copilot_model_prices (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      metadataJson TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS copilot_usage_sessions (
+      sessionId TEXT PRIMARY KEY,
+      parserVersion INTEGER NOT NULL,
+      fingerprintJson TEXT NOT NULL,
+      resultJson TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS copilot_usage_scan_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      completedAt TEXT
+    );
   `);
 
   // Ordered, idempotent compatibility migrations live in db-migrations.ts so
   // legacy state handling is tracked in one place instead of being scattered here.
-  runDatabaseMigrations(db);
+  if (options.freshDatabase) {
+    recordFreshDatabaseMigrations(db);
+  } else {
+    runDatabaseMigrations(db);
+  }
+
+  // Indexes that migrations may have to add a column for first, so they cannot
+  // live in the schema DDL above: on a legacy database the indexed column can
+  // still be missing when that DDL runs.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name_key ON tags(nameKey);
+    CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt);
+    CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt
+      ON bridge_session_state(lastAttentionAt);
+  `);
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
   initializeDocsFts(db);

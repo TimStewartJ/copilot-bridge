@@ -252,6 +252,32 @@ describe("createBridgeGitRevisionReader", () => {
     expect(first.remote).toEqual(second.remote);
     expect(refreshed.remote).toEqual(first.remote);
   });
+
+  it("reads the running commit once per process instead of once per reader", async () => {
+    const runningSha = "dddddddddddddddddddddddddddddddddddddddd";
+    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
+      if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
+        return commitOutput(runningSha, "ddddddd", "Running bridge commit");
+      }
+      throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
+    });
+    mockExecFileImplementation((args) => {
+      const key = gitArgsKey(args);
+      if (key === gitArgsKey(HEAD_LOG_ARGS)) return commitOutput(runningSha, "ddddddd", "Running bridge commit");
+      if (key === gitArgsKey(UPSTREAM_ARGS)) return new Error("no upstream");
+      throw new Error(`Unexpected async git args: ${args.join(" ")}`);
+    });
+
+    const revisions = await loadGitRevisionModule();
+    // Creating a reader used to spawn a synchronous `git log` every time, so
+    // every test that built an API router paid a process spawn.
+    const first = await revisions.createBridgeGitRevisionReader()();
+    const second = await revisions.createBridgeGitRevisionReader()();
+
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    expect(first.running).toEqual(second.running);
+    expect(first.running).toMatchObject({ status: "ok", ref: "HEAD @ server start", sha: runningSha });
+  });
 });
 
 describe("gitHash", () => {
