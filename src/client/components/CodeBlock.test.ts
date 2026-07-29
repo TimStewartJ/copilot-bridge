@@ -1,13 +1,134 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import CodeBlock from "./CodeBlock";
+import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+  waitUntilAct,
+} from "../test-react-harness";
 
 function renderCodeBlock(text: string, language?: string): string {
   return renderToStaticMarkup(createElement(CodeBlock, null, createElement("code", {
     className: language ? `language-${language}` : undefined,
   }, text)));
 }
+
+function findCopyButton(root: any): any {
+  const button = findAllByTag(root, "BUTTON")[0];
+  if (!button) throw new Error("Copy button not found");
+  return button;
+}
+
+function copyButtonLabel(root: any): string {
+  const button = findCopyButton(root);
+  return getReactProps(button)?.["aria-label"] ?? button.getAttribute?.("aria-label") ?? "";
+}
+
+function clickCopyButton(root: any) {
+  getReactProps(findCopyButton(root))?.onClick?.({
+    preventDefault: vi.fn(),
+    stopPropagation: vi.fn(),
+  });
+}
+
+function setClipboard(clipboard: unknown) {
+  (globalThis.navigator as unknown as { clipboard?: unknown }).clipboard = clipboard;
+}
+
+type FallbackDocument = {
+  createElement: (tag: string) => { tagName: string; value?: string; select?: () => void };
+  execCommand?: (command: string) => boolean;
+};
+
+function installExecCommandFallback(): { execCommands: string[]; copiedValues: (string | undefined)[]; restore: () => void } {
+  const shimDocument = globalThis.document as unknown as FallbackDocument;
+  const originalCreateElement = shimDocument.createElement;
+  const execCommands: string[] = [];
+  const copiedValues: (string | undefined)[] = [];
+  let lastTextArea: { value?: string } | null = null;
+
+  shimDocument.createElement = (tag: string) => {
+    const element = originalCreateElement.call(shimDocument, tag);
+    if (element.tagName === "TEXTAREA") {
+      element.select = () => { lastTextArea = element; };
+    }
+    return element;
+  };
+  shimDocument.execCommand = (command: string) => {
+    execCommands.push(command);
+    copiedValues.push(lastTextArea?.value);
+    return true;
+  };
+
+  return {
+    execCommands,
+    copiedValues,
+    restore() {
+      shimDocument.createElement = originalCreateElement;
+      delete shimDocument.execCommand;
+    },
+  };
+}
+
+describe("CodeBlock copy button", () => {
+  const unhandledRejections: unknown[] = [];
+  const recordUnhandledRejection = (reason: unknown) => { unhandledRejections.push(reason); };
+
+  afterEach(() => {
+    process.off("unhandledRejection", recordUnhandledRejection);
+    unhandledRejections.length = 0;
+  });
+
+  it("surfaces a failure instead of a copied confirmation when the clipboard write rejects", async () => {
+    process.on("unhandledRejection", recordUnhandledRejection);
+    const harness = await createReactDomHarness();
+    try {
+      const writeText = vi.fn().mockRejectedValue(new Error("Clipboard permission denied"));
+      setClipboard({ writeText });
+
+      await harness.render(createElement(CodeBlock, null, createElement("code", null, "const value = 1;")));
+      await harness.act(async () => { clickCopyButton(harness.dom.container); });
+      await waitUntilAct(harness.act, () => copyButtonLabel(harness.dom.container) === "Copy failed", {
+        label: "copy failure state",
+      });
+
+      // Give Node a full macrotask turn so an unhandled rejection would surface.
+      await harness.act(async () => {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+      });
+
+      expect(copyButtonLabel(harness.dom.container)).toBe("Copy failed");
+      expect(findAllByTag(harness.dom.container, "BUTTON").map((button) => copyButtonLabel(button)))
+        .not.toContain("Copied");
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("copies through the textarea fallback when the clipboard API is unavailable", async () => {
+    const harness = await createReactDomHarness();
+    const fallback = installExecCommandFallback();
+    try {
+      setClipboard(undefined);
+
+      await harness.render(createElement(CodeBlock, null, createElement("code", null, "fallback snippet")));
+      await harness.act(async () => { clickCopyButton(harness.dom.container); });
+      await waitUntilAct(harness.act, () => copyButtonLabel(harness.dom.container) === "Copied", {
+        label: "fallback copy confirmation",
+      });
+
+      expect(fallback.execCommands).toEqual(["copy"]);
+      expect(fallback.copiedValues).toEqual(["fallback snippet"]);
+    } finally {
+      fallback.restore();
+      await harness.cleanup();
+    }
+  });
+});
 
 describe("CodeBlock diff rendering", () => {
   const unifiedDiff = [

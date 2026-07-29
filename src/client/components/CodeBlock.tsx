@@ -1,5 +1,14 @@
-import { useState, useCallback, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import { Copy, Check } from "lucide-react";
+import { useState, useCallback, useEffect, useRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { AlertTriangle, Copy, Check } from "lucide-react";
+import { writeClipboardText } from "../lib/clipboard";
+
+type CopyState = "idle" | "copied" | "failed";
+
+const COPY_LABELS: Record<CopyState, string> = {
+  idle: "Copy code",
+  copied: "Copied",
+  failed: "Copy failed",
+};
 
 const DIFF_LANGUAGES = new Set(["diff", "patch", "udiff"]);
 
@@ -106,14 +115,35 @@ interface CodeBlockProps extends ComponentPropsWithoutRef<"pre"> {
 }
 
 export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockProps) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyRequestRef = useRef(0);
+
+  useEffect(() => () => {
+    copyRequestRef.current += 1;
+    if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+    copyResetTimerRef.current = null;
+  }, []);
 
   const handleCopy = useCallback(() => {
     const text = extractText(children);
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    const requestId = copyRequestRef.current + 1;
+    copyRequestRef.current = requestId;
+    if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+    copyResetTimerRef.current = null;
+    setCopyState("idle");
+
+    const settle = (next: CopyState) => {
+      if (copyRequestRef.current !== requestId) return;
+      setCopyState(next);
+      copyResetTimerRef.current = setTimeout(() => {
+        copyResetTimerRef.current = null;
+        if (copyRequestRef.current !== requestId) return;
+        setCopyState("idle");
+      }, 2000);
+    };
+
+    void writeClipboardText(text).then(() => settle("copied"), () => settle("failed"));
   }, [children]);
 
   const language = detectLanguage(children);
@@ -126,9 +156,12 @@ export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockP
         onClick={handleCopy}
         className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-surface/80 backdrop-blur-sm border border-border
           text-text-muted hover:text-text-primary opacity-0 group-hover:opacity-100 transition-all z-10"
-        aria-label={copied ? "Copied" : "Copy code"}
+        aria-label={COPY_LABELS[copyState]}
+        title={copyState === "failed" ? "Copy failed — clipboard unavailable" : undefined}
       >
-        {copied ? <Check size={14} className="text-copy-success" /> : <Copy size={14} />}
+        {copyState === "copied" && <Check size={14} className="text-copy-success" />}
+        {copyState === "failed" && <AlertTriangle size={14} className="text-error" />}
+        {copyState === "idle" && <Copy size={14} />}
       </button>
       {renderDiff ? (
         <DiffBlock text={text} rest={rest} />

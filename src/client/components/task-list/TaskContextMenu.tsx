@@ -1,9 +1,10 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSessionActivityTime, type EnrichedTaskData, type Task, type TaskGroup, type Session, type TaskPatch } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
-import { Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
 import { queryKeys } from "../../queryClient";
+import { writeClipboardText } from "../../lib/clipboard";
 import { useTaskChecklistItemsQuery } from "../../hooks/queries/useChecklistItems";
 import {
   getTaskCompletionCounts,
@@ -55,8 +56,14 @@ export default function TaskContextMenu({
   const queryClient = useQueryClient();
   const checklistItemsQuery = useTaskChecklistItemsQuery(task.id);
 
-  const [copied, setCopied] = useState(false);
-  const closeMenu = useCallback(() => { setCopied(false); onClose(); }, [onClose]);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyRequestRef = useRef(0);
+  useEffect(() => () => { copyRequestRef.current += 1; }, []);
+  const closeMenu = useCallback(() => {
+    copyRequestRef.current += 1;
+    setCopyState("idle");
+    onClose();
+  }, [onClose]);
 
   const unreadCount = useMemo(() => {
     if (!isUnread) return 0;
@@ -114,13 +121,28 @@ export default function TaskContextMenu({
       <button
         className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
         onClick={() => {
-          navigator.clipboard.writeText(task.id);
-          setCopied(true);
-          setTimeout(closeMenu, 600);
+          const requestId = copyRequestRef.current + 1;
+          copyRequestRef.current = requestId;
+          setCopyState("idle");
+          void writeClipboardText(task.id).then(() => {
+            if (copyRequestRef.current !== requestId) return;
+            setCopyState("copied");
+            setTimeout(() => {
+              if (copyRequestRef.current !== requestId) return;
+              closeMenu();
+            }, 600);
+          }, () => {
+            if (copyRequestRef.current !== requestId) return;
+            setCopyState("failed");
+          });
         }}
       >
-        {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
-        {copied ? "Copied!" : "Copy Task ID"}
+        {copyState === "copied" && <Check size={14} className="text-success" />}
+        {copyState === "failed" && <AlertTriangle size={14} className="text-error" />}
+        {copyState === "idle" && <Copy size={14} />}
+        {copyState === "failed"
+          ? <span className="text-error" role="alert">Copy failed</span>
+          : <span>{copyState === "copied" ? "Copied!" : "Copy Task ID"}</span>}
       </button>
 
       <CtxDivider />

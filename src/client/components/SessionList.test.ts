@@ -1,7 +1,13 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../api";
-import { createReactDomHarness } from "../test-react-harness";
+import {
+  advanceTimersByTimeAct,
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+  waitUntilAct,
+} from "../test-react-harness";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
 import {
   canKeepCurrentReasoningEffortForModel,
@@ -215,5 +221,71 @@ describe("session model menu labels", () => {
       currentReasoningEffort: "xhigh",
       currentEffortLookupReady: true,
     })).toBe(true);
+  });
+});
+
+describe("SessionList copy session id", () => {
+  async function renderSessionMenu() {
+    const harness = await createReactDomHarness();
+    const { default: SessionList } = await import("./SessionList");
+
+    await harness.render(createElement(SessionList, {
+      variant: "global",
+      sessions: [createSession({ sessionId: "session-1", summary: "Clipboard session" })],
+      activeSessionId: null,
+      onSelectSession: vi.fn(),
+      onNewSession: vi.fn(),
+      showNewButton: false,
+    }));
+
+    const row = findAllByTag(harness.dom.container, "BUTTON")
+      .find((candidate) => typeof getReactProps(candidate)?.onContextMenu === "function");
+    if (!row) throw new Error("Session row button not found");
+
+    await harness.act(async () => {
+      getReactProps(row)?.onContextMenu?.({ preventDefault: vi.fn(), clientX: 10, clientY: 10 });
+    });
+
+    return harness;
+  }
+
+  function findMenuButton(root: any, text: string): any {
+    const button = findAllByTag(root, "BUTTON").find((candidate) => (candidate.textContent ?? "").includes(text));
+    if (!button) throw new Error(`Button not found with text: ${text}`);
+    return button;
+  }
+
+  function clickMenuButton(button: any) {
+    getReactProps(button)?.onClick?.({
+      currentTarget: button,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+  }
+
+  function setClipboard(clipboard: unknown) {
+    (globalThis.navigator as unknown as { clipboard?: unknown }).clipboard = clipboard;
+  }
+
+  it("keeps the menu open with an inline error when the clipboard write rejects", async () => {
+    const harness = await renderSessionMenu();
+    try {
+      setClipboard({ writeText: vi.fn().mockRejectedValue(new Error("Clipboard permission denied")) });
+
+      await harness.act(async () => {
+        clickMenuButton(findMenuButton(harness.dom.container, "Copy Session ID"));
+      });
+      await waitUntilAct(harness.act, () => (harness.dom.container.textContent ?? "").includes("Copy failed"), {
+        label: "session id copy failure",
+      });
+
+      expect(harness.dom.container.textContent).toContain("Clipboard permission denied");
+      expect(harness.dom.container.textContent).not.toContain("Copied!");
+
+      await advanceTimersByTimeAct(harness.act, 2_000);
+      expect(harness.dom.container.textContent).toContain("Copy Session ID");
+    } finally {
+      await harness.cleanup();
+    }
   });
 });
