@@ -2,6 +2,7 @@
 
 import { execSync } from "node:child_process";
 import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, AdoProviderConfig } from "./types.js";
+import { createProviderCache } from "./cache.js";
 
 // ── Token cache ───────────────────────────────────────────────────
 
@@ -135,16 +136,8 @@ async function adoFetchAttempt(url: string, isRetry: boolean): Promise<any> {
 
 // ── Enrichment cache ──────────────────────────────────────────────
 
-interface CacheEntry<T> {
-  data: T;
-  expiresAt: number;
-  staleUntil: number;
-}
-
-const workItemCache = new Map<string, CacheEntry<EnrichedWorkItem>>();
-const prCache = new Map<string, CacheEntry<EnrichedPR>>();
-const CACHE_TTL = 60_000;
-const STALE_CACHE_TTL = 24 * 60 * 60_000;
+const workItemCache = createProviderCache<EnrichedWorkItem>();
+const prCache = createProviderCache<EnrichedPR>();
 
 function shouldUseStaleFallback(err: unknown): boolean {
   if (err instanceof AdoRequestError) return err.transient;
@@ -155,32 +148,6 @@ export function clearAdoProviderState(): void {
   cachedToken = null;
   workItemCache.clear();
   prCache.clear();
-}
-
-function readCachedValue<T>(
-  cache: Map<string, CacheEntry<T>>,
-  key: string,
-  now: number,
-  allowStale = false,
-): T | null {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  if (now < entry.expiresAt) return entry.data;
-  if (allowStale && now < entry.staleUntil) return entry.data;
-  return null;
-}
-
-function writeCachedValue<T>(
-  cache: Map<string, CacheEntry<T>>,
-  key: string,
-  data: T,
-  now: number,
-): void {
-  cache.set(key, {
-    data,
-    expiresAt: now + CACHE_TTL,
-    staleUntil: now + STALE_CACHE_TTL,
-  });
 }
 
 // ── Provider ──────────────────────────────────────────────────────
@@ -214,19 +181,19 @@ export class AdoProvider implements WorkTrackingProvider {
   }
 
   private getCachedWorkItem(id: string, now: number, allowStale = false): EnrichedWorkItem | null {
-    return readCachedValue(workItemCache, this.workItemCacheKey(id), now, allowStale);
+    return workItemCache.read(this.workItemCacheKey(id), now, allowStale);
   }
 
   private getCachedPR(pr: PRRef, now: number, allowStale = false): EnrichedPR | null {
-    return readCachedValue(prCache, this.prCacheKey(pr), now, allowStale);
+    return prCache.read(this.prCacheKey(pr), now, allowStale);
   }
 
   private cacheWorkItem(item: EnrichedWorkItem, now: number): void {
-    writeCachedValue(workItemCache, this.workItemCacheKey(item.id), item, now);
+    workItemCache.write(this.workItemCacheKey(item.id), item, now);
   }
 
   private cachePR(pr: EnrichedPR, now: number): void {
-    writeCachedValue(prCache, this.prCacheKey(pr), pr, now);
+    prCache.write(this.prCacheKey(pr), pr, now);
   }
 
   private buildWorkItemFallback(id: string): EnrichedWorkItem {

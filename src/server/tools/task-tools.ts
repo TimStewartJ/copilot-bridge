@@ -51,7 +51,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   return [
   defineBridgeTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "workItemId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
@@ -61,7 +61,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_unlink_work_item", {
     description: "Remove a work item from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "workItemId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
@@ -71,7 +71,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_link_pr", {
     description: "Link a pull request to a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\" or \"repo\"." }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
@@ -81,7 +81,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\" or \"repo\"." }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);

@@ -5,6 +5,7 @@ import type { RuntimePaths } from "./runtime-paths.js";
 // ── Types ─────────────────────────────────────────────────────────
 
 import type { ProviderName } from "./providers/types.js";
+import { canonicalizeGitHubWorkItemId } from "./providers/github.js";
 
 export class InvalidTaskUpdateError extends Error {}
 type TaskStatus = "active" | "done" | "archived";
@@ -495,9 +496,9 @@ export function createTaskStore(
     return getTask(taskId)!;
   }
 
-  /** Normalize numeric-looking IDs (e.g. "00123" → "123") for providers that use numeric IDs */
+  /** Normalize numeric-looking IDs (e.g. "00123" → "123") and GitHub refs (URL → "owner/repo#123") */
   function normalizeWorkItemId(id: string): string {
-    const trimmed = id.trim();
+    const trimmed = canonicalizeGitHubWorkItemId(id);
     if (/^\d+$/.test(trimmed)) return String(Number(trimmed));
     return trimmed;
   }

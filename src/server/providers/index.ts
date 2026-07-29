@@ -2,7 +2,7 @@
 
 import type { AppSettings } from "../settings-store.js";
 import { AdoProvider, clearAdoProviderState } from "./ado.js";
-import { GitHubProvider } from "./github.js";
+import { GitHubProvider, clearGitHubProviderState } from "./github.js";
 import { LinearProvider } from "./linear.js";
 import { NullProvider } from "./null.js";
 import type { WorkTrackingProvider, EnrichedWorkItem, EnrichedPR, ProviderName } from "./types.js";
@@ -39,8 +39,9 @@ export function getProvider(name: ProviderName): WorkTrackingProvider {
       break;
     }
     case "github": {
-      const cfg = settings.providers?.github;
-      provider = cfg ? new GitHubProvider(cfg) : new NullProvider("github");
+      // GitHub refs can be fully qualified ("owner/repo#123"), so enrichment works without
+      // settings; config only supplies defaults for short refs like "123" or "repo#123".
+      provider = new GitHubProvider(settings.providers?.github ?? { owner: "" });
       break;
     }
     case "linear": {
@@ -60,6 +61,7 @@ export function getProvider(name: ProviderName): WorkTrackingProvider {
 export function clearProviderCache(): void {
   providerCache.clear();
   clearAdoProviderState();
+  clearGitHubProviderState();
 }
 
 // ── Batch enrichment — groups by provider, fetches in parallel ────

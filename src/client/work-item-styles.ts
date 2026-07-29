@@ -3,17 +3,21 @@ import {
   Bug,
   CheckSquare,
   BookOpen,
+  CircleDot,
+  GitPullRequest,
   Target,
   Trophy,
 } from "lucide-react";
 
-/** Icon + color for each ADO work item type */
+/** Icon + color for each work item type (ADO types, plus GitHub issues/PRs) */
 export const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode; color: string }> = {
   Bug: { icon: React.createElement(Bug, { size: 12, className: "text-error" }), color: "text-error" },
   Task: { icon: React.createElement(CheckSquare, { size: 12, className: "text-info" }), color: "text-info" },
   "User Story": { icon: React.createElement(BookOpen, { size: 12, className: "text-success" }), color: "text-success" },
   Feature: { icon: React.createElement(Target, { size: 12, className: "text-agent" }), color: "text-agent" },
   Epic: { icon: React.createElement(Trophy, { size: 12, className: "text-warning" }), color: "text-warning" },
+  Issue: { icon: React.createElement(CircleDot, { size: 12, className: "text-info" }), color: "text-info" },
+  "Pull Request": { icon: React.createElement(GitPullRequest, { size: 12, className: "text-agent" }), color: "text-agent" },
 };
 
 /** CSS classes for work item state badges */
@@ -32,6 +36,8 @@ export const WI_STATE_STYLES: Record<string, string> = {
   Completed: "bg-success/15 text-success",
   Cancelled: "bg-text-faint/15 text-text-faint",
   Duplicate: "bg-text-faint/15 text-text-faint",
+  // GitHub states
+  Open: "bg-info-surface text-info",
 };
 
 /** CSS dot class + label for PR statuses */
