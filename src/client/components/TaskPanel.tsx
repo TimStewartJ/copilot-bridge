@@ -606,6 +606,8 @@ export default function TaskPanel({
                     rawWIs={task.workItems}
                     variant="summary"
                     resetKey={task.id}
+                    taskId={task.id}
+                    onTasksChanged={onTasksChanged}
                   />
                 )}
                 {task.pullRequests.length > 0 && (
@@ -614,6 +616,8 @@ export default function TaskPanel({
                     rawPRs={task.pullRequests}
                     variant="summary"
                     resetKey={task.id}
+                    taskId={task.id}
+                    onTasksChanged={onTasksChanged}
                   />
                 )}
                 {hasNotesSummary && (

@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./queryClient";
 import { ThemeProvider } from "./useTheme";
+import { ToastProvider } from "./useToast";
 import App from "./App";
 import { initPushSubscriptionReconciliation, registerPushServiceWorker } from "./push-notifications";
 import "./index.css";
@@ -21,7 +22,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/+$/, "") || undefined}>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
-          <App />
+          <ToastProvider>
+            <App />
+          </ToastProvider>
         </ThemeProvider>
       </QueryClientProvider>
     </BrowserRouter>
