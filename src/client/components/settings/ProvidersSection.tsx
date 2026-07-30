@@ -67,6 +67,21 @@ export function ProvidersSection({
     </span>
   );
 
+  // GitHub enrichment works without settings, so its badge reports whether
+  // defaults for short refs exist rather than whether the provider is usable.
+  const githubDefaultsBadge = (
+    <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
+      <Check size={10} />
+      defaults set
+    </span>
+  );
+
+  const githubNoDefaultsBadge = (
+    <span className="text-[10px] px-1.5 py-0.5 bg-bg-surface text-text-faint rounded-full">
+      no defaults
+    </span>
+  );
+
   return (
     <SettingsSection
       title="Providers"
@@ -150,7 +165,7 @@ export function ProvidersSection({
         ) : (
           <ConfigCard
             title="GitHub"
-            badge={providers.github ? configuredBadge : notConfiguredBadge}
+            badge={providers.github?.owner ? githubDefaultsBadge : githubNoDefaultsBadge}
             onEdit={() => setEditingProvider("github")}
             onRemove={
               providers.github
@@ -159,6 +174,10 @@ export function ProvidersSection({
             }
             removeTitle="Remove"
           >
+            <div className="mt-2 text-xs text-text-faint">
+              Fully qualified <code>owner/repo#123</code> refs and github.com URLs link
+              without configuration; defaults only fill in short refs.
+            </div>
             {providers.github && (
               <div className="mt-2 space-y-1">
                 <div className="text-xs text-text-muted">
