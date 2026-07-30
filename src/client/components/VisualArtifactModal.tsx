@@ -4,13 +4,13 @@ import { Code2, Download, FileText, X } from "lucide-react";
 import VisualArtifactRenderer from "./VisualArtifactRenderer";
 import { hasVisualSource, useVisualSource } from "./useVisualSource";
 import type { VisualViewport } from "./visualDisplay";
+import { useModalDialog } from "./shared/useModalDialog";
 
 interface VisualArtifactModalProps {
   visual: VisualArtifact;
   onClose: () => void;
 }
 
-const TITLE_ID = "va-modal-title";
 const RESIZE_DEBOUNCE_MS = 120;
 const MIN_VIEWPORT_DELTA = 4;
 
@@ -79,6 +79,7 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
   const [viewerRef, viewerViewport] = useMeasuredViewport();
   const [activePanel, setActivePanel] = useState<ActivePanel | null>(null);
   const sourceState = useVisualSource(visual);
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
 
   const hasSource = hasVisualSource(visual);
   const sourceLabel = SOURCE_LABEL[visual.kind] ?? "Source";
@@ -94,14 +95,6 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
     };
   }, []);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
-
   const handleOverlayClick = (e: MouseEvent) => {
     if (e.target === overlayRef.current) onClose();
   };
@@ -115,13 +108,11 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-2 sm:p-4"
       onClick={handleOverlayClick}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={TITLE_ID}
+      {...dialogProps}
     >
       <div className="relative flex h-[92vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-xl bg-bg-surface shadow-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 sm:px-4">
-          <span id={TITLE_ID} className="min-w-0 truncate text-sm font-medium text-text-primary">
+          <span id={titleId} className="min-w-0 truncate text-sm font-medium text-text-primary">
             {visual.title}
           </span>
           <div className="flex shrink-0 items-center gap-1">

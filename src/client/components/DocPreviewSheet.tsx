@@ -9,6 +9,7 @@ import type { DocPage } from "../api";
 import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
+import { useModalDialog } from "./shared/useModalDialog";
 
 interface DocPreviewSheetProps {
   docPath: string;
@@ -20,6 +21,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
   const [doc, setDoc] = useState<DocPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
 
   useEffect(() => {
     setLoading(true);
@@ -36,10 +38,13 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       {/* Sheet */}
-      <div className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl">
+      <div
+        {...dialogProps}
+        className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-          <h2 className="text-sm font-medium text-text-primary flex items-center gap-1.5 min-w-0">
+          <h2 id={titleId} className="text-sm font-medium text-text-primary flex items-center gap-1.5 min-w-0">
             <BookOpen size={14} className="text-text-muted shrink-0" />
             <span className="truncate">{doc?.title ?? docPath}</span>
           </h2>

@@ -3,6 +3,7 @@ import { MessageSquare, Send, X } from "lucide-react";
 import { DEFAULT_FEED_ACTION_LABEL } from "../feed-action-helpers";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { UI } from "./shared/design-system";
+import { useModalDialog } from "./shared/useModalDialog";
 
 export type FeedActionSubmitMode = "foreground" | "background";
 
@@ -59,6 +60,7 @@ export default function FeedActionDialog({
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const promptEmpty = prompt.trim().length === 0;
   const submitDisabled = submitting || (!allowEmptyPrompt && promptEmpty);
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose, dismissible: !submitting });
 
   useEffect(() => {
     const promptNode = promptRef.current;
@@ -66,12 +68,7 @@ export default function FeedActionDialog({
     if (promptNode && prompt) {
       promptNode.setSelectionRange?.(prompt.length, prompt.length);
     }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, submitting]);
+  }, []);
 
   return (
     <div
@@ -82,9 +79,7 @@ export default function FeedActionDialog({
       }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="feed-action-title"
+        {...dialogProps}
         className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-bg-primary shadow-2xl"
       >
         <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
@@ -93,7 +88,7 @@ export default function FeedActionDialog({
               <MessageSquare size={14} />
               {eyebrow}
             </div>
-            <h2 id="feed-action-title" className="mt-1 truncate text-lg font-semibold text-text-primary">
+            <h2 id={titleId} className="mt-1 truncate text-lg font-semibold text-text-primary">
               {actionLabel ?? DEFAULT_FEED_ACTION_LABEL}
             </h2>
             <p className="mt-1 text-xs text-text-muted">

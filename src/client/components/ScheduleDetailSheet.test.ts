@@ -7,7 +7,7 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../test-react-harness";
-import { installDomShim } from "../test-dom-shim";
+import { installSelectAwareDomShim } from "../test-dom-shim";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import type { Schedule, ScheduleRun } from "../api";
 
@@ -81,42 +81,6 @@ async function selectModel(harness: ReactDomHarness, value: string) {
   await harness.act(async () => {
     await getReactProps(select)?.onChange?.({ target: { value } });
   });
-}
-
-function installSelectAwareDomShim() {
-  const dom = installDomShim();
-  const documentRef = globalThis.document as typeof globalThis.document & {
-    createElement: (tag: string) => any;
-  };
-  const originalCreateElement = documentRef.createElement.bind(documentRef);
-  documentRef.createElement = (tag: string) => {
-    const element = originalCreateElement(tag);
-    const normalizedTag = tag.toUpperCase();
-    if (normalizedTag === "SELECT") {
-      Object.defineProperty(element, "options", {
-        configurable: true,
-        get: () =>
-          Array.from(element.childNodes ?? []).filter((child: any) => child.tagName === "OPTION"),
-      });
-    }
-    if (normalizedTag === "OPTION") {
-      Object.defineProperty(element, "value", {
-        configurable: true,
-        get: () => element.getAttribute("value") ?? element.textContent ?? "",
-        set: (value) => element.setAttribute("value", String(value)),
-      });
-      Object.defineProperty(element, "selected", { configurable: true, writable: true, value: false });
-    }
-    return element;
-  };
-
-  return {
-    container: dom.container,
-    cleanup() {
-      documentRef.createElement = originalCreateElement;
-      dom.cleanup();
-    },
-  };
 }
 
 async function fillNameAndPrompt(harness: ReactDomHarness) {
