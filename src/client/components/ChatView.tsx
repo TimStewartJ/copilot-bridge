@@ -580,6 +580,10 @@ export default function ChatView({
   const latestMessageAnchorKeyRef = useRef<string | null>(null);
   const anchoredMessageKeyRef = useRef<string | null>(null);
   const pendingLiveAnchorCarryRef = useRef(false);
+  /** Armed on session navigation so the first painted history lands on the newest reply's top. */
+  const pendingInitialAnchorRef = useRef(false);
+  /** Anchor applied by the navigation landing, released when a new run needs the live tail. */
+  const loadAnchoredMessageKeyRef = useRef<string | null>(null);
   const contextRefreshStreamingRef = useRef(false);
   const pendingRenderedReadThroughRef = useRef<{
     sessionId: string;
@@ -1040,6 +1044,8 @@ export default function ChatView({
       anchoredMessageKeyRef.current = null;
       latestMessageAnchorKeyRef.current = null;
       pendingLiveAnchorCarryRef.current = false;
+      pendingInitialAnchorRef.current = false;
+      loadAnchoredMessageKeyRef.current = null;
       messageElementRefs.current.clear();
       firstItemIndex.current = 0;
       totalEntriesRef.current = 0;
@@ -1062,6 +1068,12 @@ export default function ChatView({
     anchoredMessageKeyRef.current = null;
     latestMessageAnchorKeyRef.current = null;
     pendingLiveAnchorCarryRef.current = false;
+    if (prevSession !== sessionId) {
+      // Arm the landing anchor per navigation only. Re-running this effect for the same session
+      // (composer or callback identity churn) must not yank an established reading position.
+      pendingInitialAnchorRef.current = true;
+      loadAnchoredMessageKeyRef.current = null;
+    }
     messageElementRefs.current.clear();
     setShowJumpToLatest(false);
     cancelFollowScroll();
@@ -1927,6 +1939,7 @@ export default function ChatView({
     if (previousMessageKey === latestMessageAnchorKey) return;
 
     const wasAnchored = Boolean(previousMessageKey && anchoredMessageKeyRef.current === previousMessageKey);
+    loadAnchoredMessageKeyRef.current = null;
     const isLiveMessageReplacement = previousMessageKey === LIVE_STREAMING_MESSAGE_ID
       && latestMessageAnchorKey !== null;
     latestMessageAnchorKeyRef.current = latestMessageAnchorKey;
@@ -1961,9 +1974,35 @@ export default function ChatView({
     }
   }, [latestMessageAnchorKey, latestMessageRole, scrollToLatest]);
 
+  // Landing on a session should show the start of the newest reply, not its tail. The bottom-follow
+  // layout effect above jams the first painted history to the bottom, which clips the top of a long
+  // assistant message and forces the reader to scroll back up. Re-anchor once per navigation; the
+  // anchored target is clamped to the max scroll top, so short replies still land at the bottom.
+  // `entries` is a dependency because two sessions can share a newest message id, and cached
+  // navigation between them would otherwise never re-run this effect.
+  useLayoutEffect(() => {
+    if (!pendingInitialAnchorRef.current || loading) return;
+    // Consume the arming even when there is nothing to anchor, so a later reply in a session that
+    // opened empty is treated as ordinary live output.
+    pendingInitialAnchorRef.current = false;
+    if (!latestMessageAnchorKey || latestMessageRole !== "assistant") return;
+    // Active runs keep the existing live-follow behaviour; the tail is what matters there.
+    if (isStreaming || creating) return;
+    scrollToLatest({ immediate: true, force: true, anchorKey: latestMessageAnchorKey });
+    loadAnchoredMessageKeyRef.current = anchoredMessageKeyRef.current;
+  }, [creating, entries, isStreaming, latestMessageAnchorKey, latestMessageRole, loading, scrollToLatest]);
+
   // Auto-scroll during streaming until the newest message itself reaches the viewport top.
   useEffect(() => {
     if (!isStreaming && !creating && !hasPendingInteractions) return;
+    if (loadAnchoredMessageKeyRef.current
+      && anchoredMessageKeyRef.current === loadAnchoredMessageKeyRef.current) {
+      // New work started under a transcript still parked where navigation left it: fall back to the
+      // live tail so status, tools, and pending prompts stay visible.
+      loadAnchoredMessageKeyRef.current = null;
+      scrollToLatest({ force: true });
+      return;
+    }
     if (latestMessageAnchorKey && anchoredMessageKeyRef.current === latestMessageAnchorKey) return;
     scrollToLatest({ anchorKey: latestMessageAnchorKey });
   }, [

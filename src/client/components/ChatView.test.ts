@@ -674,6 +674,178 @@ describe("ChatView cached resume loading state", () => {
 
 });
 
+describe("ChatView navigation landing position", () => {
+  const SCROLL_HEIGHT = 2000;
+  const CLIENT_HEIGHT = 400;
+  const BOTTOM_SCROLL_TOP = SCROLL_HEIGHT - CLIENT_HEIGHT;
+
+  /**
+   * Landing position is measured inside the layout effect of the commit that first paints history,
+   * so geometry has to exist before that element is created. Stub it at creation time and key
+   * message rects off the anchor attribute the transcript already renders.
+   */
+  function stubChatGeometry(messageTops: Record<string, number>) {
+    const doc = globalThis.document as any;
+    const originalCreateElement = doc.createElement;
+    doc.createElement = (tag: string) => {
+      const element = originalCreateElement(tag);
+      Object.defineProperty(element, "scrollHeight", { configurable: true, value: SCROLL_HEIGHT });
+      Object.defineProperty(element, "clientHeight", { configurable: true, value: CLIENT_HEIGHT });
+      Object.defineProperty(element, "scrollTop", { configurable: true, writable: true, value: 0 });
+      element.getBoundingClientRect = () => {
+        const key = element.getAttribute?.("data-chat-message-key");
+        const top = (key != null ? messageTops[key] : undefined) ?? 0;
+        return {
+          x: 0,
+          y: top,
+          width: 0,
+          height: 0,
+          top,
+          left: 0,
+          right: 0,
+          bottom: top,
+          toJSON: () => ({}),
+        };
+      };
+      return element;
+    };
+    return () => {
+      doc.createElement = originalCreateElement;
+    };
+  }
+
+  async function renderSettledSession(options: {
+    messages: ChatEntry[];
+    messageTops: Record<string, number>;
+  }) {
+    const history = createDeferred<{
+      messages: ChatEntry[];
+      busy: boolean;
+      total: number;
+      warm: boolean;
+      hasMore: boolean;
+    }>();
+    // The DOM shim restores document properties on install, so stub after the harness mounts and
+    // before history paints the scroll container.
+    const view = await renderChatView({
+      fetchMessagesFastResult: history.promise,
+      streamOverrides: { isStreaming: false, streamStatus: null, pendingOrigin: null },
+    });
+    const restoreGeometry = stubChatGeometry(options.messageTops);    await view.act(async () => {
+      history.resolve({
+        messages: options.messages,
+        busy: false,
+        total: options.messages.length,
+        warm: true,
+        hasMore: false,
+      });
+      await waitTick();
+    });
+    await waitUntilAct(view.act, () => (
+      view.dom.container.textContent?.includes("newest-entry") ?? false
+    ));
+    return { ...view, restoreGeometry, scrollContainer: findScrollContainer(view.dom.container) };
+  }
+
+  it("lands on the top of the newest assistant reply when it overflows the viewport", async () => {
+    // Measured while the transcript is jammed to the bottom, so a top of -700 means the reply
+    // starts 700px above the viewport, i.e. at content offset 900.
+    const view = await renderSettledSession({
+      messages: [createMessage("older-entry"), createMessage("newest-entry")],
+      messageTops: { "newest-entry": -700 },
+    });
+
+    try {
+      expect(view.scrollContainer.scrollTop).toBe(900);
+    } finally {
+      view.restoreGeometry();
+      await view.cleanup();
+    }
+  });
+
+  it("stays at the bottom when the newest assistant reply fits above the fold", async () => {
+    const view = await renderSettledSession({
+      messages: [createMessage("older-entry"), createMessage("newest-entry")],
+      messageTops: { "newest-entry": 100 },
+    });
+
+    try {
+      expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
+    } finally {
+      view.restoreGeometry();
+      await view.cleanup();
+    }
+  });
+
+  it("stays at the bottom when the transcript ends with a user message", async () => {
+    const view = await renderSettledSession({
+      messages: [
+        createMessage("older-entry"),
+        { id: "newest-entry", role: "user", content: "newest-entry" },
+      ],
+      messageTops: { "newest-entry": -700 },
+    });
+
+    try {
+      expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
+    } finally {
+      view.restoreGeometry();
+      await view.cleanup();
+    }
+  });
+
+  it("releases the landing anchor when new work starts so live output stays visible", async () => {
+    const view = await renderSettledSession({
+      messages: [createMessage("older-entry"), createMessage("newest-entry")],
+      messageTops: { "newest-entry": -700 },
+    });
+
+    try {
+      expect(view.scrollContainer.scrollTop).toBe(900);
+
+      await view.render({
+        streamOverrides: {
+          isStreaming: true,
+          streamStatus: "thinking",
+          streamingContent: "",
+          pendingOrigin: "message",
+        },
+      });
+
+      await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === BOTTOM_SCROLL_TOP);
+      expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
+    } finally {
+      view.restoreGeometry();
+      await view.cleanup();
+    }
+  });
+
+  it("lands on the newest reply when switching to a cached session with the same message ids", async () => {
+    // Message ids are per-session, so two sessions routinely share the newest anchor key. Cached
+    // navigation must still re-run the landing effect instead of leaving the reader at the tail.
+    const view = await renderSettledSession({
+      messages: [createMessage("older-entry"), createMessage("newest-entry")],
+      messageTops: { "newest-entry": -700 },
+    });
+
+    try {
+      expect(view.scrollContainer.scrollTop).toBe(900);
+      setCachedChatSnapshot(
+        view.queryClient,
+        createSnapshot("session-2", [createMessage("older-entry"), createMessage("newest-entry")]),
+      );
+
+      await view.render({ sessionId: "session-2" });
+
+      await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === 900);
+      expect(view.scrollContainer.scrollTop).toBe(900);
+    } finally {
+      view.restoreGeometry();
+      await view.cleanup();
+    }
+  });
+});
+
 describe("ChatView history pagination", () => {
   it("manual load-more leaves bottom-follow mode before prepending older messages", async () => {
     vi.useFakeTimers();
