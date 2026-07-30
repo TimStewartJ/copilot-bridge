@@ -386,6 +386,21 @@ const DEPLOY_VALIDATION_COMMANDS = [
   "npm run preview:smoke",
 ] as const;
 const DEPLOY_SMOKE_COMMAND = "npm run preview:smoke";
+const DEPLOY_STASH_SHA = "cafebabecafebabecafebabecafebabecafebabe";
+const STASH_LIST_COMMAND = 'git --no-pager stash list --format="%H %gs"';
+
+function isStashListCommand(cmd: string): boolean {
+  return cmd === STASH_LIST_COMMAND;
+}
+
+function isStashPushCommand(cmd: string): boolean {
+  return cmd.startsWith('git stash push --include-untracked -m "bridge-deploy-');
+}
+
+/** The unique marker the deploy stashes production changes under. */
+function stashMarkerOf(cmd: string): string {
+  return cmd.slice(cmd.indexOf('"') + 1, cmd.lastIndexOf('"'));
+}
 
 function stagingStampJson(prefix: string, commitSha: string, dependencyHash = "same-hash"): string {
   return JSON.stringify({
@@ -500,14 +515,14 @@ afterEach(() => {
   buildPublicUrlMock.mockReturnValue(undefined);
   execSyncMock.mockReset();
   execSyncMock.mockReturnValue("");
-  spawnMock.mockClear();
+  spawnMock.mockReset();
   captureProcessIdentityMock.mockClear();
   terminateProcessTreeMock.mockClear();
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
   renameSyncCallMock.mockReset();
-  stagingLogMock.mockClear();
+  stagingLogMock.mockReset();
   vi.resetModules();
 });
 
@@ -1053,7 +1068,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1133,7 +1149,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (cmd === "git rev-parse HEAD" && cwd === stagingDir) return `${validatedSha}\n`;
@@ -1203,13 +1220,18 @@ describe("staging tools", () => {
       },
     }));
 
+    let stashMarker = "";
     execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
       const cwd = options?.cwd;
       if (cmd === "git add -A") return "";
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "Saved working directory and index state WIP on main\n";
+      if (isStashListCommand(cmd)) return stashMarker ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n` : "";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1247,7 +1269,7 @@ describe("staging tools", () => {
     expect(prepareReleaseSlotMock).toHaveBeenCalledWith(expect.objectContaining({ commitSha: validatedSha }));
 
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
-    const stashIndex = commands.indexOf("git stash --include-untracked");
+    const stashIndex = commands.findIndex(isStashPushCommand);
     const unstashIndex = commands.indexOf("git stash pop");
     expect(stashIndex).toBeGreaterThan(-1);
     expect(unstashIndex).toBeGreaterThan(stashIndex);
@@ -1266,6 +1288,637 @@ describe("staging tools", () => {
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
     expect(existsSync(stagingDir)).toBe(true);
     expect(readFileSync(join(stagingDir, ".gitignore"), "utf-8")).toBe("node_modules\n");
+  });
+
+  it("fails the deploy when staging the worktree changes fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") {
+        const error = new Error("git add failed") as Error & { stderr: string };
+        error.stderr = "fatal: Unable to create '.git/index.lock': File exists.\n";
+        throw error;
+      }
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy with a broken index" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      sessionLog: expect.stringContaining("Command: git add -A"),
+      toolTelemetry: {
+        bridge: {
+          command: "git add -A",
+          cwd: stagingDir,
+          stagingDir,
+          branch: "staging/preview-deploy",
+        },
+      },
+    });
+    expect(result.textResultForLlm).toContain("Failed to stage staging worktree changes for the deploy commit.");
+    expect(result.textResultForLlm).toContain("index.lock");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).toEqual(["git add -A"]);
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => basename(String(file)) === ".commit-msg")).toBe(false);
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("fails the deploy when the staging worktree status cannot be read", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") {
+        const error = new Error("git status failed") as Error & { stderr: string };
+        error.stderr = "fatal: not a git repository\n";
+        throw error;
+      }
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy with an unreadable status" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      sessionLog: expect.stringContaining("Command: git --no-pager status --porcelain"),
+      toolTelemetry: {
+        bridge: {
+          command: "git --no-pager status --porcelain",
+          cwd: stagingDir,
+          stagingDir,
+          branch: "staging/preview-deploy",
+        },
+      },
+    });
+    expect(result.textResultForLlm).toContain("Failed to read the staging worktree status.");
+    expect(result.textResultForLlm).toContain("not a git repository");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).toEqual(["git add -A", "git --no-pager status --porcelain"]);
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => basename(String(file)) === ".commit-msg")).toBe(false);
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("stops the deploy when stashing uncommitted production changes fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) {
+        const error = new Error("git stash failed") as Error & { stderr: string };
+        error.stderr = "error: cannot save the current index state\n";
+        throw error;
+      }
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy with an unstashable production tree" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      sessionLog: expect.stringContaining("Command: git stash push --include-untracked -m "),
+    });
+    expect(result.textResultForLlm).toContain("Failed to stash uncommitted production changes.");
+    expect(result.textResultForLlm).toContain("cannot save the current index state");
+    expect(result.stashRestoreFailed).toBeUndefined();
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).not.toContain("git stash pop");
+    expect(commands).not.toContain("git pull --rebase origin main");
+    expect(commands).not.toContain("git rebase main");
+    expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
+    expect(commands).not.toContain("git push origin main");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("warns that production changes are still stashed when the post-deploy stash pop fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) return stashMarker ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n` : "";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git stash pop") {
+        const error = new Error("git stash pop failed") as Error & { stderr: string };
+        error.stderr = "CONFLICT (content): Merge conflict in src/server/api-router.ts\n";
+        throw error;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
+      if (cmd === "git push origin main") return "";
+      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
+      if (cmd === 'git branch -D "staging/preview-deploy"') return "";
+      if (cmd === "git worktree prune") return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy with a conflicting production stash" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      success: true,
+      commitSha: "1111111",
+      stashRestoreFailed: true,
+    });
+    expect(result.stashRecoveryWarning).toContain("still saved in git stash");
+    expect(result.stashRecoveryWarning).toContain("git stash list");
+    expect(result.stashRecoveryWarning).toContain("git stash pop");
+    expect(result.stashRecoveryWarning).toContain("Merge conflict in src/server/api-router.ts");
+    expect(result.message).toContain("still saved in git stash");
+    expect(result.content?.[0]?.text).toContain("still saved in git stash");
+    expect(result.content?.[0]?.text).toContain("git stash list");
+    expect(result.summary).toContain("could not be restored automatically");
+    expect(stagingLogMock.mock.calls.map(([msg]) => String(msg))).not.toContain("Restored stashed production changes");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands.filter((cmd) => cmd === "git stash pop")).toHaveLength(1);
+    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns about the stranded production stash on deploy failure paths", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) return stashMarker ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n` : "";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git stash pop") {
+        const error = new Error("git stash pop failed") as Error & { stderr: string };
+        error.stderr = "CONFLICT (content): Merge conflict in src/server/db.ts\n";
+        throw error;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (cmd === "npm run check:pr") {
+        const error = new Error("deploy gate failed") as Error & { stderr: string };
+        error.stderr = "deploy gate exploded\n";
+        throw error;
+      }
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy that fails validation" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ resultType: "failure", stashRestoreFailed: true });
+    expect(result.textResultForLlm).toContain("Staging deploy validation failed.");
+    expect(result.textResultForLlm).toContain("still saved in git stash");
+    expect(result.sessionLog).toContain("still saved in git stash");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands.filter((cmd) => cmd === "git stash pop")).toHaveLength(1);
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves production changes stashed when the post-push reset also fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) return stashMarker ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n` : "";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
+      if (cmd === "git push origin main") {
+        const error = new Error("push failed") as Error & { stderr: string };
+        error.stderr = "push rejected\n";
+        throw error;
+      }
+      if (cmd === "git reset --hard 1111111111111111111111111111111111111111") {
+        const error = new Error("reset failed") as Error & { stderr: string };
+        error.stderr = "fatal: Unable to write new index file\n";
+        throw error;
+      }
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy that cannot be reverted" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.stashRestoreFailed).toBeUndefined();
+    expect(result.textResultForLlm).toContain("Push to origin failed and production reset failed.");
+    expect(result.textResultForLlm).toContain(`Your uncommitted production changes are stashed as '${stashMarker}'`);
+    expect(result.textResultForLlm).toContain("restore them only after recovering the checkout");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).not.toContain("git stash pop");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves the deploy stash in place when another stash entry lands on top", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    const concurrentStashSha = "0123456789012345678901234567890123456789";
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    let stashMarker = "";
+    let stashListCalls = 0;
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) {
+        stashListCalls += 1;
+        // Someone else stashes in the production checkout during the deploy
+        // window, so this deploy's entry is no longer on top by restore time.
+        return stashListCalls === 1
+          ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n`
+          : `${concurrentStashSha} On main: someone else\n${DEPLOY_STASH_SHA} On main: ${stashMarker}\n`;
+      }
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
+      if (cmd === "git push origin main") return "";
+      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
+      if (cmd === 'git branch -D "staging/preview-deploy"') return "";
+      if (cmd === "git worktree prune") return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy racing a concurrent stash" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ success: true, commitSha: "1111111", stashRestoreFailed: true });
+    expect(result.stashRecoveryWarning).toContain(DEPLOY_STASH_SHA);
+    expect(result.stashRecoveryWarning).toContain("no longer the entry");
+    expect(result.stashRecoveryWarning).toContain(concurrentStashSha);
+    expect(result.content?.[0]?.text).toContain("still saved in git stash");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).not.toContain("git stash pop");
+    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the deploy stash untouched when the stash list cannot be read after stashing", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) {
+        const error = new Error("git stash list failed") as Error & { stderr: string };
+        error.stderr = "fatal: bad object refs/stash\n";
+        throw error;
+      }
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (cmd === "npm run check:pr") {
+        const error = new Error("deploy gate failed") as Error & { stderr: string };
+        error.stderr = "deploy gate exploded\n";
+        throw error;
+      }
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy with an unreadable stash list" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ resultType: "failure", stashRestoreFailed: true });
+    expect(result.textResultForLlm).toContain("Staging deploy validation failed.");
+    expect(result.stashRecoveryWarning).toContain("could not be read after stashing");
+    expect(result.stashRecoveryWarning).toContain(stashMarker);
+    expect(result.stashRecoveryWarning).toContain("bad object refs/stash");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).not.toContain("git stash pop");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("reports the stranded stash when the stash list read throws after stashing", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+    // The command runner itself blows up (not a non-zero exit) right after the
+    // stash was created, so the deploy never learns what it stashed.
+    stagingLogMock.mockImplementation((message: string) => {
+      if (String(message).includes(`$ ${STASH_LIST_COMMAND}`)) throw new Error("log sink exploded");
+    });
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    await expect(deployTool.handler(
+      { stagingDir, message: "Deploy whose stash list read throws" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    )).rejects.toThrow(/log sink exploded[\s\S]*may be stashed under the message/);
+
+    expect(stashMarker).not.toBe("");
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).not.toContain("git stash pop");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the stranded stash when the deploy throws after stashing production", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+    prepareReleaseSlotMock.mockImplementationOnce(async () => {
+      throw new Error("release slot exploded");
+    });
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) return stashMarker ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n` : "";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git stash pop") {
+        const error = new Error("git stash pop failed") as Error & { stderr: string };
+        error.stderr = "CONFLICT (content): Merge conflict in src/server/db.ts\n";
+        throw error;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    await expect(deployTool.handler(
+      { stagingDir, message: "Deploy that throws mid-flight" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    )).rejects.toThrow(/release slot exploded[\s\S]*still saved in git stash/);
+
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands.filter((cmd) => cmd === "git stash pop")).toHaveLength(1);
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a completed deploy successful when restoring the stash throws", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+    // The restore command runner itself blows up (e.g. spawn failure), which is
+    // the only way left for the stash restore to throw.
+    const defaultSpawn = spawnMock.getMockImplementation();
+    spawnMock.mockImplementation((cmd: string, options?: any) => {
+      if (cmd === "git stash pop") throw new Error("spawn exploded");
+      return defaultSpawn!(cmd, options);
+    });
+
+    let stashMarker = "";
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (isStashListCommand(cmd)) return stashMarker ? `${DEPLOY_STASH_SHA} On main: ${stashMarker}\n` : "";
+      if (isStashPushCommand(cmd)) {
+        stashMarker = stashMarkerOf(cmd);
+        return `Saved working directory and index state On main: ${stashMarker}\n`;
+      }
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
+      if (cmd === "git push origin main") return "";
+      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
+      if (cmd === 'git branch -D "staging/preview-deploy"') return "";
+      if (cmd === "git worktree prune") return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy whose stash restore throws" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({ success: true, commitSha: "1111111", stashRestoreFailed: true });
+    expect(result.stashRecoveryWarning).toContain("threw an unexpected error");
+    expect(result.stashRecoveryWarning).toContain("spawn exploded");
+    expect(result.content?.[0]?.text).toContain("still saved in git stash");
+    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
   });
 
   it("resets production and blocks push when the merged commit differs from the validated candidate", async () => {
@@ -1287,7 +1940,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1337,7 +1991,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1394,7 +2049,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (cmd === "npm run check:pr") {
@@ -1457,7 +2113,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1530,7 +2187,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") {
         pullAttempts += 1;
         return "Already up to date.\n";
@@ -1634,7 +2292,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1682,7 +2341,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -1973,7 +2633,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd.startsWith("git log main..staging/") && cmd.endsWith(" --oneline")) return "abc123 staged change\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main") {
         const error = new Error("conflict") as Error & { stderr: string };
@@ -2035,7 +2696,8 @@ describe("staging tools", () => {
       if (cmd === "git --no-pager status --porcelain") return "";
       if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
       if (cmd === "git log main..staging/preview-ordering --oneline") return "abc123 deploy commit\n";
-      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";

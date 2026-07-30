@@ -955,9 +955,147 @@ export interface StagingDeployJobInput {
   message: string;
 }
 
+/**
+ * Tracks the production `git stash` created for a deploy so a failed or
+ * ambiguous `git stash pop` can never be reported as a clean success.
+ *
+ * The entry is created with a unique marker message and located by that marker,
+ * so a stash someone else pushed during the deploy window is never mistaken for
+ * this deploy's entry. `restore` is installed by the deploy body so the wrapper
+ * can finalize a still-pending stash even when the body throws, and `suppressed`
+ * marks the recovery paths that deliberately leave the stash in place.
+ */
+interface ProductionStashState {
+  pending: boolean;
+  suppressed: boolean;
+  restored?: boolean;
+  sha?: string;
+  warning?: string;
+  restore?: () => Promise<void>;
+}
+
+interface ProductionStashEntry {
+  sha: string;
+  subject: string;
+}
+
+const PRODUCTION_STASH_LIST_COMMAND = 'git --no-pager stash list --format="%H %gs"';
+
+const STASH_RESTORE_WARNING_SUMMARY =
+  "Warning: your uncommitted production changes could not be restored automatically and are still saved in git stash.";
+
+function stashRestoreWarning(reason: string, details?: string): string {
+  return joinFailureSections(
+    `${STASH_RESTORE_WARNING_SUMMARY} ${reason} ` +
+      `Recover them manually: run 'git status' and 'git stash list' in ${PRODUCTION_ROOT}, resolve any conflicts left in the working tree, ` +
+      "and reapply the entry with 'git stash pop' (or 'git stash apply <entry>') only if 'git stash list' still shows it.",
+    truncateFailureText(details, FAILURE_DETAIL_OUTPUT_LIMIT),
+  ) ?? STASH_RESTORE_WARNING_SUMMARY;
+}
+
+/** Stash entries newest first, i.e. entry 0 is what `git stash pop` would apply. */
+async function readProductionStashEntries(
+  runCommand: StagingCommandRunner,
+): Promise<{ ok: boolean; entries: ProductionStashEntry[]; output: string }> {
+  const result = await runCommand(PRODUCTION_STASH_LIST_COMMAND, PRODUCTION_ROOT);
+  const entries = result.ok
+    ? result.output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const separator = line.indexOf(" ");
+        return separator === -1
+          ? { sha: line, subject: "" }
+          : { sha: line.slice(0, separator), subject: line.slice(separator + 1) };
+      })
+    : [];
+  return { ok: result.ok, entries, output: result.output };
+}
+
+function appendWarningText(value: string, warning: string): string {
+  return joinFailureSections(value, warning) ?? warning;
+}
+
+function appendWarningField(target: Record<string, unknown>, field: string, warning: string): void {
+  const value = target[field];
+  if (typeof value === "string") target[field] = appendWarningText(value, warning);
+}
+
+/**
+ * Makes a failed stash restore visible on every deploy outcome — including the
+ * success path — without depending on each return site remembering to mention it.
+ */
+function appendStashRecoveryWarning(
+  result: Record<string, unknown>,
+  warning: string,
+): Record<string, unknown> {
+  const patched: Record<string, unknown> = {
+    ...result,
+    stashRestoreFailed: true,
+    stashRecoveryWarning: warning,
+  };
+  for (const field of ["textResultForLlm", "sessionLog", "message"]) {
+    appendWarningField(patched, field, warning);
+  }
+  appendWarningField(patched, "summary", STASH_RESTORE_WARNING_SUMMARY);
+  if (Array.isArray(patched.content)) {
+    patched.content = patched.content.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const text = (entry as { text?: unknown }).text;
+      return typeof text === "string" ? { ...entry, text: appendWarningText(text, warning) } : entry;
+    });
+  }
+  return patched;
+}
+
+/** Restore is best-effort: it must never turn a completed deploy into a thrown error. */
+async function finalizeProductionStash(
+  stash: ProductionStashState,
+  writeLog?: (message: string) => void,
+): Promise<void> {
+  try {
+    await stash.restore?.();
+  } catch (error) {
+    stash.pending = false;
+    const details = error instanceof Error ? error.message : String(error);
+    if (!stash.restored) {
+      stash.warning ??= stashRestoreWarning("Restoring it after the deploy threw an unexpected error.", details);
+    }
+    try {
+      writeLog?.(`Stash restore raised an unexpected error: ${details}`);
+    } catch {
+      // Logging must never change the deploy outcome.
+    }
+  }
+}
+
 export async function runStagingDeployJob(
   args: StagingDeployJobInput,
   options: StagingJobRunOptions = {},
+): Promise<Record<string, unknown>> {
+  const stash: ProductionStashState = { pending: false, suppressed: false };
+  try {
+    const result = await runStagingDeployJobImpl(args, options, stash);
+    await finalizeProductionStash(stash);
+    return stash.warning ? appendStashRecoveryWarning(result, stash.warning) : result;
+  } catch (error) {
+    await finalizeProductionStash(stash);
+    // The original error is what callers classify on, so only enrich its text.
+    if (stash.warning && error instanceof Error) {
+      error.message = appendWarningText(error.message, stash.warning);
+      if (typeof error.stack === "string") {
+        error.stack = appendWarningText(error.stack, stash.warning);
+      }
+    }
+    throw error;
+  }
+}
+
+async function runStagingDeployJobImpl(
+  args: StagingDeployJobInput,
+  options: StagingJobRunOptions,
+  stash: ProductionStashState,
 ): Promise<Record<string, unknown>> {
   const { stagingDir, message } = args;
   const deployStartedAt = Date.now();
@@ -986,9 +1124,31 @@ export async function runStagingDeployJob(
   writeLog(`Deploying from ${stagingDir} (branch: ${branch})`);
   ensureNodeModulesIgnored(stagingDir);
 
-  await runCommand("git add -A", stagingDir);
+  const addResult = await runCommand("git add -A", stagingDir);
+  if (!addResult.ok) {
+    return commandFailure(
+      "Failed to stage staging worktree changes for the deploy commit.",
+      "Staging the worktree changes with git add failed, so the deploy commit would have captured only a partial change set. " +
+        "No commit, merge, or push was attempted; the staging worktree and index were left in place so staging_deploy can be retried after fixing the git issue.",
+      "git add -A",
+      stagingDir,
+      addResult.output,
+      { stagingDir, branch },
+    );
+  }
   const status = await runCommand("git --no-pager status --porcelain", stagingDir);
-  const hasUncommittedChanges = status.ok && !!status.output.trim();
+  if (!status.ok) {
+    return commandFailure(
+      "Failed to read the staging worktree status.",
+      "Reading the staging worktree status failed, so the deploy could not tell whether there were uncommitted changes to commit. " +
+        "Deploying an unknown working-tree state was blocked; no commit, merge, or push was attempted and the staging worktree and index were left in place for retry.",
+      "git --no-pager status --porcelain",
+      stagingDir,
+      status.output,
+      { stagingDir, branch },
+    );
+  }
+  const hasUncommittedChanges = !!status.output.trim();
 
   if (hasUncommittedChanges) {
     const msgFile = join(stagingDir, ".commit-msg");
@@ -1047,17 +1207,82 @@ export async function runStagingDeployJob(
     );
   }
 
-  const stashResult = await runCommand("git stash --include-untracked", PRODUCTION_ROOT);
-  const didStash = stashResult.ok && !stashResult.output.includes("No local changes");
-  if (didStash) {
-    writeLog("Stashed uncommitted production changes");
-  }
-  const unstashProduction = async () => {
-    if (didStash) {
-      await runCommand("git stash pop", PRODUCTION_ROOT);
-      writeLog("Restored stashed production changes");
+  const stashMarker = `bridge-deploy-${prefix}-${randomBytes(4).toString("hex")}`;
+  const stashCommand = `git stash push --include-untracked -m "${stashMarker}"`;
+  const safeWriteLog = (message: string) => {
+    try {
+      writeLog(message);
+    } catch {
+      // Logging must never change the deploy outcome.
     }
   };
+  // Recovery commands log through the guarded sink so a broken logger cannot
+  // make a successful restore look like a stranded stash.
+  const runRecoveryCommand: StagingCommandRunner = (cmd, cwd, runOptions = {}) =>
+    run(cmd, cwd, { ...runOptions, log: safeWriteLog });
+
+  const popProductionStash = async () => {
+    if (!stash.pending || stash.suppressed) return;
+    // Clear first so an unexpected failure can never trigger a second pop.
+    stash.pending = false;
+    const currentEntries = await readProductionStashEntries(runRecoveryCommand);
+    const [top] = currentEntries.entries;
+    if (!currentEntries.ok || top?.sha !== stash.sha) {
+      stash.warning = stashRestoreWarning(
+        `The stash entry created for this deploy (${stash.sha}, message '${stashMarker}') is no longer the entry 'git stash pop' would apply, so it was left untouched.`,
+        currentEntries.ok ? `Current top stash entry: ${top ? `${top.sha} ${top.subject}` : "(none)"}` : currentEntries.output,
+      );
+      safeWriteLog(`Stashed production changes left in place: deploy stash ${stash.sha} is no longer the top stash entry`);
+      return;
+    }
+    const popResult = await runRecoveryCommand("git stash pop", PRODUCTION_ROOT);
+    if (popResult.ok) {
+      stash.restored = true;
+      safeWriteLog("Restored stashed production changes");
+      return;
+    }
+    stash.warning = stashRestoreWarning(`'git stash pop' failed in ${PRODUCTION_ROOT}.`, popResult.output);
+    safeWriteLog(`Failed to restore stashed production changes: ${popResult.output.slice(-200)}`);
+  };
+  stash.restore = popProductionStash;
+  // Deploy paths always use the non-throwing form so a broken restore cannot
+  // replace the outcome they were about to report.
+  const unstashProduction = () => finalizeProductionStash(stash, writeLog);
+
+  // Assume the worst until the stash outcome is confirmed, so an exception
+  // between here and identification still tells the user where to look.
+  stash.warning = stashRestoreWarning(
+    `The deploy could not confirm the outcome of '${stashCommand}' in ${PRODUCTION_ROOT}, so uncommitted production changes may be stashed under the message '${stashMarker}'.`,
+  );
+  const stashResult = await runCommand(stashCommand, PRODUCTION_ROOT);
+  if (!stashResult.ok) {
+    stash.warning = undefined;
+    return commandFailure(
+      "Failed to stash uncommitted production changes.",
+      "Stashing the production checkout failed, so the deploy stopped before pulling, rebasing, merging, or pushing anything. " +
+        `Check 'git status' and 'git stash list' in ${PRODUCTION_ROOT} for an entry named '${stashMarker}' before retrying; the staging worktree is intact.`,
+      stashCommand,
+      PRODUCTION_ROOT,
+      stashResult.output,
+      { stagingDir, branch, prodBranch },
+    );
+  }
+  const stashEntries = await readProductionStashEntries(runCommand);
+  if (!stashEntries.ok) {
+    stash.warning = stashRestoreWarning(
+      `The production stash list could not be read after stashing, so any entry this deploy created (message '${stashMarker}') was left untouched.`,
+      stashEntries.output,
+    );
+    writeLog(`Could not identify the production stash created for this deploy ('${stashMarker}') — leaving it in place`);
+  } else {
+    stash.warning = undefined;
+    const created = stashEntries.entries.find((entry) => entry.subject.includes(stashMarker));
+    if (created) {
+      stash.sha = created.sha;
+      stash.pending = true;
+      writeLog(`Stashed uncommitted production changes (${created.sha})`);
+    }
+  }
 
   const pullResult = await runCommand(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
   if (pullResult.ok) {
@@ -1308,11 +1533,16 @@ export async function runStagingDeployJob(
       writeLog(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
       const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
       if (!resetResult.ok) {
+        // Leave the stash in place: popping onto a checkout that could not be
+        // reset would layer the user's changes over a broken production tree.
+        stash.suppressed = true;
         return commandFailure(
           "Push to origin failed and production reset failed.",
           `The production merge succeeded locally, but pushing ${prodBranch} to origin failed and resetting the local production checkout back to ${preDeploySha} also failed. ` +
             "Restart signaling was blocked, the rollback checkpoint was preserved, and manual recovery is required before retrying. " +
-            "If production changes were stashed, restore them only after recovering the checkout.",
+            (stash.pending
+              ? `Your uncommitted production changes are stashed as '${stashMarker}' (${stash.sha}); restore them only after recovering the checkout.`
+              : "If production changes were stashed, restore them only after recovering the checkout."),
           resetCommand,
           PRODUCTION_ROOT,
           joinFailureSections(pushResult.output, resetResult.output) ?? resetResult.output,
