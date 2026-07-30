@@ -2890,6 +2890,283 @@ describe("staging preview cleanup hardening", () => {
   });
 });
 
+describe("staging preview event-driven discovery", () => {
+  type FakeJob = {
+    id: string;
+    type: "staging_preview" | "staging_deploy" | "self_update";
+    status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+    input: unknown;
+    createdAt: string;
+    updatedAt: string;
+  };
+
+  function createFakeJobStore(job: FakeJob) {
+    let current = job;
+    return {
+      store: {
+        get: (id: string) => (id === current.id ? current as any : null),
+        listActive: () =>
+          (current.status === "queued" || current.status === "running" ? [current as any] : []),
+      } as any,
+      complete(status: FakeJob["status"] = "succeeded") {
+        current = { ...current, status, updatedAt: new Date().toISOString() };
+      },
+      get job() {
+        return current as any;
+      },
+    };
+  }
+
+  function makePreviewJob(stagingDir: string): FakeJob {
+    const createdAt = new Date().toISOString();
+    return {
+      id: "preview-job-1",
+      type: "staging_preview",
+      status: "queued",
+      input: { stagingDir, validate: true },
+      createdAt,
+      updatedAt: createdAt,
+    };
+  }
+
+  it("serves a runner-built preview once its management job completes", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const prefix = "preview-job-built";
+    const stagingDir = join(stagingParent, prefix);
+    const distDir = join(previewParent, prefix);
+    mkdirSync(stagingDir, { recursive: true });
+
+    const app = createStagingPreviewTestApp(mod);
+    const fake = createFakeJobStore(makePreviewJob(stagingDir));
+
+    vi.useFakeTimers();
+    try {
+      const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
+      expect(controller).not.toBeNull();
+      controller!.watchJob(fake.job);
+
+      // Nothing is registered while the runner is still building.
+      await vi.advanceTimersByTimeAsync(50);
+      expect(mod.getActivePreviews().has(prefix)).toBe(false);
+
+      // The runner process writes the build, then marks the job terminal.
+      mkdirSync(distDir, { recursive: true });
+      writeFileSync(join(distDir, "index.html"), "<!doctype html><p>runner built preview</p>");
+      fake.complete("succeeded");
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+      // Discovery is finished: no repeating timer is left behind.
+      expect(controller!.watchedJobIds()).toEqual([]);
+      expect(controller!.hasScheduledWork()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.useRealTimers();
+      const response = await request(app).get(`/staging/${prefix}/`);
+      expect(response.status).toBe(200);
+      expect(response.text).toContain("runner built preview");
+      controller!.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("unregisters a preview whose dist disappeared when a job completes", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+    mod.__testing.backendManager.resetBackendState();
+
+    const prefix = "preview-deployed-away";
+    const distDir = join(previewParent, prefix);
+    mod.__testing.seedActivePreview(prefix, distDir);
+    expect(mod.__testing.hasActivePreview(prefix)).toBe(true);
+
+    const deployJob: FakeJob = {
+      id: "deploy-job-1",
+      type: "staging_deploy",
+      status: "running",
+      input: { stagingDir: join("unused", prefix), message: "ship it" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const fake = createFakeJobStore(deployJob);
+
+    vi.useFakeTimers();
+    try {
+      const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
+      controller!.watchJob(fake.job);
+      fake.complete("succeeded");
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(mod.__testing.hasActivePreview(prefix)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      controller!.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the stale staged backend when a preview is rebuilt", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+    mod.__testing.backendManager.resetBackendState();
+
+    const backendMod = await import("../staging-backend-manager.js");
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const prefix = "preview-rebuilt";
+    const stagingDir = join(stagingParent, prefix);
+    const distDir = join(previewParent, prefix);
+    mkdirSync(stagingDir, { recursive: true });
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, "index.html"), "<!doctype html><p>rebuilt</p>");
+
+    createStagingPreviewTestApp(mod);
+    mod.registerExistingPreviewsFromDisk({ stagingParent, stagingPreviewParents: [previewParent] });
+    // A staged backend is live for the previous build of this same prefix.
+    mod.__testing.backendManager.seedPreviewDataDir(prefix, createTempDir("bridge-preview-data-"));
+    expect(mod.__testing.backendManager.ensureLazyRouter(prefix)).toBe(true);
+    expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
+
+    // Spy through to the real cleanup so the invalidate → re-register cycle is
+    // exercised end to end; record the state observed mid-cycle.
+    const actualCleanup = backendMod.cleanupStagingBackendResources;
+    const midCycleRestorable: boolean[] = [];
+    const cleanupSpy = vi
+      .spyOn(backendMod, "cleanupStagingBackendResources")
+      .mockImplementation(async (cleanupPrefix: string, cleanupOptions?: { removeData?: boolean }) => {
+        await actualCleanup(cleanupPrefix, cleanupOptions);
+        midCycleRestorable.push(mod.__testing.backendManager.hasRestorableTarget(cleanupPrefix));
+      });
+    const fake = createFakeJobStore(makePreviewJob(stagingDir));
+
+    vi.useFakeTimers();
+    try {
+      const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
+      controller!.watchJob(fake.job);
+      fake.complete("succeeded");
+      await vi.advanceTimersByTimeAsync(50);
+
+      // The old child process is torn down (its seeded data is preserved) so the
+      // next request lazily restores a backend running the rebuilt code.
+      expect(cleanupSpy).toHaveBeenCalledWith(prefix, { removeData: false });
+      expect(midCycleRestorable).toEqual([false]);
+      expect(mod.__testing.backendManager.hasLazyRouter(prefix)).toBe(false);
+      expect(mod.__testing.backendManager.hasPreviewDataDir(prefix)).toBe(true);
+
+      // The same discovery pass re-registers the preview from the rebuilt dist.
+      expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
+      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+      controller!.stop();
+    } finally {
+      vi.useRealTimers();
+      cleanupSpy.mockRestore();
+    }
+  });
+
+  it("serves a preview registered from a real management job committed by the runner connection", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+    mod.__testing.backendManager.resetBackendState();
+
+    const { openDatabase } = await import("../db.js");
+    const { createManagementJobStore } = await import("../management-job-store.js");
+    const jobDataDir = createTempDir("bridge-stage-jobs-");
+    // Two connections to one database, exactly like the runner and the live server.
+    const runnerDb = openDatabase(jobDataDir);
+    const serverDb = openDatabase(jobDataDir);
+    const runnerStore = createManagementJobStore(runnerDb, { dataDir: jobDataDir });
+    const serverStore = createManagementJobStore(serverDb, { dataDir: jobDataDir });
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const prefix = "preview-cross-process";
+    const stagingDir = join(stagingParent, prefix);
+    const distDir = join(previewParent, prefix);
+    mkdirSync(stagingDir, { recursive: true });
+
+    const app = createStagingPreviewTestApp(mod);
+
+    vi.useFakeTimers();
+    try {
+      const controller = mod.startStagingPreviewDiscovery({ store: serverStore, pollIntervalMs: 50 });
+      const job = serverStore.enqueue("staging_preview", { stagingDir, validate: true });
+      controller!.watchJob(job);
+
+      // The runner claims and builds; the live server sees nothing yet.
+      runnerStore.claimNext({ runnerPid: 4242 });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(mod.getActivePreviews().has(prefix)).toBe(false);
+
+      mkdirSync(distDir, { recursive: true });
+      writeFileSync(join(distDir, "index.html"), "<!doctype html><p>cross process preview</p>");
+      runnerStore.succeed(job.id, { previewPath: `/staging/${prefix}/` });
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(controller!.hasScheduledWork()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.useRealTimers();
+      const response = await request(app).get(`/staging/${prefix}/`);
+      expect(response.status).toBe(200);
+      expect(response.text).toContain("cross process preview");
+      controller!.stop();
+    } finally {
+      vi.useRealTimers();
+      runnerDb.close();
+      serverDb.close();
+    }
+  });
+
+  it("does not start discovery when staging artifacts are not managed", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
+    vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", undefined);
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", undefined);
+    const mod = await loadStagingToolsModule();
+    const fake = createFakeJobStore(makePreviewJob(join("staging", "release-mode")));
+
+    expect(mod.shouldManageStagingArtifacts()).toBe(false);
+    expect(mod.startStagingPreviewDiscovery({ store: fake.store })).toBeNull();
+    expect(mod.startStagingPreviewDiscovery({ store: undefined })).toBeNull();
+  });
+
+  it("reports registered previews whose built assets are gone", async () => {
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+
+    const livePrefix = "preview-live";
+    const liveDist = join(previewParent, livePrefix);
+    mkdirSync(liveDist, { recursive: true });
+    writeFileSync(join(liveDist, "index.html"), "<!doctype html>");
+    mod.__testing.seedActivePreview(livePrefix, liveDist);
+    mod.__testing.seedActivePreview("preview-gone", join(previewParent, "preview-gone"));
+
+    expect(mod.isRegisteredStagingPreviewMissing(livePrefix)).toBe(false);
+    expect(mod.isRegisteredStagingPreviewMissing("preview-gone")).toBe(true);
+    // Unknown prefixes are not "missing" — they were never registered here.
+    expect(mod.isRegisteredStagingPreviewMissing("preview-unknown")).toBe(false);
+  });
+});
+
 describe("staging fresh-install node_modules link handling", () => {
   it("aborts the fresh install when the node_modules symlink cannot be removed and proceeds once it is removed", async () => {
     const mod = await loadStagingToolsModule();

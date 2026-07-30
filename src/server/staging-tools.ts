@@ -79,6 +79,7 @@ import {
   STAGING_STALE_ARTIFACT_KEEP_RECENT,
   STAGING_STALE_ARTIFACT_MAX_AGE_MS,
   STAGING_STALE_ARTIFACT_RECENT_GRACE_MS,
+  buildPreviewPrefix,
   createPreviewTarget,
   directoryMtimeMs,
   listStagingPreviewParents,
@@ -109,7 +110,12 @@ import { createValidationCommandEnv, prependNodePath } from "./validation-comman
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
-import { ActiveManagementJobError } from "./management-job-store.js";
+import { ActiveManagementJobError, type ManagementJobStore } from "./management-job-store.js";
+import {
+  createStagingPreviewDiscovery,
+  type StagingPreviewDiscoveryController,
+  type StagingPreviewDiscoveryTrigger,
+} from "./staging-preview-discovery.js";
 import { queuedManagementJobResult } from "./management-job-tool-results.js";
 import { createGitPullRebaseCommand } from "./git-command.js";
 
@@ -223,6 +229,16 @@ export function getActivePreviews(): ReadonlyMap<string, string> {
   return activePreviews;
 }
 
+/**
+ * True when a preview is still registered in this process but its built assets are
+ * gone (deployed, cleaned up, or mid-rebuild). Callers use this to refuse routing —
+ * including lazy staged-backend starts — and to trigger a reconciling rescan.
+ */
+export function isRegisteredStagingPreviewMissing(prefix: string): boolean {
+  const distDir = activePreviews.get(prefix);
+  return distDir !== undefined && !existsSync(join(distDir, "index.html"));
+}
+
 type RegisterExistingPreviewsFromDiskOptions = {
   stagingParent?: string;
   stagingDistParent?: string;
@@ -310,38 +326,75 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
   return registeredPreviewDirs;
 }
 
-let previewDiscoveryPoller: ReturnType<typeof setInterval> | null = null;
-
-function previewDiscoveryPollIntervalMs(): number {
-  const value = Number(process.env.BRIDGE_STAGING_PREVIEW_DISCOVERY_INTERVAL_MS ?? "");
-  return Number.isInteger(value) && value > 0 ? value : 2_000;
+/**
+ * Reconcile in-process preview state with what is on disk.
+ *
+ * Preview builds happen in the management-job-runner process, so this runs when a
+ * watched management job reaches a terminal state (or when a request finds a
+ * registered preview whose assets are gone) instead of on a permanent interval.
+ */
+async function runStagingPreviewDiscovery(
+  trigger: StagingPreviewDiscoveryTrigger,
+  writeLog: (msg: string) => void,
+): Promise<void> {
+  for (const job of trigger.completedJobs) {
+    if (job.type !== "staging_preview" || job.status !== "succeeded") continue;
+    await invalidateRebuiltPreviewBackend(job.input, writeLog);
+  }
+  await cleanupMissingRegisteredPreviews(writeLog);
+  registerExistingPreviewsFromDisk({ log: writeLog });
 }
 
-export function startStagingPreviewDiscoveryPoller(options: {
-  intervalMs?: number;
+/**
+ * A rebuilt preview must not keep serving its previous staged backend: the runner
+ * only replaces the frontend bundle, so the in-process child process still runs the
+ * pre-rebuild code. Dropping the backend state here lets the next API request lazily
+ * restore it from the new build (its seeded data dir is preserved).
+ */
+async function invalidateRebuiltPreviewBackend(
+  input: unknown,
+  writeLog: (msg: string) => void,
+): Promise<void> {
+  const stagingDir = typeof input === "object" && input !== null
+    ? (input as { stagingDir?: unknown }).stagingDir
+    : undefined;
+  if (typeof stagingDir !== "string" || stagingDir.trim() === "") return;
+
+  const prefix = buildPreviewPrefix(stagingDir);
+  if (!parsePreviewPrefix(prefix)) return;
+  if (!hasStagingBackendState(prefix)) return;
+
+  try {
+    await cleanupStagingBackendResources(prefix, { removeData: false });
+    writeLog(`Staging preview ${prefix} was rebuilt — staged backend will restart on the new build`);
+  } catch (error) {
+    writeLog(`Warning: could not reset staged backend for rebuilt preview ${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Start event-driven preview discovery for management jobs run by the separate
+ * runner process. Returns null when there is no job store or when staging artifacts
+ * are not managed (packaged release mode).
+ */
+export function startStagingPreviewDiscovery(options: {
+  store?: ManagementJobStore | null;
   log?: (msg: string) => void;
-} = {}): void {
-  if (previewDiscoveryPoller) return;
-  const intervalMs = options.intervalMs ?? previewDiscoveryPollIntervalMs();
-  const writeLog = options.log ?? log;
-  previewDiscoveryPoller = setInterval(() => {
-    try {
-      void cleanupMissingRegisteredPreviews(writeLog)
-        .then(() => registerExistingPreviewsFromDisk({ log: writeLog }))
-        .catch((error) => {
-          writeLog(`Warning: staging preview discovery poll failed: ${error instanceof Error ? error.message : String(error)}`);
-        });
-    } catch (error) {
-      writeLog(`Warning: staging preview discovery poll failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }, intervalMs);
-  previewDiscoveryPoller.unref?.();
-}
+  pollIntervalMs?: number;
+} = {}): StagingPreviewDiscoveryController | null {
+  const { store } = options;
+  if (!store) return null;
+  if (!shouldManageStagingArtifacts()) return null;
 
-export function stopStagingPreviewDiscoveryPoller(): void {
-  if (!previewDiscoveryPoller) return;
-  clearInterval(previewDiscoveryPoller);
-  previewDiscoveryPoller = null;
+  const writeLog = options.log ?? log;
+  const controller = createStagingPreviewDiscovery({
+    store,
+    log: writeLog,
+    pollIntervalMs: options.pollIntervalMs,
+    discover: (trigger) => runStagingPreviewDiscovery(trigger, writeLog),
+  });
+  controller.resumeActiveJobs();
+  return controller;
 }
 
 async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void): Promise<void> {
@@ -1892,6 +1945,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
       stagingDir,
       validate: args.validate !== false,
     });
+    ctx.stagingPreviewDiscovery?.watchJob(job);
     return queuedManagementJobResult(job, "Staging preview");
   } catch (error) {
     const activeJob = getActiveManagementJob(error);
@@ -1921,6 +1975,7 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
   }
   try {
     const job = store.enqueue("staging_deploy", { stagingDir, message });
+    ctx.stagingPreviewDiscovery?.watchJob(job);
     return queuedManagementJobResult(job, "Staging deploy");
   } catch (error) {
     const activeJob = getActiveManagementJob(error);

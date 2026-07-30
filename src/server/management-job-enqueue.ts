@@ -162,16 +162,22 @@ export function enqueueManagementJob(
   // request does not get masked by a pending restart that the active job
   // itself initiated.
   const reusable = findReusableJob(store, type, input);
-  if (reusable) return { job: reusable, reused: true };
+  if (reusable) {
+    ctx.stagingPreviewDiscovery?.watchJob(reusable);
+    return { job: reusable, reused: true };
+  }
 
   applyPreflightGuards(ctx, type);
 
   try {
-    return { job: store.enqueue(type, input), reused: false };
+    const job = store.enqueue(type, input);
+    ctx.stagingPreviewDiscovery?.watchJob(job);
+    return { job, reused: false };
   } catch (error) {
     if (error instanceof ActiveManagementJobError) {
       // Race: another caller enqueued between findReusableJob and store.enqueue.
       if (isReusableMatch(error.activeJob, type, input)) {
+        ctx.stagingPreviewDiscovery?.watchJob(error.activeJob);
         return { job: error.activeJob, reused: true };
       }
       throw new ManagementJobEnqueueError(error.message, 409, error.activeJob);
