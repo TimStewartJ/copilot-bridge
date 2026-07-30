@@ -1,8 +1,11 @@
-import type { EnrichedPR, PRRef } from "../../api";
+import { useState } from "react";
+import type { EnrichedPR, PRRef, ProviderName } from "../../api";
+import { linkResource, unlinkResource } from "../../api";
 import { PR_STATUS_STYLES } from "../../work-item-styles";
-import { GitPullRequest } from "lucide-react";
+import { GitPullRequest, Loader2, Unlink } from "lucide-react";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
+import { useToast } from "../../useToast";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -11,7 +14,12 @@ export interface PullRequestListProps {
   rawPRs: PRRef[];
   variant?: "compact" | "card" | "summary";
   resetKey?: string;
+  /** Task the rows are linked to. When provided, each row gets an unlink affordance. */
+  taskId?: string;
+  onTasksChanged?: () => void;
 }
+
+type UnlinkablePR = { repoId: string; repoName: string | null; prId: number; provider: ProviderName };
 
 const PR_SUMMARY_STYLES: Record<string, string> = {
   active: "bg-info-surface text-info",
@@ -23,10 +31,89 @@ function sortCountEntries(a: [string, number], b: [string, number]) {
   return b[1] - a[1] || a[0].localeCompare(b[0]);
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 // ── Component ────────────────────────────────────────────────────
 
-export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", resetKey }: PullRequestListProps) {
+export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", resetKey, taskId, onTasksChanged }: PullRequestListProps) {
   const isCompact = variant === "compact";
+  const [unlinkingKeys, setUnlinkingKeys] = useState<string[]>([]);
+  const { showToast, dismissToast } = useToast();
+  const canUnlink = !!taskId;
+
+  async function handleUnlink(pr: UnlinkablePR) {
+    if (!taskId) return;
+    const rowKey = `${pr.repoId}-${pr.prId}`;
+    setUnlinkingKeys((prev) => (prev.includes(rowKey) ? prev : [...prev, rowKey]));
+    try {
+      await unlinkResource(taskId, { type: "pr", repoId: pr.repoId, prId: pr.prId, provider: pr.provider });
+      onTasksChanged?.();
+      const toastId = showToast({
+        tone: "success",
+        title: `Unlinked pull request #${pr.prId}`,
+        description: pr.repoName || pr.repoId,
+        action: {
+          label: "Undo",
+          pendingLabel: "Restoring…",
+          onAction: async () => {
+            try {
+              await linkResource(taskId, {
+                type: "pr",
+                repoId: pr.repoId,
+                repoName: pr.repoName ?? undefined,
+                prId: pr.prId,
+                provider: pr.provider,
+              });
+              onTasksChanged?.();
+              dismissToast(toastId);
+            } catch (err) {
+              showToast({
+                tone: "error",
+                title: `Could not restore pull request #${pr.prId}`,
+                description: errorMessage(err),
+              });
+            }
+          },
+        },
+      });
+    } catch (err) {
+      showToast({
+        tone: "error",
+        title: `Could not unlink pull request #${pr.prId}`,
+        description: errorMessage(err),
+      });
+    } finally {
+      setUnlinkingKeys((prev) => prev.filter((key) => key !== rowKey));
+    }
+  }
+
+  function renderUnlinkButton(
+    pr: UnlinkablePR,
+    rowKey: string,
+    opts: { iconSize: number; className: string },
+  ) {
+    const isUnlinking = unlinkingKeys.includes(rowKey);
+    return (
+      <button
+        type="button"
+        onClick={() => { void handleUnlink(pr); }}
+        disabled={isUnlinking}
+        title="Unlink from task"
+        aria-label={`Unlink pull request #${pr.prId} from task`}
+        className={`${opts.className} shrink-0 self-start text-text-muted hover:text-warning transition-colors ${
+          isUnlinking
+            ? "opacity-100"
+            : "opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+        }`}
+      >
+        {isUnlinking
+          ? <Loader2 size={opts.iconSize} className="animate-spin" />
+          : <Unlink size={opts.iconSize} />}
+      </button>
+    );
+  }
 
   const items = enrichedPRs.length > 0
     ? enrichedPRs
@@ -75,6 +162,10 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
           .join(" · ");
 
     const singleUrl = !hasMultiplePRs && primaryPr.url && primaryPr.url !== "#" ? primaryPr.url : null;
+    // A single PR with a URL opens that URL instead of expanding, so the inline
+    // rows (and their unlink buttons) are unreachable — surface one in the row itself.
+    const singleRowKey = `${primaryPr.repoId}-${primaryPr.prId}`;
+    const showTrailingUnlink = canUnlink && items.length === 1 && !!singleUrl;
 
     return (
       <TaskPanelSummaryDisclosure
@@ -87,8 +178,17 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
         resetKey={resetKey}
         onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
         expandWhenSingle={!singleUrl}
+        trailing={showTrailingUnlink
+          ? renderUnlinkButton(primaryPr, singleRowKey, { iconSize: 14, className: "p-0.5" })
+          : undefined}
       >
-        <PullRequestList enrichedPRs={enrichedPRs} rawPRs={rawPRs} variant="compact" />
+        <PullRequestList
+          enrichedPRs={enrichedPRs}
+          rawPRs={rawPRs}
+          variant="compact"
+          taskId={taskId}
+          onTasksChanged={onTasksChanged}
+        />
       </TaskPanelSummaryDisclosure>
     );
   }
@@ -153,22 +253,33 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
             )}
           </>
         );
-        return realUrl ? (
+        const rowKey = `${pr.repoId}-${pr.prId}`;
+        const row = realUrl ? (
           <a
-            key={`${pr.repoId}-${pr.prId}`}
+            key={rowKey}
             href={realUrl}
             target="_blank"
             rel="noopener"
-            className={rowClass}
+            className={canUnlink ? `${rowClass} flex-1 min-w-0` : rowClass}
           >
             {inner}
           </a>
         ) : (
           <div
-            key={`${pr.repoId}-${pr.prId}`}
-            className={rowClass}
+            key={rowKey}
+            className={canUnlink ? `${rowClass} flex-1 min-w-0` : rowClass}
           >
             {inner}
+          </div>
+        );
+        if (!canUnlink) return row;
+        return (
+          <div key={rowKey} className="group flex items-start gap-1">
+            {row}
+            {renderUnlinkButton(pr, rowKey, {
+              iconSize: isCompact ? 12 : 14,
+              className: isCompact ? "mt-1 p-0.5" : "mt-2 p-1",
+            })}
           </div>
         );
       })}

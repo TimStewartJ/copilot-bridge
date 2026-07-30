@@ -76,19 +76,18 @@ import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
-import TaskCompletionToast from "./components/TaskCompletionToast";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
-import { createTaskCompletionFeedback, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
+import { createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
+import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
-const TASK_COMPLETION_TOAST_MS = 6_000;
 
 interface StartPromptSessionOptions {
   navigateOnError?: boolean;
@@ -110,6 +109,7 @@ export default function App() {
   const isMobile = useIsMobile();
   const { hasAttention: pageHasAttention, hasAttentionRef: pageHasAttentionRef } = usePageAttention();
   const queryClient = useQueryClient();
+  const { showToast, dismissToast } = useToast();
 
   // ── React Query data ────────────────────────────────────────
   const [archivedLoaded, setArchivedLoaded] = useState(false);
@@ -157,7 +157,6 @@ export default function App() {
   });
   const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
   const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
-  const [undoingTaskCompletionId, setUndoingTaskCompletionId] = useState<string | null>(null);
   // Incremented per-session when an external source (e.g. schedule) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
   const [sessionHistorySignals, setSessionHistorySignals] = useState<Record<string, number>>({});
@@ -560,26 +559,16 @@ export default function App() {
 
     if (reopenedTaskIds.size > 0) {
       setTaskCompletionFeedback((current) => (current && reopenedTaskIds.has(current.taskId) ? null : current));
-      setUndoingTaskCompletionId((current) => (current && reopenedTaskIds.has(current) ? null : current));
+      for (const taskId of reopenedTaskIds) dismissToast(`task-completion-${taskId}`);
     }
 
     if (completedTasks.length > 0) {
       completedTasks.sort((left, right) => right.sortTime - left.sortTime);
       setTaskCompletionFeedback(completedTasks[0].feedback);
-      setUndoingTaskCompletionId(null);
     }
 
     previousTasksRef.current = new Map(tasks.map((task) => [task.id, task]));
-  }, [tasks, buildTaskCompletionFeedback]);
-
-  useEffect(() => {
-    if (!taskCompletionFeedback) return;
-    const timer = window.setTimeout(() => {
-      setTaskCompletionFeedback((current) => current?.taskId === taskCompletionFeedback.taskId ? null : current);
-      setUndoingTaskCompletionId((current) => current === taskCompletionFeedback.taskId ? null : current);
-    }, TASK_COMPLETION_TOAST_MS);
-    return () => window.clearTimeout(timer);
-  }, [taskCompletionFeedback]);
+  }, [tasks, buildTaskCompletionFeedback, dismissToast]);
 
   const previousActiveSessionIdRef = useRef<string | null>(null);
   const dwelledSessionIdRef = useRef<string | null>(null);
@@ -1182,27 +1171,42 @@ export default function App() {
     }
   };
 
-  const dismissTaskCompletionFeedback = useCallback((taskId?: string) => {
-    setTaskCompletionFeedback((current) => {
-      if (!current) return current;
-      if (taskId && current.taskId !== taskId) return current;
-      return null;
-    });
-    setUndoingTaskCompletionId((current) => (taskId ? (current === taskId ? null : current) : null));
-  }, []);
+  const dismissTaskCompletionFeedback = useCallback((taskId: string) => {
+    setTaskCompletionFeedback((current) => (current?.taskId === taskId ? null : current));
+    dismissToast(`task-completion-${taskId}`);
+  }, [dismissToast]);
 
-  const handleUndoTaskCompletion = useCallback(async () => {
-    if (!taskCompletionFeedback) return;
-    setUndoingTaskCompletionId(taskCompletionFeedback.taskId);
-    const updated = await handleUpdateTask(taskCompletionFeedback.taskId, {
-      status: taskCompletionFeedback.previousStatus,
+  const handleUndoTaskCompletion = useCallback(async (feedback: TaskCompletionFeedback) => {
+    const updated = await handleUpdateTask(feedback.taskId, {
+      status: feedback.previousStatus,
     });
     if (updated) {
-      dismissTaskCompletionFeedback(taskCompletionFeedback.taskId);
+      dismissTaskCompletionFeedback(feedback.taskId);
     } else {
-      setUndoingTaskCompletionId(null);
+      showToast({
+        tone: "error",
+        title: `Could not reopen ${feedback.taskTitle}`,
+        description: "The task could not be reopened. Try again from the task panel.",
+      });
+      dismissToast(`task-completion-${feedback.taskId}`);
     }
-  }, [dismissTaskCompletionFeedback, handleUpdateTask, taskCompletionFeedback]);
+  }, [dismissTaskCompletionFeedback, dismissToast, handleUpdateTask, showToast]);
+
+  // `handleUpdateTask` is recreated every render, so route the undo through a ref
+  // to keep the toast effect keyed purely on newly completed tasks. Without this
+  // the effect re-fires each render and keeps resetting the auto-dismiss timer.
+  const undoTaskCompletionRef = useRef(handleUndoTaskCompletion);
+  useEffect(() => {
+    undoTaskCompletionRef.current = handleUndoTaskCompletion;
+  });
+
+  useEffect(() => {
+    if (!taskCompletionFeedback) return;
+    showToast(createTaskCompletionToast(
+      taskCompletionFeedback,
+      () => undoTaskCompletionRef.current(taskCompletionFeedback),
+    ));
+  }, [taskCompletionFeedback, showToast]);
 
   const handleMoveAndReorder = async (taskId: string, groupId: string | undefined, taskIds: string[]) => {
     // Single optimistic update: group move + reorder combined
@@ -1916,15 +1920,6 @@ export default function App() {
         </main>
       </div>
       </div>{/* ← close row wrapper */}
-
-      {taskCompletionFeedback && (
-        <TaskCompletionToast
-          feedback={taskCompletionFeedback}
-          undoing={undoingTaskCompletionId === taskCompletionFeedback.taskId}
-          onUndo={() => { void handleUndoTaskCompletion(); }}
-          onDismiss={() => dismissTaskCompletionFeedback(taskCompletionFeedback.taskId)}
-        />
-      )}
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
       {isMobile && mobileRouteMeta.showBottomNav && (
