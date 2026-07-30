@@ -337,7 +337,7 @@ describe("feed-store", () => {
     ]);
   });
 
-  it("does not issue cursors for mixed-status pages", () => {
+  it("does not issue cursors for mixed-status pages but still reports hasMore", () => {
     store.saveCard({ title: "Active" });
     store.saveCard({ title: "Done", status: "done" });
 
@@ -345,6 +345,155 @@ describe("feed-store", () => {
 
     expect(page.cards).toHaveLength(1);
     expect(page.nextCursor).toBeNull();
+    expect(page.hasMore).toBe(true);
+    expect(page.returnedCount).toBe(1);
+
+    const minimalPage = store.listCardPage({ includeDismissed: true, limit: 1, minimal: true });
+    expect(minimalPage.nextCursor).toBeNull();
+    expect(minimalPage.hasMore).toBe(true);
+    expect(minimalPage.returnedCount).toBe(1);
+
+    const finalPage = store.listCardPage({ includeDismissed: true, limit: 2 });
+    expect(finalPage.nextCursor).toBeNull();
+    expect(finalPage.hasMore).toBe(false);
+    expect(finalPage.returnedCount).toBe(2);
+  });
+
+  it("reports returnedCount and hasMore for truncated and final pages", () => {
+    store.saveCard({ title: "First" });
+    store.saveCard({ title: "Second" });
+    store.saveCard({ title: "Third" });
+
+    const truncated = store.listCardPage({ limit: 2 });
+    expect(truncated.returnedCount).toBe(2);
+    expect(truncated.hasMore).toBe(true);
+    expect(truncated.nextCursor).toEqual(expect.any(String));
+
+    const final = store.listCardPage({ limit: 2, cursor: truncated.nextCursor! });
+    expect(final.returnedCount).toBe(1);
+    expect(final.hasMore).toBe(false);
+    expect(final.nextCursor).toBeNull();
+
+    const exact = store.listCardPage({ limit: 3 });
+    expect(exact.returnedCount).toBe(3);
+    expect(exact.hasMore).toBe(false);
+    expect(exact.nextCursor).toBeNull();
+
+    const empty = store.listCardPage({ status: "dismissed" });
+    expect(empty.returnedCount).toBe(0);
+    expect(empty.hasMore).toBe(false);
+    expect(empty.nextCursor).toBeNull();
+  });
+
+  it("returns only summary fields when minimal is true", () => {
+    const bus = createTestBus();
+    const taskStore = createTaskStore(db, bus);
+    store = createFeedStore(db, bus);
+    const task = taskStore.createTask("Feed task");
+    const created = store.saveCard({
+      key: "minimal:one",
+      title: "Minimal card",
+      body: "A long body that should not be returned",
+      kind: "decision",
+      priority: "high",
+      taskId: task.id,
+      sessionId: "session-1",
+      url: "https://example.test/card",
+      links: [{ label: "Spec", url: "https://example.test/spec" }],
+      metadata: { prefix: "abc" },
+      action: { prompt: "Do the thing." },
+      pinned: true,
+    }, { visual: makeVisual("card", "33333333-3333-4333-8333-333333333333") }).card;
+
+    const page = store.listCardPage({ minimal: true });
+    expect(page.cards).toHaveLength(1);
+    const [summary] = page.cards;
+
+    expect(summary).toEqual({
+      id: created.id,
+      dedupeKey: "minimal:one",
+      title: "Minimal card",
+      kind: "decision",
+      status: "active",
+      priority: "high",
+      taskId: task.id,
+      updatedAt: created.updatedAt,
+    });
+    expect(Object.keys(summary!).sort()).toEqual([
+      "dedupeKey",
+      "id",
+      "kind",
+      "priority",
+      "status",
+      "taskId",
+      "title",
+      "updatedAt",
+    ]);
+    for (const omitted of [
+      "body",
+      "action",
+      "visual",
+      "links",
+      "metadata",
+      "url",
+      "sessionId",
+      "pinned",
+      "statusChangedAt",
+      "createdAt",
+    ]) {
+      expect(Object.prototype.hasOwnProperty.call(summary, omitted)).toBe(false);
+    }
+  });
+
+  it("returns the unchanged full card shape when minimal is omitted", () => {
+    const created = store.saveCard({
+      key: "full:one",
+      title: "Full card",
+      body: "Body text",
+      kind: "decision",
+      links: [{ label: "Spec", url: "https://example.test/spec" }],
+      metadata: { prefix: "abc" },
+      action: { prompt: "Do the thing." },
+      pinned: true,
+    }).card;
+
+    const page = store.listCardPage();
+
+    expect(page.cards).toEqual([store.getCard(created.id)]);
+    expect(page.cards[0]).toEqual(expect.objectContaining({
+      body: "Body text",
+      links: [{ label: "Spec", url: "https://example.test/spec" }],
+      metadata: { prefix: "abc" },
+      action: { prompt: "Do the thing." },
+      visual: null,
+      pinned: true,
+      statusChangedAt: created.statusChangedAt,
+      createdAt: created.createdAt,
+    }));
+  });
+
+  it("paginates minimal pages with cursors identical to full pages", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
+      const oldPinned = store.saveCard({ title: "Old pinned", pinned: true }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
+      const unpinned = store.saveCard({ title: "Unpinned" }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
+      const newPinned = store.saveCard({ title: "New pinned", pinned: true }).card;
+
+      const firstPage = store.listCardPage({ limit: 2, minimal: true });
+      expect(firstPage.cards.map((card) => card.id)).toEqual([newPinned.id, oldPinned.id]);
+      expect(firstPage.hasMore).toBe(true);
+      expect(firstPage.nextCursor).toBe(store.listCardPage({ limit: 2 }).nextCursor);
+
+      const secondPage = store.listCardPage({ limit: 2, minimal: true, cursor: firstPage.nextCursor! });
+      expect(secondPage.cards.map((card) => card.id)).toEqual([unpinned.id]);
+      expect(secondPage.nextCursor).toBeNull();
+      expect(secondPage.hasMore).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("filters cards", () => {

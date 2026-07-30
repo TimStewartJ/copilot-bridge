@@ -262,7 +262,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_get_info", {
     description: "Get task details including title, kind, status, linked session counts/previews, work items, PRs, and notes",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The exact task ID, copied verbatim from task_list or from injected task context. Never guess, infer, or reconstruct an ID from a task title." } }, required: ["taskId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);

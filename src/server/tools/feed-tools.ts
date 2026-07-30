@@ -109,12 +109,12 @@ export interface RegisterFeedToolsOptions {
 export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineBridgeTool("feed_save", {
-      description: "Create or update a durable dashboard feed card. Use this sparingly for finite, user-relevant queue items that should remain visible after chat, not for narration, progress logs, routine status updates, staging previews, or generic completion summaries. Use key for recurring or ongoing cards you plan to update in place; omit key for distinct historical cards. Optional body supports concise Markdown for scannable text. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
+      description: "Create or update a durable dashboard feed card. Use this sparingly for finite, user-relevant queue items that should remain visible after chat, not for narration, progress logs, routine status updates, staging previews, or generic completion summaries. Use key for recurring or ongoing cards you plan to update in place; omit key for distinct historical cards; the saved key is returned as the card's dedupeKey field and is what feed_list reports. Optional body supports concise Markdown for scannable text. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
       parameters: {
         type: "object",
         properties: {
           id: { type: "string", description: "Existing card ID to update. Mutually exclusive with key." },
-          key: { type: "string", description: "Stable agent-chosen key for upsert/dedupe, e.g. 'platform-audit:slug' or 'decision:task-id:topic'. Mutually exclusive with id." },
+          key: { type: "string", description: "Stable agent-chosen key for upsert/dedupe, e.g. 'platform-audit:slug' or 'decision:task-id:topic'. Returned as the card's dedupeKey field. Mutually exclusive with id." },
           title: { type: "string", description: "Short card title. Required when creating a new card." },
           body: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional concise Markdown body text. Supports GFM-style bullets, links, tables, task lists, and code. Raw HTML is escaped. Null clears it." },
           kind: { type: "string", description: "Card kind. Recommended: note, status, todo, decision, artifact, link. Unknown kinds are allowed." },
@@ -135,7 +135,7 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
               required: ["label", "url"],
             },
           },
-          metadata: { type: "object", description: "Optional small JSON object for agent-owned structured data. Replaces existing metadata when updating." },
+          metadata: { type: "object", description: "Optional small JSON object for agent-owned structured data. Must serialize to 4096 bytes or less. Replaces existing metadata when updating." },
           action: {
             anyOf: [{
               type: "object",
@@ -230,7 +230,7 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
     }),
     defineBridgeTool("feed_list", {
-      description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use keyPrefix to inspect a keyed proposal family without loading unrelated cards. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
+      description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor, returnedCount, hasMore }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. hasMore reports whether more rows matched beyond this page even when nextCursor is null. Full cards can be very large, so prefer minimal: true for scans, audits, and dedupe checks, then re-list a narrow filter for the few cards whose body or action you actually need. Saved card keys are returned as the dedupeKey field. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use keyPrefix to inspect a keyed proposal family without loading unrelated cards. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
       parameters: {
         type: "object",
         properties: {
@@ -240,14 +240,15 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
           sessionId: { type: "string", description: "Filter by related session ID." },
           keyPrefix: { type: "string", description: "Filter to cards whose stable key/dedupeKey starts with this prefix. Keyless cards are excluded." },
           limit: { type: "number", description: "Maximum cards per page to return, capped by the server." },
-          cursor: { type: "string", description: "Opaque nextCursor from a previous feed_list response. Must be paired with the identical filter arguments; pass only when the previous nextCursor was non-null." },
+          cursor: { type: "string", description: "Opaque nextCursor from a previous feed_list response. Copy it verbatim; never decode, reconstruct, or edit it. Must be paired with the identical filter arguments; pass only when the previous nextCursor was non-null." },
           includeDismissed: { type: "boolean", description: "When true and status is omitted, include all statuses." },
+          minimal: { type: "boolean", description: "When true, return only id, dedupeKey, title, kind, status, priority, taskId, and updatedAt per card, omitting body, action, visual, links, metadata, url, sessionId, pinned, and creation timestamps. Defaults to false. Use this for large or paged scans." },
         },
         required: [],
       },
       handler: async (args: any) => {
         try {
-          return ctx.feedStore.listCardPage({
+          const filters = {
             status: parseFeedStatus(args.status),
             kind: args.kind,
             taskId: args.taskId,
@@ -256,7 +257,10 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
             limit: args.limit,
             cursor: args.cursor,
             includeDismissed: args.includeDismissed === true,
-          });
+          };
+          return args.minimal === true
+            ? ctx.feedStore.listCardPage({ ...filters, minimal: true })
+            : ctx.feedStore.listCardPage(filters);
         } catch (error) {
           return normalizeFeedToolError(error);
         }

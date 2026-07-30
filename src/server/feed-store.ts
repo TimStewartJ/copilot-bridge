@@ -49,6 +49,17 @@ export interface FeedCard {
   updatedAt: string;
 }
 
+export interface FeedCardSummary {
+  id: string;
+  dedupeKey: string | null;
+  title: string;
+  kind: string;
+  status: FeedCardStatus;
+  priority: FeedCardPriority;
+  taskId: string | null;
+  updatedAt: string;
+}
+
 export interface FeedCardPageFilters {
   status?: FeedCardStatus;
   kind?: string;
@@ -60,9 +71,22 @@ export interface FeedCardPageFilters {
   cursor?: string;
 }
 
-export interface FeedCardListPage {
-  cards: FeedCard[];
+export interface FeedCardMinimalPageFilters extends FeedCardPageFilters {
+  minimal: true;
+}
+
+interface FeedCardPageMeta {
   nextCursor: string | null;
+  returnedCount: number;
+  hasMore: boolean;
+}
+
+export interface FeedCardListPage extends FeedCardPageMeta {
+  cards: FeedCard[];
+}
+
+export interface FeedCardSummaryListPage extends FeedCardPageMeta {
+  cards: FeedCardSummary[];
 }
 
 export interface FeedKindStat {
@@ -145,6 +169,19 @@ const MAX_STATS_DAYS = 365;
 const DEFAULT_STATS_BUCKETS = 14;
 const MAX_STATS_BUCKETS = 60;
 const FEED_CURSOR_VERSION = 1;
+const FEED_SUMMARY_COLUMNS = [
+  "id",
+  "dedupeKey",
+  "title",
+  "kind",
+  "status",
+  "priority",
+  "taskId",
+  "updatedAt",
+  "pinned",
+  "statusChangedAt",
+  "createdAt",
+].join(", ");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const FIELD_LIMITS = {
@@ -240,6 +277,14 @@ interface FeedCursorPayload {
   sessionId: string | null;
   keyPrefix: string | null;
   pinned: 0 | 1;
+  statusChangedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  id: string;
+}
+
+interface FeedCursorPosition {
+  pinned: boolean;
   statusChangedAt: string;
   createdAt: string;
   updatedAt: string;
@@ -780,7 +825,7 @@ function assertFeedCursorScope(cursor: FeedCursorPayload, filters: NormalizedFee
   }
 }
 
-function encodeFeedCursor(card: FeedCard, filters: NormalizedFeedListFilters): string {
+function encodeFeedCursor(position: FeedCursorPosition, filters: NormalizedFeedListFilters): string {
   const payload: FeedCursorPayload = {
     v: FEED_CURSOR_VERSION,
     order: filters.order,
@@ -790,13 +835,23 @@ function encodeFeedCursor(card: FeedCard, filters: NormalizedFeedListFilters): s
     taskId: filters.taskId ?? null,
     sessionId: filters.sessionId ?? null,
     keyPrefix: filters.keyPrefix ?? null,
-    pinned: card.pinned ? 1 : 0,
-    statusChangedAt: card.statusChangedAt,
-    createdAt: card.createdAt,
-    updatedAt: card.updatedAt,
-    id: card.id,
+    pinned: position.pinned ? 1 : 0,
+    statusChangedAt: position.statusChangedAt,
+    createdAt: position.createdAt,
+    updatedAt: position.updatedAt,
+    id: position.id,
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function cursorPositionFromRow(row: any): FeedCursorPosition {
+  return {
+    pinned: row.pinned === 1,
+    statusChangedAt: row.statusChangedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    id: row.id,
+  };
 }
 
 function appendCursorPredicate(
@@ -847,6 +902,19 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
       pinned: row.pinned === 1,
       statusChangedAt: row.statusChangedAt,
       createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  function hydrateSummary(row: any): FeedCardSummary {
+    return {
+      id: row.id,
+      dedupeKey: row.dedupeKey ?? null,
+      title: row.title,
+      kind: row.kind,
+      status: normalizeStatus(row.status),
+      priority: normalizePriority(row.priority),
+      taskId: row.taskId ?? null,
       updatedAt: row.updatedAt,
     };
   }
@@ -1114,7 +1182,11 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     };
   }
 
-  function listCardPage(filters: FeedCardPageFilters = {}): FeedCardListPage {
+  function listCardPage(filters: FeedCardMinimalPageFilters): FeedCardSummaryListPage;
+  function listCardPage(filters?: FeedCardPageFilters): FeedCardListPage;
+  function listCardPage(
+    filters: FeedCardPageFilters & { minimal?: boolean } = {},
+  ): FeedCardListPage | FeedCardSummaryListPage {
     const normalized = normalizeListFilters(filters);
     const where: string[] = [];
     const values: Array<string | number> = [];
@@ -1125,22 +1197,29 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
       assertFeedCursorScope(cursor, normalized);
       appendCursorPredicate(where, values, cursor);
     }
+    const minimal = filters.minimal === true;
     const pageLimit = normalized.limit + 1;
     values.push(pageLimit);
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = db.prepare(`
-      SELECT * FROM feed_cards
+      SELECT ${minimal ? FEED_SUMMARY_COLUMNS : "*"} FROM feed_cards
       ${whereClause}
       ORDER BY ${feedPageOrderBy(normalized.order)}
       LIMIT ?
     `).all(...values) as any[];
-    const cards = rows.slice(0, normalized.limit).map(hydrate);
-    return {
-      cards,
-      nextCursor: normalized.order !== "mixed" && rows.length > normalized.limit && cards.length > 0
-        ? encodeFeedCursor(cards[cards.length - 1]!, normalized)
+    const pageRows = rows.slice(0, normalized.limit);
+    const hasMore = rows.length > normalized.limit;
+    const lastRow = pageRows[pageRows.length - 1];
+    const meta: FeedCardPageMeta = {
+      nextCursor: normalized.order !== "mixed" && hasMore && lastRow
+        ? encodeFeedCursor(cursorPositionFromRow(lastRow), normalized)
         : null,
+      returnedCount: pageRows.length,
+      hasMore,
     };
+    return minimal
+      ? { cards: pageRows.map(hydrateSummary), ...meta }
+      : { cards: pageRows.map(hydrate), ...meta };
   }
 
   return {
