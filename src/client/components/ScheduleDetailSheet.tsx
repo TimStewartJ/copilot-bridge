@@ -21,6 +21,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import EmptyState from "./shared/EmptyState";
+import { useModalDialog } from "./shared/useModalDialog";
 
 const CRON_PRESETS = [
   { label: "Every weekday at 8 AM", cron: "0 8 * * 1-5" },
@@ -76,6 +77,10 @@ export default function ScheduleDetailSheet({
 }: ScheduleDetailSheetProps) {
   const isEditing = mode === "edit" || mode === "create";
   const isCreating = mode === "create";
+  // Escape mirrors the visible Close/Cancel target: editing an existing
+  // schedule returns to view mode instead of closing the whole sheet.
+  const dismissTarget = isEditing && !isCreating ? onSwitchToView : onClose;
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: dismissTarget });
   const {
     data: modelData,
     isLoading: modelsLoading,
@@ -88,9 +93,13 @@ export default function ScheduleDetailSheet({
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full md:max-w-lg md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl">
+      <div
+        {...dialogProps}
+        className="relative w-full md:max-w-lg md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+      >
         {isEditing ? (
           <EditMode
+            titleId={titleId}
             schedule={schedule}
             taskId={taskId}
             isCreating={isCreating}
@@ -102,6 +111,7 @@ export default function ScheduleDetailSheet({
           />
         ) : schedule ? (
           <ViewMode
+            titleId={titleId}
             schedule={schedule}
             taskTitle={taskTitle}
             models={models}
@@ -122,6 +132,7 @@ export default function ScheduleDetailSheet({
 // ── View Mode ────────────────────────────────────────────────────
 
 function ViewMode({
+  titleId,
   schedule,
   taskTitle,
   models,
@@ -133,6 +144,7 @@ function ViewMode({
   onSelectSession,
   onSelectTask,
 }: {
+  titleId: string;
   schedule: Schedule;
   taskTitle?: string | null;
   models: ModelInfo[];
@@ -171,7 +183,7 @@ function ViewMode({
     <>
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-        <h2 className="text-sm font-medium text-text-primary flex items-center gap-1.5 truncate min-w-0">
+        <h2 id={titleId} className="text-sm font-medium text-text-primary flex items-center gap-1.5 truncate min-w-0">
           <Clock size={14} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
           <span className="truncate">{schedule.name}</span>
         </h2>
@@ -375,35 +387,60 @@ function ViewMode({
       </div>
 
       {/* Delete confirmation */}
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowDeleteConfirm(false)} />
-          <div className="relative bg-bg-primary border border-border rounded-xl p-5 max-w-sm mx-4 shadow-2xl">
-            <h3 className="text-sm font-medium text-text-primary mb-2">Delete schedule?</h3>
-            <p className="text-xs text-text-muted mb-4">
-              "{schedule.name}" will be permanently deleted. This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowDeleteConfirm(false)} className="px-3 py-1.5 text-xs rounded-md text-text-secondary hover:text-text-primary transition-colors">
-                Cancel
-              </button>
-              <button
-                onClick={() => { onDelete(schedule.id); setShowDeleteConfirm(false); onClose(); }}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-error text-white hover:bg-error/90 transition-colors"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteConfirm
+        open={showDeleteConfirm}
+        scheduleName={schedule.name}
+        onCancel={() => setShowDeleteConfirm(false)}
+        onConfirm={() => { onDelete(schedule.id); setShowDeleteConfirm(false); onClose(); }}
+      />
     </>
+  );
+}
+
+// ── Delete Confirmation ──────────────────────────────────────────
+
+function DeleteConfirm({
+  open,
+  scheduleName,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  scheduleName: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onCancel, open });
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div {...dialogProps} className="relative bg-bg-primary border border-border rounded-xl p-5 max-w-sm mx-4 shadow-2xl">
+        <h3 id={titleId} className="text-sm font-medium text-text-primary mb-2">Delete schedule?</h3>
+        <p className="text-xs text-text-muted mb-4">
+          "{scheduleName}" will be permanently deleted. This cannot be undone.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-xs rounded-md text-text-secondary hover:text-text-primary transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-3 py-1.5 text-xs font-medium rounded-md bg-error text-white hover:bg-error/90 transition-colors"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
 // ── Edit Mode ────────────────────────────────────────────────────
 
 function EditMode({
+  titleId,
   schedule,
   taskId,
   isCreating,
@@ -413,6 +450,7 @@ function EditMode({
   onClose,
   onSaved,
 }: {
+  titleId: string;
   schedule: Schedule | null;
   taskId: string;
   isCreating: boolean;
@@ -517,7 +555,7 @@ function EditMode({
     <>
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-        <h2 className="text-sm font-medium text-text-primary flex items-center gap-1.5">
+        <h2 id={titleId} className="text-sm font-medium text-text-primary flex items-center gap-1.5">
           <Clock size={14} className="text-accent" />
           {isCreating ? "New Schedule" : "Edit Schedule"}
         </h2>

@@ -21,6 +21,7 @@ import {
   getGitWorktreePath,
 } from "../lib/workspace-presentation";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
+import { useModalDialog } from "./shared/useModalDialog";
 
 const TASK_WORKSPACE_NOT_CONFIGURED = "Task workspace is not configured.";
 
@@ -132,6 +133,7 @@ export default function WorkspaceDetailsSheet({
   const [copyError, setCopyError] = useState<string | null>(null);
   const copyRequestRef = useRef(0);
   const copyFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
 
   useEffect(() => () => {
     copyRequestRef.current += 1;
@@ -253,9 +255,12 @@ export default function WorkspaceDetailsSheet({
     <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
-      <div className="relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-border bg-bg-primary shadow-2xl md:mb-16 md:mt-16 md:max-h-[80vh] md:max-w-2xl md:rounded-xl">
+      <div
+        {...dialogProps}
+        className="relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-border bg-bg-primary shadow-2xl md:mb-16 md:mt-16 md:max-h-[80vh] md:max-w-2xl md:rounded-xl"
+      >
         <div className="flex items-center justify-between border-b border-border px-5 py-3 shrink-0">
-          <h2 className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-text-primary">
+          <h2 id={titleId} className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-text-primary">
             <FolderOpen size={14} className="text-text-muted" />
             <span className="truncate">Workspace details</span>
           </h2>

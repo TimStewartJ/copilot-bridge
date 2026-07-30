@@ -19,6 +19,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
+import { useModalDialog } from "./shared/useModalDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
@@ -583,6 +584,13 @@ export default function SessionList({
     setModelSwitchError(null);
   }, [modelSwitchSaving]);
 
+  const { dialogProps: modelDialogProps } = useModalDialog({
+    onDismiss: closeModelDialog,
+    open: !!modelDialogSessionId,
+    dismissible: !modelSwitchSaving,
+    label: "Change session model",
+  });
+
   const handleSaveModelSwitch = useCallback(async () => {
     if (!modelDialogSessionId) return;
     const model = modelDraft.trim();
@@ -1085,9 +1093,7 @@ export default function SessionList({
       {modelDialogSessionId && (
         <div
           className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Change session model"
+          {...modelDialogProps}
           onClick={closeModelDialog}
         >
           <div

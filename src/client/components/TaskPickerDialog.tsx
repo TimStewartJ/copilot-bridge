@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import type { Task } from "../api";
 import { X } from "lucide-react";
 import TaskKindBadge from "./TaskKindBadge";
+import { useModalDialog } from "./shared/useModalDialog";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-info-surface text-info",
@@ -22,18 +23,11 @@ export default function TaskPickerDialog({
 }: TaskPickerDialogProps) {
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onEsc);
-    return () => document.removeEventListener("keydown", onEsc);
-  }, [onClose]);
 
   const pickable = tasks.filter((t) => t.status === "active");
 
@@ -49,13 +43,17 @@ export default function TaskPickerDialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-bg-secondary border border-border rounded-xl shadow-2xl w-full max-w-[400px] mx-4 max-h-[60vh] flex flex-col">
+      <div
+        {...dialogProps}
+        className="bg-bg-secondary border border-border rounded-xl shadow-2xl w-full max-w-[400px] mx-4 max-h-[60vh] flex flex-col"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <h3 className="font-medium text-sm">Link to Task</h3>
+          <h3 id={titleId} className="font-medium text-sm">Link to Task</h3>
           <button
             onClick={onClose}
             className="text-text-muted hover:text-text-secondary"
+            aria-label="Close"
           >
             <X size={16} />
           </button>

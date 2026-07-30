@@ -6,6 +6,7 @@ import { FileText, Pencil, X } from "lucide-react";
 import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
 import EmptyState from "./shared/EmptyState";
+import { useModalDialog } from "./shared/useModalDialog";
 
 interface NotesSheetProps {
   notes: string;
@@ -18,6 +19,7 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
   const [editing, setEditing] = useState(startInEditMode);
   const [draft, setDraft] = useState(notes);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
 
   useEffect(() => {
     if (editing && textareaRef.current) {
@@ -43,10 +45,13 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       {/* Sheet */}
-      <div className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl">
+      <div
+        {...dialogProps}
+        className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-          <h2 className="text-sm font-medium text-text-primary flex items-center gap-1.5">
+          <h2 id={titleId} className="text-sm font-medium text-text-primary flex items-center gap-1.5">
             <FileText size={14} className="text-text-muted" />
             {editing ? "Editing Notes" : "Notes"}
           </h2>
