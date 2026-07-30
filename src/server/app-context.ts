@@ -38,6 +38,7 @@ import type { PushSubscriptionStore } from "./push-subscription-store.js";
 import type { PushNotificationService } from "./push-notification-service.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/index.js";
 import type { ManagementJobStore } from "./management-job-store.js";
+import type { StagingPreviewDiscoveryController } from "./staging-preview-discovery.js";
 import type { SessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 
 export interface AppContext {
@@ -83,6 +84,11 @@ export interface AppContext {
   scheduler?: typeof SchedulerModule;
   /** Periodic owner of session-overlay/defer row cleanup. Started at boot. */
   sessionOverlayMaintenance?: SessionOverlayMaintenance;
+  /**
+   * Watches management jobs run by the separate runner process so staging previews
+   * are discovered when a job completes instead of on a permanent poll.
+   */
+  stagingPreviewDiscovery?: StagingPreviewDiscoveryController;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
   /** Public API mount path used for server-generated links (e.g. "/api" or "/staging/<prefix>/api") */

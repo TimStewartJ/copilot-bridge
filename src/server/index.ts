@@ -12,9 +12,10 @@ import {
   pruneOrphanedWorktrees,
   getActivePreviews,
   getStagingRouter,
+  isRegisteredStagingPreviewMissing,
   registerExistingPreviewsFromDisk,
   registerExpressApp,
-  startStagingPreviewDiscoveryPoller,
+  startStagingPreviewDiscovery,
 } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
@@ -69,6 +70,15 @@ app.use("/api", (_req, res, next) => {
 }, createApiRouter(defaultContext, { shutdownCoordinator }));
 
 // ── Static files (Vite build output) ──────────────────────────────
+
+// Staging previews whose built assets vanished (deployed, cleaned up, mid-rebuild)
+// must stop routing before the API handler can lazily start a backend for them, and
+// the disappearance itself is the event that triggers reconciliation.
+app.use("/staging/:prefix", (req, res, next) => {
+  if (!isRegisteredStagingPreviewMissing(req.params.prefix)) return next();
+  void defaultContext.stagingPreviewDiscovery?.requestDiscovery();
+  res.status(404).send("Staging preview not found. It may have been cleaned up or deployed.");
+});
 
 // Staging API — delegating middleware registered at startup, resolves routers dynamically
 app.use("/staging/:prefix/api", (req, res, next) => {
@@ -217,8 +227,12 @@ async function main(): Promise<void> {
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();
 
+  // Watch active management jobs before scanning disk: a preview finishing between
+  // the scan and the resume would otherwise never be observed.
+  defaultContext.stagingPreviewDiscovery = startStagingPreviewDiscovery({
+    store: defaultContext.managementJobStore,
+  }) ?? undefined;
   registerExistingPreviewsFromDisk();
-  startStagingPreviewDiscoveryPoller();
 
   const port = config.web.port;
   // Event loop lag monitor — measures how late setInterval fires vs expected
