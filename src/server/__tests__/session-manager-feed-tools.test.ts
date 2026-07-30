@@ -56,19 +56,36 @@ describe("session manager feed tools", () => {
     expect(bodyDescription).toContain("Raw HTML is escaped");
   });
 
-  it("describes feed_list page shape and cursor usage", () => {
+  it("describes feed_list page shape, minimal mode, and cursor usage", () => {
     const { ctx } = createTestApp();
     const listTool = getTool(ctx, "feed_list");
     const cursorDescription = getParameterDescription(ctx, "feed_list", "cursor");
     const keyPrefixDescription = getParameterDescription(ctx, "feed_list", "keyPrefix");
+    const minimalDescription = getParameterDescription(ctx, "feed_list", "minimal");
 
-    expect(listTool.description).toContain("Returns { cards, nextCursor }");
+    expect(listTool.description).toContain("Returns { cards, nextCursor, returnedCount, hasMore }");
     expect(listTool.description).toContain("identical filters");
     expect(listTool.description).toContain("request each status separately");
     expect(listTool.description).toContain("keyPrefix");
+    expect(listTool.description).toContain("minimal: true");
+    expect(listTool.description).toContain("dedupeKey");
     expect(cursorDescription).toContain("previous feed_list response");
     expect(cursorDescription).toContain("identical filter arguments");
+    expect(cursorDescription).toContain("never decode, reconstruct, or edit it");
     expect(keyPrefixDescription).toContain("starts with this prefix");
+    expect(minimalDescription).toContain("omitting body, action");
+    expect(minimalDescription).toContain("Defaults to false");
+  });
+
+  it("describes feed_save key as dedupeKey and the metadata size cap", () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const keyDescription = getParameterDescription(ctx, "feed_save", "key");
+    const metadataDescription = getParameterDescription(ctx, "feed_save", "metadata");
+
+    expect(saveTool.description).toContain("dedupeKey");
+    expect(keyDescription).toContain("Returned as the card's dedupeKey field");
+    expect(metadataDescription).toContain("4096 bytes or less");
   });
 
   it("feed_save creates and updates keyed cards", async () => {
@@ -245,6 +262,84 @@ describe("session manager feed tools", () => {
       "proposal:bridge:two",
     ]);
     expect(page.nextCursor).toBeNull();
+  });
+
+  it("feed_list returns reduced cards when minimal is true", async () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const listTool = getTool(ctx, "feed_list");
+    const task = ctx.taskStore.createTask("Minimal task");
+    const created = await saveTool.handler({
+      key: "minimal:one",
+      title: "Minimal card",
+      body: "A long body that should not be listed",
+      kind: "decision",
+      priority: "high",
+      taskId: task.id,
+      sessionId: "session-1",
+      url: "https://example.test/card",
+      links: [{ label: "Spec", url: "https://example.test/spec" }],
+      metadata: { prefix: "abc" },
+      action: { prompt: "Do the thing." },
+      pinned: true,
+    }, createInvocation("feed_save")) as any;
+
+    const minimal = await listTool.handler({ minimal: true }, createInvocation("feed_list")) as any;
+
+    expect(minimal.cards).toEqual([{
+      id: created.card.id,
+      dedupeKey: "minimal:one",
+      title: "Minimal card",
+      kind: "decision",
+      status: "active",
+      priority: "high",
+      taskId: task.id,
+      updatedAt: created.card.updatedAt,
+    }]);
+    expect(minimal).toEqual(expect.objectContaining({
+      nextCursor: null,
+      returnedCount: 1,
+      hasMore: false,
+    }));
+
+    const full = await listTool.handler({}, createInvocation("feed_list")) as any;
+    expect(full.cards).toEqual([created.card]);
+    expect(full.cards[0].body).toBe("A long body that should not be listed");
+    expect(full.cards[0].action).toEqual({ prompt: "Do the thing." });
+
+    const explicitFull = await listTool.handler({ minimal: false }, createInvocation("feed_list")) as any;
+    expect(explicitFull.cards).toEqual([created.card]);
+  });
+
+  it("feed_list reports hasMore for truncated pages and mixed status pages", async () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const listTool = getTool(ctx, "feed_list");
+    await saveTool.handler({ title: "Active one" }, createInvocation("feed_save"));
+    await saveTool.handler({ title: "Active two" }, createInvocation("feed_save"));
+    await saveTool.handler({ title: "Done", status: "done" }, createInvocation("feed_save"));
+
+    const truncated = await listTool.handler({ limit: 1 }, createInvocation("feed_list")) as any;
+    expect(truncated.returnedCount).toBe(1);
+    expect(truncated.hasMore).toBe(true);
+    expect(truncated.nextCursor).toEqual(expect.any(String));
+
+    const final = await listTool.handler({
+      limit: 1,
+      cursor: truncated.nextCursor,
+    }, createInvocation("feed_list")) as any;
+    expect(final.returnedCount).toBe(1);
+    expect(final.hasMore).toBe(false);
+    expect(final.nextCursor).toBeNull();
+
+    const mixed = await listTool.handler({
+      includeDismissed: true,
+      limit: 1,
+      minimal: true,
+    }, createInvocation("feed_list")) as any;
+    expect(mixed.returnedCount).toBe(1);
+    expect(mixed.hasMore).toBe(true);
+    expect(mixed.nextCursor).toBeNull();
   });
 
   it("feed_save publishes, preserves, replaces, and clears feed visuals", async () => {
