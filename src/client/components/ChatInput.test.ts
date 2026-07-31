@@ -119,6 +119,37 @@ describe("ChatInput voice retry", () => {
     expect(retryVoiceJobUpload).toHaveBeenCalledWith("session-1");
   });
 
+  it("offers a discard action and blocks new recordings while audio is still unsent", async () => {
+    const discardVoiceRecording = vi.fn();
+    await renderChatInput({
+      voiceJob: {
+        composerKey: "session-1",
+        status: "error",
+        submitMode: "autosend",
+        error: "Unsent voice recording saved from earlier.",
+        retryable: true,
+        restored: true,
+      },
+      onRetryVoiceJobUpload: vi.fn(),
+      onDiscardVoiceRecording: discardVoiceRecording,
+    });
+
+    expect(getHarness().dom.container.textContent).toContain("Unsent voice recording saved from earlier.");
+
+    const micButton = findButtonByAriaLabel(
+      getHarness().dom.container,
+      "Retry or discard the unsent voice recording first",
+    );
+    expect(getReactProps(micButton)?.disabled).toBe(true);
+
+    const discardButton = findButtonByText(getHarness().dom.container, "Discard");
+    await getHarness().act(async () => {
+      getReactProps(discardButton)?.onClick();
+    });
+
+    expect(discardVoiceRecording).toHaveBeenCalledWith("session-1");
+  });
+
   it("does not render retry action for non-retryable voice errors", async () => {
     await renderChatInput({
       voiceJob: {

@@ -12,6 +12,16 @@ import { getTaskIdFromDraftComposerKey, isDraftComposerKey } from "../lib/compos
 import { resolveBackgroundVoiceSubmitMode } from "../lib/background-voice-delivery";
 import { clearOwnedVoiceJobs, replaceVoiceJob, shouldHandleDraftVoiceTarget } from "../lib/voice-job-map";
 import { mergeTranscript } from "../lib/voice-transcript";
+import {
+  createVoiceRecordingId,
+  deletePendingVoiceRecording,
+  getPendingVoiceRecording,
+  migratePendingVoiceRecording,
+  patchPendingVoiceRecording,
+  pendingVoiceRecordingToBlob,
+  savePendingVoiceRecording,
+  type VoicePersistResult,
+} from "../lib/voice-recording-store";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import type { Draft } from "../useDrafts";
 
@@ -44,6 +54,21 @@ export interface VoiceBackgroundJob {
   originComposerKey?: string;
   targetSessionId?: string;
   safeToLeave?: boolean;
+  /** True when the job was rebuilt from a recording persisted before an app restart. */
+  restored?: boolean;
+  /** Set when the audio could not be written to durable client storage. */
+  persistWarning?: string;
+}
+
+/** A voice job that is still in flight, narrowed away from the terminal `error` status. */
+export type ActiveVoiceBackgroundJob = VoiceBackgroundJob & {
+  status: Exclude<VoiceBackgroundJobStatus, "error">;
+};
+
+export function isActiveVoiceBackgroundJob(
+  job: VoiceBackgroundJob | null | undefined,
+): job is ActiveVoiceBackgroundJob {
+  return !!job && job.status !== "error";
 }
 
 export interface StartBackgroundVoiceJobOptions {
@@ -75,9 +100,19 @@ export interface UseBackgroundVoiceJobsResult {
   retryVoiceJobUpload: (composerKey: string) => void;
   reviewInstead: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
+  discardVoiceRecording: (composerKey: string) => void;
+  migrateVoiceRecording: (fromComposerKey: string, toComposerKey: string) => void;
 }
 
 const SERVER_POLL_DELAY_MS = 1_200;
+const RESTORED_RECORDING_MESSAGE = "Unsent voice recording saved from earlier.";
+const NON_DURABLE_STORAGE_MESSAGE = "Recording could not be saved on this device — keep the app open until it sends.";
+
+function describePersistResult(result: VoicePersistResult): string | undefined {
+  if (result.durable) return undefined;
+  if (result.reason === "conflict") return undefined;
+  return NON_DURABLE_STORAGE_MESSAGE;
+}
 
 function isVoiceServerActivityStatus(status: VoiceJobStatusResponse["status"]): status is VoiceServerActivityStatus {
   return status === "accepted" || status === "transcribing" || status === "sending";
@@ -102,6 +137,9 @@ export function useBackgroundVoiceJobs({
   const jobsRef = useRef(jobs);
   const uploadControllersRef = useRef<Record<string, AbortController>>({});
   const uploadAudioRef = useRef<Record<string, Blob>>({});
+  const pendingRecordingIdsRef = useRef<Record<string, string>>({});
+  const persistWarningsRef = useRef<Record<string, string>>({});
+  const hydratedComposerKeysRef = useRef<Set<string>>(new Set());
   const retryingComposerKeysRef = useRef<Set<string>>(new Set());
   const pollTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const claimedOriginServerJobIdsRef = useRef<Record<string, string>>({});
@@ -177,13 +215,88 @@ export function useBackgroundVoiceJobs({
     }
   }, []);
 
+  const forgetPendingRecording = useCallback(async (composerKey: string, recordingId?: string) => {
+    const owned = recordingId ?? pendingRecordingIdsRef.current[composerKey];
+    if (!owned) return;
+    if (recordingId && pendingRecordingIdsRef.current[composerKey] === recordingId) {
+      delete pendingRecordingIdsRef.current[composerKey];
+    } else if (!recordingId) {
+      delete pendingRecordingIdsRef.current[composerKey];
+    }
+    hydratedComposerKeysRef.current.delete(composerKey);
+    await deletePendingVoiceRecording(composerKey, owned).catch(() => {});
+  }, []);
+
+  /**
+   * Deletes the stored recording only when it belongs to the server job that just settled. A stale
+   * recovery response must never destroy a recording made after that job started.
+   */
+  const forgetRecordingForServerJob = useCallback(async (composerKey: string, serverJobId: string) => {
+    const record = await getPendingVoiceRecording(composerKey).catch(() => null);
+    if (!record) return;
+    if (record.serverJobId && record.serverJobId !== serverJobId) return;
+    await forgetPendingRecording(composerKey, record.recordingId);
+  }, [forgetPendingRecording]);
+
+  const notePendingRecordingFailure = useCallback(async (composerKey: string, message: string) => {
+    const recordingId = pendingRecordingIdsRef.current[composerKey];
+    if (!recordingId) return;
+    await patchPendingVoiceRecording(composerKey, recordingId, { lastError: message }).catch(() => {});
+  }, []);
+
+  /** Keeps a persisted recording attached to its conversation when a draft becomes a real session. */
+  const moveRecordingOwnership = useCallback(async (fromComposerKey: string, toComposerKey: string) => {
+    if (fromComposerKey === toComposerKey) return;
+
+    const moved = await migratePendingVoiceRecording(fromComposerKey, toComposerKey).catch(() => null);
+    if (!moved) return;
+
+    pendingRecordingIdsRef.current[toComposerKey] = moved.recordingId;
+    delete pendingRecordingIdsRef.current[fromComposerKey];
+
+    const audio = uploadAudioRef.current[fromComposerKey];
+    if (audio) {
+      uploadAudioRef.current[toComposerKey] = audio;
+      delete uploadAudioRef.current[fromComposerKey];
+    }
+
+    const warning = persistWarningsRef.current[fromComposerKey];
+    if (warning) {
+      persistWarningsRef.current[toComposerKey] = warning;
+      delete persistWarningsRef.current[fromComposerKey];
+    }
+
+    hydratedComposerKeysRef.current.delete(fromComposerKey);
+    hydratedComposerKeysRef.current.add(toComposerKey);
+  }, []);
+
   const clearVoiceJobError = useCallback((composerKey: string) => {
-    if (jobsRef.current[composerKey]?.status !== "error") return;
+    const existing = jobsRef.current[composerKey];
+    if (existing?.status !== "error") return;
+    // Never silently drop audio that has not been delivered yet — that needs an explicit discard.
+    if (existing.retryable === true) return;
     clearUploadTracking(composerKey);
     retryingComposerKeysRef.current.delete(composerKey);
     setJobsState((prev) => {
-      const existing = prev[composerKey];
-      if (!existing || existing.status !== "error") return prev;
+      const current = prev[composerKey];
+      if (!current || current.status !== "error" || current.retryable === true) return prev;
+      const next = { ...prev };
+      delete next[composerKey];
+      return next;
+    });
+  }, [clearUploadTracking, setJobsState]);
+
+  const discardVoiceRecording = useCallback((composerKey: string) => {
+    clearUploadTracking(composerKey);
+    retryingComposerKeysRef.current.delete(composerKey);
+    delete pendingRecordingIdsRef.current[composerKey];
+    delete persistWarningsRef.current[composerKey];
+    hydratedComposerKeysRef.current.delete(composerKey);
+    // Delete unconditionally: an explicit discard must clear the slot even if this tab never
+    // owned the recording (for example after a restart rebuilt the job from storage).
+    void deletePendingVoiceRecording(composerKey).catch(() => {});
+    setJobsState((prev) => {
+      if (!(composerKey in prev)) return prev;
       const next = { ...prev };
       delete next[composerKey];
       return next;
@@ -270,7 +383,7 @@ export function useBackgroundVoiceJobs({
   const markError = useCallback((
     composerKey: string,
     message: string,
-    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave">>,
+    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning">>,
   ) => {
     const nextJob: VoiceBackgroundJob = {
       composerKey,
@@ -281,19 +394,29 @@ export function useBackgroundVoiceJobs({
     if (extras) {
       Object.assign(nextJob, extras);
     }
-    nextJob.retryable = extras?.retryable === true && !!uploadAudioRef.current[composerKey]
+    // Retry needs recoverable audio: either still in memory, or persisted on this device.
+    nextJob.retryable = extras?.retryable === true
+      && (!!uploadAudioRef.current[composerKey] || !!pendingRecordingIdsRef.current[composerKey])
       ? true
       : undefined;
+    nextJob.persistWarning = extras?.persistWarning ?? persistWarningsRef.current[composerKey];
     setJob(composerKey, nextJob);
-  }, [setJob]);
-
-  const startLocalInsertJob = useCallback((composerKey: string, audio: Blob) => {
+    if (nextJob.retryable) {
+      void notePendingRecordingFailure(composerKey, message);
+    }
+  }, [notePendingRecordingFailure, setJob]);
+  const startLocalInsertJob = useCallback((composerKey: string, audio: Blob, recordingId?: string) => {
     clearUploadTracking(composerKey);
     uploadAudioRef.current[composerKey] = audio;
+    if (recordingId) {
+      pendingRecordingIdsRef.current[composerKey] = recordingId;
+    }
+    const ownedRecordingId = pendingRecordingIdsRef.current[composerKey];
     setJob(composerKey, {
       composerKey,
       status: "transcribing",
       submitMode: "insert",
+      persistWarning: persistWarningsRef.current[composerKey],
     });
 
     const runJob = async () => {
@@ -304,7 +427,9 @@ export function useBackgroundVoiceJobs({
           throw new Error("No transcript returned");
         }
 
-        insertTranscriptIntoDraft(composerKey, transcript);
+        // Persist the transcript before dropping the audio so a reload cannot lose both.
+        insertTranscriptIntoDraft(composerKey, transcript, true);
+        await forgetPendingRecording(composerKey, ownedRecordingId);
         clearUploadTracking(composerKey);
         clearJob(composerKey);
       } catch (err) {
@@ -318,7 +443,7 @@ export function useBackgroundVoiceJobs({
     };
 
     void runJob();
-  }, [clearJob, clearUploadTracking, insertTranscriptIntoDraft, markError, setJob]);
+  }, [clearJob, clearUploadTracking, forgetPendingRecording, insertTranscriptIntoDraft, markError, setJob]);
 
   const applyServerSnapshot = useCallback(async (
     snapshot: VoiceJobStatusResponse,
@@ -357,6 +482,7 @@ export function useBackgroundVoiceJobs({
         }
       }
       moveDraftContent(originComposerKey, snapshot.targetSessionId);
+      await moveRecordingOwnership(originComposerKey, snapshot.targetSessionId);
     }
 
     if (snapshot.status === "done" || snapshot.status === "recovered") {
@@ -379,6 +505,9 @@ export function useBackgroundVoiceJobs({
       if (isDraftComposerKey(originComposerKey) && snapshot.targetSessionId) {
         optionsRef.current.clearDraftSession(originComposerKey);
       }
+      // The message landed (or its transcript was recovered) — the local copy is finally safe to drop.
+      await forgetRecordingForServerJob(displayKey, snapshot.id);
+      await forgetRecordingForServerJob(originComposerKey, snapshot.id);
       if (snapshot.targetSessionId) {
         notifyVoiceSessionSettled(snapshot.id, {
           sessionId: snapshot.targetSessionId,
@@ -398,25 +527,37 @@ export function useBackgroundVoiceJobs({
           optionsRef.current.activeComposerKey === displayKey
           || optionsRef.current.activeComposerKey === originComposerKey;
 
+      let transcriptRecovered = false;
       if (canRecoverNow) {
         if (snapshot.transcript) {
           insertTranscriptIntoDraft(displayKey, snapshot.transcript, true);
           await markVoiceJobRecovered(snapshot.id).catch(() => {});
+          transcriptRecovered = true;
           if (isDraftComposerKey(originComposerKey) && snapshot.targetSessionId) {
             optionsRef.current.clearDraftSession(originComposerKey);
           }
         }
       }
+
+      // The server discards its audio copy on failure, so keep ours unless a transcript survived.
+      if (transcriptRecovered) {
+        await forgetRecordingForServerJob(displayKey, snapshot.id);
+        await forgetRecordingForServerJob(originComposerKey, snapshot.id);
+      }
+      const retryableFromLocalCopy = !transcriptRecovered && !!pendingRecordingIdsRef.current[displayKey];
+
       setJobsState((prev) => replaceVoiceJob(prev, snapshot.id, originComposerKey, {
         composerKey: displayKey,
         status: "error",
         submitMode: "insert",
         error: snapshot.error ?? "Auto-send failed.",
+        retryable: retryableFromLocalCopy ? true : undefined,
         serverOwned: true,
         serverJobId: snapshot.id,
         originComposerKey,
         targetSessionId: snapshot.targetSessionId,
         safeToLeave: snapshot.safeToLeave,
+        persistWarning: persistWarningsRef.current[displayKey],
       }, claimedOriginServerJobId));
       if (claimedOriginServerJobIdsRef.current[originComposerKey] === snapshot.id) {
         delete claimedOriginServerJobIdsRef.current[originComposerKey];
@@ -454,7 +595,7 @@ export function useBackgroundVoiceJobs({
       optionsRef.current.navigateToSession(navigateTargetSessionId, taskId, true);
     }
     return true;
-  }, [draftHasContent, insertTranscriptIntoDraft, moveDraftContent, notifySnapshotVoiceSessionActivity, notifyVoiceSessionSettled, setJobsState, stopPolling]);
+  }, [draftHasContent, forgetRecordingForServerJob, insertTranscriptIntoDraft, moveDraftContent, moveRecordingOwnership, notifySnapshotVoiceSessionActivity, notifyVoiceSessionSettled, setJobsState, stopPolling]);
 
   const pollServerJob = useCallback((jobId: string, originComposerKey: string) => {
     stopPolling(jobId);
@@ -488,12 +629,16 @@ export function useBackgroundVoiceJobs({
     }, SERVER_POLL_DELAY_MS);
   }, [applyServerSnapshot, clearJob, findDisplayKeyForServerJob, stopPolling]);
 
-  const startServerAutoSendJob = useCallback((composerKey: string, audio: Blob) => {
+  const startServerAutoSendJob = useCallback((composerKey: string, audio: Blob, recordingId?: string) => {
     clearUploadTracking(composerKey);
     const controller = new AbortController();
     const existingSessionComposer = !isDraftComposerKey(composerKey);
     uploadControllersRef.current[composerKey] = controller;
     uploadAudioRef.current[composerKey] = audio;
+    if (recordingId) {
+      pendingRecordingIdsRef.current[composerKey] = recordingId;
+    }
+    const ownedRecordingId = pendingRecordingIdsRef.current[composerKey];
     delete claimedOriginServerJobIdsRef.current[composerKey];
     setJob(composerKey, {
       composerKey,
@@ -501,6 +646,7 @@ export function useBackgroundVoiceJobs({
       submitMode: "autosend",
       serverOwned: true,
       originComposerKey: composerKey,
+      persistWarning: persistWarningsRef.current[composerKey],
     });
     if (existingSessionComposer) {
       optionsRef.current.onVoiceSessionActivity?.({
@@ -524,6 +670,12 @@ export function useBackgroundVoiceJobs({
         clearUploadTracking(composerKey, controller);
         retryingComposerKeysRef.current.delete(composerKey);
         claimedOriginServerJobIdsRef.current[composerKey] = snapshot.id;
+        // Remember which server job owns this audio so a retry after a restart can resume instead
+        // of re-uploading (and duplicating) a message the server already accepted.
+        if (ownedRecordingId) {
+          await patchPendingVoiceRecording(composerKey, ownedRecordingId, { serverJobId: snapshot.id })
+            .catch(() => {});
+        }
         const keepPolling = await applyServerSnapshot(snapshot, composerKey);
         if (keepPolling) {
           pollServerJob(snapshot.id, composerKey);
@@ -554,7 +706,7 @@ export function useBackgroundVoiceJobs({
     // Server-owned autosend commits once upload begins; insert/review mode remains local-only.
   }, []);
 
-  const startBackgroundVoiceJob = useCallback(({
+  const startBackgroundVoiceJob = useCallback(async ({
     composerKey,
     audio,
     submitMode,
@@ -565,46 +717,203 @@ export function useBackgroundVoiceJobs({
       targetBusy: !isDraftComposerKey(composerKey) && optionsRef.current.isSessionBusy(composerKey),
     });
 
-    if (effectiveSubmitMode === "insert") {
-      startLocalInsertJob(composerKey, audio);
-    } else {
-      startServerAutoSendJob(composerKey, audio);
+    // Save the audio before touching the network so a crash, reload, or failed upload can never
+    // destroy the only copy of the recording.
+    const recordingId = createVoiceRecordingId();
+    let persistResult: VoicePersistResult = { durable: false, reason: "unavailable" };
+    try {
+      persistResult = await savePendingVoiceRecording({
+        composerKey,
+        recordingId,
+        submitMode: effectiveSubmitMode,
+        audio: await audio.arrayBuffer(),
+        mimeType: audio.type || "audio/wav",
+      });
+    } catch {
+      persistResult = { durable: false, reason: "unavailable" };
     }
-    return Promise.resolve();
-  }, [draftHasContent, startLocalInsertJob, startServerAutoSendJob]);
+
+    if (persistResult.reason === "conflict") {
+      // An earlier recording for this composer is still unsent; refuse rather than overwrite it.
+      markError(composerKey, "Kept the earlier unsent recording — retry or discard it before recording again.", {
+        submitMode: effectiveSubmitMode,
+        retryable: true,
+      });
+      return;
+    }
+
+    pendingRecordingIdsRef.current[composerKey] = recordingId;
+    const warning = describePersistResult(persistResult);
+    if (warning) {
+      persistWarningsRef.current[composerKey] = warning;
+    } else {
+      delete persistWarningsRef.current[composerKey];
+    }
+
+    if (effectiveSubmitMode === "insert") {
+      startLocalInsertJob(composerKey, audio, recordingId);
+    } else {
+      startServerAutoSendJob(composerKey, audio, recordingId);
+    }
+  }, [draftHasContent, markError, startLocalInsertJob, startServerAutoSendJob]);
 
   const retryVoiceJobUpload = useCallback((composerKey: string) => {
     const existing = jobsRef.current[composerKey];
-    const retainedAudio = uploadAudioRef.current[composerKey];
     if (
       !existing
       || existing.status !== "error"
       || existing.retryable !== true
-      || !retainedAudio
       || retryingComposerKeysRef.current.has(composerKey)
     ) {
       return;
     }
 
     retryingComposerKeysRef.current.add(composerKey);
-    if (existing.submitMode === "autosend") {
-      startServerAutoSendJob(composerKey, retainedAudio);
-    } else {
-      startLocalInsertJob(composerKey, retainedAudio);
-    }
-  }, [startLocalInsertJob, startServerAutoSendJob]);
 
+    // Discard removes the composer from this set, which cancels a retry already in flight.
+    const stillRetrying = () => retryingComposerKeysRef.current.has(composerKey);
+
+    const runRetry = async () => {
+      const record = await getPendingVoiceRecording(composerKey).catch(() => null);
+      if (!stillRetrying()) return;
+
+      const retainedAudio = uploadAudioRef.current[composerKey]
+        ?? (record ? pendingVoiceRecordingToBlob(record) : null);
+
+      if (!retainedAudio) {
+        retryingComposerKeysRef.current.delete(composerKey);
+        markError(composerKey, "The recording is no longer available on this device.", {
+          submitMode: existing.submitMode,
+        });
+        return;
+      }
+
+      const recordingId = record?.recordingId ?? pendingRecordingIdsRef.current[composerKey];
+      if (recordingId) {
+        pendingRecordingIdsRef.current[composerKey] = recordingId;
+      }
+
+      // If the server already accepted this audio, resume that job instead of sending it twice.
+      const knownServerJobId = record?.serverJobId ?? existing.serverJobId;
+      if (knownServerJobId) {
+        let snapshot: VoiceJobStatusResponse | null = null;
+        let statusKnown = true;
+        try {
+          snapshot = await fetchVoiceJob(knownServerJobId);
+        } catch {
+          statusKnown = false;
+        }
+        if (!stillRetrying()) return;
+
+        if (!statusKnown) {
+          // An inconclusive status check must not become a second copy of the same message.
+          retryingComposerKeysRef.current.delete(composerKey);
+          markError(composerKey, "Could not reach the server to check the earlier send. Try again.", {
+            submitMode: record?.submitMode ?? existing.submitMode,
+            retryable: true,
+            serverOwned: existing.serverOwned,
+            serverJobId: knownServerJobId,
+          });
+          return;
+        }
+
+        if (snapshot && snapshot.status !== "error") {
+          retryingComposerKeysRef.current.delete(composerKey);
+          const originComposerKey = snapshot.composerKey;
+          const keepPolling = await applyServerSnapshot(snapshot, originComposerKey);
+          if (keepPolling) {
+            pollServerJob(snapshot.id, originComposerKey);
+          }
+          return;
+        }
+      }
+
+      if (!stillRetrying()) return;
+
+      const retrySubmitMode = record?.submitMode ?? existing.submitMode;
+      if (retrySubmitMode === "autosend") {
+        startServerAutoSendJob(composerKey, retainedAudio, recordingId);
+      } else {
+        startLocalInsertJob(composerKey, retainedAudio, recordingId);
+      }
+    };
+
+    void runRetry();
+  }, [applyServerSnapshot, markError, pollServerJob, startLocalInsertJob, startServerAutoSendJob]);
+
+  const migrateVoiceRecording = useCallback((fromComposerKey: string, toComposerKey: string) => {
+    if (fromComposerKey === toComposerKey) return;
+    void (async () => {
+      await moveRecordingOwnership(fromComposerKey, toComposerKey);
+      setJobsState((prev) => {
+        const existing = prev[fromComposerKey];
+        if (!existing || existing.retryable !== true || prev[toComposerKey]) return prev;
+        const next = { ...prev };
+        delete next[fromComposerKey];
+        next[toComposerKey] = { ...existing, composerKey: toComposerKey };
+        return next;
+      });
+    })();
+  }, [moveRecordingOwnership, setJobsState]);
+
+  // Rebuild pending recordings for whichever composer the user is looking at. Lazy by design: the
+  // audio for other composers stays on disk instead of being pulled into memory.
   useEffect(() => {
     if (!activeComposerKey) return;
     let cancelled = false;
+    const composerKey = activeComposerKey;
 
-    const recover = async () => {
+    const hydrateAndRecover = async () => {
+      if (!hydratedComposerKeysRef.current.has(composerKey)) {
+        const record = await getPendingVoiceRecording(composerKey).catch(() => null);
+        if (cancelled) return;
+
+        if (record) {
+          pendingRecordingIdsRef.current[composerKey] = record.recordingId;
+
+          if (record.serverJobId) {
+            const snapshot = await fetchVoiceJob(record.serverJobId).catch(() => null);
+            // Bail without marking hydrated so returning to this composer tries again.
+            if (cancelled) return;
+            if (snapshot) {
+              hydratedComposerKeysRef.current.add(composerKey);
+              const keepPolling = await applyServerSnapshot(snapshot, snapshot.composerKey, {
+                allowDraftRecovery: true,
+              });
+              if (cancelled) return;
+              if (keepPolling) pollServerJob(snapshot.id, snapshot.composerKey);
+              return;
+            }
+          }
+
+          hydratedComposerKeysRef.current.add(composerKey);
+          // Never commit over a job that is already in flight for this composer.
+          if (!jobsRef.current[composerKey]) {
+            uploadAudioRef.current[composerKey] = pendingVoiceRecordingToBlob(record);
+            setJob(composerKey, {
+              composerKey,
+              status: "error",
+              submitMode: record.submitMode,
+              error: record.lastError
+                ? `${RESTORED_RECORDING_MESSAGE} (${record.lastError})`
+                : RESTORED_RECORDING_MESSAGE,
+              retryable: true,
+              restored: true,
+            });
+          }
+          return;
+        }
+
+        hydratedComposerKeysRef.current.add(composerKey);
+      }
+
       try {
-        const snapshot = await fetchLatestVoiceJob(activeComposerKey);
+        const snapshot = await fetchLatestVoiceJob(composerKey);
         if (cancelled || !snapshot) return;
 
         const originComposerKey = snapshot.composerKey;
         const keepPolling = await applyServerSnapshot(snapshot, originComposerKey, { allowDraftRecovery: true });
+        if (cancelled) return;
         if (keepPolling) {
           pollServerJob(snapshot.id, originComposerKey);
         }
@@ -613,11 +922,11 @@ export function useBackgroundVoiceJobs({
       }
     };
 
-    void recover();
+    void hydrateAndRecover();
     return () => {
       cancelled = true;
     };
-  }, [activeComposerKey, applyServerSnapshot, pollServerJob]);
+  }, [activeComposerKey, applyServerSnapshot, pollServerJob, setJob]);
 
   useEffect(() => {
     return () => {
@@ -626,6 +935,9 @@ export function useBackgroundVoiceJobs({
       }
       uploadControllersRef.current = {};
       uploadAudioRef.current = {};
+      hydratedComposerKeysRef.current.clear();
+      pendingRecordingIdsRef.current = {};
+      persistWarningsRef.current = {};
       retryingComposerKeysRef.current.clear();
       for (const timer of Object.values(pollTimersRef.current)) {
         clearTimeout(timer);
@@ -641,5 +953,7 @@ export function useBackgroundVoiceJobs({
     retryVoiceJobUpload,
     reviewInstead,
     clearVoiceJobError,
+    discardVoiceRecording,
+    migrateVoiceRecording,
   };
 }

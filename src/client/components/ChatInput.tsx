@@ -2,7 +2,11 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Square, Paperclip, FileText, X, Loader2, Mic, SendHorizontal } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
-import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import {
+  isActiveVoiceBackgroundJob,
+  type ActiveVoiceBackgroundJob,
+  type VoiceBackgroundJob,
+} from "../hooks/useBackgroundVoiceJobs";
 import { useVoiceInput } from "../hooks/useVoiceInput";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
@@ -92,6 +96,7 @@ interface ChatInputProps {
   onReviewVoiceJob?: (composerKey: string) => void;
   onClearVoiceJobError?: (composerKey: string) => void;
   onRetryVoiceJobUpload?: (composerKey: string) => void;
+  onDiscardVoiceRecording?: (composerKey: string) => void;
   /** When true, input is visible but send is disabled (e.g., session warming up) */
   disabled?: boolean;
   disabledHint?: string;
@@ -113,6 +118,7 @@ export default function ChatInput({
   onReviewVoiceJob,
   onClearVoiceJobError,
   onRetryVoiceJobUpload,
+  onDiscardVoiceRecording,
   disabled,
   disabledHint,
   slashCommands = [],
@@ -136,7 +142,7 @@ export default function ChatInput({
   const acceptedFlashTimerRef = useRef<number | null>(null);
   const previousComposerKeyRef = useRef<string | null>(composerKey);
   const pendingAcceptedHandoffRef = useRef<{ originComposerKey: string; targetComposerKey: string } | null>(null);
-  const previousVoiceJobRef = useRef<VoiceBackgroundJob | null>(null);
+  const previousVoiceJobRef = useRef<ActiveVoiceBackgroundJob | null>(null);
   const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
@@ -225,19 +231,11 @@ export default function ChatInput({
     }, 2_000);
   }, []);
 
-  const activeVoiceJob = voiceJob && (
-    voiceJob.status === "uploading"
-    || voiceJob.status === "accepted"
-    || voiceJob.status === "transcribing"
-    || voiceJob.status === "sending"
-  )
-    ? voiceJob
-    : null;
+  const activeVoiceJob = isActiveVoiceBackgroundJob(voiceJob) ? voiceJob : null;
   const voiceJobError = voiceJob?.status === "error" ? voiceJob.error ?? null : null;
-  const canRetryVoiceJobUpload =
-    voiceJob?.status === "error"
-    && voiceJob.retryable === true
-    && !!onRetryVoiceJobUpload;
+  const hasPendingVoiceRecording = voiceJob?.status === "error" && voiceJob.retryable === true;
+  const canRetryVoiceJobUpload = hasPendingVoiceRecording && !!onRetryVoiceJobUpload;
+  const canDiscardVoiceRecording = hasPendingVoiceRecording && !!onDiscardVoiceRecording;
 
   const voice = useVoiceInput({
     contextKey: composerKey,
@@ -542,6 +540,8 @@ export default function ChatInput({
         }
       : null,
     canAutoSendStoppedRecording,
+    hasPendingRecording: hasPendingVoiceRecording,
+    persistWarning: voiceJob?.persistWarning ?? null,
   });
   const voiceMessageClassName = voiceUi.tone === "error"
     ? "text-error"
@@ -598,6 +598,16 @@ export default function ChatInput({
                 className="rounded-sm font-medium underline underline-offset-2 transition-colors hover:text-error-hover focus:outline-none focus:ring-2 focus:ring-error/40"
               >
                 Try again
+              </button>
+            )}
+            {canDiscardVoiceRecording && (
+              <button
+                type="button"
+                onClick={() => onDiscardVoiceRecording?.(composerKey)}
+                aria-label="Discard the unsent voice recording"
+                className="rounded-sm font-medium underline underline-offset-2 transition-colors hover:text-error-hover focus:outline-none focus:ring-2 focus:ring-error/40"
+              >
+                Discard
               </button>
             )}
           </div>
@@ -732,6 +742,7 @@ export default function ChatInput({
                     : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
                 }`}
                 title={voiceUi.buttonTitle}
+                aria-label={voiceUi.buttonTitle}
                 type="button"
               >
                 {voiceUi.buttonState === "spinner" ? (

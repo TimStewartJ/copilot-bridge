@@ -21,6 +21,10 @@ export interface VoiceUiStateContext {
   isCheckingStatus: boolean;
   activeVoiceJob: VoiceUiJobState | null;
   canAutoSendStoppedRecording: boolean;
+  /** An unsent recording is still stored for this composer and must be retried or discarded. */
+  hasPendingRecording?: boolean;
+  /** Set when the recording could not be written to durable client storage. */
+  persistWarning?: string | null;
 }
 
 export interface VoiceUiState {
@@ -43,6 +47,8 @@ export function deriveVoiceUiState({
   isCheckingStatus,
   activeVoiceJob,
   canAutoSendStoppedRecording,
+  hasPendingRecording = false,
+  persistWarning = null,
 }: VoiceUiStateContext): VoiceUiState {
   const isStarting = recorderPhase === "starting";
   const isRecording = recorderPhase === "recording";
@@ -63,6 +69,8 @@ export function deriveVoiceUiState({
     || hasActiveVoiceJob
     || isStarting
     || isFinishing
+    // Only one recording can be pending per composer; overwriting it would destroy unsent audio.
+    || (hasPendingRecording && !isRecording)
     || (isCheckingStatus && !isRecording);
   const buttonState: VoiceUiButtonState = hasActiveVoiceJob || isStarting || isFinishing
     ? "spinner"
@@ -116,6 +124,14 @@ export function deriveVoiceUiState({
     tone = "error";
   }
 
+  // The storage warning must survive an error message: that is exactly when it matters most.
+  if (persistWarning && message) {
+    message = `${message} ${persistWarning}`;
+  } else if (persistWarning) {
+    message = persistWarning;
+    tone = "error";
+  }
+
   let buttonTitle: string;
   if (!browserSupported) {
     buttonTitle = "Voice input is not supported in this browser";
@@ -135,6 +151,8 @@ export function deriveVoiceUiState({
     buttonTitle = canAutoSendStoppedRecording
       ? "Stop recording, transcribe, and send automatically"
       : "Stop recording and transcribe";
+  } else if (hasPendingRecording) {
+    buttonTitle = "Retry or discard the unsent voice recording first";
   } else if (statusError) {
     buttonTitle = "Retry voice input status";
   } else {

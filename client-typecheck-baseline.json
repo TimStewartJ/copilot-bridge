@@ -57,41 +57,6 @@
   },
   {
     "code": 2345,
-    "file": "src/client/components/ChatInput.tsx",
-    "line": 275,
-    "character": 65,
-    "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/ChatInput.tsx",
-    "line": 280,
-    "character": 33,
-    "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/ChatInput.tsx",
-    "line": 284,
-    "character": 9,
-    "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/ChatInput.tsx",
-    "line": 295,
-    "character": 78,
-    "message": "Argument of type 'VoiceBackgroundJob | null' is not assignable to parameter of type 'AcceptedFlashJobState | null'.\n  Type 'VoiceBackgroundJob' is not assignable to type 'AcceptedFlashJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type 'AcceptedFlashJobStatus'.\n        Type '\"error\"' is not assignable to type 'AcceptedFlashJobStatus'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/ChatInput.tsx",
-    "line": 537,
-    "character": 5,
-    "message": "Type '{ status: VoiceBackgroundJobStatus; submitMode: VoiceSubmitMode; serverOwned: boolean | undefined; } | null' is not assignable to type 'VoiceUiJobState | null'.\n  Type '{ status: VoiceBackgroundJobStatus; submitMode: VoiceSubmitMode; serverOwned: boolean | undefined; }' is not assignable to type 'VoiceUiJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type '\"accepted\" | \"transcribing\" | \"sending\" | \"uploading\"'.\n        Type '\"error\"' is not assignable to type '\"accepted\" | \"transcribing\" | \"sending\" | \"uploading\"'."
-  },
-  {
-    "code": 2345,
     "file": "src/client/components/DocsView.tsx",
     "line": 1643,
     "character": 57,
