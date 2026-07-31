@@ -352,6 +352,71 @@ describe("event-transform skill injection", () => {
   });
 });
 
+// The agent runtime injects its own `user.message` events tagged `source: "system"`
+// to carry model-only context, currently the deferred-tool `<system_reminder>`
+// block. Copilot CLI <= 1.0.73 left `content` empty and put the text in
+// `transformedContent` (which Bridge never reads), so these dropped out of the
+// timeline by accident. CLI 1.0.75 also emits a copy with the text in `content`,
+// which rendered as though the user had pasted it into the chat.
+describe("event-transform agent-injected system messages", () => {
+  const REMINDER = "<system_reminder>\nIMPORTANT: The tools listed below are deferred"
+    + " — their full definitions are NOT loaded.\n</system_reminder>";
+
+  it("hides a system-sourced reminder that carries visible content", () => {
+    const entries = transformEventsToMessages([
+      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Reply with just: PONG" } },
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { content: REMINDER, source: "system" },
+      },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "PONG" } },
+    ], "session-1");
+
+    expect(entries).toMatchObject([
+      { type: "message", role: "user", content: "Reply with just: PONG" },
+      { type: "message", role: "assistant", content: "PONG" },
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("system_reminder");
+  });
+
+  it("hides the pre-1.0.74 shape that kept the reminder in transformedContent", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: "", transformedContent: REMINDER, source: "system" },
+      },
+    ], "session-1");
+
+    expect(entries).toEqual([]);
+  });
+
+  it("does not count an injected system message as visible activity", () => {
+    expect(getLastVisibleActivityAt([
+      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Real prompt" } },
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:05:00.000Z",
+        data: { content: REMINDER, source: "system" },
+      },
+    ], "session-1")).toBe("2026-04-10T10:00:00.000Z");
+  });
+
+  it("still renders a genuine user message that merely mentions the marker", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: `why do i see this? ${REMINDER}` },
+      },
+    ], "session-1");
+
+    expect(entries).toMatchObject([{ type: "message", role: "user" }]);
+    expect(entries[0].content).toContain("why do i see this?");
+  });
+});
+
 describe("event-transform fork boundaries", () => {
   it("adds the next raw event id after a completed assistant turn as a safe fork boundary", () => {
     const entries = transformEventsToMessages([

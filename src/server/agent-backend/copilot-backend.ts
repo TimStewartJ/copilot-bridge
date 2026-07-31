@@ -17,6 +17,8 @@ import {
   CopilotClient,
 } from "@github/copilot-sdk";
 
+import { AgentPendingInteractionUnsupportedError } from "./types.js";
+
 import type {
   AgentBackend,
   AgentBackgroundTask,
@@ -218,12 +220,18 @@ class CopilotAgentSession implements AgentSession {
   async getPendingUserInputRequests(): Promise<AgentPendingUserInputRequest[]> {
     const pendingRequests = this.session?.rpc?.permissions?.pendingRequests;
     if (typeof pendingRequests !== "function") {
-      throw new Error("Pending user input snapshots are not available in this Copilot SDK build");
+      throw new AgentPendingInteractionUnsupportedError(
+        "Pending user input snapshots are not available in this Copilot SDK build",
+      );
     }
     const result = await pendingRequests.call(this.session.rpc.permissions);
-    return Array.isArray((result as any)?.pendingUserInputs)
-      ? (result as any).pendingUserInputs
-      : [];
+    const pending = (result as any)?.pendingUserInputs;
+    if (!Array.isArray(pending)) {
+      throw new AgentPendingInteractionUnsupportedError(
+        "This Copilot runtime does not expose pending user input snapshots",
+      );
+    }
+    return pending;
   }
 
   async respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean> {
@@ -238,12 +246,18 @@ class CopilotAgentSession implements AgentSession {
   async getPendingElicitationRequests(): Promise<AgentPendingElicitationRequest[]> {
     const pendingRequests = this.session?.rpc?.permissions?.pendingRequests;
     if (typeof pendingRequests !== "function") {
-      throw new Error("Pending elicitation snapshots are not available in this Copilot SDK build");
+      throw new AgentPendingInteractionUnsupportedError(
+        "Pending elicitation snapshots are not available in this Copilot SDK build",
+      );
     }
     const result = await pendingRequests.call(this.session.rpc.permissions);
-    return Array.isArray((result as any)?.pendingElicitations)
-      ? (result as any).pendingElicitations
-      : [];
+    const pending = (result as any)?.pendingElicitations;
+    if (!Array.isArray(pending)) {
+      throw new AgentPendingInteractionUnsupportedError(
+        "This Copilot runtime does not expose pending elicitation snapshots",
+      );
+    }
+    return pending;
   }
 
   async tryRespondToElicitation(

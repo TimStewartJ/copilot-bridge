@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentPendingElicitationRequest, AgentSession } from "../agent-backend/index.js";
+import { AgentPendingInteractionUnsupportedError } from "../agent-backend/index.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { PendingInteractionError } from "../pending-interaction-validation.js";
 import { SessionManager } from "../session-manager.js";
@@ -229,5 +230,234 @@ describe("SessionManager SDK-owned elicitation", () => {
       pendingElicitations: [expect.objectContaining({ requestId: "el-stale" })],
     });
     expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", { action: "cancel" });
+  });
+});
+
+/**
+ * Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests` from its
+ * native runtime and ships no wire method that enumerates pending user input or
+ * elicitation requests. The runtime stays the sole authority for *answering* a
+ * request; Bridge only keeps an event-derived listing index so a reconnecting
+ * browser can still see what is in flight.
+ */
+describe("SessionManager pending elicitation listing fallback", () => {
+  function indexPendingElicitation(
+    eventBusRegistry: ReturnType<typeof createEventBusRegistry>,
+    requestId = "el-request",
+  ): void {
+    eventBusRegistry.getOrCreateBus("session-1").emitElicitationRequested({
+      requestId,
+      message: "Configure deployment",
+      mode: "form",
+      requestedSchema: pendingRequest().request.requestedSchema as never,
+      elicitationSource: "deployment-mcp",
+    });
+  }
+
+  function makeUnsupported() {
+    const created = createManager([pendingRequest()]);
+    vi.mocked(created.session.getPendingElicitationRequests!).mockRejectedValue(
+      new AgentPendingInteractionUnsupportedError("no listing wire method"),
+    );
+    vi.mocked(created.session.getPendingUserInputRequests!).mockRejectedValue(
+      new AgentPendingInteractionUnsupportedError("no listing wire method"),
+    );
+    return created;
+  }
+
+  it("hydrates a reconnect from the listing index and marks it non-authoritative", async () => {
+    const { manager, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+
+    await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
+      pendingUserInputs: [],
+      pendingElicitations: [{
+        requestId: "el-request",
+        message: "Configure deployment",
+        mode: "form",
+        elicitationSource: "deployment-mcp",
+        requestedSchema: pendingRequest().request.requestedSchema,
+      }],
+      runtimeSourced: { userInput: false, elicitation: false },
+    });
+  });
+
+  it("validates against the indexed view and still delegates the response to the runtime", async () => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
+      action: "accept",
+      content: { target: "staging", reason: "Safer" },
+    })).resolves.toMatchObject({ requestId: "el-request", action: "accept" });
+    expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", {
+      action: "accept",
+      content: { target: "staging", reason: "Safer" },
+    });
+  });
+
+  it("keeps schema validation intact when the view comes from the index", async () => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
+      action: "accept",
+      content: { target: "staging" },
+    })).rejects.toMatchObject({
+      code: "invalid_response",
+      statusCode: 400,
+    } satisfies Partial<PendingInteractionError>);
+    expect(tryRespondToElicitation).not.toHaveBeenCalled();
+  });
+
+  it("keeps the runtime authoritative for stale ids", async () => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+    tryRespondToElicitation.mockResolvedValueOnce(false);
+
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
+      action: "cancel",
+    })).rejects.toMatchObject({
+      code: "request_not_found",
+      statusCode: 404,
+    } satisfies Partial<PendingInteractionError>);
+  });
+
+  it("404s an id the index never saw instead of inventing one", async () => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+
+    await expect(manager.submitElicitationResponse("session-1", "el-unknown", {
+      action: "cancel",
+    })).rejects.toMatchObject({
+      code: "request_not_found",
+      statusCode: 404,
+    } satisfies Partial<PendingInteractionError>);
+    expect(tryRespondToElicitation).not.toHaveBeenCalled();
+  });
+
+  it("cancels indexed requests captured before the terminal event replaced the bus", async () => {
+    const { manager, session, tryRespondToElicitation, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+    recordPendingElicitation(manager);
+
+    // Hold the terminal lookup open so the bus really is replaced mid-cancel.
+    let rejectTerminalLookup!: (error: unknown) => void;
+    vi.mocked(session.getPendingElicitationRequests!).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectTerminalLookup = reject; }),
+    );
+
+    const terminalBus = eventBusRegistry.getOrCreateBus("session-1");
+    abortRun(manager, terminalBus);
+    expect(terminalBus.complete).toBe(true);
+
+    // A new run starts before cancellation settles and registers its own request.
+    const nextRunBus = eventBusRegistry.getOrCreateBus("session-1");
+    expect(nextRunBus).not.toBe(terminalBus);
+    nextRunBus.emitElicitationRequested({
+      requestId: "el-next-run",
+      message: "Next run question",
+      mode: "form",
+      requestedSchema: pendingRequest().request.requestedSchema as never,
+    });
+
+    rejectTerminalLookup(new AgentPendingInteractionUnsupportedError("no listing wire method"));
+    await Reflect.get(manager, "pendingInteractionCleanups").get("session-1");
+
+    // Only the terminated run's request is cancelled...
+    expect(tryRespondToElicitation).toHaveBeenCalledTimes(1);
+    expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", { action: "cancel" });
+    // ...and the clear lands on the captured bus, never the new run's index.
+    expect(nextRunBus.getPendingInteractionIndex().pendingElicitations.map((r) => r.requestId))
+      .toEqual(["el-next-run"]);
+    expect(terminalBus.getPendingInteractionIndex().pendingElicitations).toEqual([]);
+  });
+
+  it("does not resurrect a terminated run's request into a reconnect snapshot", async () => {
+    const { manager, eventBusRegistry } = makeUnsupported();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    indexPendingElicitation(eventBusRegistry);
+    recordPendingElicitation(manager);
+
+    abortRun(manager, bus);
+    // Simulate cancellation failing to drain the index (e.g. a dead runtime).
+    await Reflect.get(manager, "pendingInteractionCleanups").get("session-1");
+    bus.emitElicitationRequested({
+      requestId: "el-zombie",
+      message: "Left behind",
+      mode: "form",
+      requestedSchema: pendingRequest().request.requestedSchema as never,
+    });
+    expect(bus.complete).toBe(true);
+
+    await expect(manager.hydratePendingInteractions("session-1")).resolves.toMatchObject({
+      pendingUserInputs: [],
+      pendingElicitations: [],
+    });
+    expect(manager.getPendingUserInputCount("session-1")).toBe(0);
+  });
+
+  it("cancels indexed requests even when no derived count was recorded", async () => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = makeUnsupported();
+    indexPendingElicitation(eventBusRegistry);
+
+    abortRun(manager, eventBusRegistry.getOrCreateBus("session-1"));
+    await Reflect.get(manager, "pendingInteractionCleanups").get("session-1");
+
+    expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", { action: "cancel" });
+  });
+
+  it("does not degrade an unsupported listing into a backend failure", async () => {
+    const { manager } = makeUnsupported();
+
+    await expect(manager.hydratePendingInteractions("session-1")).resolves.toMatchObject({
+      pendingElicitations: [],
+      runtimeSourced: { elicitation: false },
+    });
+  });
+
+  it("still surfaces genuine backend failures", async () => {
+    const { manager, session } = createManager([pendingRequest()]);
+    vi.mocked(session.getPendingElicitationRequests!).mockRejectedValue(
+      new Error("session connection closed"),
+    );
+
+    await expect(manager.hydratePendingInteractions("session-1")).rejects.toMatchObject({
+      code: "backend_unavailable",
+      statusCode: 503,
+    } satisfies Partial<PendingInteractionError>);
+  });
+
+  it("does not let one unparseable sibling block a valid response", async () => {
+    const { manager, session, tryRespondToElicitation } = createManager([
+      // `message` must be a string; this entry cannot be normalized.
+      { requestId: "el-broken", request: { message: 42 } as never },
+      pendingRequest(),
+    ]);
+    vi.mocked(session.getPendingElicitationRequests!).mockResolvedValue([
+      { requestId: "el-broken", request: { message: 42 } as never },
+      pendingRequest(),
+    ]);
+
+    await expect(manager.submitElicitationResponse("session-1", "el-request", {
+      action: "accept",
+      content: { target: "staging", reason: "Safer" },
+    })).resolves.toMatchObject({ requestId: "el-request", action: "accept" });
+    expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", {
+      action: "accept",
+      content: { target: "staging", reason: "Safer" },
+    });
+  });
+
+  it("keeps the envelope request id authoritative over a payload field", async () => {
+    const { manager, session } = createManager([pendingRequest()]);
+    vi.mocked(session.getPendingElicitationRequests!).mockResolvedValue([{
+      requestId: "el-envelope",
+      request: { ...pendingRequest().request, requestId: "el-spoofed" } as never,
+    }]);
+
+    await expect(manager.hydratePendingInteractions("session-1")).resolves.toMatchObject({
+      pendingElicitations: [expect.objectContaining({ requestId: "el-envelope" })],
+    });
   });
 });

@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { CopilotBackend } from "../copilot-backend.js";
+import { isAgentPendingInteractionUnsupportedError } from "../types.js";
 
 function createFakeSession(rpc: any = {}) {
   return {
@@ -204,6 +205,38 @@ describe("CopilotAgentSession wrap fidelity", () => {
       request: { message: "Deploy?", mode: "form", requestedSchema: { type: "object", properties: {} } },
     }]);
     expect(pendingRequests).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports unsupported instead of empty when the runtime cannot list pending requests", async () => {
+    // Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests` natively
+    // and returns permission items only. Silently reporting "nothing pending"
+    // there is indistinguishable from a genuinely empty queue, which is what made
+    // reconnect hydration drop in-flight `ask_user` prompts.
+    const pendingRequests = vi.fn().mockResolvedValue({ items: [] });
+    const session = createFakeSession({ permissions: { pendingRequests } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+
+    await expect(wrapped.getPendingUserInputRequests!()).rejects.toMatchObject({
+      agentPendingInteractionUnsupported: true,
+    });
+    await expect(wrapped.getPendingElicitationRequests!()).rejects.toMatchObject({
+      agentPendingInteractionUnsupported: true,
+    });
+    expect(isAgentPendingInteractionUnsupportedError(
+      await wrapped.getPendingUserInputRequests!().catch((error: unknown) => error),
+    )).toBe(true);
+  });
+
+  it("reports unsupported when the pending requests RPC is missing entirely", async () => {
+    const session = createFakeSession({ permissions: {} });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+
+    await expect(wrapped.getPendingUserInputRequests!()).rejects.toMatchObject({
+      agentPendingInteractionUnsupported: true,
+    });
+    await expect(wrapped.getPendingElicitationRequests!()).rejects.toMatchObject({
+      agentPendingInteractionUnsupported: true,
+    });
   });
 
   it("delegates race-safe pending interaction responses", async () => {

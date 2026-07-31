@@ -213,8 +213,8 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().pendingUserMessages).toEqual([]);
     });
 
-    it("does not retain pending interaction lifecycle state", () => {
-      const bus = getOrCreateBus("test-interactions-not-retained");
+    it("indexes pending interactions for reconnect hydration and clears them per request", () => {
+      const bus = getOrCreateBus("test-interactions-indexed");
       const events: StreamEvent[] = [];
       bus.subscribe((event) => events.push(event));
 
@@ -230,19 +230,95 @@ describe("event-bus", () => {
         requestedSchema: { type: "object", properties: {} },
       });
 
+      // Copilot CLI >= 1.0.74 has no wire method that lists pending requests, so
+      // a reconnecting browser can only re-render an in-flight prompt from here.
       expect(bus.getSnapshot()).toMatchObject({
-        pendingUserInputs: [],
-        pendingElicitations: [],
+        pendingUserInputs: [{ requestId: "request-1", allowFreeform: true }],
+        pendingElicitations: [{ requestId: "el-1", message: "Configure deployment" }],
       });
       expect(events.map((event) => event.type)).toEqual([
         "snapshot",
         "user_input_requested",
         "elicitation_requested",
       ]);
+
+      bus.emitUserInputAnswered("request-1", { answer: "yes", wasFreeform: true });
+      expect(bus.getSnapshot().pendingUserInputs).toEqual([]);
+      expect(bus.getSnapshot().pendingElicitations).toHaveLength(1);
+
+      bus.emitElicitationResolved("el-1", "accept");
+      expect(bus.getSnapshot().pendingElicitations).toEqual([]);
+    });
+
+    it("drops indexed elicitations that are canceled rather than resolved", () => {
+      const bus = getOrCreateBus("test-interactions-canceled");
+      bus.emitElicitationRequested({
+        requestId: "el-cancel",
+        message: "Configure deployment",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      });
+      bus.emitUserInputRequested({
+        requestId: "ui-cancel",
+        question: "Pick one",
+        allowFreeform: true,
+      });
+
+      bus.emitElicitationCanceled("el-cancel", { reason: "session_ended" });
+      bus.emitUserInputCanceled("ui-cancel", { reason: "session_ended" });
+
+      expect(bus.getPendingInteractionIndex()).toEqual({
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      });
+    });
+
+    it("keeps indexed pending interactions across turn boundaries", () => {
+      const bus = getOrCreateBus("test-interactions-turn-boundary");
+      bus.emitElicitationRequested({
+        requestId: "el-live",
+        message: "Configure deployment",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      });
+
+      // `thinking` starts a turn, which resets ephemeral run state. An `ask_user`
+      // prompt blocks inside its tool call while the run keeps streaming, so the
+      // request must survive.
+      bus.emit({ type: "thinking" });
+
+      expect(bus.getSnapshot().pendingElicitations.map((request) => request.requestId))
+        .toEqual(["el-live"]);
+    });
+
+    it("stops replaying indexed pending interactions once the run is terminal", () => {
+      const bus = getOrCreateBus("test-interactions-terminal");
+      bus.emitElicitationRequested({
+        requestId: "el-terminal",
+        message: "Configure deployment",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      });
+
+      bus.emit({ type: "done", content: "" });
+
+      expect(bus.getSnapshot().pendingElicitations).toEqual([]);
+      // Terminal cleanup still needs the ids so it can cancel them upstream.
+      expect(bus.getPendingInteractionIndex().pendingElicitations.map((r) => r.requestId))
+        .toEqual(["el-terminal"]);
+
+      bus.clearPendingInteractionIndex();
+      expect(bus.getPendingInteractionIndex().pendingElicitations).toEqual([]);
     });
 
     it("hydrates snapshots from an authoritative pending interaction snapshot", () => {
       const bus = getOrCreateBus("test-interaction-hydration");
+      bus.emitElicitationRequested({
+        requestId: "el-cached",
+        message: "Stale cached entry",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      });
       const snapshot = bus.getSnapshot({
         pendingUserInputs: [{
           requestId: "request-1",
@@ -258,6 +334,7 @@ describe("event-bus", () => {
         }],
       });
 
+      // An explicit runtime snapshot always wins over the listing cache.
       expect(snapshot.pendingUserInputs.map((request) => request.requestId)).toEqual(["request-1"]);
       expect(snapshot.pendingElicitations.map((request) => request.requestId)).toEqual(["el-1"]);
     });

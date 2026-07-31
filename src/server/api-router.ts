@@ -9,7 +9,7 @@ import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import {
-  type PendingInteractionSnapshot,
+  type PendingInteractionHydration,
 } from "./event-bus.js";
 import type { RunNotice, SyntheticTerminalOverlay } from "../shared/session-stream.js";
 import {
@@ -2793,12 +2793,14 @@ export function createApiRouter(
     });
     unsub = subscription.unsubscribe;
 
-    let pendingInteractions: PendingInteractionSnapshot = {
-      pendingUserInputs: [],
-      pendingElicitations: [],
-    };
+    // `subscribeWithSnapshot` is the linearization barrier: it registers the
+    // listener before capturing state, so anything after it is buffered. Only
+    // let the runtime overwrite a kind it answered authoritatively — when the
+    // listing came from Bridge's own index the barrier's copy is the one whose
+    // request context buffered cancellations still refer to.
+    let hydration: PendingInteractionHydration | undefined;
     try {
-      pendingInteractions = await ctx.sessionManager.getPendingInteractionSnapshot(sessionId);
+      hydration = await ctx.sessionManager.hydratePendingInteractions(sessionId);
     } catch (error) {
       console.warn(
         `[sessions] Failed to hydrate pending interactions for ${sessionId}:`,
@@ -2808,7 +2810,12 @@ export function createApiRouter(
     if (connection.closed) return;
     sendEvent({
       ...subscription.snapshot,
-      ...pendingInteractions,
+      ...(hydration?.runtimeSourced.userInput
+        ? { pendingUserInputs: hydration.pendingUserInputs }
+        : {}),
+      ...(hydration?.runtimeSourced.elicitation
+        ? { pendingElicitations: hydration.pendingElicitations }
+        : {}),
     });
     hydrated = true;
     for (const event of bufferedEvents) {

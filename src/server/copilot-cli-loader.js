@@ -28,36 +28,47 @@ const ASK_USER_ELICITATION_PATTERN = new RegExp(
   String.raw`let (${ID})=!!(${ID})\.requestUserInput,(${ID})=!!\2\.featureFlags\?\.ASK_USER_ELICITATION&&!!\2\.requestElicitation;`,
   "g",
 );
-const ELICITATION_CALLBACK_PATTERN = /requestElicitation:this\.hasEventListeners\("elicitation\.requested"\)\?/g;
-const PENDING_INTERACTION_METHODS_PATTERN = /getPendingUserInputRequests\(\)\{return this\.pendingRequests\.getPendingUserInputRequests\(\)\}getPendingElicitationRequests\(\)\{return this\.pendingRequests\.getPendingElicitationRequests\(\)\}/g;
-const PENDING_INTERACTION_PERMISSIONS_FACADE_PATTERN = new RegExp(
-  String.raw`pendingRequests\(\)\{return\{items:(${ID})\((${ID})\)\}\}`,
+// Copilot CLI >= 1.0.74 gates the elicitation callback on the runtime's own
+// tool plan instead of on JS event listeners. That flag is false for Bridge,
+// which advertises the elicitation capability and then unregisters the
+// in-process handler so only its transport answers. Widening the gate with the
+// runtime's effective capability set keeps `ask_user` in the toolset without
+// overriding a capability the runtime itself revoked.
+const ELICITATION_CALLBACK_PATTERN = new RegExp(
+  String.raw`requestElicitation:(${ID})\.toolConfig\.enableRequestElicitation\?`,
+  "g",
+);
+const SUPPORTS_ELICITATION_PATTERN = /supportsElicitation\(\)\{/g;
+// Drift canary only. These getters are native-backed from 1.0.74 onward and are
+// served to the wire by the Rust runtime, so there is nothing here for Bridge to
+// widen — see `patchCopilotPendingInteractionRpcSource` for why the old
+// permissions-facade rewrite was dropped.
+const PENDING_INTERACTION_METHODS_PATTERN = new RegExp(
+  String.raw`getPendingUserInputRequests\(\)\{return ${ID}\(${ID}\.sessionPendingRequestsListJson\(this\.nativeSessionId,"userInput"\)\)\.items\}`
+    + String.raw`getPendingElicitationRequests\(\)\{return ${ID}\(${ID}\.sessionPendingRequestsListJson\(this\.nativeSessionId,"elicitation"\)\)\.items`,
   "g",
 );
 
+/**
+ * Asserts the runtime still owns pending interaction listing natively.
+ *
+ * Up to CLI 1.0.73 Bridge widened the JS `session.permissions.pendingRequests`
+ * handler so a reconnecting browser could re-hydrate an in-flight `ask_user`
+ * prompt. From 1.0.74 that JS object is only a client-side proxy — the wire
+ * method is served natively — so the rewrite became dead code. Bridge now keeps
+ * its own listing index off the runtime's `*.requested` / `*.completed` events
+ * instead (see `SessionEventBus`).
+ *
+ * This is a contract-test canary, not a load-time gate: nothing in the patched
+ * output reads these getters, so drift here should fail CI on upgrade rather
+ * than refuse to launch.
+ */
 export function patchCopilotPendingInteractionRpcSource(source) {
   const pendingInteractionMethodMatches = source.match(PENDING_INTERACTION_METHODS_PATTERN)?.length ?? 0;
   if (pendingInteractionMethodMatches !== 1) {
     throw new Error(
       "Unable to patch Copilot app for pending interaction snapshots: "
         + `expected 1 runtime getter pair, found ${pendingInteractionMethodMatches}.`,
-    );
-  }
-
-  let pendingInteractionFacadeMatches = 0;
-  source = source.replace(
-    PENDING_INTERACTION_PERMISSIONS_FACADE_PATTERN,
-    (match, permissionSnapshot, sessionVar) => {
-      pendingInteractionFacadeMatches++;
-      return `pendingRequests(){return{items:${permissionSnapshot}(${sessionVar}),`
-        + `pendingUserInputs:${sessionVar}.getPendingUserInputRequests(),`
-        + `pendingElicitations:${sessionVar}.getPendingElicitationRequests()}}`;
-    },
-  );
-  if (pendingInteractionFacadeMatches !== 1) {
-    throw new Error(
-      "Unable to patch Copilot app for pending interaction snapshots: "
-        + `expected 1 permissions snapshot facade, found ${pendingInteractionFacadeMatches}.`,
     );
   }
 
@@ -166,12 +177,21 @@ export function patchCopilotAppSource(source) {
     );
   }
 
+  const supportsElicitationMatches = source.match(SUPPORTS_ELICITATION_PATTERN)?.length ?? 0;
+  if (supportsElicitationMatches !== 1) {
+    throw new Error(
+      "Unable to patch Copilot app for SDK elicitation callbacks: "
+        + `expected 1 supportsElicitation definition, found ${supportsElicitationMatches}.`,
+    );
+  }
+
   let elicitationCallbackMatches = 0;
   source = source.replace(
     ELICITATION_CALLBACK_PATTERN,
-    () => {
+    (match, toolPlanVar) => {
       elicitationCallbackMatches++;
-      return 'requestElicitation:(this.hasEventListeners("elicitation.requested")||this.supportsElicitation())?';
+      return `requestElicitation:(${toolPlanVar}.toolConfig.enableRequestElicitation`
+        + "||this.supportsElicitation())?";
     },
   );
   if (elicitationCallbackMatches !== 1) {
@@ -180,7 +200,11 @@ export function patchCopilotAppSource(source) {
     );
   }
 
-  return patchCopilotPendingInteractionRpcSource(source);
+  // The native pending-getter canary is deliberately NOT enforced here: those
+  // getters are runtime-owned and nothing in the patched output depends on
+  // them, so a shape change must not take app-mode launch down. The
+  // installed-bundle contract test asserts it instead.
+  return source;
 }
 
 export async function load(url, context, nextLoad) {

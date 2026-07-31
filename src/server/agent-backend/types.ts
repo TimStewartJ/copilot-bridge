@@ -222,6 +222,32 @@ export interface AgentPendingElicitationRequest {
   elicitationSource?: string;
 }
 
+/**
+ * Raised when the agent runtime cannot enumerate its pending interaction
+ * requests at all — as opposed to authoritatively reporting that none are
+ * pending. Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests`
+ * natively and exposes no listing wire method for user input / elicitation, so
+ * callers must be able to tell "nothing pending" from "cannot answer" and fall
+ * back to Bridge's own event-derived listing index.
+ */
+export class AgentPendingInteractionUnsupportedError extends Error {
+  /** Structural marker so detection survives duplicate module instances. */
+  readonly agentPendingInteractionUnsupported = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentPendingInteractionUnsupportedError";
+  }
+}
+
+export function isAgentPendingInteractionUnsupportedError(error: unknown): boolean {
+  if (error instanceof AgentPendingInteractionUnsupportedError) return true;
+  return typeof error === "object"
+    && error !== null
+    && (error as { agentPendingInteractionUnsupported?: unknown })
+      .agentPendingInteractionUnsupported === true;
+}
+
 export type AgentPendingInteractionEvent =
   | {
     type: "user_input.requested";

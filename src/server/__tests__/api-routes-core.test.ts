@@ -243,9 +243,10 @@ describe("Session stream route", () => {
         },
       ],
     };
-    ctx.sessionManager.getPendingInteractionSnapshot = vi.fn().mockResolvedValue({
+    ctx.sessionManager.hydratePendingInteractions = vi.fn().mockResolvedValue({
       pendingUserInputs: snapshot.pendingUserInputs,
       pendingElicitations: [],
+      runtimeSourced: { userInput: true, elicitation: true },
     });
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribeWithSnapshot(listener: (event: unknown) => void) {
@@ -268,8 +269,45 @@ describe("Session stream route", () => {
     expect(res.text).toContain('"pendingUserInputs":[{"requestId":"request-1"');
   });
 
+  it("keeps the bus listing index when the runtime cannot enumerate pending requests", async () => {
+    const busPending = {
+      requestId: "request-index",
+      question: "Pick one",
+      choices: ["yes", "no"],
+      allowFreeform: false,
+      requestedAt: "2026-04-29T12:00:00.000Z",
+    };
+    // Copilot CLI >= 1.0.74 cannot list pending requests, so hydration reports
+    // the kind as non-authoritative and must not overwrite the bus snapshot.
+    ctx.sessionManager.hydratePendingInteractions = vi.fn().mockResolvedValue({
+      pendingUserInputs: [],
+      pendingElicitations: [],
+      runtimeSourced: { userInput: false, elicitation: false },
+    });
+    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
+      subscribeWithSnapshot(listener: (event: unknown) => void) {
+        queueMicrotask(() => listener({ type: "done", content: "" }));
+        return {
+          snapshot: {
+            type: "snapshot",
+            complete: false,
+            pendingUserInputs: [busPending],
+            pendingElicitations: [],
+          },
+          unsubscribe: () => {},
+        };
+      },
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"pendingUserInputs":[{"requestId":"request-index"');
+  });
+
   it("keeps the SSE stream usable when pending snapshot hydration fails", async () => {
-    ctx.sessionManager.getPendingInteractionSnapshot = vi.fn().mockRejectedValue(
+    ctx.sessionManager.hydratePendingInteractions = vi.fn().mockRejectedValue(
       new Error("session connection closed"),
     );
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
