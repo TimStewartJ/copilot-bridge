@@ -45,6 +45,11 @@ export type {
   AgentUserInputResponse,
 } from "./types.js";
 
+export {
+  AgentPendingInteractionUnsupportedError,
+  isAgentPendingInteractionUnsupportedError,
+} from "./types.js";
+
 export { CopilotBackend };
 
 export interface CreateAgentBackendOptions {

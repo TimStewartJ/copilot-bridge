@@ -201,6 +201,18 @@ export interface PendingInteractionSnapshot {
   pendingElicitations: PendingElicitationRequestView[];
 }
 
+/** Where a pending interaction listing came from. The runtime is authoritative. */
+export type PendingInteractionListingSource = "runtime" | "index";
+
+export interface PendingInteractionListing<T> {
+  items: T[];
+  source: PendingInteractionListingSource;
+}
+
+export interface PendingInteractionHydration extends PendingInteractionSnapshot {
+  runtimeSourced: { userInput: boolean; elicitation: boolean };
+}
+
 export interface ProjectedUserMessage {
   id: string;
   content: string;
@@ -381,6 +393,14 @@ export class SessionEventBus {
   private liveCompletion?: LiveCompletion;
   private intentText = "";
   private runNotice?: RunNotice;
+  /**
+   * Runtime-owned pending interactions this run, keyed by the runtime's own
+   * request id. Deliberately NOT reset on turn boundaries: an `ask_user` prompt
+   * blocks inside its tool call while the surrounding run keeps streaming, so
+   * only explicit resets, terminal cleanup, and disposal may clear it.
+   */
+  private pendingUserInputIndex = new Map<UserInputRequestId, PendingUserInputRequestView>();
+  private pendingElicitationIndex = new Map<ElicitationRequestId, PendingElicitationRequestView>();
   /** Server-only: last assistant text observed this run, used for abort/shutdown fallback. */
   private lastAssistantSegment?: LiveAssistantSegment;
   private finalContent?: string;
@@ -528,6 +548,12 @@ export class SessionEventBus {
   }
 
   emitUserInputRequested(request: PendingUserInputRequestView, timestamp?: string): void {
+    const requestedAt = request.requestedAt ?? timestamp;
+    this.pendingUserInputIndex.set(request.requestId, {
+      ...structuredClone(request),
+      allowFreeform: request.allowFreeform ?? true,
+      ...(requestedAt ? { requestedAt } : {}),
+    });
     this.emit({
       type: "user_input_requested",
       ...request,
@@ -542,6 +568,7 @@ export class SessionEventBus {
     response: NativeUserInputResponse,
     timestamp?: string,
   ): void {
+    this.pendingUserInputIndex.delete(requestId);
     this.emit({
       type: "user_input_answered",
       requestId,
@@ -551,6 +578,7 @@ export class SessionEventBus {
   }
 
   emitUserInputCanceled(requestId: UserInputRequestId, options: UserInputCanceledOptions = {}): void {
+    this.pendingUserInputIndex.delete(requestId);
     this.emit({
       type: "user_input_canceled",
       requestId,
@@ -561,6 +589,11 @@ export class SessionEventBus {
   }
 
   emitElicitationRequested(request: PendingElicitationRequestView, timestamp?: string): void {
+    const requestedAt = request.requestedAt ?? timestamp;
+    this.pendingElicitationIndex.set(request.requestId, {
+      ...structuredClone(request),
+      ...(requestedAt ? { requestedAt } : {}),
+    });
     this.emit({
       type: "elicitation_requested",
       ...structuredClone(request),
@@ -574,6 +607,7 @@ export class SessionEventBus {
     action: ElicitationAction,
     timestamp?: string,
   ): void {
+    this.pendingElicitationIndex.delete(requestId);
     this.emit({
       type: "elicitation_resolved",
       requestId,
@@ -586,6 +620,7 @@ export class SessionEventBus {
     requestId: ElicitationRequestId,
     options: ElicitationCanceledOptions = {},
   ): void {
+    this.pendingElicitationIndex.delete(requestId);
     this.emit({
       type: "elicitation_canceled",
       requestId,
@@ -593,6 +628,37 @@ export class SessionEventBus {
       message: options.message,
       timestamp: options.timestamp,
     });
+  }
+
+  /**
+   * Listing cache only — never an authority.
+   *
+   * Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests` from its
+   * native runtime and exposes no wire method that enumerates pending user
+   * input / elicitation requests, so a browser reconnecting mid-`ask_user` had
+   * no way to re-hydrate the prompt. These maps are keyed by the *runtime's own*
+   * request ids, taken straight off its `*.requested` events, and exist purely
+   * so a reconnect can render what is already in flight. Every response still
+   * goes through the runtime, which remains the sole adjudicator of whether an
+   * id is live or stale.
+   */
+  getPendingInteractionIndex(): PendingInteractionSnapshot {
+    return {
+      pendingUserInputs: [...this.pendingUserInputIndex.values()]
+        .map((request) => structuredClone(request)),
+      pendingElicitations: [...this.pendingElicitationIndex.values()]
+        .map((request) => structuredClone(request)),
+    };
+  }
+
+  /**
+   * Drops every cached entry. Terminal cleanup owns this: it must first capture
+   * the ids it needs to cancel, since the runtime only releases a pending
+   * request when something answers it.
+   */
+  clearPendingInteractionIndex(): void {
+    this.pendingUserInputIndex.clear();
+    this.pendingElicitationIndex.clear();
   }
 
   emit(event: StreamEvent): void {
@@ -829,12 +895,15 @@ export class SessionEventBus {
     }
   }
 
-  getSnapshot(pendingInteractions: PendingInteractionSnapshot = {
-    pendingUserInputs: [],
-    pendingElicitations: [],
-  }): BusSnapshot {
+  getSnapshot(pendingInteractions?: PendingInteractionSnapshot): BusSnapshot {
     const turnId = this.currentTurnId ?? this.terminalTurnId;
     const turnInstanceId = this.currentTurnInstanceId ?? this.terminalTurnInstanceId;
+    // A completed run has nothing in flight by definition, so never replay the
+    // listing cache past terminal even if cancellation could not drain it.
+    const pending = pendingInteractions
+      ?? (this._complete
+        ? { pendingUserInputs: [], pendingElicitations: [] }
+        : this.getPendingInteractionIndex());
     return {
       type: "snapshot",
       runId: this.runId,
@@ -848,8 +917,8 @@ export class SessionEventBus {
       intentText: this.intentText,
       mcpServers: [...this.mcpServers],
       contextSummary: this.contextSummary,
-      pendingUserInputs: pendingInteractions.pendingUserInputs.map((request) => structuredClone(request)),
-      pendingElicitations: pendingInteractions.pendingElicitations.map((request) => structuredClone(request)),
+      pendingUserInputs: pending.pendingUserInputs.map((request) => structuredClone(request)),
+      pendingElicitations: pending.pendingElicitations.map((request) => structuredClone(request)),
       ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
       ...(this.terminalType ? { terminalType: this.terminalType } : {}),
       ...(this.terminalTimestamp ? { terminalTimestamp: this.terminalTimestamp } : {}),
@@ -903,6 +972,7 @@ export class SessionEventBus {
   reset(): void {
     this.runId = randomUUID();
     this.resetLiveTurnState();
+    this.clearPendingInteractionIndex();
     this.userMessages = [];
     this.liveAssistantSegments = [];
     this.lastAssistantSegment = undefined;
@@ -968,6 +1038,7 @@ export class SessionEventBus {
 
   dispose(): void {
     this.cancelCleanup();
+    this.clearPendingInteractionIndex();
     const event: StreamEvent = { type: "resync_required" };
     for (const listener of this.listeners) {
       try {

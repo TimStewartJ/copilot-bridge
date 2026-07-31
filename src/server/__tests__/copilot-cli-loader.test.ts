@@ -41,15 +41,16 @@ const ASK_USER_TOOL_SELECTION = `
 async function tools(f){let G=!!f.requestUserInput,W=!!f.featureFlags?.ASK_USER_ELICITATION&&!!f.requestElicitation;return W?"ask_user_2":G?"ask_user":"none"}
 `;
 const ELICITATION_CALLBACK_SELECTION = `
-function callbacks(){return{requestElicitation:this.hasEventListeners("elicitation.requested")?q=>this.pendingRequests.requestElicitation(q):void 0}}
+function callbacks(B){return{requestElicitation:B.toolConfig.enableRequestElicitation?q=>this.pendingRequests.requestElicitation(q):void 0}}
+`;
+const SUPPORTS_ELICITATION = `
+class Caps{supportsElicitation(){return m.sessionCapabilitiesEffectiveHas(this.nativeSessionId,"elicitation")}}
 `;
 const PENDING_INTERACTION_RUNTIME = `
-class Session{getPendingUserInputRequests(){return this.pendingRequests.getPendingUserInputRequests()}getPendingElicitationRequests(){return this.pendingRequests.getPendingElicitationRequests()}}
+class Session{getPendingUserInputRequests(){return an(m.sessionPendingRequestsListJson(this.nativeSessionId,"userInput")).items}getPendingElicitationRequests(){return an(m.sessionPendingRequestsListJson(this.nativeSessionId,"elicitation")).items.map(e=>({requestId:e.requestId}))}}
 `;
-const PENDING_INTERACTION_PERMISSIONS_FACADE = `
-function permissions(t){return{pendingRequests(){return{items:jbr(t)}}}}
-`;
-const NATIVE_ASK_USER_SOURCE = `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_RUNTIME}${PENDING_INTERACTION_PERMISSIONS_FACADE}`;
+const NATIVE_ASK_USER_SOURCE =
+  `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${SUPPORTS_ELICITATION}${PENDING_INTERACTION_RUNTIME}`;
 
 describe("copilot-cli-loader installed-package contract", () => {
   // The Copilot bundle patches are regex-driven, so a dependency bump can break
@@ -73,10 +74,19 @@ describe("copilot-cli-loader installed-package contract", () => {
 
     expect(patched).not.toBe(source);
     expect(patched).toContain("__bridgeGithubMcpOptions");
-    expect(patched).toContain("this.supportsElicitation()");
-    expect(patched).toContain("pendingUserInputs:");
-    expect(patched).toContain("pendingElicitations:");
+    expect(patched).toContain("||this.supportsElicitation())?");
+    expect(patched).toContain(".toolConfig.enableRequestElicitation||this.supportsElicitation()");
   });
+
+  // Not enforced by the loader on purpose — see `patchCopilotPendingInteractionRpcSource`.
+  it.each(installedAppSources)(
+    "keeps pending interaction listing runtime-owned at %s",
+    (appPath) => {
+      const source = readFileSync(appPath, "utf-8");
+
+      expect(patchCopilotPendingInteractionRpcSource(source)).toBe(source);
+    },
+  );
 });
 
 describe("copilot-cli-loader", () => {
@@ -91,10 +101,7 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions)");
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
     expect(patched).toContain(
-      'requestElicitation:(this.hasEventListeners("elicitation.requested")||this.supportsElicitation())?',
-    );
-    expect(patched).toContain(
-      "pendingRequests(){return{items:jbr(t),pendingUserInputs:t.getPendingUserInputRequests(),pendingElicitations:t.getPendingElicitationRequests()}}",
+      "requestElicitation:(B.toolConfig.enableRequestElicitation||this.supportsElicitation())?",
     );
   });
 
@@ -206,18 +213,36 @@ describe("copilot-cli-loader", () => {
     }
   });
   it("rejects SDK drift that removes the runtime pending getters", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_PERMISSIONS_FACADE}}`;
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${SUPPORTS_ELICITATION}}`;
 
-    expect(() => patchCopilotAppSource(source)).toThrow("expected 1 runtime getter pair, found 0");
+    // The loader itself tolerates this; only the contract canary rejects it.
+    expect(() => patchCopilotAppSource(source)).not.toThrow();
+    expect(() => patchCopilotPendingInteractionRpcSource(source)).toThrow(
+      "expected 1 runtime getter pair, found 0",
+    );
   });
 
-  it("patches the pending interaction snapshot facade independently", () => {
-    const source = `${PENDING_INTERACTION_RUNTIME}${PENDING_INTERACTION_PERMISSIONS_FACADE}`;
+  it("rejects SDK drift that removes the runtime elicitation capability probe", () => {
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_RUNTIME}}`;
 
-    const patched = patchCopilotPendingInteractionRpcSource(source);
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "expected 1 supportsElicitation definition, found 0",
+    );
+  });
 
-    expect(patched).toContain(
-      "pendingRequests(){return{items:jbr(t),pendingUserInputs:t.getPendingUserInputRequests(),pendingElicitations:t.getPendingElicitationRequests()}}",
+  it("asserts the native pending interaction runtime without rewriting it", () => {
+    const source = `${PENDING_INTERACTION_RUNTIME}`;
+
+    expect(patchCopilotPendingInteractionRpcSource(source)).toBe(source);
+  });
+
+  it("rejects a pending interaction runtime that reverts to JS-owned state", () => {
+    const source = `
+class Session{getPendingUserInputRequests(){return this.pendingRequests.getPendingUserInputRequests()}getPendingElicitationRequests(){return this.pendingRequests.getPendingElicitationRequests()}}
+`;
+
+    expect(() => patchCopilotPendingInteractionRpcSource(source)).toThrow(
+      "expected 1 runtime getter pair, found 0",
     );
   });
 });

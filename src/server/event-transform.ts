@@ -136,6 +136,26 @@ function getSkillSource(event: any): string | undefined {
   return SKILL_SOURCE_PATTERN.test(trimmed) ? trimmed : undefined;
 }
 
+/**
+ * Runtime plumbing the user never typed.
+ *
+ * The agent runtime injects its own `user.message` events tagged
+ * `source: "system"` — currently the deferred-tool `<system_reminder>` block it
+ * prepends when many MCP tools are registered. Through Copilot CLI 1.0.73 these
+ * carried the text only in `transformedContent` (which Bridge never reads) and
+ * left `content` empty, so they fell out of the timeline by accident. CLI 1.0.75
+ * also emits a copy with the reminder in `content`, which would otherwise render
+ * as if the user had pasted it.
+ *
+ * These are model-context plumbing, not user speech, so they stay out of the
+ * visible transcript regardless of which field the runtime populates.
+ */
+function isAgentInjectedSystemMessage(event: any): boolean {
+  if (event?.type !== "user.message") return false;
+  const source = event?.data?.source;
+  return typeof source === "string" && source.trim().toLowerCase() === "system";
+}
+
 export function getUndoBoundaryEventId(event: any): string | undefined {
   if (event?.type !== "user.message" || getSkillSource(event)) return undefined;
   if (!isVisibleMessageEvent(event)) return undefined;
@@ -193,6 +213,7 @@ export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   const data = event?.data;
 
   if (event.type === "user.message") {
+    if (isAgentInjectedSystemMessage(event)) return false;
     return Boolean((data?.content ?? data?.prompt ?? "").trim() || data?.attachments?.length);
   }
 
@@ -523,6 +544,7 @@ export function transformEventsToMessages(
       activeTurnId = undefined;
       activeTurnInstanceId = undefined;
     } else if (event.type === "user.message") {
+      if (isAgentInjectedSystemMessage(event)) continue;
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
       const skillSource = getSkillSource(event);

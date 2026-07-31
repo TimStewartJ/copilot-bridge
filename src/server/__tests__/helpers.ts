@@ -209,6 +209,11 @@ export function createMockSessionManager() {
       pendingUserInputs: [],
       pendingElicitations: [],
     }),
+    hydratePendingInteractions: async () => ({
+      pendingUserInputs: [],
+      pendingElicitations: [],
+      runtimeSourced: { userInput: false, elicitation: false },
+    }),
     getActiveSessions: () => [],
     getLifecycleBlockingSessionCount: () => 0,
     isSessionWarm: () => false,
