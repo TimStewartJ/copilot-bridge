@@ -5,6 +5,12 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../test-react-harness";
+import {
+  __resetVoiceRecordingStoreForTests,
+  getPendingVoiceRecording,
+  patchPendingVoiceRecording,
+  savePendingVoiceRecording,
+} from "../lib/voice-recording-store";
 import { useBackgroundVoiceJobs, type UseBackgroundVoiceJobsResult } from "./useBackgroundVoiceJobs";
 
 const createVoiceJobMock = vi.hoisted(() => vi.fn());
@@ -67,6 +73,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    __resetVoiceRecordingStoreForTests();
     harness = await createReactDomHarness();
     result = null;
     getDraftMock = vi.fn<GetDraft>(() => null);
@@ -100,6 +107,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     await harness?.cleanup();
     harness = null;
     result = null;
+    __resetVoiceRecordingStoreForTests();
   });
 
   it("offers a retryable autosend error and retries with the original mode and audio blob", async () => {
@@ -250,10 +258,11 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1") === null);
     expect(transcribeAudioMock).toHaveBeenCalledTimes(2);
     expect(transcribeAudioMock.mock.calls[1][0]).toBe(audio);
-    expect(setDraftMock).toHaveBeenCalledWith("session-1", "Retried transcript", undefined);
+    // Transcripts are persisted immediately so a reload cannot lose both the audio and the text.
+    expect(options.setDraftImmediate).toHaveBeenCalledWith("session-1", "Retried transcript", undefined);
   });
 
-  it("drops retained retry audio when the voice job error is cleared", async () => {
+  it("keeps unsent audio retryable when the voice job error is cleared", async () => {
     const audio = new Blob(["voice"], { type: "audio/wav" });
     createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
 
@@ -266,12 +275,257 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     });
 
     await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
     await getHarness().act(async () => {
       result?.clearVoiceJobError("session-1");
+    });
+
+    expect(result?.getJobForComposer("session-1")).toMatchObject({ status: "error", retryable: true });
+
+    await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
     });
 
-    expect(result?.getJobForComposer("session-1")).toBeNull();
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "accepted");
+    expect(createVoiceJobMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards the persisted recording only on an explicit discard", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio,
+        submitMode: "autosend",
+      });
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
+
+    await getHarness().act(async () => {
+      result?.discardVoiceRecording("session-1");
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1") === null);
+    expect(await getPendingVoiceRecording("session-1")).toBeNull();
+
+    await getHarness().act(async () => {
+      result?.retryVoiceJobUpload("session-1");
+    });
     expect(createVoiceJobMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists the recording before uploading so a failed send survives a reload", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio,
+        submitMode: "autosend",
+      });
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+
+    const stored = await getPendingVoiceRecording("session-1");
+    expect(stored).toMatchObject({ composerKey: "session-1", submitMode: "autosend" });
+    expect(stored?.audio.byteLength).toBe(5);
+    expect(stored?.lastError).toBe("Network timeout");
+  });
+
+  it("refuses to overwrite an unsent recording that is still pending for the same composer", async () => {
+    const first = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio: first,
+        submitMode: "autosend",
+      });
+    });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+    const storedId = (await getPendingVoiceRecording("session-1"))?.recordingId;
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio: new Blob(["second recording"], { type: "audio/wav" }),
+        submitMode: "autosend",
+      });
+    });
+
+    expect(result?.getJobForComposer("session-1")?.error).toBe(
+      "Kept the earlier unsent recording — retry or discard it before recording again.",
+    );
+    expect((await getPendingVoiceRecording("session-1"))?.recordingId).toBe(storedId);
+    expect(createVoiceJobMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves an unsent recording to the session a draft materialized into", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "draft:task:task-1",
+        audio,
+        submitMode: "autosend",
+      });
+    });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("draft:task:task-1")?.status === "error");
+
+    await getHarness().act(async () => {
+      result?.migrateVoiceRecording("draft:task:task-1", "session-9");
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-9")?.retryable === true);
+    expect(result?.getJobForComposer("draft:task:task-1")).toBeNull();
+    expect(await getPendingVoiceRecording("draft:task:task-1")).toBeNull();
+    expect(await getPendingVoiceRecording("session-9")).toMatchObject({ composerKey: "session-9" });
+  });
+});
+
+describe("useBackgroundVoiceJobs restart recovery", () => {
+  let harness: ReactDomHarness | null = null;
+  let result: UseBackgroundVoiceJobsResult | null = null;
+
+  function getHarness() {
+    if (!harness) throw new Error("Hook harness has not been initialized");
+    return harness;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetVoiceRecordingStoreForTests();
+    fetchLatestVoiceJobMock.mockResolvedValue(null);
+  });
+
+  afterEach(async () => {
+    await harness?.cleanup();
+    harness = null;
+    result = null;
+    __resetVoiceRecordingStoreForTests();
+  });
+
+  async function renderWithActiveComposer(activeComposerKey: string) {
+    harness = await createReactDomHarness();
+    function Harness() {
+      result = useBackgroundVoiceJobs({
+        activeComposerKey,
+        getDraft: () => null,
+        setDraft: vi.fn(),
+        setDraftImmediate: vi.fn(),
+        clearDraft: vi.fn(),
+        rememberDraftSession: vi.fn(),
+        clearDraftSession: vi.fn(),
+        materializeSession: vi.fn().mockResolvedValue("session-1"),
+        isSessionBusy: () => false,
+        navigateToSession: vi.fn(),
+        refreshSessions: vi.fn(),
+        refreshTasks: vi.fn(),
+      });
+      return null;
+    }
+    await harness.render(createElement(Harness));
+  }
+
+  it("restores a recording persisted by a previous app run as a retryable job", async () => {
+    await savePendingVoiceRecording({
+      composerKey: "session-1",
+      recordingId: "rec-1",
+      submitMode: "autosend",
+      audio: new TextEncoder().encode("voice").buffer as ArrayBuffer,
+      mimeType: "audio/wav",
+    });
+
+    await renderWithActiveComposer("session-1");
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.retryable === true);
+    expect(result?.getJobForComposer("session-1")).toMatchObject({
+      status: "error",
+      submitMode: "autosend",
+      restored: true,
+      retryable: true,
+    });
+
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
+    await getHarness().act(async () => {
+      result?.retryVoiceJobUpload("session-1");
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "accepted");
+    expect(createVoiceJobMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes an already accepted server job instead of re-uploading the recording", async () => {
+    await savePendingVoiceRecording({
+      composerKey: "session-1",
+      recordingId: "rec-2",
+      submitMode: "autosend",
+      audio: new TextEncoder().encode("voice").buffer as ArrayBuffer,
+      mimeType: "audio/wav",
+    });
+    await patchPendingVoiceRecording("session-1", "rec-2", { serverJobId: "voice-job-1" });
+    fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ status: "transcribing" }));
+
+    await renderWithActiveComposer("session-1");
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "transcribing");
+    expect(createVoiceJobMock).not.toHaveBeenCalled();
+    expect(fetchLatestVoiceJobMock).not.toHaveBeenCalled();
+  });
+
+  it("does not re-upload when the server job status cannot be checked", async () => {
+    await savePendingVoiceRecording({
+      composerKey: "session-1",
+      recordingId: "rec-4",
+      submitMode: "autosend",
+      audio: new TextEncoder().encode("voice").buffer as ArrayBuffer,
+      mimeType: "audio/wav",
+    });
+    await patchPendingVoiceRecording("session-1", "rec-4", { serverJobId: "voice-job-1" });
+    fetchVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot({ status: "error" }));
+
+    await renderWithActiveComposer("session-1");
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.retryable === true);
+
+    fetchVoiceJobMock.mockRejectedValue(new Error("Failed to fetch"));
+    await getHarness().act(async () => {
+      result?.retryVoiceJobUpload("session-1");
+    });
+
+    await waitUntilAct(
+      getHarness().act,
+      () => result?.getJobForComposer("session-1")?.error
+        === "Could not reach the server to check the earlier send. Try again.",
+    );
+    // The recording is kept and no duplicate message is sent.
+    expect(createVoiceJobMock).not.toHaveBeenCalled();
+    expect(result?.getJobForComposer("session-1")?.retryable).toBe(true);
+    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
+  });
+
+  it("keeps a locally stored recording retryable when its server job failed without a transcript", async () => {
+    await savePendingVoiceRecording({
+      composerKey: "session-1",
+      recordingId: "rec-3",
+      submitMode: "autosend",
+      audio: new TextEncoder().encode("voice").buffer as ArrayBuffer,
+      mimeType: "audio/wav",
+    });
+    await patchPendingVoiceRecording("session-1", "rec-3", { serverJobId: "voice-job-1" });
+    fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ status: "error" }));
+
+    await renderWithActiveComposer("session-1");
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+    expect(result?.getJobForComposer("session-1")?.retryable).toBe(true);
+    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
   });
 });

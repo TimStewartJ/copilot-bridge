@@ -70,4 +70,43 @@ describe("deriveVoiceUiState", () => {
       showButton: true,
     });
   });
+
+  it("blocks a new recording while unsent audio is still pending for the composer", () => {
+    expect(deriveVoiceUiState({
+      ...baseState,
+      voiceJobError: "Unsent voice recording saved from earlier.",
+      hasPendingRecording: true,
+    })).toMatchObject({
+      buttonDisabled: true,
+      buttonTitle: "Retry or discard the unsent voice recording first",
+      message: "Unsent voice recording saved from earlier.",
+      tone: "error",
+    });
+
+    // Stopping an in-progress recording must stay possible.
+    expect(deriveVoiceUiState({
+      ...baseState,
+      recorderPhase: "recording",
+      hasPendingRecording: true,
+    })).toMatchObject({ buttonDisabled: false, buttonState: "stop" });
+  });
+
+  it("surfaces a warning when the recording could not be stored on the device", () => {
+    expect(deriveVoiceUiState({
+      ...baseState,
+      activeVoiceJob: { status: "uploading", submitMode: "autosend", serverOwned: true },
+      persistWarning: "Recording could not be saved on this device — keep the app open until it sends.",
+    })).toMatchObject({
+      message: "Uploading… stay here. Recording could not be saved on this device — keep the app open until it sends.",
+      tone: "accent",
+    });
+
+    expect(deriveVoiceUiState({
+      ...baseState,
+      persistWarning: "Recording could not be saved on this device — keep the app open until it sends.",
+    })).toMatchObject({
+      message: "Recording could not be saved on this device — keep the app open until it sends.",
+      tone: "error",
+    });
+  });
 });

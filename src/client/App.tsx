@@ -1005,6 +1005,8 @@ export default function App() {
     retryVoiceJobUpload,
     reviewInstead,
     clearVoiceJobError,
+    discardVoiceRecording,
+    migrateVoiceRecording,
   } = useBackgroundVoiceJobs({
     activeComposerKey,
     getDraft,
@@ -1025,6 +1027,19 @@ export default function App() {
     onVoiceSessionActivity: handleVoiceSessionActivity,
     onVoiceSessionSettled: handleVoiceSessionSettled,
   });
+
+  /**
+   * Drops every piece of client-side state keyed to a composer that is going away for good.
+   * Session deletion has more than one entry point, so all per-composer stores are retired here
+   * to keep them from drifting apart.
+   */
+  const retireComposer = useCallback((sessionId: string) => {
+    clearDraft(sessionId);
+    discardVoiceRecording(sessionId);
+    clearDraftSessionBySessionId(sessionId);
+    clearLastViewedSession(sessionId);
+    clearLastActiveQuickChat(sessionId);
+  }, [clearDraft, clearDraftSessionBySessionId, discardVoiceRecording]);
 
   const handleNewTask = async (groupId?: string) => {
     try {
@@ -1299,10 +1314,7 @@ export default function App() {
   };
 
   const handleDeleteSession = async (sessionId: string) => {
-    clearDraft(sessionId);
-    clearDraftSessionBySessionId(sessionId);
-    clearLastViewedSession(sessionId);
-    clearLastActiveQuickChat(sessionId);
+    retireComposer(sessionId);
     const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     // Animate out before removing
     setExitingIds((prev) => new Set(prev).add(sessionId));
@@ -1451,10 +1463,7 @@ export default function App() {
 
     if (action === "delete") {
       for (const id of sessionIds) {
-        clearDraft(id);
-        clearDraftSessionBySessionId(id);
-        clearLastViewedSession(id);
-        clearLastActiveQuickChat(id);
+        retireComposer(id);
       }
       setExitingIds((prev) => {
         const next = new Set(prev);
@@ -1492,7 +1501,7 @@ export default function App() {
         return next;
       });
     }
-  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, clearDraftSessionBySessionId, clearLastViewedSession, clearLastActiveQuickChat, patchSessionsInCache, invalidateAllSessionQueries, invalidateTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, retireComposer, patchSessionsInCache, invalidateAllSessionQueries, invalidateTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
@@ -1827,6 +1836,8 @@ export default function App() {
                   retryVoiceJobUpload={retryVoiceJobUpload}
                   reviewVoiceJob={reviewInstead}
                   clearVoiceJobError={clearVoiceJobError}
+                  discardVoiceRecording={discardVoiceRecording}
+                  migrateVoiceRecording={migrateVoiceRecording}
                   sessionReloads={sessionReloads}
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
@@ -1903,6 +1914,8 @@ export default function App() {
                   retryVoiceJobUpload={retryVoiceJobUpload}
                   reviewVoiceJob={reviewInstead}
                   clearVoiceJobError={clearVoiceJobError}
+                  discardVoiceRecording={discardVoiceRecording}
+                  migrateVoiceRecording={migrateVoiceRecording}
                   sessionReloads={sessionReloads}
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
@@ -2127,6 +2140,8 @@ function SessionRoute({
   retryVoiceJobUpload,
   reviewVoiceJob,
   clearVoiceJobError,
+  discardVoiceRecording,
+  migrateVoiceRecording,
   sessionReloads,
   sessionBusySignals,
   onForkSession,
@@ -2152,6 +2167,8 @@ function SessionRoute({
   retryVoiceJobUpload: (composerKey: string) => void;
   reviewVoiceJob: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
+  discardVoiceRecording: (composerKey: string) => void;
+  migrateVoiceRecording: (fromComposerKey: string, toComposerKey: string) => void;
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
   sessionBusySignals: Record<string, number>;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
@@ -2266,6 +2283,8 @@ function SessionRoute({
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
+    // Keep any unsent recording attached to the conversation it was made for.
+    migrateVoiceRecording(composerKey, newSessionId);
     const delivery = sendMaterializedFirstPrompt({
       sessionId: newSessionId,
       prompt,
@@ -2274,6 +2293,7 @@ function SessionRoute({
       onRejected: async () => {
         await cleanupFailedFirstSendSession(newSessionId, taskId);
         setDraft(draftRouteKey, prompt, attachments);
+        migrateVoiceRecording(newSessionId, composerKey);
         navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new", { replace: true });
       },
     });
@@ -2290,6 +2310,7 @@ function SessionRoute({
     launchState.selectedContextTier,
     launchState.selectedReasoningEffort,
     materializeSession,
+    migrateVoiceRecording,
     navigate,
     resetLaunchOptions,
     setDraft,
@@ -2345,6 +2366,7 @@ function SessionRoute({
       onSubmitVoiceCapture={startBackgroundVoiceJob}
       onReviewVoiceJob={reviewVoiceJob}
       onClearVoiceJobError={clearVoiceJobError}
+      onDiscardVoiceRecording={discardVoiceRecording}
       onRetryVoiceJobUpload={retryVoiceJobUpload}
       reloadToken={sessionReload?.token ?? 0}
       reloadMcpServers={sessionReload?.servers}
