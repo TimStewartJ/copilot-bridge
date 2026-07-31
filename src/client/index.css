@@ -201,6 +201,32 @@ body {
   }
 }
 
+/*
+ * Code block copy button: always visible on touch devices (no hover to reveal it),
+ * hover-revealed on pointer devices. Matches the pattern used by ChatGPT/Claude.
+ */
+.code-copy-button {
+  opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .code-copy-button {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .code-copy-button {
+    opacity: 0;
+  }
+
+  .group:hover > .code-copy-button,
+  .code-copy-button:focus-visible {
+    opacity: 1;
+  }
+}
+
 @keyframes session-exit {
   from {
     opacity: 1;
