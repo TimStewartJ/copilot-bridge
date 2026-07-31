@@ -154,8 +154,9 @@ export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockP
     <div className="not-prose relative group my-2">
       <button
         onClick={handleCopy}
-        className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-surface/80 backdrop-blur-sm border border-border
-          text-text-muted hover:text-text-primary opacity-0 group-hover:opacity-100 transition-all z-10"
+        className="code-copy-button absolute top-2 right-2 inline-flex items-center justify-center p-2 rounded-md
+          bg-bg-surface/90 backdrop-blur-sm border border-border
+          text-text-muted hover:text-text-primary transition-all z-10"
         aria-label={COPY_LABELS[copyState]}
         title={copyState === "failed" ? "Copy failed — clipboard unavailable" : undefined}
       >
