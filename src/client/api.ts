@@ -972,8 +972,60 @@ export async function patchTask(
   return data.task;
 }
 
-export async function deleteTask(id: string): Promise<void> {
-  await requestDelete(`/api/tasks/${id}`);
+/** Counts backing the task delete-confirmation dialog. Server-computed: the
+ *  client's session list is noise-filtered and excludes archived sessions, so
+ *  it cannot derive these itself. */
+export interface TaskDeletionPreview {
+  sessionCount: number;
+  archivedCount: number;
+  unarchivedCount: number;
+  sharedSessionCount: number;
+  busySessionIds: string[];
+  scheduleCount: number;
+  fingerprint: string;
+}
+
+export type SessionDisposition = "archive" | "delete";
+
+export interface TaskDeletionErrorBody {
+  error?: string;
+  message?: string;
+  preview?: TaskDeletionPreview;
+  sessionErrors?: Record<string, string>;
+  deletedSessionIds?: string[];
+}
+
+export async function getTaskDeletionPreview(id: string): Promise<TaskDeletionPreview> {
+  const data = await apiFetch<{ preview: TaskDeletionPreview }>(
+    `/api/tasks/${encodeURIComponent(id)}/deletion-preview`,
+  );
+  return data.preview;
+}
+
+/**
+ * Deletes a task. `sessionDisposition` decides what happens to linked sessions;
+ * without it the server refuses (409 `confirmation_required`) unless the task
+ * has none, so a task can never silently orphan its sessions.
+ *
+ * Rejects with an `ApiError` whose `details` carry the server's error body
+ * (`preview`, `sessionErrors`) so callers can re-render the dialog.
+ */
+export async function deleteTask(
+  id: string,
+  opts?: { sessionDisposition?: SessionDisposition; fingerprint?: string },
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (opts?.sessionDisposition) params.set("sessionDisposition", opts.sessionDisposition);
+  if (opts?.fingerprint) params.set("fingerprint", opts.fingerprint);
+  const suffix = params.toString() ? `?${params}` : "";
+
+  const res = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(id)}${suffix}`, {
+    method: "DELETE",
+  });
+  if (res.ok) return;
+  const body = await res.json().catch(() => null) as TaskDeletionErrorBody | null;
+  const message = typeof body?.error === "string" ? body.error : res.statusText;
+  throw new ApiError(message || res.statusText, res.status, body ?? undefined);
 }
 
 export async function reorderTasks(taskIds: string[]): Promise<Task[]> {

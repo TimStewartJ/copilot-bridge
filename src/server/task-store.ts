@@ -402,10 +402,60 @@ export function createTaskStore(
     emitChange(id);
   }
 
+  /** Session IDs linked to a task, oldest link first. */
+  function listSessionIdsForTask(id: string): string[] {
+    return (db
+      .prepare("SELECT sessionId FROM task_sessions WHERE taskId = ? ORDER BY linkedAt ASC")
+      .all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
+  }
+
   /**
-   * Delete a task and every child schedule (plus that schedule's run history and
-   * claims) in one transaction, returning the deleted schedule IDs so the caller
-   * can unregister their timers.
+   * Counts backing the delete-confirmation dialog, in one query.
+   *
+   * The client cannot derive these: its session list is noise-filtered and
+   * excludes archived sessions, so it would undercount badly.
+   */
+  function getTaskSessionCounts(id: string): { total: number; archived: number; shared: number } {
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN COALESCE(b.archived, 0) = 1 THEN 1 ELSE 0 END), 0) AS archived,
+        COALESCE(SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM task_sessions other
+          WHERE other.sessionId = ts.sessionId AND other.taskId != ts.taskId
+        ) THEN 1 ELSE 0 END), 0) AS shared
+      FROM task_sessions ts
+      LEFT JOIN bridge_session_state b ON b.sessionId = ts.sessionId
+      WHERE ts.taskId = ?
+    `).get(id) as { total: number; archived: number; shared: number } | undefined;
+    return {
+      total: Number(row?.total ?? 0),
+      archived: Number(row?.archived ?? 0),
+      shared: Number(row?.shared ?? 0),
+    };
+  }
+
+  /**
+   * Session IDs linked to this task and to no other task.
+   *
+   * Deleting a session unlinks it from *every* task, so a bulk "delete the
+   * task's sessions" must not reach sessions another task still owns. Callers
+   * delete these and merely unlink the rest.
+   */
+  function listExclusiveSessionIdsForTask(id: string): string[] {
+    return (db.prepare(`
+      SELECT ts.sessionId FROM task_sessions ts
+      WHERE ts.taskId = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM task_sessions other
+          WHERE other.sessionId = ts.sessionId AND other.taskId != ts.taskId
+        )
+      ORDER BY ts.linkedAt ASC
+    `).all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  /**
+   * Delete the task's owned rows. Must run inside an open transaction.
    *
    * `schedules.taskId` has no foreign key, so schedule rows do not cascade with
    * the task. Neither do `entity_tags` rows. Both are deleted here — rather than
@@ -413,20 +463,37 @@ export function createTaskStore(
    * commit or roll back together; SQLite has no nested transactions, so the
    * cascade cannot be split across stores that each own a transaction.
    */
+  function cascadeWithinTransaction(id: string): string[] {
+    const deletedScheduleIds = (db
+      .prepare("SELECT id FROM schedules WHERE taskId = ?")
+      .all(id) as Array<{ id: string }>).map((row) => row.id);
+    for (const scheduleId of deletedScheduleIds) {
+      db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(scheduleId);
+      db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(scheduleId);
+      // Sessions that survive the task keep `scheduleName` as provenance, but a
+      // `scheduleId` pointing at a deleted schedule is a dangling reference.
+      db.prepare(`
+        UPDATE bridge_session_state
+        SET scheduleId = NULL, updatedAt = ?
+        WHERE scheduleId = ?
+      `).run(new Date().toISOString(), scheduleId);
+    }
+    db.prepare("DELETE FROM schedules WHERE taskId = ?").run(id);
+    db.prepare("DELETE FROM entity_tags WHERE entityType = 'task' AND entityId = ?").run(id);
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+    return deletedScheduleIds;
+  }
+
+  /**
+   * Delete a task and every child schedule (plus that schedule's run history and
+   * claims) in one transaction, returning the deleted schedule IDs so the caller
+   * can unregister their timers.
+   */
   function deleteTaskCascade(id: string): { deletedScheduleIds: string[] } {
     db.exec("BEGIN");
     let deletedScheduleIds: string[];
     try {
-      deletedScheduleIds = (db
-        .prepare("SELECT id FROM schedules WHERE taskId = ?")
-        .all(id) as Array<{ id: string }>).map((row) => row.id);
-      for (const scheduleId of deletedScheduleIds) {
-        db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(scheduleId);
-        db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(scheduleId);
-      }
-      db.prepare("DELETE FROM schedules WHERE taskId = ?").run(id);
-      db.prepare("DELETE FROM entity_tags WHERE entityType = 'task' AND entityId = ?").run(id);
-      db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+      deletedScheduleIds = cascadeWithinTransaction(id);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -434,6 +501,46 @@ export function createTaskStore(
     }
     emitChange(id);
     return { deletedScheduleIds };
+  }
+
+  /**
+   * Archive every session linked to a task and delete the task in one
+   * transaction.
+   *
+   * Archiving is pure SQLite, so it can commit atomically with the cascade —
+   * the task can never be left alive with its sessions unexpectedly archived,
+   * and sessions can never be archived for a task that survived. Callers still
+   * own the non-transactional side effects (timer unregistration, events).
+   */
+  function archiveSessionsAndDeleteTask(id: string): {
+    deletedScheduleIds: string[];
+    archivedSessionIds: string[];
+  } {
+    db.exec("BEGIN");
+    let deletedScheduleIds: string[];
+    let archivedSessionIds: string[];
+    try {
+      archivedSessionIds = (db
+        .prepare("SELECT sessionId FROM task_sessions WHERE taskId = ? ORDER BY linkedAt ASC")
+        .all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
+      const now = new Date().toISOString();
+      const archive = db.prepare(`
+        INSERT INTO bridge_session_state (sessionId, archived, archivedAt, createdAt, updatedAt)
+        VALUES (?, 1, ?, ?, ?)
+        ON CONFLICT(sessionId) DO UPDATE SET
+          archived = 1,
+          archivedAt = excluded.archivedAt,
+          updatedAt = excluded.updatedAt
+      `);
+      for (const sessionId of archivedSessionIds) archive.run(sessionId, now, now, now);
+      deletedScheduleIds = cascadeWithinTransaction(id);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    emitChange(id);
+    return { deletedScheduleIds, archivedSessionIds };
   }
 
   /**
@@ -562,6 +669,8 @@ export function createTaskStore(
 
   return {
     listTasks, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
+    archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
+    getTaskSessionCounts,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
     findTaskBySessionId, linkPR, unlinkPR,
   };

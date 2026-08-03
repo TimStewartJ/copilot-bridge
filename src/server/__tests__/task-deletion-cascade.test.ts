@@ -116,26 +116,28 @@ describe("task deletion removes child schedules", () => {
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
   });
 
-  it("clears entity tags through the shared deletion path", () => {
+  it("clears entity tags through the shared deletion path", async () => {
     const task = ctx.taskStore.createTask("Tagged task");
     const tag = ctx.tagStore!.createTag("release");
     ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
     expect(ctx.tagStore!.getEntityTags("task", task.id)).toHaveLength(1);
 
-    deleteTaskWithOwnedState(ctx, task.id);
+    await deleteTaskWithOwnedState(ctx, task.id, { sessionDisposition: "archive" });
 
     expect(ctx.tagStore!.getEntityTags("task", task.id)).toHaveLength(0);
     expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
   });
 
-  it("restores entity tags when the cascade rolls back", () => {
+  it("restores entity tags when the cascade rolls back", async () => {
     const task = ctx.taskStore.createTask("Tagged rollback");
     const tag = ctx.tagStore!.createTag("release");
     ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
 
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec("ALTER TABLE tasks RENAME TO tasks_hidden");
-    expect(() => deleteTaskWithOwnedState(ctx, task.id)).toThrow();
+    await expect(
+      deleteTaskWithOwnedState(ctx, task.id, { sessionDisposition: "archive" }),
+    ).rejects.toThrow();
     db.exec("ALTER TABLE tasks_hidden RENAME TO tasks");
     db.exec("PRAGMA foreign_keys = ON");
 
@@ -143,6 +145,250 @@ describe("task deletion removes child schedules", () => {
     // its tags instead of silently losing them.
     expect(ctx.tagStore!.getEntityTags("task", task.id)).toHaveLength(1);
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+  });
+});
+
+describe("task deletion session disposition", () => {
+  function isArchived(sessionId: string): boolean {
+    const row = db
+      .prepare("SELECT archived FROM bridge_session_state WHERE sessionId = ?")
+      .get(sessionId) as { archived?: number } | undefined;
+    return row?.archived === 1;
+  }
+
+  it("requires an explicit disposition when the task has linked sessions", async () => {
+    const task = ctx.taskStore.createTask("Has sessions");
+    ctx.taskStore.linkSession(task.id, "session-a");
+    ctx.taskStore.linkSession(task.id, "session-b");
+
+    const res = await request(app).delete(`/api/tasks/${task.id}`).expect(409);
+
+    expect(res.body.error).toBe("confirmation_required");
+    expect(res.body.preview.sessionCount).toBe(2);
+    // The whole point: nothing is destroyed and nothing is silently detached.
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+  });
+
+  it("still deletes a task with no linked sessions without a disposition", async () => {
+    const task = ctx.taskStore.createTask("No sessions");
+
+    await request(app).delete(`/api/tasks/${task.id}`).expect(200);
+
+    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
+  });
+
+  it("archive disposition archives every linked session and deletes the task", async () => {
+    const task = ctx.taskStore.createTask("Archive me");
+    ctx.taskStore.linkSession(task.id, "session-a");
+    ctx.taskStore.linkSession(task.id, "session-b");
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=archive`)
+      .expect(200);
+
+    expect(res.body.archivedSessionIds).toEqual(["session-a", "session-b"]);
+    expect(isArchived("session-a")).toBe(true);
+    expect(isArchived("session-b")).toBe(true);
+    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
+  });
+
+  it("does not leave sessions archived when the task delete rolls back", async () => {
+    const task = ctx.taskStore.createTask("Atomic archive");
+    ctx.taskStore.linkSession(task.id, "session-a");
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec("ALTER TABLE tasks RENAME TO tasks_hidden");
+    await expect(
+      deleteTaskWithOwnedState(ctx, task.id, { sessionDisposition: "archive" }),
+    ).rejects.toThrow();
+    db.exec("ALTER TABLE tasks_hidden RENAME TO tasks");
+    db.exec("PRAGMA foreign_keys = ON");
+
+    // Archiving commits with the cascade, so a surviving task cannot be left
+    // with all of its sessions mysteriously archived.
+    expect(isArchived("session-a")).toBe(false);
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+  });
+
+  it("delete disposition deletes linked sessions and the task", async () => {
+    const task = ctx.taskStore.createTask("Delete me");
+    ctx.taskStore.linkSession(task.id, "session-a");
+    ctx.taskStore.linkSession(task.id, "session-b");
+    const deleted: string[] = [];
+    ctx.sessionManager.deleteSession = (async (id: string) => { deleted.push(id); }) as any;
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
+      .expect(200);
+
+    expect(deleted).toEqual(["session-a", "session-b"]);
+    expect(res.body.deletedSessionIds).toEqual(["session-a", "session-b"]);
+    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
+  });
+
+  it("unlinks sessions another task still owns instead of deleting them", async () => {
+    const task = ctx.taskStore.createTask("Owner");
+    const otherTask = ctx.taskStore.createTask("Co-owner");
+    ctx.taskStore.linkSession(task.id, "exclusive-session");
+    ctx.taskStore.linkSession(task.id, "shared-session");
+    ctx.taskStore.linkSession(otherTask.id, "shared-session");
+    const deleted: string[] = [];
+    ctx.sessionManager.deleteSession = (async (id: string) => { deleted.push(id); }) as any;
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
+      .expect(200);
+
+    // Deleting a session unlinks it from every task, so a shared session must
+    // never be destroyed on behalf of just one of its owners.
+    expect(deleted).toEqual(["exclusive-session"]);
+    expect(res.body.unlinkedSharedSessionIds).toEqual(["shared-session"]);
+    expect(ctx.taskStore.getTask(otherTask.id)!.sessionIds).toEqual(["shared-session"]);
+  });
+
+  it("refuses to delete while a linked session is busy, keeping the task", async () => {
+    const task = ctx.taskStore.createTask("Busy task");
+    ctx.taskStore.linkSession(task.id, "busy-session");
+    ctx.sessionManager.isSessionBusy = ((id: string) => id === "busy-session") as any;
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
+      .expect(409);
+
+    expect(res.body.error).toBe("sessions_busy");
+    expect(res.body.preview.busySessionIds).toEqual(["busy-session"]);
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+  });
+
+  it("keeps the task when a session delete fails so the operation can be retried", async () => {
+    const task = ctx.taskStore.createTask("Partial failure");
+    ctx.taskStore.linkSession(task.id, "ok-session");
+    ctx.taskStore.linkSession(task.id, "doomed-session");
+    ctx.sessionManager.deleteSession = (async (id: string) => {
+      if (id === "doomed-session") throw new Error("backend exploded");
+    }) as any;
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
+      .expect(409);
+
+    expect(res.body.error).toBe("session_disposition_failed");
+    expect(res.body.sessionErrors).toMatchObject({ "doomed-session": "backend exploded" });
+    // Sessions are disposed before the task, so the survivor is the task itself
+    // rather than a set of orphaned sessions.
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+    expect(ctx.taskStore.getTask(task.id)!.sessionIds).toEqual(["doomed-session"]);
+  });
+
+  it("cancels deferred work for sessions archived in bulk", async () => {
+    const task = ctx.taskStore.createTask("Deferred host");
+    ctx.taskStore.linkSession(task.id, "session-a");
+    ctx.taskStore.linkSession(task.id, "session-b");
+    const cancelledPrompts: string[] = [];
+    const cancelledLoops: string[] = [];
+    ctx.deferredPromptStore!.cancelForSession = ((id: string) => {
+      cancelledPrompts.push(id);
+      return 1;
+    }) as any;
+    ctx.deferLoopStore!.cancelForSession = ((id: string) => {
+      cancelledLoops.push(id);
+      return 1;
+    }) as any;
+
+    await request(app).delete(`/api/tasks/${task.id}?sessionDisposition=archive`).expect(200);
+
+    // Per-session `session:archived` events are what normally cancel deferred
+    // work; the bulk path skips them, so it must cancel explicitly or an
+    // archived session could still fire a deferred prompt.
+    expect(cancelledPrompts).toEqual(["session-a", "session-b"]);
+    expect(cancelledLoops).toEqual(["session-a", "session-b"]);
+  });
+
+  it("keeps the task when a session is linked while the delete runs", async () => {
+    const task = ctx.taskStore.createTask("Racing task");
+    ctx.taskStore.linkSession(task.id, "session-a");
+    ctx.sessionManager.deleteSession = (async () => {
+      // Simulate an agent linking a new session mid-delete.
+      ctx.taskStore.linkSession(task.id, "late-session");
+    }) as any;
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
+      .expect(409);
+
+    expect(res.body.error).toBe("session_disposition_failed");
+    expect(res.body.sessionErrors).toHaveProperty("late-session");
+    // The cascade would have dropped the new link silently — precisely the
+    // orphaning this path exists to prevent.
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+    expect(ctx.taskStore.getTask(task.id)!.sessionIds).toContain("late-session");
+  });
+
+  it("rejects a stale preview fingerprint", async () => {
+    const task = ctx.taskStore.createTask("Drifting");
+    ctx.taskStore.linkSession(task.id, "session-a");
+    const preview = await request(app).get(`/api/tasks/${task.id}/deletion-preview`).expect(200);
+
+    ctx.taskStore.linkSession(task.id, "session-b");
+
+    const res = await request(app)
+      .delete(`/api/tasks/${task.id}?sessionDisposition=delete&fingerprint=${preview.body.preview.fingerprint}`)
+      .expect(409);
+
+    expect(res.body.error).toBe("preview_stale");
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+  });
+
+  it("rejects an unknown disposition", async () => {
+    const task = ctx.taskStore.createTask("Bad param");
+    ctx.taskStore.linkSession(task.id, "session-a");
+
+    await request(app).delete(`/api/tasks/${task.id}?sessionDisposition=nuke`).expect(400);
+
+    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+  });
+
+  it("reports counts, shared sessions and busy sessions in the preview", async () => {
+    const task = ctx.taskStore.createTask("Preview host");
+    const otherTask = ctx.taskStore.createTask("Co-owner");
+    ctx.taskStore.linkSession(task.id, "plain-session");
+    ctx.taskStore.linkSession(task.id, "archived-session");
+    ctx.taskStore.linkSession(task.id, "shared-session");
+    ctx.taskStore.linkSession(otherTask.id, "shared-session");
+    ctx.sessionMetaStore.setArchived("archived-session", true);
+    ctx.sessionManager.isSessionBusy = ((id: string) => id === "plain-session") as any;
+
+    const res = await request(app).get(`/api/tasks/${task.id}/deletion-preview`).expect(200);
+
+    expect(res.body.preview).toMatchObject({
+      sessionCount: 3,
+      archivedCount: 1,
+      unarchivedCount: 2,
+      sharedSessionCount: 1,
+      busySessionIds: ["plain-session"],
+    });
+  });
+
+  it("clears a dangling scheduleId on sessions that survive the task", async () => {
+    const task = ctx.taskStore.createTask("Scheduled");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Nightly",
+      prompt: "run",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    ctx.taskStore.linkSession(task.id, "run-session");
+    ctx.sessionMetaStore.setScheduleMeta("run-session", schedule.id, "Nightly");
+
+    await request(app).delete(`/api/tasks/${task.id}?sessionDisposition=archive`).expect(200);
+
+    const row = db
+      .prepare("SELECT scheduleId, scheduleName FROM bridge_session_state WHERE sessionId = ?")
+      .get("run-session") as { scheduleId: string | null; scheduleName: string | null };
+    // The name is provenance worth keeping; the ID now points at nothing.
+    expect(row.scheduleId).toBeNull();
+    expect(row.scheduleName).toBe("Nightly");
   });
 });
 
