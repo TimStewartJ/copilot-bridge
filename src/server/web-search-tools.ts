@@ -243,10 +243,10 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineBridgeTool("browser_web_search", {
       description:
-        "Search the web using a real browser. Returns structured results from Google with " +
-        "automatic Bing and DuckDuckGo fallbacks. Use this as a browser-backed fallback when the GitHub " +
-        "MCP web_search tool is unavailable, challenged, or not suitable for search-engine " +
-        "verification. After identifying promising results, " +
+        "Search the web using a real browser. Returns ranked search-engine results from Google with " +
+        "automatic Bing and DuckDuckGo fallbacks. Use this when web_search is unavailable or failing, " +
+        "or when direct browser-backed search-engine verification is specifically needed. " +
+        "After identifying promising results, " +
         "follow up with browser_fetch when you need rendered-page confirmation or the canonical " +
         "source. Requires agent-browser to be installed.",
       parameters: {

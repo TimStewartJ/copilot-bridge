@@ -53,8 +53,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
         "Fetch a web page using a real browser and return its content as an accessibility snapshot. " +
         "Use this to confirm rendered or canonical pages after web_search or browser_web_search, or instead of web_fetch " +
         "when a site requires JavaScript rendering, blocks bots, returns empty/broken content via " +
-        "web_fetch, or is a single-page app (SPA). For broader source discovery or parallel " +
-        "research fan-out, use web_search first and browser_web_search as a browser-backed fallback. For multi-step interactive flows (login, form " +
+        "web_fetch, or is a single-page app (SPA). For multi-step interactive flows (login, form " +
         "filling, pagination), use the browser skill instead.",
       parameters: {
         type: "object" as const,
