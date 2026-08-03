@@ -2,6 +2,7 @@ import type { ModelInfo } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
+import { LaunchModelSelect, LaunchOptionRow } from "./shared/LaunchOptionControls";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
 
@@ -22,50 +23,10 @@ interface NewSessionLaunchPanelProps {
   onModeChange: (mode: SendMode) => void;
 }
 
-function LaunchButtonRow<T extends string>({
-  label,
-  options,
-  selectedValue,
-  onChange,
-}: {
-  label: string;
-  options: readonly LaunchOption<T>[];
-  selectedValue?: T;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div
-      className="grid w-full gap-2"
-      role="group"
-      aria-label={`${label} for new session`}
-      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
-    >
-        {options.map((option) => {
-          const selected = option.value === null
-            ? selectedValue === undefined
-            : selectedValue === option.value;
-          return (
-            <button
-              key={option.value ?? "default"}
-              type="button"
-              aria-pressed={selected}
-              disabled={option.value === null}
-              onClick={() => {
-                if (option.value !== null) onChange(option.value);
-              }}
-              className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-                selected
-                  ? "border-accent bg-accent/10 text-accent"
-                  : "border-border bg-bg-surface text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-              } disabled:cursor-default disabled:opacity-100`}
-            >
-              {option.label}
-            </button>
-          );
-        })}
-    </div>
-  );
-}
+const MODE_OPTIONS: LaunchOption<SendMode>[] = [
+  { value: "interactive", label: "Interactive" },
+  { value: "autopilot", label: "Autopilot" },
+];
 
 export default function NewSessionLaunchPanel({
   models,
@@ -106,21 +67,15 @@ export default function NewSessionLaunchPanel({
             <label htmlFor="new-session-model" className="sr-only">
               Model
             </label>
-            <select
+            <LaunchModelSelect
               id="new-session-model"
-              aria-label="Model for new session"
+              ariaLabel="Model for new session"
+              models={availableModels}
               value={selectedModelId}
-              onChange={(event) => onModelChange(event.target.value)}
+              placeholderLabel={modelsLoading ? "Loading models..." : defaultLabel}
               disabled={modelsLoading || Boolean(modelsError)}
-              className="w-full appearance-none rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <option value="">{modelsLoading ? "Loading models..." : defaultLabel}</option>
-              {availableModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
+              onChange={onModelChange}
+            />
             {modelsError && (
               <p className="text-xs text-error" role="alert">
                 Models could not be loaded. The default model will be used.
@@ -128,46 +83,27 @@ export default function NewSessionLaunchPanel({
             )}
           </div>
 
-          <LaunchButtonRow
-            label="Effort"
+          <LaunchOptionRow
+            ariaLabel="Effort for new session"
             options={reasoningEffortOptions}
             selectedValue={selectedReasoningEffort}
             onChange={onReasoningEffortChange}
           />
 
-          <LaunchButtonRow
-            label="Context"
+          <LaunchOptionRow
+            ariaLabel="Context for new session"
             options={contextOptions}
             selectedValue={selectedContextTier}
             onChange={onContextTierChange}
           />
 
           <div className="space-y-1.5">
-            <div
-              className="grid grid-cols-2 gap-2"
-              role="group"
-              aria-label="Run mode for new session"
-            >
-              {(["interactive", "autopilot"] as const).map((candidate) => {
-                const selected = mode === candidate;
-                const label = candidate === "interactive" ? "Interactive" : "Autopilot";
-                return (
-                  <button
-                    key={candidate}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => onModeChange(candidate)}
-                    className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-                      selected
-                        ? "border-accent bg-accent/10 text-accent"
-                        : "border-border bg-bg-surface text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
+            <LaunchOptionRow
+              ariaLabel="Run mode for new session"
+              options={MODE_OPTIONS}
+              selectedValue={mode}
+              onChange={onModeChange}
+            />
           </div>
         </div>
       </div>

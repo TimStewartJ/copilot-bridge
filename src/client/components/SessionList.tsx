@@ -22,6 +22,11 @@ import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
+import { LaunchModelSelect, LaunchOptionRow } from "./shared/LaunchOptionControls";
+import {
+  buildContextTierOptions,
+  buildReasoningEffortOptions,
+} from "../lib/new-session-launch";
 import {
   getContextTierLabel,
   modelSupportsLongContext,
@@ -86,12 +91,6 @@ function getAvailableModels(models: readonly ModelInfo[] | null): ModelInfo[] {
   return [...(models ?? [])]
     .filter((model) => !model.policy || model.policy.state !== "disabled")
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function formatModelMultiplier(multiplier: unknown, suffix: "x" | "×"): string {
-  return typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier !== 1
-    ? ` (${multiplier}${suffix})`
-    : "";
 }
 
 function getPreferredReasoningEffort(model?: ModelInfo): ReasoningEffort | undefined {
@@ -369,15 +368,28 @@ export default function SessionList({
     && !modelDialogLookup.error
     && !!modelDialogLookup.data;
   const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
-  const reasoningOptions = (supportedReasoningEfforts ?? []).map((value) => ({
-    value,
-    label: formatReasoningEffortLabel(value) ?? value,
-  }));
   const canKeepCurrentReasoningEffort = canKeepCurrentReasoningEffortForModel({
     supportedReasoningEfforts,
     currentReasoningEffort,
     currentEffortLookupReady,
   });
+  // A model with no advertised efforts keeps whatever the session already has
+  // (the save omits the field), so name that effort instead of "Default".
+  const keepCurrentEffortLabel = supportedReasoningEfforts === undefined
+    ? formatReasoningEffortLabel(currentReasoningEffort)
+    : undefined;
+  const dialogReasoningOptions = buildReasoningEffortOptions(supportedReasoningEfforts)
+    .map((option) => (option.value === null && keepCurrentEffortLabel
+      ? { ...option, label: keepCurrentEffortLabel }
+      : option));
+  const dialogSelectedReasoningEffort = reasoningDraft
+    || (currentReasoningEffort && supportedReasoningEfforts?.includes(currentReasoningEffort)
+      ? currentReasoningEffort
+      : undefined);
+  const dialogContextOptions = buildContextTierOptions(selectedDialogModel);
+  const dialogSelectedContextTier = selectedDialogModelSupportsLongContext
+    ? (contextTierDraft || "default")
+    : undefined;
   const reasoningDraftCanBeSubmitted =
     !!reasoningDraft
     && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
@@ -1026,11 +1038,11 @@ export default function SessionList({
             onClick={(event) => event.stopPropagation()}
           >
             <div>
-              <div className="text-sm font-semibold text-text-primary">Change Session Model</div>
-              <div className="text-xs text-text-muted mt-1">
+              <div className="text-base font-semibold text-text-primary">Change session model</div>
+              <p className="mt-1 text-sm text-text-muted">
                 Changes apply only to this session.
                 {modelDialogSession?.summary ? ` ${modelDialogSession.summary}` : ""}
-              </div>
+              </p>
             </div>
 
             <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs">
@@ -1042,119 +1054,78 @@ export default function SessionList({
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-xs font-medium text-text-secondary" htmlFor="session-model-select">
-                Model
-              </label>
-              {modelOptionsError ? (
-                <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-                  <div>Failed to load models: {modelOptionsError}</div>
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="sr-only" htmlFor="session-model-select">
+                  Model
+                </label>
+                {modelOptionsError ? (
+                  <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                    <div>Failed to load models: {modelOptionsError}</div>
+                    <button
+                      type="button"
+                      className="mt-2 text-xs text-error underline"
+                      onClick={() => {
+                        void loadModelOptions();
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : (
+                  <LaunchModelSelect
+                    id="session-model-select"
+                    ariaLabel="Model for this session"
+                    models={availableModels}
+                    value={modelDraft}
+                    placeholderLabel={modelOptionsLoading ? "Loading models..." : "Select a model"}
+                    placeholderDisabled
+                    unlistedModelId={showDraftModelOption ? modelDraft : undefined}
+                    disabled={modelOptionsLoading || modelSwitchSaving}
+                    onChange={(nextModel) => {
+                      setModelDraft(nextModel);
+                      setReasoningDraft("");
+                      const modelInfo = modelOptions?.find((model) => model.id === nextModel);
+                      setContextTierDraft(modelSupportsLongContext(modelInfo) ? "default" : "");
+                    }}
+                  />
+                )}
+                {!modelOptionsError && (
                   <button
                     type="button"
-                    className="mt-2 text-xs text-error underline"
-                    onClick={() => {
-                      void loadModelOptions();
-                    }}
+                    onClick={() => { void loadModelOptions(true); }}
+                    disabled={modelOptionsLoading || modelSwitchSaving}
+                    className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary disabled:opacity-50"
                   >
-                    Retry
+                    <RotateCw className={`h-3.5 w-3.5 ${modelOptionsLoading ? "animate-spin" : ""}`} />
+                    Refresh model list
                   </button>
-                </div>
-              ) : (
-                <select
-                  id="session-model-select"
-                  value={modelDraft}
-                  onChange={(event) => {
-                    const nextModel = event.target.value;
-                    setModelDraft(nextModel);
-                    const modelInfo = modelOptions?.find((model) => model.id === nextModel);
-                    setContextTierDraft(modelSupportsLongContext(modelInfo) ? "default" : "");
-                  }}
-                  disabled={modelOptionsLoading}
-                  className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none disabled:opacity-50"
-                >
-                  <option value="" disabled>
-                    {modelOptionsLoading ? "Loading models..." : "Select a model"}
-                  </option>
-                  {showDraftModelOption && (
-                    <option value={modelDraft}>{modelDraft}</option>
-                  )}
-                  {availableModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}{formatModelMultiplier(model.billing?.multiplier, "x")}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {!modelOptionsError && (
-                <button
-                  type="button"
-                  onClick={() => { void loadModelOptions(true); }}
-                  disabled={modelOptionsLoading || modelSwitchSaving}
-                  className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary disabled:opacity-50"
-                >
-                  <RotateCw className={`h-3.5 w-3.5 ${modelOptionsLoading ? "animate-spin" : ""}`} />
-                  Refresh model list
-                </button>
-              )}
-              {modelDraft && (
-                <div className="text-[11px] text-text-faint truncate">
-                  Model ID: <code className="text-text-muted">{modelDraft}</code>
-                </div>
-              )}
-            </div>
-
-            {selectedDialogModelSupportsLongContext && (
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-text-secondary" htmlFor="session-context-tier-select">
-                  Context tier
-                </label>
-                <select
-                  id="session-context-tier-select"
-                  value={contextTierDraft || "default"}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    setContextTierDraft(next === "long_context" ? "long_context" : "default");
-                  }}
-                  className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none"
-                >
-                  <option value="default">
-                    {getContextTierLabel(selectedDialogModel, "default") ?? "Standard context"}
-                  </option>
-                  <option value="long_context">
-                    {getContextTierLabel(selectedDialogModel, "long_context") ?? "Long context"} · higher price
-                  </option>
-                </select>
-                <div className="text-[11px] text-text-faint">
-                  Current: {getContextTierLabel(selectedDialogModel, modelDialogLookup?.data?.contextTier) ?? "standard context"}
-                </div>
+                )}
               </div>
-            )}
 
-            <div className="space-y-2">
-              <label className="block text-xs font-medium text-text-secondary" htmlFor="session-reasoning-select">
-                Reasoning effort
-              </label>
-              <select
-                id="session-reasoning-select"
-                value={reasoningDraft}
-                onChange={(event) => {
-                  setReasoningDraft(event.target.value);
-                }}
-                className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none"
-              >
-                <option value="" disabled={!canKeepCurrentReasoningEffort}>
-                  {canKeepCurrentReasoningEffort ? "Keep current" : "Select a supported effort"}
-                </option>
-                {reasoningOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <div className="text-[11px] text-text-faint">
-                Current: {formatReasoningEffortLabel(modelDialogLookup?.data?.reasoningEffort) ?? "unknown"}
-                {!canKeepCurrentReasoningEffort && " (not supported by selected model)"}
+              <div className="space-y-1.5">
+                <LaunchOptionRow
+                  ariaLabel="Effort for this session"
+                  options={dialogReasoningOptions}
+                  selectedValue={dialogSelectedReasoningEffort}
+                  onChange={setReasoningDraft}
+                  disabled={modelSwitchSaving}
+                />
+                {!canKeepCurrentReasoningEffort && currentEffortLookupReady && currentReasoningEffort && (
+                  <div className="text-xs text-text-faint">
+                    Current: {formatReasoningEffortLabel(currentReasoningEffort)}
+                    {" (not supported by selected model)"}
+                  </div>
+                )}
               </div>
+
+              <LaunchOptionRow
+                ariaLabel="Context for this session"
+                options={dialogContextOptions}
+                selectedValue={dialogSelectedContextTier}
+                onChange={setContextTierDraft}
+                disabled={modelSwitchSaving}
+              />
             </div>
 
             {modelSwitchError && (
@@ -1166,7 +1137,7 @@ export default function SessionList({
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                className="px-3 py-1.5 text-xs rounded-md border border-border text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+                className="rounded-md border border-border px-3 py-2 text-sm font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-50"
                 onClick={closeModelDialog}
                 disabled={modelSwitchSaving}
               >
@@ -1174,14 +1145,14 @@ export default function SessionList({
               </button>
               <button
                 type="button"
-                className="px-3 py-1.5 text-xs rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 flex items-center gap-1.5"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
                 onClick={() => {
                   void handleSaveModelSwitch();
                 }}
                 disabled={!canSaveModelSwitch}
                 title={modelDialogSession?.busy ? "This session is busy" : undefined}
               >
-                {modelSwitchSaving && <Loader2 size={12} className="animate-spin" />}
+                {modelSwitchSaving && <Loader2 size={14} className="animate-spin" />}
                 Save
               </button>
             </div>

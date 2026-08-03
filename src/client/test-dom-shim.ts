@@ -423,3 +423,43 @@ export function installDomShim() {
     },
   };
 }
+
+/**
+ * DOM shim variant that teaches the fake `<select>`/`<option>` nodes just enough
+ * about `options`/`value`/`selected` for React DOM's controlled-select handling.
+ */
+export function installSelectAwareDomShim() {
+  const dom = installDomShim();
+  const documentRef = globalThis.document as typeof globalThis.document & {
+    createElement: (tag: string) => any;
+  };
+  const originalCreateElement = documentRef.createElement.bind(documentRef);
+  documentRef.createElement = (tag: string) => {
+    const element = originalCreateElement(tag);
+    const normalizedTag = tag.toUpperCase();
+    if (normalizedTag === "SELECT") {
+      Object.defineProperty(element, "options", {
+        configurable: true,
+        get: () =>
+          Array.from(element.childNodes ?? []).filter((child: any) => child.tagName === "OPTION"),
+      });
+    }
+    if (normalizedTag === "OPTION") {
+      Object.defineProperty(element, "value", {
+        configurable: true,
+        get: () => element.getAttribute("value") ?? element.textContent ?? "",
+        set: (value) => element.setAttribute("value", String(value)),
+      });
+      Object.defineProperty(element, "selected", { configurable: true, writable: true, value: false });
+    }
+    return element;
+  };
+
+  return {
+    container: dom.container,
+    cleanup() {
+      documentRef.createElement = originalCreateElement;
+      dom.cleanup();
+    },
+  };
+}
