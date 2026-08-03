@@ -28,11 +28,16 @@ import {
   getSessionReadThroughActivityTime,
   isSessionActive,
   markSessionReadOnPageHide,
+  getTaskDeletionPreview,
+  ApiError,
   API_BASE,
   type ChecklistItem,
   type EnrichedTaskData,
   type Session,
+  type SessionDisposition,
   type Task,
+  type TaskDeletionErrorBody,
+  type TaskDeletionPreview,
   type TaskGroup,
   type McpServerStatus,
   type CreateSessionOptions,
@@ -68,6 +73,7 @@ import TaskRail from "./components/TaskRail";
 import TaskPanel, { TaskPanelRouteSkeleton } from "./components/TaskPanel";
 import TaskDashboard, { TaskDashboardRouteSkeleton } from "./components/TaskDashboard";
 import TaskList from "./components/TaskList";
+import ConfirmTaskDeleteDialog, { useTaskDeletionProgress } from "./components/ConfirmTaskDeleteDialog";
 import ChatView from "./components/ChatView";
 import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
 import Dashboard from "./components/Dashboard";
@@ -1098,15 +1104,82 @@ export default function App() {
     }
   };
 
+  // Deleting a task used to silently orphan its linked sessions. The dialog
+  // makes the caller choose, and the server refuses a disposition-less delete
+  // whenever sessions are linked, so no entry point can skip the decision.
+  const [pendingTaskDeletion, setPendingTaskDeletion] = useState<{
+    task: Task;
+    preview?: TaskDeletionPreview;
+    previewError?: string;
+    busy?: SessionDisposition;
+    actionError?: string;
+    /** Keeps polling after a lost response, while the server may still be working. */
+    monitoring?: boolean;
+  } | null>(null);
+
+  const deletionProgress = useTaskDeletionProgress(
+    pendingTaskDeletion?.task.id,
+    pendingTaskDeletion?.busy === "delete" || pendingTaskDeletion?.monitoring === true,
+    getTaskDeletionPreview,
+  );
+
+  const finishTaskDeletion = useCallback(async (taskId: string) => {
+    setPendingTaskDeletion(null);
+    clearLastActiveTask(taskId);
+    setSelectedTask(null);
+    navigate("/");
+    await Promise.all([invalidateTasks(), invalidateAllSessionQueries()]);
+  }, [navigate, invalidateTasks, invalidateAllSessionQueries]);
+
+  // A delete that outlived its HTTP response still finishes server-side; the
+  // poll noticing the task is gone stands in for the reply that never arrived.
+  useEffect(() => {
+    const taskId = pendingTaskDeletion?.task.id;
+    if (!taskId || !deletionProgress.taskGone) return;
+    void finishTaskDeletion(taskId);
+  }, [deletionProgress.taskGone, pendingTaskDeletion?.task.id, finishTaskDeletion]);
+
   const handleDeleteTask = async (taskId: string) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    setPendingTaskDeletion({ task });
     try {
-      await deleteTask(taskId);
-      clearLastActiveTask(taskId);
-      setSelectedTask(null);
-      navigate("/");
-      await invalidateTasks();
+      const preview = await getTaskDeletionPreview(taskId);
+      setPendingTaskDeletion((prev) => (prev?.task.id === taskId ? { ...prev, preview } : prev));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPendingTaskDeletion((prev) =>
+        prev?.task.id === taskId ? { ...prev, previewError: message } : prev);
+    }
+  };
+
+  const handleConfirmTaskDeletion = async (sessionDisposition: SessionDisposition) => {
+    const pending = pendingTaskDeletion;
+    if (!pending) return;
+    const taskId = pending.task.id;
+    setPendingTaskDeletion({ ...pending, busy: sessionDisposition, actionError: undefined });
+    try {
+      await deleteTask(taskId, { sessionDisposition, fingerprint: pending.preview?.fingerprint });
+      await finishTaskDeletion(taskId);
     } catch (err) {
       console.error("Failed to delete task:", err);
+      const apiError = err instanceof ApiError ? err : undefined;
+      const details = apiError?.details as TaskDeletionErrorBody | undefined;
+      const message = details?.message ?? (err instanceof Error ? err.message : String(err));
+      // A transport failure (or a run already in flight) does not mean the
+      // server stopped working, so keep polling instead of going idle. The task
+      // always survives a failed disposition, so retrying from here is safe.
+      const stillRunning = apiError === undefined || details?.error === "deletion_in_progress";
+      setPendingTaskDeletion((prev) => prev && prev.task.id === taskId
+        ? {
+          ...prev,
+          busy: undefined,
+          monitoring: stillRunning,
+          actionError: message,
+          preview: details?.preview ?? prev.preview,
+        }
+        : prev);
+      await Promise.all([invalidateTasks(), invalidateAllSessionQueries()]);
     }
   };
 
@@ -1933,6 +2006,19 @@ export default function App() {
         </main>
       </div>
       </div>{/* ← close row wrapper */}
+
+      {pendingTaskDeletion && (
+        <ConfirmTaskDeleteDialog
+          task={pendingTaskDeletion.task}
+          preview={pendingTaskDeletion.preview}
+          previewError={pendingTaskDeletion.previewError}
+          progressRemaining={deletionProgress.remaining}
+          busy={pendingTaskDeletion.busy}
+          actionError={pendingTaskDeletion.actionError}
+          onConfirm={handleConfirmTaskDeletion}
+          onClose={() => setPendingTaskDeletion(null)}
+        />
+      )}
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
       {isMobile && mobileRouteMeta.showBottomNav && (

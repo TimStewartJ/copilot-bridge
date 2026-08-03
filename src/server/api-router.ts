@@ -2,7 +2,7 @@
 
 import express from "express";
 import multer from "multer";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname } from "node:path";
@@ -1309,7 +1309,18 @@ export function createApiRouter(
     ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
   }
 
-  async function deleteSessionWithOwnedState(sessionId: string, cacheInvalidationReason: string): Promise<void> {
+  /**
+   * Tasks with a disposition run in flight. A large delete can outlive its HTTP
+   * response (tunnels cap requests well below the time thousands of session
+   * deletes take), so a retry can arrive while the first run is still going.
+   */
+  const taskDeletionsInFlight = new Set<string>();
+
+  async function deleteSessionWithOwnedState(
+    sessionId: string,
+    cacheInvalidationReason: string,
+    opts: { deferInvalidation?: boolean } = {},
+  ): Promise<void> {
     let backendDeleteError: SessionBackendDeleteError | undefined;
     try {
       await ctx.sessionManager.deleteSession(sessionId);
@@ -1321,7 +1332,9 @@ export function createApiRouter(
       backendDeleteError = err;
     }
 
-    invalidateEnrichedCache(cacheInvalidationReason);
+    // Bulk callers invalidate once at the end; a task can link thousands of
+    // sessions and per-session invalidation would thrash the enriched cache.
+    if (!opts.deferInvalidation) invalidateEnrichedCache(cacheInvalidationReason);
     ctx.sessionMetaStore.deleteMeta(sessionId);
     ctx.readStateStore.markUnread(sessionId);
     ctx.sessionContextStore?.deleteSessionContext(sessionId);
@@ -1341,6 +1354,29 @@ export function createApiRouter(
   function setSessionArchived(sessionId: string, archived: boolean) {
     ctx.sessionMetaStore.setArchived(sessionId, archived);
     ctx.globalBus.emit({ type: "session:archived", sessionId, archived });
+  }
+
+  /**
+   * Counts and busy state backing the task delete-confirmation dialog. Also
+   * polled during a long delete so the dialog can show progress: `sessionCount`
+   * falls as sessions are removed, and the endpoint 404s once the task is gone.
+   */
+  function buildTaskDeletionPreview(taskId: string) {
+    const counts = ctx.taskStore.getTaskSessionCounts(taskId);
+    const sessionIds = ctx.taskStore.listSessionIdsForTask(taskId);
+    // Only genuinely in-flight sessions block deletion. Active deferred work is
+    // NOT a blocker here: unlike automatic retention archiving, an explicit
+    // delete already cancels and removes a session's deferred prompts and loops.
+    const busySessionIds = sessionIds.filter((id) => ctx.sessionManager.isSessionBusy(id));
+    return {
+      sessionCount: counts.total,
+      archivedCount: counts.archived,
+      unarchivedCount: counts.total - counts.archived,
+      sharedSessionCount: counts.shared,
+      busySessionIds,
+      scheduleCount: ctx.scheduleStore?.listSchedules(taskId).length ?? 0,
+      fingerprint: createHash("sha1").update([...sessionIds].sort().join("\n")).digest("hex"),
+    };
   }
 
   function materializeSessionList(
@@ -3544,9 +3580,92 @@ export function createApiRouter(
     }
   });
 
-  router.delete("/tasks/:id", (req, res) => {
-    deleteTaskWithOwnedState(ctx, req.params.id);
-    res.json({ ok: true });
+  router.get("/tasks/:id/deletion-preview", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    res.json({ preview: buildTaskDeletionPreview(req.params.id) });
+  });
+
+  router.delete("/tasks/:id", async (req, res) => {
+    const taskId = req.params.id;
+    const task = ctx.taskStore.getTask(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const rawDisposition = req.query.sessionDisposition;
+    const disposition = typeof rawDisposition === "string" ? rawDisposition : undefined;
+    const preview = buildTaskDeletionPreview(taskId);
+
+    if (disposition === undefined) {
+      // Deleting a task used to silently detach its sessions. Rather than pick a
+      // default that could archive or destroy thousands of sessions on behalf of
+      // a caller that never asked, make the choice explicit — but keep the
+      // parameterless call working when there is nothing to decide.
+      if (preview.sessionCount === 0) {
+        const { deletedScheduleIds } = ctx.taskStore.deleteTaskCascade(taskId);
+        for (const scheduleId of deletedScheduleIds) {
+          ctx.scheduler?.unregisterSchedule(scheduleId);
+          ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId });
+        }
+        ctx.globalBus.emit({ type: "feed:changed" });
+        return res.json({ ok: true, taskDeleted: true, preview });
+      }
+      return res.status(409).json({
+        error: "confirmation_required",
+        message: `Task has ${preview.sessionCount} linked session(s). `
+          + "Pass sessionDisposition=archive or sessionDisposition=delete.",
+        preview,
+      });
+    }
+
+    if (disposition !== "archive" && disposition !== "delete") {
+      return res.status(400).json({ error: "sessionDisposition must be 'archive' or 'delete'" });
+    }
+
+    const fingerprint = typeof req.query.fingerprint === "string" ? req.query.fingerprint : undefined;
+    if (fingerprint !== undefined && fingerprint !== preview.fingerprint) {
+      return res.status(409).json({
+        error: "preview_stale",
+        message: "The task's linked sessions changed since the preview was taken.",
+        preview,
+      });
+    }
+
+    if (disposition === "delete" && preview.busySessionIds.length > 0) {
+      return res.status(409).json({
+        error: "sessions_busy",
+        message: `${preview.busySessionIds.length} linked session(s) are busy and cannot be deleted.`,
+        preview,
+      });
+    }
+
+    if (taskDeletionsInFlight.has(taskId)) {
+      return res.status(409).json({ error: "deletion_in_progress", preview });
+    }
+    taskDeletionsInFlight.add(taskId);
+    try {
+      const result = await deleteTaskWithOwnedState(ctx, taskId, {
+        sessionDisposition: disposition,
+        deleteSession: (sessionId) =>
+          deleteSessionWithOwnedState(sessionId, "route:task:delete", { deferInvalidation: true }),
+        onSessionsChanged: (reason) => invalidateEnrichedCache(reason, { rawDisk: true }),
+      });
+      if (!result.taskDeleted) {
+        // Sessions are disposed before the task, so a partial failure leaves the
+        // task intact and the whole operation safely retryable.
+        return res.status(409).json({
+          error: "session_disposition_failed",
+          message: "Some sessions could not be deleted; the task was kept so you can retry.",
+          ...result,
+          preview: buildTaskDeletionPreview(taskId),
+        });
+      }
+      emitReadStateChanged();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      taskDeletionsInFlight.delete(taskId);
+    }
   });
 
   router.post("/tasks/:id/link", (req, res) => {
