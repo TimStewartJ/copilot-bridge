@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Session } from "../api";
+import type { ModelInfo, Session, SessionModelState } from "../api";
 import {
   advanceTimersByTimeAct,
   createReactDomHarness,
@@ -8,11 +8,24 @@ import {
   getReactProps,
   waitUntilAct,
 } from "../test-react-harness";
+import { installSelectAwareDomShim } from "../test-dom-shim";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
 import {
   canKeepCurrentReasoningEffortForModel,
   formatSessionModelLabel,
 } from "./SessionList";
+
+const apiMocks = vi.hoisted(() => ({
+  fetchModels: vi.fn(),
+  refreshModels: vi.fn(),
+  fetchSessionModelState: vi.fn(),
+  patchSessionModel: vi.fn(),
+}));
+
+vi.mock("../api", async () => {
+  const actual = await vi.importActual<typeof import("../api")>("../api");
+  return { ...actual, ...apiMocks };
+});
 
 async function renderSessionList(sessions: Session[]) {
   const harness = await createReactDomHarness();
@@ -45,10 +58,15 @@ function minutesFromNow(minutes: number): string {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-04-27T12:00:00.000Z"));
+  apiMocks.fetchModels.mockResolvedValue([]);
+  apiMocks.refreshModels.mockResolvedValue([]);
+  apiMocks.fetchSessionModelState.mockResolvedValue({ source: "unknown" });
+  apiMocks.patchSessionModel.mockResolvedValue({ model: "gpt-5.6" });
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.clearAllMocks();
 });
 
 describe("SessionList input-required indicator", () => {
@@ -284,6 +302,150 @@ describe("SessionList copy session id", () => {
 
       await advanceTimersByTimeAct(harness.act, 2_000);
       expect(harness.dom.container.textContent).toContain("Copy Session ID");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
+describe("SessionList change model dialog", () => {
+  const TIERED_MODEL: ModelInfo = {
+    id: "gpt-5.6",
+    name: "GPT-5.6",
+    supportedReasoningEfforts: ["low", "high"],
+    defaultReasoningEffort: "low",
+    capabilities: { limits: { max_context_window_tokens: 1_050_000 } },
+    billing: { tokenPrices: { contextMax: 272_000, longContext: { contextMax: 922_000 } } },
+  };
+
+  async function openModelDialog(modelState: SessionModelState, models: ModelInfo[]) {
+    apiMocks.fetchSessionModelState.mockResolvedValue(modelState);
+    apiMocks.fetchModels.mockResolvedValue(models);
+
+    const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    const { default: SessionList } = await import("./SessionList");
+    await harness.render(createElement(SessionList, {
+      variant: "global",
+      sessions: [createSession({ sessionId: "session-1", summary: "Model session" })],
+      activeSessionId: null,
+      onSelectSession: vi.fn(),
+      onNewSession: vi.fn(),
+      showNewButton: false,
+    }));
+
+    const row = findAllByTag(harness.dom.container, "BUTTON")
+      .find((candidate) => typeof getReactProps(candidate)?.onContextMenu === "function");
+    if (!row) throw new Error("Session row button not found");
+    await harness.act(async () => {
+      getReactProps(row)?.onContextMenu?.({ preventDefault: vi.fn(), clientX: 10, clientY: 10 });
+    });
+
+    await harness.act(async () => {
+      getReactProps(findButton(harness.dom.container, "Change Model..."))?.onClick?.({
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      });
+    });
+    await waitUntilAct(
+      harness.act,
+      () => (harness.dom.container.textContent ?? "").includes("Change session model"),
+      { label: "change model dialog" },
+    );
+
+    return harness;
+  }
+
+  function findButton(root: any, text: string): any {
+    const button = findAllByTag(root, "BUTTON").find((candidate) => (candidate.textContent ?? "") === text);
+    if (!button) throw new Error(`Button not found with text: ${text}`);
+    return button;
+  }
+
+  async function clickButton(harness: { act: any; dom: { container: any } }, text: string) {
+    await harness.act(async () => {
+      getReactProps(findButton(harness.dom.container, text))?.onClick?.({
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      });
+    });
+  }
+
+  it("submits the effort and context tier picked from the option rows", async () => {
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+      [TIERED_MODEL],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
+        { label: "model metadata" },
+      );
+
+      await clickButton(harness, "High");
+      await clickButton(harness, "Long context (922K)");
+      await clickButton(harness, "Save");
+      await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
+        label: "session model patch",
+      });
+
+      expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "gpt-5.6", "high", "long_context");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("drops a picked effort when switching to a model without effort metadata", async () => {
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+      [TIERED_MODEL, { id: "plain-model", name: "Plain Model" }],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
+        { label: "model metadata" },
+      );
+
+      await clickButton(harness, "High");
+      const select = findAllByTag(harness.dom.container, "SELECT")[0];
+      await harness.act(async () => {
+        getReactProps(select)?.onChange?.({ target: { value: "plain-model" } });
+      });
+
+      await clickButton(harness, "Save");
+      await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
+        label: "session model patch",
+      });
+
+      expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "plain-model", undefined, undefined);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps the current effort when the selected model has no effort metadata", async () => {
+    const harness = await openModelDialog(
+      { model: "mystery-model", reasoningEffort: "high", source: "events" },
+      [TIERED_MODEL],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Default context"),
+        { label: "model metadata" },
+      );
+
+      // The save omits the effort, so the inert placeholder names what is kept.
+      const effortRow = findButton(harness.dom.container, "High");
+      expect(getReactProps(effortRow)?.disabled).toBe(true);
+
+      await clickButton(harness, "Save");
+      await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
+        label: "session model patch",
+      });
+
+      expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "mystery-model", undefined, undefined);
     } finally {
       await harness.cleanup();
     }

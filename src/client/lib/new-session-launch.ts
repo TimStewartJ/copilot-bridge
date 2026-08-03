@@ -37,6 +37,52 @@ export interface NewSessionLaunchState {
   selectedContextTier?: CopilotContextTier;
 }
 
+/**
+ * Effort choices for a model, shared by the new-chat screen and the
+ * change-model dialog. Models without effort metadata get an inert placeholder
+ * so the row still renders.
+ */
+export function buildReasoningEffortOptions(
+  supportedEfforts: readonly string[] | undefined,
+): LaunchOption<string>[] {
+  if (!supportedEfforts || supportedEfforts.length === 0) {
+    return [{ value: null, label: "Default" }];
+  }
+  return supportedEfforts.map((value) => ({
+    value,
+    label: formatReasoningEffortLabel(value) ?? value,
+  }));
+}
+
+/**
+ * Context-tier choices for a model. Models without a distinct long-context tier
+ * get an inert placeholder that names the only available context window.
+ */
+export function buildContextTierOptions(
+  model: ModelInfo | undefined,
+): LaunchOption<CopilotContextTier>[] {
+  if (modelSupportsLongContext(model)) {
+    return [
+      {
+        value: "default",
+        label: getContextTierLabel(model, "default") ?? "Standard context",
+      },
+      {
+        value: "long_context",
+        label: getContextTierLabel(model, "long_context") ?? "Long context",
+      },
+    ];
+  }
+
+  const defaultContextTokens = getContextWindowTokensForTier(model, "default");
+  return [{
+    value: null,
+    label: defaultContextTokens
+      ? `Default context (${formatContextWindowTokens(defaultContextTokens)})`
+      : "Default context",
+  }];
+}
+
 export function resolveNewSessionLaunchState({
   models,
   selectedModelId,
@@ -55,12 +101,7 @@ export function resolveNewSessionLaunchState({
   const modelKey = effectiveModel?.id ?? effectiveModelId ?? "";
 
   const supportedEfforts = [...(effectiveModel?.supportedReasoningEfforts ?? [])];
-  const reasoningEffortOptions = supportedEfforts.length > 0
-    ? supportedEfforts.map((value) => ({
-        value,
-        label: formatReasoningEffortLabel(value) ?? value,
-      }))
-    : [{ value: null, label: "Default" }];
+  const reasoningEffortOptions = buildReasoningEffortOptions(supportedEfforts);
   const automaticEffort = supportedEfforts.includes(defaultReasoningEffort ?? "")
     ? defaultReasoningEffort
     : supportedEfforts.includes(effectiveModel?.defaultReasoningEffort ?? "")
@@ -72,17 +113,8 @@ export function resolveNewSessionLaunchState({
       ? reasoningEffortSelection.value
       : automaticEffort;
 
+  const contextOptions = buildContextTierOptions(effectiveModel);
   if (modelSupportsLongContext(effectiveModel)) {
-    const contextOptions: LaunchOption<CopilotContextTier>[] = [
-      {
-        value: "default",
-        label: getContextTierLabel(effectiveModel, "default") ?? "Standard context",
-      },
-      {
-        value: "long_context",
-        label: getContextTierLabel(effectiveModel, "long_context") ?? "Long context",
-      },
-    ];
     const selectedContextTier =
       contextTierSelection?.modelId === modelKey
         && contextOptions.some((option) => option.value === contextTierSelection.value)
@@ -99,16 +131,12 @@ export function resolveNewSessionLaunchState({
     };
   }
 
-  const defaultContextTokens = getContextWindowTokensForTier(effectiveModel, "default");
-  const defaultContextLabel = defaultContextTokens
-    ? `Default context (${formatContextWindowTokens(defaultContextTokens)})`
-    : "Default context";
   return {
     availableModels,
     effectiveModel,
     modelKey,
     reasoningEffortOptions,
     selectedReasoningEffort,
-    contextOptions: [{ value: null, label: defaultContextLabel }],
+    contextOptions,
   };
 }

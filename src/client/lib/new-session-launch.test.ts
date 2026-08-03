@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { resolveNewSessionLaunchState } from "./new-session-launch";
+import {
+  buildContextTierOptions,
+  buildReasoningEffortOptions,
+  resolveNewSessionLaunchState,
+} from "./new-session-launch";
 
 const TIERED_MODEL = {
   id: "gpt-5.6",
@@ -87,5 +91,29 @@ describe("resolveNewSessionLaunchState", () => {
     expect(state.selectedReasoningEffort).toBeUndefined();
     expect(state.contextOptions).toEqual([{ value: null, label: "Default context" }]);
     expect(state.selectedContextTier).toBeUndefined();
+  });
+});
+
+describe("launch option builders", () => {
+  it("labels the supported efforts and falls back to an inert placeholder", () => {
+    expect(buildReasoningEffortOptions(["low", "xhigh"])).toEqual([
+      { value: "low", label: "Low" },
+      { value: "xhigh", label: "Xhigh" },
+    ]);
+    expect(buildReasoningEffortOptions([])).toEqual([{ value: null, label: "Default" }]);
+    expect(buildReasoningEffortOptions(undefined)).toEqual([{ value: null, label: "Default" }]);
+  });
+
+  it("builds tier choices only for models with a distinct long-context tier", () => {
+    expect(buildContextTierOptions(TIERED_MODEL)).toEqual([
+      { value: "default", label: "Standard context (272K)" },
+      { value: "long_context", label: "Long context (922K)" },
+    ]);
+    expect(buildContextTierOptions({
+      id: "claude-haiku",
+      name: "Claude Haiku",
+      capabilities: { limits: { max_context_window_tokens: 128_000 } },
+    })).toEqual([{ value: null, label: "Default context (128K)" }]);
+    expect(buildContextTierOptions(undefined)).toEqual([{ value: null, label: "Default context" }]);
   });
 });
