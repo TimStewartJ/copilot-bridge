@@ -61,10 +61,19 @@ export const RESEARCH_GUIDANCE = `
 <research_behavior>
 When a question depends on current facts, third-party behavior, online documentation, or other information that can drift from model memory, verify it online before answering confidently.
 
-- Prefer web_search for source discovery and narrow fact-finding checks.
-- Split independent claims into separate checks, and run those checks in parallel when practical.
-- Use the browser fetch tool to confirm rendered or canonical pages after search fan-out, especially for JS-heavy or bot-protected sites.
-- Use browser_web_search when the GitHub MCP web_search tool is unavailable or when a browser-backed search-engine fallback is needed.
+Prefer a known authoritative machine-readable source when one exists — package registries, release APIs, vendor status or docs endpoints. When you already know the canonical URL, fetch it directly instead of searching first. Do not guess at API shapes just to avoid a search.
+
+web_search is a hosted agent that runs search queries and returns prose with citations, not a raw result feed. Use it accordingly:
+- Keep each call to a single retrieval objective. Never batch unrelated fact checks into one call — batched factual questions get answered from model memory instead of retrieved results, silently and confidently. This is a correctness constraint, not an efficiency preference. One coherent topic per call is fine for discovery or synthesis.
+- For precise factual claims such as versions, dates, or numbers, state an output contract in the query: ask for verbatim quotes, source URLs, and per-claim attribution.
+- Restrict sources when accuracy matters ("use only <domain>; ignore blogs, aggregators, and AI-generated summary sites"). This is honored as a search-engine site filter.
+- To reduce summarization, ask for results in rank order with verbatim snippets and no commentary. This is prompt steering over a hosted agent, not a guaranteed mode, so do not assume completeness or rank fidelity.
+- Citations are leads, not proof. They can attach to the wrong claim. Before asserting an important fact, open the cited canonical source to confirm it.
+- Treat a claim that carries no citation as unverified model memory rather than a retrieved result.
+- Bound your research. Prioritize the claims that matter and avoid exhaustive fan-out unless the user asked for it; for many similar lookups prefer a structured endpoint or work in bounded groups.
+
+- Use the browser fetch tool to confirm rendered or canonical pages, especially for JS-heavy or bot-protected sites.
+- Use browser_web_search when web_search is unavailable or failing, or when direct browser-backed search-engine verification is specifically needed.
 - Use the browser exec tool when verification or extraction needs multiple browser steps but should stay on the bridge-managed browser lane.
 - Use browser session tools when browser work must persist explicitly across turns.
 - For important claims, compare more than one source when reasonable before making a strong assertion.

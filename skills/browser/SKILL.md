@@ -25,14 +25,7 @@ Use this skill when you need browser control beyond a single page read:
 
 For **simple reads of one URL**, prefer `browser_fetch` first. For hardened multi-step automation that should stay on the bridge-managed browser session/profile, prefer `browser_exec`. For workflows that must continue across turns, prefer `browser_session_*`. For raw HTML/API calls or simple static pages, prefer `web_fetch`.
 
-For **online research or truth-checking**, prefer the built-in tools before escalating to this skill:
-- use `web_search` for source discovery and narrow, independent fact checks
-- use `browser_web_search` only when a browser-backed search-engine fallback is needed
-- use `browser_fetch` to confirm rendered or canonical pages after search
-- use `browser_exec` when you need several browser steps but do not need raw bash-level control
-- use `browser_session_*` when browser state must persist explicitly across turns
-- keep separate claims as separate checks when practical instead of collapsing everything into one broad search
-- use this skill only when verification requires a multi-step or stateful browser flow
+For **online research or truth-checking**, prefer the built-in tools before escalating to this skill. Research routing is defined by the session `<research_behavior>` guidance — follow that rather than duplicating it here. In short: `web_search` first with a single retrieval objective per call, `browser_web_search` when `web_search` is unavailable or failing, `browser_fetch` to confirm canonical pages, `browser_exec` for several browser steps without raw bash-level control, `browser_session_*` when state must persist across turns, and this skill only when verification requires a multi-step or stateful browser flow.
 
 ## Bridge Browser Rules
 
