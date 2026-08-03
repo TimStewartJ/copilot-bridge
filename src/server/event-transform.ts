@@ -1,12 +1,16 @@
 import { win32 as winPath } from "node:path";
-import { getToolExecutionDisplayText } from "./tool-results.js";
+import {
+  SubagentCorrelator,
+  resolveToolOutcome,
+  type ToolCompletionRecord,
+} from "./subagent-correlation.js";
 import {
   extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
-  isTerminalCompletionToolName,
   isTerminalTurnEventType,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
+import { isHiddenTool } from "../shared/tool-visibility.js";
 import {
   getAssistantTurnInstanceId,
   getSdkAgentId,
@@ -191,22 +195,6 @@ export function isQuietIntervalDeferEvent(event: any, expectedDeferId?: string):
   return metadata?.kind === "interval"
     && metadata.attentionMode === "quiet"
     && (expectedDeferId === undefined || metadata.deferId === expectedDeferId);
-}
-
-function getRenameTargetSessionId(args: unknown): string | undefined {
-  if (!args || typeof args !== "object") return undefined;
-  const value = (args as Record<string, unknown>).sessionId;
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized || undefined;
-}
-
-function isHiddenTool(toolName: string, args: unknown, sessionId?: string): boolean {
-  if (isTerminalCompletionToolName(toolName)) return true;
-  if (toolName === "report_intent") return true;
-  if (toolName !== "session_rename") return false;
-  const targetSessionId = getRenameTargetSessionId(args);
-  return targetSessionId === undefined || (sessionId !== undefined && targetSessionId === sessionId);
 }
 
 export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
@@ -450,12 +438,10 @@ export function transformEventsToMessages(
   let pendingTerminalCompletion: TerminalCompletion | undefined;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
-  const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string; eventId?: string }>();
+  const toolCompletes = new Map<string, ToolCompletionRecord>();
   const toolProgress = new Map<string, string>();
   const openToolCallIds = new Set<string>();
-  const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
-  const subAgentResponses = new Map<string, string>();
-  const subAgentErrors = new Map<string, string>();
+  const correlator = new SubagentCorrelator();
   const toolNames = new Map<string, string>();
   const assistantForkBoundaries = getAssistantForkBoundaries(events);
   // Detect visual artifact publications from publish_visual tool completions
@@ -467,12 +453,15 @@ export function transformEventsToMessages(
       openToolCallIds.add(data.toolCallId);
       toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
     } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
+      // Raw completion data is retained so pass 2 can derive display text through the same shared
+      // resolver the live fold uses. The event array is already in memory, so this costs nothing.
       toolCompletes.set(data.toolCallId, {
         success: data.success,
-        result: getToolExecutionDisplayText(data),
+        data,
         timestamp: (event as any).timestamp,
         eventId: getSdkEventId(event),
       });
+      correlator.completeTool(data.toolCallId);
       openToolCallIds.delete(data.toolCallId);
       const visual = getVisualArtifactFromToolCompletion(event, toolNames.get(data.toolCallId), sessionId);
       if (visual) visualResults.set(data.toolCallId, visual);
@@ -484,19 +473,19 @@ export function transformEventsToMessages(
         toolProgress.set(data.toolCallId, nextText);
       }
     } else if (event.type === "subagent.started" && data?.toolCallId) {
-      subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
+      correlator.startSubagent(data.toolCallId, getSdkAgentId(event), data);
+    } else if (event.type === "subagent.failed" && data?.toolCallId) {
+      correlator.recordSubagentFailure(data.toolCallId, data.error);
     } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
-      subAgentResponses.set(data.parentToolCallId, data.content);
+      correlator.recordResponse(data.parentToolCallId, data.content);
     } else if (event.type === "session.error" && getSdkAgentId(event)) {
-      const agentId = getSdkAgentId(event)!;
-      if (typeof data?.message === "string" && data.message) {
-        subAgentErrors.set(agentId, data.message);
-      }
+      correlator.recordAgentError(getSdkAgentId(event)!, data?.message);
     } else if (isTurnTerminalEvent(event)) {
+      // Provisional: a real completion can still arrive after `assistant.turn_end` and must win.
       for (const toolCallId of openToolCallIds) {
         toolCompletes.set(toolCallId, {
           success: false,
-          result: subAgentResponses.get(toolCallId) ?? toolProgress.get(toolCallId),
+          fallbackText: correlator.resolve(toolCallId).response ?? toolProgress.get(toolCallId),
           timestamp: (event as any).timestamp,
         });
       }
@@ -607,10 +596,8 @@ export function transformEventsToMessages(
         continue;
       }
       if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
-      const subAgent = subAgentStarts.get(data.toolCallId);
       const complete = toolCompletes.get(data.toolCallId);
-      const subAgentError = subAgentErrors.get(data.toolCallId);
-      const isSubAgent = !!subAgent;
+      const outcome = resolveToolOutcome(correlator.resolve(data.toolCallId), complete, toolName);
       entries.push({
         id: `entry-${idx++}`,
         type: "tool",
@@ -619,15 +606,13 @@ export function transformEventsToMessages(
         ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
         toolCall: {
           toolCallId: data.toolCallId,
-          name: isSubAgent ? `🤖 ${subAgent!.agentDisplayName ?? subAgent!.agentName ?? "agent"}` : toolName,
+          name: outcome.displayName,
           args: data.arguments,
-          result: subAgentError ?? (isSubAgent && complete?.success !== false
-            ? (subAgentResponses.get(data.toolCallId) ?? complete?.result)
-            : complete?.result),
+          result: outcome.result,
           progressText: toolProgress.get(data.toolCallId),
-          success: subAgentError ? false : complete?.success,
+          success: outcome.success,
           parentToolCallId: data.parentToolCallId,
-          isSubAgent: isSubAgent || undefined,
+          isSubAgent: outcome.isSubAgent || undefined,
           startedAt: (event as any).timestamp,
           completedAt: complete?.timestamp,
         },

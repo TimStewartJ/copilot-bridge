@@ -11,10 +11,8 @@ import { API_BASE, reportTiming, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { RunNotice } from "../shared/session-stream.js";
-import {
-  isTerminalCompletionToolName,
-  type TerminalCompletion,
-} from "../shared/terminal-completion.js";
+import type { TerminalCompletion } from "../shared/terminal-completion.js";
+import { isHiddenTool } from "../shared/tool-visibility.js";
 
 /**
  * Live stream state.
@@ -344,14 +342,6 @@ export function getKnownToolName(name: unknown): string | undefined {
   if (typeof name !== "string") return undefined;
   const normalized = name.trim();
   return normalized && normalized !== "unknown" ? normalized : undefined;
-}
-
-function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: string): boolean {
-  if (isTerminalCompletionToolName(name) || name === "report_intent") return true;
-  if (name !== "session_rename") return false;
-  if (!args || typeof args !== "object") return true;
-  const targetSessionId = (args as Record<string, unknown>).sessionId;
-  return typeof targetSessionId !== "string" || targetSessionId === sessionId;
 }
 
 export function normalizeActiveTool(

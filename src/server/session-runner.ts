@@ -32,7 +32,11 @@ import {
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
 import type { SessionAgentRegistry } from "./session-agent-registry.js";
-import { getToolExecutionDisplayText } from "./tool-results.js";
+import {
+  SubagentCorrelator,
+  formatSubagentDisplayName,
+  resolveToolOutcome,
+} from "./subagent-correlation.js";
 import { createToolLoopGuard } from "./tool-loop-guard.js";
 import type {
   RoutedSdkAttachment,
@@ -660,11 +664,9 @@ export class SessionRunner {
     const toolNameMap = new Map<string, string>();
     const toolStartTimes = new Map<string, number>();
     const toolLoopGuard = createToolLoopGuard();
-    const subAgentMap = new Map<string, string>();
+    const correlator = new SubagentCorrelator();
     const subAgentToolCallIds = new Set<string>();
     const subAgentTurnIdMap = new Map<string, string>();
-    const subAgentResponseMap = new Map<string, string>();
-    const subAgentErrors = new Map<string, string>();
     const activeExternalTools = new Map<string, ActiveExternalToolCall>();
     const contextTelemetryProvider = this.client?.id ?? "copilot";
     const contextTelemetryProviderSessionId = sessionId;
@@ -681,7 +683,10 @@ export class SessionRunner {
     };
     const getTrackedToolDisplayName = (toolCallId: unknown, fallbackName?: string): string => {
       if (typeof toolCallId === "string" && toolCallId) {
-        return subAgentMap.get(toolCallId) ?? toolNameMap.get(toolCallId) ?? fallbackName ?? "unknown";
+        return correlator.resolve(toolCallId).displayName
+          ?? toolNameMap.get(toolCallId)
+          ?? fallbackName
+          ?? "unknown";
       }
       return fallbackName ?? "unknown";
     };
@@ -1183,7 +1188,7 @@ export class SessionRunner {
           break;
         case "assistant.message":
           if (data?.parentToolCallId && data?.content) {
-            subAgentResponseMap.set(data.parentToolCallId, data.content);
+            correlator.recordResponse(data.parentToolCallId, data.content);
             break;
           }
           if (data?.content) {
@@ -1235,8 +1240,8 @@ export class SessionRunner {
               data?.arguments,
             ) ?? pendingTerminalCompletion;
           }
-          const pendingAgent = data?.toolCallId ? subAgentMap.get(data.toolCallId) : undefined;
-          const displayName = pendingAgent ?? toolName;
+          const pendingAgent = data?.toolCallId ? correlator.resolve(data.toolCallId) : undefined;
+          const displayName = pendingAgent?.displayName ?? toolName;
           console.log(`[sdk] [${sid}] 🔧 Tool: ${displayName}${data?.parentToolCallId ? ` (sub-agent)` : ""}`);
           bus.emit({
             type: "tool_start",
@@ -1244,7 +1249,7 @@ export class SessionRunner {
             name: displayName,
             args: data?.arguments,
             parentToolCallId: data?.parentToolCallId,
-            isSubAgent: pendingAgent ? true : undefined,
+            isSubAgent: pendingAgent?.isSubAgent ? true : undefined,
             timestamp: event.timestamp,
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
@@ -1277,33 +1282,31 @@ export class SessionRunner {
         case "tool.execution_complete": {
           clearExternalToolsForToolCall(data?.toolCallId, eventAt);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
-          const subAgentError = typeof data?.toolCallId === "string"
-            ? subAgentErrors.get(data.toolCallId)
-            : undefined;
-          const ok = subAgentError ? false : data?.success !== false;
-          const isAgent = subAgentMap.has(data?.toolCallId) || subAgentError !== undefined;
-          const agentDisplayName = subAgentMap.get(data?.toolCallId);
-          const result = subAgentError ?? getToolExecutionDisplayText(data, {
-            subAgentResponse: isAgent ? subAgentResponseMap.get(data?.toolCallId) : undefined,
-          });
-          const displayName = isAgent ? (agentDisplayName ?? "🤖 agent") : completedToolName;
-          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${displayName} (${ok ? "ok" : "failed"})`);
+          const completedToolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
+          if (completedToolCallId) correlator.completeTool(completedToolCallId);
+          const outcome = resolveToolOutcome(
+            completedToolCallId ? correlator.resolve(completedToolCallId) : { isSubAgent: false },
+            { success: data?.success, data },
+            completedToolName,
+          );
+          const ok = outcome.success !== false;
+          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${outcome.displayName} (${ok ? "ok" : "failed"})`);
           const toolStart = toolStartTimes.get(data?.toolCallId);
           if (toolStart) {
             this.recordSpan("tool.execution", Date.now() - toolStart, sessionId, {
               toolName: completedToolName,
               success: ok,
-              isSubAgent: isAgent || undefined,
+              isSubAgent: outcome.isSubAgent || undefined,
             });
           }
           if (data?.toolCallId) toolStartTimes.delete(data.toolCallId);
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
-            name: displayName,
-            result,
-            success: subAgentError ? false : data?.success,
-            isSubAgent: isAgent || undefined,
+            name: outcome.displayName,
+            result: outcome.result,
+            success: outcome.success,
+            isSubAgent: outcome.isSubAgent || undefined,
             timestamp: event.timestamp,
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
@@ -1313,18 +1316,14 @@ export class SessionRunner {
           ) {
             void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId, data.toolCallId);
           }
-          if (typeof data?.toolCallId === "string") {
-            subAgentMap.delete(data.toolCallId);
-            subAgentResponseMap.delete(data.toolCallId);
-            subAgentErrors.delete(data.toolCallId);
-          }
+          if (completedToolCallId) correlator.forget(completedToolCallId);
           break;
         }
         case "subagent.started": {
-          const displayName = `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`;
+          const displayName = formatSubagentDisplayName(data);
           console.log(`[sdk] [${sid}] ${displayName}`);
           if (data?.toolCallId) {
-            subAgentMap.set(data.toolCallId, displayName);
+            correlator.startSubagent(data.toolCallId, getSdkAgentId(event), data);
             subAgentToolCallIds.add(data.toolCallId);
             const subagentBridgeTurnId = `subagent-${randomUUID()}`;
             subAgentTurnIdMap.set(data.toolCallId, subagentBridgeTurnId);
@@ -1352,6 +1351,11 @@ export class SessionRunner {
         case "subagent.completed":
         case "subagent.failed": {
           const subagentToolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
+          // `data.toolCallId` is authoritative here. A background agent's launch has already been
+          // sealed as successful by this point, so the correlator ignores this for that case.
+          if (event.type === "subagent.failed" && subagentToolCallId) {
+            correlator.recordSubagentFailure(subagentToolCallId, data?.error);
+          }
           const subagentBridgeTurnId = subagentToolCallId
             ? subAgentTurnIdMap.get(subagentToolCallId)
             : undefined;
@@ -1366,9 +1370,7 @@ export class SessionRunner {
           if (subagentToolCallId) {
             subAgentTurnIdMap.delete(subagentToolCallId);
             if (!toolStartTimes.has(subagentToolCallId)) {
-              subAgentMap.delete(subagentToolCallId);
-              subAgentResponseMap.delete(subagentToolCallId);
-              subAgentErrors.delete(subagentToolCallId);
+              correlator.forget(subagentToolCallId);
             }
           }
           this.refreshSessionAgents(sessionId, event.type);
@@ -1398,14 +1400,12 @@ export class SessionRunner {
         case "session.error": {
           const agentId = getSdkAgentId(event);
           if (agentId) {
-            if (typeof data?.message === "string" && data.message) {
-              subAgentErrors.set(agentId, data.message);
-            }
+            correlator.recordAgentError(agentId, data?.message);
             console.warn(
               `[sdk] [${sid}] Subagent ${agentId} error did not terminate the parent run: ${data?.message ?? "unknown"}`,
             );
             recordRunSpan("session.subagent.error", 0, {
-              subagentTracked: subAgentMap.has(agentId),
+              subagentTracked: correlator.isTrackedAgent(agentId),
               errorType: typeof data?.errorType === "string" ? data.errorType : undefined,
               errorMessagePresent: typeof data?.message === "string",
               errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,

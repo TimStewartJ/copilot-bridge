@@ -864,7 +864,7 @@ describe("event-transform tool results", () => {
       },
       {
         type: "subagent.started",
-        agentId: "agent-call-1",
+        agentId: "subagent-instance-9",
         timestamp: "2026-07-24T17:54:28.100Z",
         data: {
           toolCallId: "agent-call-1",
@@ -874,7 +874,7 @@ describe("event-transform tool results", () => {
       },
       {
         type: "session.error",
-        agentId: "agent-call-1",
+        agentId: "subagent-instance-9",
         timestamp: "2026-07-24T17:59:30.000Z",
         data: {
           errorType: "query",
@@ -883,7 +883,7 @@ describe("event-transform tool results", () => {
       },
       {
         type: "subagent.completed",
-        agentId: "agent-call-1",
+        agentId: "subagent-instance-9",
         timestamp: "2026-07-24T17:59:30.010Z",
         data: { toolCallId: "agent-call-1" },
       },

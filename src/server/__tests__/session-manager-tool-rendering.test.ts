@@ -3,6 +3,7 @@ import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTestBus, setupTestDb } from "./helpers.js";
+import { transformEventsToMessages } from "../event-transform.js";
 
 describe("SessionManager tool result rendering", () => {
   let eventBusRegistry: ReturnType<typeof createEventBusRegistry>;
@@ -271,5 +272,117 @@ describe("SessionManager tool result rendering", () => {
       name: "🤖 Explore agent",
       message: "Searching files...",
     }));
+  });
+  it("streams the real sub-agent failure reason and matches disk replay", async () => {
+    // The live fold and the disk replay fold are separate traversals of the same event stream.
+    // They must agree, so this drives both from one event list and compares the results.
+    const sdkEvents: any[] = [
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-08-01T10:00:00.000Z",
+        data: { toolCallId: "call_sync_agent", toolName: "task", arguments: { mode: "sync" } },
+      },
+      {
+        type: "subagent.started",
+        agentId: "subagent_instance_7",
+        timestamp: "2026-08-01T10:00:00.100Z",
+        data: { toolCallId: "call_sync_agent", agentName: "explore", agentDisplayName: "Explore Agent" },
+      },
+      {
+        type: "subagent.failed",
+        timestamp: "2026-08-01T10:00:04.000Z",
+        data: { toolCallId: "call_sync_agent", error: "CAPIError: 400 messages: at least one message is required" },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-08-01T10:00:04.100Z",
+        data: {
+          toolCallId: "call_sync_agent",
+          success: false,
+          error: { message: "Agent completed but produced no response.", code: "failure" },
+        },
+      },
+      { type: "session.idle", timestamp: "2026-08-01T10:00:05.000Z", data: {} },
+    ];
+
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-subagent-failure");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-subagent-failure", createSession(sdkEvents));
+    await manager._doWork("session-subagent-failure", "run an agent", bus);
+
+    const liveDone = events.find((event) => event.type === "tool_done" && event.toolCallId === "call_sync_agent");
+    expect(liveDone).toMatchObject({
+      name: "🤖 Explore Agent",
+      result: "CAPIError: 400 messages: at least one message is required",
+      success: false,
+      isSubAgent: true,
+    });
+
+    const replayed = transformEventsToMessages(sdkEvents).find((entry) => entry.type === "tool");
+    expect(replayed?.toolCall).toMatchObject({
+      name: liveDone.name,
+      result: liveDone.result,
+      success: liveDone.success,
+      isSubAgent: liveDone.isSubAgent,
+    });
+  });
+
+  it("keeps a background agent launch successful in both folds when the agent fails later", async () => {
+    // The launch itself succeeded. The live fold has no look-ahead, so replay must not use its
+    // look-ahead to retroactively fail the launch.
+    const sdkEvents: any[] = [
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-08-01T11:00:00.000Z",
+        data: { toolCallId: "call_bg_agent", toolName: "task", arguments: { mode: "background" } },
+      },
+      {
+        type: "subagent.started",
+        agentId: "subagent_instance_8",
+        timestamp: "2026-08-01T11:00:00.100Z",
+        data: { toolCallId: "call_bg_agent", agentName: "explore", agentDisplayName: "Explore Agent" },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-08-01T11:00:00.200Z",
+        data: {
+          toolCallId: "call_bg_agent",
+          success: true,
+          result: { content: "Agent started in background" },
+        },
+      },
+      {
+        type: "subagent.failed",
+        timestamp: "2026-08-01T11:20:00.000Z",
+        data: { toolCallId: "call_bg_agent", error: "CAPIError: 404 Not Found" },
+      },
+      { type: "session.idle", timestamp: "2026-08-01T11:20:01.000Z", data: {} },
+    ];
+
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-background-agent");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-background-agent", createSession(sdkEvents));
+    await manager._doWork("session-background-agent", "run a background agent", bus);
+
+    const liveDone = events.find((event) => event.type === "tool_done" && event.toolCallId === "call_bg_agent");
+    expect(liveDone).toMatchObject({ result: "Agent started in background", success: true });
+
+    const replayed = transformEventsToMessages(sdkEvents).find((entry) => entry.type === "tool");
+    expect(replayed?.toolCall).toMatchObject({
+      result: liveDone.result,
+      success: liveDone.success,
+    });
   });
 });

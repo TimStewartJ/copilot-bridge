@@ -1,4 +1,4 @@
-import { normalizeSessionTitle } from "../session-title-utils.js";
+import { normalizeSessionTitle } from "../../shared/session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import {
