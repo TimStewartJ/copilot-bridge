@@ -463,10 +463,6 @@ export async function readGitWorktreeStatus(cwd: string): Promise<GitWorktreeSta
   };
 }
 
-export function clearGitWorktreeStatusCache(): void {
-  gitWorktreeStatusCache.clear();
-}
-
 export async function readCachedGitWorktreeStatus(
   cwd: string,
   options: ReadCachedGitWorktreeStatusOptions = {},

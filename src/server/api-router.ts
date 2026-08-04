@@ -11,7 +11,6 @@ import type { AppContext } from "./app-context.js";
 import {
   type PendingInteractionHydration,
 } from "./event-bus.js";
-import type { RunNotice, SyntheticTerminalOverlay } from "../shared/session-stream.js";
 import {
   createServerShutdownCoordinator,
   type ServerShutdownCoordinator,
@@ -2737,30 +2736,6 @@ export function createApiRouter(
     }
   });
 
-  /**
-   * Terminal overlays persisted before run notices existed stored raw transcript-shaped fields.
-   * Those rows specifically hold output that never reached events.jsonl, so map them forward
-   * instead of dropping them during rollout.
-   */
-  function legacyTerminalOverlayNotice(
-    overlay: SyntheticTerminalOverlay | undefined,
-  ): RunNotice | undefined {
-    if (!overlay || overlay.notice) return overlay?.notice;
-    const legacy = overlay as SyntheticTerminalOverlay & { content?: string; message?: string };
-    const timestamp = overlay.timestamp ? { timestamp: overlay.timestamp } : {};
-    if (overlay.type === "error") {
-      return { kind: "error", message: legacy.message || "Unknown session error", ...timestamp };
-    }
-    if (overlay.type === "aborted" || overlay.type === "shutdown") {
-      return {
-        kind: overlay.type === "aborted" ? "stopped" : "interrupted",
-        ...(legacy.content ? { content: legacy.content } : {}),
-        ...timestamp,
-      };
-    }
-    return legacy.content ? { kind: "command", content: legacy.content, ...timestamp } : undefined;
-  }
-
   // GET /sessions/:id/stream — SSE stream with snapshot + live events
   router.get("/sessions/:id/stream", async (req, res) => {
     const sessionId = req.params.id;
@@ -2805,7 +2780,7 @@ export function createApiRouter(
 
     if (!bus) {
       const terminalOverlay = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
-      const runNotice = terminalOverlay?.notice ?? legacyTerminalOverlayNotice(terminalOverlay);
+      const runNotice = terminalOverlay?.notice;
       sendEvent({
         type: "snapshot",
         runId: terminalOverlay?.runId ?? sessionId,

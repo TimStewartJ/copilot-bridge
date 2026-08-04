@@ -567,13 +567,13 @@ describe("staging tools", () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = join(tmpdir(), "bridge-staging", "abc12345");
     expect(mod.buildPreviewPrefix(stagingDir)).toBe("abc12345");
-    expect(mod.parsePreviewPrefix("abc12345")).toEqual({ stagingName: "abc12345", profile: "clone" });
+    expect(mod.parsePreviewPrefix("abc12345")).toBe("abc12345");
   });
 
   it("keeps staging previews unambiguous when worktree names contain suffix-like text", async () => {
     const mod = await loadStagingToolsModule();
     const activeWorktrees = new Set(["foo-preview", "foo"]);
-    expect(mod.parsePreviewPrefix("foo-preview", activeWorktrees)).toEqual({ stagingName: "foo-preview", profile: "clone" });
+    expect(mod.parsePreviewPrefix("foo-preview", activeWorktrees)).toBe("foo-preview");
   });
 
   it("returns null for orphaned preview prefixes when active worktrees are known", async () => {
@@ -656,7 +656,7 @@ describe("staging tools", () => {
     const stagingDir = createTempDir("bridge-stage-child-source-mode-");
 
     const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
-    const runtimePaths = mod.__testing.getExistingPreviewRuntime(stagingDir, "clone");
+    const runtimePaths = mod.__testing.getExistingPreviewRuntime(stagingDir);
     const spawnConfig = mod.__testing.buildStagingBackendSpawnConfig(
       stagingDir,
       runtimePaths!,

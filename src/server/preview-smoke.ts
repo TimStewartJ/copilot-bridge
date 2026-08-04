@@ -15,7 +15,6 @@ import { isPathAtOrUnder } from "./path-utils.js";
 
 interface PreviewResult {
   success: boolean;
-  profile: "clone";
   previewPath: string;
   previewUrl: string | null;
   localUrl: string;
@@ -47,7 +46,6 @@ interface StagingToolsModule {
   buildPreviewPrefix(stagingDir: string): string;
   cleanupPreviewTarget(
     stagingDir: string,
-    profile?: "clone",
     options?: { removeData?: boolean },
   ): Promise<void>;
   getActivePreviews(): ReadonlyMap<string, string>;
@@ -301,7 +299,6 @@ async function main(): Promise<void> {
       : initialResult;
     stagingTools.registerExistingPreviewsFromDisk({ stagingParent: dirname(stagingDir) });
     assert.equal(result.success, true, result.error ?? "preview failed");
-    assert.equal(result.profile, "clone");
     assert.equal(result.previewPath, `/staging/${prefix}/`);
     if (result.backendError) {
       throw new Error(result.backendError);
@@ -356,7 +353,7 @@ async function main(): Promise<void> {
     }, null, 2));
   } finally {
     if (stagingTools) {
-      await stagingTools.cleanupPreviewTarget(stagingDir, "clone", { removeData: false });
+      await stagingTools.cleanupPreviewTarget(stagingDir, { removeData: false });
     }
     restoreEnv();
     cleanupPreviewSmokeSource(source);

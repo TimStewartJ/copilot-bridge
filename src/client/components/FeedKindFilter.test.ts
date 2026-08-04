@@ -33,10 +33,6 @@ function findOptionByKind(root: any, kind: string): any {
   return findAllByRole(root, "option").find((option) => option.getAttribute?.("data-kind") === kind) ?? null;
 }
 
-function findButtonByText(root: any, text: string): any {
-  return findAllByTag(root, "BUTTON").find((button) => button.textContent === text) ?? null;
-}
-
 function makeStats(overrides: Partial<FeedKindStats> = {}): FeedKindStats {
   return {
     generatedAt: "2026-06-24T00:00:00.000Z",
@@ -154,20 +150,6 @@ describe("FeedKindFilter", () => {
     expect(optionKinds).toContain("status");
     const noteOption = findOptionByKind(dom?.container, "note");
     expect(noteOption.textContent).toContain("—");
-  });
-
-  it("switches the activity visualization mode", async () => {
-    await render();
-    await act(async () => {
-      getReactProps(findByAriaLabel(dom?.container, "Filter feed by kind"))?.onClick?.({});
-    });
-    const trendButton = findButtonByText(dom?.container, "Trend");
-    expect(trendButton.getAttribute("aria-pressed")).toBe("false");
-    await act(async () => {
-      getReactProps(trendButton)?.onClick?.({});
-    });
-    expect(findButtonByText(dom?.container, "Trend").getAttribute("aria-pressed")).toBe("true");
-    expect(findButtonByText(dom?.container, "Bars").getAttribute("aria-pressed")).toBe("false");
   });
 
   it("marks the currently selected kind", async () => {

@@ -2,11 +2,6 @@ import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type Keyb
 import { Check, ChevronDown, Search } from "lucide-react";
 import type { FeedKindStats } from "../api";
 
-export type FeedKindVizMode = "bars" | "trend" | "heat";
-
-const VIZ_STORAGE_KEY = "bridge-feed-kind-viz";
-const VIZ_MODES: FeedKindVizMode[] = ["bars", "trend", "heat"];
-const VIZ_LABELS: Record<FeedKindVizMode, string> = { bars: "Bars", trend: "Trend", heat: "Heat" };
 const ALL_KINDS_LABEL = "All kinds";
 const DEFAULT_BUCKET_COUNT = 14;
 const DORMANT_COLLAPSE_THRESHOLD = 5;
@@ -36,26 +31,6 @@ function maxOf(values: number[]): number {
   return values.reduce((max, value) => (value > max ? value : max), 1);
 }
 
-function readVizMode(): FeedKindVizMode {
-  try {
-    if (typeof localStorage === "undefined") return "bars";
-    const stored = localStorage.getItem(VIZ_STORAGE_KEY);
-    if (stored === "bars" || stored === "trend" || stored === "heat") return stored;
-  } catch {
-    /* localStorage may be unavailable; fall back silently */
-  }
-  return "bars";
-}
-
-function persistVizMode(mode: FeedKindVizMode): void {
-  try {
-    if (typeof localStorage === "undefined") return;
-    localStorage.setItem(VIZ_STORAGE_KEY, mode);
-  } catch {
-    /* ignore persistence failures */
-  }
-}
-
 interface KindRow {
   key: string;
   label: string;
@@ -80,61 +55,6 @@ function BarsViz({ values, hue }: { values: number[]; hue: string }) {
   );
 }
 
-function HeatViz({ values, hue }: { values: number[]; hue: string }) {
-  const max = maxOf(values);
-  return (
-    <div className="flex h-full w-full items-center gap-px" aria-hidden="true">
-      {values.map((value, index) => (
-        <span
-          key={index}
-          className="h-3 flex-1 rounded-sm"
-          style={{ background: hue, opacity: 0.14 + (value / max) * 0.86 }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function TrendViz({ values, hue }: { values: number[]; hue: string }) {
-  const gradientId = useId();
-  const width = 120;
-  const height = 28;
-  const max = maxOf(values);
-  const count = values.length;
-  const points = values.map((value, index) => {
-    const x = count <= 1 ? width : (index / (count - 1)) * width;
-    const y = height - 3 - (value / max) * (height - 7);
-    return [x, y] as const;
-  });
-  const line = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  const area = `0,${height} ${line} ${width},${height}`;
-  return (
-    <svg className="h-full w-full" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
-      <defs>
-        <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor={hue} stopOpacity={0.35} />
-          <stop offset="1" stopColor={hue} stopOpacity={0} />
-        </linearGradient>
-      </defs>
-      <polygon points={area} fill={`url(#${gradientId})`} />
-      <polyline
-        points={line}
-        fill="none"
-        stroke={hue}
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function RowViz({ mode, values, hue }: { mode: FeedKindVizMode; values: number[]; hue: string }) {
-  if (mode === "trend") return <TrendViz values={values} hue={hue} />;
-  if (mode === "heat") return <HeatViz values={values} hue={hue} />;
-  return <BarsViz values={values} hue={hue} />;
-}
-
 interface FeedKindFilterProps {
   value: string;
   onChange: (kind: string) => void;
@@ -152,7 +72,6 @@ export default function FeedKindFilter({
 }: FeedKindFilterProps) {
   const [open, setOpen] = useState(false);
   const [activeKey, setActiveKey] = useState<string>(value);
-  const [vizMode, setVizMode] = useState<FeedKindVizMode>(() => readVizMode());
   const [showDormant, setShowDormant] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -315,11 +234,6 @@ export default function FeedKindFilter({
     }
   };
 
-  const chooseViz = (mode: FeedKindVizMode) => {
-    setVizMode(mode);
-    persistVizMode(mode);
-  };
-
   const optionId = (index: number) => `${baseId}-opt-${index}`;
   const selectedLabel = value ? value : ALL_KINDS_LABEL;
   const selectedActive = selectedRow?.active ?? null;
@@ -367,7 +281,7 @@ export default function FeedKindFilter({
           <div className="truncate text-[10.5px] text-text-faint">{meta}</div>
         </div>
         <div className="flex h-[26px] w-[110px] items-end justify-end">
-          <RowViz mode={vizMode} values={row.buckets} hue={row.hue} />
+          <BarsViz values={row.buckets} hue={row.hue} />
         </div>
         <div className="flex min-w-[44px] flex-col items-end">
           <span
@@ -417,26 +331,6 @@ export default function FeedKindFilter({
             <div className="flex flex-col">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Filter by type</span>
               <span className="text-[11px] text-text-faint">Last {windowDays} days · updates</span>
-            </div>
-            <div
-              className="inline-flex rounded-lg border border-border bg-bg-surface p-0.5"
-              role="group"
-              aria-label="Activity display"
-            >
-              {VIZ_MODES.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  aria-pressed={vizMode === mode}
-                  onMouseDown={(event: MouseEvent<HTMLButtonElement>) => event.preventDefault()}
-                  onClick={() => chooseViz(mode)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
-                    vizMode === mode ? "bg-bg-hover text-text-primary" : "text-text-muted hover:text-text-secondary"
-                  }`}
-                >
-                  {VIZ_LABELS[mode]}
-                </button>
-              ))}
             </div>
           </div>
 

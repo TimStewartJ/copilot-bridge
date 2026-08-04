@@ -1,18 +1,7 @@
-import type { TerminalCompletion } from "./terminal-completion.js";
-
 export interface SessionHistoryCoverage {
   latestEventId?: string;
   latestTurnId?: string;
   latestTerminalEventId?: string;
-}
-
-export interface ProjectedAssistantEntry {
-  id: string;
-  content: string;
-  turnId?: string;
-  turnInstanceId?: string;
-  sourceEventId?: string;
-  timestamp?: string;
 }
 
 export type RunNoticeKind = "stopped" | "interrupted" | "error" | "command";
@@ -37,8 +26,4 @@ export interface SyntheticTerminalOverlay {
   terminalSourceEventId?: string;
   timestamp?: string;
   notice?: RunNotice;
-  /** @deprecated Pre-notice overlay shape; ignored when reading. */
-  terminalCompletion?: TerminalCompletion;
-  /** @deprecated Pre-notice overlay shape; ignored when reading. */
-  finalAssistantEntry?: ProjectedAssistantEntry;
 }

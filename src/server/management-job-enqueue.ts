@@ -9,7 +9,7 @@ import {
 import type { AppContext } from "./app-context.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
-import { PRODUCTION_DATA_DIR, resolvePreviewProfile } from "./staging-preview-shared.js";
+import { PRODUCTION_DATA_DIR } from "./staging-preview-shared.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 
 export class ManagementJobEnqueueError extends Error {
@@ -89,10 +89,7 @@ function normalizeRequest(req: ManagementJobEnqueueRequest): NormalizedRequest {
         }
         validate = rawInput.validate;
       }
-      const profile = resolvePreviewProfile(
-        typeof rawInput.profile === "string" ? rawInput.profile : undefined,
-      );
-      return { type: req.type, input: { stagingDir, validate, profile } };
+      return { type: req.type, input: { stagingDir, validate } };
     }
     case "staging_deploy": {
       const stagingDir = requireExistingStagingDir(rawInput);
@@ -105,7 +102,6 @@ function normalizeRequest(req: ManagementJobEnqueueRequest): NormalizedRequest {
 function previewInputsReusable(active: ManagementJob, requested: Record<string, unknown>): boolean {
   if (!isRecord(active.input)) return false;
   if (active.input.stagingDir !== requested.stagingDir) return false;
-  if (active.input.profile !== requested.profile) return false;
   // Require exact validate equality. A validate:true caller cannot accept a
   // validate:false job (no gate), and a validate:false caller should not be
   // tied to a validate:true job that may fail validation and surface as the

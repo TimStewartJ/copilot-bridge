@@ -289,7 +289,7 @@ describe("management job API routes", () => {
       expect(res.body.error).toContain("staging_deploy");
     });
 
-    it("reuses an active staging_preview job when stagingDir, profile, and validate match", async () => {
+    it("reuses an active staging_preview job when stagingDir and validate match", async () => {
       const { app } = createManagementJobApiTestApp();
       const stagingDir = makeRealStagingDir("preview-reuse");
 

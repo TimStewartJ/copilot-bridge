@@ -238,17 +238,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizedPreviewTarget(input: unknown): { stagingDir: string; profile: string } {
+function normalizedPreviewStagingDir(input: unknown): string {
   const record = isRecord(input) ? input : {};
-  return {
-    stagingDir: String(record.stagingDir ?? ""),
-    profile: String(record.profile ?? "clone"),
-  };
+  return String(record.stagingDir ?? "");
 }
 
 function findActivePreviewJob(db: DatabaseSync, input: unknown): ManagementJob | null {
-  const target = normalizedPreviewTarget(input);
-  if (!target.stagingDir) return null;
+  const stagingDir = normalizedPreviewStagingDir(input);
+  if (!stagingDir) return null;
   const rows = db.prepare(`
     SELECT *
     FROM management_jobs
@@ -258,11 +255,7 @@ function findActivePreviewJob(db: DatabaseSync, input: unknown): ManagementJob |
   `).all(...ACTIVE_STATUSES) as unknown as ManagementJobRow[];
   const active = rows
     .map(rowToJob)
-    .find((job) => {
-      const activeTarget = normalizedPreviewTarget(job.input);
-      return activeTarget.stagingDir === target.stagingDir
-        && activeTarget.profile === target.profile;
-    });
+    .find((job) => normalizedPreviewStagingDir(job.input) === stagingDir);
   return active ?? null;
 }
 
