@@ -1851,6 +1851,8 @@ export interface DeviceHibernateOnIdleStatus {
   idleSince: number | null;
   /** Projected hibernation time while idle, or null while sessions are active. */
   hibernateAt: number | null;
+  /** Non-session reason hibernation is held off (deploy/update job or restart). */
+  blockedReason?: string | null;
 }
 
 export interface DeviceHibernateStatus {

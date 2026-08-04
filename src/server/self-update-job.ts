@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
@@ -10,9 +10,8 @@ import {
   readActiveRelease,
   type ReleaseSlotManifest,
 } from "./release-slots.js";
-import { clearRestartPending, triggerRestartPending } from "./restart-controller.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
-import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "./restart-signal.js";
+import { lifecycleBusyToolFailure, writeRestartSignalOrRollback } from "./restart-inflight.js";
 import { toolFailure } from "./tool-results.js";
 import { resolveBridgeControlRoot } from "./control-root.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
@@ -35,31 +34,6 @@ export interface SelfUpdateJobOptions {
 interface CommandResult {
   ok: boolean;
   output: string;
-}
-
-function cleanupFailedRestartSignal(signalFile: string): void {
-  clearRestartPending();
-  try {
-    unlinkSync(signalFile);
-  } catch {
-    // Best-effort cleanup.
-  }
-}
-
-function writeRestartSignalOrRollback(
-  signalFile: string,
-  validationMode: RestartValidationMode,
-  source: string,
-  releaseCandidate?: RestartReleaseCandidate,
-): number {
-  const otherBusy = triggerRestartPending();
-  try {
-    writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
-  } catch (error) {
-    cleanupFailedRestartSignal(signalFile);
-    throw error;
-  }
-  return otherBusy;
 }
 
 function createSelfUpdateRunner(
@@ -269,7 +243,14 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
     return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
   }
   if (isRestartAlreadyInFlight(dataDir)) {
-    return toolFailure("A restart is already pending. Wait for it to complete before updating.");
+    // This job runs inside the management-job runner, so it is itself the
+    // active lifecycle job — only the on-disk restart state can tell it that
+    // someone else already queued a cutover.
+    return lifecycleBusyToolFailure({
+      busy: { reason: "restart_in_flight" },
+      retryTarget: "the update",
+      toolTelemetry: { signalFile },
+    });
   }
 
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });

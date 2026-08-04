@@ -30,6 +30,11 @@ export type HibernateOnIdleStatus = {
   idleSince: number | null;
   /** Projected hibernation time while idle, or null while sessions are active. */
   hibernateAt: number | null;
+  /**
+   * Why hibernation is held off for a reason other than session activity
+   * (a deploy/update job or a restart cutover), or null when nothing blocks it.
+   */
+  blockedReason: string | null;
 };
 
 type PendingHibernate = {
@@ -44,10 +49,12 @@ type IdleWatch = {
   command: DeviceHibernateCommand;
   graceMs: number;
   getActiveSessionCount: () => number;
+  getBlockingReason: (() => string | null) | undefined;
   interval: ReturnType<typeof setInterval>;
   armedAt: number;
   idleSince: number | null;
   activeSessions: number;
+  blockedReason: string | null;
 };
 
 /** How often the armed idle watcher re-samples the active session count. */
@@ -101,6 +108,7 @@ export function getHibernateOnIdleStatus(): HibernateOnIdleStatus {
       activeSessions: 0,
       idleSince: null,
       hibernateAt: null,
+      blockedReason: null,
     };
   }
   return {
@@ -110,7 +118,19 @@ export function getHibernateOnIdleStatus(): HibernateOnIdleStatus {
     activeSessions: idleWatch.activeSessions,
     idleSince: idleWatch.idleSince,
     hibernateAt: idleWatch.idleSince === null ? null : idleWatch.idleSince + idleWatch.graceMs,
+    blockedReason: idleWatch.blockedReason,
   };
+}
+
+function readBlockingReason(watch: IdleWatch): string | null {
+  if (!watch.getBlockingReason) return null;
+  try {
+    return watch.getBlockingReason();
+  } catch (error) {
+    console.error("[device] Hibernate-on-idle blocker check failed:", error);
+    // An unknown lifecycle state must never be treated as safe to suspend.
+    return "lifecycle state could not be read";
+  }
 }
 
 function readActiveSessionCount(watch: IdleWatch): number {
@@ -127,11 +147,19 @@ function readActiveSessionCount(watch: IdleWatch): number {
 /**
  * Refresh the watcher's view of session activity. Returns true when the idle
  * window has been held for the full grace period and hibernation should fire.
+ *
+ * Deploy/restart work blocks the same way active sessions do — and resets the
+ * grace window — because a self_update or staging_deploy cutover runs for
+ * minutes with zero active sessions. Suspending the host there makes the
+ * launcher's wall-clock health-check window look like a timeout and can roll
+ * back a good release.
  */
 function sampleIdleWatch(watch: IdleWatch): boolean {
+  const blockedReason = readBlockingReason(watch);
+  watch.blockedReason = blockedReason;
   const activeSessions = readActiveSessionCount(watch);
   watch.activeSessions = activeSessions;
-  if (activeSessions > 0) {
+  if (activeSessions > 0 || blockedReason !== null) {
     watch.idleSince = null;
     return false;
   }
@@ -149,6 +177,8 @@ export function armHibernateOnIdle(options: {
   command: DeviceHibernateCommand;
   graceMs: number;
   getActiveSessionCount: () => number;
+  /** Returns why hibernation must be held off, or null when nothing blocks it. */
+  getBlockingReason?: () => string | null;
 }): HibernateOnIdleStatus {
   disarmHibernateOnIdle();
   const graceMs = Number.isFinite(options.graceMs) ? Math.max(0, Math.floor(options.graceMs)) : 0;
@@ -171,10 +201,12 @@ export function armHibernateOnIdle(options: {
     command: options.command,
     graceMs,
     getActiveSessionCount: options.getActiveSessionCount,
+    getBlockingReason: options.getBlockingReason,
     interval,
     armedAt: Date.now(),
     idleSince: null,
     activeSessions: 0,
+    blockedReason: null,
   };
   sampleIdleWatch(idleWatch);
   return getHibernateOnIdleStatus();

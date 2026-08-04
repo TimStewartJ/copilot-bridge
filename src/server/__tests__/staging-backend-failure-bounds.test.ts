@@ -135,3 +135,35 @@ describe("lazy staging backend startup failures are bounded", () => {
     expect(mod.__testing.getStartFailure(PREFIX)?.attempts).toBe(1);
   });
 });
+
+describe("lazy staging request rejections", () => {
+  it("forwards a handler rejection to next() instead of hanging the request", async () => {
+    const mod = await loadManager();
+    mod.__testing.resetBackendState();
+
+    const stagingDir = makeTestDir("staging-lazy-reject");
+    const target = { ...createPreviewTarget(stagingDir), prefix: PREFIX };
+    mod.rememberRestorablePreviewTarget(target);
+    // A recorded failure puts the prefix in its retry cooldown, so the handler
+    // reaches the failure response path without spawning a backend.
+    mod.__testing.recordStartFailure(PREFIX, "boom");
+
+    const router = mod.__testing.getLazyRouter(PREFIX);
+    expect(router).toBeDefined();
+
+    const failure = new Error("response already destroyed");
+    const res = {
+      setHeader() {
+        throw failure;
+      },
+      status() {
+        throw new Error("status should not be reached");
+      },
+    };
+    const next = vi.fn();
+
+    router!({} as never, res as never, next as never);
+    await vi.waitFor(() => expect(next).toHaveBeenCalledWith(failure));
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});

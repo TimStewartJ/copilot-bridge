@@ -244,6 +244,16 @@ vi.mock("../session-manager.js", () => ({
   isRestartPending: isRestartPendingMock,
 }));
 
+// The restart-signal write/rollback pair now lives in restart-inflight.ts, which
+// imports the controller directly rather than through the session-manager
+// re-export, so the mock has to be applied at the source module too.
+vi.mock("../restart-controller.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../restart-controller.js")>(),
+  triggerRestartPending: triggerRestartPendingMock,
+  clearRestartPending: clearRestartPendingMock,
+  isRestartPending: isRestartPendingMock,
+}));
+
 vi.mock("../dependency-sync.js", () => ({
   dependencySyncHash: dependencySyncHashMock,
   DEPENDENCY_SYNC_GIT_PATHSPEC: "package.json",

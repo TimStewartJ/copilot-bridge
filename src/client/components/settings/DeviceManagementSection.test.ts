@@ -37,6 +37,7 @@ function disarmedOnIdle() {
     activeSessions: 0,
     idleSince: null,
     hibernateAt: null,
+    blockedReason: null,
   };
 }
 
@@ -221,6 +222,35 @@ describe("DeviceManagementSection", () => {
       );
       expect(harness.dom.container.textContent ?? "").toContain("On idle: on");
       expect(harness.dom.container.textContent ?? "").not.toContain("All sessions idle");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("explains a deploy or restart hold instead of the idle countdown", async () => {
+    apiMocks.fetchHibernateStatus.mockResolvedValue({
+      ...idleStatus(),
+      onIdle: {
+        armed: true,
+        armedAt: NOW.getTime() - 60_000,
+        graceMs: 2 * 60_000,
+        activeSessions: 0,
+        idleSince: null,
+        hibernateAt: null,
+        blockedReason: "A staging_deploy management job is running",
+      },
+    });
+
+    const harness = await renderSection();
+    try {
+      await waitUntilAct(harness.act, () =>
+        (harness.dom.container.textContent ?? "").includes("held because"),
+      );
+      const text = harness.dom.container.textContent ?? "";
+      expect(text).toContain("a staging_deploy management job is running");
+      // Zero active sessions must not read as "about to hibernate".
+      expect(text).not.toContain("All sessions idle");
+      expect(text).not.toContain("waiting for all sessions to go idle");
     } finally {
       await harness.cleanup();
     }

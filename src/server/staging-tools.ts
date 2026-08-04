@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
+import { lifecycleBusyToolFailure, writeRestartSignalOrRollback } from "./restart-inflight.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -58,7 +59,6 @@ import {
   scheduleStartupBackendWarmup,
   seedStagingData,
   startStagingBackendProcess,
-  writeRestartSignalOrRollback,
   __testing as backendManagerTesting,
   type RestoreStagingBackendWithRetryOptions,
   type SeedStagingDataOptions,
@@ -415,27 +415,17 @@ function stagingFailure(
 /**
  * Restart-pending failure with a protocol-level Bridge tool contract.
  *
- * Tells the agent (via terminal + nextAction:"respond" + retryable:false in
- * both the structured fields and the model-visible text) to end its turn
- * rather than polling/sleeping/retrying. Polling keeps the session "active"
- * which itself blocks the launcher's restart cutover — a deadlock the prior
- * "Wait for it to complete" wording inadvertently encouraged.
+ * Thin wrapper over the shared lifecycle-busy envelope so the staging tools
+ * keep their stagingDir/signalFile telemetry.
  */
 function stagingRestartPendingFailure(
   stagingDir: string,
   verb: "deploying" | "previewing",
 ) {
-  const summary = "A restart is already pending — end your turn so the restart can complete.";
-  const detail = `A restart is already pending; this session's continued tool calls are themselves one of the restart blockers. Respond to the user and do not poll, sleep, or retry. The user can re-invoke ${verb === "deploying" ? "the deploy" : "the preview"} after the restart finishes.`;
-  return bridgeToolResult({
-    ...stagingFailure(summary, detail, {
-      toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE },
-    }),
-    isError: true,
-    summary,
-    terminal: true,
-    toolNextAction: "respond" as const,
-    retryable: false,
+  return lifecycleBusyToolFailure({
+    busy: { reason: "restart_in_flight" },
+    retryTarget: verb === "deploying" ? "the deploy" : "the preview",
+    toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE },
   });
 }
 
