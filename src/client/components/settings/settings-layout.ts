@@ -1,4 +1,4 @@
-export type CategoryId = "general" | "integrations" | "management" | "usage" | "diagnostics";
+export type CategoryId = "general" | "integrations" | "updates" | "usage" | "diagnostics";
 
 export type SectionId =
   | "system-prompt"
@@ -28,7 +28,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "general",
     label: "General",
-    sections: ["updates", "system-prompt", "model", "reasoning-effort", "appearance", "notifications", "device-management"],
+    sections: ["system-prompt", "model", "reasoning-effort", "appearance", "notifications", "device-management"],
   },
   {
     id: "integrations",
@@ -36,14 +36,14 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
     sections: ["providers", "tags", "mcp-servers", "skills"],
   },
   {
-    id: "diagnostics",
-    label: "Diagnostics",
-    sections: ["bridge-status", "browser-diagnostics", "voice-input"],
+    id: "updates",
+    label: "Updates & Deployment",
+    sections: ["updates", "management-jobs", "bridge-status"],
   },
   {
-    id: "management",
-    label: "Management",
-    sections: ["management-jobs"],
+    id: "diagnostics",
+    label: "Diagnostics",
+    sections: ["browser-diagnostics", "voice-input"],
   },
   {
     id: "usage",
@@ -54,12 +54,20 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
 
 export const DEFAULT_CATEGORY: CategoryId = "general";
 
+/** Retired category ids kept so existing `?group=` deep links still resolve. */
+const CATEGORY_ALIASES: Record<string, CategoryId> = {
+  management: "updates",
+};
+
 const VALID_CATEGORY_IDS = new Set<string>(SETTINGS_CATEGORIES.map((c) => c.id));
 
 /** Normalizes an unknown/invalid group search param value to the default category. */
 export function normalizeCategory(value: string | null | undefined): CategoryId {
   if (value && VALID_CATEGORY_IDS.has(value)) {
     return value as CategoryId;
+  }
+  if (value && CATEGORY_ALIASES[value]) {
+    return CATEGORY_ALIASES[value];
   }
   return DEFAULT_CATEGORY;
 }

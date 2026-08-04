@@ -13,7 +13,6 @@ export const PRODUCTION_RUNTIME_PATHS = resolveRuntimePaths(process.env);
 export const PRODUCTION_DATA_DIR = PRODUCTION_RUNTIME_PATHS.dataDir;
 export const SIGNAL_FILE = join(PRODUCTION_DATA_DIR, "restart.signal");
 export const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_DATA_DIR, "pre-deploy-sha");
-export const LEGACY_STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
 export const STAGING_PREVIEW_DIR_ENV = "BRIDGE_STAGING_PREVIEW_DIR";
 export const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 export const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
@@ -45,11 +44,8 @@ export const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
   join(PRODUCTION_DATA_DIR, "staging-previews"),
 );
 
-export type StagingPreviewProfile = "clone";
-
 export interface PreviewTarget {
   prefix: string;
-  profile: StagingPreviewProfile;
   stagingDir: string;
   basePath: string;
   outDir: string;
@@ -88,34 +84,21 @@ export function uniqueResolvedPaths(paths: string[]): string[] {
 }
 
 export function listStagingPreviewParents(): string[] {
-  return uniqueResolvedPaths([STAGING_PREVIEW_PARENT, LEGACY_STAGING_DIST_PARENT]);
+  return uniqueResolvedPaths([STAGING_PREVIEW_PARENT]);
 }
 
-export function resolvePreviewProfile(_value?: string): StagingPreviewProfile {
-  return "clone";
-}
-
-export function buildPreviewPrefix(stagingDir: string, _profile: StagingPreviewProfile = "clone"): string {
+export function buildPreviewPrefix(stagingDir: string): string {
   return basename(stagingDir);
 }
 
+/** Returns the staging worktree name a preview prefix maps to, or null when it is not servable. */
 export function parsePreviewPrefix(
   prefix: string,
   activeWorktrees?: ReadonlySet<string>,
-): { stagingName: string; profile: StagingPreviewProfile } | null {
-  if (!isSafePreviewPrefix(prefix)) {
-    return null;
-  }
-
-  if (activeWorktrees?.has(prefix)) {
-    return { stagingName: prefix, profile: "clone" };
-  }
-
-  if (activeWorktrees && !activeWorktrees.has(prefix)) {
-    return null;
-  }
-
-  return { stagingName: prefix, profile: "clone" };
+): string | null {
+  if (!isSafePreviewPrefix(prefix)) return null;
+  if (activeWorktrees && !activeWorktrees.has(prefix)) return null;
+  return prefix;
 }
 
 function isSafePreviewPrefix(prefix: string): boolean {
@@ -126,21 +109,16 @@ export function escapeSqliteStringLiteral(value: string): string {
   return value.replaceAll("'", "''");
 }
 
-export function createPreviewTarget(stagingDir: string, profile: StagingPreviewProfile = "clone"): PreviewTarget {
-  const prefix = buildPreviewPrefix(stagingDir, profile);
+export function createPreviewTarget(stagingDir: string): PreviewTarget {
+  const prefix = buildPreviewPrefix(stagingDir);
   const outDir = join(STAGING_PREVIEW_PARENT, prefix);
   return {
     prefix,
-    profile,
     stagingDir,
     basePath: `/staging/${prefix}/`,
     outDir,
     updatedAtMs: directoryMtimeMs(outDir),
   };
-}
-
-export function listPreviewTargetsForStagingDir(stagingDir: string): PreviewTarget[] {
-  return [createPreviewTarget(stagingDir)];
 }
 
 export function shouldManageStagingArtifacts(

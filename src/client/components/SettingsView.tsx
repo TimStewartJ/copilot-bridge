@@ -277,7 +277,6 @@ export default function SettingsView() {
 
           <div className="min-w-0">
             <CategoryPanel category="general" activeCategory={activeCategory}>
-              <UpdatesSection />
               <SystemPromptSection draft={draft} setDraft={setDraft} />
               <ModelSection draft={draft} setDraft={setDraft} />
               <ReasoningEffortSection draft={draft} setDraft={setDraft} />
@@ -295,14 +294,15 @@ export default function SettingsView() {
               <SkillsSection />
             </CategoryPanel>
 
-            <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
+            <CategoryPanel category="updates" activeCategory={activeCategory}>
+              <UpdatesSection />
+              <ManagementJobsSection />
               <BridgeCommitsSection />
-              <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} />
-              <VoiceInputSection />
             </CategoryPanel>
 
-            <CategoryPanel category="management" activeCategory={activeCategory}>
-              <ManagementJobsSection />
+            <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
+              <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} />
+              <VoiceInputSection />
             </CategoryPanel>
 
             <CategoryPanel category="usage" activeCategory={activeCategory}>

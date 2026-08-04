@@ -170,10 +170,6 @@ export interface TriggerScheduleOptions {
   scheduledFor?: string;
 }
 
-export function isGlobalPaused(): boolean {
-  return _globalPause;
-}
-
 export function setGlobalPause(paused: boolean): void {
   _globalPause = paused;
   console.log(`[scheduler] Global pause: ${paused}`);

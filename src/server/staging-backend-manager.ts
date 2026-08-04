@@ -46,7 +46,6 @@ import {
   previewTargetLastActivityMs,
   removePreviewData,
   type PreviewTarget,
-  type StagingPreviewProfile,
 } from "./staging-preview-shared.js";
 import {
   appendCapturedCommandOutput,
@@ -209,8 +208,7 @@ export interface SeedStagingDataOptions {
 
 export interface RestoreStagingBackendWithRetryOptions {
   attempts?: number;
-  profile?: StagingPreviewProfile;
-  initializeBackend?: (prefix: string, stagingDir: string, profile?: StagingPreviewProfile) => Promise<void>;
+  initializeBackend?: (prefix: string, stagingDir: string) => Promise<void>;
   log?: (msg: string) => void;
 }
 
@@ -347,7 +345,7 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
   return runtimePaths;
 }
 
-export function getExistingPreviewRuntime(stagingDir: string, _profile: StagingPreviewProfile): RuntimePaths | null {
+export function getExistingPreviewRuntime(stagingDir: string): RuntimePaths | null {
   const runtimePaths = resolveStagingPreviewRuntimePaths(stagingDir);
   const requiredPaths = [
     join(runtimePaths.dataDir, "bridge.db"),
@@ -363,11 +361,10 @@ interface PreparePreviewRuntimeOptions {
 
 async function preparePreviewRuntime(
   stagingDir: string,
-  profile: StagingPreviewProfile,
   options: PreparePreviewRuntimeOptions = {},
 ): Promise<RuntimePaths> {
   if (options.preserveExisting) {
-    const existing = getExistingPreviewRuntime(stagingDir, profile);
+    const existing = getExistingPreviewRuntime(stagingDir);
     if (existing) return existing;
   }
 
@@ -607,7 +604,7 @@ async function startRestorableStagingBackend(
     });
 
     log(`Starting staged backend for ${prefix} (${reason})...`);
-    const restoreResult = await restore(prefix, target.stagingDir, { profile: target.profile });
+    const restoreResult = await restore(prefix, target.stagingDir);
     if (restoreResult.restored) {
       stagingBackendStartFailures.delete(prefix);
       const backend = activeStagingBackends.get(prefix);
@@ -1022,19 +1019,18 @@ async function teardownStagingBackend(
 export async function initializeStagingBackend(
   prefix: string,
   stagingDir: string,
-  profile: StagingPreviewProfile = "clone",
 ): Promise<void> {
   await teardownStagingBackend(prefix, { removeData: false });
   const stalePreviewDataDir = activePreviewDataDirs.get(prefix)
     ?? join(stagingDir, "data");
   removePreviewData(stalePreviewDataDir);
   activePreviewDataDirs.delete(prefix);
-  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));
+  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir));
 
   let runtimePaths: RuntimePaths | null = null;
 
   try {
-    runtimePaths = await preparePreviewRuntime(stagingDir, profile);
+    runtimePaths = await preparePreviewRuntime(stagingDir);
     activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
 
     log(`Starting staged backend child process from ${stagingDir}...`);
@@ -1060,15 +1056,14 @@ export async function initializeStagingBackend(
 async function restoreStagingBackend(
   prefix: string,
   stagingDir: string,
-  profile: StagingPreviewProfile = "clone",
 ): Promise<void> {
   await teardownStagingBackend(prefix, { removeData: false });
-  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));
+  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir));
 
   let runtimePaths: RuntimePaths | null = null;
 
   try {
-    runtimePaths = await preparePreviewRuntime(stagingDir, profile, { preserveExisting: true });
+    runtimePaths = await preparePreviewRuntime(stagingDir, { preserveExisting: true });
     activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
 
     log(`Restoring staged backend child process from ${stagingDir}...`);
@@ -1092,14 +1087,13 @@ export async function restoreStagingBackendWithRetry(
   options: RestoreStagingBackendWithRetryOptions = {},
 ): Promise<{ restored: boolean; attempts: number; error?: string }> {
   const maxAttempts = options.attempts ?? 2;
-  const profile = options.profile ?? "clone";
   const initializeBackend = options.initializeBackend ?? restoreStagingBackend;
   const writeLog = options.log ?? log;
 
   let lastError: string | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await initializeBackend(prefix, stagingDir, profile);
+      await initializeBackend(prefix, stagingDir);
       return { restored: true, attempts: attempt };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);

@@ -13,8 +13,8 @@ describe("SETTINGS_CATEGORIES", () => {
     expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual([
       "general",
       "integrations",
+      "updates",
       "diagnostics",
-      "management",
       "usage",
     ]);
 
@@ -44,21 +44,26 @@ describe("SETTINGS_CATEGORIES", () => {
   it("places sections in the categories that own them", () => {
     const general = getCategoryMeta("general");
     const integrations = getCategoryMeta("integrations");
+    const updates = getCategoryMeta("updates");
     const diagnostics = getCategoryMeta("diagnostics");
-    const management = getCategoryMeta("management");
     const usage = getCategoryMeta("usage");
 
     expect(general!.label).toBe("General");
-    expect(general!.sections[0]).toBe("updates");
-    expect(general!.sections).toContain("system-prompt");
+    expect(general!.sections[0]).toBe("system-prompt");
+    expect(general!.sections).not.toContain("updates");
     expect(integrations!.sections).toContain("mcp-servers");
-    expect(diagnostics!.sections[0]).toBe("bridge-status");
-    expect(diagnostics!.sections).toContain("browser-diagnostics");
+
+    // The three update/deploy status surfaces live together, in read order:
+    // what the release is, the job that performed it, whether it is live.
+    expect(updates!.label).toBe("Updates & Deployment");
+    expect(updates!.sections).toEqual(["updates", "management-jobs", "bridge-status"]);
+
+    expect(diagnostics!.sections[0]).toBe("browser-diagnostics");
+    expect(diagnostics!.sections).toContain("voice-input");
+    expect(diagnostics!.sections).not.toContain("bridge-status");
     expect(diagnostics!.sections).not.toContain("updates");
     expect(diagnostics!.sections).not.toContain("management-jobs");
     expect(diagnostics!.sections).not.toContain("local-copilot-usage");
-    expect(management!.label).toBe("Management");
-    expect(management!.sections).toEqual(["management-jobs"]);
     expect(usage!.label).toBe("Copilot Usage");
     expect(usage!.sections).toEqual(["local-copilot-usage"]);
   });
@@ -67,12 +72,17 @@ describe("SETTINGS_CATEGORIES", () => {
 describe("normalizeCategory", () => {
   it("passes through known ids and falls back to the default otherwise", () => {
     expect(DEFAULT_CATEGORY).toBe("general");
-    for (const id of ["general", "integrations", "management", "usage", "diagnostics"]) {
+    for (const id of ["general", "integrations", "updates", "usage", "diagnostics"]) {
       expect(normalizeCategory(id)).toBe(id);
     }
     for (const bad of [null, undefined, "", "unknown-category", "GENERAL", "  general  "]) {
       expect(normalizeCategory(bad), String(bad)).toBe(DEFAULT_CATEGORY);
     }
+  });
+
+  it("maps the retired 'management' id forward so old ?group= links still resolve", () => {
+    expect(normalizeCategory("management")).toBe("updates");
+    expect(normalizeCategory("management")).not.toBe(DEFAULT_CATEGORY);
   });
 });
 

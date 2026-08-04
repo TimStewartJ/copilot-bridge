@@ -81,17 +81,14 @@ import {
   STAGING_STALE_ARTIFACT_RECENT_GRACE_MS,
   createPreviewTarget,
   directoryMtimeMs,
-  listPreviewTargetsForStagingDir,
   listStagingPreviewParents,
   parsePreviewPrefix,
   previewTargetLastActivityMs,
   removeDirectoryWithRetries,
   removePreviewData,
-  resolvePreviewProfile,
   shouldManageStagingArtifacts,
   uniqueResolvedPaths,
   type PreviewTarget,
-  type StagingPreviewProfile,
 } from "./staging-preview-shared.js";
 import {
   joinFailureSections,
@@ -124,9 +121,7 @@ type StagingCommandRunner = (
 ) => Promise<{ ok: boolean; output: string }>;
 
 async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
-  for (const target of listPreviewTargetsForStagingDir(stagingDir)) {
-    await cleanupPreviewTarget(stagingDir, target.profile);
-  }
+  await cleanupPreviewTarget(stagingDir);
 }
 
 async function cleanupPreviewResources(
@@ -146,10 +141,9 @@ async function cleanupPreviewResources(
 
 export async function cleanupPreviewTarget(
   stagingDir: string,
-  profile: StagingPreviewProfile = "clone",
   options: { removeData?: boolean } = {},
 ): Promise<void> {
-  const target = createPreviewTarget(stagingDir, profile);
+  const target = createPreviewTarget(stagingDir);
   await cleanupPreviewResources(target.prefix, options);
 }
 
@@ -233,11 +227,10 @@ type RegisterExistingPreviewsFromDiskOptions = {
 function createRestorablePreviewTarget(
   stagingParent: string,
   prefix: string,
-  profile: StagingPreviewProfile,
   outDir: string,
 ): PreviewTarget {
   return {
-    ...createPreviewTarget(join(stagingParent, prefix), profile),
+    ...createPreviewTarget(join(stagingParent, prefix)),
     outDir,
     updatedAtMs: directoryMtimeMs(outDir),
   };
@@ -277,8 +270,7 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
         const isNewFrontend = !previewMap.has(entry.name);
         const target = createRestorablePreviewTarget(
           stagingParent,
-          parsed.stagingName,
-          parsed.profile,
+          parsed,
           distDir,
         );
 
@@ -535,7 +527,7 @@ async function pruneStaleStagingArtifacts(options: {
   for (const target of options.restorablePreviews.values()) {
     const parsed = parsePreviewPrefix(target.prefix);
     if (!parsed) continue;
-    byStagingName.set(parsed.stagingName, [...(byStagingName.get(parsed.stagingName) ?? []), target]);
+    byStagingName.set(parsed, [...(byStagingName.get(parsed) ?? []), target]);
   }
 
   const entries = Array.from(options.activeWorktrees).map((prefix) => {
@@ -673,8 +665,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
           if (!restorablePreviews.has(entry.name)) {
             const target = createRestorablePreviewTarget(
               stagingParent,
-              parsed.stagingName,
-              parsed.profile,
+              parsed,
               distDir,
             );
             previewMap.set(entry.name, distDir);
@@ -765,7 +756,6 @@ export const __testing = {
 export interface StagingPreviewJobInput {
   stagingDir: string;
   validate?: boolean;
-  profile?: string;
 }
 
 export interface StagingJobRunOptions {
@@ -779,7 +769,6 @@ export async function runStagingPreviewJob(
   options: StagingJobRunOptions = {},
 ): Promise<Record<string, unknown>> {
   const { stagingDir } = args;
-  const profile = resolvePreviewProfile(args.profile);
   const shouldValidate = args.validate !== false;
   const writeLog = options.log ?? log;
   const runCommand: StagingCommandRunner = (cmd, cwd, runOptions = {}) =>
@@ -796,10 +785,10 @@ export async function runStagingPreviewJob(
     );
   }
 
-  const target = createPreviewTarget(stagingDir, profile);
+  const target = createPreviewTarget(stagingDir);
   const { prefix, basePath, outDir } = target;
 
-  writeLog(`Building ${profile} staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
+  writeLog(`Building staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
 
   const previewParent = dirname(outDir);
   if (!existsSync(previewParent)) {
@@ -902,7 +891,7 @@ export async function runStagingPreviewJob(
   if (options.startBackend === true) {
     if (hasRegisteredExpressApp()) {
       try {
-        await initializeStagingBackend(prefix, stagingDir, profile);
+        await initializeStagingBackend(prefix, stagingDir);
         backendReady = true;
       } catch (err) {
         backendError = err instanceof Error ? err.message : String(err);
@@ -929,7 +918,6 @@ export async function runStagingPreviewJob(
   writeLog(`Staging preview ready at ${fullUrl || localUrl}`);
   return {
     success: true,
-    profile,
     previewPath: basePath,
     previewUrl: fullUrl,
     localUrl,
@@ -1883,7 +1871,6 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
     const job = store.enqueue("staging_preview", {
       stagingDir,
       validate: args.validate !== false,
-      profile: resolvePreviewProfile(args.profile),
     });
     return queuedManagementJobResult(job, "Staging preview");
   } catch (error) {

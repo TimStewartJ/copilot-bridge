@@ -33,7 +33,6 @@ function stagingPreviewInput(value: unknown): StagingPreviewJobInput {
   return {
     stagingDir: String(record.stagingDir ?? ""),
     validate: record.validate !== false,
-    profile: typeof record.profile === "string" ? record.profile : undefined,
   };
 }
 
