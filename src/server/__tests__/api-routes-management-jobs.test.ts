@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { request } from "./api-routes-test-helpers.js";
 import { makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
@@ -8,7 +9,7 @@ import {
   ManagementJobNotCancellableError,
   type ManagementJobStore,
 } from "../management-job-store.js";
-import { clearRestartPending, triggerRestartPending } from "../restart-controller.js";
+import { clearRestartPending } from "../restart-controller.js";
 
 function createManagementJobApiTestApp(): ReturnType<typeof createTestApp> & { store: ManagementJobStore } {
   const local = createTestApp();
@@ -397,15 +398,22 @@ describe("management job API routes", () => {
       expect(badInput.status).toBe(400);
     });
 
-    it("rejects enqueue when a restart is pending", async () => {
-      const { app } = createManagementJobApiTestApp();
-      triggerRestartPending();
+    it("rejects enqueue when a restart is queued by another process", async () => {
+      const { app, ctx } = createManagementJobApiTestApp();
+      const dataDir = ctx.runtimePaths?.dataDir;
+      if (!dataDir) throw new Error("test app is missing runtime data dir");
+      const signalFile = join(dataDir, "restart.signal");
+
+      // The management-job runner is a separate process: it triggers the
+      // restart the server gets restarted by, so only the on-disk record can
+      // tell the server a cutover is queued.
+      writeFileSync(signalFile, "{}");
       try {
         const res = await request(app).post("/api/management-jobs").send({ type: "self_update" });
         expect(res.status).toBe(409);
         expect(res.body.error).toContain("restart is already pending");
       } finally {
-        clearRestartPending();
+        rmSync(signalFile, { force: true });
       }
     });
 

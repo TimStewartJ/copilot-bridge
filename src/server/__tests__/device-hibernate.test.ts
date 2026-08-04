@@ -102,6 +102,15 @@ describe("device-hibernate idle watcher", () => {
     return armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount });
   }
 
+  function armWithBlocker(getBlockingReason: () => string | null) {
+    return armHibernateOnIdle({
+      command,
+      graceMs: GRACE_MS,
+      getActiveSessionCount: () => 0,
+      getBlockingReason,
+    });
+  }
+
   it("reports a disarmed watcher initially", () => {
     expect(getHibernateOnIdleStatus()).toEqual({
       armed: false,
@@ -110,6 +119,7 @@ describe("device-hibernate idle watcher", () => {
       activeSessions: 0,
       idleSince: null,
       hibernateAt: null,
+      blockedReason: null,
     });
   });
 
@@ -122,6 +132,7 @@ describe("device-hibernate idle watcher", () => {
       activeSessions: 0,
       idleSince: Date.now(),
       hibernateAt: Date.now() + GRACE_MS,
+      blockedReason: null,
     });
 
     // Arming alone must never hibernate — only a later poll tick can fire.
@@ -171,6 +182,57 @@ describe("device-hibernate idle watcher", () => {
 
     expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
     expect(getHibernateOnIdleStatus()).toMatchObject({ armed: true, activeSessions: 1, idleSince: null });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("never hibernates while deploy or restart work is in flight, even with zero active sessions", async () => {
+    armWithBlocker(() => "A staging_deploy management job is running");
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 3);
+
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    expect(getHibernateOnIdleStatus()).toMatchObject({
+      armed: true,
+      activeSessions: 0,
+      idleSince: null,
+      hibernateAt: null,
+      blockedReason: "A staging_deploy management job is running",
+    });
+  });
+
+  it("restarts the grace window from scratch once the blocker clears", async () => {
+    let blocked = true;
+    armWithBlocker(() => (blocked ? "A restart is already pending" : null));
+
+    // Most of a grace window passes while blocked; none of it may count.
+    await vi.advanceTimersByTimeAsync(GRACE_MS);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+
+    blocked = false;
+    await vi.advanceTimersByTimeAsync(HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(getHibernateOnIdleStatus()).toMatchObject({
+      blockedReason: null,
+      idleSince: Date.now(),
+    });
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS - HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock, "grace window restarted after unblock").not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when the blocker check throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    armWithBlocker(() => {
+      throw new Error("restart state unreadable");
+    });
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
+
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+    expect(getHibernateOnIdleStatus().blockedReason).toBe("lifecycle state could not be read");
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
   });

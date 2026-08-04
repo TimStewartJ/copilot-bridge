@@ -4,7 +4,6 @@ import { openMemoryDatabase } from "../db.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { toolFailure } from "../tool-results.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import { makeTestDir } from "./helpers.js";
 
@@ -126,6 +125,21 @@ afterEach(async () => {
   } catch {}
 });
 
+/**
+ * The lifecycle-busy contract: terminal + respond + non-retryable, so the agent
+ * ends its turn instead of polling (polling itself blocks the restart cutover).
+ */
+function expectLifecycleBusyFailure(result: any, expectedText: string): void {
+  expect(result.resultType).toBe("failure");
+  expect(result.textResultForLlm).toContain(expectedText);
+  expect(result.textResultForLlm).not.toContain("Wait for it to");
+  expect(result.terminal).toBe(true);
+  expect(result.toolNextAction).toBe("respond");
+  expect(result.retryable).toBe(false);
+  expect(result.isError).toBe(true);
+  expect(result.content?.[0]?.text).toContain('"nextAction":"respond"');
+}
+
 describe("self_update", () => {
   it("enqueues a durable management job without running git in the tool handler", async () => {
     existsSyncOverrideMock.mockImplementation((path) => {
@@ -183,8 +197,7 @@ describe("self_update", () => {
       arguments: {},
     } as any) as any;
 
-    expect(duplicate).toMatchObject({ resultType: "failure" });
-    expect(duplicate.textResultForLlm).toContain("already active");
+    expectLifecycleBusyFailure(duplicate, "A self_update management job is queued");
   });
 
   it("normalizes direct restart-pending failures", async () => {
@@ -197,13 +210,14 @@ describe("self_update", () => {
     const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
-    await expect(tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_update",
-      arguments: {},
-    } as any)).resolves.toEqual(
-      toolFailure("A restart is already pending. Wait for it to complete before updating."),
+    expectLifecycleBusyFailure(
+      await tool.handler({}, {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "self_update",
+        arguments: {},
+      } as any),
+      "A restart is already pending",
     );
   });
 
@@ -231,13 +245,14 @@ describe("self_update", () => {
     const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
-    await expect(tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_update",
-      arguments: {},
-    } as any)).resolves.toEqual(
-      toolFailure("A restart is already pending. Wait for it to complete before updating."),
+    expectLifecycleBusyFailure(
+      await tool.handler({}, {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "self_update",
+        arguments: {},
+      } as any),
+      "A restart is already pending",
     );
   });
 
@@ -256,13 +271,14 @@ describe("self_restart", () => {
     const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
 
-    await expect(tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_restart",
-      arguments: {},
-    } as any)).resolves.toEqual(
-      toolFailure("A restart is already pending. Wait for it to complete before restarting."),
+    expectLifecycleBusyFailure(
+      await tool.handler({}, {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "self_restart",
+        arguments: {},
+      } as any),
+      "A restart is already pending",
     );
   });
 

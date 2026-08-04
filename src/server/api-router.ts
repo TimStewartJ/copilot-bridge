@@ -139,7 +139,7 @@ import {
   enqueueManagementJob,
 } from "./management-job-enqueue.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
-import { isRestartAlreadyInFlight } from "./restart-state.js";
+import { describeLifecycleBusyState, findLifecycleBusyState } from "./restart-inflight.js";
 import { writeRestartSignalFile } from "./restart-signal.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
@@ -1915,6 +1915,13 @@ export function createApiRouter(
       command: idleHibernateCommand,
       graceMs: graceMinutes * 60_000,
       getActiveSessionCount: () => ctx.sessionManager.getLifecycleBlockingSessionCount(),
+      getBlockingReason: () => {
+        const busy = findLifecycleBusyState({
+          dataDir: ctx.runtimePaths?.dataDir,
+          managementJobStore: ctx.managementJobStore,
+        });
+        return busy ? describeLifecycleBusyState(busy) : null;
+      },
     });
     console.log(
       `[device] Hibernate-on-idle armed via API (grace=${graceMinutes}m, active=${status.activeSessions})`,
@@ -1980,18 +1987,17 @@ export function createApiRouter(
     const dataDir = ctx.runtimePaths?.dataDir;
     if (!dataDir) return res.status(503).json({ error: "Bridge runtime paths are not available." });
 
-    const activeExclusiveJob = ctx.managementJobStore
-      ?.listActive(["self_update", "staging_deploy"])[0];
-    if (activeExclusiveJob) {
-      return res.status(409).json({
-        error: `Cannot restart while a ${activeExclusiveJob.type} management job is ${activeExclusiveJob.status}.`,
-        activeJob: toManagementJobSummaryResponse(activeExclusiveJob, {
-          now: new Date(),
-          staleAfterMs: managementJobStaleAfterMs(),
-        }),
-      });
-    }
-    if (isRestartAlreadyInFlight(dataDir)) {
+    const busy = findLifecycleBusyState({ dataDir, managementJobStore: ctx.managementJobStore });
+    if (busy) {
+      if (busy.reason === "management_job") {
+        return res.status(409).json({
+          error: `Cannot restart while a ${busy.job.type} management job is ${busy.job.status}.`,
+          activeJob: toManagementJobSummaryResponse(busy.job, {
+            now: new Date(),
+            staleAfterMs: managementJobStaleAfterMs(),
+          }),
+        });
+      }
       return res.status(409).json({ error: "A restart is already pending." });
     }
 

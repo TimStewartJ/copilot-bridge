@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
-import { clearRestartPending, triggerRestartPending } from "../restart-controller.js";
-import { isRestartAlreadyInFlight } from "../restart-state.js";
-import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "../restart-signal.js";
+import {
+  findLifecycleBusyState,
+  lifecycleBusyToolFailure,
+  writeRestartSignalOrRollback,
+} from "../restart-inflight.js";
 import { bridgeToolResult, toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { queuedManagementJobResult } from "../management-job-tool-results.js";
@@ -42,25 +44,11 @@ function getActiveManagementJob(error: unknown) {
   return undefined;
 }
 
-function cleanupFailedRestartSignal(signalFile: string): void {
-  clearRestartPending();
-  try { unlinkSync(signalFile); } catch {}
-}
-
-function writeRestartSignalOrRollback(
-  signalFile: string,
-  validationMode: RestartValidationMode,
-  source: string,
-  releaseCandidate?: RestartReleaseCandidate,
-): number {
-  const otherBusy = triggerRestartPending();
-  try {
-    writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
-  } catch (error) {
-    cleanupFailedRestartSignal(signalFile);
-    throw error;
-  }
-  return otherBusy;
+function findBusyLifecycle(ctx: AppContext) {
+  return findLifecycleBusyState({
+    dataDir: getDataDir(ctx),
+    managementJobStore: ctx.managementJobStore,
+  });
 }
 
 export interface RegisterSelfAdminToolsOptions {
@@ -74,8 +62,13 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const signalFile = getSignalFile(ctx);
-      if (isRestartAlreadyInFlight(getDataDir(ctx))) {
-        return toolFailure("A restart is already pending. Wait for it to complete before restarting.");
+      const busy = findBusyLifecycle(ctx);
+      if (busy) {
+        return lifecycleBusyToolFailure({
+          busy,
+          retryTarget: "the restart",
+          toolTelemetry: { signalFile },
+        });
       }
       const dataDir = getDataDir(ctx);
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
@@ -118,8 +111,13 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
       }
 
       const signalFile = getSignalFile(ctx);
-      if (isRestartAlreadyInFlight(getDataDir(ctx))) {
-        return toolFailure("A restart is already pending. Wait for it to complete before updating.");
+      const busy = findBusyLifecycle(ctx);
+      if (busy) {
+        return lifecycleBusyToolFailure({
+          busy,
+          retryTarget: "the update",
+          toolTelemetry: { signalFile },
+        });
       }
 
       const dataDir = getDataDir(ctx);
@@ -131,9 +129,13 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
       } catch (error) {
         const activeJob = getActiveManagementJob(error);
         if (activeJob) {
-          return toolFailure("A deploy/update management job is already active.", {
-            detail: `Job ${activeJob.id} (${activeJob.type}) is ${activeJob.status}. Wait for it to finish before updating.`,
-            toolTelemetry: { activeJobId: activeJob.id, activeJobType: activeJob.type },
+          // Race backstop: another caller enqueued between the gate above and
+          // store.enqueue. Same contract as the gate so the agent still ends
+          // its turn instead of polling.
+          return lifecycleBusyToolFailure({
+            busy: { reason: "management_job", job: activeJob },
+            retryTarget: "the update",
+            toolTelemetry: { signalFile },
           });
         }
         return toolFailure("Self-update could not be queued.", {

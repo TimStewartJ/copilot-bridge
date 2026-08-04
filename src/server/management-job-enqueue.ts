@@ -8,8 +8,8 @@ import {
 } from "./management-job-store.js";
 import type { AppContext } from "./app-context.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
-import { isRestartPending } from "./restart-controller.js";
-import { SIGNAL_FILE, resolvePreviewProfile } from "./staging-preview-shared.js";
+import { isRestartAlreadyInFlight } from "./restart-state.js";
+import { PRODUCTION_DATA_DIR, resolvePreviewProfile } from "./staging-preview-shared.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 
 export class ManagementJobEnqueueError extends Error {
@@ -146,7 +146,10 @@ function applyPreflightGuards(ctx: AppContext, type: ManagementJobType): void {
       );
     }
   }
-  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+  // Disk-derived so a cutover queued by another process (the management-job
+  // runner triggers the restart, but the server is what gets restarted) is
+  // visible here. A process-local isRestartPending() is not.
+  if (isRestartAlreadyInFlight(ctx.runtimePaths?.dataDir ?? PRODUCTION_DATA_DIR)) {
     throw new ManagementJobEnqueueError("A restart is already pending.", 409);
   }
 }

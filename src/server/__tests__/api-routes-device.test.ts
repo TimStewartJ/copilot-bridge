@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request, createTestApp, createMockSessionManager, eventually } from "./api-routes-test-helpers.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate } from "../platform.js";
 import { cancelHibernate, disarmHibernateOnIdle, getHibernateOnIdleStatus, HIBERNATE_IDLE_POLL_INTERVAL_MS } from "../device-hibernate.js";
+import type { AppContext } from "../app-context.js";
 
 vi.mock("../platform.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../platform.js")>();
@@ -26,6 +27,7 @@ const disarmedOnIdle = {
   activeSessions: 0,
   idleSince: null,
   hibernateAt: null,
+  blockedReason: null,
 };
 
 beforeEach(() => {
@@ -242,8 +244,56 @@ describe("Device management routes", () => {
     expect(getHibernateOnIdleStatus().armed).toBe(false);
   });
 
-  it("POST /api/device/hibernate/on-idle disarms the watcher when disabled", async () => {
+  it("POST /api/device/hibernate/on-idle holds hibernation while a deploy job is active", async () => {
     vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
+    requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);
+    let activeJobs: unknown[] = [{
+      id: "job-1",
+      type: "staging_deploy",
+      status: "running",
+      input: {},
+      createdAt: "2026-06-06T11:59:00.000Z",
+      updatedAt: "2026-06-06T11:59:00.000Z",
+    }];
+    const { app } = createTestApp({
+      sessionManager: {
+        ...createMockSessionManager(),
+        getLifecycleBlockingSessionCount: () => 0,
+      },
+      managementJobStore: {
+        listActive: () => activeJobs,
+      } as unknown as AppContext["managementJobStore"],
+    });
+
+    const res = await request(app)
+      .post("/api/device/hibernate/on-idle")
+      .send({ enabled: true, graceMinutes: 1 });
+
+    // Zero active sessions, but a cutover is in flight — the watcher must hold.
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({
+      armed: true,
+      activeSessions: 0,
+      idleSince: null,
+      hibernateAt: null,
+      blockedReason: "A staging_deploy management job is running",
+    });
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
+
+    const statusRes = await request(app).get("/api/device/hibernate");
+    expect(statusRes.body.onIdle).toMatchObject({
+      armed: true,
+      blockedReason: "A staging_deploy management job is running",
+    });
+
+    activeJobs = [];
+    await vi.advanceTimersByTimeAsync(60_000 + 2 * HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    await eventually(() => expect(requestDeviceHibernateMock).toHaveBeenCalledOnce());
+  });
+
+  it("POST /api/device/hibernate/on-idle disarms the watcher when disabled", async () => {    vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
     requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);
     const { app } = createTestApp();
 

@@ -171,6 +171,7 @@ export function DeviceManagementSection() {
   const isPending = Boolean(pending?.pending && pending.scheduledAt != null);
   const remainingMs = isPending && pending?.scheduledAt != null ? pending.scheduledAt - now : 0;
   const idleActiveSessions = onIdle?.activeSessions ?? 0;
+  const idleBlockedReason = onIdle?.blockedReason ?? null;
   const idleHibernateAt = onIdle?.hibernateAt ?? null;
   const idleRemainingMs = idleHibernateAt != null ? idleHibernateAt - now : 0;
 
@@ -240,7 +241,12 @@ export function DeviceManagementSection() {
         {onIdleArmed && (
           <div className="flex flex-col gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between">
             <span>
-              {idleActiveSessions > 0 ? (
+              {idleBlockedReason ? (
+                <>
+                  Hibernating on idle — held because{" "}
+                  <span className="font-medium">{idleBlockedReason.toLowerCase()}</span>.
+                </>
+              ) : idleActiveSessions > 0 ? (
                 <>
                   Hibernating on idle — waiting for{" "}
                   <span className="font-medium">

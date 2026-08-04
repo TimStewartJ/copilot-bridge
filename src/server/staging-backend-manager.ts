@@ -9,8 +9,6 @@ import { DatabaseSync } from "node:sqlite";
 import type express from "express";
 import type { RequestHandler } from "express";
 import { createSettingsStore } from "./settings-store.js";
-import { clearRestartPending, triggerRestartPending } from "./session-manager.js";
-import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "./restart-signal.js";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
@@ -233,27 +231,6 @@ function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
   }
 }
 
-function cleanupFailedRestartSignal(signalFile: string): void {
-  clearRestartPending();
-  try { unlinkSync(signalFile); } catch {}
-}
-
-export function writeRestartSignalOrRollback(
-  signalFile: string,
-  validationMode: RestartValidationMode = "deploy",
-  source = "staging_deploy",
-  releaseCandidate?: RestartReleaseCandidate,
-): number {
-  const otherBusy = triggerRestartPending();
-  try {
-    writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
-  } catch (error) {
-    cleanupFailedRestartSignal(signalFile);
-    throw error;
-  }
-  return otherBusy;
-}
-
 /**
  * Apply every staging-only override to the freshly seeded database over a single
  * connection: one open, one WAL setup, one transaction for runtime-state
@@ -458,7 +435,13 @@ function getLazyStagingRouter(prefix: string): RequestHandler | undefined {
 
 function createLazyStagingHandler(prefix: string): RequestHandler {
   return (req, res, next) => {
-    void handleLazyStagingRequest(prefix, req, res, next);
+    // Without this the rejection is unhandled and the request hangs with no
+    // response. next(error) is the only safe forwarding: Express closes the
+    // connection itself when headers were already sent.
+    void handleLazyStagingRequest(prefix, req, res, next).catch((error: unknown) => {
+      log(`Lazy staging backend request for ${prefix} failed: ${error instanceof Error ? error.message : String(error)}`);
+      next(error);
+    });
   };
 }
 
@@ -1149,6 +1132,9 @@ export const __testing = {
   },
   ensureLazyRouter(prefix: string): boolean {
     return getLazyStagingRouter(prefix) !== undefined;
+  },
+  getLazyRouter(prefix: string): RequestHandler | undefined {
+    return getLazyStagingRouter(prefix);
   },
   async startRestorableBackend(
     prefix: string,
