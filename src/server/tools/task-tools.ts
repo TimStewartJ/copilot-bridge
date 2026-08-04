@@ -80,7 +80,10 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (!task.ok) return toolFailure(task.error);
       const unlink = resolveWorkItemUnlink(args);
       if (!unlink.ok) return toolFailure(unlink.error);
-      ctx.taskStore.unlinkWorkItem(args.taskId, unlink.value.workItemId, unlink.value.provider);
+      const result = ctx.taskStore.unlinkWorkItem(args.taskId, unlink.value.workItemId, unlink.value.provider);
+      if (!result.removed) {
+        return toolFailure(`Work item ${unlink.value.workItemId} is not linked to this task`);
+      }
       return { success: true, message: `Work item ${unlink.value.workItemId} unlinked from task` };
     },
   }),

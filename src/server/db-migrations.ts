@@ -5,6 +5,7 @@ import {
   type McpServerConfig,
 } from "./mcp-config.js";
 import { normalizeTagNameKey } from "./tag-name.js";
+import { normalizeWorkItemIdValue } from "./work-item-id.js";
 
 // This registry is for idempotent database/schema compatibility only. Runtime
 // compatibility remains next to its call site, e.g. API aliases, workspace.yaml
@@ -282,16 +283,34 @@ function migrateMcpRegistry(db: DatabaseSync): void {
       serverName: string;
       config: string;
     }>;
+    const migratedRows: Array<{ tagId: string; serverName: string }> = [];
+    let retainedRows = 0;
     for (const row of legacyTagServers) {
       const config = parseMcpServerConfig(row.config);
-      if (!config) continue;
+      if (!config) {
+        // Deleting a row we could not read would permanently destroy the user's
+        // MCP config. Leave it in place so a later Bridge version (or a manual
+        // repair) can still recover it.
+        retainedRows++;
+        continue;
+      }
       const serverId = ensureTagMcpServerInRegistry(db, row.tagId, row.serverName, config);
       db.prepare(`
         INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
         VALUES (?, ?)
       `).run(row.tagId, serverId);
+      migratedRows.push({ tagId: row.tagId, serverName: row.serverName });
     }
-    db.prepare("DELETE FROM tag_mcp_servers").run();
+    if (migratedRows.length > 0) {
+      const deleteMigrated = db.prepare("DELETE FROM tag_mcp_servers WHERE tagId = ? AND serverName = ?");
+      for (const row of migratedRows) deleteMigrated.run(row.tagId, row.serverName);
+    }
+    if (retainedRows > 0) {
+      console.warn(
+        `[db-migrations] Retained ${retainedRows} unreadable tag_mcp_servers row(s) that could not be migrated `
+        + "into the MCP registry",
+      );
+    }
   });
 }
 
@@ -620,12 +639,63 @@ function migrateLegacyTodosAndNormalizeChecklist(db: DatabaseSync): void {
   runMigrationInTransaction(db, () => {
     if (sqliteTableExists(db, "todos")) {
       const legacyTodoCols = getTableInfo(db, "todos");
-      const deadlineExpr = legacyTodoCols.some((c: any) => c.name === "deadline") ? "deadline" : "NULL";
+      const legacyHasDeadline = legacyTodoCols.some((c: any) => c.name === "deadline");
+      const deadlineExpr = legacyHasDeadline ? "deadline" : "NULL";
       db.exec(`
         INSERT OR IGNORE INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt, deadline)
         SELECT id, taskId, text, done, "order", createdAt, completedAt, ${deadlineExpr}
         FROM todos;
       `);
+
+      // `INSERT OR IGNORE` drops a legacy row whose id already exists in
+      // checklist_items even when the two rows carry different content, so the
+      // legacy text/done/deadline would be lost with no trace. The destination
+      // row stays authoritative (current code writes there), and the differing
+      // legacy row is preserved under a fresh id instead of being discarded.
+      const comparedColumns = ["taskId", "text", "done", '"order"', "createdAt", "completedAt"];
+      if (legacyHasDeadline) comparedColumns.push("deadline");
+      const differsPredicate = comparedColumns
+        .map((column) => `current.${column} IS NOT legacy.${column}`)
+        .join(" OR ");
+      const legacyDeadlineExpr = legacyHasDeadline ? "legacy.deadline" : "NULL";
+      const collidingLegacyRows = db.prepare(`
+        SELECT legacy.taskId AS taskId, legacy.text AS text, legacy.done AS done,
+               legacy."order" AS "order", legacy.createdAt AS createdAt,
+               legacy.completedAt AS completedAt, ${legacyDeadlineExpr} AS deadline
+        FROM todos legacy
+        JOIN checklist_items current ON current.id = legacy.id
+        WHERE ${differsPredicate}
+      `).all() as Array<{
+        taskId: string | null;
+        text: string;
+        done: number;
+        order: number;
+        createdAt: string;
+        completedAt: string | null;
+        deadline: string | null;
+      }>;
+      if (collidingLegacyRows.length > 0) {
+        const insertPreserved = db.prepare(`
+          INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const row of collidingLegacyRows) {
+          insertPreserved.run(
+            crypto.randomUUID(),
+            row.taskId,
+            row.text,
+            row.done,
+            row.order,
+            row.createdAt,
+            row.completedAt,
+            row.deadline,
+          );
+        }
+        console.warn(
+          `[db-migrations] Preserved ${collidingLegacyRows.length} legacy todo row(s) under new ids: their ids `
+          + "already existed in checklist_items with different content",
+        );
+      }
 
       const missingLegacyRows = (db.prepare(`
         SELECT COUNT(*) AS count
@@ -758,6 +828,55 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
     db.exec("DROP TABLE task_work_items");
     db.exec("ALTER TABLE task_work_items_new RENAME TO task_work_items");
   }
+}
+
+/**
+ * Rewrite `task_work_items.itemId` into the canonical form the store now
+ * produces at link/unlink time.
+ *
+ * Canonicalization landed in the store without a backfill, so rows written
+ * earlier (`https://github.com/owner/repo/issues/12`, `#123`, `0123`) can no
+ * longer be matched: unlink normalizes its *input*, the DELETE matches nothing,
+ * and callers report success while the link survives. Re-linking then inserts a
+ * second row for the same issue.
+ *
+ * Collisions collapse onto the surviving `(taskId, itemId, provider)` row rather
+ * than failing on the primary key; the row carries no other payload to merge.
+ */
+function canonicalizeTaskWorkItemIds(db: DatabaseSync): void {
+  if (!sqliteTableExists(db, "task_work_items")) return;
+  const rows = db.prepare("SELECT taskId, itemId, provider FROM task_work_items").all() as Array<{
+    taskId: string;
+    itemId: string;
+    provider: string;
+  }>;
+
+  const rewrites = rows
+    .map((row) => ({ row, canonical: normalizeWorkItemIdValue(String(row.itemId)) }))
+    .filter((entry) => entry.canonical !== String(entry.row.itemId));
+  if (rewrites.length === 0) return;
+
+  const existing = new Set(rows.map((row) => `${row.taskId}\u0000${row.itemId}\u0000${row.provider}`));
+  const deleteRow = db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?");
+  const insertRow = db.prepare("INSERT OR IGNORE INTO task_work_items (taskId, itemId, provider) VALUES (?, ?, ?)");
+
+  let collapsed = 0;
+  for (const { row, canonical } of rewrites) {
+    deleteRow.run(row.taskId, row.itemId, row.provider);
+    existing.delete(`${row.taskId}\u0000${row.itemId}\u0000${row.provider}`);
+    const canonicalKey = `${row.taskId}\u0000${canonical}\u0000${row.provider}`;
+    if (existing.has(canonicalKey)) {
+      collapsed++;
+      continue;
+    }
+    insertRow.run(row.taskId, canonical, row.provider);
+    existing.add(canonicalKey);
+  }
+
+  console.log(
+    `[db-migrations] Canonicalized ${rewrites.length} work item link(s)`
+    + (collapsed > 0 ? `, collapsing ${collapsed} duplicate(s)` : ""),
+  );
 }
 
 function voiceJobsTaskIdHasSetNullForeignKey(db: DatabaseSync): boolean {
@@ -1231,6 +1350,13 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Rebuild task_work_items when itemId was stored as INTEGER so string identifiers are preserved.",
     apply: migrateTaskWorkItemIdsToText,
+  },
+  {
+    id: "task-work-items-canonicalize-item-id",
+    category: "data-repair",
+    runMode: "once",
+    description: "Rewrite stored work item ids into the canonical form link/unlink now produces, collapsing duplicates.",
+    apply: canonicalizeTaskWorkItemIds,
   },
   {
     id: "voice-jobs-task-foreign-key",

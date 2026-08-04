@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import type { DatabaseSync } from "./db.js";
+import { runInOwnOrOuterTransaction } from "./db-transaction.js";
 import {
   type SessionContextAttribution,
   type SessionContextCapabilities,
@@ -600,34 +601,39 @@ export function createSessionContextStore(db: DatabaseSync) {
     if (snapshotHash && current?.lastSnapshotHash === snapshotHash) return null;
 
     const dedupeKey = createDedupeKey(normalizedEvent, snapshotHash ?? undefined);
-    const result = insertEvent.run(
-      normalizedEvent.sessionId,
-      provider,
-      normalizedEvent.providerSessionId ?? null,
-      normalizedEvent.providerEventId ?? null,
-      normalizedEvent.providerTurnId ?? null,
-      normalizedEvent.bridgeTurnId ?? null,
-      normalizedEvent.attribution,
-      normalizedEvent.type,
-      normalizedEvent.occurredAt,
-      normalizedEvent.model ?? null,
-      normalizedEvent.contextWindow ?? null,
-      normalizedEvent.tokensUsed ?? null,
-      normalizedEvent.tokensRemaining ?? null,
-      normalizedEvent.usageRatio ?? null,
-      encodeJson(normalizedEvent.modelUsage),
-      encodeJson(normalizedEvent.provenance),
-      encodeJson(normalizedEvent.metadata),
-      dedupeKey,
-      snapshotHash,
-      normalizedEvent.contextWindowCapability ?? "unavailable",
-      normalizedEvent.modelUsageCapability ?? "unavailable",
-      nowIso(),
-    ) as { changes?: number };
-    if ((result.changes ?? 0) === 0) return null;
+    // The event insert, the turn touch, and the summary write describe one
+    // observation. Persisting a subset leaves a summary that disagrees with its
+    // own event history. Joins the backfill's transaction when called from it.
+    return runInOwnOrOuterTransaction(db, () => {
+      const result = insertEvent.run(
+        normalizedEvent.sessionId,
+        provider,
+        normalizedEvent.providerSessionId ?? null,
+        normalizedEvent.providerEventId ?? null,
+        normalizedEvent.providerTurnId ?? null,
+        normalizedEvent.bridgeTurnId ?? null,
+        normalizedEvent.attribution,
+        normalizedEvent.type,
+        normalizedEvent.occurredAt,
+        normalizedEvent.model ?? null,
+        normalizedEvent.contextWindow ?? null,
+        normalizedEvent.tokensUsed ?? null,
+        normalizedEvent.tokensRemaining ?? null,
+        normalizedEvent.usageRatio ?? null,
+        encodeJson(normalizedEvent.modelUsage),
+        encodeJson(normalizedEvent.provenance),
+        encodeJson(normalizedEvent.metadata),
+        dedupeKey,
+        snapshotHash,
+        normalizedEvent.contextWindowCapability ?? "unavailable",
+        normalizedEvent.modelUsageCapability ?? "unavailable",
+        nowIso(),
+      ) as { changes?: number };
+      if ((result.changes ?? 0) === 0) return null;
 
-    touchTurnFromEvent(normalizedEvent);
-    return writeSummary(mergeSummary(current, normalizedEvent, snapshotHash));
+      touchTurnFromEvent(normalizedEvent);
+      return writeSummary(mergeSummary(current, normalizedEvent, snapshotHash));
+    });
   }
 
   function getSummary(sessionId: string): SessionContextSummary | null {

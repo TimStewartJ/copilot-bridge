@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import { findUnknownFields, formatUnknownFieldsError } from "./schedule-validation.js";
+import { runTransaction } from "./db-transaction.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -125,18 +126,22 @@ export function createTaskGroupStore(db: DatabaseSync) {
   }
 
   function deleteGroup(id: string): void {
-    db.prepare("DELETE FROM task_groups WHERE id = ?").run(id);
-    // Re-order remaining groups
-    const remaining = db.prepare('SELECT id FROM task_groups ORDER BY "order"').all() as any[];
-    const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
-    remaining.forEach((r, i) => stmt.run(i, r.id));
+    runTransaction(db, () => {
+      db.prepare("DELETE FROM task_groups WHERE id = ?").run(id);
+      // Re-order remaining groups
+      const remaining = db.prepare('SELECT id FROM task_groups ORDER BY "order"').all() as any[];
+      const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
+      remaining.forEach((r, i) => stmt.run(i, r.id));
+    });
   }
 
   function reorderGroups(groupIds: string[]): TaskGroup[] {
-    const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
-    for (let i = 0; i < groupIds.length; i++) {
-      stmt.run(i, groupIds[i]);
-    }
+    runTransaction(db, () => {
+      const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
+      for (let i = 0; i < groupIds.length; i++) {
+        stmt.run(i, groupIds[i]);
+      }
+    });
     return listGroups();
   }
 

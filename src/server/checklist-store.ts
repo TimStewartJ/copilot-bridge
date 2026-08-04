@@ -2,6 +2,7 @@
 
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
+import { runTransaction } from "./db-transaction.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -205,10 +206,12 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
   }
 
   function reorderChecklistItems(taskId: string, checklistItemIds: string[]): ChecklistItem[] {
-    const stmt = db.prepare('UPDATE checklist_items SET "order" = ? WHERE id = ? AND taskId = ?');
-    for (let i = 0; i < checklistItemIds.length; i++) {
-      stmt.run(i, checklistItemIds[i], taskId);
-    }
+    runTransaction(db, () => {
+      const stmt = db.prepare('UPDATE checklist_items SET "order" = ? WHERE id = ? AND taskId = ?');
+      for (let i = 0; i < checklistItemIds.length; i++) {
+        stmt.run(i, checklistItemIds[i], taskId);
+      }
+    });
     emitChange(taskId);
     return listChecklistItems(taskId);
   }

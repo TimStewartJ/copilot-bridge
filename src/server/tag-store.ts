@@ -2,6 +2,7 @@ import type { DatabaseSync } from "./db.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
 import { normalizeTagNameKey } from "./tag-name.js";
+import { runTransaction } from "./db-transaction.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -133,20 +134,24 @@ export function createTagStore(db: DatabaseSync) {
 
   /** Returns true when a tag row was actually removed. */
   function deleteTag(id: string): boolean {
-    const result = db.prepare("DELETE FROM tags WHERE id = ?").run(id) as { changes?: number };
-    if ((result.changes ?? 0) === 0) return false;
-    // Re-order remaining tags
-    const remaining = db.prepare('SELECT id FROM tags ORDER BY "order"').all() as any[];
-    const stmt = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
-    remaining.forEach((r, i) => stmt.run(i, r.id));
-    return true;
+    return runTransaction(db, () => {
+      const result = db.prepare("DELETE FROM tags WHERE id = ?").run(id) as { changes?: number };
+      if ((result.changes ?? 0) === 0) return false;
+      // Re-order remaining tags
+      const remaining = db.prepare('SELECT id FROM tags ORDER BY "order"').all() as any[];
+      const stmt = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
+      remaining.forEach((r, i) => stmt.run(i, r.id));
+      return true;
+    });
   }
 
   function reorderTags(tagIds: string[]): Tag[] {
-    const stmt = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
-    for (let i = 0; i < tagIds.length; i++) {
-      stmt.run(i, tagIds[i]);
-    }
+    runTransaction(db, () => {
+      const stmt = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
+      for (let i = 0; i < tagIds.length; i++) {
+        stmt.run(i, tagIds[i]);
+      }
+    });
     return listTags();
   }
 
@@ -159,12 +164,17 @@ export function createTagStore(db: DatabaseSync) {
       if (!tag) throw new Error(`Tag ${tagId} not found`);
     }
 
-    db.prepare("DELETE FROM entity_tags WHERE entityType = ? AND entityId = ?").run(entityType, entityId);
+    // `entity_tags` has no cascade, so a failure between the delete and the
+    // re-insert would silently strip an entity's tags with nothing to restore
+    // them.
+    runTransaction(db, () => {
+      db.prepare("DELETE FROM entity_tags WHERE entityType = ? AND entityId = ?").run(entityType, entityId);
 
-    const stmt = db.prepare("INSERT INTO entity_tags (entityType, entityId, tagId) VALUES (?, ?, ?)");
-    for (const tagId of tagIds) {
-      stmt.run(entityType, entityId, tagId);
-    }
+      const stmt = db.prepare("INSERT INTO entity_tags (entityType, entityId, tagId) VALUES (?, ?, ?)");
+      for (const tagId of tagIds) {
+        stmt.run(entityType, entityId, tagId);
+      }
+    });
   }
 
   function getEntityTags(entityType: "task" | "task_group", entityId: string): Tag[] {

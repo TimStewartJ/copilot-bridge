@@ -1,5 +1,11 @@
 import type { DatabaseSync } from "./db.js";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
+import { hydrateRowSafely, type RowHydrationContext } from "./store-row-hydration.js";
+
+const BRIDGE_SESSION_STATE_HYDRATION: RowHydrationContext<any> = {
+  store: "bridge-session-state",
+  describeRow: (row) => String(row?.sessionId ?? "<no sessionId>"),
+};
 
 export interface BridgeSessionState {
   sessionId: string;
@@ -28,6 +34,24 @@ function nowIso(): string {
 }
 
 export function createBridgeSessionStateStore(db: DatabaseSync) {
+  /**
+   * The terminal overlay is optional presentation metadata, so an unreadable
+   * overlay column degrades to "no overlay" instead of throwing and taking the
+   * whole `listStates()` read — and therefore every session list — down with it.
+   */
+  function parseTerminalOverlay(row: any): SyntheticTerminalOverlay | undefined {
+    if (!row.terminalOverlayJson) return undefined;
+    try {
+      return JSON.parse(row.terminalOverlayJson) as SyntheticTerminalOverlay;
+    } catch (error) {
+      console.warn(
+        `[bridge-session-state] Ignoring unreadable terminal overlay for session ${String(row.sessionId)}: `
+        + (error instanceof Error ? error.message : String(error)),
+      );
+      return undefined;
+    }
+  }
+
   function hydrate(row: any): BridgeSessionState {
     return {
       sessionId: row.sessionId,
@@ -44,9 +68,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       lastAttentionAt: row.lastAttentionAt ?? undefined,
       hiddenReason: row.hiddenReason ?? undefined,
       hiddenAt: row.hiddenAt ?? undefined,
-      terminalOverlay: row.terminalOverlayJson
-        ? JSON.parse(row.terminalOverlayJson) as SyntheticTerminalOverlay
-        : undefined,
+      terminalOverlay: parseTerminalOverlay(row),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -60,7 +82,10 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
   function listStates(): BridgeSessionStateMap {
     const rows = db.prepare("SELECT * FROM bridge_session_state").all() as any[];
     const states: BridgeSessionStateMap = {};
-    for (const row of rows) states[row.sessionId] = hydrate(row);
+    for (const row of rows) {
+      const state = hydrateRowSafely(row, hydrate, BRIDGE_SESSION_STATE_HYDRATION);
+      if (state) states[row.sessionId] = state;
+    }
     return states;
   }
 

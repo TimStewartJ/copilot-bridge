@@ -3722,7 +3722,11 @@ export function createApiRouter(
         case "workItem": {
           const unlink = resolveWorkItemUnlink(request);
           if (!unlink.ok) return res.status(400).json({ error: unlink.error });
-          task = ctx.taskStore.unlinkWorkItem(req.params.id, unlink.value.workItemId, unlink.value.provider);
+          const result = ctx.taskStore.unlinkWorkItem(req.params.id, unlink.value.workItemId, unlink.value.provider);
+          if (!result.removed) {
+            return res.status(404).json({ error: `Work item ${unlink.value.workItemId} is not linked to this task` });
+          }
+          task = result.task;
           break;
         }
         case "pr": {

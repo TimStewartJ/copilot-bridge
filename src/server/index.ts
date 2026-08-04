@@ -31,6 +31,7 @@ import {
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
+import { createStorageMaintenance } from "./storage-maintenance.js";
 import { PRODUCTION_ROOT } from "./staging-preview-shared.js";
 import {
   getValidationCommandLogDir,
@@ -154,6 +155,20 @@ async function pruneBridgeLogArtifacts(): Promise<void> {
   }
 }
 
+/** How often bounded-storage maintenance reruns while the server stays up. */
+const STORAGE_MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function pruneTelemetrySpans(): void {
+  const pruned = defaultContext.telemetryStore?.pruneOldSpans(7) ?? 0;
+  if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
+}
+
+const storageMaintenance = createStorageMaintenance({
+  pruneTelemetrySpans,
+  pruneLogArtifacts: pruneBridgeLogArtifacts,
+  intervalMs: STORAGE_MAINTENANCE_INTERVAL_MS,
+});
+
 async function main(): Promise<void> {
   console.log("╔════════════════════════════════════════╗");
   console.log("║      Copilot Web Bridge                ║");
@@ -182,14 +197,12 @@ async function main(): Promise<void> {
   }
   defaultContext.voiceJobManager.resumePendingJobs();
 
-  // Prune old telemetry data
-  const pruned = defaultContext.telemetryStore?.pruneOldSpans(7) ?? 0;
-  if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
+  // Prune old telemetry data and bounded on-disk log artifacts, then keep doing
+  // it on a timer. Deliberately not awaited: the first sweep on a long-unpruned
+  // host can delete tens of thousands of files.
   startRequestTelemetryInflightReporter(defaultContext.telemetryStore);
-
-  // Bounded on-disk log artifacts. Deliberately not awaited: the first sweep on a
-  // long-unpruned host can delete tens of thousands of files.
-  void pruneBridgeLogArtifacts();
+  void storageMaintenance.runOnce();
+  storageMaintenance.start();
 
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);
@@ -212,7 +225,7 @@ async function main(): Promise<void> {
   const LAG_INTERVAL = 200;
   const LAG_THRESHOLD = 50; // ms
   let lastTick = Date.now();
-  setInterval(() => {
+  const lagTimer = setInterval(() => {
     const now = Date.now();
     const lag = now - lastTick - LAG_INTERVAL;
     lastTick = now;
@@ -228,6 +241,8 @@ async function main(): Promise<void> {
       });
     }
   }, LAG_INTERVAL);
+  // Diagnostics only — must never be the reason the process refuses to exit.
+  lagTimer.unref();
 
   await new Promise<void>((resolve, reject) => {
     const server = app.listen(port, () => {

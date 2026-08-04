@@ -170,6 +170,64 @@ describe("session context telemetry store", () => {
     });
   });
 
+  it("does not leave a summary that disagrees with its own event history", () => {
+    const db = setupTestDb();
+    const store = createSessionContextStore(db);
+    const event = {
+      sessionId: "session-1",
+      provider: "copilot",
+      providerSessionId: "session-1",
+      attribution: "session_overhead" as const,
+      bridgeTurnId: null,
+      type: "truncation" as const,
+      occurredAt: "2026-05-01T11:00:00.000Z",
+      metadata: { eventId: "event-1", eventsRemoved: 3 },
+      dedupeKey: "truncation:event-1:3",
+    };
+
+    // Fail the summary write that follows the event insert.
+    const original = db.prepare.bind(db);
+    (db as any).prepare = (sql: string) => {
+      const stmt = original(sql);
+      if (!sql.includes("INTO session_context_summary")) return stmt;
+      return new Proxy(stmt, {
+        get(target, prop, receiver) {
+          if (prop === "run") return () => { throw new Error("injected summary failure"); };
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+    };
+    const failingStore = createSessionContextStore(db);
+    try {
+      expect(() => failingStore.recordContextEvent(event)).toThrow(/injected summary failure/);
+    } finally {
+      (db as any).prepare = original;
+    }
+
+    // The orphaned event must have rolled back with the summary.
+    const context = store.getSessionContext("session-1");
+    expect(context.events).toHaveLength(0);
+    expect(context.summary).toBeNull();
+    expect(db.isTransaction).toBe(false);
+
+    // A later record still works normally.
+    expect(store.recordContextEvent(event)).toMatchObject({ truncationCount: 1 });
+  });
+
+  it("joins the backfill's transaction instead of failing on a nested BEGIN", () => {
+    const store = createSessionContextStore(setupTestDb());
+    expect(() => store.backfillSessionContextEvents({
+      sessionId: "session-nested",
+      events: [{
+        type: "session.compaction",
+        id: "compact-nested",
+        timestamp: "2026-05-01T12:00:00.000Z",
+        data: { reason: "context pressure" },
+      }],
+    })).not.toThrow();
+    expect(store.getSessionContext("session-nested").summary).toMatchObject({ compactionCount: 1 });
+  });
+
   it("backfills persisted shutdown and compaction markers idempotently", () => {
     const store = createSessionContextStore(setupTestDb());
     const events = [
