@@ -25,6 +25,24 @@ export interface DeletedScheduleRunGroup {
 const SCHEDULE_RUN_CLAIM_TTL_MS = 2 * 60 * 1000;
 const SCHEDULE_LOCK_RUN_KEY = "__schedule_active__";
 
+/**
+ * Terminal claims older than this (measured on the run's own scheduled time) are
+ * eligible for pruning.
+ *
+ * The claim row's job is to stop a run from firing twice. A run can only be
+ * re-proposed by missed-run catch-up, which is bounded by
+ * `MISSED_RUN_GRACE_WINDOW_MS` (1 hour) from now — or, when a restart was
+ * pending, from `restartRequestedAt - 1 hour`. Since `restartRequestedAt` is
+ * always in the past, 7 days leaves a 168× margin over that window, and a
+ * restart pending for a week would already be failing loudly. Advancing
+ * `lastRunAt`/`nextRunAt` on completion (and disabling one-shots) is an
+ * independent second guard.
+ */
+const SCHEDULE_RUN_CLAIM_RETENTION_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Hard ceiling on retained terminal claims per schedule, regardless of age. */
+const SCHEDULE_RUN_CLAIM_RETENTION_KEEP = 500;
+
 export interface Schedule {
   id: string;
   taskId: string;
@@ -434,6 +452,54 @@ export function createScheduleStore(db: DatabaseSync) {
       DELETE FROM schedule_runs
       WHERE scheduleId NOT IN (SELECT id FROM schedules)
     `).run() as { changes?: number };
+    // Claims for a schedule that no longer exists can never dedupe anything, so
+    // they are swept alongside the runs rather than left behind forever.
+    db.prepare(`
+      DELETE FROM schedule_run_claims
+      WHERE scheduleId NOT IN (SELECT id FROM schedules)
+    `).run();
+    return result.changes ?? 0;
+  }
+
+  /**
+   * Bound `schedule_run_claims`, which otherwise grows by one permanent row per
+   * automatic fire forever: every automatic run gets a distinct timestamp
+   * `runKey`, and finishing a run only flips the status to `triggered`/`skipped`.
+   *
+   * Only terminal rows that are BOTH older than the catch-up safety window AND
+   * beyond the newest-`keep` are removed, so in-window duplicate-fire
+   * suppression is untouched. `claimed` rows (in-flight or reclaimable leases)
+   * and the reused manual-trigger lock row are never eligible.
+   */
+  function pruneFinishedRunClaims(
+    scheduleId: string,
+    keep: number = SCHEDULE_RUN_CLAIM_RETENTION_KEEP,
+    now: Date = new Date(),
+  ): number {
+    if (!Number.isInteger(keep) || keep < 0) return 0;
+    const cutoff = new Date(now.getTime() - SCHEDULE_RUN_CLAIM_RETENTION_MIN_AGE_MS).toISOString();
+    const result = db.prepare(`
+      DELETE FROM schedule_run_claims
+      WHERE scheduleId = ?
+        AND status IN ('triggered', 'skipped')
+        AND runKey != ?
+        AND runKey < ?
+        AND runKey NOT IN (
+          SELECT runKey FROM schedule_run_claims
+          WHERE scheduleId = ?
+            AND status IN ('triggered', 'skipped')
+            AND runKey != ?
+          ORDER BY runKey DESC
+          LIMIT ?
+        )
+    `).run(
+      scheduleId,
+      SCHEDULE_LOCK_RUN_KEY,
+      cutoff,
+      scheduleId,
+      SCHEDULE_LOCK_RUN_KEY,
+      keep,
+    ) as { changes?: number };
     return result.changes ?? 0;
   }
 
@@ -444,6 +510,7 @@ export function createScheduleStore(db: DatabaseSync) {
     releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
     updateNextRunAt, getSchedulesForTask, getEnabledSchedules, listDueSchedules,
     listClaimedSessionIds, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
+    pruneFinishedRunClaims,
   };
 }
 

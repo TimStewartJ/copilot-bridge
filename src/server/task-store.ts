@@ -5,7 +5,8 @@ import type { RuntimePaths } from "./runtime-paths.js";
 // ── Types ─────────────────────────────────────────────────────────
 
 import type { ProviderName } from "./providers/types.js";
-import { canonicalizeGitHubWorkItemId } from "./providers/github.js";
+import { runTransaction } from "./db-transaction.js";
+import { normalizeWorkItemIdValue } from "./work-item-id.js";
 
 export class InvalidTaskUpdateError extends Error {}
 type TaskStatus = "active" | "done" | "archived";
@@ -52,6 +53,15 @@ export interface Task {
 }
 
 export type TaskCompletionAction = "complete-and-archive";
+
+/**
+ * `removed` is false when the delete matched no row, so callers can report an
+ * honest no-op instead of claiming an unlink that never happened.
+ */
+export interface UnlinkWorkItemResult {
+  task: Task;
+  removed: boolean;
+}
 
 export function areSessionUnreadBubblesMuted(tasks: Task[]): boolean {
   const visibleLinkedTasks = tasks.filter((task) => task.status !== "archived");
@@ -258,17 +268,22 @@ export function createTaskStore(
   function createTask(title: string, groupId?: string, kind?: TaskKind): Task {
     const normalizedKind = kind === undefined ? "task" : normalizeTaskKind(kind, { strict: true });
 
-    // Bump order of all existing active tasks to make room at top
-    db.prepare('UPDATE tasks SET "order" = "order" + 1 WHERE status = \'active\'').run();
-
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const cwd = defaultTaskCwd();
 
-    db.prepare(`
-      INSERT INTO tasks (id, title, kind, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
-      VALUES (?, ?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
-    `).run(id, title, normalizedKind, groupId || null, cwd ?? null, now, now);
+    // The order bump and the INSERT are one unit: if the INSERT fails, every
+    // active task must not keep the +1, or each failed create permanently
+    // inflates the ordering.
+    runTransaction(db, () => {
+      // Bump order of all existing active tasks to make room at top
+      db.prepare('UPDATE tasks SET "order" = "order" + 1 WHERE status = \'active\'').run();
+
+      db.prepare(`
+        INSERT INTO tasks (id, title, kind, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
+        VALUES (?, ?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
+      `).run(id, title, normalizedKind, groupId || null, cwd ?? null, now, now);
+    });
 
     const task = getTask(id)!;
     emitChange(id);
@@ -368,8 +383,8 @@ export function createTaskStore(
     }
 
     // When status changes, place task at top of new group
-    if (shouldPersistStatus && targetStatus !== oldStatus) {
-      db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
+    const shouldBumpCohort = shouldPersistStatus && targetStatus !== oldStatus;
+    if (shouldBumpCohort) {
       fields.push('"order" = ?');
       values.push(0);
     }
@@ -390,7 +405,14 @@ export function createTaskStore(
     }
 
     values.push(id);
-    db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    // Cohort bump and the row's own write are one unit, so a failure cannot
+    // leave the destination cohort shifted without the moved task landing at 0.
+    runTransaction(db, () => {
+      if (shouldBumpCohort) {
+        db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
+      }
+      db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    });
 
     const task = getTask(id)!;
     emitChange(id);
@@ -572,10 +594,12 @@ export function createTaskStore(
   }
 
   function reorderTasks(taskIds: string[]): Task[] {
-    const stmt = db.prepare('UPDATE tasks SET "order" = ? WHERE id = ?');
-    for (let i = 0; i < taskIds.length; i++) {
-      stmt.run(i, taskIds[i]);
-    }
+    runTransaction(db, () => {
+      const stmt = db.prepare('UPDATE tasks SET "order" = ? WHERE id = ?');
+      for (let i = 0; i < taskIds.length; i++) {
+        stmt.run(i, taskIds[i]);
+      }
+    });
     for (const id of taskIds) emitChange(id);
     return listTasks();
   }
@@ -605,9 +629,7 @@ export function createTaskStore(
 
   /** Normalize numeric-looking IDs (e.g. "00123" → "123") and GitHub refs (URL → "owner/repo#123") */
   function normalizeWorkItemId(id: string): string {
-    const trimmed = canonicalizeGitHubWorkItemId(id);
-    if (/^\d+$/.test(trimmed)) return String(Number(trimmed));
-    return trimmed;
+    return normalizeWorkItemIdValue(id);
   }
 
   function linkWorkItem(taskId: string, workItemId: string, provider: ProviderName = "ado"): Task {
@@ -623,18 +645,20 @@ export function createTaskStore(
     return getTask(taskId)!;
   }
 
-  function unlinkWorkItem(taskId: string, workItemId: string, provider?: ProviderName): Task {
+  function unlinkWorkItem(taskId: string, workItemId: string, provider?: ProviderName): UnlinkWorkItemResult {
     const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
     const normalizedId = normalizeWorkItemId(workItemId);
-    if (provider) {
-      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").run(taskId, normalizedId, provider);
-    } else {
-      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ?").run(taskId, normalizedId);
-    }
+    const result = (provider
+      ? db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").run(taskId, normalizedId, provider)
+      : db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ?").run(taskId, normalizedId)) as { changes?: number };
+    const removed = (result.changes ?? 0) > 0;
+    // Reporting success for a delete that matched nothing let callers claim a
+    // work item was unlinked while the row was still there.
+    if (!removed) return { task, removed: false };
     db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);
-    return getTask(taskId)!;
+    return { task: getTask(taskId)!, removed: true };
   }
 
   function findTaskBySessionId(sessionId: string): Task | undefined {

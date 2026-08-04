@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readSync, statSync, closeSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "./db.js";
+import { runImmediateTransaction } from "./db-transaction.js";
 import {
   pruneRetainedLogFiles,
   removeRetainedFiles,
@@ -194,22 +195,6 @@ function rowToJob(row: ManagementJobRow): ManagementJob {
     startedAt: optionalText(row.startedAt),
     completedAt: optionalText(row.completedAt),
   };
-}
-
-function runImmediateTransaction<T>(db: DatabaseSync, operation: () => T): T {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = operation();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      // Preserve the original error.
-    }
-    throw error;
-  }
 }
 
 function placeholders(values: readonly unknown[]): string {

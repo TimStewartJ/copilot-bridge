@@ -653,8 +653,33 @@ describe("task-store", () => {
     it("unlinkWorkItem removes by id and provider", () => {
       const task = store.createTask("WI task");
       store.linkWorkItem(task.id, "100", "ado");
-      store.unlinkWorkItem(task.id, "100", "ado");
+      expect(store.unlinkWorkItem(task.id, "100", "ado").removed).toBe(true);
       expect(store.getTask(task.id)!.workItems).toHaveLength(0);
+    });
+
+    it("unlinkWorkItem reports a no-op instead of a false success", () => {
+      const task = store.createTask("WI task");
+      store.linkWorkItem(task.id, "100", "ado");
+      const before = store.getTask(task.id)!;
+
+      const missingId = store.unlinkWorkItem(task.id, "999", "ado");
+      expect(missingId.removed).toBe(false);
+      const wrongProvider = store.unlinkWorkItem(task.id, "100", "github");
+      expect(wrongProvider.removed).toBe(false);
+
+      const after = store.getTask(task.id)!;
+      expect(after.workItems).toEqual(before.workItems);
+      // A no-op must not look like a change to clients polling updatedAt.
+      expect(after.updatedAt).toBe(before.updatedAt);
+    });
+
+    it("normalizes numeric ids without losing precision", () => {
+      const task = store.createTask("Big id task");
+      store.linkWorkItem(task.id, "0009007199254740993", "ado");
+      expect(store.getTask(task.id)!.workItems).toEqual([
+        { id: "9007199254740993", provider: "ado" },
+      ]);
+      expect(store.unlinkWorkItem(task.id, "9007199254740993", "ado").removed).toBe(true);
     });
 
     it("linkWorkItem supports string identifiers (Linear-style)", () => {
@@ -672,8 +697,7 @@ describe("task-store", () => {
 
       store.unlinkWorkItem(task.id, "https://github.com/octo/bridge/pull/12", "github");
       expect(store.getTask(task.id)!.workItems).toHaveLength(0);
-    });
-  });
+    });  });
 
   describe("link/unlink PRs", () => {
     it("linkPR adds PR ref", () => {

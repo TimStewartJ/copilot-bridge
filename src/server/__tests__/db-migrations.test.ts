@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
@@ -150,6 +150,7 @@ describe("database migration registry", () => {
       "task-groups-notes-column",
       "tasks-kind-momentum-and-status-repair",
       "task-work-items-text-item-id",
+      "task-work-items-canonicalize-item-id",
       "voice-jobs-task-foreign-key",
       "session-context-telemetry-tables",
       "copilot-model-prices-table",
@@ -720,6 +721,83 @@ describe("database checklist migration (merged)", () => {
       cleanupChkDirs();
     }
   });
+
+  it("preserves a colliding legacy todo whose content differs from the checklist row", () => {
+    const dataDir = createChkTempDir();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      createChkLegacyTaskTable(legacyDb);
+      legacyDb.exec(`
+        CREATE TABLE todos (
+          id TEXT PRIMARY KEY,
+          taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          done INTEGER NOT NULL DEFAULT 0,
+          "order" INTEGER NOT NULL DEFAULT 0,
+          createdAt TEXT NOT NULL,
+          completedAt TEXT,
+          deadline TEXT
+        );
+        CREATE TABLE checklist_items (
+          id TEXT PRIMARY KEY,
+          taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          done INTEGER NOT NULL DEFAULT 0,
+          "order" INTEGER NOT NULL DEFAULT 0,
+          createdAt TEXT NOT NULL,
+          completedAt TEXT,
+          deadline TEXT
+        );
+      `);
+      legacyDb.prepare(`
+        INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+        VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, ?, ?)
+      `).run("task-3", "Collision task", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
+      // Same id in both tables with different content: the old INSERT OR IGNORE
+      // dropped the legacy payload silently.
+      legacyDb.prepare(`
+        INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("shared-id", "task-3", "Destination text", 0, 0, "2026-04-06T00:00:00.000Z", null, null);
+      legacyDb.prepare(`
+        INSERT INTO todos (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("shared-id", "task-3", "Legacy text worth keeping", 1, 5, "2026-04-02T00:00:00.000Z", "2026-04-03T00:00:00.000Z", "2026-04-10");
+      // An identical collision must NOT be duplicated.
+      legacyDb.prepare(`
+        INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("identical-id", "task-3", "Same", 0, 2, "2026-04-06T00:00:00.000Z", null, null);
+      legacyDb.prepare(`
+        INSERT INTO todos (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run("identical-id", "task-3", "Same", 0, 2, "2026-04-06T00:00:00.000Z", null, null);
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      const rows = db.prepare(`
+        SELECT id, text, done, "order", deadline FROM checklist_items ORDER BY text
+      `).all() as Array<{ id: string; text: string; done: number; order: number; deadline: string | null }>;
+
+      // Destination rows stay authoritative and keep their ids.
+      expect(rows.filter((row) => row.id === "shared-id").map((row) => row.text)).toEqual(["Destination text"]);
+      expect(rows.filter((row) => row.id === "identical-id")).toHaveLength(1);
+      // The differing legacy row survived under a fresh id.
+      const preserved = rows.find((row) => row.text === "Legacy text worth keeping");
+      expect(preserved).toBeDefined();
+      expect(preserved!.id).not.toBe("shared-id");
+      expect(preserved!.done).toBe(1);
+      expect(preserved!.deadline).toBe("2026-04-10");
+      expect(rows).toHaveLength(3);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Preserved 1 legacy todo row(s)"));
+      db.close();
+    } finally {
+      warn.mockRestore();
+      cleanupChkDirs();
+    }
+  });
 });
 
 // ── Merged from db-mcp-registry-migration.test.ts ─────────────────────────────
@@ -834,6 +912,142 @@ describe("database MCP registry migration (merged)", () => {
       reopened.close();
     } finally {
       cleanupMcpDirs();
+    }
+  });
+
+  it("retains legacy tag rows it could not parse instead of deleting them", () => {
+    const dataDir = createMcpLocalDataDir();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+      legacyDb.exec("PRAGMA foreign_keys = ON");
+      legacyDb.exec(`
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE tags (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          color TEXT NOT NULL DEFAULT 'slate', instructions TEXT NOT NULL DEFAULT '',
+          "order" INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+        );
+        CREATE TABLE tag_mcp_servers (
+          tagId TEXT NOT NULL, serverName TEXT NOT NULL, config TEXT NOT NULL,
+          PRIMARY KEY (tagId, serverName),
+          FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
+        );
+      `);
+      mcpInsertTag(legacyDb, "tag-good", "Good");
+      mcpInsertTag(legacyDb, "tag-bad", "Bad");
+      const goodConfig = { command: "good-mcp", args: ["--go"] };
+      const insert = legacyDb.prepare("INSERT INTO tag_mcp_servers (tagId, serverName, config) VALUES (?, ?, ?)");
+      insert.run("tag-good", "good", JSON.stringify(goodConfig));
+      insert.run("tag-bad", "not-json", "{ this is not json");
+      insert.run("tag-bad", "wrong-shape", JSON.stringify({ nonsense: true }));
+      legacyDb.close();
+
+      const db = openDatabase(dataDir);
+      // The readable row migrated and was removed.
+      expect(mcpSelectRefs(db).map((ref) => [ref.tagId, ref.serverName])).toEqual([["tag-good", "good"]]);
+      // The unreadable rows survived rather than being silently destroyed.
+      const retained = db.prepare("SELECT tagId, serverName, config FROM tag_mcp_servers ORDER BY serverName")
+        .all() as Array<{ tagId: string; serverName: string; config: string }>;
+      expect(retained.map((row) => row.serverName)).toEqual(["not-json", "wrong-shape"]);
+      expect(retained[0]!.config).toBe("{ this is not json");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Retained 2 unreadable tag_mcp_servers row(s)"));
+      db.close();
+    } finally {
+      warn.mockRestore();
+      cleanupMcpDirs();
+    }
+  });
+});
+
+describe("task work item id canonicalization migration", () => {
+  const workItemDirs: string[] = [];
+  function createWorkItemDataDir(): string {
+    const dir = join(process.cwd(), ".work-item-migration-test-data", crypto.randomUUID());
+    mkdirSync(dir, { recursive: true });
+    workItemDirs.push(dir);
+    return dir;
+  }
+  function cleanupWorkItemDirs() {
+    for (const dir of workItemDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    rmSync(join(process.cwd(), ".work-item-migration-test-data"), { recursive: true, force: true });
+  }
+
+  function seedWorkItems(dataDir: string, rows: Array<[taskId: string, itemId: string, provider: string]>): void {
+    const db = openDatabase(dataDir);
+    db.prepare(`
+      INSERT INTO tasks (id, title, kind, status, notes, priority, "order", createdAt, updatedAt)
+      VALUES ('task-1', 'Task', 'task', 'active', '', 0, 0, '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z')
+    `).run();
+    const insert = db.prepare("INSERT OR IGNORE INTO task_work_items (taskId, itemId, provider) VALUES (?, ?, ?)");
+    for (const [taskId, itemId, provider] of rows) insert.run(taskId, itemId, provider);
+    // Reset the once-marker so the migration reruns against the seeded rows.
+    db.prepare("DELETE FROM schema_migrations WHERE id = 'task-work-items-canonicalize-item-id'").run();
+    db.close();
+  }
+
+  function readWorkItems(dataDir: string) {
+    const db = openDatabase(dataDir);
+    const rows = db.prepare("SELECT taskId, itemId, provider FROM task_work_items ORDER BY provider, itemId")
+      .all() as Array<{ taskId: string; itemId: string; provider: string }>;
+    db.close();
+    return rows;
+  }
+
+  it("canonicalizes legacy ids and collapses duplicates without losing links", () => {
+    const dataDir = createWorkItemDataDir();
+    try {
+      seedWorkItems(dataDir, [
+        ["task-1", "https://github.com/octo/bridge/issues/12", "github"],
+        // Same issue already stored canonically — the rewrite must collapse onto it.
+        ["task-1", "octo/bridge#12", "github"],
+        ["task-1", "#123", "ado"],
+        ["task-1", "00456", "ado"],
+        // Already canonical; must be left alone.
+        ["task-1", "789", "ado"],
+        ["task-1", "ENG-42", "linear"],
+      ]);
+
+      expect(readWorkItems(dataDir)).toEqual([
+        { taskId: "task-1", itemId: "123", provider: "ado" },
+        { taskId: "task-1", itemId: "456", provider: "ado" },
+        { taskId: "task-1", itemId: "789", provider: "ado" },
+        { taskId: "task-1", itemId: "octo/bridge#12", provider: "github" },
+        { taskId: "task-1", itemId: "ENG-42", provider: "linear" },
+      ]);
+    } finally {
+      cleanupWorkItemDirs();
+    }
+  });
+
+  it("is idempotent and leaves already-canonical tables untouched", () => {
+    const dataDir = createWorkItemDataDir();
+    try {
+      seedWorkItems(dataDir, [
+        ["task-1", "octo/bridge#12", "github"],
+        ["task-1", "123", "ado"],
+      ]);
+      const first = readWorkItems(dataDir);
+
+      const db = openDatabase(dataDir);
+      db.prepare("DELETE FROM schema_migrations WHERE id = 'task-work-items-canonicalize-item-id'").run();
+      db.close();
+
+      expect(readWorkItems(dataDir)).toEqual(first);
+    } finally {
+      cleanupWorkItemDirs();
+    }
+  });
+
+  it("preserves numeric ids too large for double precision", () => {
+    const dataDir = createWorkItemDataDir();
+    try {
+      seedWorkItems(dataDir, [["task-1", "0009007199254740993", "ado"]]);
+      expect(readWorkItems(dataDir)).toEqual([
+        { taskId: "task-1", itemId: "9007199254740993", provider: "ado" },
+      ]);
+    } finally {
+      cleanupWorkItemDirs();
     }
   });
 });

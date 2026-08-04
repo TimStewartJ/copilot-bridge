@@ -1,5 +1,11 @@
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
+import { hydrateRowsSafely, type RowHydrationContext } from "./store-row-hydration.js";
+
+const FEED_CARD_HYDRATION: RowHydrationContext<any> = {
+  store: "feed-cards",
+  describeRow: (row) => `${String(row?.id ?? "<no id>")} ("${String(row?.title ?? "")}")`,
+};
 
 export type FeedCardStatus = "active" | "done" | "dismissed";
 export type FeedCardPriority = "low" | "normal" | "high";
@@ -1210,16 +1216,23 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     const pageRows = rows.slice(0, normalized.limit);
     const hasMore = rows.length > normalized.limit;
     const lastRow = pageRows[pageRows.length - 1];
+    // A card whose stored visual/action/metadata JSON no longer validates is
+    // skipped rather than thrown, so one bad row cannot blank the whole feed.
+    // Paging math stays keyed to the raw page window: the cursor still advances
+    // past the skipped row, so pagination can neither stall nor skip good cards.
+    const cards = minimal
+      ? hydrateRowsSafely(pageRows, hydrateSummary, FEED_CARD_HYDRATION)
+      : hydrateRowsSafely(pageRows, hydrate, FEED_CARD_HYDRATION);
     const meta: FeedCardPageMeta = {
       nextCursor: normalized.order !== "mixed" && hasMore && lastRow
         ? encodeFeedCursor(cursorPositionFromRow(lastRow), normalized)
         : null,
-      returnedCount: pageRows.length,
+      returnedCount: cards.length,
       hasMore,
     };
     return minimal
-      ? { cards: pageRows.map(hydrateSummary), ...meta }
-      : { cards: pageRows.map(hydrate), ...meta };
+      ? { cards: cards as FeedCardSummary[], ...meta }
+      : { cards: cards as FeedCard[], ...meta };
   }
 
   return {

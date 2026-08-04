@@ -629,6 +629,14 @@ export async function triggerSchedule(
     } catch (err) {
       console.warn(`[scheduler] Failed to apply retention/prune for "${schedule.name}" (${schedule.id}):`, err);
     }
+    try {
+      // Claims are pruned independently of session retention: they are a pure
+      // dedupe ledger with no session to preserve, so a retention failure above
+      // must not leave this table growing forever.
+      scheduleStore.pruneFinishedRunClaims(scheduleId);
+    } catch (err) {
+      console.warn(`[scheduler] Failed to prune run claims for "${schedule.name}" (${schedule.id}):`, err);
+    }
     releaseScheduleRunClaim();
 
     // Emit global event
