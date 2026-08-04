@@ -107,12 +107,12 @@ describe("session manager task tools", () => {
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({ kind: "ongoing" }));
 
-    await expect(tool.handler({
+    const invalidKind: any = await tool.handler({
       taskId: task.id,
       kind: "invalid",
-    }, createInvocation("task_update"))).resolves.toEqual(
-      toolFailure("kind must be either 'task' or 'ongoing'"),
-    );
+    }, createInvocation("task_update"));
+    expect(String(invalidKind.textResultForLlm)).toContain("Invalid arguments for task_update");
+    expect(String(invalidKind.textResultForLlm)).toContain("kind must be one of");
   });
 
   it("task_update normalizes kind-only switches to ongoing", async () => {
@@ -351,7 +351,7 @@ describe("session manager task tools", () => {
       toolFailure("followUp.nextTouchAt is only allowed when followUp.mode is 'set'"),
     );
 
-    for (const nextTouchAt of ["not-a-date", "2026-02-31T00:00:00.000Z", JSON.parse("{\"value\":123}").value]) {
+    for (const nextTouchAt of ["not-a-date", "2026-02-31T00:00:00.000Z"]) {
       await expect(tool.handler({
         taskId: task.id,
         followUp: { mode: "set", nextTouchAt },
@@ -359,6 +359,12 @@ describe("session manager task tools", () => {
         toolFailure("nextTouchAt must be a valid ISO timestamp with timezone"),
       );
     }
+
+    const wrongType: any = await tool.handler({
+      taskId: task.id,
+      followUp: { mode: "set", nextTouchAt: JSON.parse("{\"value\":123}").value },
+    }, createInvocation("task_update_momentum"));
+    expect(String(wrongType.textResultForLlm)).toContain("followUp.nextTouchAt must be string");
 
     expect(ctx.taskStore.getTask(task.id)?.nextTouchAt).toBeUndefined();
   });
@@ -384,5 +390,176 @@ describe("session manager task tools", () => {
       waitingOn: undefined,
       nextTouchAt: undefined,
     }));
+  });
+  it("task_link_pr stores a canonical repo id separate from the display name", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Link PR");
+    const tool = getTool(ctx, "task_link_pr");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      repoName: "https://github.com/octo/widget",
+      prId: 12,
+      provider: "github",
+    }, createInvocation("task_link_pr"))).resolves.toMatchObject({ success: true });
+
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([
+      expect.objectContaining({
+        repoId: "octo/widget",
+        repoName: "https://github.com/octo/widget",
+        prId: 12,
+        provider: "github",
+      }),
+    ]);
+  });
+
+  it("task_link_pr keeps a durable ADO repository id", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Link ADO PR");
+    const tool = getTool(ctx, "task_link_pr");
+
+    await tool.handler({
+      taskId: task.id,
+      repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77",
+      repoName: "Widget.Service",
+      prId: 8,
+      provider: "ado",
+    }, createInvocation("task_link_pr"));
+
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([
+      expect.objectContaining({
+        repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77",
+        repoName: "Widget.Service",
+        provider: "ado",
+      }),
+    ]);
+  });
+
+  it("task_link_pr rejects a non-integer prId through the declared schema", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Bad prId");
+    const tool = getTool(ctx, "task_link_pr");
+
+    for (const prId of [1.5, 0, "12"]) {
+      const result: any = await tool.handler({
+        taskId: task.id,
+        repoName: "octo/widget",
+        prId,
+        provider: "github",
+      }, createInvocation("task_link_pr"));
+      expect(String(result.textResultForLlm)).toContain("Invalid arguments for task_link_pr");
+    }
+
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([]);
+  });
+
+  it("task_link_work_item does not fall back to ado for an ambiguous reference", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Ambiguous work item");
+    const tool = getTool(ctx, "task_link_work_item");
+
+    const result: any = await tool.handler(
+      { taskId: task.id, workItemId: "4242" },
+      createInvocation("task_link_work_item"),
+    );
+
+    expect(String(result.textResultForLlm)).toContain("Pass provider explicitly");
+    expect(ctx.taskStore.getTask(task.id)?.workItems).toEqual([]);
+  });
+
+  it("task_link_work_item infers github from a github.com reference and accepts numeric ids", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Inferred work item");
+    const tool = getTool(ctx, "task_link_work_item");
+
+    await tool.handler(
+      { taskId: task.id, workItemId: "https://github.com/octo/widget/issues/7" },
+      createInvocation("task_link_work_item"),
+    );
+    await tool.handler(
+      { taskId: task.id, workItemId: 4242, provider: "ado" },
+      createInvocation("task_link_work_item"),
+    );
+
+    expect(ctx.taskStore.getTask(task.id)?.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "octo/widget#7", provider: "github" }),
+      expect.objectContaining({ id: "4242", provider: "ado" }),
+    ]));
+  });
+
+  it("task_unlink_pr also clears a legacy row keyed by the raw repo reference", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Legacy unlink");
+    ctx.taskStore.linkPR(task.id, {
+      repoId: "https://github.com/octo/widget",
+      repoName: "https://github.com/octo/widget",
+      prId: 5,
+      provider: "github",
+    });
+
+    await getTool(ctx, "task_unlink_pr").handler({
+      taskId: task.id,
+      repoName: "https://github.com/octo/widget",
+      prId: 5,
+      provider: "github",
+    }, createInvocation("task_unlink_pr"));
+
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([]);
+  });
+  it("task_unlink_pr without a provider unlinks across providers", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Cross provider unlink");
+    ctx.taskStore.linkPR(task.id, { repoId: "repo", repoName: "repo", prId: 1, provider: "ado" });
+    ctx.taskStore.linkPR(task.id, { repoId: "repo", repoName: "repo", prId: 1, provider: "linear" });
+
+    const result: any = await getTool(ctx, "task_unlink_pr").handler(
+      { taskId: task.id, repoName: "repo", prId: 1 },
+      createInvocation("task_unlink_pr"),
+    );
+
+    expect(result).toMatchObject({ success: true });
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([]);
+  });
+
+  it("task_link_pr accepts a durable repoId without a repoName", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("RepoId only");
+
+    await getTool(ctx, "task_link_pr").handler({
+      taskId: task.id,
+      repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77",
+      prId: 8,
+      provider: "ado",
+    }, createInvocation("task_link_pr"));
+
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([
+      expect.objectContaining({ repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77", prId: 8, provider: "ado" }),
+    ]);
+  });
+
+  it("task_link_pr still requires some repository reference", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("No repo ref");
+
+    const result: any = await getTool(ctx, "task_link_pr").handler(
+      { taskId: task.id, prId: 8, provider: "ado" },
+      createInvocation("task_link_pr"),
+    );
+
+    expect(String(result.textResultForLlm)).toContain("repoName or repoId is required");
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([]);
+  });
+
+  it("task_link_work_item rejects a blank work item reference", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Blank work item");
+
+    const result: any = await getTool(ctx, "task_link_work_item").handler(
+      { taskId: task.id, workItemId: "   ", provider: "ado" },
+      createInvocation("task_link_work_item"),
+    );
+
+    expect(String(result.textResultForLlm)).toContain("workItemId is required");
+    expect(ctx.taskStore.getTask(task.id)?.workItems).toEqual([]);
   });
 });

@@ -90,7 +90,7 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
       parameters: {
         type: "object",
         properties: {
-          jobId: { type: "string", description: "Management job id returned by the queued tool." },
+          jobId: { type: ["string", "number"], description: "Management job id returned by the queued tool." },
           logTailBytes: { type: "number", description: "Optional maximum log tail bytes. Defaults to 16384." },
         },
         required: ["jobId"],

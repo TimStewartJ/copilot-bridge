@@ -123,7 +123,8 @@ describe("publish_visual tool", () => {
       createInvocation(),
     );
 
-    expect(result).toMatchObject(toolFailure("kind must be \"image\", \"mermaid\", \"vega-lite\", or \"html\""));
+    expect(String((result as any).textResultForLlm)).toContain("Invalid arguments for publish_visual");
+    expect(String((result as any).textResultForLlm)).toContain("kind must be one of");
   });
 
   it("publishes a mermaid diagram and returns structured visual result", async () => {

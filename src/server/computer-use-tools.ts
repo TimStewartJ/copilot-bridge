@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
 import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
-import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
+import { defineBridgeTool, defineSessionBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { sniffImageMime } from "./image-mime.js";
@@ -426,8 +426,7 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
   });
 
   return [
-    defineBridgeTool("computer_open_browser", {
-      scope: "session",
+    defineSessionBridgeTool("computer_open_browser", {
       description:
         "Open a URL in a visible browser window on the desktop for computer-use interaction. " +
         "The browser window is visible in screenshots and can be controlled with computer_click, " +

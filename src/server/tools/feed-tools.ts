@@ -4,7 +4,7 @@ import type { AppContext } from "../app-context.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "../feed-store.js";
 import { toolFailure } from "../tool-results.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "../visual-artifacts.js";
-import { publishVisualFromToolArgs, stripVisualSource } from "./visual-tool-publisher.js";
+import { publishVisualFromToolArgs, stripVisualSource, VISUAL_CONTENT_TYPE_SCHEMA, VISUAL_KIND_SCHEMA } from "./visual-tool-publisher.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -155,10 +155,10 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
             anyOf: [{
               type: "object",
               properties: {
-                kind: { type: "string", enum: ["image", "mermaid", "vega-lite", "html"] },
+                kind: { ...VISUAL_KIND_SCHEMA },
                 title: { type: "string", description: "Optional visual title. Defaults to the feed card title." },
                 path: { type: "string", description: "Absolute path to an existing image file to publish (image kind only)." },
-                content: { type: "string", description: "Base64 image bytes, Mermaid source, Vega-Lite JSON spec, or HTML source depending on kind." },
+                content: { ...VISUAL_CONTENT_TYPE_SCHEMA, description: "Base64 image bytes, Mermaid source, Vega-Lite JSON spec or object, or HTML source depending on kind." },
                 mimeType: { type: "string", description: "Image MIME type. Inferred from path when omitted." },
                 displayName: { type: "string", description: "Optional filename shown in download controls." },
                 caption: { type: "string", description: "Optional caption displayed below the visual." },

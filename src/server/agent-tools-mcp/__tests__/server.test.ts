@@ -3,31 +3,26 @@ import { describe, expect, it } from "vitest";
 import type { AppContext } from "../../app-context.js";
 import {
   BridgeToolsMcpServer,
+  defineBridgeTool,
   normalizeToolResult,
 } from "../index.js";
 
 function makeRegistry(): BridgeToolsMcpServer {
   const server = new BridgeToolsMcpServer({} as AppContext);
-  server.registerTool({
-    name: "global_tool",
+  server.registerTool(defineBridgeTool("global_tool", {
     description: "Global Bridge tool",
-    inputSchema: { type: "object", properties: {} },
     handler: async () => "global",
-  });
-  server.registerTool({
-    name: "session_tool",
+  }));
+  server.registerTool(defineBridgeTool("session_tool", {
     description: "Session-scoped Bridge tool",
-    inputSchema: { type: "object", properties: {} },
     scope: "session",
     handler: async () => "session",
-  });
-  server.registerTool({
-    name: "both_tool",
+  }));
+  server.registerTool(defineBridgeTool("both_tool", {
     description: "Bridge tool visible on every scope",
-    inputSchema: { type: "object", properties: {} },
     scope: "both",
     handler: async () => "both",
-  });
+  }));
   return server;
 }
 

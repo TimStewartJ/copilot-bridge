@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { AppContext } from "../app-context.js";
+import { isAdaptedToolHandler } from "./adapter.js";
 import { sniffImageMimeFromBase64 } from "../image-mime.js";
 
 export type BridgeToolHandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
@@ -91,6 +92,11 @@ export class BridgeToolsMcpServer {
   registerTool(definition: BridgeToolDefinition): void {
     if (this.tools.has(definition.name)) {
       throw new Error(`Bridge tool already registered: ${definition.name}`);
+    }
+    if (!isAdaptedToolHandler(definition.handler)) {
+      throw new Error(
+        `Bridge tool ${definition.name} must be built with defineBridgeTool so its arguments are validated`,
+      );
     }
     this.tools.set(definition.name, definition);
   }

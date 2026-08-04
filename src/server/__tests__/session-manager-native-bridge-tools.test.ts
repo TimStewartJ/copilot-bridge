@@ -12,6 +12,7 @@ import {
   triggerRestartPendingForExternalRequest,
 } from "../session-manager.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
+import { defineBridgeTool } from "../agent-tools-mcp/adapter.js";
 import { createTestBus, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 
 const EXTRA_MCP_SERVER_NAME = "extra-tools";
@@ -113,25 +114,19 @@ async function flushMicrotasks() {
 
 function createBridgeToolServer() {
   const server = new BridgeToolsMcpServer({} as any);
-  server.registerTool({
-    name: "global_bridge_tool",
+  server.registerTool(defineBridgeTool("global_bridge_tool", {
     description: "Global Bridge tool",
-    inputSchema: { type: "object", properties: {} },
     handler: async () => "global",
-  });
-  server.registerTool({
-    name: "session_bridge_tool",
+  }));
+  server.registerTool(defineBridgeTool("session_bridge_tool", {
     description: "Session Bridge tool",
-    inputSchema: { type: "object", properties: {} },
     scope: "session",
     handler: async () => "session",
-  });
-  server.registerTool({
-    name: "report_intent",
+  }));
+  server.registerTool(defineBridgeTool("report_intent", {
     description: "Excluded Bridge tool",
-    inputSchema: { type: "object", properties: {} },
     handler: async () => "excluded",
-  });
+  }));
   return server;
 }
 

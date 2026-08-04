@@ -13,6 +13,7 @@ import { lifecycleBusyToolFailure, writeRestartSignalOrRollback } from "./restar
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
+  type DefineBridgeToolOptions,
 } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import {
@@ -1923,14 +1924,22 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
 
 export function createStagingToolDefinitions(ctx?: AppContext): BridgeToolDefinition[] {
   if (!ctx) return [...STAGING_TOOLS];
+  // Rebuild through the adapter rather than patching `handler`, so these tools
+  // keep the argument validation every other Bridge tool gets.
+  const boundHandlers: Record<string, DefineBridgeToolOptions["handler"]> = {
+    staging_preview: (args: any) => enqueueStagingPreview(ctx, args),
+    staging_deploy: (args: any) => enqueueStagingDeploy(ctx, args),
+  };
   return STAGING_TOOLS.map((tool) => {
-    if (tool.name === "staging_preview") {
-      return { ...tool, handler: async (args: any) => enqueueStagingPreview(ctx, args) };
-    }
-    if (tool.name === "staging_deploy") {
-      return { ...tool, handler: async (args: any) => enqueueStagingDeploy(ctx, args) };
-    }
-    return tool;
+    const bound = boundHandlers[tool.name];
+    return bound
+      ? defineBridgeTool(tool.name, {
+        description: tool.description,
+        parameters: tool.inputSchema,
+        scope: tool.scope,
+        handler: bound,
+      })
+      : tool;
   });
 }
 

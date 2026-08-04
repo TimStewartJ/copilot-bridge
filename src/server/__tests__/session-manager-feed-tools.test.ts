@@ -190,10 +190,11 @@ describe("session manager feed tools", () => {
     const { ctx } = createTestApp();
     const saveTool = getTool(ctx, "feed_save");
 
-    await expect(saveTool.handler({
+    const result: any = await saveTool.handler({
       title: "Bad action",
       action: { label: "No prompt" },
-    }, createInvocation("feed_save"))).resolves.toEqual(toolFailure("action.prompt is required"));
+    }, createInvocation("feed_save"));
+    expect(String(result.textResultForLlm)).toContain("action is missing required property: prompt");
   });
 
   it("feed_list defaults to active cards", async () => {

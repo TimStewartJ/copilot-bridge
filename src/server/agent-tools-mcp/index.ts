@@ -1,5 +1,6 @@
 export {
   defineBridgeTool,
+  defineSessionBridgeTool,
   registerBridgeToolDefinitions,
   type BridgeToolInvocation,
   type DefineBridgeToolOptions,

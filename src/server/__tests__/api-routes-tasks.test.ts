@@ -237,6 +237,111 @@ describe("Task routes", () => {
     expect(res.body.task.workItems).toEqual([]);
   });
 
+  it("POST /api/tasks/:id/link rejects an ambiguous provider instead of defaulting to ado", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Ambiguous Link" });
+    const id = create.body.task.id;
+
+    const res = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "workItem", workItemId: "4242" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Pass provider explicitly");
+
+    const task = await request(app).get(`/api/tasks/${id}`);
+    expect(task.body.task.workItems).toEqual([]);
+  });
+
+  it("POST /api/tasks/:id/link infers github from a github.com reference", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Inferred Link" });
+    const id = create.body.task.id;
+
+    const res = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "workItem", workItemId: "https://github.com/octo/widget/issues/7" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.task.workItems).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "octo/widget#7", provider: "github" })]),
+    );
+  });
+
+  it("POST /api/tasks/:id/link stores a canonical github repo id and rejects a bad prId", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "PR Link" });
+    const id = create.body.task.id;
+
+    const linked = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoName: "https://github.com/octo/widget", prId: 12, provider: "github" });
+
+    expect(linked.status).toBe(200);
+    expect(linked.body.task.pullRequests).toEqual([
+      expect.objectContaining({ repoId: "octo/widget", repoName: "https://github.com/octo/widget", prId: 12, provider: "github" }),
+    ]);
+
+    for (const prId of [0, -3, 1.5, "abc", null]) {
+      const bad = await request(app)
+        .post(`/api/tasks/${id}/link`)
+        .send({ type: "pr", repoName: "octo/widget", prId, provider: "github" });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error).toContain("prId must be a positive whole number");
+    }
+  });
+
+  it("DELETE /api/tasks/:id/link removes a pull request stored under a legacy raw repo id", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Legacy PR Link" });
+    const id = create.body.task.id;
+    // Legacy row: repoId was written as the raw display name before canonicalization.
+    ctx.taskStore.linkPR(id, { repoId: "https://github.com/octo/widget", repoName: "https://github.com/octo/widget", prId: 5, provider: "github" });
+
+    const res = await request(app)
+      .delete(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoName: "https://github.com/octo/widget", prId: 5, provider: "github" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.task.pullRequests).toEqual([]);
+  });
+
+  it("DELETE /api/tasks/:id/link without a provider unlinks a PR across providers", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Cross provider unlink" });
+    const id = create.body.task.id;
+    ctx.taskStore.linkPR(id, { repoId: "repo", repoName: "repo", prId: 1, provider: "ado" });
+    ctx.taskStore.linkPR(id, { repoId: "repo", repoName: "repo", prId: 1, provider: "linear" });
+
+    const res = await request(app)
+      .delete(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoName: "repo", prId: 1 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.task.pullRequests).toEqual([]);
+  });
+
+  it("POST /api/tasks/:id/link rejects a blank work item reference", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Blank work item" });
+    const id = create.body.task.id;
+
+    const res = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "workItem", provider: "github" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("workItemId is required");
+  });
+
+  it("POST /api/tasks/:id/link preserves a durable ADO repository id", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "ADO PR Link" });
+    const id = create.body.task.id;
+
+    const res = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77", repoName: "Widget.Service", prId: 8, provider: "ado" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.task.pullRequests).toEqual([
+      expect.objectContaining({ repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77", repoName: "Widget.Service", prId: 8, provider: "ado" }),
+    ]);
+  });
+
   it("PATCH /api/tasks/:id clears momentum fields when passed empty strings", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "Clear Momentum" });
     const id = create.body.task.id;
