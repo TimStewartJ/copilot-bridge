@@ -654,13 +654,15 @@ export function createTaskStore(
     return getTask(taskId)!;
   }
 
-  function unlinkPR(taskId: string, repoId: string, prId: number, provider?: ProviderName): Task {
+  function unlinkPR(taskId: string, repoIds: readonly string[], prId: number, provider?: ProviderName): Task {
     const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    if (provider) {
-      db.prepare("DELETE FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ? AND provider = ?").run(taskId, repoId, prId, provider);
-    } else {
-      db.prepare("DELETE FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ?").run(taskId, repoId, prId);
+    for (const repoId of [...new Set(repoIds.filter(Boolean))]) {
+      if (provider) {
+        db.prepare("DELETE FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ? AND provider = ?").run(taskId, repoId, prId, provider);
+      } else {
+        db.prepare("DELETE FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ?").run(taskId, repoId, prId);
+      }
     }
     db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);

@@ -81,6 +81,12 @@ import {
 } from "../shared/session-agents.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
+import {
+  resolvePullRequestLink,
+  resolvePullRequestUnlink,
+  resolveWorkItemLink,
+  resolveWorkItemUnlink,
+} from "./task-link-identity.js";
 import { deleteTaskWithOwnedState } from "./task-deletion.js";
 import { InvalidTagColorError } from "./tag-store.js";
 import { TaskGroupValidationError } from "./task-group-store.js";
@@ -3675,19 +3681,26 @@ export function createApiRouter(
   });
 
   router.post("/tasks/:id/link", (req, res) => {
-    const { type, sessionId, workItemId, provider, repoId, repoName, prId } = req.body;
+    const { type, sessionId } = req.body;
+    const request = { ...req.body, providers: ctx.settingsStore.getSettings().providers };
     try {
       let task;
       switch (type) {
         case "session":
           task = ctx.taskStore.linkSession(req.params.id, sessionId);
           break;
-        case "workItem":
-          task = ctx.taskStore.linkWorkItem(req.params.id, String(workItemId), provider ?? "ado");
+        case "workItem": {
+          const link = resolveWorkItemLink(request);
+          if (!link.ok) return res.status(400).json({ error: link.error });
+          task = ctx.taskStore.linkWorkItem(req.params.id, link.value.workItemId, link.value.provider);
           break;
-        case "pr":
-          task = ctx.taskStore.linkPR(req.params.id, { repoId, repoName, prId: Number(prId), provider: provider ?? "ado" });
+        }
+        case "pr": {
+          const link = resolvePullRequestLink(request);
+          if (!link.ok) return res.status(400).json({ error: link.error });
+          task = ctx.taskStore.linkPR(req.params.id, link.value);
           break;
+        }
         default:
           return res.status(400).json({ error: `Unknown link type: ${type}` });
       }
@@ -3698,19 +3711,26 @@ export function createApiRouter(
   });
 
   router.delete("/tasks/:id/link", (req, res) => {
-    const { type, sessionId, workItemId, provider, repoId, prId } = req.body;
+    const { type, sessionId } = req.body;
+    const request = { ...req.body, providers: ctx.settingsStore.getSettings().providers };
     try {
       let task;
       switch (type) {
         case "session":
           task = ctx.taskStore.unlinkSession(req.params.id, sessionId);
           break;
-        case "workItem":
-          task = ctx.taskStore.unlinkWorkItem(req.params.id, String(workItemId), provider);
+        case "workItem": {
+          const unlink = resolveWorkItemUnlink(request);
+          if (!unlink.ok) return res.status(400).json({ error: unlink.error });
+          task = ctx.taskStore.unlinkWorkItem(req.params.id, unlink.value.workItemId, unlink.value.provider);
           break;
-        case "pr":
-          task = ctx.taskStore.unlinkPR(req.params.id, repoId, Number(prId), provider);
+        }
+        case "pr": {
+          const unlink = resolvePullRequestUnlink(request);
+          if (!unlink.ok) return res.status(400).json({ error: unlink.error });
+          task = ctx.taskStore.unlinkPR(req.params.id, unlink.value.repoIds, unlink.value.prId, unlink.value.provider);
           break;
+        }
         default:
           return res.status(400).json({ error: `Unknown link type: ${type}` });
       }

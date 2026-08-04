@@ -7,6 +7,7 @@ import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_REPO_ROOT, getAttachmentApiBasePath } from "./helpers.js";
 import {
   defineBridgeTool,
+  defineSessionBridgeTool,
   registerBridgeToolDefinitions,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
@@ -17,8 +18,7 @@ export interface RegisterAttachmentToolsOptions {
 
 export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineBridgeTool("send_attachment", {
-    scope: "session",
+  defineSessionBridgeTool("send_attachment", {
     description:
       "Publish a file as an attachment the user can open or download. " +
       "Use this when the user asks you to send them a file, export, image, report, or other artifact. " +
@@ -33,7 +33,6 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
       },
     },
     handler: async (args: any, invocation: any) => {
-      if (!invocation.sessionId) return toolFailure("sessionId is required");
 
       const rawPath = typeof args.path === "string" ? args.path.trim() : "";
       const content = typeof args.content === "string" ? args.content : undefined;

@@ -1,7 +1,14 @@
 import { InvalidTaskUpdateError, normalizeOptionalText, normalizeOptionalTimestamp } from "../task-store.js";
 import { bridgeToolResult, toolFailure } from "../tool-results.js";
+import {
+  resolvePullRequestLink,
+  resolvePullRequestUnlink,
+  resolveWorkItemLink,
+  resolveWorkItemUnlink,
+} from "../task-link-identity.js";
 import type { AppContext } from "../app-context.js";
 import type { Task } from "../task-store.js";
+import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
@@ -10,6 +17,10 @@ import {
   type BridgeToolDefinition,
   type BridgeToolsMcpServer,
 } from "../agent-tools-mcp/index.js";
+
+function providersConfig(ctx: AppContext): ProvidersConfig | undefined {
+  return ctx.settingsStore.getSettings().providers;
+}
 
 function hasOwn(args: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(args, key);
@@ -51,42 +62,50 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   return [
   defineBridgeTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "workItemId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: ["string", "number"], description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Inferred from the reference or the configured provider when omitted." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
-      ctx.taskStore.linkWorkItem(args.taskId, String(args.workItemId), args.provider ?? "ado");
-      return { success: true, message: `Work item ${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
+      const link = resolveWorkItemLink({ ...args, providers: providersConfig(ctx) });
+      if (!link.ok) return toolFailure(link.error);
+      ctx.taskStore.linkWorkItem(args.taskId, link.value.workItemId, link.value.provider);
+      return { success: true, message: `Work item ${link.value.workItemId} (${link.value.provider}) linked to task` };
     },
   }),
   defineBridgeTool("task_unlink_work_item", {
     description: "Remove a work item from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "workItemId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: ["string", "number"], description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Omit to unlink the work item from every provider." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
-      ctx.taskStore.unlinkWorkItem(args.taskId, String(args.workItemId), args.provider);
-      return { success: true, message: `Work item ${args.workItemId} unlinked from task` };
+      const unlink = resolveWorkItemUnlink(args);
+      if (!unlink.ok) return toolFailure(unlink.error);
+      ctx.taskStore.unlinkWorkItem(args.taskId, unlink.value.workItemId, unlink.value.provider);
+      return { success: true, message: `Work item ${unlink.value.workItemId} unlinked from task` };
     },
   }),
   defineBridgeTool("task_link_pr", {
     description: "Link a pull request to a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\" or \"repo\"." }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id (e.g. an Azure DevOps repository GUID). Derived from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Inferred from the repository reference or the configured provider when omitted." } }, required: ["taskId", "prId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
-      ctx.taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId, provider: args.provider ?? "ado" });
-      return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
+      const link = resolvePullRequestLink({ ...args, providers: providersConfig(ctx) });
+      if (!link.ok) return toolFailure(link.error);
+      ctx.taskStore.linkPR(args.taskId, link.value);
+      return { success: true, message: `PR #${link.value.prId} from ${link.value.repoName ?? link.value.repoId} linked to task` };
     },
   }),
   defineBridgeTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\" or \"repo\"." }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id (e.g. an Azure DevOps repository GUID). Derived from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Omit to unlink the pull request from every provider." } }, required: ["taskId", "prId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
-      ctx.taskStore.unlinkPR(args.taskId, args.repoName, args.prId, args.provider);
-      return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
+      const unlink = resolvePullRequestUnlink({ ...args, providers: providersConfig(ctx) });
+      if (!unlink.ok) return toolFailure(unlink.error);
+      ctx.taskStore.unlinkPR(args.taskId, unlink.value.repoIds, unlink.value.prId, unlink.value.provider);
+      return { success: true, message: `PR #${unlink.value.prId} from ${args.repoName ?? args.repoId} unlinked from task` };
     },
   }),
   defineBridgeTool("task_update", {

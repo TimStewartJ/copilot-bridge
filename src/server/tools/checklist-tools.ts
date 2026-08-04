@@ -24,7 +24,7 @@ export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefin
   return [
   defineBridgeTool("checklist_add", {
     description: "Add a checklist item to a task's checklist, or create a global checklist item if no taskId is provided",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID. Omit to create a global (unparented) checklist item." }, text: { type: "string", description: "The checklist item text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
+    parameters: { type: "object", properties: { taskId: { type: ["string", "null"], description: "The task ID. Omit to create a global (unparented) checklist item." }, text: { type: "string", description: "The checklist item text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
     handler: async (args: any) => {
       if (args.taskId !== undefined && args.taskId !== null) {
         const task = ensureTask(ctx, args.taskId);

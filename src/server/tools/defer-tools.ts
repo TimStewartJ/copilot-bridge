@@ -4,6 +4,7 @@ import { emitSessionDeferSummary } from "../defer-summary.js";
 import { toolFailure } from "../tool-results.js";
 import {
   defineBridgeTool,
+  defineSessionBridgeTool,
   registerBridgeToolDefinitions,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
@@ -77,8 +78,7 @@ export interface RegisterDeferToolsOptions {
 
 export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-    defineBridgeTool("defer_create", {
-      scope: "session",
+    defineSessionBridgeTool("defer_create", {
       description: "Create a same-session defer. Use delaySeconds or runAt for a one-shot follow-up in this session. Use intervalSeconds for same-session polling/recurrence with an explicit stop condition such as maxRuns or expiresAt; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
       parameters: {
         type: "object",
@@ -94,8 +94,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         required: ["prompt"],
       },
       handler: async (args: any, invocation: any) => {
-        const sessionId: string | undefined = invocation?.sessionId;
-        if (!sessionId) return toolFailure("No active session — defer_create requires an invocation session.");
+        const sessionId = invocation.sessionId;
         if (args.deferredPromptId !== undefined || args.loopId !== undefined) {
           return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
         }
@@ -217,8 +216,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
     }),
 
-    defineBridgeTool("defer_cancel", {
-      scope: "session",
+    defineSessionBridgeTool("defer_cancel", {
       description: "Cancel a pending or running same-session defer by public deferId. Works for one-shot and recurring interval defers. Use the deferId from defer_create, defer_list, or recurring prompt metadata.",
       parameters: {
         type: "object",
@@ -228,8 +226,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         required: ["deferId"],
       },
       handler: async (args: any, invocation: any) => {
-        const sessionId: string | undefined = invocation?.sessionId;
-        if (!sessionId) return toolFailure("No active session — defer_cancel requires an invocation session.");
+        const sessionId = invocation.sessionId;
         if (args.deferredPromptId !== undefined || args.loopId !== undefined) {
           return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
         }
@@ -267,13 +264,11 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
     }),
 
-    defineBridgeTool("defer_list", {
-      scope: "session",
+    defineSessionBridgeTool("defer_list", {
       description: "List active same-session defers for this session. Includes one-shot and recurring interval defers using public deferId values.",
       parameters: { type: "object", properties: {} },
       handler: async (args: any, invocation: any) => {
-        const sessionId: string | undefined = invocation?.sessionId;
-        if (!sessionId) return toolFailure("No active session — defer_list requires an invocation session.");
+        const sessionId = invocation.sessionId;
         if (args?.deferredPromptId !== undefined || args?.loopId !== undefined) {
           return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
         }

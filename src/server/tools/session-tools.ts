@@ -2,8 +2,9 @@ import { normalizeSessionTitle } from "../../shared/session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import {
-  defineBridgeTool,
+  defineSessionBridgeTool,
   registerBridgeToolDefinitions,
+  type SessionBridgeToolInvocation,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 
@@ -11,17 +12,24 @@ export interface RegisterSessionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
+/**
+ * Session ids are opaque — only trim them. The title normalizer strips quotes
+ * and collapses whitespace, which would corrupt an id.
+ */
+function targetSessionId(args: any, invocation: SessionBridgeToolInvocation): string {
+  const explicit = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+  return explicit || invocation.sessionId;
+}
+
 export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineBridgeTool("session_rename", {
-    scope: "session",
+  defineSessionBridgeTool("session_rename", {
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
-    parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["title"] },
-    handler: async (args: any, invocation: any) => {
-      const sessionId = normalizeSessionTitle(args.sessionId) || invocation.sessionId;
+    parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename. Defaults to the current session." }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["title"] },
+    handler: async (args: any, invocation) => {
+      const sessionId = targetSessionId(args, invocation);
       const title = normalizeSessionTitle(args.title);
 
-      if (!sessionId) return toolFailure("sessionId is required");
       if (!title) return toolFailure("Title is required");
       if (title.length > 80) return toolFailure("Title is too long");
 
@@ -33,8 +41,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
       return { success: true, sessionId, message: `Session renamed to "${title}"` };
     },
   }),
-  defineBridgeTool("session_set_workspace", {
-    scope: "session",
+  defineSessionBridgeTool("session_set_workspace", {
     description: "Switch the current session's workspace for future turns. Set an explicit cwd or reset back to the linked task's current default workspace snapshot.",
     parameters: {
       type: "object",
@@ -45,11 +52,8 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
         reset: { type: "boolean", description: "When true, copy the linked task's current default working directory into this session's pinned workspace." },
       },
     },
-    handler: async (args: any, invocation: any) => {
-      const sessionId = typeof args.sessionId === "string" && args.sessionId.trim()
-        ? args.sessionId.trim()
-        : invocation.sessionId;
-      if (!sessionId) return toolFailure("sessionId is required");
+    handler: async (args: any, invocation) => {
+      const sessionId = targetSessionId(args, invocation);
 
       const hasCwd = typeof args.cwd === "string";
       const cwd = hasCwd ? args.cwd.trim() : undefined;

@@ -14,6 +14,20 @@ import {
 } from "../visual-artifacts.js";
 import { BRIDGE_TOOLS_REPO_ROOT, getAttachmentApiBasePath } from "./helpers.js";
 
+/**
+ * Schema fragments for the visual payload this module publishes. `publish_visual`
+ * and `feed_save` both feed `publishVisualFromToolArgs`, so they must declare the
+ * same accepted shapes — a Vega-Lite spec may be a JSON string or an object.
+ */
+export const VISUAL_KIND_SCHEMA = {
+  type: "string" as const,
+  enum: ["image", "mermaid", "vega-lite", "html"],
+};
+
+export const VISUAL_CONTENT_TYPE_SCHEMA = {
+  anyOf: [{ type: "string" as const }, { type: "object" as const }],
+};
+
 export interface VisualPublishArgs {
   kind?: unknown;
   title?: unknown;

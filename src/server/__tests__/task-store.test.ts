@@ -695,7 +695,7 @@ describe("task-store", () => {
     it("unlinkPR removes PR ref", () => {
       const task = store.createTask("PR task");
       store.linkPR(task.id, { repoId: "repo-1", prId: 42, provider: "ado" });
-      store.unlinkPR(task.id, "repo-1", 42, "ado");
+      store.unlinkPR(task.id, ["repo-1"], 42, "ado");
       expect(store.getTask(task.id)!.pullRequests).toHaveLength(0);
     });
   });

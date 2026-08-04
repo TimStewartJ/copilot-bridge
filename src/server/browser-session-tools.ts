@@ -5,6 +5,7 @@ import { captureFinalBrowserState, formatBrowserStepTimeline, normalizeBrowserAu
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
 import {
   defineBridgeTool,
+  defineSessionBridgeTool,
   registerBridgeToolDefinitions,
 } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
@@ -50,8 +51,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
   });
 
   return [
-    defineBridgeTool("browser_session_start", {
-      scope: "session",
+    defineSessionBridgeTool("browser_session_start", {
       description:
         "Create an explicit browser session handle for multi-turn continuity. Use mode='persistent' " +
         "to reuse the shared primary browser state across turns, or mode='isolated' for a disposable " +
@@ -107,8 +107,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         };
       },
     }),
-    defineBridgeTool("browser_session_exec", {
-      scope: "session",
+    defineSessionBridgeTool("browser_session_exec", {
       description:
         "Execute structured browser automation steps against an explicit browser session handle. " +
         "Use this when a browser workflow must persist across multiple turns.",
@@ -204,8 +203,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         return result.value;
       },
     }),
-    defineBridgeTool("browser_session_get_state", {
-      scope: "session",
+    defineSessionBridgeTool("browser_session_get_state", {
       description:
         "Inspect the current state of an explicit browser session handle. By default returns URL and title; " +
         "optionally capture a fresh accessibility snapshot too.",
@@ -265,8 +263,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         return result.value;
       },
     }),
-    defineBridgeTool("browser_session_close", {
-      scope: "session",
+    defineSessionBridgeTool("browser_session_close", {
       description: "Close an explicit browser session handle and release any associated isolated browser resources.",
       parameters: {
         type: "object" as const,

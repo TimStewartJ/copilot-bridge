@@ -193,8 +193,10 @@ describe("unified defer tools", () => {
 
     await expect(createTool.handler({ prompt: "hi", delaySeconds: 10, deferredPromptId: "old" }, makeInvocation("s1")))
       .resolves.toEqual(toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId."));
-    await expect(cancelTool.handler({ deferredPromptId: "old" }, makeInvocation("s1")))
-      .resolves.toEqual(toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId."));
+    // Legacy-only calls now fail the declared schema first: the required
+    // replacement argument is named in the failure.
+    const legacyCancel: any = await cancelTool.handler({ deferredPromptId: "old" }, makeInvocation("s1"));
+    expect(String(legacyCancel.textResultForLlm)).toContain("missing required property: deferId");
     await expect(listTool.handler({ loopId: "old" }, makeInvocation("s1")))
       .resolves.toEqual(toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId."));
   });
