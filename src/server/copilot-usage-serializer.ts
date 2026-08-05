@@ -4,7 +4,7 @@ import type { CopilotUsageSummary } from "./copilot-usage.js";
 export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
   type TokenTotalsLike = Pick<
     CopilotUsageSummary["totals"],
-    "requests" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens"
+    "requests" | "inputTokens" | "uncachedInputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens" | "meteredAiCredits" | "meteredTokens"
   >;
   type CostBreakdownLike = CopilotUsageSummary["totals"]["costBreakdownUsd"];
   type CostEstimateLike = Pick<
@@ -18,11 +18,14 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
   const serializeTokenTotals = (row: TokenTotalsLike) => ({
     requests: row.requests,
     inputTokens: row.inputTokens,
+    uncachedInputTokens: row.uncachedInputTokens,
     outputTokens: row.outputTokens,
     cacheReadTokens: row.cacheReadTokens,
     cacheWriteTokens: row.cacheWriteTokens,
     reasoningTokens: row.reasoningTokens,
     totalTokens: row.totalTokens,
+    meteredAiCredits: row.meteredAiCredits,
+    meteredTokens: row.meteredTokens,
   });
   const serializeCostBreakdown = (row: CostBreakdownLike) => ({
     input: row.input,

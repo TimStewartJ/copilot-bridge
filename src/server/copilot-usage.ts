@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
+  COPILOT_CACHE_WRITE_INPUT_RATE_MULTIPLIER,
   COPILOT_TOKEN_PRICING_UNIT,
   getCopilotPricingRatesFromModelMetadata,
   resolveCopilotPricingModel,
@@ -28,15 +29,37 @@ export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_
 
 export interface CopilotUsageTotals {
   requests: number;
+  /**
+   * Total prompt tokens as reported by the CLI. This is INCLUSIVE of
+   * `cacheReadTokens` and `cacheWriteTokens`; it is not the uncached remainder.
+   * Use `uncachedInputTokens` for anything that prices input.
+   */
   inputTokens: number;
+  /** Prompt tokens that were neither served from nor written to cache. */
+  uncachedInputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Reasoning tokens. Already counted inside `outputTokens`, so never billed again. */
   reasoningTokens: number;
   totalTokens: number;
+  /**
+   * GitHub's own metered cost for this usage, in AI credits, taken from the
+   * CLI's `totalNanoAiu`. Authoritative where present; older session logs
+   * predate the field and report 0.
+   */
+  meteredAiCredits: number;
+  /**
+   * Portion of `totalTokens` that came from snapshots carrying metered cost.
+   * Lets callers tell "GitHub billed zero" apart from "no metering recorded",
+   * so a partially metered range is never presented as a complete total.
+   */
+  meteredTokens: number;
 }
 
-export type CopilotUsageReasoningPricingAssumption = "reasoning_tokens_priced_at_output_rate";
+export type CopilotUsageReasoningPricingAssumption =
+  | "reasoning_tokens_priced_at_output_rate"
+  | "reasoning_tokens_included_in_output";
 
 export interface CopilotUsageCostBreakdownUsd {
   input: number;
@@ -179,8 +202,10 @@ interface AssistantUsageAccumulator {
 
 const DEFAULT_SCAN_CONCURRENCY = 8;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
-const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
-export const COPILOT_USAGE_PARSER_VERSION = 3;
+const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
+/** nanoAIU per AI credit. The CLI reports metered cost as `totalNanoAiu`. */
+const NANO_AIU_PER_AI_CREDIT = 1_000_000_000;
+export const COPILOT_USAGE_PARSER_VERSION = 4;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -767,7 +792,9 @@ function applyCostEstimateToModelRow(
     ...(contextTierLabel ? { contextTierLabel } : {}),
   } satisfies CopilotUsageModelPricingMetadata);
 
-  const billableOutputTokens = Math.max(0, row.outputTokens) + Math.max(0, row.reasoningTokens);
+  // Reasoning tokens are a subset of outputTokens, so output is already the
+  // full billable amount. Adding reasoning here would charge it twice.
+  const billableOutputTokens = Math.max(0, row.outputTokens);
   if (!priced || !rates) {
     assignCostEstimate(row, {
       ...createZeroCostEstimate(),
@@ -791,11 +818,15 @@ function calculateCostBreakdownUsd(
   usage: CopilotUsageTotals,
 ): CopilotUsageCostBreakdownUsd {
   const breakdown = {
-    input: calculateTokenCostUsd(usage.inputTokens, rates.input),
+    input: calculateTokenCostUsd(usage.uncachedInputTokens, rates.input),
     cachedInput: calculateTokenCostUsd(usage.cacheReadTokens, rates.cachedInput),
-    cacheWrite: calculateTokenCostUsd(usage.cacheWriteTokens, rates.cacheWrite ?? 0),
+    cacheWrite: calculateTokenCostUsd(
+      usage.cacheWriteTokens,
+      rates.cacheWrite ?? rates.input * COPILOT_CACHE_WRITE_INPUT_RATE_MULTIPLIER,
+    ),
     output: calculateTokenCostUsd(usage.outputTokens, rates.output),
-    reasoning: calculateTokenCostUsd(usage.reasoningTokens, rates.output),
+    // Reasoning tokens are already inside outputTokens, so they are billed there.
+    reasoning: 0,
     total: 0,
   };
   breakdown.total = breakdown.input
@@ -836,11 +867,14 @@ function createUnpricedModelReportRow(row: CopilotUsageModelRow): CopilotUsageUn
     sessions: row.sessions,
     requests: row.requests,
     inputTokens: row.inputTokens,
+    uncachedInputTokens: row.uncachedInputTokens,
     outputTokens: row.outputTokens,
     cacheReadTokens: row.cacheReadTokens,
     cacheWriteTokens: row.cacheWriteTokens,
     reasoningTokens: row.reasoningTokens,
     totalTokens: row.totalTokens,
+    meteredAiCredits: row.meteredAiCredits,
+    meteredTokens: row.meteredTokens,
     pricingKey: null,
     pricedAs: null,
     pricingStatus: "unpriced",
@@ -881,11 +915,14 @@ function createZeroTotals(): CopilotUsageTotals {
   return {
     requests: 0,
     inputTokens: 0,
+    uncachedInputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
+    meteredAiCredits: 0,
+    meteredTokens: 0,
   };
 }
 
@@ -965,31 +1002,84 @@ function extractTotals(value: unknown): CopilotUsageTotals {
   const metricRecord = asRecord(value);
   const requestRecord = asRecord(metricRecord?.requests);
   const usageRecord = asRecord(metricRecord?.usage);
+  const detailRecord = asRecord(metricRecord?.tokenDetails);
+
+  const inputTokens = toNumber(usageRecord?.inputTokens);
+  const cacheReadTokens = toNumber(usageRecord?.cacheReadTokens);
+  const cacheWriteTokens = toNumber(usageRecord?.cacheWriteTokens);
 
   const totals = {
     requests: toNumber(requestRecord?.count),
-    inputTokens: toNumber(usageRecord?.inputTokens),
+    inputTokens,
+    uncachedInputTokens: extractUncachedInputTokens(
+      detailRecord,
+      inputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+    ),
     outputTokens: toNumber(usageRecord?.outputTokens),
-    cacheReadTokens: toNumber(usageRecord?.cacheReadTokens),
-    cacheWriteTokens: toNumber(usageRecord?.cacheWriteTokens),
+    cacheReadTokens,
+    cacheWriteTokens,
     reasoningTokens: toNumber(usageRecord?.reasoningTokens),
     totalTokens: 0,
+    meteredAiCredits: toNumber(metricRecord?.totalNanoAiu) / NANO_AIU_PER_AI_CREDIT,
+    meteredTokens: 0,
   };
-  totals.totalTokens = totals.inputTokens
-    + totals.outputTokens
+  totals.totalTokens = sumBilledTokens(totals);
+  totals.meteredTokens = hasMeteredCost(metricRecord) ? totals.totalTokens : 0;
+  return totals;
+}
+
+/** True when this snapshot carries GitHub's metered cost field at all. */
+function hasMeteredCost(metricRecord: Record<string, unknown> | null | undefined): boolean {
+  const value = metricRecord?.totalNanoAiu;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * `usage.inputTokens` already contains cache reads and cache writes, so the
+ * uncached remainder is what actually gets billed at the input rate. The CLI
+ * reports that remainder directly as `tokenDetails.input`, which is preferred;
+ * `usage` and `tokenDetails` are occasionally captured a beat apart, so fall
+ * back to subtraction whenever the two do not reconcile exactly.
+ */
+function extractUncachedInputTokens(
+  detailRecord: Record<string, unknown> | null | undefined,
+  inputTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
+): number {
+  const reported = asRecord(detailRecord?.input)?.tokenCount;
+  if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+    if (reported + cacheReadTokens + cacheWriteTokens === inputTokens) {
+      return reported;
+    }
+  }
+  return Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+}
+
+/**
+ * Counts each token exactly once. `inputTokens` is inclusive of cache traffic
+ * and `reasoningTokens` is inclusive in `outputTokens`, so adding either on top
+ * of its components would double count.
+ */
+function sumBilledTokens(totals: Omit<CopilotUsageTotals, "totalTokens">): number {
+  return totals.uncachedInputTokens
     + totals.cacheReadTokens
     + totals.cacheWriteTokens
-    + totals.reasoningTokens;
-  return totals;
+    + totals.outputTokens;
 }
 
 function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {  target.requests += delta.requests;
   target.inputTokens += delta.inputTokens;
+  target.uncachedInputTokens += delta.uncachedInputTokens;
   target.outputTokens += delta.outputTokens;
   target.cacheReadTokens += delta.cacheReadTokens;
   target.cacheWriteTokens += delta.cacheWriteTokens;
   target.reasoningTokens += delta.reasoningTokens;
   target.totalTokens += delta.totalTokens;
+  target.meteredAiCredits += delta.meteredAiCredits;
+  target.meteredTokens += delta.meteredTokens;
 }
 
 // Copilot writes a session.shutdown snapshot every time a session suspends, and each
@@ -1003,17 +1093,17 @@ function diffCumulativeTotals(
   const delta = {
     requests: diffCumulativeMetric(previous.requests, current.requests),
     inputTokens: diffCumulativeMetric(previous.inputTokens, current.inputTokens),
+    uncachedInputTokens: diffCumulativeMetric(previous.uncachedInputTokens, current.uncachedInputTokens),
     outputTokens: diffCumulativeMetric(previous.outputTokens, current.outputTokens),
     cacheReadTokens: diffCumulativeMetric(previous.cacheReadTokens, current.cacheReadTokens),
     cacheWriteTokens: diffCumulativeMetric(previous.cacheWriteTokens, current.cacheWriteTokens),
     reasoningTokens: diffCumulativeMetric(previous.reasoningTokens, current.reasoningTokens),
     totalTokens: 0,
+    meteredAiCredits: diffCumulativeMetric(previous.meteredAiCredits, current.meteredAiCredits),
+    meteredTokens: 0,
   };
-  delta.totalTokens = delta.inputTokens
-    + delta.outputTokens
-    + delta.cacheReadTokens
-    + delta.cacheWriteTokens
-    + delta.reasoningTokens;
+  delta.totalTokens = sumBilledTokens(delta);
+  delta.meteredTokens = current.meteredTokens > 0 ? delta.totalTokens : 0;
   return delta;
 }
 

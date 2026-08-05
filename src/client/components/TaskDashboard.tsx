@@ -100,11 +100,14 @@ const SIGNAL_TONE_CLASS: Record<SignalTone, string> = {
 const ZERO_USAGE_TOTALS: CopilotUsageTotals = {
   requests: 0,
   inputTokens: 0,
+  uncachedInputTokens: 0,
   outputTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   reasoningTokens: 0,
   totalTokens: 0,
+  meteredAiCredits: 0,
+  meteredTokens: 0,
 };
 
 export function TaskDashboardRouteSkeleton() {
@@ -1187,11 +1190,14 @@ function createZeroCostBreakdownUsd(): CopilotUsageCostBreakdownUsd {
 function addUsageTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {
   target.requests += delta.requests;
   target.inputTokens += delta.inputTokens;
+  target.uncachedInputTokens += delta.uncachedInputTokens ?? 0;
   target.outputTokens += delta.outputTokens;
   target.cacheReadTokens += delta.cacheReadTokens;
   target.cacheWriteTokens += delta.cacheWriteTokens;
   target.reasoningTokens += delta.reasoningTokens;
   target.totalTokens += delta.totalTokens;
+  target.meteredAiCredits += delta.meteredAiCredits ?? 0;
+  target.meteredTokens += delta.meteredTokens ?? 0;
 }
 
 function addUsageCostEstimate(target: SessionUsageCostFields, delta: Partial<CopilotUsageCostEstimate>): void {

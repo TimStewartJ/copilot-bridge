@@ -29,11 +29,14 @@ function createUsageTotals(totalTokens: number, requests = 1) {
   return {
     requests,
     inputTokens: totalTokens,
+    uncachedInputTokens: totalTokens,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     totalTokens,
+    meteredAiCredits: 0,
+    meteredTokens: 0,
   };
 }
 

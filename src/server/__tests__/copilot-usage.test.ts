@@ -9,7 +9,7 @@ import {
 } from "../copilot-usage.js";
 import { makeTestDir } from "./helpers.js";
 
-const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
+const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 
 function createCopilotHome(): string {
   return makeTestDir("copilot-usage");
@@ -59,11 +59,14 @@ function zeroTotals(): CopilotUsageTotals {
   return {
     requests: 0,
     inputTokens: 0,
+    uncachedInputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
+    meteredAiCredits: 0,
+    meteredTokens: 0,
   };
 }
 
@@ -80,7 +83,9 @@ function summaryTotals(totals: CopilotUsageTotals): CopilotUsageSummary["totals"
       reasoning: 0,
       total: 0,
     },
-    billableOutputTokens: totals.outputTokens + totals.reasoningTokens,
+    // Reasoning tokens are already inside outputTokens, so output is the whole
+    // billable amount.
+    billableOutputTokens: totals.outputTokens,
     reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
     unpricedModelCount: 0,
     unpricedTokens: zeroTotals(),
@@ -137,11 +142,12 @@ describe("readCopilotUsageSummary", () => {
       totals: {
         requests: 7,
         inputTokens: 18,
+        uncachedInputTokens: 15,
         outputTokens: 12,
         cacheReadTokens: 3,
         cacheWriteTokens: 2,
         reasoningTokens: 1,
-        totalTokens: 36,
+        totalTokens: 32,
       },
       coverage: {
         sessionsSeen: 2,
@@ -165,22 +171,24 @@ describe("readCopilotUsageSummary", () => {
           sessions: 2,
           requests: 6,
           inputTokens: 18,
+          uncachedInputTokens: 15,
           outputTokens: 5,
           cacheReadTokens: 3,
           cacheWriteTokens: 0,
           reasoningTokens: 0,
-          totalTokens: 26,
+          totalTokens: 23,
         },
         {
           model: "claude-sonnet",
           sessions: 1,
           requests: 1,
           inputTokens: 0,
+          uncachedInputTokens: 0,
           outputTokens: 7,
           cacheReadTokens: 0,
           cacheWriteTokens: 2,
           reasoningTokens: 1,
-          totalTokens: 10,
+          totalTokens: 9,
         },
         {
           model: "gemini-2.5",
@@ -235,22 +243,24 @@ describe("readCopilotUsageSummary", () => {
           shutdownAt: "2026-01-02T10:00:00.000Z",
           requests: 3,
           inputTokens: 10,
+          uncachedInputTokens: 7,
           outputTokens: 12,
           cacheReadTokens: 3,
           cacheWriteTokens: 2,
           reasoningTokens: 1,
-          totalTokens: 28,
+          totalTokens: 24,
           models: [
             {
               model: "gpt-4o",
               sessions: 1,
               requests: 2,
               inputTokens: 10,
+              uncachedInputTokens: 7,
               outputTokens: 5,
               cacheReadTokens: 3,
               cacheWriteTokens: 0,
               reasoningTokens: 0,
-              totalTokens: 18,
+              totalTokens: 15,
             },
             {
               model: "claude-sonnet",
@@ -261,7 +271,7 @@ describe("readCopilotUsageSummary", () => {
               cacheReadTokens: 0,
               cacheWriteTokens: 2,
               reasoningTokens: 1,
-              totalTokens: 10,
+              totalTokens: 9,
             },
           ],
         },
@@ -280,7 +290,9 @@ describe("readCopilotUsageSummary", () => {
             "claude-sonnet-4.6": {
               requests: { count: 1 },
               usage: {
-                inputTokens: 1_000_000,
+                // inputTokens is inclusive of cache reads and cache writes, so
+                // only 1M of this is uncached and billed at the input rate.
+                inputTokens: 3_000_000,
                 outputTokens: 1_000_000,
                 cacheReadTokens: 1_000_000,
                 cacheWriteTokens: 1_000_000,
@@ -298,9 +310,10 @@ describe("readCopilotUsageSummary", () => {
     const model = summary.models[0];
     const session = summary.sessions[0];
 
-    // The SDK does not expose a cache-write rate, so cache-write tokens are billed at $0.
-    expect(summary.totals.estimatedCostUsd).toBeCloseTo(18.3);
-    expect(summary.totals.estimatedAiCredits).toBeCloseTo(1_830);
+    // Cache writes bill at 1.25x the input rate even though the SDK price card
+    // carries no explicit cache-write field.
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(summary.totals.estimatedAiCredits).toBeCloseTo(2_205);
     expect(summary.totals.unpricedModelCount).toBe(0);
     expect(summary.unpricedModels).toEqual([]);
     expect(model).toMatchObject({
@@ -308,21 +321,223 @@ describe("readCopilotUsageSummary", () => {
       pricingStatus: "exact",
       pricingKey: "claude-sonnet-4.6",
       pricedAs: "claude-sonnet-4.6",
+      uncachedInputTokens: 1_000_000,
+      totalTokens: 4_000_000,
       billableOutputTokens: 1_000_000,
       reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
     });
     expect(model.costBreakdownUsd).toMatchObject({
       input: 3,
       cachedInput: 0.3,
-      cacheWrite: 0,
+      cacheWrite: 3.75,
       output: 15,
       reasoning: 0,
     });
-    expect(model.costBreakdownUsd.total).toBeCloseTo(18.3);
-    expect(model.estimatedCostUsd).toBeCloseTo(18.3);
-    expect(model.estimatedAiCredits).toBeCloseTo(1_830);
-    expect(session.estimatedCostUsd).toBeCloseTo(18.3);
-    expect(session.models[0].estimatedCostUsd).toBeCloseTo(18.3);
+    expect(model.costBreakdownUsd.total).toBeCloseTo(22.05);
+    expect(model.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(model.estimatedAiCredits).toBeCloseTo(2_205);
+    expect(session.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(session.models[0].estimatedCostUsd).toBeCloseTo(22.05);
+  });
+
+  it("prefers the reported uncached input count over subtracting cache tokens", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: {
+                inputTokens: 2_000_000,
+                outputTokens: 10,
+                cacheReadTokens: 1_500_000,
+                cacheWriteTokens: 400_000,
+              },
+              tokenDetails: {
+                input: { tokenCount: 100_000 },
+                cache_read: { tokenCount: 1_500_000 },
+                cache_write: { tokenCount: 400_000 },
+                output: { tokenCount: 10 },
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.uncachedInputTokens).toBe(100_000);
+    expect(summary.totals.totalTokens).toBe(2_000_010);
+  });
+
+  it("falls back to subtraction when tokenDetails does not reconcile with usage", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { inputTokens: 900, outputTokens: 10, cacheReadTokens: 400 },
+              // Captured a beat apart from usage, so it must not be trusted.
+              tokenDetails: { input: { tokenCount: 12_345 } },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.uncachedInputTokens).toBe(500);
+    expect(summary.totals.totalTokens).toBe(910);
+  });
+
+  it("never reports negative uncached input when cache counts exceed the reported input", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 50 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.uncachedInputTokens).toBe(0);
+  });
+
+  it("carries GitHub's metered cost through as forward progress only", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100, outputTokens: 10 },
+              totalNanoAiu: 250_000_000_000,
+            },
+          },
+        },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T11:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 2 },
+              usage: { inputTokens: 180, outputTokens: 30 },
+              totalNanoAiu: 400_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    // Snapshots are cumulative, so the later 400 AIU replaces the earlier 250.
+    expect(summary.totals.meteredAiCredits).toBeCloseTo(400);
+    expect(summary.models[0].meteredAiCredits).toBeCloseTo(400);
+    expect(summary.totals.meteredTokens).toBe(summary.totals.totalTokens);
+  });
+
+  it("tracks metered coverage separately so a partly metered range is not read as complete", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "metered-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100, outputTokens: 10 },
+              totalNanoAiu: 300_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+    writeEvents(copilotHome, "legacy-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T11:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": { requests: { count: 1 }, usage: { inputTokens: 300, outputTokens: 40 } },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.totalTokens).toBe(450);
+    expect(summary.totals.meteredTokens).toBe(110);
+    expect(summary.totals.meteredAiCredits).toBeCloseTo(300);
+  });
+
+  it("keeps metered coverage when GitHub genuinely billed zero", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "free-alpha": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100, outputTokens: 10 },
+              totalNanoAiu: 0,
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.meteredAiCredits).toBe(0);
+    expect(summary.totals.meteredTokens).toBe(110);
+  });
+
+  it("reports zero metered credits for sessions logged before the field existed", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": { requests: { count: 1 }, usage: { inputTokens: 100, outputTokens: 10 } },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.meteredAiCredits).toBe(0);
+    expect(summary.totals.meteredTokens).toBe(0);
   });
 
   it("uses SDK long-context pricing when Bridge recorded a long context tier", async () => {
@@ -341,7 +556,7 @@ describe("readCopilotUsageSummary", () => {
             "gpt-5.5": {
               requests: { count: 1 },
               usage: {
-                inputTokens: 1_000_000,
+                inputTokens: 2_000_000,
                 outputTokens: 1_000_000,
                 cacheReadTokens: 1_000_000,
               },
@@ -495,10 +710,11 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.totals).toMatchObject({
       requests: 2,
       inputTokens: 1_000_000,
+      uncachedInputTokens: 1_000_000,
       outputTokens: 2_000_000,
       reasoningTokens: 1_000_000,
-      totalTokens: 4_000_000,
-      billableOutputTokens: 3_000_000,
+      totalTokens: 3_000_000,
+      billableOutputTokens: 2_000_000,
       unpricedModelCount: 1,
     });
     expect(summary.totals.estimatedCostUsd).toBeCloseTo(30);
@@ -508,7 +724,7 @@ describe("readCopilotUsageSummary", () => {
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,
       reasoningTokens: 1_000_000,
-      totalTokens: 3_000_000,
+      totalTokens: 2_000_000,
     });
     expect(known?.estimatedCostUsd).toBeCloseTo(30);
     expect(unknown).toMatchObject({
@@ -518,21 +734,21 @@ describe("readCopilotUsageSummary", () => {
       normalizedPricingModel: "unknown-model",
       estimatedCostUsd: 0,
       estimatedAiCredits: 0,
-      billableOutputTokens: 2_000_000,
+      billableOutputTokens: 1_000_000,
     });
     expect(unknown?.costBreakdownUsd.total).toBe(0);
     expect(summary.unpricedModels).toEqual([
       expect.objectContaining({
         model: "unknown-model",
         requests: 1,
-        totalTokens: 3_000_000,
+        totalTokens: 2_000_000,
         pricingStatus: "unpriced",
       }),
     ]);
     expect(summary.sessions[0].unpricedModels).toEqual(summary.unpricedModels);
   });
 
-  it("prices reasoning tokens at the output rate and exposes them separately", async () => {
+  it("does not bill reasoning tokens again because they are already inside output tokens", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
       {
@@ -542,7 +758,8 @@ describe("readCopilotUsageSummary", () => {
           modelMetrics: {
             "gpt-5.5": {
               requests: { count: 1 },
-              usage: { outputTokens: 1_000_000, reasoningTokens: 2_000_000 },
+              // Reasoning is a subset of output, not an additional bucket.
+              usage: { outputTokens: 3_000_000, reasoningTokens: 2_000_000 },
             },
           },
         },
@@ -556,15 +773,16 @@ describe("readCopilotUsageSummary", () => {
     const model = summary.models[0];
 
     expect(model).toMatchObject({
-      outputTokens: 1_000_000,
+      outputTokens: 3_000_000,
       reasoningTokens: 2_000_000,
+      totalTokens: 3_000_000,
       billableOutputTokens: 3_000_000,
       reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
     });
-    expect(model.costBreakdownUsd.output).toBeCloseTo(30);
-    expect(model.costBreakdownUsd.reasoning).toBeCloseTo(60);
+    expect(model.costBreakdownUsd.output).toBeCloseTo(90);
+    expect(model.costBreakdownUsd.reasoning).toBe(0);
     expect(model.costBreakdownUsd.total).toBeCloseTo(90);
-    expect(summary.totals.costBreakdownUsd.reasoning).toBeCloseTo(60);
+    expect(summary.totals.costBreakdownUsd.reasoning).toBe(0);
     expect(summary.totals.estimatedCostUsd).toBeCloseTo(90);
   });
 
@@ -844,11 +1062,12 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.totals).toMatchObject({
       requests: 11,
       inputTokens: 140,
+      uncachedInputTokens: 140,
       outputTokens: 55,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 4,
-      totalTokens: 199,
+      totalTokens: 195,
     });
     expect(summary.coverage.earliestIncludedAt).toBe("2026-03-01T08:00:00.000Z");
     expect(summary.coverage.latestIncludedAt).toBe("2026-03-01T09:00:00.000Z");
@@ -903,11 +1122,12 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.totals).toMatchObject({
       requests: 320,
       inputTokens: 4_100,
+      uncachedInputTokens: 2_200,
       outputTokens: 600,
       cacheReadTokens: 1_900,
       cacheWriteTokens: 0,
       reasoningTokens: 0,
-      totalTokens: 6_600,
+      totalTokens: 4_700,
     });
     expect(summary.models).toMatchObject([{ model: "gpt-4o", sessions: 1, requests: 320 }]);
   });
@@ -994,11 +1214,12 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.totals).toMatchObject({
       requests: 4,
       inputTokens: 10,
+      uncachedInputTokens: 10,
       outputTokens: 7,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 6,
-      totalTokens: 23,
+      totalTokens: 17,
     });
     expect(summary.coverage.sessionsIncluded).toBe(1);
     expect(summary.coverage.earliestIncludedAt).toBe("2026-03-05T08:00:00.000Z");
@@ -1024,7 +1245,7 @@ describe("readCopilotUsageSummary", () => {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         reasoningTokens: 6,
-        totalTokens: 6,
+        totalTokens: 0,
       },
     ]);
   });
@@ -1151,7 +1372,7 @@ describe("readCopilotUsageSummary", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 4,
-      totalTokens: 9,
+      totalTokens: 5,
     });
     expect(sandwichedSummary.coverage.sessionsIncluded).toBe(1);
     expect(sandwichedSummary.coverage.earliestIncludedAt).toBe("2026-04-02T10:00:00.000Z");
