@@ -9,10 +9,17 @@ import {
   LIFECYCLE_EXCLUSIVE_JOB_TYPES,
   type LifecycleJobLookup,
 } from "../restart-inflight.js";
-import { clearRestartPending, isRestartPending } from "../restart-controller.js";
-import { isRestartAlreadyInFlight } from "../restart-state.js";
+import {
+  beginRestartPending,
+  clearRestartPending,
+  configureRestartStateStore,
+  forceClearRestartPending,
+  isRestartPending,
+  refreshRestartState,
+} from "../restart-controller.js";
+import { isRestartAlreadyInFlight, writeRestartState } from "../restart-state.js";
 import type { ManagementJob, ManagementJobType } from "../management-job-store.js";
-import { makeTestDir } from "./helpers.js";
+import { makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 function job(overrides: Partial<ManagementJob> = {}): ManagementJob {
   return {
@@ -124,9 +131,51 @@ describe("lifecycleBusyToolFailure", () => {
   });
 });
 
+describe("request-scoped restart clears", () => {
+  afterEach(async () => {
+    forceClearRestartPending();
+    await refreshRestartState();
+    configureRestartStateStore(undefined);
+  });
+
+  it("does not let stale cleanup erase a newer restart request", async () => {
+    const runtimePaths = makeTestRuntimePaths("restart-request-scope");
+    configureRestartStateStore(runtimePaths);
+    const first = beginRestartPending();
+    const second = beginRestartPending();
+
+    expect(clearRestartPending(first.requestId)).toBe(false);
+    expect((await refreshRestartState()).requestId).toBe(second.requestId);
+
+    expect(clearRestartPending(second.requestId)).toBe(true);
+    expect((await refreshRestartState()).phase).toBe("idle");
+  });
+
+  it("re-checks the persisted request before a queued clear deletes state", async () => {
+    const runtimePaths = makeTestRuntimePaths("restart-request-persisted-scope");
+    configureRestartStateStore(runtimePaths);
+    const request = beginRestartPending();
+    await refreshRestartState();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "launcher-owned-new-request",
+      phase: "restarting",
+      requestedAt: new Date().toISOString(),
+      waitingSessions: 0,
+      launcherHeartbeatAt: new Date().toISOString(),
+    });
+
+    expect(clearRestartPending(request.requestId)).toBe(true);
+    expect(await refreshRestartState()).toMatchObject({
+      requestId: "launcher-owned-new-request",
+      phase: "restarting",
+    });
+  });
+});
+
 describe("writeRestartSignalOrRollback", () => {
-  afterEach(() => {
-    clearRestartPending();
+  afterEach(async () => {
+    forceClearRestartPending();
+    await refreshRestartState();
   });
 
   it("publishes the restart to disk in the same tick it marks it pending", () => {

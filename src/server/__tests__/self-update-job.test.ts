@@ -12,8 +12,16 @@ const reusableReleaseMock = vi.hoisted(() => ({
 const prepareReleaseSlotMock = vi.hoisted(() => vi.fn());
 const writeRestartSignalFileMock = vi.hoisted(() => vi.fn());
 const removeRollbackCheckpointMock = vi.hoisted(() => vi.fn());
-const runValidationCommandMock = vi.hoisted(() => vi.fn(async (options: { command: string }) => {
-  switch (options.command) {
+type ValidationCommandOptions = {
+  command: string;
+  args?: readonly string[];
+  displayCommand?: string;
+  env?: NodeJS.ProcessEnv;
+};
+const renderedCommand = (options: ValidationCommandOptions) =>
+  options.displayCommand ?? [options.command, ...(options.args ?? [])].join(" ");
+const runValidationCommandMock = vi.hoisted(() => vi.fn(async (options: ValidationCommandOptions) => {
+  switch (renderedCommand(options)) {
     case "git rev-parse --abbrev-ref HEAD":
       return { ok: true, output: "main\n" };
     case "git rev-parse HEAD":
@@ -40,6 +48,7 @@ vi.mock("../release-slots.js", () => ({
 }));
 
 vi.mock("../restart-controller.js", () => ({
+  beginRestartPending: () => ({ requestId: "restart-request-test", waitingSessions: 0 }),
   isRestartPending: () => false,
   triggerRestartPending: () => 0,
   clearRestartPending: vi.fn(),
@@ -112,6 +121,11 @@ describe("runSelfUpdateJob active-release drift", () => {
     expect(result1.success).toBe(true);
     expect(result1.activeReleaseDrift).toBe(true);
     expect(result1.reusedReleaseSlot).toBe(true);
+    expect(runValidationCommandMock).toHaveBeenCalledWith(expect.objectContaining({
+      command: "git",
+      args: ["pull", "--rebase", "origin", "main"],
+      shell: false,
+    }));
     expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
     expect(writeRestartSignalFileMock).toHaveBeenCalledWith(
       expect.stringContaining("restart.signal"),
@@ -135,15 +149,16 @@ describe("runSelfUpdateJob active-release drift", () => {
     activeReleaseMock.value = manifest(oldSha, dataDir2);
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
-    runValidationCommandMock.mockImplementation(async (options: { command: string }) => {
-      if (options.command.startsWith("git merge-base --is-ancestor")) return { ok: false, output: "" };
+    runValidationCommandMock.mockImplementation(async (options: ValidationCommandOptions) => {
+      const command = renderedCommand(options);
+      if (command.startsWith("git merge-base --is-ancestor")) return { ok: false, output: "" };
       return {
         ok: true,
-        output: options.command === "git rev-parse --short HEAD"
+        output: command === "git rev-parse --short HEAD"
           ? "22222222\n"
-          : options.command === "git rev-parse --abbrev-ref HEAD"
+          : command === "git rev-parse --abbrev-ref HEAD"
             ? "main\n"
-            : options.command === "git pull --rebase origin main"
+            : command === "git pull --rebase origin main"
               ? "Already up to date.\n"
               : "2222222222222222222222222222222222222222\n",
       };
@@ -182,25 +197,23 @@ describe("runSelfUpdateJob active-release drift", () => {
       expect(result.ok).toBe(true);
       return { ok: true, manifest: manifest(headSha, dataDir) };
     });
-    runValidationCommandMock.mockImplementation(async (options: {
-      command: string;
-      env?: NodeJS.ProcessEnv;
-    }) => {
-      if (options.command === "npm run check:deploy") {
+    runValidationCommandMock.mockImplementation(async (options: ValidationCommandOptions) => {
+      const command = renderedCommand(options);
+      if (command === "npm run check:deploy") {
         expect(options.env?.BRIDGE_DATA_DIR).toBeTruthy();
         expect(options.env?.BRIDGE_DATA_DIR).not.toBe(liveDataDir);
         return { ok: true, output: "" };
       }
-      if (options.command.startsWith("git merge-base --is-ancestor")) {
+      if (command.startsWith("git merge-base --is-ancestor")) {
         return { ok: true, output: "" };
       }
       return {
         ok: true,
-        output: options.command === "git rev-parse --short HEAD"
+        output: command === "git rev-parse --short HEAD"
           ? "22222222\n"
-          : options.command === "git rev-parse --abbrev-ref HEAD"
+          : command === "git rev-parse --abbrev-ref HEAD"
             ? "main\n"
-            : options.command === "git pull --rebase origin main"
+            : command === "git pull --rebase origin main"
               ? "Already up to date.\n"
               : `${headSha}\n`,
       };

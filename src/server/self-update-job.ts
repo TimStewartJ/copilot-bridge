@@ -18,6 +18,7 @@ import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
+import { createGitPullRebaseCommand } from "./git-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTROL_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -36,10 +37,18 @@ interface CommandResult {
   output: string;
 }
 
+interface SelfUpdateRunOptions {
+  cwd?: string;
+  timeoutMs?: number;
+  isolateRuntimeEnv?: boolean;
+  executable?: string;
+  args?: readonly string[];
+}
+
 function createSelfUpdateRunner(
   controlRoot: string,
   log: (message: string) => void,
-): (cmd: string, options?: { cwd?: string; timeoutMs?: number; isolateRuntimeEnv?: boolean }) => Promise<CommandResult> {
+): (cmd: string, options?: SelfUpdateRunOptions) => Promise<CommandResult> {
   return async (cmd, options = {}) => {
     const cwd = options.cwd ?? controlRoot;
     const nodeDir = dirname(process.execPath);
@@ -53,10 +62,13 @@ function createSelfUpdateRunner(
       const result = await runValidationCommand({
         rootDir: controlRoot,
         source: "self-update",
-        command: cmd,
+        command: options.executable ?? cmd,
+        args: options.args,
+        displayCommand: cmd,
         cwd,
         env,
         timeoutMs: options.timeoutMs ?? 120_000,
+        shell: options.args ? false : undefined,
         failureOutputFormat: "plain",
       });
       if (result.output.trim()) log(result.output.trimEnd());
@@ -262,7 +274,11 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
   const preUpdateSha = headResult.ok ? headResult.output.trim() : "";
   const rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(preDeployShaFile, preUpdateSha);
 
-  const pullResult = await run(`git pull --rebase origin ${branch}`);
+  const pullCommand = createGitPullRebaseCommand(branch);
+  const pullResult = await run(pullCommand.displayCommand, {
+    executable: pullCommand.command,
+    args: pullCommand.args,
+  });
   if (!pullResult.ok) {
     await run("git rebase --abort");
     removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);

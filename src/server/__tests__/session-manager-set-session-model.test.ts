@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { clearRestartPending, SessionManager } from "../session-manager.js";
+import { forceClearRestartPending, SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, createMockSessionManager, makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -80,7 +80,7 @@ const LONG_CONTEXT_CAPABILITIES = {
 describe("SessionManager.setSessionModel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    clearRestartPending();
+    forceClearRestartPending();
   });
 
   it("calls setModel on a cached session and returns model info, including reasoningEffort", async () => {

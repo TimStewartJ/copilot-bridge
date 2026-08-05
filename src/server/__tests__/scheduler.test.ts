@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import {
-  clearRestartPending,
+  forceClearRestartPending,
   configureRestartStateStore,
   isRestartPending,
   refreshRestartState,
@@ -22,7 +22,7 @@ import { createTestApp } from "./test-app.js";
 import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {
-  clearRestartPending();
+  forceClearRestartPending();
   if (scheduler.isInitialized()) {
     scheduler.shutdown();
   }
@@ -152,11 +152,11 @@ describe("cron math", () => {
 
 describe("scheduler restart gating", () => {
   beforeEach(() => {
-    clearRestartPending();
+    forceClearRestartPending();
   });
 
   afterEach(() => {
-    clearRestartPending();
+    forceClearRestartPending();
     scheduler.shutdown();
   });
 
@@ -244,7 +244,7 @@ describe("scheduler restart gating", () => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
       expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
     } finally {
-      clearRestartPending();
+      forceClearRestartPending();
       configureRestartStateStore(undefined);
     }
   });
@@ -292,7 +292,7 @@ describe("scheduler restart gating", () => {
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
       expect(sessionManager.startWork).not.toHaveBeenCalled();
     } finally {
-      clearRestartPending();
+      forceClearRestartPending();
       configureRestartStateStore(undefined);
     }
   });
@@ -1585,7 +1585,7 @@ describe("scheduler startup recovery", () => {
         enabled: false,
       });
     } finally {
-      clearRestartPending();
+      forceClearRestartPending();
       configureRestartStateStore(undefined);
     }
   });
@@ -1657,7 +1657,7 @@ describe("scheduler startup recovery", () => {
         enabled: false,
       });
     } finally {
-      clearRestartPending();
+      forceClearRestartPending();
       configureRestartStateStore(undefined);
     }
   });
@@ -1701,7 +1701,7 @@ describe("scheduler startup recovery", () => {
     scheduler.armOneShot(schedule.id, rescheduledRunAt);
     ctx.scheduleStore.updateNextRunAt(schedule.id, rescheduledRunAt);
 
-    clearRestartPending();
+    forceClearRestartPending();
     ctx.globalBus.emit({ type: "server:restart-cleared" });
     await vi.advanceTimersByTimeAsync(5_000);
 
@@ -1779,7 +1779,7 @@ describe("scheduler startup recovery", () => {
       await scheduler.waitForMissedRunCatchUpForTests();
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
 
-      clearRestartPending();
+      forceClearRestartPending();
       ctx.globalBus.emit({ type: "server:restart-cleared" });
 
       await scheduler.waitForMissedRunCatchUpForTests();
@@ -1787,7 +1787,7 @@ describe("scheduler startup recovery", () => {
       expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-cron", "catch up cron");
       expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(2);
     } finally {
-      clearRestartPending();
+      forceClearRestartPending();
       configureRestartStateStore(undefined);
     }
   });

@@ -99,8 +99,11 @@ import {
   shouldClearRollbackCheckpointAfterHealthyState,
 } from "./launcher-recovery.js";
 import {
+  attachLauncherChildErrorHandler,
   isChildProcessActive,
+  LAUNCHER_STARTUP_GIT_PULL_ENV,
   resolveServerLaunchDistributionMode,
+  shouldPullOnLauncherStartup,
   spawnLauncherChildIfRunning,
   waitForChildExit,
 } from "./launcher-process.js";
@@ -108,6 +111,7 @@ import { TunnelSupervisor } from "./launcher-tunnel-supervisor.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { openDatabase } from "./server/db.js";
 import { createManagementJobStore } from "./server/management-job-store.js";
+import { createGitPullRebaseCommand } from "./server/git-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -177,7 +181,7 @@ let lastCrashTime = 0;
 let steadyHealthFailures = 0;
 let healthPollInFlight = false;
 let recoveringServer = false;
-let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+let suppressAutoRecovery = readPersistentRollbackSuppression();
 let currentServerPort = resolveBridgePort();
 let lastCommandFailure:
   | {
@@ -283,7 +287,12 @@ function clearStaleInProgressSignal() {
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 
-function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; output: string } {
+type LauncherRunOptions = LauncherCommandOptions & {
+  executable?: string;
+  args?: readonly string[];
+};
+
+function run(cmd: string, options: LauncherRunOptions = {}): { ok: boolean; output: string } {
   // Prepend the launcher's Node v22 directory to PATH so npx/vitest use it
   const nodeDir = dirname(NODE_PATH);
   const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
@@ -295,10 +304,13 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
     const result = runSyncCommand({
       rootDir: ROOT,
       source: "launcher",
-      command: cmd,
+      command: options.executable ?? cmd,
+      args: options.args,
+      displayCommand: cmd,
       cwd: ROOT,
       env,
       timeoutMs,
+      shell: options.args ? false : undefined,
     });
     if (result.ok) {
       lastCommandFailure = null;
@@ -473,13 +485,31 @@ function rollback(): boolean {
 }
 
 function enterStoppedStateAfterFailedRollback() {
+  try {
+    markPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+  } catch (error) {
+    log(`Failed to persist rollback-required state; auto-recovery remains suppressed in this launcher process: ${error}`);
+  }
   suppressAutoRecovery = true;
-  markPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
 }
 
 function clearFailedRollbackState() {
+  try {
+    clearPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+  } catch (error) {
+    log(`Failed to clear rollback-required state; auto-recovery remains suppressed: ${error}`);
+    return;
+  }
   suppressAutoRecovery = false;
-  clearPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+}
+
+function readPersistentRollbackSuppression(): boolean {
+  try {
+    return hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+  } catch (error) {
+    log(`Failed to read rollback-required state; auto-recovery will remain suppressed: ${error}`);
+    return true;
+  }
 }
 
 function clearRollbackCheckpointAfterHealthyState() {
@@ -924,10 +954,12 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
 
   child.on("exit", (code, signal) => {
     log(`Server exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
-    if (serverProcess === child) {
+    const wasActive = serverProcess === child;
+    if (wasActive) {
       serverProcess = null;
       serverLaunchTarget = null;
     }
+    if (!wasActive) return;
 
     const recovery = evaluateUnexpectedExit({
       code,
@@ -940,6 +972,16 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
     if (recovery) {
       recoverServer(recovery.reason, recovery.options);
     }
+  });
+  attachLauncherChildErrorHandler(child, {
+    label: "Server",
+    log,
+    onSpawnFailure: () => {
+      if (serverProcess !== child) return;
+      serverProcess = null;
+      serverLaunchTarget = null;
+      recoverServer("Server failed to spawn", { delayMs: CRASH_RESTART_DELAY });
+    },
   });
 
   return child;
@@ -978,14 +1020,28 @@ function startManagementJobRunner(): ChildProcess | null {
   managementJobRunnerProcess = child;
   child.on("exit", (code, signal) => {
     log(`Management job runner exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
-    if (managementJobRunnerProcess === child) {
+    const wasActive = managementJobRunnerProcess === child;
+    if (wasActive) {
       managementJobRunnerProcess = null;
     }
-    if (!shuttingDown && !cyclingManagementJobRunner) {
+    if (wasActive && !shuttingDown && !cyclingManagementJobRunner) {
       setTimeout(() => {
         if (!shuttingDown && !managementJobRunnerProcess) startManagementJobRunner();
       }, CRASH_RESTART_DELAY);
     }
+  });
+  attachLauncherChildErrorHandler(child, {
+    label: "Management job runner",
+    log,
+    onSpawnFailure: () => {
+      if (managementJobRunnerProcess !== child) return;
+      managementJobRunnerProcess = null;
+      if (!shuttingDown && !cyclingManagementJobRunner) {
+        setTimeout(() => {
+          if (!shuttingDown && !managementJobRunnerProcess) startManagementJobRunner();
+        }, CRASH_RESTART_DELAY);
+      }
+    },
   });
   return child;
 }
@@ -1451,16 +1507,25 @@ async function main() {
   if (shuttingDown) return;
 
   if (startupDecision.startServer) {
-    if (DISTRIBUTION.mode === "development" && DISTRIBUTION.gitAvailable) {
-      // Pull latest from origin on startup
+    if (
+      DISTRIBUTION.mode === "development"
+      && DISTRIBUTION.gitAvailable
+      && shouldPullOnLauncherStartup(process.env)
+    ) {
       const currentBranch = run("git rev-parse --abbrev-ref HEAD");
       const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
-      const pullResult = run(`git pull --rebase origin ${branchName}`);
+      const pullCommand = createGitPullRebaseCommand(branchName);
+      const pullResult = run(pullCommand.displayCommand, {
+        executable: pullCommand.command,
+        args: pullCommand.args,
+      });
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {
         log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
       }
+    } else if (DISTRIBUTION.mode === "development" && DISTRIBUTION.gitAvailable) {
+      log(`Startup git pull disabled; set ${LAUNCHER_STARTUP_GIT_PULL_ENV}=true to enable it`);
     } else {
       log(`${DISTRIBUTION.mode} mode - skipping startup git pull`);
     }

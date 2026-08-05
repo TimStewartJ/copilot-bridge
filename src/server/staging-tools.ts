@@ -111,9 +111,17 @@ import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
 import { ActiveManagementJobError } from "./management-job-store.js";
 import { queuedManagementJobResult } from "./management-job-tool-results.js";
+import { createGitPullRebaseCommand } from "./git-command.js";
 
 
-type StagingRunOptions = { timeoutMs?: number; isolateRuntimeEnv?: boolean; env?: NodeJS.ProcessEnv; log?: (message: string) => void };
+type StagingRunOptions = {
+  timeoutMs?: number;
+  isolateRuntimeEnv?: boolean;
+  env?: NodeJS.ProcessEnv;
+  log?: (message: string) => void;
+  executable?: string;
+  args?: readonly string[];
+};
 type StagingCommandRunner = (
   cmd: string,
   cwd: string,
@@ -380,10 +388,13 @@ async function run(
     const result = await runValidationCommand({
       rootDir: PRODUCTION_ROOT,
       source: "staging",
-      command: cmd,
+      command: options.executable ?? cmd,
+      args: options.args,
+      displayCommand: cmd,
       cwd,
       env,
       timeoutMs,
+      shell: options.args ? false : undefined,
       failureOutputFormat: "plain",
     });
     if (result.output.trim()) options.log?.(result.output.trimEnd());
@@ -1263,7 +1274,11 @@ async function runStagingDeployJobImpl(
     }
   }
 
-  const pullResult = await runCommand(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+  const pullCommand = createGitPullRebaseCommand(prodBranch);
+  const pullResult = await runCommand(pullCommand.displayCommand, PRODUCTION_ROOT, {
+    executable: pullCommand.command,
+    args: pullCommand.args,
+  });
   if (pullResult.ok) {
     writeLog("Pulled latest production from origin");
   } else {
@@ -1673,7 +1688,11 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       // Pull latest from origin so the worktree starts from the newest remote state
       const currentBranch = await run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
       const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
-      const pullResult = await run(`git pull --rebase origin ${branchName}`, PRODUCTION_ROOT);
+      const pullCommand = createGitPullRebaseCommand(branchName);
+      const pullResult = await run(pullCommand.displayCommand, PRODUCTION_ROOT, {
+        executable: pullCommand.command,
+        args: pullCommand.args,
+      });
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {

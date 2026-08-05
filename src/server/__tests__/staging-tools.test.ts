@@ -12,6 +12,8 @@ type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
 type MkdirSyncArgs = Parameters<typeof import("node:fs").mkdirSync>;
 type RenameSyncArgs = Parameters<typeof import("node:fs").renameSync>;
+type StatSyncPath = Parameters<typeof import("node:fs").statSync>[0];
+type MockSpawnOptions = { cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean };
 type ToolInvocation = {
   sessionId: string;
   toolCallId: string;
@@ -24,9 +26,15 @@ const execSyncMock = vi.hoisted(() => vi.fn<
 >(() => ""));
 const spawnMock = vi.hoisted(() => {
   type Listener = (...args: any[]) => void;
-  type MockSpawnOptions = { cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean };
 
-  return vi.fn((cmd: string, options?: MockSpawnOptions) => {
+  return vi.fn((
+    cmd: string,
+    argsOrOptions?: readonly string[] | MockSpawnOptions,
+    maybeOptions?: MockSpawnOptions,
+  ) => {
+    const args = Array.isArray(argsOrOptions) ? argsOrOptions : undefined;
+    const options = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions as MockSpawnOptions | undefined;
+    const renderedCommand = args ? [cmd, ...args].join(" ") : cmd;
     const listeners = new Map<string, Listener[]>();
     const stdoutListeners: Listener[] = [];
     const stderrListeners: Listener[] = [];
@@ -64,7 +72,7 @@ const spawnMock = vi.hoisted(() => {
 
     queueMicrotask(() => {
       try {
-        const output = execSyncMock(cmd, {
+        const output = execSyncMock(renderedCommand, {
           cwd: options?.cwd,
           encoding: "utf-8",
           env: options?.env,
@@ -218,6 +226,18 @@ vi.mock("node:fs", async (importOriginal) => {
       if (override) return override as unknown as ReturnType<typeof actual.lstatSync>;
       return actual.lstatSync(path, ...(args as []));
     },
+    statSync: (path: StatSyncPath, ...args: unknown[]) => {
+      const override = existsSyncOverrideMock(path);
+      if (override === false) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${String(path)}'`), {
+          code: "ENOENT",
+        });
+      }
+      if (override === true) {
+        return { isFile: () => true } as ReturnType<typeof actual.statSync>;
+      }
+      return actual.statSync(path, ...(args as []));
+    },
     unlinkSync: (path: Parameters<typeof actual.unlinkSync>[0], ...args: unknown[]) => {
       unlinkSyncCallMock(path);
       if (isDataFilePath(String(path), "pre-deploy-sha")) return;
@@ -249,6 +269,10 @@ vi.mock("../session-manager.js", () => ({
 // re-export, so the mock has to be applied at the source module too.
 vi.mock("../restart-controller.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../restart-controller.js")>(),
+  beginRestartPending: () => {
+    triggerRestartPendingMock();
+    return { requestId: "restart-request-test", waitingSessions: 0 };
+  },
   triggerRestartPending: triggerRestartPendingMock,
   clearRestartPending: clearRestartPendingMock,
   isRestartPending: isRestartPendingMock,
@@ -1122,6 +1146,11 @@ describe("staging tools", () => {
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("npm install --no-audit --no-fund --include=dev");
     expect(commands.some((cmd) => cmd.startsWith("git diff "))).toBe(true);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "git",
+      ["pull", "--rebase", "origin", "main"],
+      expect.objectContaining({ shell: false }),
+    );
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(true);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "deps-hash"))).toBe(false);
@@ -2750,7 +2779,8 @@ describe("staging tools", () => {
       DEPLOY_VALIDATION_COMMANDS.includes(String(cmd) as (typeof DEPLOY_VALIDATION_COMMANDS)[number]),
     );
     expect(deployValidationSpawnCalls).toHaveLength(DEPLOY_VALIDATION_COMMANDS.length);
-    for (const [, options] of deployValidationSpawnCalls) {
+    for (const [, argsOrOptions, maybeOptions] of deployValidationSpawnCalls) {
+      const options = (Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions) as MockSpawnOptions | undefined;
       expectIsolatedValidationEnv(options?.env);
     }
 

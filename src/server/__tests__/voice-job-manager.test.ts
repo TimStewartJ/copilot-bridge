@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../db.js";
 import { createGlobalBus } from "../global-bus.js";
 import { writeRestartState } from "../restart-state.js";
-import { clearRestartPending, configureRestartStateStore, RESTART_PENDING_MESSAGE } from "../session-manager.js";
+import {
+  configureRestartStateStore,
+  forceClearRestartPending,
+  refreshRestartState,
+  RESTART_PENDING_MESSAGE,
+} from "../session-manager.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createTaskStore } from "../task-store.js";
 import {
@@ -52,12 +57,14 @@ function createManagerHarness(transcribe = vi.fn()) {
   return { runtimePaths, store, sessionManager, manager };
 }
 
-beforeEach(() => {
-  clearRestartPending();
+beforeEach(async () => {
+  forceClearRestartPending();
+  await refreshRestartState();
 });
 
-afterEach(() => {
-  clearRestartPending();
+afterEach(async () => {
+  forceClearRestartPending();
+  await refreshRestartState();
   configureRestartStateStore(undefined);
   vi.useRealTimers();
 });
@@ -386,6 +393,61 @@ describe("voice job restart gating", () => {
 
     expect(sessionManager.startWork).not.toHaveBeenCalled();
     expect(store.getVoiceJob("job-1")?.status).toBe("accepted");
+    await manager.shutdown();
+  });
+
+  it("marks a pending job errored when restart-state refresh fails unexpectedly", async () => {
+    const { runtimePaths, store, manager } = createManagerHarness();
+    configureRestartStateStore(runtimePaths);
+    writeFileSync(join(runtimePaths.dataDir, "restart-state.json"), "{");
+    const audioPath = join(runtimePaths.dataDir, "voice-jobs", "persisted", "recording.wav");
+    mkdirSync(dirname(audioPath), { recursive: true });
+    writeFileSync(audioPath, "test-audio");
+    store.createVoiceJob({
+      id: "job-refresh-error",
+      composerKey: "existing-session",
+      targetSessionId: "existing-session",
+      audioPath,
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    manager.resumePendingJobs();
+    await manager.shutdown();
+
+    expect(store.getVoiceJob("job-refresh-error")).toMatchObject({
+      status: "error",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[voice-jobs] Processing failed for job-refresh-error:",
+      expect.any(SyntaxError),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("keeps restart-pending processing failures retryable instead of marking them terminal", async () => {
+    vi.useFakeTimers();
+    const { runtimePaths, store, manager } = createManagerHarness();
+    configureRestartStateStore(runtimePaths);
+    const audioPath = join(runtimePaths.dataDir, "voice-jobs", "persisted", "recording.wav");
+    mkdirSync(dirname(audioPath), { recursive: true });
+    writeFileSync(audioPath, "test-audio");
+    store.createVoiceJob({
+      id: "job-restart-pending",
+      composerKey: "existing-session",
+      targetSessionId: "existing-session",
+      audioPath,
+    });
+    const originalGetVoiceJob = store.getVoiceJob.bind(store);
+    vi.spyOn(store, "getVoiceJob")
+      .mockImplementationOnce(() => {
+        throw new Error(RESTART_PENDING_MESSAGE);
+      })
+      .mockImplementation(originalGetVoiceJob);
+
+    manager.resumePendingJobs();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.getVoiceJob("job-restart-pending")?.status).toBe("accepted");
     await manager.shutdown();
   });
 });

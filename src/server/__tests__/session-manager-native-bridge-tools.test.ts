@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import {
-  clearRestartPending,
+  forceClearRestartPending,
   configureRestartStateStore,
   getRestartWaitingCount,
   isRestartImminent,
@@ -547,7 +547,7 @@ describe("SessionManager native Bridge tools", () => {
     const activeSession = createControlledFakeSession("active-session");
     try {
       configureRestartStateStore(runtimePaths);
-      clearRestartPending();
+      forceClearRestartPending();
       await refreshRestartState();
       await manager.initialize();
       backend.createSession.mockImplementationOnce(async (config: any) => {
@@ -594,7 +594,7 @@ describe("SessionManager native Bridge tools", () => {
     } finally {
       activeSession.releaseSend();
       creationGate.resolve();
-      clearRestartPending();
+      forceClearRestartPending();
       await refreshRestartState();
       await manager.gracefulShutdown();
       configureRestartStateStore(undefined);
@@ -609,7 +609,7 @@ describe("SessionManager native Bridge tools", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       configureRestartStateStore(runtimePaths);
-      clearRestartPending();
+      forceClearRestartPending();
       await refreshRestartState();
       await manager.initialize();
       backend.createSession.mockImplementationOnce(async (config: any) => {
@@ -652,7 +652,7 @@ describe("SessionManager native Bridge tools", () => {
       );
     } finally {
       creationGate.reject(creationError);
-      clearRestartPending();
+      forceClearRestartPending();
       await refreshRestartState();
       await manager.gracefulShutdown();
       configureRestartStateStore(undefined);

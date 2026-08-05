@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { clearRestartPending, refreshRestartState, SessionManager } from "../session-manager.js";
+import { forceClearRestartPending, refreshRestartState, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus, testPath } from "./helpers.js";
@@ -15,12 +15,12 @@ function createFakeBrowserLifecycle(overrides: Partial<{ result: BrowserShutdown
 
 describe("SessionManager graceful shutdown", () => {
   beforeEach(async () => {
-    clearRestartPending();
+    forceClearRestartPending();
     await refreshRestartState();
   });
 
   afterEach(async () => {
-    clearRestartPending();
+    forceClearRestartPending();
     await refreshRestartState();
   });
 

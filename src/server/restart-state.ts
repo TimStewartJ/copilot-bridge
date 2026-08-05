@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -116,6 +116,21 @@ function normalizeRestartState(value: unknown): RestartState {
   };
 }
 
+function parseRestartState(raw: string, filePath: string): RestartState {
+  if (!raw.trim()) {
+    throw new Error(`Restart state file is empty: ${filePath}`);
+  }
+  const value = JSON.parse(raw) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Restart state file must contain an object: ${filePath}`);
+  }
+  const phase = (value as Record<string, unknown>).phase;
+  if (!isRestartPhase(phase)) {
+    throw new Error(`Restart state file has an invalid phase: ${filePath}`);
+  }
+  return normalizeRestartState(value);
+}
+
 export function buildRestartStateWithReleaseFailure(
   state: RestartState,
   releaseFailure: ReleaseFailureState,
@@ -144,6 +159,7 @@ function isTransientRestartStateFsError(error: unknown): boolean {
 }
 
 type RestartStateFsRetrySleep = (ms: number) => Promise<void>;
+type RestartStateFsRetrySleepSync = (ms: number) => void;
 
 // Capture the real timer at module load. Callers may install fake timers after
 // importing this module (e.g. test suites), but the transient-FS retry backoff
@@ -156,6 +172,11 @@ const defaultRestartStateFsRetrySleep: RestartStateFsRetrySleep = (ms) =>
   new Promise((resolve) => realSetTimeout(resolve, ms));
 
 let restartStateFsRetrySleep: RestartStateFsRetrySleep = defaultRestartStateFsRetrySleep;
+const restartStateSyncWaitBuffer = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+const defaultRestartStateFsRetrySleepSync: RestartStateFsRetrySleepSync = (ms) => {
+  Atomics.wait(restartStateSyncWaitBuffer, 0, 0, ms);
+};
+let restartStateFsRetrySleepSync: RestartStateFsRetrySleepSync = defaultRestartStateFsRetrySleepSync;
 
 /**
  * Test seam for the transient-FS-retry backoff sleep. The default is already
@@ -165,6 +186,10 @@ let restartStateFsRetrySleep: RestartStateFsRetrySleep = defaultRestartStateFsRe
  */
 export function __setRestartStateFsRetrySleepForTests(sleep?: RestartStateFsRetrySleep): void {
   restartStateFsRetrySleep = sleep ?? defaultRestartStateFsRetrySleep;
+}
+
+export function __setRestartStateFsRetrySleepSyncForTests(sleep?: RestartStateFsRetrySleepSync): void {
+  restartStateFsRetrySleepSync = sleep ?? defaultRestartStateFsRetrySleepSync;
 }
 
 async function retryTransientRestartStateFsOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -183,24 +208,42 @@ async function retryTransientRestartStateFsOperation<T>(operation: () => Promise
   }
 }
 
-export async function readRestartState(filePath: string): Promise<RestartState> {
-  try {
-    const raw = await retryTransientRestartStateFsOperation(() => readFile(filePath, "utf8"));
-    if (!raw.trim()) return createDefaultRestartState();
-    return normalizeRestartState(JSON.parse(raw) as unknown);
-  } catch {
-    return createDefaultRestartState();
+function retryTransientRestartStateFsOperationSync<T>(operation: () => T): T {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return operation();
+    } catch (error) {
+      if (
+        attempt >= RESTART_STATE_FS_RETRY_DELAYS_MS.length
+        || !isTransientRestartStateFsError(error)
+      ) {
+        throw error;
+      }
+      restartStateFsRetrySleepSync(RESTART_STATE_FS_RETRY_DELAYS_MS[attempt]);
+    }
   }
 }
 
-export function readRestartStateSync(filePath: string): RestartState {
+export async function readRestartState(filePath: string): Promise<RestartState> {
+  let raw: string;
   try {
-    const raw = readFileSync(filePath, "utf8");
-    if (!raw.trim()) return createDefaultRestartState();
-    return normalizeRestartState(JSON.parse(raw) as unknown);
-  } catch {
-    return createDefaultRestartState();
+    raw = await retryTransientRestartStateFsOperation(() => readFile(filePath, "utf8"));
+  } catch (error) {
+    if (getFsErrorCode(error) === "ENOENT") return createDefaultRestartState();
+    throw error;
   }
+  return parseRestartState(raw, filePath);
+}
+
+export function readRestartStateSync(filePath: string): RestartState {
+  let raw: string;
+  try {
+    raw = retryTransientRestartStateFsOperationSync(() => readFileSync(filePath, "utf8"));
+  } catch (error) {
+    if (getFsErrorCode(error) === "ENOENT") return createDefaultRestartState();
+    throw error;
+  }
+  return parseRestartState(raw, filePath);
 }
 
 export async function writeRestartState(filePath: string, state: RestartState): Promise<RestartState> {
@@ -285,7 +328,25 @@ export function sweepStaleRestartStateTempFiles(
  * truth here keeps the deploy/update gate self-healing across cutovers.
  */
 export function isRestartAlreadyInFlight(dataDir: string): boolean {
-  if (existsSync(join(dataDir, RESTART_SIGNAL_FILE_NAME))) return true;
-  if (existsSync(join(dataDir, RESTART_IN_PROGRESS_FILE_NAME))) return true;
-  return readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME)).phase !== "idle";
+  try {
+    if (controlFileExistsSync(join(dataDir, RESTART_SIGNAL_FILE_NAME))) return true;
+    if (controlFileExistsSync(join(dataDir, RESTART_IN_PROGRESS_FILE_NAME))) return true;
+    return readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME)).phase !== "idle";
+  } catch (error) {
+    console.error(
+      `[restart] Failed to read restart control state in ${dataDir}; treating the lifecycle as busy:`,
+      error,
+    );
+    return true;
+  }
+}
+
+function controlFileExistsSync(filePath: string): boolean {
+  try {
+    retryTransientRestartStateFsOperationSync(() => statSync(filePath));
+    return true;
+  } catch (error) {
+    if (getFsErrorCode(error) === "ENOENT") return false;
+    throw error;
+  }
 }

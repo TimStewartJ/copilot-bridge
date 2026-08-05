@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readRestartState, writeRestartState } from "../restart-state.js";
 import {
-  clearRestartPending,
+  forceClearRestartPending,
   SessionManager,
   RESTART_PENDING_MESSAGE,
   configureRestartStateStore,
@@ -3593,7 +3593,7 @@ describe("SessionManager run state", () => {
 
         configureRestartStateStore(firstRuntimePaths);
         await refreshRestartState();
-        clearRestartPending();
+        forceClearRestartPending();
         configureRestartStateStore(secondRuntimePaths);
 
         await waitForRestartPhase(firstRestartStatePath, "idle");

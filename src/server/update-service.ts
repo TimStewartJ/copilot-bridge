@@ -618,7 +618,7 @@ function resolvePowerShellCommand(env: NodeJS.ProcessEnv, explicit?: string): st
 function releaseStateRootArg(env: NodeJS.ProcessEnv, runtimePaths: RuntimePaths): string | undefined {
   const explicit = stringValue(env.BRIDGE_STATE_ROOT);
   if (explicit) return explicit;
-  return basename(runtimePaths.dataDir).toLowerCase() === "data" ? dirname(runtimePaths.dataDir) : undefined;
+  return dirname(runtimePaths.dataDir);
 }
 
 export function resolveReleaseRootForUpdate(env: NodeJS.ProcessEnv, appRoot: string): string {
