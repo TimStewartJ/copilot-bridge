@@ -9,7 +9,7 @@ import type { DatabaseSync } from "../db.js";
 import type { DeferredPromptRunner } from "../deferred-prompt-runner.js";
 import { publishOutboundAttachment } from "../outbound-attachments.js";
 import { writeRestartState } from "../restart-state.js";
-import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
+import { forceClearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
 import * as providers from "../providers/index.js";
 import { PendingInteractionError } from "../pending-interaction-validation.js";
@@ -40,7 +40,7 @@ const TRANSCRIPTION_ENV_KEYS = [
 
 export function installApiRouteTestHooks(assign: (state: ApiRouteTestState) => void): void {
   beforeEach(() => {
-    clearRestartPending();
+    forceClearRestartPending();
     for (const key of TRANSCRIPTION_ENV_KEYS) {
       vi.stubEnv(key, undefined);
     }
@@ -49,7 +49,7 @@ export function installApiRouteTestHooks(assign: (state: ApiRouteTestState) => v
 
   afterEach(() => {
     vi.useRealTimers();
-    clearRestartPending();
+    forceClearRestartPending();
     if (scheduler.isInitialized()) {
       scheduler.shutdown();
     }

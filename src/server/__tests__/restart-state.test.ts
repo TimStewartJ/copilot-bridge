@@ -8,6 +8,8 @@ const {
   rmMock,
   writeFileMock,
   randomUUIDMock,
+  readFileSyncMock,
+  statSyncMock,
 } = vi.hoisted(() => ({
   mkdirMock: vi.fn(),
   readFileMock: vi.fn(),
@@ -15,6 +17,8 @@ const {
   rmMock: vi.fn(),
   writeFileMock: vi.fn(),
   randomUUIDMock: vi.fn(() => "restart-state-test"),
+  readFileSyncMock: vi.fn(),
+  statSyncMock: vi.fn(),
 }));
 
 vi.mock("node:crypto", () => ({
@@ -29,12 +33,24 @@ vi.mock("node:fs/promises", () => ({
   writeFile: writeFileMock,
 }));
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    readFileSync: readFileSyncMock,
+    statSync: statSyncMock,
+  };
+});
+
 import {
   DEFAULT_RESTART_STATE,
   __setRestartStateFsRetrySleepForTests,
+  __setRestartStateFsRetrySleepSyncForTests,
   buildRestartStateWithReleaseFailure,
   clearRestartState,
+  isRestartAlreadyInFlight,
   readRestartState,
+  readRestartStateSync,
   writeRestartState,
   type ReleaseFailureState,
   type RestartState,
@@ -71,12 +87,21 @@ describe("restart-state", () => {
     rmMock.mockReset();
     writeFileMock.mockReset();
     randomUUIDMock.mockClear();
+    readFileSyncMock.mockReset();
+    statSyncMock.mockReset();
 
     mkdirMock.mockResolvedValue(undefined);
     readFileMock.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
     renameMock.mockResolvedValue(undefined);
     rmMock.mockResolvedValue(undefined);
     writeFileMock.mockResolvedValue(undefined);
+    readFileSyncMock.mockImplementation(() => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    statSyncMock.mockImplementation(() => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    __setRestartStateFsRetrySleepSyncForTests(() => {});
   });
 
   it("returns the default state when no persisted file exists", async () => {
@@ -122,10 +147,10 @@ describe("restart-state", () => {
     });
   });
 
-  it("falls back to the default state for malformed JSON", async () => {
+  it("rejects malformed JSON instead of treating it as idle", async () => {
     readFileMock.mockResolvedValue("{");
 
-    await expect(readRestartState(statePath)).resolves.toEqual(DEFAULT_RESTART_STATE);
+    await expect(readRestartState(statePath)).rejects.toThrow();
   });
 
   it("writes through a temp file before renaming into place", async () => {
@@ -242,7 +267,7 @@ describe("restart-state", () => {
     expect(written3).toEqual(DEFAULT_RESTART_STATE);
   });
 
-  it("normalizes an unknown phase to idle", async () => {
+  it("rejects an unknown phase instead of normalizing it to idle", async () => {
     readFileMock.mockResolvedValueOnce(JSON.stringify({
       requestId: "req-bad",
       phase: "launching",
@@ -250,8 +275,7 @@ describe("restart-state", () => {
       waitingSessions: 1,
     }));
 
-    const result = await readRestartState(statePath);
-    expect(result.phase).toBe("idle");
+    await expect(readRestartState(statePath)).rejects.toThrow("invalid phase");
   });
 
   it("clamps negative waitingSessions to zero", async () => {
@@ -264,6 +288,36 @@ describe("restart-state", () => {
 
     const result = await readRestartState(statePath);
     expect(result.waitingSessions).toBe(0);
+  });
+
+  it("surfaces exhausted unreadable-state errors instead of treating them as missing", async () => {
+    __setRestartStateFsRetrySleepForTests(() => Promise.resolve());
+    readFileMock.mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+
+    await expect(readRestartState(statePath)).rejects.toThrow("permission denied");
+    expect(readFileMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("retries transient synchronous reads and fails closed on corrupt state", () => {
+    readFileSyncMock
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error("state file busy"), { code: "EBUSY" });
+      })
+      .mockReturnValueOnce(JSON.stringify({ phase: "idle" }));
+
+    expect(readRestartStateSync(statePath)).toEqual(DEFAULT_RESTART_STATE);
+    expect(readFileSyncMock).toHaveBeenCalledTimes(2);
+
+    readFileSyncMock.mockReset();
+    readFileSyncMock.mockReturnValue("{");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(isRestartAlreadyInFlight(dirname(statePath))).toBe(true);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("treating the lifecycle as busy"),
+      expect.any(SyntaxError),
+    );
+    errorSpy.mockRestore();
   });
 
 });
@@ -286,6 +340,7 @@ describe("restart-state transient FS retry under fake timers", () => {
 
   afterEach(() => {
     __setRestartStateFsRetrySleepForTests();
+    __setRestartStateFsRetrySleepSyncForTests();
     vi.useRealTimers();
   });
 

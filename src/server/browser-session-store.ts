@@ -33,6 +33,7 @@ export class BrowserSessionStore {
   private readonly idleTimeoutMs: number;
   private readonly getBrowserLaunchConfig?: () => BrowserLaunchConfig;
   private readonly sessions = new Map<string, BrowserSessionRecord>();
+  private readonly disposalRuns = new Map<string, Promise<boolean>>();
   private readonly sweepHandle: NodeJS.Timeout;
 
   constructor(options: BrowserSessionStoreOptions = {}) {
@@ -41,7 +42,9 @@ export class BrowserSessionStore {
     this.idleTimeoutMs = options.idleTimeoutMs ?? (30 * 60_000);
     this.getBrowserLaunchConfig = options.getBrowserLaunchConfig;
     this.sweepHandle = setInterval(() => {
-      void this.sweepIdleSessions();
+      void this.sweepIdleSessions().catch((error) => {
+        console.error("[browser-session] Idle session sweep failed:", error);
+      });
     }, Math.min(this.idleTimeoutMs, 60_000));
     this.sweepHandle.unref?.();
   }
@@ -99,6 +102,7 @@ export class BrowserSessionStore {
   ): Promise<BrowserSessionUseResult<T>> {
     const record = this.sessions.get(id);
     if (!record) return err(`Browser session not found: ${id}`);
+    if (this.disposalRuns.has(id)) return err("Browser session is closing");
     if (record.ownerSessionId !== ownerSessionId) {
       return err("Browser session belongs to a different Copilot session");
     }
@@ -117,6 +121,7 @@ export class BrowserSessionStore {
   async closeSession(id: string, ownerSessionId: string, force = false): Promise<{ ok: true } | ErrorResult> {
     const record = this.sessions.get(id);
     if (!record) return err(`Browser session not found: ${id}`);
+    if (this.disposalRuns.has(id)) return err("Browser session is already closing");
     if (record.ownerSessionId !== ownerSessionId) {
       return err("Browser session belongs to a different Copilot session");
     }
@@ -129,6 +134,7 @@ export class BrowserSessionStore {
 
   async closeAll(): Promise<void> {
     clearInterval(this.sweepHandle);
+    await Promise.allSettled([...this.disposalRuns.values()]);
     const records = [...this.sessions.values()];
     for (const record of records) {
       await this.disposeRecord(record, "shutdown");
@@ -143,6 +149,7 @@ export class BrowserSessionStore {
     for (const record of idleRecords) {
       const current = this.sessions.get(record.id);
       if (!current) continue;
+      if (this.disposalRuns.has(current.id)) continue;
       if (current.activeCount > 0) continue;
       if ((now - current.lastUsedAt) < this.idleTimeoutMs) continue;
       if (await this.disposeRecord(current, "idle_timeout")) expired += 1;
@@ -151,10 +158,25 @@ export class BrowserSessionStore {
   }
 
   private async disposeRecord(record: BrowserSessionRecord, reason: "explicit" | "idle_timeout" | "shutdown" = "explicit"): Promise<boolean> {
+    if (this.disposalRuns.has(record.id)) return false;
+    const run = this.performDisposeRecord(record, reason);
+    this.disposalRuns.set(record.id, run);
+    try {
+      return await run;
+    } finally {
+      if (this.disposalRuns.get(record.id) === run) {
+        this.disposalRuns.delete(record.id);
+      }
+    }
+  }
+
+  private async performDisposeRecord(
+    record: BrowserSessionRecord,
+    reason: "explicit" | "idle_timeout" | "shutdown",
+  ): Promise<boolean> {
     const current = this.sessions.get(record.id);
     if (!current) return false;
     if (reason === "idle_timeout" && current.activeCount > 0) return false;
-    this.sessions.delete(record.id);
     if (current.mode === "isolated") {
       await destroyPersistentCloneBrowserTarget(current.browserTarget, this.telemetryStore, {
         browserSessionId: current.id,
@@ -164,6 +186,8 @@ export class BrowserSessionStore {
         cloneId: current.cloneId,
       });
     }
+    if (this.sessions.get(current.id) !== current) return false;
+    this.sessions.delete(current.id);
     safeRecordBrowserSpan(this.telemetryStore, "browser.session.close", 0, {
       browserSessionId: current.id,
       browserSessionMode: current.mode,

@@ -11,6 +11,7 @@ type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
 type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
+type StatSyncPath = Parameters<typeof import("node:fs").statSync>[0];
 
 const execSyncMock = vi.hoisted(() => vi.fn<(cmd: string) => string>(() => ""));
 const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
@@ -63,6 +64,18 @@ vi.mock("node:fs", async (importOriginal) => {
       const override = readFileSyncOverrideMock(path);
       if (typeof override === "string") return override;
       return actual.readFileSync(path, ...(args as []));
+    },
+    statSync: (path: StatSyncPath, ...args: unknown[]) => {
+      const override = existsSyncOverrideMock(path);
+      if (override === false) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${String(path)}'`), {
+          code: "ENOENT",
+        });
+      }
+      if (override === true) {
+        return { isFile: () => true } as ReturnType<typeof actual.statSync>;
+      }
+      return actual.statSync(path, ...(args as []));
     },
     unlinkSync: (path: Parameters<typeof actual.unlinkSync>[0]) => {
       unlinkSyncCallMock(path);
@@ -121,7 +134,7 @@ afterEach(async () => {
   vi.resetModules();
   try {
     const mod = await import("../session-manager.js");
-    mod.clearRestartPending();
+    mod.forceClearRestartPending();
   } catch {}
 });
 
@@ -318,7 +331,7 @@ describe("self_restart", () => {
     expect(result.success).toBe(true);
     expect(callOrder.indexOf("triggerRestartPending")).toBeLessThan(callOrder.indexOf("writeSignalFile"));
 
-    mod.clearRestartPending();
+    mod.forceClearRestartPending();
   });
 
   it("clears restart state when self_restart cannot write the restart signal", async () => {

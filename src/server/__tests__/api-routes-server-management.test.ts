@@ -5,13 +5,13 @@ import { request } from "./api-routes-test-helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import {
-  clearRestartPending,
+  forceClearRestartPending,
   refreshRestartState,
 } from "../restart-controller.js";
 import { readRestartSignalFile } from "../restart-signal.js";
 
 afterEach(async () => {
-  clearRestartPending();
+  forceClearRestartPending();
   await refreshRestartState();
 });
 

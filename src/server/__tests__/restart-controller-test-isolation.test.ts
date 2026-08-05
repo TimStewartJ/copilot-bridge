@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "../control-root.js";
 import {
-  clearRestartPending,
+  forceClearRestartPending,
   refreshRestartState,
   triggerRestartPending,
 } from "../restart-controller.js";
@@ -32,7 +32,7 @@ function snapshotProd(): string | null {
 
 describe("restart-controller default path under the test runner", () => {
   afterEach(async () => {
-    clearRestartPending();
+    forceClearRestartPending();
     // Drain the write queue so the clear lands before the next test.
     await refreshRestartState();
     rmSync(testDefaultDir, { recursive: true, force: true });

@@ -74,6 +74,12 @@ export function createVoiceJobManager({
   let maintenanceTimer: ReturnType<typeof setInterval> | undefined;
   let shuttingDown = false;
 
+  function startVoiceJobProcessing(jobId: string): void {
+    void processVoiceJob(jobId).catch((error) => {
+      console.error(`[voice-jobs] Uncontained processing failure for ${jobId}:`, error);
+    });
+  }
+
   function toSnapshot(job: VoiceJob | undefined): VoiceJobSnapshot | undefined {
     if (!job) return undefined;
     return {
@@ -111,7 +117,7 @@ export function createVoiceJobManager({
         audioPath,
       });
 
-      void processVoiceJob(id);
+      startVoiceJobProcessing(id);
       return toSnapshot(job)!;
     } catch (error) {
       await removeJobDirectory(jobDir, id);
@@ -138,7 +144,7 @@ export function createVoiceJobManager({
 
   function resumePendingJobs(): void {
     for (const job of store.listPendingVoiceJobs()) {
-      void processVoiceJob(job.id);
+      startVoiceJobProcessing(job.id);
     }
   }
 
@@ -160,6 +166,8 @@ export function createVoiceJobManager({
           return;
         }
         await transcribeAndSend(job, job.transcript);
+      } catch (error) {
+        await handleUnexpectedProcessingError(jobId, error);
       } finally {
         processingJobRuns.delete(jobId);
       }
@@ -167,6 +175,31 @@ export function createVoiceJobManager({
 
     processingJobRuns.set(jobId, run);
     await run;
+  }
+
+  async function handleUnexpectedProcessingError(jobId: string, error: unknown): Promise<void> {
+    if (isRestartPendingError(error)) {
+      scheduleRetry(jobId);
+      return;
+    }
+
+    console.error(`[voice-jobs] Processing failed for ${jobId}:`, error);
+    const message = error instanceof Error ? error.message : String(error);
+    let transcript: string | undefined;
+    try {
+      transcript = store.getVoiceJob(jobId)?.transcript;
+    } catch (lookupError) {
+      console.error(`[voice-jobs] Failed to reload ${jobId} after processing error:`, lookupError);
+      scheduleRetry(jobId);
+      return;
+    }
+
+    try {
+      await markJobError(jobId, message, transcript);
+    } catch (markError) {
+      console.error(`[voice-jobs] Failed to mark ${jobId} as errored:`, markError);
+      scheduleRetry(jobId);
+    }
   }
 
   function runMaintenance(now = Date.now()): Promise<VoiceJobMaintenanceResult> {
@@ -306,7 +339,7 @@ export function createVoiceJobManager({
     if (shuttingDown || retryTimers.has(jobId)) return;
     const timer = setTimeout(() => {
       retryTimers.delete(jobId);
-      void processVoiceJob(jobId);
+      startVoiceJobProcessing(jobId);
     }, RESTART_RETRY_DELAY_MS);
     retryTimers.set(jobId, timer);
   }

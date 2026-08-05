@@ -47,6 +47,11 @@ export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect."
 export const PROMPT_DELIVERY_ABORTED_MESSAGE = "Session was aborted before the prompt was accepted";
 export const PROMPT_DELIVERY_SHUTDOWN_MESSAGE = "Session shut down before the prompt was accepted";
 
+export interface RestartPendingRequest {
+  requestId: string;
+  waitingSessions: number;
+}
+
 function resolveRestartStatePath(runtimePaths?: RuntimePaths): string {
   return join(runtimePaths?.dataDir ?? defaultRestartStateDir(), "restart-state.json");
 }
@@ -187,16 +192,31 @@ export function isRestartCutoverInProgress(state: RestartState = _restartState):
   return state.phase === "restarting";
 }
 
-export function clearRestartPending(): void {
+function clearRestartPendingInternal(options: { requestId: string } | { force: true }): boolean {
   const wasPending = isRestartActive(_restartState);
+  const requestId = "requestId" in options ? options.requestId : null;
+  if (requestId !== null && _restartState.requestId !== requestId) return false;
   const writeTarget = captureRestartStateWriteTarget();
   setCachedRestartState(createDefaultRestartState());
   queueRestartStateWrite(async () => {
+    if (requestId !== null) {
+      const persisted = await readRestartState(writeTarget.path);
+      if (persisted.requestId !== requestId) return;
+    }
     await clearRestartState(writeTarget.path);
   });
   if (wasPending) {
     emitRestartEvent({ type: "server:restart-cleared" });
   }
+  return true;
+}
+
+export function clearRestartPending(requestId: string): boolean {
+  return clearRestartPendingInternal({ requestId });
+}
+
+export function forceClearRestartPending(): boolean {
+  return clearRestartPendingInternal({ force: true });
 }
 
 export function getRestartWaitingCount(): number {
@@ -224,11 +244,12 @@ export function isPromptDeliveryInterruptedError(err: unknown): boolean {
  * Sets restart-pending state and emits the SSE event.
  * Returns the waiting-session count (excludes the calling session).
  */
-function triggerRestartPendingWithWaitingCount(waitingSessions: number): number {
+function beginRestartPendingWithWaitingCount(waitingSessions: number): RestartPendingRequest {
   const waitingCount = Math.max(0, Math.floor(waitingSessions));
   const writeTarget = captureRestartStateWriteTarget();
+  const requestId = randomUUID();
   const nextState: RestartState = setCachedRestartState({
-    requestId: randomUUID(),
+    requestId,
     phase: getRestartPhaseForWaitingSessions("queued", waitingCount),
     requestedAt: new Date().toISOString(),
     waitingSessions: waitingCount,
@@ -243,18 +264,26 @@ function triggerRestartPendingWithWaitingCount(waitingSessions: number): number 
     }
   });
   emitRestartPendingEvent(nextState);
-  return waitingCount;
+  return { requestId, waitingSessions: waitingCount };
+}
+
+export function beginRestartPending(): RestartPendingRequest {
+  return beginRestartPendingWithWaitingCount(_activeSessionCountProvider() - 1);
+}
+
+export function beginRestartPendingForExternalRequest(activeSessions: number): RestartPendingRequest {
+  return beginRestartPendingWithWaitingCount(activeSessions);
 }
 
 export function triggerRestartPending(): number {
   // The calling session is still counted as active; subtract 1 since it will
   // finish momentarily and should not count as "blocking" the restart.
-  return triggerRestartPendingWithWaitingCount(_activeSessionCountProvider() - 1);
+  return beginRestartPending().waitingSessions;
 }
 
 /** UI and other external requests have no calling Copilot session to exclude. */
 export function triggerRestartPendingForExternalRequest(activeSessions: number): number {
-  return triggerRestartPendingWithWaitingCount(activeSessions);
+  return beginRestartPendingForExternalRequest(activeSessions).waitingSessions;
 }
 
 export function syncRestartWaitingSessions(waitingSessions: number): void {

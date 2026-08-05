@@ -3,6 +3,30 @@ import type { BridgeDistributionMode } from "./server/distribution-mode.js";
 import { remainingMs, type Deadline } from "./server/deadline.js";
 
 type ExitAwareChildProcess = Pick<ChildProcess, "exitCode" | "signalCode" | "once" | "off">;
+type ErrorAwareChildProcess = Pick<ChildProcess, "on" | "pid">;
+
+export const LAUNCHER_STARTUP_GIT_PULL_ENV = "BRIDGE_GIT_PULL_ON_STARTUP";
+
+export function shouldPullOnLauncherStartup(env: NodeJS.ProcessEnv): boolean {
+  return /^(1|true|yes|on)$/i.test(env[LAUNCHER_STARTUP_GIT_PULL_ENV]?.trim() ?? "");
+}
+
+export function attachLauncherChildErrorHandler(
+  child: ErrorAwareChildProcess,
+  options: {
+    label: string;
+    log: (message: string) => void;
+    onSpawnFailure: (error: Error) => void;
+  },
+): void {
+  child.on("error", (error) => {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    options.log(`${options.label} process error: ${normalized.message}`);
+    if (child.pid === undefined) {
+      options.onSpawnFailure(normalized);
+    }
+  });
+}
 
 export function isChildProcessActive(
   proc: Pick<ChildProcess, "exitCode" | "signalCode"> | null,

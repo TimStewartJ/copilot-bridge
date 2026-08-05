@@ -20,7 +20,7 @@ type MockSpawnResult = {
 };
 
 const spawnSyncMock = vi.hoisted(() =>
-  vi.fn<(command: string, options?: MockSpawnOptions) => MockSpawnResult>(() => ({
+  vi.fn((_command: string, _argsOrOptions?: readonly string[] | MockSpawnOptions, _options?: MockSpawnOptions): MockSpawnResult => ({
     status: 0,
     signal: null,
   })),
@@ -40,6 +40,13 @@ function writeToStdioFd(options: MockSpawnOptions | undefined, index: number, va
   writeSync(fd, value);
 }
 
+function callOptions(
+  argsOrOptions: readonly string[] | MockSpawnOptions | undefined,
+  options: MockSpawnOptions | undefined,
+): MockSpawnOptions | undefined {
+  return Array.isArray(argsOrOptions) ? options : argsOrOptions as MockSpawnOptions | undefined;
+}
+
 function runFakeCommand(rootDir: string) {
   return runSyncCommand({
     rootDir,
@@ -55,8 +62,8 @@ describe("runSyncCommand", () => {
   it("returns large stdout without using child_process output buffers", () => {
     const rootDir = makeTestDir("sync-command-runner-large");
     const largeOutput = "x".repeat(1_200_000);
-    spawnSyncMock.mockImplementation((_command, options) => {
-      writeToStdioFd(options, 1, largeOutput);
+    spawnSyncMock.mockImplementation((_command, argsOrOptions, options) => {
+      writeToStdioFd(callOptions(argsOrOptions, options), 1, largeOutput);
       return { status: 0, signal: null };
     });
 
@@ -74,9 +81,10 @@ describe("runSyncCommand", () => {
 
   it("keeps stdout and stderr details when persisting a failure log", () => {
     const rootDir = makeTestDir("sync-command-runner-failure");
-    spawnSyncMock.mockImplementation((_command, options) => {
-      writeToStdioFd(options, 1, "normal output\n");
-      writeToStdioFd(options, 2, "warning output\n");
+    spawnSyncMock.mockImplementation((_command, argsOrOptions, options) => {
+      const spawnOptions = callOptions(argsOrOptions, options);
+      writeToStdioFd(spawnOptions, 1, "normal output\n");
+      writeToStdioFd(spawnOptions, 2, "warning output\n");
       return { status: 2, signal: null };
     });
 
@@ -97,8 +105,8 @@ describe("runSyncCommand", () => {
 
   it("reports spawnSync timeout failures consistently", () => {
     const rootDir = makeTestDir("sync-command-runner-timeout");
-    spawnSyncMock.mockImplementation((_command, options) => {
-      writeToStdioFd(options, 2, "still running\n");
+    spawnSyncMock.mockImplementation((_command, argsOrOptions, options) => {
+      writeToStdioFd(callOptions(argsOrOptions, options), 2, "still running\n");
       const error = Object.assign(new Error("spawnSync fake timeout"), { code: "ETIMEDOUT" });
       return { status: null, signal: null, error };
     });
@@ -135,5 +143,34 @@ describe("runSyncCommand", () => {
     expect(result.ok).toBe(false);
     expect(result.output).toContain("error:\nspawn fake ENOENT");
     expect(result.validationLogPath).toContain("validation-logs");
+  });
+
+  it("passes argv literally with the shell disabled", () => {
+    const rootDir = makeTestDir("sync-command-runner-argv");
+    const branch = "release/$rc with space;next";
+    spawnSyncMock.mockReturnValue({ status: 0, signal: null });
+
+    const result = runSyncCommand({
+      rootDir,
+      source: "test",
+      command: "git",
+      args: ["pull", "--rebase", "origin", branch],
+      displayCommand: "git pull --rebase origin <branch>",
+      cwd: rootDir,
+      env: process.env,
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(spawnSyncMock).toHaveBeenCalledWith(
+      "git",
+      ["pull", "--rebase", "origin", branch],
+      expect.objectContaining({
+        cwd: rootDir,
+        shell: false,
+        timeout: 1_000,
+        windowsHide: true,
+      }),
+    );
   });
 });

@@ -30,6 +30,22 @@ afterEach(() => {
   vi.resetModules();
 });
 
+describe("createGitPullRebaseCommand", () => {
+  it.each([
+    "release/$rc",
+    "branch with space",
+    "release;candidate",
+  ])("keeps branch %j as one literal argv entry", async (branch) => {
+    const { createGitPullRebaseCommand } = await loadGitCommandModule();
+
+    const invocation = createGitPullRebaseCommand(branch);
+
+    expect(invocation.command).toBe("git");
+    expect(invocation.args).toEqual(["pull", "--rebase", "origin", branch]);
+    expect(invocation.displayCommand).toContain("git pull --rebase origin");
+  });
+});
+
 describe("normalizeStreamOutput", () => {
   it("trims strings, decodes Buffers, and returns empty string for other input", async () => {
     const { normalizeStreamOutput } = await loadGitCommandModule();

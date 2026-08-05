@@ -286,6 +286,43 @@ describe("update service", () => {
     expect(readUpdateInstallStatus({ runtimePaths }).status?.phase).toBe("started");
   });
 
+  it("passes the parent of a custom data directory as the updater state root", async () => {
+    const keys = createKeyPair();
+    const manifest = manifestText("0.2.0");
+    const stateRoot = makeTestDir("update-custom-state-root");
+    const runtimePaths = makeTestRuntimePaths("update-custom-data", {
+      dataDir: join(stateRoot, "bridge-state"),
+      distributionMode: "release",
+    });
+    const appRoot = writeReleaseAppRoot("0.1.0");
+    writeFileSync(join(appRoot, "..", "update.ps1"), "# test updater\n");
+    const spawnImpl = vi.fn((_command: string, _args: string[], _options: any) => ({
+      once: vi.fn(),
+      unref: vi.fn(),
+    }) as any);
+
+    await startUpdateInstall({
+      appRoot,
+      runtimePaths,
+      env: {
+        ...runtimePaths.env,
+        BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM: keys.publicPem,
+        BRIDGE_UPDATE_MANIFEST_STABLE_URL: "https://updates.example.test/stable-win-x64.manifest.json",
+      },
+      fetchImpl: fetchManifest(manifest, keys.signManifest(manifest)),
+      spawnImpl,
+      powerShellCommand: "pwsh-test",
+    });
+
+    const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[] | undefined;
+    if (!spawnArgs) throw new Error("Expected updater spawn call.");
+    const launcherPath = spawnArgs[spawnArgs.indexOf("-File") + 1];
+    if (!launcherPath) throw new Error("Expected launcher script path.");
+    const launcherScript = readFileSync(launcherPath, "utf8");
+    expect(launcherScript).toContain("-StateRoot");
+    expect(launcherScript).toContain(stateRoot);
+  });
+
   it("uses BRIDGE_RELEASE_ROOT when the active app runs from a release slot", async () => {
     const keys = createKeyPair();
     const manifest = manifestText("0.2.0");

@@ -7,6 +7,29 @@ export type GitCommandResult =
   | { ok: true; output: string }
   | { ok: false; error: string };
 
+export interface GitCommandInvocation {
+  command: "git";
+  args: string[];
+  displayCommand: string;
+}
+
+function formatDisplayArg(arg: string): string {
+  return /^[A-Za-z0-9_./:@+-]+$/.test(arg) ? arg : JSON.stringify(arg);
+}
+
+export function createGitCommand(args: readonly string[]): GitCommandInvocation {
+  const commandArgs = [...args];
+  return {
+    command: "git",
+    args: commandArgs,
+    displayCommand: ["git", ...commandArgs.map(formatDisplayArg)].join(" "),
+  };
+}
+
+export function createGitPullRebaseCommand(branch: string): GitCommandInvocation {
+  return createGitCommand(["pull", "--rebase", "origin", branch]);
+}
+
 export function normalizeStreamOutput(output: unknown): string {
   if (typeof output === "string") return output.trim();
   if (Buffer.isBuffer(output)) return output.toString("utf-8").trim();

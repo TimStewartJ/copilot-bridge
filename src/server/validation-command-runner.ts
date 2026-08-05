@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -59,9 +59,12 @@ export interface SyncValidationCommandRunOptions {
   rootDir: string;
   source: string;
   command: string;
+  args?: readonly string[];
+  displayCommand?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  shell?: boolean;
 }
 
 export interface StreamingValidationCommandRunOptions {
@@ -234,15 +237,19 @@ export function runSyncValidationCommand(options: SyncValidationCommandRunOption
   const stdoutFile = { ...createOutputFile(options.rootDir, "stdout"), closed: false };
   const stderrFile = { ...createOutputFile(options.rootDir, "stderr"), closed: false };
   const startedAt = Date.now();
+  const command = displayCommand(options);
   try {
-    const result = spawnSync(options.command, {
+    const spawnOptions: SpawnSyncOptions = {
       cwd: options.cwd,
       env: options.env,
-      shell: true,
+      shell: options.shell ?? (!options.args || options.args.length === 0),
       stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
       timeout: options.timeoutMs,
       windowsHide: true,
-    });
+    };
+    const result = options.args
+      ? spawnSync(options.command, [...options.args], spawnOptions)
+      : spawnSync(options.command, spawnOptions);
     const elapsedMs = Date.now() - startedAt;
     closeFile(stdoutFile);
     closeFile(stderrFile);
@@ -263,7 +270,7 @@ export function runSyncValidationCommand(options: SyncValidationCommandRunOption
     return formatValidationCommandFailureResult({
       rootDir: options.rootDir,
       source: options.source,
-      command: options.command,
+      command,
       cwd: options.cwd,
       stdout,
       stderr,

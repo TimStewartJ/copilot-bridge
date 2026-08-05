@@ -9,7 +9,7 @@ import {
   ManagementJobNotCancellableError,
   type ManagementJobStore,
 } from "../management-job-store.js";
-import { clearRestartPending } from "../restart-controller.js";
+import { forceClearRestartPending } from "../restart-controller.js";
 
 function createManagementJobApiTestApp(): ReturnType<typeof createTestApp> & { store: ManagementJobStore } {
   const local = createTestApp();
@@ -27,7 +27,7 @@ function makeRealStagingDir(label: string): string {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-  clearRestartPending();
+  forceClearRestartPending();
 });
 
 describe("management job API routes", () => {

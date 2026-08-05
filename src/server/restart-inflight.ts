@@ -13,7 +13,7 @@
 // makes isRestartAlreadyInFlight() start returning true.
 
 import { unlinkSync } from "node:fs";
-import { clearRestartPending, triggerRestartPending } from "./restart-controller.js";
+import { beginRestartPending, clearRestartPending } from "./restart-controller.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
 import {
   writeRestartSignalFile,
@@ -116,8 +116,8 @@ export function lifecycleBusyToolFailure(options: {
   });
 }
 
-export function cleanupFailedRestartSignal(signalFile: string): void {
-  clearRestartPending();
+export function cleanupFailedRestartSignal(signalFile: string, requestId: string): void {
+  clearRestartPending(requestId);
   try {
     unlinkSync(signalFile);
   } catch {
@@ -136,12 +136,12 @@ export function writeRestartSignalOrRollback(
   source = "staging_deploy",
   releaseCandidate?: RestartReleaseCandidate,
 ): number {
-  const otherBusy = triggerRestartPending();
+  const restartRequest = beginRestartPending();
   try {
     writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
   } catch (error) {
-    cleanupFailedRestartSignal(signalFile);
+    cleanupFailedRestartSignal(signalFile, restartRequest.requestId);
     throw error;
   }
-  return otherBusy;
+  return restartRequest.waitingSessions;
 }

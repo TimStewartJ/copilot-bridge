@@ -2,13 +2,17 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeadline } from "./server/deadline.js";
 import {
+  attachLauncherChildErrorHandler,
   isChildProcessActive,
+  LAUNCHER_STARTUP_GIT_PULL_ENV,
   resolveServerLaunchDistributionMode,
+  shouldPullOnLauncherStartup,
   spawnLauncherChildIfRunning,
   waitForChildExit,
 } from "./launcher-process.js";
 
 class FakeChildProcess extends EventEmitter {
+  pid: number | undefined = 123;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
 }
@@ -37,6 +41,15 @@ describe("resolveServerLaunchDistributionMode", () => {
     expect(resolveServerLaunchDistributionMode("release", true), "release + release slot").toBe("release");
   });
 
+  describe("shouldPullOnLauncherStartup", () => {
+    it("is default-off and accepts explicit truthy values", () => {
+      expect(shouldPullOnLauncherStartup({})).toBe(false);
+      expect(shouldPullOnLauncherStartup({ [LAUNCHER_STARTUP_GIT_PULL_ENV]: "false" })).toBe(false);
+      expect(shouldPullOnLauncherStartup({ [LAUNCHER_STARTUP_GIT_PULL_ENV]: "true" })).toBe(true);
+      expect(shouldPullOnLauncherStartup({ [LAUNCHER_STARTUP_GIT_PULL_ENV]: "1" })).toBe(true);
+    });
+  });
+
   describe("spawnLauncherChildIfRunning", () => {
     it.each(["startup", "recovery"])("blocks a child spawn when shutdown begins during %s", () => {
       const spawn = vi.fn(() => ({ pid: 123 }));
@@ -51,6 +64,39 @@ describe("resolveServerLaunchDistributionMode", () => {
     });
   });
 
+});
+
+describe("attachLauncherChildErrorHandler", () => {
+  it("handles spawn failures without leaving an unhandled error event", () => {
+    const child = new FakeChildProcess();
+    child.pid = undefined;
+    const log = vi.fn();
+    const onSpawnFailure = vi.fn();
+    attachLauncherChildErrorHandler(child as any, {
+      label: "Server",
+      log,
+      onSpawnFailure,
+    });
+    const error = Object.assign(new Error("spawn node ENOENT"), { code: "ENOENT" });
+
+    expect(() => child.emit("error", error)).not.toThrow();
+    expect(log).toHaveBeenCalledWith("Server process error: spawn node ENOENT");
+    expect(onSpawnFailure).toHaveBeenCalledWith(error);
+  });
+
+  it("logs non-spawn child errors without starting a second recovery", () => {
+    const child = new FakeChildProcess();
+    const onSpawnFailure = vi.fn();
+    attachLauncherChildErrorHandler(child as any, {
+      label: "Server",
+      log: vi.fn(),
+      onSpawnFailure,
+    });
+
+    child.emit("error", new Error("kill failed"));
+
+    expect(onSpawnFailure).not.toHaveBeenCalled();
+  });
 });
 
 

@@ -18,8 +18,10 @@ import {
 import { validateSupportedCronExpression } from "./cron-next-run.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import {
+  beginRestartPendingForExternalRequest,
   clearRestartPending,
   configureRestartStateStore,
+  forceClearRestartPending,
   isRestartCutoverInProgress,
   isRestartPendingError,
   ModelRefreshBlockedError,
@@ -28,7 +30,6 @@ import {
   SessionBackendDeleteError,
   SessionCapacityError,
   SessionHistoryUndoError,
-  triggerRestartPendingForExternalRequest,
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
@@ -1983,7 +1984,7 @@ export function createApiRouter(
   // POST /restart-clear — manual escape hatch to dismiss a stale restart banner
   router.post("/restart-clear", (_req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
-    clearRestartPending();
+    forceClearRestartPending();
     res.json({ ok: true });
   });
 
@@ -2040,7 +2041,7 @@ export function createApiRouter(
 
     mkdirSync(dataDir, { recursive: true });
     const signalFile = join(dataDir, "restart.signal");
-    const waitingSessions = triggerRestartPendingForExternalRequest(
+    const restartRequest = beginRestartPendingForExternalRequest(
       ctx.sessionManager.getLifecycleBlockingSessionCount(),
     );
     try {
@@ -2049,7 +2050,7 @@ export function createApiRouter(
         source: "settings_ui",
       });
     } catch (error) {
-      clearRestartPending();
+      clearRestartPending(restartRequest.requestId);
       try {
         unlinkSync(signalFile);
       } catch {
@@ -2061,7 +2062,7 @@ export function createApiRouter(
       });
     }
 
-    res.status(202).json({ ok: true, waitingSessions });
+    res.status(202).json({ ok: true, waitingSessions: restartRequest.waitingSessions });
   });
 
   // GET /status-stream — global SSE for session lifecycle events
