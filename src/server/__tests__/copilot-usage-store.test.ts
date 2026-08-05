@@ -23,11 +23,14 @@ function createEntry(sessionId: string, inputTokens: number): CopilotUsageCacheE
       totals: {
         requests: 0,
         inputTokens,
+        uncachedInputTokens: inputTokens,
         outputTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         reasoningTokens: 0,
         totalTokens: inputTokens,
+        meteredAiCredits: 0,
+        meteredTokens: 0,
       },
     },
   };

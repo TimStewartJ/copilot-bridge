@@ -1572,15 +1572,24 @@ export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_
 
 export interface CopilotUsageTotals {
   requests: number;
+  /** Inclusive of cacheReadTokens and cacheWriteTokens. Use uncachedInputTokens for pricing. */
   inputTokens: number;
+  uncachedInputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Already counted inside outputTokens. */
   reasoningTokens: number;
   totalTokens: number;
+  /** GitHub's own metered cost in AI credits. Zero for sessions older than the field. */
+  meteredAiCredits: number;
+  /** Portion of totalTokens covered by GitHub metering, for partial-coverage ranges. */
+  meteredTokens: number;
 }
 
-export type CopilotUsageReasoningPricingAssumption = "reasoning_tokens_priced_at_output_rate";
+export type CopilotUsageReasoningPricingAssumption =
+  | "reasoning_tokens_priced_at_output_rate"
+  | "reasoning_tokens_included_in_output";
 
 export interface CopilotUsageCostBreakdownUsd {
   input: number;

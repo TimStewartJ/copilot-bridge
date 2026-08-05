@@ -15,6 +15,7 @@ import {
   DEFAULT_COPILOT_USAGE_RANGE,
   type CopilotUsageRangeKey,
 } from "../../../shared/copilot-usage-range";
+import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing";
 import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import EmptyState from "../shared/EmptyState";
@@ -44,6 +45,17 @@ const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
   day: "numeric",
+});
+/**
+ * Quota reset lands on a UTC calendar boundary. Rendering it in local time
+ * shifts it a day backwards for anyone west of UTC, so it gets its own
+ * UTC-pinned formatter rather than the ambient-timezone one.
+ */
+const UTC_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
 });
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
@@ -95,6 +107,15 @@ export function CopilotUsageSection() {
   const busy = refreshing || indexing || (isLoading && !data);
   const isEmpty = Boolean(data && data.models.length === 0 && data.coverage.sessionsIncluded === 0);
   const isRanged = Boolean(data?.range.startAt);
+  // GitHub's own per-model metering. Older session logs predate the field, so a
+  // range can be partially metered; the estimate stays the headline and the
+  // metered figure carries its own coverage so it is never read as complete.
+  const meteredAiCredits = data?.totals.meteredAiCredits ?? 0;
+  const meteredTokens = data?.totals.meteredTokens ?? 0;
+  const totalTokens = data?.totals.totalTokens ?? 0;
+  const meteredCoverage = totalTokens > 0 ? meteredTokens / totalTokens : 0;
+  const hasMeteredCost = meteredTokens > 0;
+  const meteredCostUsd = meteredAiCredits * COPILOT_AI_CREDIT_USD;
   const reasonSummary = useMemo(
     () => (data ? formatSkipReasonSummary(data.coverage) : "Skipped session details will appear after the first successful scan."),
     [data],
@@ -154,7 +175,7 @@ export function CopilotUsageSection() {
         />
 
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-          Local estimate only. Costs use GitHub's public Copilot model pricing, assume reasoning tokens are priced at the output rate, and convert AI credits at $0.01 per credit. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded. This is not official GitHub billing.
+          Metered cost is what GitHub actually billed, read from each session log, and only covers sessions recent enough to carry that field. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded.
         </div>
 
         {data && indexing && (
@@ -221,12 +242,14 @@ export function CopilotUsageSection() {
               <SummaryCard
                 label="Estimated cost"
                 value={formatCurrencyUsd(data.totals.estimatedCostUsd)}
-                sub={data.totals.unpricedModelCount > 0 ? "Excludes unpriced models" : "Priced models"}
+                sub={`${formatAiCredits(data.totals.estimatedAiCredits)} credits${data.totals.unpricedModelCount > 0 ? " · excludes unpriced" : ""}`}
               />
               <SummaryCard
-                label="Estimated AI credits"
-                value={formatAiCredits(data.totals.estimatedAiCredits)}
-                sub={data.totals.unpricedModelCount > 0 ? "Excludes unpriced models" : "GitHub credit estimate"}
+                label="Metered cost"
+                value={hasMeteredCost ? formatCurrencyUsd(meteredCostUsd) : "Not recorded"}
+                sub={hasMeteredCost
+                  ? `Billed by GitHub · ${formatMeteredCoverage(meteredCoverage)}`
+                  : "No GitHub metering in this range"}
               />
               <SummaryCard label="Total tokens" value={formatNumber(data.totals.totalTokens)} />
               <SummaryCard label="Requests" value={formatNumber(data.totals.requests)} />
@@ -435,7 +458,7 @@ function QuotaCard({
         />
         <SummaryCard
           label="Resets"
-          value={snapshot.resetAt ? formatDate(snapshot.resetAt) ?? snapshot.resetAt : "Unknown"}
+          value={snapshot.resetAt ? formatUtcDate(snapshot.resetAt) ?? snapshot.resetAt : "Unknown"}
           sub={`Bucket ${snapshot.bucket}`}
         />
       </div>
@@ -479,7 +502,7 @@ function UnpricedModelsWarning({
         <div className="min-w-0">
           <div className="text-sm font-medium text-warning">Unknown pricing excluded from cost totals</div>
           <p className="mt-1 text-xs text-text-muted">
-            GitHub public pricing did not include {formatNumber(count)} observed model{count === 1 ? "" : "s"}. These models remain visible below with token totals, but their estimated cost and AI credits are excluded from summary totals.
+            GitHub public pricing did not include {formatNumber(count)} observed model{count === 1 ? "" : "s"}. These models remain visible below with token totals, and their estimated cost is excluded from summary totals. Excluded cost below is what GitHub actually metered for them, which is genuinely zero for free internal and alpha models.
           </p>
         </div>
       </div>
@@ -488,7 +511,10 @@ function UnpricedModelsWarning({
         <CoverageStat label="Unpriced tokens" value={formatNumber(unpricedTokens.totalTokens)} />
         <CoverageStat label="Unpriced requests" value={formatNumber(unpricedTokens.requests)} />
         <CoverageStat label="Unpriced models" value={formatNumber(count)} />
-        <CoverageStat label="Excluded cost" value={formatCurrencyUsd(0)} />
+        <CoverageStat
+          label="Excluded cost"
+          value={formatCurrencyUsd(unpricedTokens.meteredAiCredits * COPILOT_AI_CREDIT_USD)}
+        />
       </div>
 
       {models.length > 0 && (
@@ -634,6 +660,20 @@ function formatSkipReasonSummary(coverage: CopilotUsageCoverage): string {
 
 function formatDate(value: string): string | null {
   return formatTimestamp(value, DATE_FORMATTER);
+}
+
+/** Formats a UTC calendar date without shifting it into the viewer's timezone. */
+function formatUtcDate(value: string): string | null {
+  return formatTimestamp(value, UTC_DATE_FORMATTER);
+}
+
+/**
+ * Describes how much of the range GitHub actually metered. Anything short of
+ * full coverage has to say so, otherwise a partial figure reads as a total.
+ */
+function formatMeteredCoverage(coverage: number): string {
+  if (coverage >= 0.999) return "covers all tokens in range";
+  return `covers ${Math.round(coverage * 100)}% of tokens in range`;
 }
 
 function formatDateTime(value: string): string {

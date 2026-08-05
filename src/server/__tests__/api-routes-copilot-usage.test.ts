@@ -43,7 +43,7 @@ installApiRouteTestHooks((state) => {
   ({ app } = state);
 });
 
-const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
+const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 
 // Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
 // convert to round USD-per-1M rates.
@@ -67,17 +67,20 @@ function sdkPriceableModel(
 }
 
 function expectedUsageTotals(overrides: Partial<Record<
-  "requests" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens",
+  "requests" | "inputTokens" | "uncachedInputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens" | "meteredAiCredits" | "meteredTokens",
   number
 >> = {}) {
   return {
     requests: 0,
     inputTokens: 0,
+    uncachedInputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
+    meteredAiCredits: 0,
+    meteredTokens: 0,
     ...overrides,
   };
 }
@@ -126,7 +129,8 @@ describe("Copilot usage routes", () => {
             "gpt-5.4": {
               requests: { count: 3, cost: 99, path: "secret-request-path", details: "secret-request-details" },
               usage: {
-                inputTokens: 1_000_000,
+                // Inclusive of cache reads and writes, leaving 1M uncached.
+                inputTokens: 3_000_000,
                 outputTokens: 1_000_000,
                 cacheReadTokens: 1_000_000,
                 cacheWriteTokens: 1_000_000,
@@ -167,46 +171,50 @@ describe("Copilot usage routes", () => {
     ));
     const pricedTotals = expectedUsageTotals({
       requests: 3,
-      inputTokens: 1_000_000,
+      inputTokens: 3_000_000,
+      uncachedInputTokens: 1_000_000,
       outputTokens: 1_000_000,
       cacheReadTokens: 1_000_000,
       cacheWriteTokens: 1_000_000,
       reasoningTokens: 1_000_000,
-      totalTokens: 5_000_000,
+      totalTokens: 4_000_000,
     });
     const unpricedTotals = expectedUsageTotals({
       requests: 1,
       inputTokens: 100,
+      uncachedInputTokens: 85,
       outputTokens: 50,
       cacheReadTokens: 5,
       cacheWriteTokens: 10,
       reasoningTokens: 25,
-      totalTokens: 190,
+      totalTokens: 150,
     });
     const aggregateTotals = expectedUsageTotals({
       requests: 4,
-      inputTokens: 1_000_100,
+      inputTokens: 3_000_100,
+      uncachedInputTokens: 1_000_085,
       outputTokens: 1_000_050,
       cacheReadTokens: 1_000_005,
       cacheWriteTokens: 1_000_010,
       reasoningTokens: 1_000_025,
-      totalTokens: 5_000_190,
+      totalTokens: 4_000_150,
     });
     const pricedCostBreakdownUsd = expectedCostBreakdownUsd({
       input: 2.5,
       cachedInput: 0.25,
+      cacheWrite: 3.125,
       output: 15,
-      reasoning: 15,
-      total: 32.75,
+      reasoning: 0,
+      total: 20.875,
     });
     const pricedCostEstimate = expectedCostEstimate({
       costBreakdownUsd: pricedCostBreakdownUsd,
-      billableOutputTokens: 2_000_000,
+      billableOutputTokens: 1_000_000,
     });
-    const unpricedCostEstimate = expectedCostEstimate({ billableOutputTokens: 75 });
+    const unpricedCostEstimate = expectedCostEstimate({ billableOutputTokens: 50 });
     const aggregateCostEstimate = expectedCostEstimate({
       costBreakdownUsd: pricedCostBreakdownUsd,
-      billableOutputTokens: 2_000_075,
+      billableOutputTokens: 1_000_050,
     });
     const pricedModelRow = {
       model: "gpt-5.4",

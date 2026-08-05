@@ -26,11 +26,14 @@ function createUsageTotals(overrides: Partial<CopilotUsageSummary["totals"]["unp
   return {
     requests: 0,
     inputTokens: 0,
+    uncachedInputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
+    meteredAiCredits: 0,
+    meteredTokens: 0,
     ...overrides,
   };
 }
@@ -313,8 +316,9 @@ describe("CopilotUsageSection", () => {
 
     expect(text).toContain("Estimated cost");
     expect(text).toContain("32.75");
-    expect(text).toContain("Estimated AI credits");
     expect(text).toContain("3,275");
+    expect(text).toContain("Metered cost");
+    expect(text).toContain("No GitHub metering in this range");
     expect(text).toContain("Unknown pricing excluded from cost totals");
     expect(text).toContain("GitHub public pricing did not include 1 observed model");
     expect(text).toContain("Unpriced tokens");
@@ -372,6 +376,15 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("9,920,606.1");
     expect(text).toContain("99.2% left");
     expect(text).toContain("timstewart_microsoft · enterprise");
+  });
+
+  it("renders the quota reset on its UTC calendar date regardless of viewer timezone", () => {
+    // 2026-09-01T00:00Z is still Aug 31 anywhere west of UTC, so a local-time
+    // formatter silently reports the reset a day early.
+    const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
+
+    expect(text).toContain("Sep 1, 2026");
+    expect(text).not.toContain("Aug 31, 2026");
   });
 
   it("keeps the panel usable when the live quota is unavailable", () => {

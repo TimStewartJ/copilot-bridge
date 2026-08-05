@@ -8,6 +8,7 @@ export interface CopilotPricingRatesUsdPerMillionTokens {
 }
 
 export interface CopilotTokenUsageForPricing {
+  /** Uncached input tokens only. Cache reads and cache writes are priced separately. */
   readonly inputTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheWriteTokens?: number;
@@ -44,9 +45,35 @@ export type CopilotPricingModelResolution =
   | PricedCopilotPricingModelResolution
   | UnpricedCopilotPricingModelResolution;
 
+/**
+ * GitHub converts per-token model pricing into AI credits at a fixed rate of
+ * 1 AI credit = $0.01 USD. This is not returned by any API, so it has to live
+ * here, but it is a published rate rather than an assumption.
+ *
+ * Source: https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+ */
 export const COPILOT_AI_CREDIT_USD = 0.01 as const;
 export const COPILOT_PRICING_RATE_UNIT = "usd_per_1m_tokens" as const;
 export const COPILOT_TOKEN_PRICING_UNIT = 1_000_000 as const;
+
+/**
+ * Copilot's SDK price card exposes input, cached-input, and output rates but no
+ * cache-write rate, even though cache writes are billed. GitHub's published
+ * pricing table lists cache write at exactly 1.25x the input rate for every
+ * model that charges it (Claude Opus $5.00 -> $6.25, Claude Sonnet 4.6 $3.00 ->
+ * $3.75, Claude Haiku 4.5 $1.00 -> $1.25, GPT-5.6 Sol $5.00 -> $6.25, GPT-5.6
+ * Terra $2.00 -> $2.50, GPT-5.6 Luna $0.20 -> $0.25, and the same 1.25 ratio on
+ * each long-context tier). Reconciling the CLI's own `totalNanoAiu` metering
+ * against the card across local history independently resolves the same 1.25.
+ *
+ * Models that GitHub lists as having no cache-write cost (earlier OpenAI,
+ * Gemini, Grok, MAI, Raptor) also emit no cache-write tokens, so applying the
+ * ratio uniformly costs them nothing rather than requiring a hardcoded model
+ * list that would drift as models ship.
+ *
+ * Source: https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+ */
+export const COPILOT_CACHE_WRITE_INPUT_RATE_MULTIPLIER = 1.25 as const;
 
 export function getCopilotPricingRatesFromModelMetadata(
   model: CopilotModelMetadataForPricing | undefined,
@@ -62,7 +89,7 @@ export function getCopilotPricingRatesFromModelMetadata(
   const output = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.outputPrice, batchSize);
   const cachedInput = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.cachePrice, batchSize);
   if (input === undefined || output === undefined || cachedInput === undefined) return undefined;
-  return { input, output, cachedInput };
+  return { input, output, cachedInput, cacheWrite: input * COPILOT_CACHE_WRITE_INPUT_RATE_MULTIPLIER };
 }
 
 export function isCopilotModelPriceable(

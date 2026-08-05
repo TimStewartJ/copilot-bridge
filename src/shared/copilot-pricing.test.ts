@@ -28,12 +28,12 @@ function priceableModel(
 describe("getCopilotPricingRatesFromModelMetadata", () => {
   it("converts SDK cents-per-batch token prices into USD-per-1M rates", () => {
     const rates = getCopilotPricingRatesFromModelMetadata(priceableModel("model-x"), undefined);
-    expect(rates).toEqual({ input: 3, output: 15, cachedInput: 0.3 });
+    expect(rates).toEqual({ input: 3, output: 15, cachedInput: 0.3, cacheWrite: 3.75 });
   });
 
-  it("never derives a cacheWrite rate because the SDK does not expose one", () => {
+  it("derives the cacheWrite rate at 1.25x input because the SDK does not expose one", () => {
     const rates = getCopilotPricingRatesFromModelMetadata(priceableModel("model-x"), undefined);
-    expect(rates && "cacheWrite" in rates).toBe(false);
+    expect(rates?.cacheWrite).toBeCloseTo(3.75);
   });
 
   it("uses long_context tier prices when requested and present", () => {
@@ -53,6 +53,7 @@ describe("getCopilotPricingRatesFromModelMetadata", () => {
       input: 6,
       output: 30,
       cachedInput: 0.6,
+      cacheWrite: 7.5,
     });
   });
 
@@ -74,6 +75,7 @@ describe("getCopilotPricingRatesFromModelMetadata", () => {
       input: 6,
       output: 30,
       cachedInput: 0.6,
+      cacheWrite: 7.5,
     });
   });
 
