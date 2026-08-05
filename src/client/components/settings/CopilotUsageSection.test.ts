@@ -1,12 +1,23 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CopilotUsageCostEstimate, CopilotUsageSummary } from "../../api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CopilotQuotaStatus, CopilotUsageCostEstimate, CopilotUsageSummary } from "../../api";
+import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
+import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+  type ReactDomHarness,
+} from "../../test-react-harness";
 import { CopilotUsageSection } from "./CopilotUsageSection";
 
 vi.mock("../../hooks/queries/useCopilotUsage", () => ({
   useCopilotUsageQuery: vi.fn(),
+}));
+
+vi.mock("../../hooks/queries/useCopilotQuota", () => ({
+  useCopilotQuotaQuery: vi.fn(),
 }));
 
 const NOW = "2026-05-01T12:00:00.000Z";
@@ -48,6 +59,12 @@ function createCostEstimate(overrides: Partial<CopilotUsageCostEstimate> = {}): 
 function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): CopilotUsageSummary {
   return {
     generatedAt: NOW,
+    range: {
+      key: "all",
+      label: "All time",
+      startAt: null,
+      startDate: null,
+    },
     index: {
       state: "idle",
       startedAt: NOW,
@@ -89,9 +106,49 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
   };
 }
 
-function renderSection(summary: CopilotUsageSummary): string {
+function createQuotaStatus(overrides: Partial<CopilotQuotaStatus> = {}): CopilotQuotaStatus {
+  const primary = overrides.primary ?? {
+    bucket: "premium_interactions",
+    unit: "ai_credits" as const,
+    tokenBasedBilling: true,
+    isUnlimitedEntitlement: false,
+    entitlement: 10_000_000,
+    used: 79_393.9,
+    usedIsPrecise: true,
+    remaining: 9_920_606.1,
+    remainingPercentage: 99.2,
+    overage: 0,
+    overagePermitted: true,
+    resetAt: "2026-09-01T00:00:00.000Z",
+  };
+  return {
+    available: true,
+    fetchedAt: NOW,
+    identity: {
+      login: "timstewart_microsoft",
+      plan: "enterprise",
+      sku: "copilot_enterprise_seat_quota",
+      organizations: ["ms-copilot"],
+    },
+    primary,
+    snapshots: primary ? [primary] : [],
+    error: null,
+    ...overrides,
+  };
+}
+
+function renderSection(
+  summary: CopilotUsageSummary,
+  quota: CopilotQuotaStatus | null = createQuotaStatus(),
+): string {
   vi.mocked(useCopilotUsageQuery).mockReturnValue({
     data: summary,
+    error: null,
+    isLoading: false,
+    refresh: vi.fn(),
+  } as any);
+  vi.mocked(useCopilotQuotaQuery).mockReturnValue({
+    data: quota,
     error: null,
     isLoading: false,
     refresh: vi.fn(),
@@ -102,6 +159,7 @@ function renderSection(summary: CopilotUsageSummary): string {
 
 beforeEach(() => {
   vi.mocked(useCopilotUsageQuery).mockReset();
+  vi.mocked(useCopilotQuotaQuery).mockReset();
 });
 
 describe("CopilotUsageSection", () => {
@@ -123,7 +181,7 @@ describe("CopilotUsageSection", () => {
 
     expect(html).toContain("Indexing local usage in the background");
     expect(html).toContain("Checked 25 of 100 sessions");
-    expect(vi.mocked(useCopilotUsageQuery)).toHaveBeenCalledWith({ includeSessions: false });
+    expect(vi.mocked(useCopilotUsageQuery)).toHaveBeenCalledWith({ includeSessions: false, range: "all" });
   });
 
   it("shows a partial indexing warning while keeping cached usage visible", () => {
@@ -263,5 +321,127 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("unknown-model");
     expect(text).toContain("Exact public price");
     expect(text).toContain("Unpriced");
+  });
+
+  it("renders every range button with all time selected by default", () => {
+    const html = renderSection(createUsageSummary());
+
+    for (const label of ["7 days", "28 days", "MTD", "YTD", "All time"]) {
+      expect(html).toContain(`>${label}</button>`);
+    }
+    expect(html).toContain("All local history");
+  });
+
+  it("labels the active window when a bounded range is returned", () => {
+    const html = renderSection(createUsageSummary({
+      range: {
+        key: "28d",
+        label: "28 days",
+        startAt: "2026-04-04T00:00:00.000Z",
+        startDate: "2026-04-04",
+      },
+      coverage: {
+        sessionsSeen: 2,
+        sessionsWithEvents: 2,
+        sessionsIncluded: 2,
+        sessionsSkipped: 0,
+        skippedByReason: {
+          no_events: 0,
+          no_shutdown: 0,
+          empty_model_metrics: 0,
+          parse_error: 0,
+        },
+        earliestIncludedAt: NOW,
+        latestIncludedAt: NOW,
+        earliestSkippedAt: null,
+        latestSkippedAt: null,
+      },
+    }));
+
+    expect(html).toContain("Since ");
+    expect(html.replace(/<!-- -->/g, "")).toContain("Counts are limited to sessions with recorded usage inside the selected window.");
+  });
+
+  it("renders the live quota counter with the precise used value and credit units", () => {
+    const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
+
+    expect(text).toContain("Live account quota");
+    expect(text).toContain("Used AI credits");
+    expect(text).toContain("79,393.9");
+    expect(text).toContain("Exact counter");
+    expect(text).toContain("9,920,606.1");
+    expect(text).toContain("99.2% left");
+    expect(text).toContain("timstewart_microsoft · enterprise");
+  });
+
+  it("keeps the panel usable when the live quota is unavailable", () => {
+    const text = renderSection(
+      createUsageSummary(),
+      {
+        available: false,
+        fetchedAt: NOW,
+        identity: null,
+        primary: null,
+        snapshots: [],
+        error: "Account quota lookup is not available in this Copilot SDK build",
+      },
+    ).replace(/<!-- -->/g, "");
+
+    expect(text).toContain("Account quota lookup is not available in this Copilot SDK build");
+    expect(text).toContain("Local Copilot Usage");
+  });
+});
+
+describe("CopilotUsageSection range buttons", () => {
+  let harness: ReactDomHarness | null = null;
+
+  function getHarness() {
+    if (!harness) throw new Error("CopilotUsageSection harness not initialized");
+    return harness;
+  }
+
+  beforeEach(async () => {
+    vi.mocked(useCopilotUsageQuery).mockReset();
+    vi.mocked(useCopilotQuotaQuery).mockReset();
+    vi.mocked(useCopilotUsageQuery).mockReturnValue({
+      data: createUsageSummary(),
+      error: null,
+      isLoading: false,
+      refresh: vi.fn(),
+    } as any);
+    vi.mocked(useCopilotQuotaQuery).mockReturnValue({
+      data: createQuotaStatus(),
+      error: null,
+      isLoading: false,
+      refresh: vi.fn(),
+    } as any);
+    harness = await createReactDomHarness();
+  });
+
+  afterEach(async () => {
+    await harness?.cleanup();
+    harness = null;
+  });
+
+  it("requeries usage for the picked window", async () => {
+    await getHarness().render(createElement(CopilotUsageSection));
+    expect(vi.mocked(useCopilotUsageQuery).mock.calls.at(-1)?.[0]).toEqual({
+      includeSessions: false,
+      range: "all",
+    });
+
+    const button = findAllByTag(harness?.dom.container, "BUTTON")
+      .find((candidate: any) => candidate.textContent === "28 days");
+    expect(button).toBeTruthy();
+
+    await getHarness().act(async () => {
+      getReactProps(button)?.onClick?.({});
+    });
+
+    expect(vi.mocked(useCopilotUsageQuery).mock.calls.at(-1)?.[0]).toEqual({
+      includeSessions: false,
+      range: "28d",
+    });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 });

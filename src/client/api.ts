@@ -1,6 +1,7 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
+import type { CopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
 import type {
   CopilotContextTier,
   CopilotModelContextMetadata,
@@ -1661,8 +1662,16 @@ export interface CopilotUsageIndexStatus {
   error: string | null;
 }
 
+export interface CopilotUsageRangeSummary {
+  key: CopilotUsageRangeKey;
+  label: string;
+  startAt: string | null;
+  startDate: string | null;
+}
+
 export interface CopilotUsageSummary {
   generatedAt: string;
+  range: CopilotUsageRangeSummary;
   index: CopilotUsageIndexStatus;
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
@@ -1676,10 +1685,14 @@ export async function fetchCopilotUsage(options?: {
   signal?: AbortSignal;
   taskId?: string;
   includeSessions?: boolean;
+  range?: CopilotUsageRangeKey;
 }): Promise<CopilotUsageSummary> {
   const params = new URLSearchParams();
   if (options?.refresh) {
     params.set("refresh", "1");
+  }
+  if (options?.range && options.range !== "all") {
+    params.set("range", options.range);
   }
   if (options?.taskId) {
     params.set("taskId", options.taskId);
@@ -1688,6 +1701,49 @@ export async function fetchCopilotUsage(options?: {
   }
   const query = params.toString();
   return apiFetch<CopilotUsageSummary>(`/api/copilot-usage${query ? `?${query}` : ""}`, undefined, {
+    signal: options?.signal,
+  });
+}
+
+export type CopilotQuotaUnit = "ai_credits" | "premium_requests";
+
+export interface CopilotQuotaSnapshot {
+  bucket: string;
+  unit: CopilotQuotaUnit;
+  tokenBasedBilling: boolean;
+  isUnlimitedEntitlement: boolean;
+  entitlement: number | null;
+  used: number | null;
+  usedIsPrecise: boolean;
+  remaining: number | null;
+  remainingPercentage: number | null;
+  overage: number | null;
+  overagePermitted: boolean | null;
+  resetAt: string | null;
+}
+
+export interface CopilotQuotaIdentity {
+  login: string | null;
+  plan: string | null;
+  sku: string | null;
+  organizations: string[];
+}
+
+export interface CopilotQuotaStatus {
+  available: boolean;
+  fetchedAt: string;
+  identity: CopilotQuotaIdentity | null;
+  primary: CopilotQuotaSnapshot | null;
+  snapshots: CopilotQuotaSnapshot[];
+  error: string | null;
+}
+
+export async function fetchCopilotQuota(options?: {
+  refresh?: boolean;
+  signal?: AbortSignal;
+}): Promise<CopilotQuotaStatus> {
+  const query = options?.refresh ? "?refresh=1" : "";
+  return apiFetch<CopilotQuotaStatus>(`/api/copilot-usage/quota${query}`, undefined, {
     signal: options?.signal,
   });
 }

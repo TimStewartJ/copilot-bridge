@@ -495,6 +495,19 @@ export interface AgentBackend {
     sourceSessionId: string,
     opts?: { toEventId?: string },
   ): Promise<{ sessionId: string }>;
+
+  /**
+   * Live quota/usage counter for the authenticated account. Optional — older
+   * SDK builds may lack the `account.getQuota` RPC. The payload is
+   * backend-shaped and normalized by the caller.
+   */
+  getAccountQuota?(): Promise<unknown>;
+
+  /**
+   * Current authentication state, including the backend's raw account
+   * passthrough. Optional for the same reason as `getAccountQuota`.
+   */
+  getAccountAuth?(): Promise<unknown>;
 }
 
 /**

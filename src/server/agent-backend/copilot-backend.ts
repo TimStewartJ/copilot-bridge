@@ -476,4 +476,22 @@ export class CopilotBackend implements AgentBackend {
       : { sessionId: sourceSessionId };
     return fork.call((this.client as any).rpc.sessions, params);
   }
+
+  async getAccountQuota(): Promise<unknown> {
+    const account = (this.client as any).rpc?.account;
+    const getQuota = account?.getQuota;
+    if (typeof getQuota !== "function") {
+      throw new Error("Account quota lookup is not available in this Copilot SDK build");
+    }
+    return getQuota.call(account, {});
+  }
+
+  async getAccountAuth(): Promise<unknown> {
+    const account = (this.client as any).rpc?.account;
+    const getCurrentAuth = account?.getCurrentAuth;
+    if (typeof getCurrentAuth !== "function") {
+      throw new Error("Account auth lookup is not available in this Copilot SDK build");
+    }
+    return getCurrentAuth.call(account);
+  }
 }

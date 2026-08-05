@@ -1175,3 +1175,182 @@ describe("readCopilotUsageSummary", () => {
       .rejects.toThrow("Unable to read local Copilot usage history.");
   });
 });
+
+describe("copilot usage time ranges", () => {
+  // Fixed local anchor so month/year boundaries are deterministic in any timezone.
+  const NOW = new Date(2026, 4, 15, 12, 0, 0);
+  const now = () => NOW.getTime();
+
+  function localIso(year: number, monthIndex: number, day: number): string {
+    return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
+  }
+
+  function shutdown(timestamp: string, cumulativeInputTokens: number) {
+    return {
+      type: "session.shutdown",
+      timestamp,
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: cumulativeInputTokens },
+          },
+        },
+      },
+    };
+  }
+
+  function writeRangeSession(copilotHome: string): void {
+    // Cumulative snapshots, so each shutdown contributes its own daily delta.
+    writeEvents(copilotHome, "ranged-session", [
+      shutdown(localIso(2025, 10, 5), 100),
+      shutdown(localIso(2026, 1, 10), 300),
+      shutdown(localIso(2026, 3, 25), 700),
+      shutdown(localIso(2026, 4, 12), 1_500),
+    ]);
+  }
+
+  it("splits a long-lived session across windows by the day usage was recorded", async () => {
+    const copilotHome = createCopilotHome();
+    writeRangeSession(copilotHome);
+
+    const windows = await Promise.all(
+      (["all", "ytd", "mtd", "28d", "7d"] as const).map(
+        (range) => readCopilotUsageSummary({ copilotHome, now, range }),
+      ),
+    );
+    const [all, ytd, mtd, past28, past7] = windows;
+
+    expect(all.totals.inputTokens).toBe(1_500);
+    expect(ytd.totals.inputTokens).toBe(1_400);
+    expect(mtd.totals.inputTokens).toBe(800);
+    expect(past28.totals.inputTokens).toBe(1_200);
+    expect(past7.totals.inputTokens).toBe(800);
+    expect(past7.models).toEqual([expect.objectContaining({ model: "gpt-5.4", sessions: 1, inputTokens: 800 })]);
+  });
+
+  it("reports the resolved window and defaults to all time", async () => {
+    const copilotHome = createCopilotHome();
+    writeRangeSession(copilotHome);
+
+    const defaulted = await readCopilotUsageSummary({ copilotHome, now });
+    expect(defaulted.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
+
+    const mtd = await readCopilotUsageSummary({ copilotHome, now, range: "mtd" });
+    expect(mtd.range.key).toBe("mtd");
+    expect(mtd.range.startDate).toBe("2026-05-01");
+    expect(mtd.range.startAt).toBe(new Date(2026, 4, 1, 0, 0, 0, 0).toISOString());
+
+    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
+    expect(past7.range.startDate).toBe("2026-05-09");
+  });
+
+  it("drops sessions with no usage inside the window from coverage", async () => {
+    const copilotHome = createCopilotHome();
+    writeRangeSession(copilotHome);
+    writeEvents(copilotHome, "stale-session", [shutdown(localIso(2025, 6, 1), 500)]);
+
+    const all = await readCopilotUsageSummary({ copilotHome, now, range: "all" });
+    expect(all.coverage.sessionsIncluded).toBe(2);
+    expect(all.totals.inputTokens).toBe(2_000);
+
+    const ytd = await readCopilotUsageSummary({ copilotHome, now, range: "ytd" });
+    expect(ytd.coverage.sessionsIncluded).toBe(1);
+    expect(ytd.coverage.sessionsSeen).toBe(1);
+    expect(ytd.totals.inputTokens).toBe(1_400);
+    expect(ytd.coverage.earliestIncludedAt).toBe(localIso(2026, 1, 10));
+    expect(ytd.coverage.latestIncludedAt).toBe(localIso(2026, 4, 12));
+  });
+
+  it("buckets live assistant usage by day when no shutdown summary exists yet", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "live-session", [
+      { type: "session.start", timestamp: localIso(2026, 3, 20), data: { selectedModel: "gpt-5.4" } },
+      {
+        type: "assistant.message",
+        timestamp: localIso(2026, 3, 20),
+        data: { requestId: "req-old", outputTokens: 40 },
+      },
+      {
+        type: "assistant.message",
+        timestamp: localIso(2026, 4, 14),
+        data: { requestId: "req-new", outputTokens: 60 },
+      },
+    ]);
+
+    const all = await readCopilotUsageSummary({ copilotHome, now, range: "all" });
+    expect(all.totals.outputTokens).toBe(100);
+
+    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
+    expect(past7.totals.outputTokens).toBe(60);
+    expect(past7.totals.requests).toBe(1);
+  });
+});
+
+describe("copilot usage window session counting", () => {
+  const NOW = new Date(2026, 4, 15, 12, 0, 0);
+  const now = () => NOW.getTime();
+
+  function localIso(year: number, monthIndex: number, day: number): string {
+    return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
+  }
+
+  // Each shutdown snapshot repeats cumulative totals for every model the session
+  // has ever used, so a resume with no new work on that model yields a zero delta.
+  function multiModelShutdown(
+    timestamp: string,
+    cumulative: { old: number; current: number },
+  ) {
+    return {
+      type: "session.shutdown",
+      timestamp,
+      data: {
+        modelMetrics: {
+          "gpt-5.4": { requests: { count: 1 }, usage: { inputTokens: cumulative.old } },
+          "claude-opus-5": { requests: { count: 1 }, usage: { inputTokens: cumulative.current } },
+        },
+      },
+    };
+  }
+
+  it("excludes sessions whose only in-window snapshots repeat unchanged totals", async () => {
+    const copilotHome = createCopilotHome();
+    // gpt-5.4 did all its work in January and none since; the May shutdown just
+    // repeats its unchanged cumulative snapshot alongside real claude usage.
+    writeEvents(copilotHome, "resumed-session", [
+      multiModelShutdown(localIso(2026, 0, 10), { old: 900, current: 0 }),
+      multiModelShutdown(localIso(2026, 4, 12), { old: 900, current: 400 }),
+    ]);
+    // A session that only ever replays an unchanged snapshot inside the window.
+    writeEvents(copilotHome, "idle-session", [
+      multiModelShutdown(localIso(2026, 0, 11), { old: 500, current: 0 }),
+      multiModelShutdown(localIso(2026, 4, 13), { old: 500, current: 0 }),
+    ]);
+
+    const all = await readCopilotUsageSummary({ copilotHome, now, range: "all" });
+    expect(all.coverage.sessionsIncluded).toBe(2);
+    expect(all.totals.inputTokens).toBe(1_800);
+
+    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
+    // Only the session with real in-window work counts, and only for that model.
+    expect(past7.coverage.sessionsIncluded).toBe(1);
+    expect(past7.totals.inputTokens).toBe(400);
+    expect(past7.models).toEqual([
+      expect.objectContaining({ model: "claude-opus-5", sessions: 1, inputTokens: 400 }),
+    ]);
+    expect(past7.models.some((row) => row.model === "gpt-5.4")).toBe(false);
+  });
+
+  it("keeps zero-usage rows out of per-session window rows", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "resumed-session", [
+      multiModelShutdown(localIso(2026, 0, 10), { old: 900, current: 0 }),
+      multiModelShutdown(localIso(2026, 4, 12), { old: 900, current: 400 }),
+    ]);
+
+    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
+    const session = past7.sessions.find((row) => row.sessionId === "resumed-session");
+    expect(session?.totalTokens).toBe(400);
+    expect(session?.models.map((row) => row.model)).toEqual(["claude-opus-5"]);
+  });
+});

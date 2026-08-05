@@ -195,6 +195,7 @@ function createUnpricedModelMetadata() {
 function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): CopilotUsageSummary {
   return {
     generatedAt: NOW,
+    range: { key: "all", label: "All time", startAt: null, startDate: null },
     index: {
       state: "idle",
       startedAt: NOW,
