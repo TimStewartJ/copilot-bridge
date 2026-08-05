@@ -118,6 +118,18 @@ describe("resolvePullRequestLink", () => {
       .toMatchObject({ ok: true, value: { repoId: "octo/widget", repoName: "widget" } });
   });
 
+  it("keeps an explicit repoId that cannot be canonicalized (legacy bare repo name)", () => {
+    // Rows written before canonicalization hold a bare name as their durable id.
+    // The UI's undo/relink path sends that id back, so it must survive.
+    expect(resolvePullRequestLink({ repoId: "space43", repoName: "space43", prId: 200, provider: "github" }))
+      .toEqual({ ok: true, value: { repoId: "space43", repoName: "space43", prId: 200, provider: "github" } });
+  });
+
+  it("still upgrades an explicit repoId when it can be canonicalized", () => {
+    expect(resolvePullRequestLink({ repoId: "https://github.com/octo/widget", prId: 7, provider: "github" }))
+      .toMatchObject({ ok: true, value: { repoId: "octo/widget" } });
+  });
+
   it("fails on an unresolvable github repository instead of persisting a dead row", () => {
     const result = resolvePullRequestLink({ repoName: "widget", prId: 7, provider: "github" });
     expect(result).toMatchObject({ ok: false });

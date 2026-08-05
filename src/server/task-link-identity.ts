@@ -148,6 +148,11 @@ export interface ResolvedPullRequestLink {
  *
  * `repoId` is the identity the row is keyed by (an ADO repository GUID, or a
  * canonical `owner/repo` for GitHub); `repoName` is only ever display text.
+ *
+ * An explicit `repoId` is authoritative: canonicalization upgrades a GitHub
+ * reference to `owner/repo` when it can, but never rejects an id the caller
+ * supplied — rows written before canonicalization hold un-upgradable ids (a
+ * bare repo name with no configured owner) and must stay relinkable.
  */
 export function resolvePullRequestRef(input: {
   repoId?: unknown;
@@ -168,13 +173,15 @@ export function resolvePullRequestRef(input: {
 
   let repoId = explicitRepoId;
   if (input.provider === "github") {
-    // Canonicalize even an explicit id so a URL never becomes the row key.
-    repoId = canonicalizeGitHubRepoId(explicitRepoId || repoName, input.providers?.github?.owner) ?? "";
-    if (!repoId) {
+    const canonical = canonicalizeGitHubRepoId(explicitRepoId || repoName, input.providers?.github?.owner);
+    if (!canonical && !explicitRepoId) {
+      // Only a display name to go on, and it does not name a repository —
+      // refuse rather than key a row on something that can never resolve.
       return err(
-        `Could not resolve "${explicitRepoId || repoName}" to a GitHub repository. Use "owner/repo" or a github.com URL.`,
+        `Could not resolve "${repoName}" to a GitHub repository. Use "owner/repo" or a github.com URL.`,
       );
     }
+    repoId = canonical ?? explicitRepoId;
   }
   if (!repoId) repoId = repoName;
 

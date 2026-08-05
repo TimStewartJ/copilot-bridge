@@ -328,6 +328,28 @@ describe("Task routes", () => {
     expect(res.body.error).toContain("workItemId is required");
   });
 
+  it("round-trips a legacy bare repoId through unlink and relink (undo path)", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Legacy bare repoId" });
+    const id = create.body.task.id;
+    // Row written before repo ids were canonicalized: durable id is a bare name.
+    ctx.taskStore.linkPR(id, { repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
+
+    const unlinked = await request(app)
+      .delete(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
+    expect(unlinked.status).toBe(200);
+    expect(unlinked.body.task.pullRequests).toEqual([]);
+
+    // Exactly what the PullRequestList undo toast re-sends.
+    const relinked = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
+    expect(relinked.status).toBe(200);
+    expect(relinked.body.task.pullRequests).toEqual([
+      expect.objectContaining({ repoId: "space43", repoName: "space43", prId: 200, provider: "github" }),
+    ]);
+  });
+
   it("POST /api/tasks/:id/link preserves a durable ADO repository id", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "ADO PR Link" });
     const id = create.body.task.id;
