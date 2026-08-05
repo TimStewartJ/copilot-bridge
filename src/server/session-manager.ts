@@ -3015,6 +3015,30 @@ export class SessionManager {
     return models;
   }
 
+  /** Live account quota counter from the agent backend, when the SDK exposes it. */
+  async getAccountQuota(): Promise<unknown> {
+    const client = await this.getBackendAfterRotation();
+    if (typeof client.getAccountQuota !== "function") {
+      throw new Error("Account quota lookup is not supported by the active agent backend");
+    }
+    const t0 = Date.now();
+    const quota = await client.getAccountQuota();
+    this.recordSpan("session.getAccountQuota", Date.now() - t0);
+    return quota;
+  }
+
+  /** Current backend auth state, used to enrich the quota counter. */
+  async getAccountAuth(): Promise<unknown> {
+    const client = await this.getBackendAfterRotation();
+    if (typeof client.getAccountAuth !== "function") {
+      throw new Error("Account auth lookup is not supported by the active agent backend");
+    }
+    const t0 = Date.now();
+    const auth = await client.getAccountAuth();
+    this.recordSpan("session.getAccountAuth", Date.now() - t0);
+    return auth;
+  }
+
   /**
    * ISO timestamp of when the current agent backend (SDK/CLI client) object was
    * created — either at startup or the last successful model-refresh rotation.

@@ -65,6 +65,12 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
 
   return {
     generatedAt: summary.generatedAt,
+    range: {
+      key: summary.range.key,
+      label: summary.range.label,
+      startAt: summary.range.startAt,
+      startDate: summary.range.startDate,
+    },
     index: {
       state: index.state,
       startedAt: index.startedAt,

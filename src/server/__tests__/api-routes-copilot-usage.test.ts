@@ -241,6 +241,7 @@ describe("Copilot usage routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       generatedAt: expect.any(String),
+      range: { key: "all", label: "All time", startAt: null, startDate: null },
       index: {
         state: "idle",
         startedAt: expect.any(String),
@@ -800,5 +801,150 @@ describe("Copilot usage routes", () => {
     } finally {
       error.mockRestore();
     }
+  });
+});
+
+describe("Copilot usage range filtering", () => {
+  const NOW = new Date(2026, 4, 15, 12, 0, 0);
+
+  function localIso(year: number, monthIndex: number, day: number): string {
+    return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
+  }
+
+  function rangedShutdown(timestamp: string, cumulativeInputTokens: number) {
+    return {
+      type: "session.shutdown",
+      timestamp,
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: cumulativeInputTokens },
+          },
+        },
+      },
+    };
+  }
+
+  it("GET /api/copilot-usage?range= narrows totals to the requested window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      const copilotHome = createCopilotUsageTestHome();
+      writeCopilotUsageEvents(copilotHome, "ranged-session", [
+        rangedShutdown(localIso(2026, 1, 10), 300),
+        rangedShutdown(localIso(2026, 4, 12), 1_500),
+      ]);
+      ({ app } = createTestApp({ copilotHome }));
+
+      const all = await requestUsageUntil((body) => body.index.state === "idle");
+      expect(all.body.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
+      expect(all.body.totals.inputTokens).toBe(1_500);
+
+      const mtd = await requestUsageUntil(
+        (body) => body.index.state === "idle",
+        "/api/copilot-usage?range=mtd",
+      );
+      expect(mtd.body.range.key).toBe("mtd");
+      expect(mtd.body.range.startDate).toBe("2026-05-01");
+      expect(mtd.body.totals.inputTokens).toBe(1_200);
+      expect(mtd.body.coverage.sessionsIncluded).toBe(1);
+
+      const bogus = await requestUsageUntil(
+        (body) => body.index.state === "idle",
+        "/api/copilot-usage?range=not-a-range",
+      );
+      expect(bogus.body.range.key).toBe("all");
+      expect(bogus.body.totals.inputTokens).toBe(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Copilot quota route", () => {
+  const quotaPayload = {
+    quotaSnapshots: {
+      chat: {
+        isUnlimitedEntitlement: true,
+        entitlementRequests: 0,
+        usedRequests: 0,
+        remainingPercentage: 100,
+      },
+      premium_interactions: {
+        isUnlimitedEntitlement: false,
+        entitlementRequests: 10_000_000,
+        usedRequests: 80_000,
+        remainingPercentage: 99.2,
+        resetDate: "2026-08-04T16:16:52.847-07:00",
+        tokenBasedBilling: true,
+        overageAllowedWithExhaustedQuota: true,
+        overage: 0,
+      },
+    },
+  };
+  const authPayload = {
+    authInfo: {
+      type: "user",
+      login: "timstewart_microsoft",
+      copilotUser: {
+        copilot_plan: "enterprise",
+        access_type_sku: "copilot_enterprise_seat_quota",
+        organization_login_list: ["ms-copilot"],
+        quota_reset_date: "2026-09-01",
+        quota_reset_date_utc: "2026-09-01T00:00:00.000Z",
+        quota_snapshots: {
+          premium_interactions: { entitlement: 10_000_000, quota_remaining: 9_920_606.1 },
+        },
+      },
+    },
+  };
+
+  it("GET /api/copilot-usage/quota normalizes the live counter", async () => {
+    const getAccountQuota = vi.fn(async () => quotaPayload);
+    const getAccountAuth = vi.fn(async () => authPayload);
+    ({ app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), getAccountQuota, getAccountAuth } as never,
+    }));
+
+    const res = await request(app).get("/api/copilot-usage/quota");
+
+    expect(res.status).toBe(200);
+    expect(res.body.available).toBe(true);
+    expect(res.body.primary).toEqual({
+      bucket: "premium_interactions",
+      unit: "ai_credits",
+      tokenBasedBilling: true,
+      isUnlimitedEntitlement: false,
+      entitlement: 10_000_000,
+      used: 79_393.9,
+      usedIsPrecise: true,
+      remaining: 9_920_606.1,
+      remainingPercentage: 99.2,
+      overage: 0,
+      overagePermitted: true,
+      resetAt: "2026-09-01T00:00:00.000Z",
+    });
+    expect(res.body.identity.login).toBe("timstewart_microsoft");
+    expect(res.body.snapshots).toHaveLength(2);
+    expect(getAccountQuota).toHaveBeenCalledTimes(1);
+
+    // Cached: a second read inside the TTL does not hit the backend again.
+    await request(app).get("/api/copilot-usage/quota");
+    expect(getAccountQuota).toHaveBeenCalledTimes(1);
+
+    await request(app).get("/api/copilot-usage/quota?refresh=1");
+    expect(getAccountQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("GET /api/copilot-usage/quota degrades instead of failing when the RPC is missing", async () => {
+    ({ app } = createTestApp());
+
+    const res = await request(app).get("/api/copilot-usage/quota");
+
+    expect(res.status).toBe(200);
+    expect(res.body.available).toBe(false);
+    expect(res.body.primary).toBeNull();
+    expect(typeof res.body.error).toBe("string");
   });
 });

@@ -58,6 +58,7 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
   const totals = createUsageTotals(totalTokens);
   return {
     generatedAt,
+    range: { key: "all", label: "All time", startAt: null, startDate: null },
     index: {
       state: "idle",
       startedAt: generatedAt,
@@ -153,12 +154,27 @@ describe("refreshCopilotUsageQuery", () => {
       "copilot-usage",
       "task-1",
       true,
+      "all",
       "session-1",
       "session-2",
     ]);
     expect(vi.mocked(fetchCopilotUsage)).toHaveBeenCalledWith(expect.objectContaining({
       taskId: "task-1",
       includeSessions: undefined,
+    }));
+  });
+
+  it("keys separate cache entries per range window", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(fetchCopilotUsage).mockResolvedValue(createUsageSummary("2026-04-23T12:00:00.000Z", 200));
+
+    const ranged = getCopilotUsageQueryOptions({ includeSessions: false, range: "28d" });
+    await queryClient.fetchQuery(ranged);
+
+    expect(ranged.queryKey).toEqual(["copilot-usage", null, false, "28d"]);
+    expect(vi.mocked(fetchCopilotUsage)).toHaveBeenCalledWith(expect.objectContaining({
+      includeSessions: false,
+      range: "28d",
     }));
   });
 

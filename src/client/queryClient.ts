@@ -54,13 +54,20 @@ export const queryKeys = {
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,
   dashboard: ["dashboard"] as const,
-  copilotUsage: (scope?: { taskId?: string; includeSessions?: boolean; sessionIds?: readonly string[] }) =>
+  copilotUsage: (scope?: {
+    taskId?: string;
+    includeSessions?: boolean;
+    sessionIds?: readonly string[];
+    range?: string;
+  }) =>
     [
       "copilot-usage",
       scope?.taskId ?? null,
       scope?.includeSessions ?? true,
+      scope?.range ?? "all",
       ...(scope?.sessionIds ?? []),
     ] as const,
+  copilotQuota: ["copilot-usage", "quota"] as const,
   updates: (channel?: string) => ["updates", channel ?? "default"] as const,
   relatedDocs: (tagIds: string[]) => ["related-docs", ...tagIds] as const,
 };

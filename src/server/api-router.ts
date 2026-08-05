@@ -63,6 +63,8 @@ import {
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
+import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
+import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
 import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
@@ -956,6 +958,7 @@ function managementJobCancellationConflictBody(
 export interface ApiRouterOptions {
   shutdownCoordinator?: ServerShutdownCoordinator;
   sessionStorageReader?: SessionStorageReader;
+  copilotQuotaReader?: CopilotQuotaReader;
 }
 
 export function createApiRouter(
@@ -989,6 +992,10 @@ export function createApiRouter(
     ctx.copilotUsageReader = copilotUsageReader;
   }
   copilotUsageReader.startBackgroundRefresh?.();
+  const copilotQuotaReader = options.copilotQuotaReader ?? createCopilotQuotaReader({
+    getQuota: () => ctx.sessionManager.getAccountQuota(),
+    getAuth: () => ctx.sessionManager.getAccountAuth(),
+  });
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
@@ -1775,6 +1782,7 @@ export function createApiRouter(
   router.get("/copilot-usage", async (req, res) => {
     try {
       const refresh = req.query.refresh === "1";
+      const range = normalizeCopilotUsageRangeKey(req.query.range);
       const taskId = typeof req.query.taskId === "string" ? req.query.taskId.trim() : "";
       let sessionIds: readonly string[] | undefined;
       if (taskId) {
@@ -1790,8 +1798,8 @@ export function createApiRouter(
       const summary = await timeRequestOperation(
         res,
         "copilot-usage.readSummary",
-        () => copilotUsageReader.readSummary({ refresh, sessionIds }),
-        { refresh, taskId: taskId || undefined, sessionCount: sessionIds?.length },
+        () => copilotUsageReader.readSummary({ refresh, sessionIds, range }),
+        { refresh, taskId: taskId || undefined, sessionCount: sessionIds?.length, range },
       );
       const serialized = serializeCopilotUsageSummary(summary);
       res.json(serialized);
@@ -1799,6 +1807,30 @@ export function createApiRouter(
       console.error("[copilot-usage] Error:", err);
       res.status(500).json({
         error: err instanceof Error ? err.message : "Unable to read local Copilot usage history.",
+      });
+    }
+  });
+
+  // GET /copilot-usage/quota — live account counter from the backend SDK.
+  // Never fails the panel: an RPC error degrades to available:false.
+  router.get("/copilot-usage/quota", async (req, res) => {
+    const refresh = req.query.refresh === "1";
+    try {
+      const status = await timeRequestOperation(
+        res,
+        "copilot-usage.readQuota",
+        () => copilotQuotaReader.read({ refresh }),
+        { refresh },
+      );
+      res.json(status);
+    } catch (err) {
+      res.json({
+        available: false,
+        fetchedAt: new Date().toISOString(),
+        identity: null,
+        primary: null,
+        snapshots: [],
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   });

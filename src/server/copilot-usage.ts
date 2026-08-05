@@ -15,6 +15,13 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import {
+  copilotUsageDayKey,
+  DEFAULT_COPILOT_USAGE_RANGE,
+  resolveCopilotUsageRange,
+  type CopilotUsageRange,
+  type CopilotUsageRangeKey,
+} from "../shared/copilot-usage-range.js";
 import { BRIDGE_SESSION_MODEL_STATE_FILE } from "./session-model-state-sidecar.js";
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
@@ -82,6 +89,16 @@ export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsage
   unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
+/**
+ * Per local-calendar-day, per-model usage slice kept in the session cache so
+ * bounded time windows can be aggregated without rescanning session events.
+ */
+export interface CopilotUsageDailyModelRow extends CopilotUsageTotals {
+  date: string;
+  model: string;
+  contextTier?: CopilotContextTier;
+}
+
 export interface CopilotUsageCoverage {
   sessionsSeen: number;
   sessionsWithEvents: number;
@@ -113,6 +130,7 @@ export interface CopilotUsageIndexStatus {
 
 export interface CopilotUsageSummary {
   generatedAt: string;
+  range: CopilotUsageRange;
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
@@ -126,10 +144,15 @@ export interface ReadCopilotUsageSummaryOptions {
   now?: () => number;
   concurrency?: number;
   sdkModels?: readonly CopilotModelMetadataForPricing[];
+  range?: CopilotUsageRangeKey;
 }
 
 export interface CopilotUsageReader {
-  readSummary(options?: { refresh?: boolean; sessionIds?: readonly string[] }): Promise<CopilotUsageSummary>;
+  readSummary(options?: {
+    refresh?: boolean;
+    sessionIds?: readonly string[];
+    range?: CopilotUsageRangeKey;
+  }): Promise<CopilotUsageSummary>;
   invalidate(): void;
   startBackgroundRefresh?(): void;
   shutdown(): Promise<void>;
@@ -142,6 +165,7 @@ export interface CopilotUsageSessionScanResult {
   includedUsageAts: string[];
   skippedAt: string | null;
   modelRows: CopilotUsageModelRow[];
+  dailyRows?: CopilotUsageDailyModelRow[];
   totals: CopilotUsageTotals;
   sessionRow?: CopilotUsageSessionRow;
 }
@@ -156,7 +180,7 @@ interface AssistantUsageAccumulator {
 const DEFAULT_SCAN_CONCURRENCY = 8;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
-export const COPILOT_USAGE_PARSER_VERSION = 2;
+export const COPILOT_USAGE_PARSER_VERSION = 3;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -170,6 +194,7 @@ export async function readCopilotUsageSummary({
   now = Date.now,
   concurrency = DEFAULT_SCAN_CONCURRENCY,
   sdkModels,
+  range = DEFAULT_COPILOT_USAGE_RANGE,
 }: ReadCopilotUsageSummaryOptions): Promise<CopilotUsageSummary> {
   const sessionStateDir = join(copilotHome, "session-state");
 
@@ -181,7 +206,7 @@ export async function readCopilotUsageSummary({
       .map((entry) => entry.name);
   } catch (error) {
     if (getErrorCode(error) === "ENOENT") {
-      return createEmptySummary(now);
+      return createEmptySummary(now, resolveCopilotUsageRange(range, now()));
     }
     throw new CopilotUsageReadError();
   }
@@ -197,6 +222,7 @@ export async function readCopilotUsageSummary({
       sessionsSeen: sessionDirs.length,
       now,
       sdkModels,
+      range,
     });
   } catch (error) {
     if (error instanceof CopilotUsageReadError) {
@@ -213,6 +239,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
   sdkModels,
   sessionIds,
   index,
+  range = DEFAULT_COPILOT_USAGE_RANGE,
 }: {
   sessionResults: Iterable<CopilotUsageSessionScanResult>;
   sessionsSeen?: number;
@@ -220,14 +247,30 @@ export function buildCopilotUsageSummaryFromSessionResults({
   sdkModels?: readonly CopilotModelMetadataForPricing[];
   sessionIds?: readonly string[];
   index?: CopilotUsageIndexStatus;
+  range?: CopilotUsageRangeKey;
 }): CopilotUsageSummary {
-  const summary = createEmptySummary(now);
+  const resolvedRange = resolveCopilotUsageRange(range, now());
+  const summary = createEmptySummary(now, resolvedRange);
   const requestedSessionIds = sessionIds ? new Set(sessionIds) : null;
   const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const startDate = resolvedRange.startDate;
+  const startAtMs = resolvedRange.startAt ? Date.parse(resolvedRange.startAt) : null;
   let resultCount = 0;
 
   for (const result of sessionResults) {
     resultCount += 1;
+
+    if (startDate !== null) {
+      accumulateRangedSessionResult(result, {
+        summary,
+        modelTotals,
+        requestedSessionIds,
+        startDate,
+        startAtMs,
+      });
+      continue;
+    }
+
     if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
 
     if (result.included) {
@@ -260,13 +303,10 @@ export function buildCopilotUsageSummaryFromSessionResults({
     updateCoverageWindow(summary.coverage, "skipped", result.skippedAt);
   }
 
-  summary.coverage.sessionsSeen = sessionsSeen ?? resultCount;
-  summary.models = [...modelTotals.values()].sort((left, right) => (
-    right.totalTokens - left.totalTokens
-    || right.requests - left.requests
-    || right.sessions - left.sessions
-    || left.model.localeCompare(right.model)
-  ));
+  summary.coverage.sessionsSeen = startDate === null
+    ? sessionsSeen ?? resultCount
+    : summary.coverage.sessionsIncluded + summary.coverage.sessionsSkipped;
+  summary.models = sortUsageModelRows([...modelTotals.values()]);
   summary.sessions.sort((left, right) => (
     compareNullableTimestampsDesc(left.shutdownAt, right.shutdownAt)
     || right.totalTokens - left.totalTokens
@@ -275,6 +315,111 @@ export function buildCopilotUsageSummaryFromSessionResults({
   applyCopilotUsageCostEstimates(summary, sdkModels);
   if (index) summary.index = index;
   return summary;
+}
+
+/**
+ * Bounded-window aggregation. Session results carry per-day model slices, so a
+ * long-lived session only contributes the usage it actually recorded inside the
+ * window instead of landing entirely on its last shutdown timestamp.
+ */
+function accumulateRangedSessionResult(
+  result: CopilotUsageSessionScanResult,
+  context: {
+    summary: CopilotUsageSummary;
+    modelTotals: Map<string, CopilotUsageModelRow>;
+    requestedSessionIds: Set<string> | null;
+    startDate: string;
+    startAtMs: number | null;
+  },
+): void {
+  const { summary, modelTotals, requestedSessionIds, startDate, startAtMs } = context;
+
+  if (!result.included) {
+    if (!isAtOrAfter(result.skippedAt, startAtMs)) return;
+    if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
+    summary.coverage.sessionsSkipped += 1;
+    if (result.reason) {
+      summary.coverage.skippedByReason[result.reason] += 1;
+    }
+    updateCoverageWindow(summary.coverage, "skipped", result.skippedAt);
+    return;
+  }
+
+  // Zero-usage rows can survive in caches written before empty deltas were
+  // dropped; counting them would report sessions that did no work in-window.
+  const dailyRows = (result.dailyRows ?? []).filter(
+    (row) => row.date >= startDate && hasUsageTotals(row),
+  );
+  if (dailyRows.length === 0) return;
+
+  summary.coverage.sessionsIncluded += 1;
+  if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
+
+  const inRangeUsageAts = result.includedUsageAts.filter((usageAt) => isAtOrAfter(usageAt, startAtMs));
+  for (const usageAt of inRangeUsageAts) {
+    updateCoverageWindow(summary.coverage, "included", usageAt);
+  }
+
+  const sessionTotals = createZeroTotals();
+  const sessionModelRows = new Map<string, CopilotUsageModelRow>();
+  for (const row of dailyRows) {
+    const key = usageModelKey(row.model, row.contextTier);
+    addTotals(sessionTotals, row);
+
+    const sessionRow = sessionModelRows.get(key) ?? createZeroModelRow(row.model, 1, row.contextTier);
+    addTotals(sessionRow, row);
+    sessionModelRows.set(key, sessionRow);
+
+    const summaryRow = modelTotals.get(key) ?? createZeroModelRow(row.model, 0, row.contextTier);
+    addTotals(summaryRow, row);
+    modelTotals.set(key, summaryRow);
+  }
+
+  for (const key of sessionModelRows.keys()) {
+    const summaryRow = modelTotals.get(key);
+    if (summaryRow) summaryRow.sessions += 1;
+  }
+
+  addTotals(summary.totals, sessionTotals);
+
+  const sessionId = result.sessionRow?.sessionId;
+  if (sessionId && (!requestedSessionIds || requestedSessionIds.has(sessionId))) {
+    summary.sessions.push({
+      sessionId,
+      shutdownAt: maxTimestampFromList(inRangeUsageAts),
+      models: sortUsageModelRows([...sessionModelRows.values()]),
+      unpricedModels: [],
+      ...sessionTotals,
+      ...createZeroCostEstimate(),
+    });
+  }
+}
+
+function sortUsageModelRows(rows: CopilotUsageModelRow[]): CopilotUsageModelRow[] {
+  return rows.sort((left, right) => (
+    right.totalTokens - left.totalTokens
+    || right.requests - left.requests
+    || right.sessions - left.sessions
+    || left.model.localeCompare(right.model)
+  ));
+}
+
+function isAtOrAfter(value: string | null, startAtMs: number | null): boolean {
+  if (startAtMs === null) return true;
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed >= startAtMs;
+}
+
+/** True when a totals row carries any recorded work. */
+function hasUsageTotals(totals: CopilotUsageTotals): boolean {
+  return totals.requests > 0
+    || totals.totalTokens > 0
+    || totals.inputTokens > 0
+    || totals.outputTokens > 0
+    || totals.cacheReadTokens > 0
+    || totals.cacheWriteTokens > 0
+    || totals.reasoningTokens > 0;
 }
 
 export async function scanCopilotUsageSession(
@@ -410,11 +555,25 @@ export async function scanCopilotUsageSession(
 
   const modelTotals = new Map<string, CopilotUsageModelRow>();
   const previousCumulativeTotals = new Map<string, CopilotUsageTotals>();
+  const dailyTotals = new Map<string, CopilotUsageDailyModelRow>();
+  const undatedDeltas: Array<{
+    model: string;
+    contextTier: CopilotContextTier | undefined;
+    delta: CopilotUsageTotals;
+  }> = [];
   const includedShutdownAts: string[] = [];
+  let lastDayKey: string | null = null;
+  let firstDayKey: string | null = null;
   for (const usableShutdown of usableShutdowns) {
     if (usableShutdown.shutdownAt) {
       includedShutdownAts.push(usableShutdown.shutdownAt);
     }
+    const dayKey = usableShutdown.shutdownAt ? copilotUsageDayKey(usableShutdown.shutdownAt) : null;
+    if (dayKey) {
+      lastDayKey = dayKey;
+      firstDayKey ??= dayKey;
+    }
+    const bucketDay = dayKey ?? lastDayKey;
     for (const [modelName, metrics] of Object.entries(usableShutdown.modelMetrics)) {
       const model = modelName.trim() || "unknown";
       const contextTier = model === persistedState.model ? persistedState.contextTier : undefined;
@@ -424,20 +583,41 @@ export async function scanCopilotUsageSession(
         existing.sessions = 1;
       }
       const cumulative = extractTotals(metrics);
-      addTotals(existing, diffCumulativeTotals(previousCumulativeTotals.get(key), cumulative));
+      const delta = diffCumulativeTotals(previousCumulativeTotals.get(key), cumulative);
+      addTotals(existing, delta);
       previousCumulativeTotals.set(key, cumulative);
       modelTotals.set(key, existing);
+      // Every shutdown snapshot repeats cumulative totals for every model the
+      // session ever used, so idle models yield zero deltas. Bucketing those
+      // would date a model's usage to a day it did no work.
+      if (!hasUsageTotals(delta)) continue;
+      if (bucketDay) {
+        addDailyUsage(dailyTotals, bucketDay, model, contextTier, delta);
+      } else {
+        undatedDeltas.push({ model, contextTier, delta });
+      }
+    }
+  }
+
+  // Usage recorded before the first timestamped shutdown is attributed to this
+  // session's earliest known day. A session where no shutdown carries a
+  // timestamp keeps its all-time totals but cannot appear in bounded windows.
+  if (firstDayKey) {
+    for (const pending of undatedDeltas) {
+      addDailyUsage(dailyTotals, firstDayKey, pending.model, pending.contextTier, pending.delta);
     }
   }
 
   return createIncludedResult(sessionId, {
     modelRows: [...modelTotals.values()],
     includedUsageAts: includedShutdownAts,
+    dailyRows: [...dailyTotals.values()],
   });
 }
 
 function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccumulator>) {
   const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const dailyTotals = new Map<string, CopilotUsageDailyModelRow>();
   const includedUsageAts: string[] = [];
 
   for (const usage of usageByRequest.values()) {
@@ -449,22 +629,59 @@ function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccum
     modelTotals.set(key, existing);
     if (usage.timestamp) {
       includedUsageAts.push(usage.timestamp);
+      const dayKey = copilotUsageDayKey(usage.timestamp);
+      if (dayKey) {
+        addDailyUsage(dailyTotals, dayKey, usage.model, usage.contextTier, {
+          ...createZeroTotals(),
+          requests: 1,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.outputTokens,
+        });
+      }
     }
   }
 
   return {
     modelRows: [...modelTotals.values()],
     includedUsageAts,
+    dailyRows: [...dailyTotals.values()],
   };
+}
+
+function addDailyUsage(
+  target: Map<string, CopilotUsageDailyModelRow>,
+  date: string,
+  model: string,
+  contextTier: CopilotContextTier | undefined,
+  delta: CopilotUsageTotals,
+): void {
+  const key = `${date}\u0000${usageModelKey(model, contextTier)}`;
+  const existing = target.get(key) ?? {
+    date,
+    model,
+    ...(contextTier ? { contextTier } : {}),
+    ...createZeroTotals(),
+  };
+  addTotals(existing, delta);
+  target.set(key, existing);
 }
 
 function createIncludedResult(
   sessionId: string,
-  usage: { modelRows: CopilotUsageModelRow[]; includedUsageAts: string[] },
+  usage: {
+    modelRows: CopilotUsageModelRow[];
+    includedUsageAts: string[];
+    dailyRows: CopilotUsageDailyModelRow[];
+  },
 ): CopilotUsageSessionScanResult {
   const modelRows = usage.modelRows.sort((left, right) => (
     right.totalTokens - left.totalTokens
     || right.requests - left.requests
+    || left.model.localeCompare(right.model)
+  ));
+  const dailyRows = usage.dailyRows.sort((left, right) => (
+    left.date.localeCompare(right.date)
+    || right.totalTokens - left.totalTokens
     || left.model.localeCompare(right.model)
   ));
   const totals = createZeroTotals();
@@ -478,6 +695,7 @@ function createIncludedResult(
     includedUsageAts: usage.includedUsageAts,
     skippedAt: null,
     modelRows,
+    dailyRows,
     totals,
     sessionRow: {
       sessionId,
@@ -632,9 +850,10 @@ function createUnpricedModelReportRow(row: CopilotUsageModelRow): CopilotUsageUn
   };
 }
 
-function createEmptySummary(now: () => number): CopilotUsageSummary {
+function createEmptySummary(now: () => number, range: CopilotUsageRange): CopilotUsageSummary {
   return {
     generatedAt: new Date(now()).toISOString(),
+    range,
     totals: createZeroSummaryTotals(),
     coverage: {
       sessionsSeen: 0,
@@ -737,6 +956,7 @@ function createSkippedResult(
     includedUsageAts: [],
     skippedAt: shutdownAt,
     modelRows: [],
+    dailyRows: [],
     totals: createZeroTotals(),
   };
 }
@@ -763,8 +983,7 @@ function extractTotals(value: unknown): CopilotUsageTotals {
   return totals;
 }
 
-function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {
-  target.requests += delta.requests;
+function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {  target.requests += delta.requests;
   target.inputTokens += delta.inputTokens;
   target.outputTokens += delta.outputTokens;
   target.cacheReadTokens += delta.cacheReadTokens;

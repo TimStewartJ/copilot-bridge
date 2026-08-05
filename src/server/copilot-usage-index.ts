@@ -17,6 +17,7 @@ import type {
   CopilotUsageSessionFingerprint,
   CopilotUsageStore,
 } from "./copilot-usage-store.js";
+import type { CopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
 
 export interface IncrementalCopilotUsageReaderOptions {
   copilotHome: string;
@@ -87,7 +88,11 @@ export function createIncrementalCopilotUsageReader({
     error: null,
   };
 
-  function readSummary(options?: { refresh?: boolean; sessionIds?: readonly string[] }) {
+  function readSummary(options?: {
+    refresh?: boolean;
+    sessionIds?: readonly string[];
+    range?: CopilotUsageRangeKey;
+  }) {
     const currentTime = now();
     requestModelPriceRefresh(options?.refresh === true);
     const uncachedRequestedSessionIds = options?.sessionIds?.filter((sessionId) => {
@@ -115,6 +120,7 @@ export function createIncrementalCopilotUsageReader({
       now,
       sdkModels: modelSnapshot?.models ?? staticSdkModels,
       sessionIds: options?.sessionIds,
+      range: options?.range,
       index: {
         ...status,
         state: indexState,

@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BarChart3, Loader2, RotateCw } from "lucide-react";
+import { AlertTriangle, BarChart3, Gauge, Loader2, RotateCw } from "lucide-react";
 import type {
+  CopilotQuotaStatus,
   CopilotUsageCoverage,
   CopilotUsageModelRow,
   CopilotUsageSkipReason,
   CopilotUsageTotals,
   CopilotUsageUnpricedModelRow,
 } from "../../api";
+import {
+  COPILOT_USAGE_RANGE_DESCRIPTIONS,
+  COPILOT_USAGE_RANGE_KEYS,
+  COPILOT_USAGE_RANGE_LABELS,
+  DEFAULT_COPILOT_USAGE_RANGE,
+  type CopilotUsageRangeKey,
+} from "../../../shared/copilot-usage-range";
+import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import EmptyState from "../shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
@@ -58,7 +67,9 @@ const PRICING_STATUS_LABELS: Record<CopilotUsageModelRow["pricingStatus"], strin
 };
 
 export function CopilotUsageSection() {
-  const { data, error, isLoading, refresh } = useCopilotUsageQuery({ includeSessions: false });
+  const [range, setRange] = useState<CopilotUsageRangeKey>(DEFAULT_COPILOT_USAGE_RANGE);
+  const { data, error, isLoading, refresh } = useCopilotUsageQuery({ includeSessions: false, range });
+  const quota = useCopilotQuotaQuery();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -72,17 +83,18 @@ export function CopilotUsageSection() {
     setRefreshError(null);
     setRefreshing(true);
     try {
-      await refresh();
+      await Promise.all([refresh(), quota.refresh().catch(() => undefined)]);
     } catch (refreshErr) {
       setRefreshError(formatError(refreshErr));
     } finally {
       setRefreshing(false);
     }
-  }, [refresh]);
+  }, [refresh, quota.refresh]);
 
   const indexing = data?.index.state === "scanning";
   const busy = refreshing || indexing || (isLoading && !data);
   const isEmpty = Boolean(data && data.models.length === 0 && data.coverage.sessionsIncluded === 0);
+  const isRanged = Boolean(data?.range.startAt);
   const reasonSummary = useMemo(
     () => (data ? formatSkipReasonSummary(data.coverage) : "Skipped session details will appear after the first successful scan."),
     [data],
@@ -104,6 +116,43 @@ export function CopilotUsageSection() {
       )}
     >
       <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div
+            role="group"
+            aria-label="Usage time range"
+            className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-bg-elevated p-1"
+          >
+            {COPILOT_USAGE_RANGE_KEYS.map((key) => {
+              const selected = key === range;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setRange(key)}
+                  aria-pressed={selected}
+                  title={COPILOT_USAGE_RANGE_DESCRIPTIONS[key]}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    selected
+                      ? "bg-accent text-white"
+                      : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                  }`}
+                >
+                  {COPILOT_USAGE_RANGE_LABELS[key]}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-[11px] text-text-faint">
+            {data ? formatRangeWindow(data.range.startAt) : COPILOT_USAGE_RANGE_DESCRIPTIONS[range]}
+          </div>
+        </div>
+
+        <QuotaCard
+          status={quota.data ?? null}
+          isLoading={quota.isLoading && !quota.data}
+          error={quota.error}
+        />
+
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
           Local estimate only. Costs use GitHub's public Copilot model pricing, assume reasoning tokens are priced at the output rate, and convert AI credits at $0.01 per credit. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded. This is not official GitHub billing.
         </div>
@@ -202,6 +251,7 @@ export function CopilotUsageSection() {
                   </div>
                   <p className="mt-1 text-xs text-text-muted">
                     Included sessions come from shutdown summaries still present on disk. Resumed sessions keep their earlier persisted shutdown usage, but active work after the latest shutdown is still excluded.
+                    {isRanged && " Counts are limited to sessions with recorded usage inside the selected window."}
                   </p>
                 </div>
                 <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] font-medium text-text-secondary">
@@ -240,8 +290,10 @@ export function CopilotUsageSection() {
               {isEmpty ? (
                 <div className="p-4">
                   <EmptyState
-                    message="No persisted local usage yet"
-                    sub="This view only includes completed sessions with shutdown summaries and model metrics still available on disk."
+                    message={isRanged ? "No local usage in this window" : "No persisted local usage yet"}
+                    sub={isRanged
+                      ? "Pick a wider range, or wait for sessions in this window to write a shutdown summary."
+                      : "This view only includes completed sessions with shutdown summaries and model metrics still available on disk."}
                   />
                 </div>
               ) : (
@@ -291,6 +343,113 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
       <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
       <div className="mt-1 text-sm font-medium text-text-primary">{value}</div>
       {sub && <div className="mt-1 text-[11px] text-text-faint">{sub}</div>}
+    </div>
+  );
+}
+
+/**
+ * Live counter straight from the backend's `account.getQuota`. Unlike the local
+ * estimate below it is real billing state, but it covers only the identity the
+ * bridge authenticates as and resets on the quota period, not the picked range.
+ */
+function QuotaCard({
+  status,
+  isLoading,
+  error,
+}: {
+  status: CopilotQuotaStatus | null;
+  isLoading: boolean;
+  error: unknown;
+}) {
+  if (isLoading) {
+    return (
+      <LoadingSkeletonRegion
+        isLoading
+        label="Reading live Copilot quota"
+        className="rounded-md border border-border bg-bg-elevated p-4"
+      >
+        <Skeleton height={12} width="32%" shape="pill" />
+        <Skeleton height={18} width="52%" shape="pill" className="mt-2" />
+      </LoadingSkeletonRegion>
+    );
+  }
+
+  const snapshot = status?.primary ?? null;
+  if (!status?.available || !snapshot) {
+    return (
+      <div className="rounded-md border border-border bg-bg-elevated px-4 py-3 text-xs text-text-muted">
+        <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+          <Gauge size={15} />
+          Live account quota
+        </div>
+        <p className="mt-1">
+          {status?.error ?? (error ? formatError(error) : "Live quota is unavailable right now. Local estimates below still apply.")}
+        </p>
+      </div>
+    );
+  }
+
+  const unitLabel = snapshot.unit === "ai_credits" ? "AI credits" : "premium requests";
+  const usedPercent = snapshot.remainingPercentage !== null
+    ? Math.min(100, Math.max(0, 100 - snapshot.remainingPercentage))
+    : null;
+  const identity = status.identity;
+  const identityLabel = [identity?.login, identity?.plan]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+
+  return (
+    <div className="rounded-md border border-accent/30 bg-accent/5 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-accent">
+            <Gauge size={15} />
+            Live account quota
+          </div>
+          <p className="mt-1 text-xs text-text-muted">
+            Billed {unitLabel} for {identityLabel || "the identity this bridge signs in as"}, read from the Copilot backend. Covers every client on that account, not just the bridge, and resets on the quota period rather than the range picked above.
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] font-medium text-text-secondary">
+          {snapshot.usedIsPrecise ? "Exact counter" : "Rounded counter"}
+        </span>
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <SummaryCard
+          label={`Used ${unitLabel}`}
+          value={formatQuotaAmount(snapshot.used)}
+          sub={snapshot.unit === "ai_credits" && snapshot.used !== null
+            ? `${formatCurrencyUsd(snapshot.used * 0.01)} at $0.01 per credit`
+            : undefined}
+        />
+        <SummaryCard
+          label="Entitlement"
+          value={snapshot.isUnlimitedEntitlement ? "Unlimited" : formatQuotaAmount(snapshot.entitlement)}
+          sub={snapshot.overage ? `${formatQuotaAmount(snapshot.overage)} overage` : undefined}
+        />
+        <SummaryCard
+          label="Remaining"
+          value={formatQuotaAmount(snapshot.remaining)}
+          sub={snapshot.remainingPercentage !== null ? `${formatPercent(snapshot.remainingPercentage)} left` : undefined}
+        />
+        <SummaryCard
+          label="Resets"
+          value={snapshot.resetAt ? formatDate(snapshot.resetAt) ?? snapshot.resetAt : "Unknown"}
+          sub={`Bucket ${snapshot.bucket}`}
+        />
+      </div>
+
+      {usedPercent !== null && (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-primary">
+          <div className="h-full rounded-full bg-accent" style={{ width: `${usedPercent}%` }} />
+        </div>
+      )}
+
+      <div className="text-[11px] text-text-faint">
+        Updated {formatDateTime(status.fetchedAt)}
+        {snapshot.overagePermitted === true && " · overage permitted"}
+      </div>
     </div>
   );
 }
@@ -429,8 +588,22 @@ function formatAiCredits(value: number): string {
   return AI_CREDIT_FORMATTER.format(value);
 }
 
-function formatCoverageWindow(coverage: CopilotUsageCoverage): string {
-  if (!coverage.earliestIncludedAt || !coverage.latestIncludedAt) {
+function formatQuotaAmount(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "Unknown";
+  return AI_CREDIT_FORMATTER.format(value);
+}
+
+function formatPercent(value: number): string {
+  return `${AI_CREDIT_FORMATTER.format(value)}%`;
+}
+
+function formatRangeWindow(startAt: string | null): string {
+  if (!startAt) return "All local history";
+  const start = formatDate(startAt);
+  return start ? `Since ${start}` : "All local history";
+}
+
+function formatCoverageWindow(coverage: CopilotUsageCoverage): string {  if (!coverage.earliestIncludedAt || !coverage.latestIncludedAt) {
     return "No completed sessions";
   }
 
