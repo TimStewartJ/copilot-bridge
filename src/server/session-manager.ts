@@ -4226,6 +4226,7 @@ export class SessionManager {
         deleteCliSessionStoreRows(copilotHome, sessionId);
       } catch (err) {
         console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
+        throw err;
       }
       this.invalidateSessionListCache("session:delete:removed");
       // Local state is fully removed at this point. Signal that explicitly so

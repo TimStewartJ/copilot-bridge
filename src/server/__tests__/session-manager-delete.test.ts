@@ -139,4 +139,32 @@ describe("SessionManager.deleteSession", () => {
     expect(existsSync(sessionDir)).toBe(false);
     expect(readCliSessionCounts(copilotHome, sessionId)).toEqual({ sessions: 0, turns: 0, searchIndex: 0 });
   });
+
+  it("surfaces CLI catalog cleanup failures instead of reporting deletion success", async () => {
+    const runtimePaths = makeTestRuntimePaths("delete-cli-error");
+    const copilotHome = requireCopilotHome(runtimePaths);
+    const sessionId = "catalog-delete-error";
+    const sessionDir = join(copilotHome, "session-state", sessionId);
+    createCliSession(copilotHome, sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
+    try {
+      cliDb.exec(`
+        CREATE TRIGGER block_session_delete
+        BEFORE DELETE ON sessions
+        BEGIN
+          SELECT RAISE(ABORT, 'catalog cleanup blocked');
+        END;
+      `);
+    } finally {
+      cliDb.close();
+    }
+    const manager = createManager(copilotHome);
+    manager.backend = { deleteSession: vi.fn().mockResolvedValue(undefined) };
+
+    await expect(manager.deleteSession(sessionId)).rejects.toThrow("catalog cleanup blocked");
+
+    expect(existsSync(sessionDir)).toBe(false);
+    expect(readCliSessionCounts(copilotHome, sessionId)).toEqual({ sessions: 1, turns: 1, searchIndex: 1 });
+  });
 });
