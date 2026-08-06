@@ -9,9 +9,6 @@ import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import {
-  type PendingInteractionHydration,
-} from "./event-bus.js";
-import {
   createServerShutdownCoordinator,
   type ServerShutdownCoordinator,
 } from "./shutdown-coordinator.js";
@@ -2850,29 +2847,22 @@ export function createApiRouter(
     unsub = subscription.unsubscribe;
 
     // `subscribeWithSnapshot` is the linearization barrier: it registers the
-    // listener before capturing state, so anything after it is buffered. Only
-    // let the runtime overwrite a kind it answered authoritatively — when the
-    // listing came from Bridge's own index the barrier's copy is the one whose
-    // request context buffered cancellations still refer to.
-    let hydration: PendingInteractionHydration | undefined;
+    // listener before capturing state, so anything after it is buffered. The
+    // barrier's copy of the pending prompts is the one buffered cancellations
+    // refer to, and it is drawn from the same listing index the manager reads —
+    // so it is authoritative and nothing may overwrite it here. Settling the
+    // manager first only ensures a draining terminal cleanup has finished
+    // before the client sees the snapshot.
     try {
-      hydration = await ctx.sessionManager.hydratePendingInteractions(sessionId);
+      await ctx.sessionManager.hydratePendingInteractions(sessionId);
     } catch (error) {
       console.warn(
-        `[sessions] Failed to hydrate pending interactions for ${sessionId}:`,
+        `[sessions] Failed to settle pending interactions for ${sessionId}:`,
         error instanceof Error ? error.message : error,
       );
     }
     if (connection.closed) return;
-    sendEvent({
-      ...subscription.snapshot,
-      ...(hydration?.runtimeSourced.userInput
-        ? { pendingUserInputs: hydration.pendingUserInputs }
-        : {}),
-      ...(hydration?.runtimeSourced.elicitation
-        ? { pendingElicitations: hydration.pendingElicitations }
-        : {}),
-    });
+    sendEvent(subscription.snapshot);
     hydrated = true;
     for (const event of bufferedEvents) {
       sendEvent(event);

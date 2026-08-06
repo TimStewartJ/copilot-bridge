@@ -11,10 +11,6 @@ const GITHUB_MCP_CONFIG_RETURN_PATTERN = new RegExp(
   String.raw`return (${ID})\((${ID}),(${ID}),(\{[^{}]*\}),(${ID})\)`,
   "g",
 );
-const GITHUB_MCP_CONFIG_CALL_PATTERN = new RegExp(
-  String.raw`if\((${ID})\.enableConfigDiscovery&&(${ID})&&!\1\.provider&&!\1\.gitHubToken\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\4\.mcpServers\}\)\}`,
-  "g",
-);
 const GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN = new RegExp(
   String.raw`if\(this\.shouldInjectBuiltInGitHubMcp\((${ID})\)&&(${ID})&&!\1\.provider\)\{let (${ID})=await this\.createBuiltInGitHubMcpConfig\(\2([^;]*?)\);\3&&\((${ID})\.mcpServers=\{"github-mcp-server":\3,\.\.\.\5\.mcpServers\}\)\}`,
   "g",
@@ -39,41 +35,6 @@ const ELICITATION_CALLBACK_PATTERN = new RegExp(
   "g",
 );
 const SUPPORTS_ELICITATION_PATTERN = /supportsElicitation\(\)\{/g;
-// Drift canary only. These getters are native-backed from 1.0.74 onward and are
-// served to the wire by the Rust runtime, so there is nothing here for Bridge to
-// widen — see `patchCopilotPendingInteractionRpcSource` for why the old
-// permissions-facade rewrite was dropped.
-const PENDING_INTERACTION_METHODS_PATTERN = new RegExp(
-  String.raw`getPendingUserInputRequests\(\)\{return ${ID}\(${ID}\.sessionPendingRequestsListJson\(this\.nativeSessionId,"userInput"\)\)\.items\}`
-    + String.raw`getPendingElicitationRequests\(\)\{return ${ID}\(${ID}\.sessionPendingRequestsListJson\(this\.nativeSessionId,"elicitation"\)\)\.items`,
-  "g",
-);
-
-/**
- * Asserts the runtime still owns pending interaction listing natively.
- *
- * Up to CLI 1.0.73 Bridge widened the JS `session.permissions.pendingRequests`
- * handler so a reconnecting browser could re-hydrate an in-flight `ask_user`
- * prompt. From 1.0.74 that JS object is only a client-side proxy — the wire
- * method is served natively — so the rewrite became dead code. Bridge now keeps
- * its own listing index off the runtime's `*.requested` / `*.completed` events
- * instead (see `SessionEventBus`).
- *
- * This is a contract-test canary, not a load-time gate: nothing in the patched
- * output reads these getters, so drift here should fail CI on upgrade rather
- * than refuse to launch.
- */
-export function patchCopilotPendingInteractionRpcSource(source) {
-  const pendingInteractionMethodMatches = source.match(PENDING_INTERACTION_METHODS_PATTERN)?.length ?? 0;
-  if (pendingInteractionMethodMatches !== 1) {
-    throw new Error(
-      "Unable to patch Copilot app for pending interaction snapshots: "
-        + `expected 1 runtime getter pair, found ${pendingInteractionMethodMatches}.`,
-    );
-  }
-
-  return source;
-}
 
 function findMatchingBrace(source, openBraceIndex) {
   let depth = 0;
@@ -138,14 +99,6 @@ export function patchCopilotAppSource(source) {
   }
   source = source.slice(0, methodStart) + methodSource + source.slice(methodEnd + 1);
 
-  let legacyCallMatches = 0;
-  source = source.replace(
-    GITHUB_MCP_CONFIG_CALL_PATTERN,
-    (match, optionsVar, sessionVar, configVar, mcpTargetVar) => {
-      legacyCallMatches++;
-      return `if((${optionsVar}.enableConfigDiscovery||${optionsVar}.githubMcpToolOptions)&&${sessionVar}&&!${optionsVar}.provider&&!${optionsVar}.gitHubToken){let ${configVar}=await this.createBuiltInGitHubMcpConfig(${sessionVar},${optionsVar}.githubMcpToolOptions);${configVar}&&(${mcpTargetVar}.mcpServers={"github-mcp-server":${configVar},...${mcpTargetVar}.mcpServers})}`;
-    },
-  );
   let helperCallMatches = 0;
   source = source.replace(
     GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN,
@@ -154,12 +107,10 @@ export function patchCopilotAppSource(source) {
       return `if((this.shouldInjectBuiltInGitHubMcp(${optionsVar})||(${optionsVar}.githubMcpToolOptions&&!${optionsVar}.gitHubToken))&&${sessionVar}&&!${optionsVar}.provider){let ${configVar}=await this.createBuiltInGitHubMcpConfig(${sessionVar}${callArgs},${optionsVar}.githubMcpToolOptions);${configVar}&&(${mcpTargetVar}.mcpServers={"github-mcp-server":${configVar},...${mcpTargetVar}.mcpServers})}`;
     },
   );
-  const hasLegacyCallSites = legacyCallMatches === 2 && helperCallMatches === 0;
-  const hasHelperCallSites = legacyCallMatches === 0 && helperCallMatches === 2;
-  if (!hasLegacyCallSites && !hasHelperCallSites) {
+  if (helperCallMatches !== 2) {
     throw new Error(
-      "Unable to patch Copilot app for Bridge GitHub MCP auth: expected exactly 2 legacy or 2 helper config call sites, "
-        + `found ${legacyCallMatches} legacy and ${helperCallMatches} helper.`,
+      "Unable to patch Copilot app for Bridge GitHub MCP auth: "
+        + `expected exactly 2 helper config call sites, found ${helperCallMatches}.`,
     );
   }
 
@@ -200,10 +151,6 @@ export function patchCopilotAppSource(source) {
     );
   }
 
-  // The native pending-getter canary is deliberately NOT enforced here: those
-  // getters are runtime-owned and nothing in the patched output depends on
-  // them, so a shape change must not take app-mode launch down. The
-  // installed-bundle contract test asserts it instead.
   return source;
 }
 

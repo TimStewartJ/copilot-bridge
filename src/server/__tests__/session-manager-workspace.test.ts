@@ -13,6 +13,7 @@ import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionWorkspaceStore } from "../session-workspace-store.js";
 import { openMemoryDatabase } from "../db.js";
 import { createTaskGroupStore } from "../task-group-store.js";
+import { makeAgentSessionStub } from "./helpers.js";
 import { createScheduleStore } from "../schedule-store.js";
 import { createSettingsStore } from "../settings-store.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
@@ -244,7 +245,8 @@ describe("SessionManager workspace resolution", () => {
     taskStore.updateTask(task.id, { cwd: taskWorkspace });
 
     manager.backend = {
-      createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
+      createSession: vi.fn(async () =>
+        makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
     await manager.createTaskSession(task.id, task.title, task.workItems, [], task.notes, task.cwd);
@@ -262,7 +264,8 @@ describe("SessionManager workspace resolution", () => {
     taskStore.updateTask(task.id, { cwd: taskWorkspaceV1 });
 
     manager.backend = {
-      createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
+      createSession: vi.fn(async () =>
+        makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
     await manager.createTaskSession(task.id, task.title, task.workItems, [], task.notes, task.cwd);
@@ -313,7 +316,7 @@ describe("SessionManager workspace resolution", () => {
 
   it("session_set_workspace stores an explicit workspace for future turns", async () => {
     const { ctx, manager, sessionWorkspaceStore } = createToolContext();
-    const cachedSession = { disconnect: vi.fn() };
+    const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
     manager.sessionObjects.set("session-1", cachedSession);
     const tool = getTool(ctx, "session_set_workspace");
 
@@ -342,7 +345,7 @@ describe("SessionManager workspace resolution", () => {
     taskStore.updateTask(task.id, { cwd: taskDefaultWorkspace });
     taskStore.linkSession(task.id, "session-1");
     sessionWorkspaceStore.setWorkspace("session-1", "/explicit/worktree");
-    const cachedSession = { disconnect: vi.fn() };
+    const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
     manager.sessionObjects.set("session-1", cachedSession);
     const tool = getTool(ctx, "session_set_workspace");
 
@@ -389,7 +392,7 @@ describe("SessionManager workspace resolution", () => {
     taskStore.updateTask(taskB.id, { cwd: "/task/b" });
     taskStore.linkSession(taskB.id, "session-1");
     sessionWorkspaceStore.setWorkspace("session-1", "/override/worktree");
-    const cachedSession = { disconnect: vi.fn() };
+    const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
     manager.sessionObjects.set("session-1", cachedSession);
     const tool = getTool(ctx, "session_set_workspace");
 
@@ -412,7 +415,7 @@ describe("SessionManager workspace resolution", () => {
       startedAt: Date.now(),
       lastEventAt: Date.now(),
     });
-    const cachedSession = { disconnect: vi.fn() };
+    const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
     manager.sessionObjects.set("session-1", cachedSession);
     const tool = getTool(ctx, "session_set_workspace");
 
@@ -527,10 +530,12 @@ describe("SessionManager forkSession", () => {
       visibleName = name;
     });
     const get = vi.fn(async () => ({ name: visibleName }));
-    const resumeSession = vi.fn(async () => ({
-      disconnect,
-      setName: set, getName: get,
-    }));
+    const resumeSession = vi.fn(async () =>
+      makeAgentSessionStub({
+        disconnect,
+        setName: set,
+        getName: get,
+      }));
     manager.backend = {
       resumeSession,
     };

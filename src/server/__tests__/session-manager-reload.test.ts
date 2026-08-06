@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 
@@ -36,8 +36,8 @@ describe("SessionManager reloadSession", () => {
 
   it("evicts only the requested cached session and resumes it with fresh config", async () => {
     const manager = createManager();
-    const oldSession = { disconnect: vi.fn() };
-    const otherSession = { disconnect: vi.fn() };
+    const oldSession = makeAgentSessionStub({ disconnect: vi.fn() });
+    const otherSession = makeAgentSessionStub({ disconnect: vi.fn() });
     const resumedSession = {
       setModel: vi.fn(),
       listMcpServers: vi.fn().mockImplementation(async () => {
@@ -95,7 +95,7 @@ describe("SessionManager reloadSession", () => {
       expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
       expect(manager.isSessionBusy("session-timeout")).toBe(false);
 
-      const lateSession = { disconnect: vi.fn() };
+      const lateSession = makeAgentSessionStub({ disconnect: vi.fn() });
       resolveResume(lateSession);
       await vi.advanceTimersByTimeAsync(0);
       expect(lateSession.disconnect).toHaveBeenCalledTimes(1);

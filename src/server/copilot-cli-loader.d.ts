@@ -1,5 +1,4 @@
 export function patchCopilotAppSource(source: string): string;
-export function patchCopilotPendingInteractionRpcSource(source: string): string;
 
 export function load(
   url: string,

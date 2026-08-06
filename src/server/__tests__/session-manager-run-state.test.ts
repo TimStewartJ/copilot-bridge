@@ -21,7 +21,7 @@ import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
-import { setupTestDb, createTestBus, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 describe("SessionManager run state", () => {
   function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths; telemetry?: boolean } = {}) {
@@ -65,7 +65,7 @@ describe("SessionManager run state", () => {
     const pendingUserInputs: any[] = [];
     const pendingElicitations: any[] = [];
     let releaseSend: (() => void) | undefined;
-    const session = {
+    const session = makeAgentSessionStub({
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((cb: (event: any) => void) => {
         handlers.push(cb);
@@ -83,8 +83,6 @@ describe("SessionManager run state", () => {
       listSlashCommands: vi.fn(),
       abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
-      getPendingUserInputRequests: vi.fn(async () => structuredClone(pendingUserInputs)),
-      getPendingElicitationRequests: vi.fn(async () => structuredClone(pendingElicitations)),
       respondToUserInput: vi.fn(async (requestId: string) => {
         const index = pendingUserInputs.findIndex((request) => request.requestId === requestId);
         if (index < 0) return false;
@@ -97,7 +95,7 @@ describe("SessionManager run state", () => {
         pendingElicitations.splice(index, 1);
         return true;
       }),
-    };
+    });
     const getHandler = () => {
       if (handlers.length === 0) return undefined;
       return (event: any) => {
@@ -117,7 +115,10 @@ describe("SessionManager run state", () => {
   }
 
   async function flushMicrotasks() {
-    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // Deep enough to drain the agent-registry reap the resume path now awaits:
+    // session doubles expose the full AgentSession facade, so `listTasks` runs
+    // for real instead of short-circuiting on a missing method.
+    for (let i = 0; i < 80; i++) await Promise.resolve();
   }
 
   function latestSpanMetadata(telemetryStore: TelemetryStore | undefined, name: string, sessionId: string): Record<string, unknown> {
@@ -920,14 +921,14 @@ describe("SessionManager run state", () => {
   it("continues default interactive sends when the SDK mode RPC is missing", async () => {
     const { manager } = createManager();
     const handlers: Array<(event: any) => void> = [];
-    const session = {
+    const session = makeAgentSessionStub({
       on: vi.fn((handler: (event: any) => void) => {
         handlers.push(handler);
         return vi.fn();
       }),
       send: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
-    };
+    });
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
@@ -1592,14 +1593,14 @@ describe("SessionManager run state", () => {
 
   it("startWorkAndWaitForDelivery rejects when send fails before acceptance", async () => {
     const { manager } = createManager();
-    const session = {
+    const session = makeAgentSessionStub({
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn(() => vi.fn()),
       send: vi.fn(async () => {
         throw new Error("send failed");
       }),
       disconnect: vi.fn(),
-    };
+    });
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
@@ -1693,7 +1694,7 @@ describe("SessionManager run state", () => {
       { id: "assistant-2", type: "assistant.message", timestamp: "2026-05-09T10:01:01.000Z", data: { content: "Answer two" } },
     ];
     const truncateHistory = vi.fn().mockResolvedValue({ eventsRemoved: 2 });
-    const session = {
+    const session = makeAgentSessionStub({
       sessionId: "session-1",
       on: vi.fn(() => vi.fn()),
       send: vi.fn(),
@@ -1702,7 +1703,7 @@ describe("SessionManager run state", () => {
       disconnect: vi.fn(),
       getEvents: vi.fn().mockResolvedValue(events),
       truncateHistory,
-    };
+    });
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
@@ -1916,6 +1917,54 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(manager.isSessionBusy("session-1")).toBe(false);
     expect(events).toEqual(["session:busy", "session:idle"]);
+  });
+
+  it("drops an unparseable request event without blocking a valid sibling", async () => {
+    // Listings come from the event-derived index, so per-event normalization at
+    // ingest is what keeps one malformed request from blanking the whole
+    // reconnect snapshot or stranding a valid prompt.
+    const sessionId = "session-unparseable-sibling";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend, pendingElicitations } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    // The runtime holds both requests regardless of whether Bridge could parse
+    // them; only the index decides what Bridge is willing to answer.
+    pendingElicitations.push({ requestId: "el-broken" }, { requestId: "el-valid" });
+    const requestedSchema = {
+      type: "object",
+      properties: { target: { type: "string", enum: ["staging", "production"] } },
+      required: ["target"],
+    };
+    // `message` must be a string; this entry cannot be normalized.
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp: new Date().toISOString(),
+      data: { requestId: "el-broken", message: 42, mode: "form", requestedSchema },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp: new Date().toISOString(),
+      data: { requestId: "el-valid", message: "Choose a target", mode: "form", requestedSchema },
+    });
+    await flushMicrotasks();
+
+    expect(
+      eventBusRegistry.getBus(sessionId)!.getPendingInteractionIndex()
+        .pendingElicitations.map((request) => request.requestId),
+    ).toEqual(["el-valid"]);
+
+    // The malformed sibling is unknown to the index and must 404 rather than be
+    // answered unvalidated; the valid one still resolves through the runtime.
+    await expect(manager.submitElicitationResponse(sessionId, "el-broken", { action: "cancel" }))
+      .rejects.toMatchObject({ code: "request_not_found", statusCode: 404 });
+    await expect(manager.submitElicitationResponse(sessionId, "el-valid", { action: "cancel" }))
+      .resolves.toMatchObject({ requestId: "el-valid", action: "cancel" });
   });
 
   it("keeps native elicitation waits busy beyond the no-progress warning window", async () => {
@@ -2718,11 +2767,14 @@ describe("SessionManager run state", () => {
     const initial = makeSession();
     let agentStatus = "running";
     let resolveTaskRefresh!: (value: any) => void;
-    let taskListCall = 0;
+    // Keyed off explicit phases rather than a call count: session doubles now
+    // expose the whole AgentSession facade, so the number of task refreshes the
+    // resume path performs is not something this test should pin.
+    let taskListPhase: "empty" | "hang" | "live" = "empty";
     (initial.session as any).listTasks = vi.fn(async () => {
-      taskListCall += 1;
-      if (taskListCall === 1) return { tasks: [] };
-      if (taskListCall === 2) {
+      if (taskListPhase === "empty") return { tasks: [] };
+      if (taskListPhase === "hang") {
+        taskListPhase = "live";
         return new Promise((resolve) => {
           resolveTaskRefresh = resolve;
         });
@@ -2757,6 +2809,7 @@ describe("SessionManager run state", () => {
       timestamp: new Date(baseTime + 2_000).toISOString(),
       data: { turnId: "1" },
     });
+    taskListPhase = "hang";
     initial.getHandler()?.({
       type: "session.background_tasks_changed",
       timestamp: new Date(baseTime + 3_000).toISOString(),
@@ -3135,13 +3188,13 @@ describe("SessionManager run state", () => {
       resolveResume = resolve;
     });
     const send = vi.fn().mockResolvedValue(undefined);
-    const session = {
+    const session = makeAgentSessionStub({
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn(() => vi.fn()),
       send,
       abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
-    };
+    });
     manager.backend = {
       resumeSession: vi.fn().mockReturnValue(resumePromise),
     };

@@ -111,10 +111,6 @@ export function createSessionNameRpc(deps: SessionNameRpcDeps) {
   const retryDelaysMs = deps.retryDelaysMs?.length ? deps.retryDelaysMs : DEFAULT_SESSION_NAME_RETRY_DELAYS_MS;
 
   const applyNameWithRetry = async (sessionId: string, session: AgentSession, title: string): Promise<void> => {
-    if (typeof session.setName !== "function" || typeof session.getName !== "function") {
-      throw new Error("Session name RPC is not available in this Copilot SDK build");
-    }
-
     let observedName: string | undefined;
     let lastError: unknown;
     for (const delayMs of retryDelaysMs) {
@@ -149,9 +145,6 @@ export function createSessionNameRpc(deps: SessionNameRpcDeps) {
     if (workspaceName) return workspaceName;
 
     return deps.withSessionNameRpc(sessionId, async (session) => {
-      if (typeof session.getName !== "function") {
-        return readWorkspaceName(sessionId);
-      }
       const result = await session.getName();
       return typeof result?.name === "string" && result.name.trim() ? result.name.trim() : undefined;
     });

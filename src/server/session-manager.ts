@@ -10,13 +10,10 @@ import { randomUUID } from "node:crypto";
 import {
   CopilotBackend,
   createAgentBackend,
-  isAgentPendingInteractionUnsupportedError,
   type AgentBackend,
   type AgentBackendFactory,
   type AgentBackgroundTask,
   type AgentModelInfo,
-  type AgentPendingElicitationRequest,
-  type AgentPendingUserInputRequest,
   type AgentSession,
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
@@ -33,8 +30,6 @@ import { createTaskGroupStore } from "./task-group-store.js";
 import { createScheduleStore } from "./schedule-store.js";
 import {
   getOrCreateBus,
-  type PendingInteractionHydration,
-  type PendingInteractionListing,
   type PendingInteractionSnapshot,
 } from "./event-bus.js";
 import {
@@ -617,8 +612,6 @@ export class SessionManager {
   }>();
   private readonly pendingInteractionReconcileGeneration = new Map<string, number>();
   private readonly pendingInteractionCleanups = new Map<string, Promise<void>>();
-  /** Sessions already warned about a runtime that cannot enumerate pending requests. */
-  private warnedPendingInteractionListingUnsupported = false;
   private cacheQueue: Promise<void> = Promise.resolve();
   private cleanupQueue: Promise<void> = Promise.resolve();
   private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
@@ -799,7 +792,7 @@ export class SessionManager {
       cacheResumedSession: (sessionId, session, sessionConfig) =>
         this.cacheResumedSession(sessionId, session, sessionConfig),
       waitForSessionToolInitialization: (sessionId, session) =>
-        this.supportsSessionToolInitialization(session)
+        this.supportsSessionToolInitialization()
           ? this.waitForSessionToolInitialization(sessionId, session)
           : true,
       abandonCachedSession: (sessionId, expectedSession) => this.abandonCachedSession(sessionId, expectedSession),
@@ -1458,12 +1451,11 @@ export class SessionManager {
   }
 
   private async reapSessionTasks(sessionId: string, session: AgentSession): Promise<void> {
-    if (typeof session.listTasks !== "function") return;
     const deadline = createDeadline(SESSION_TASK_CLEANUP_TIMEOUT_MS);
 
     while (remainingMs(deadline) > 0) {
       const result = await this.runTaskRpcBeforeDeadline(
-        () => Promise.resolve(session.listTasks!()),
+        () => Promise.resolve(session.listTasks()),
         deadline,
       );
       const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
@@ -1473,19 +1465,13 @@ export class SessionManager {
 
       for (const task of tasks) {
         if (this.isTerminalBackgroundTask(task)) {
-          if (typeof session.removeTask !== "function") {
-            throw new Error("Agent backend cannot remove completed background tasks");
-          }
           await this.runTaskRpcBeforeDeadline(
-            () => Promise.resolve(session.removeTask!(task.id)),
+            () => Promise.resolve(session.removeTask(task.id)),
             deadline,
           );
         } else {
-          if (typeof session.cancelTask !== "function") {
-            throw new Error("Agent backend cannot cancel active background tasks");
-          }
           await this.runTaskRpcBeforeDeadline(
-            () => Promise.resolve(session.cancelTask!(task.id)),
+            () => Promise.resolve(session.cancelTask(task.id)),
             deadline,
           );
         }
@@ -2297,10 +2283,15 @@ export class SessionManager {
   }
 
   /**
-   * Cancels runtime-owned pending requests with the same payloads the Copilot
-   * CLI sends when a user dismisses a prompt. Never rejects: every request is
-   * bounded by one shared deadline and failures are isolated per request so a
-   * single unresponsive request cannot strand the others.
+   * Cancels the requests captured for the run that just ended, with the same
+   * payloads the Copilot CLI sends when a user dismisses a prompt. Never
+   * rejects: every request is bounded by one shared deadline and failures are
+   * isolated per request so a single unresponsive request cannot strand the
+   * others.
+   *
+   * The synchronously captured listing index is the only source. It is
+   * run-scoped, so it can neither miss a prompt this run raised nor cancel one
+   * belonging to the next — which a late runtime snapshot could.
    */
   private async cancelRuntimePendingInteractions(
     sessionId: string,
@@ -2322,45 +2313,22 @@ export class SessionManager {
         `Pending interaction cancellation timed out after ${PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS}ms`,
       );
     };
-    const cancelKind = async (
-      list: () => Promise<{ requestId: string }[]>,
+    const cancelEach = (
+      requests: { requestId: string }[],
       cancel: (requestId: string) => Promise<boolean>,
-      fallback: { requestId: string }[],
-    ): Promise<void> => {
-      const requests = await bounded(list).catch((error) => {
-        // A runtime that cannot enumerate its pending requests is expected on
-        // Copilot CLI >= 1.0.74, not an error; either way the pre-captured
-        // listing index is the best remaining knowledge of what to cancel.
-        if (!isAgentPendingInteractionUnsupportedError(error)) warn(error);
-        return fallback;
-      });
-      await Promise.all(requests.map((request) =>
-        bounded(() => cancel(request.requestId)).catch(warn)
-      ));
-    };
+    ): Promise<unknown>[] =>
+      requests.map((request) => bounded(() => cancel(request.requestId)).catch(warn));
 
-    const cancellations: Promise<void>[] = [];
-    if (
-      typeof session.getPendingUserInputRequests === "function"
-      && typeof session.respondToUserInput === "function"
-    ) {
-      cancellations.push(cancelKind(
-        () => session.getPendingUserInputRequests!(),
-        (requestId) => session.respondToUserInput!(requestId, DISMISSED_USER_INPUT_RESPONSE),
+    await Promise.all([
+      ...cancelEach(
         indexed?.pendingUserInputs ?? [],
-      ));
-    }
-    if (
-      typeof session.getPendingElicitationRequests === "function"
-      && typeof session.tryRespondToElicitation === "function"
-    ) {
-      cancellations.push(cancelKind(
-        () => session.getPendingElicitationRequests!(),
-        (requestId) => session.tryRespondToElicitation!(requestId, CANCELED_ELICITATION_RESPONSE),
+        (requestId) => session.respondToUserInput(requestId, DISMISSED_USER_INPUT_RESPONSE),
+      ),
+      ...cancelEach(
         indexed?.pendingElicitations ?? [],
-      ));
-    }
-    await Promise.all(cancellations);
+        (requestId) => session.tryRespondToElicitation(requestId, CANCELED_ELICITATION_RESPONSE),
+      ),
+    ]);
   }
 
   private recordPendingInteractionEvent(
@@ -2395,209 +2363,79 @@ export class SessionManager {
     return bus.getPendingInteractionIndex();
   }
 
-  private notePendingInteractionListingUnsupported(error: unknown): void {
-    // Deliberately a single manager-wide flag: this reports the agent runtime
-    // build, not anything session-specific, so a per-session set would grow
-    // without bound on a runtime that never supports listing.
-    if (this.warnedPendingInteractionListingUnsupported) return;
-    this.warnedPendingInteractionListingUnsupported = true;
-    console.warn(
-      "[sdk] Runtime cannot enumerate pending interactions; "
-        + "using the bridge listing index for hydration:",
-      error instanceof Error ? error.message : error,
-    );
+  /**
+   * Pending `ask_user` / elicitation listings come exclusively from Bridge's
+   * own event-derived index.
+   *
+   * The Copilot runtime owns the requests but exposes no wire method that
+   * enumerates them: `session.permissions.pendingRequests` answers with
+   * permission prompts only (`PendingPermissionRequestList` carries a single
+   * `items` field). Bridge therefore indexes the runtime's own request ids off
+   * its `*.requested` / `*.completed` events, which `session-runner` normalizes
+   * per event at ingest. See the installed-SDK contract test in
+   * `copilot-cli-loader.test.ts`, which fails if a future SDK grows a real
+   * listing method and this decision needs revisiting.
+   */
+  private listPendingUserInputViews(sessionId: string): PendingUserInputRequestView[] {
+    return this.busPendingInteractionIndex(sessionId).pendingUserInputs;
+  }
+
+  private listPendingElicitationViews(sessionId: string): PendingElicitationRequestView[] {
+    return this.busPendingInteractionIndex(sessionId).pendingElicitations;
   }
 
   /**
-   * Normalizes each listed request independently so one malformed sibling
-   * cannot reject an otherwise valid response or blank a whole reconnect
-   * snapshot. A request Bridge cannot parse is one it cannot validate a
-   * response against, so dropping it degrades to "not found" rather than
-   * accepting an unchecked payload.
+   * Re-derives the pending counts from the listing index.
+   *
+   * Deliberately resumes on a later microtask: callers fire this from event
+   * handlers that have already emitted an optimistic status update, and that
+   * update must be observable before the reconciled counts land. The generation
+   * and session guards then drop a reconcile that a newer read has superseded.
    */
-  private normalizePendingViews<TRaw, TView>(
-    sessionId: string,
-    kind: string,
-    raw: TRaw[],
-    normalize: (pending: TRaw) => TView,
-  ): TView[] {
-    const views: TView[] = [];
-    for (const pending of raw) {
-      try {
-        views.push(normalize(pending));
-      } catch (error) {
-        console.warn(
-          `[sdk] [${sessionId.slice(0, 8)}] Ignoring unparseable pending ${kind} request:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    }
-    return views;
-  }
-
-  private async listPendingUserInputViews(
-    sessionId: string,
-    session: AgentSession,
-  ): Promise<PendingInteractionListing<PendingUserInputRequestView>> {
-    if (typeof session.getPendingUserInputRequests === "function") {
-      try {
-        const raw = await this.runPendingInteractionOperation(
-          "Pending user input lookup",
-          () => session.getPendingUserInputRequests!(),
-        );
-        return {
-          items: this.normalizePendingViews(
-            sessionId,
-            "user input",
-            raw,
-            (pending: AgentPendingUserInputRequest) =>
-              // The envelope id is authoritative; assign it last so a payload
-              // field can never shadow it.
-              normalizePendingUserInputRequest({
-                ...pending.request,
-                requestId: pending.requestId,
-              }),
-          ),
-          source: "runtime",
-        };
-      } catch (error) {
-        if (!isAgentPendingInteractionUnsupportedError(error)) throw error;
-        this.notePendingInteractionListingUnsupported(error);
-      }
-    }
-    return { items: this.busPendingInteractionIndex(sessionId).pendingUserInputs, source: "index" };
-  }
-
-  private async listPendingElicitationViews(
-    sessionId: string,
-    session: AgentSession,
-  ): Promise<PendingInteractionListing<PendingElicitationRequestView>> {
-    if (typeof session.getPendingElicitationRequests === "function") {
-      try {
-        const raw = await this.runPendingInteractionOperation(
-          "Pending elicitation lookup",
-          () => session.getPendingElicitationRequests!(),
-        );
-        return {
-          items: this.normalizePendingViews(
-            sessionId,
-            "elicitation",
-            raw,
-            (pending: AgentPendingElicitationRequest) =>
-              normalizePendingElicitationRequest({
-                elicitationSource: pending.elicitationSource,
-                ...pending.request,
-                requestId: pending.requestId,
-              }),
-          ),
-          source: "runtime",
-        };
-      } catch (error) {
-        if (!isAgentPendingInteractionUnsupportedError(error)) throw error;
-        this.notePendingInteractionListingUnsupported(error);
-      }
-    }
-    return {
-      items: this.busPendingInteractionIndex(sessionId).pendingElicitations,
-      source: "index",
-    };
-  }
-
-  private async readPendingInteractionListings(
-    sessionId: string,
-    session: AgentSession,
-  ): Promise<{
-    userInput: PendingInteractionListing<PendingUserInputRequestView>;
-    elicitation: PendingInteractionListing<PendingElicitationRequestView>;
-  }> {
-    const [userInput, elicitation] = await Promise.all([
-      this.listPendingUserInputViews(sessionId, session),
-      this.listPendingElicitationViews(sessionId, session),
-    ]);
-    return { userInput, elicitation };
-  }
-
-  private async readPendingInteractionSnapshot(
-    sessionId: string,
-    session: AgentSession,
-  ): Promise<PendingInteractionSnapshot> {
-    const listings = await this.readPendingInteractionListings(sessionId, session);
-    return {
-      pendingUserInputs: listings.userInput.items,
-      pendingElicitations: listings.elicitation.items,
-    };
-  }
-
   private async reconcilePendingInteractionCounts(
     sessionId: string,
     session: AgentSession,
   ): Promise<void> {
     const generation = this.nextPendingInteractionReconcileGeneration(sessionId);
-    try {
-      const snapshot = await this.readPendingInteractionSnapshot(sessionId, session);
-      if (this.sessionObjects.get(sessionId) !== session) return;
-      if (this.pendingInteractionReconcileGeneration.get(sessionId) !== generation) return;
+    // Resume on a later microtask so bursts of `*.requested` / `*.completed`
+    // events coalesce into a single count write, and so a reconcile started
+    // before a newer read can still be invalidated by the generation guard.
+    // This is scheduling policy, not a correctness requirement: the optimistic
+    // status update callers emit is already synchronous.
+    await Promise.resolve();
+    if (this.sessionObjects.get(sessionId) !== session) return;
+    if (this.pendingInteractionReconcileGeneration.get(sessionId) !== generation) return;
+    const snapshot = this.busPendingInteractionIndex(sessionId);
+    this.setPendingInteractionCounts(sessionId, {
+      userInput: snapshot.pendingUserInputs.length,
+      elicitation: snapshot.pendingElicitations.length,
+    });
+  }
+
+  /**
+   * Settles the pending interactions for a session and reports what is still in
+   * flight. Reconnect hydration awaits this so a terminal cleanup that is still
+   * draining cannot leave a resolved prompt on screen.
+   */
+  async hydratePendingInteractions(sessionId: string): Promise<PendingInteractionSnapshot> {
+    // Terminal cleanup is authoritative for the run that just ended, so let it
+    // settle before reporting what is still pending. A run that terminates
+    // *while* we wait installs a new cleanup, so drain until none is
+    // outstanding rather than awaiting only the first.
+    await this.settlePendingInteractionCleanups(sessionId);
+    if (!this.sessionObjects.has(sessionId)) {
+      return { pendingUserInputs: [], pendingElicitations: [] };
+    }
+    const snapshot = this.busPendingInteractionIndex(sessionId);
+    // A cleanup that outlived the drain owns the counts for the run it ended.
+    if (!this.pendingInteractionCleanups.has(sessionId)) {
+      this.nextPendingInteractionReconcileGeneration(sessionId);
       this.setPendingInteractionCounts(sessionId, {
         userInput: snapshot.pendingUserInputs.length,
         elicitation: snapshot.pendingElicitations.length,
       });
-    } catch (error) {
-      console.warn(
-        `[sdk] [${sessionId.slice(0, 8)}] Failed to reconcile pending interaction counts:`,
-        error instanceof Error ? error.message : error,
-      );
     }
-  }
-
-  async getPendingInteractionSnapshot(sessionId: string): Promise<PendingInteractionSnapshot> {
-    const { pendingUserInputs, pendingElicitations } = await this
-      .hydratePendingInteractions(sessionId);
-    return { pendingUserInputs, pendingElicitations };
-  }
-
-  /**
-   * Stream-hydration view of the pending interactions.
-   *
-   * `runtimeSourced` marks the kinds the agent runtime answered authoritatively.
-   * Kinds it could not enumerate are served from Bridge's listing index, and the
-   * caller must keep whatever the bus snapshot already established for those
-   * rather than overwriting its linearization point with a later read.
-   */
-  async hydratePendingInteractions(sessionId: string): Promise<PendingInteractionHydration> {
-    // Terminal cleanup is authoritative for the run that just ended, so let it
-    // settle before reporting what the runtime still considers pending. A run
-    // that terminates *while* we wait installs a new cleanup, so drain until
-    // none is outstanding rather than awaiting only the first.
-    await this.settlePendingInteractionCleanups(sessionId);
-    const session = this.sessionObjects.get(sessionId);
-    if (!session) {
-      return {
-        pendingUserInputs: [],
-        pendingElicitations: [],
-        runtimeSourced: { userInput: false, elicitation: false },
-      };
-    }
-    const generation = this.nextPendingInteractionReconcileGeneration(sessionId);
-    const listings = await this.readPendingInteractionListings(sessionId, session);
-    if (
-      this.sessionObjects.get(sessionId) === session
-      && this.pendingInteractionReconcileGeneration.get(sessionId) === generation
-      // A cleanup that appeared mid-read owns the counts for the run it ended.
-      && !this.pendingInteractionCleanups.has(sessionId)
-    ) {
-      this.setPendingInteractionCounts(sessionId, {
-        userInput: listings.userInput.items.length,
-        elicitation: listings.elicitation.items.length,
-      });
-    }
-    return {
-      pendingUserInputs: listings.userInput.items,
-      pendingElicitations: listings.elicitation.items,
-      runtimeSourced: {
-        userInput: listings.userInput.source === "runtime",
-        elicitation: listings.elicitation.source === "runtime",
-      },
-    };
+    return snapshot;
   }
 
   /**
@@ -2629,10 +2467,6 @@ export class SessionManager {
       );
     }
     if (outcome.status === "rejected") {
-      // "The runtime cannot enumerate pending requests" is a capability answer,
-      // not a backend failure — callers translate it into a listing-cache
-      // fallback, so it must reach them intact.
-      if (isAgentPendingInteractionUnsupportedError(outcome.error)) throw outcome.error;
       const detail = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
       throw new PendingInteractionError(
         "backend_unavailable",
@@ -2764,22 +2598,17 @@ export class SessionManager {
     return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
   }
 
-  private supportsSessionToolInitialization(
-    session: AgentSession,
-  ): session is AgentSession & { initializeTools: () => Promise<unknown> } {
+  private supportsSessionToolInitialization(): boolean {
     return this.shouldUseNativeBridgeTools()
-      && this.backend?.capabilities?.toolMetadataWarmup === true
-      && typeof session.initializeTools === "function";
+      && this.backend?.capabilities?.toolMetadataWarmup === true;
   }
 
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
-    if (!this.supportsSessionToolInitialization(session)) return;
+    if (!this.supportsSessionToolInitialization()) return;
     const expectedTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
     try {
       await session.initializeTools();
-      const metadata = typeof session.getCurrentToolMetadata === "function"
-        ? await session.getCurrentToolMetadata()
-        : undefined;
+      const metadata = await session.getCurrentToolMetadata();
       const tools = metadata?.tools ?? [];
       if (tools.length === 0) return;
       const toolNames = new Set(tools.map((tool) => tool.name));
@@ -3263,7 +3092,7 @@ export class SessionManager {
     if (cached) return { supported: true, commands: cached };
 
     const session = this.sessionObjects.get(sessionId);
-    if (!session || typeof session.listSlashCommands !== "function") {
+    if (!session) {
       return { supported: false, commands: [] };
     }
 
@@ -3277,7 +3106,7 @@ export class SessionManager {
   /** Get cached MCP status for a session, or probe live if session is cached */
   async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
     const session = this.sessionObjects.get(sessionId);
-    if (session && typeof session.listMcpServers === "function") {
+    if (session) {
       try {
         const initialized = await this.waitForSessionToolInitialization(sessionId, session);
         if (!initialized || this.sessionObjects.get(sessionId) !== session) {
@@ -3337,10 +3166,6 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
       },
     }, async (session) => {
-      if (typeof session.startMcpOauthLogin !== "function") {
-        throw new Error("MCP OAuth login is not available in this Copilot SDK build");
-      }
-
       const initialized = await this.waitForSessionToolInitialization(sessionId, session);
       if (!initialized) {
         throw new Error("Session tool initialization did not complete before MCP authentication");
@@ -3441,18 +3266,8 @@ export class SessionManager {
         { statusCode: 404 },
       );
     }
-    if (
-      typeof session.getPendingUserInputRequests !== "function"
-      || typeof session.respondToUserInput !== "function"
-    ) {
-      throw new PendingInteractionError(
-        "unsupported",
-        "Pending user input is not supported by this agent backend",
-        { statusCode: 501 },
-      );
-    }
-    const { items } = await this.listPendingUserInputViews(normalizedSessionId, session);
-    const view = items.find((request) => request.requestId === normalizedRequestId);
+    const view = this.listPendingUserInputViews(normalizedSessionId)
+      .find((request) => request.requestId === normalizedRequestId);
     if (!view) {
       throw new PendingInteractionError(
         "request_not_found",
@@ -3463,7 +3278,7 @@ export class SessionManager {
     const response = validateUserInputResponse(view, payload);
     const accepted = await this.runPendingInteractionOperation(
       "Pending user input response",
-      () => session.respondToUserInput!(normalizedRequestId, response),
+      () => session.respondToUserInput(normalizedRequestId, response),
     );
     if (!accepted) {
       throw new PendingInteractionError(
@@ -3501,18 +3316,8 @@ export class SessionManager {
         { statusCode: 404 },
       );
     }
-    if (
-      typeof session.getPendingElicitationRequests !== "function"
-      || typeof session.tryRespondToElicitation !== "function"
-    ) {
-      throw new PendingInteractionError(
-        "unsupported",
-        "Pending elicitation is not supported by this agent backend",
-        { statusCode: 501 },
-      );
-    }
-    const { items } = await this.listPendingElicitationViews(normalizedSessionId, session);
-    const view = items.find((request) => request.requestId === normalizedRequestId);
+    const view = this.listPendingElicitationViews(normalizedSessionId)
+      .find((request) => request.requestId === normalizedRequestId);
     if (!view) {
       throw new PendingInteractionError(
         "request_not_found",
@@ -3523,7 +3328,7 @@ export class SessionManager {
     const result = validateElicitationResponse(view, payload);
     const accepted = await this.runPendingInteractionOperation(
       "Pending elicitation response",
-      () => session.tryRespondToElicitation!(normalizedRequestId, result),
+      () => session.tryRespondToElicitation(normalizedRequestId, result),
     );
     if (!accepted) {
       throw new PendingInteractionError(
@@ -3686,13 +3491,6 @@ export class SessionManager {
           timeoutMessage: "undo history resume timed out after 60s",
           flushPendingEviction: false,
         });
-      }
-
-      if (typeof session.truncateHistory !== "function" || typeof session.getEvents !== "function") {
-        throw new SessionHistoryUndoError(
-          "unsupported",
-          "Session history undo is not available in this agent backend",
-        );
       }
 
       let events: unknown[];
@@ -4339,7 +4137,7 @@ export class SessionManager {
     agentId: string,
   ): Promise<{ cancelled: boolean } | undefined> {
     const session = this.sessionObjects.get(sessionId);
-    if (!session || typeof session.cancelTask !== "function") return undefined;
+    if (!session) return undefined;
     const result = await session.cancelTask(agentId);
     await this.agentRegistry.refresh(sessionId, "cancel");
     return result;
@@ -4479,10 +4277,8 @@ export class SessionManager {
       let currentModelBeforeSwitch: string | undefined;
       if (reasoningEffort === undefined && liveState?.reasoningEffort !== undefined) {
         try {
-          if (typeof session.getCurrentModel === "function") {
-            const current = await session.getCurrentModel();
-            currentModelBeforeSwitch = current?.modelId;
-          }
+          const current = await session.getCurrentModel();
+          currentModelBeforeSwitch = current?.modelId;
         } catch { /* best-effort */ }
       }
       const knownLiveReasoningEffort =
@@ -4511,10 +4307,8 @@ export class SessionManager {
 
       let modelId: string | undefined;
       try {
-        if (typeof session.getCurrentModel === "function") {
-          const current = await session.getCurrentModel();
-          modelId = current?.modelId;
-        }
+        const current = await session.getCurrentModel();
+        modelId = current?.modelId;
       } catch { /* best-effort */ }
 
       const liveModel = modelId ?? model;
@@ -4566,24 +4360,22 @@ export class SessionManager {
     const cached = this.sessionObjects.get(sessionId);
     if (cached) {
       try {
-        if (typeof cached.getCurrentModel === "function") {
-          const current = await cached.getCurrentModel();
-          const liveModelId: string | undefined = current?.modelId;
-          if (liveModelId) {
-            const liveState = this.liveSessionModelState.get(sessionId);
-            const reasoningEffort = liveState?.model === liveModelId
-              ? liveState.reasoningEffort
-              : eventsState.reasoningEffort ?? persistedState.reasoningEffort;
-            const contextTier = liveState?.model === liveModelId
-              ? liveState.contextTier
-              : eventsState.contextTier ?? (persistedState.model === liveModelId ? persistedState.contextTier : undefined);
-            return {
-              model: liveModelId,
-              ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-              ...(contextTier !== undefined ? { contextTier } : {}),
-              source: "live",
-            };
-          }
+        const current = await cached.getCurrentModel();
+        const liveModelId: string | undefined = current?.modelId;
+        if (liveModelId) {
+          const liveState = this.liveSessionModelState.get(sessionId);
+          const reasoningEffort = liveState?.model === liveModelId
+            ? liveState.reasoningEffort
+            : eventsState.reasoningEffort ?? persistedState.reasoningEffort;
+          const contextTier = liveState?.model === liveModelId
+            ? liveState.contextTier
+            : eventsState.contextTier ?? (persistedState.model === liveModelId ? persistedState.contextTier : undefined);
+          return {
+            model: liveModelId,
+            ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+            ...(contextTier !== undefined ? { contextTier } : {}),
+            source: "live",
+          };
         }
       } catch { /* best-effort */ }
     }

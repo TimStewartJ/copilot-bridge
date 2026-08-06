@@ -196,11 +196,6 @@ export interface AgentUserInputResponse {
   dismissed?: boolean;
 }
 
-export interface AgentPendingUserInputRequest {
-  requestId: string;
-  request: AgentUserInputRequest;
-}
-
 export type AgentElicitationAction = "accept" | "decline" | "cancel";
 
 export interface AgentElicitationRequest {
@@ -214,38 +209,6 @@ export interface AgentElicitationRequest {
 export interface AgentElicitationResponse {
   action: AgentElicitationAction;
   content?: Record<string, unknown>;
-}
-
-export interface AgentPendingElicitationRequest {
-  requestId: string;
-  request: AgentElicitationRequest;
-  elicitationSource?: string;
-}
-
-/**
- * Raised when the agent runtime cannot enumerate its pending interaction
- * requests at all — as opposed to authoritatively reporting that none are
- * pending. Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests`
- * natively and exposes no listing wire method for user input / elicitation, so
- * callers must be able to tell "nothing pending" from "cannot answer" and fall
- * back to Bridge's own event-derived listing index.
- */
-export class AgentPendingInteractionUnsupportedError extends Error {
-  /** Structural marker so detection survives duplicate module instances. */
-  readonly agentPendingInteractionUnsupported = true;
-
-  constructor(message: string) {
-    super(message);
-    this.name = "AgentPendingInteractionUnsupportedError";
-  }
-}
-
-export function isAgentPendingInteractionUnsupportedError(error: unknown): boolean {
-  if (error instanceof AgentPendingInteractionUnsupportedError) return true;
-  return typeof error === "object"
-    && error !== null
-    && (error as { agentPendingInteractionUnsupported?: unknown })
-      .agentPendingInteractionUnsupported === true;
 }
 
 export type AgentPendingInteractionEvent =
@@ -284,9 +247,19 @@ export type AgentSessionEventHandler = (event: AgentSessionEvent) => void;
 
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
- * through typed methods. Each optional method may be absent on older SDK
- * builds or alternative backends; callers should treat `undefined` as "this
- * capability is not available" and surface a clear error to the user.
+ * through typed methods.
+ *
+ * This is a **required facade**, not a capability map: an implementation must
+ * define every method, and method presence says nothing about whether the
+ * underlying runtime can actually serve the call. A backend that cannot serve a
+ * capability reports it in one of two ways, decided by the return type:
+ *
+ * - methods whose result includes `| undefined` resolve `undefined`;
+ * - every other method throws.
+ *
+ * Callers must therefore branch on the result, never on `typeof session.x`.
+ * A `typeof` probe against this interface is always true and detects nothing —
+ * the wrapper method exists even when the RPC behind it does not.
  *
  * `sessionId` (not `id`) is preserved as the property name to match the
  * SDK and avoid rippling renames across api-router, push-notification,
@@ -299,12 +272,9 @@ export interface AgentSession {
   send(args: AgentSendArgs): Promise<unknown>;
   /**
    * Send a message and block until the agent finishes (resolves on
-   * `session.idle`). Optional — Copilot SDK provides this convenience
-   * via `session.sendAndWait`; other backends (Claude Code, Codex, ACP)
-   * may not, in which case callers should fall back to `send` + their
-   * own event-loop wait.
+   * `session.idle`).
    */
-  sendAndWait?(args: AgentSendArgs, timeoutMs?: number): Promise<unknown>;
+  sendAndWait(args: AgentSendArgs, timeoutMs?: number): Promise<unknown>;
   abort(): Promise<unknown>;
   setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown>;
   disconnect?(): Promise<unknown> | void;
@@ -313,65 +283,58 @@ export interface AgentSession {
   on(handler: AgentSessionEventHandler): () => void;
 
   /** Read the full on-disk event log. Used by readSdkSessionEvents. */
-  getEvents?(): Promise<unknown>;
-
-  /** Snapshot live, unresolved ask_user requests owned by the backend runtime. */
-  getPendingUserInputRequests?(): Promise<AgentPendingUserInputRequest[]>;
+  getEvents(): Promise<unknown>;
 
   /** Resolve an ask_user request. False means another responder already won or the ID is stale. */
-  respondToUserInput?(requestId: string, response: AgentUserInputResponse): Promise<boolean>;
-
-  /** Snapshot live, unresolved elicitation requests owned by the backend runtime. */
-  getPendingElicitationRequests?(): Promise<AgentPendingElicitationRequest[]>;
+  respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean>;
 
   /** Resolve an elicitation request. False means another responder already won or the ID is stale. */
-  tryRespondToElicitation?(requestId: string, response: AgentElicitationResponse): Promise<boolean>;
+  tryRespondToElicitation(requestId: string, response: AgentElicitationResponse): Promise<boolean>;
 
-  /** Switch the session's send mode. Optional — older SDK builds may lack `mode.set`. */
-  setSendMode?(opts: { mode: string }): Promise<unknown>;
+  /** Switch the session's send mode. */
+  setSendMode(opts: { mode: string }): Promise<unknown>;
 
-  /** Invoke a session-scoped slash command. Optional for agent backends that do not expose commands. */
-  invokeSlashCommand?(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult>;
+  /** Invoke a session-scoped slash command. */
+  invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult>;
 
-  /** List session-scoped slash commands. Optional for agent backends that do not expose commands. */
-  listSlashCommands?(): Promise<AgentSlashCommandList | undefined>;
+  /** List session-scoped slash commands. Resolves `undefined` when unsupported. */
+  listSlashCommands(): Promise<AgentSlashCommandList | undefined>;
 
-  /** Fetch the session's currently-selected model id. */
-  getCurrentModel?(): Promise<{ modelId?: string } | undefined>;
+  /** Fetch the session's currently-selected model id. Resolves `undefined` when unsupported. */
+  getCurrentModel(): Promise<{ modelId?: string } | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
-  truncateHistory?(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;
+  truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;
 
-  /** List MCP servers configured for the session. */
-  listMcpServers?(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined>;
+  /** List MCP servers configured for the session. Resolves `undefined` when unsupported. */
+  listMcpServers(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined>;
 
   /** Initialize and validate the currently configured tool set. */
-  initializeTools?(): Promise<unknown>;
+  initializeTools(): Promise<unknown>;
 
   /** Return lightweight metadata for the currently initialized tool set. */
-  getCurrentToolMetadata?(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined>;
+  getCurrentToolMetadata(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined>;
 
   /** Begin an OAuth login flow for the named MCP server. */
-  startMcpOauthLogin?(opts: AgentMcpOauthLoginOptions): Promise<unknown>;
+  startMcpOauthLogin(opts: AgentMcpOauthLoginOptions): Promise<unknown>;
 
-  /** Read the persisted session title/name. */
-  getName?(): Promise<{ name?: string } | undefined>;
+  /** Read the persisted session title/name. Resolves `undefined` when unsupported. */
+  getName(): Promise<{ name?: string } | undefined>;
 
   /** Persist a new session title/name. */
-  setName?(opts: { name: string }): Promise<unknown>;
+  setName(opts: { name: string }): Promise<unknown>;
 
   /**
-   * List background tasks (agents + shells) the SDK is tracking for this
-   * session. Optional — older SDK builds lack the experimental `tasks` RPC,
-   * in which case this resolves `undefined` and callers degrade gracefully.
+   * List background tasks (agents + shells) the backend is tracking for this
+   * session. Resolves `undefined` when the backend has no task RPC.
    */
-  listTasks?(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined>;
+  listTasks(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined>;
 
-  /** Request cancellation of a tracked background task. Optional. */
-  cancelTask?(id: string): Promise<{ cancelled: boolean } | undefined>;
+  /** Request cancellation of a tracked background task. */
+  cancelTask(id: string): Promise<{ cancelled: boolean } | undefined>;
 
-  /** Remove a completed or cancelled background task from SDK tracking. Optional. */
-  removeTask?(id: string): Promise<{ removed: boolean } | undefined>;
+  /** Remove a completed or cancelled background task from backend tracking. */
+  removeTask(id: string): Promise<{ removed: boolean } | undefined>;
 }
 
 /**

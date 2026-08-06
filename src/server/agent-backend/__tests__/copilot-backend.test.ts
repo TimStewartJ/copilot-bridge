@@ -8,7 +8,6 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { CopilotBackend } from "../copilot-backend.js";
-import { isAgentPendingInteractionUnsupportedError } from "../types.js";
 
 function createFakeSession(rpc: any = {}) {
   return {
@@ -169,74 +168,30 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(unsub).toHaveBeenCalledOnce();
   });
 
-  it("delegates getEvents and surfaces a clear error when the SDK lacks it", async () => {
+  it("delegates getEvents", async () => {
     const session = createFakeSession();
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
 
-    await expect(wrapped.getEvents!()).resolves.toEqual([{ type: "test" }]);
-
-    delete (session as any).getEvents;
-    await expect(wrapped.getEvents!()).rejects.toThrow(/event API is not available/);
+    // `getEvents` is declared required by the SDK's own published `CopilotSession`
+    // types and implemented in `dist/session.js`, so the wrapper delegates
+    // unconditionally rather than probing for it.
+    await expect(wrapped.getEvents()).resolves.toEqual([{ type: "test" }]);
   });
 
-  it("reads runtime-owned pending interaction snapshots through the patched session RPCs", async () => {
-    const pendingRequests = vi.fn()
-      .mockResolvedValueOnce({
-        pendingUserInputs: [{
-          requestId: "ui-1",
-          request: { question: "Continue?", allowFreeform: true },
-        }],
-      })
-      .mockResolvedValueOnce({
-        pendingElicitations: [{
-          requestId: "el-1",
-          request: { message: "Deploy?", mode: "form", requestedSchema: { type: "object", properties: {} } },
-        }],
-      });
-    const session = createFakeSession({ permissions: { pendingRequests } });
-    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
-
-    await expect(wrapped.getPendingUserInputRequests!()).resolves.toEqual([{
-      requestId: "ui-1",
-      request: { question: "Continue?", allowFreeform: true },
-    }]);
-    await expect(wrapped.getPendingElicitationRequests!()).resolves.toEqual([{
-      requestId: "el-1",
-      request: { message: "Deploy?", mode: "form", requestedSchema: { type: "object", properties: {} } },
-    }]);
-    expect(pendingRequests).toHaveBeenCalledTimes(2);
-  });
-
-  it("reports unsupported instead of empty when the runtime cannot list pending requests", async () => {
-    // Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests` natively
-    // and returns permission items only. Silently reporting "nothing pending"
-    // there is indistinguishable from a genuinely empty queue, which is what made
-    // reconnect hydration drop in-flight `ask_user` prompts.
+  it("has no pending-interaction listing surface: the SDK exposes no wire method", async () => {
+    // `session.permissions.pendingRequests` exists, but its declared result
+    // (`PendingPermissionRequestList`) carries permission prompts only — there is
+    // no `pendingUserInputs` / `pendingElicitations` field anywhere in the
+    // generated RPC surface. Reading it cost a wire round-trip that could only
+    // ever fail, so the wrapper no longer offers a listing method at all and
+    // Bridge serves listings from its own event-derived index instead.
     const pendingRequests = vi.fn().mockResolvedValue({ items: [] });
     const session = createFakeSession({ permissions: { pendingRequests } });
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
 
-    await expect(wrapped.getPendingUserInputRequests!()).rejects.toMatchObject({
-      agentPendingInteractionUnsupported: true,
-    });
-    await expect(wrapped.getPendingElicitationRequests!()).rejects.toMatchObject({
-      agentPendingInteractionUnsupported: true,
-    });
-    expect(isAgentPendingInteractionUnsupportedError(
-      await wrapped.getPendingUserInputRequests!().catch((error: unknown) => error),
-    )).toBe(true);
-  });
-
-  it("reports unsupported when the pending requests RPC is missing entirely", async () => {
-    const session = createFakeSession({ permissions: {} });
-    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
-
-    await expect(wrapped.getPendingUserInputRequests!()).rejects.toMatchObject({
-      agentPendingInteractionUnsupported: true,
-    });
-    await expect(wrapped.getPendingElicitationRequests!()).rejects.toMatchObject({
-      agentPendingInteractionUnsupported: true,
-    });
+    expect("getPendingUserInputRequests" in wrapped).toBe(false);
+    expect("getPendingElicitationRequests" in wrapped).toBe(false);
+    expect(pendingRequests).not.toHaveBeenCalled();
   });
 
   it("delegates race-safe pending interaction responses", async () => {

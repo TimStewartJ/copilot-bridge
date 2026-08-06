@@ -2,33 +2,25 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import {
-  patchCopilotAppSource,
-  patchCopilotPendingInteractionRpcSource,
-} from "../copilot-cli-loader.js";
+import { patchCopilotAppSource } from "../copilot-cli-loader.js";
 
-const CONFIG_CALL_SITES = `
+// Retained only as a rejection fixture: the legacy (<= 1.0.70) call-site shape is
+// no longer patched, so a bundle that reverts to it must fail loudly instead of
+// launching unpatched.
+const LEGACY_CONFIG_CALL_SITES = `
 async createSession(r){let o=await this.resolveSessionAuth(r);let s={};if(r.enableConfigDiscovery&&o&&!r.provider&&!r.gitHubToken){let p=await this.createBuiltInGitHubMcpConfig(o);p&&(s.mcpServers={"github-mcp-server":p,...s.mcpServers})}}
 async resumeSession(l,r){let o=await this.resolveSessionAuth(r);let p={};if(r.enableConfigDiscovery&&o&&!r.provider&&!r.gitHubToken){let g=await this.createBuiltInGitHubMcpConfig(o);g&&(p.mcpServers={"github-mcp-server":g,...p.mcpServers})}}
 `;
 
-const CONFIG_CALL_SITES_RENAMED_OPTIONS = `
-async createSession(n){let o=await this.resolveSessionAuth(n);let a={};if(n.enableConfigDiscovery&&o&&!n.provider&&!n.gitHubToken){let m=await this.createBuiltInGitHubMcpConfig(o);m&&(a.mcpServers={"github-mcp-server":m,...a.mcpServers})}}
-async resumeSession(l,n){let o=await this.resolveSessionAuth(n);let p={};if(n.enableConfigDiscovery&&o&&!n.provider&&!n.gitHubToken){let h=await this.createBuiltInGitHubMcpConfig(o);h&&(p.mcpServers={"github-mcp-server":h,...p.mcpServers})}}
-`;
-
-const CONFIG_CALL_SITES_DIFFERENT_SESSION_VARS = `
-async createSession(r){let s=await this.resolveSessionAuth(r);let c={};if(r.enableConfigDiscovery&&s&&!r.provider&&!r.gitHubToken){let g=await this.createBuiltInGitHubMcpConfig(s);g&&(c.mcpServers={"github-mcp-server":g,...c.mcpServers})}}
-async resumeSession(l,r){let o=await this.resolveSessionAuth(r);let p={};if(r.enableConfigDiscovery&&o&&!r.provider&&!r.gitHubToken){let y=await this.createBuiltInGitHubMcpConfig(o);y&&(p.mcpServers={"github-mcp-server":y,...p.mcpServers})}}
-`;
-
-const CONFIG_CALL_SITES_DOLLAR_VARS = `
-async createSession($n){let $o=await this.resolveSessionAuth($n);let $a={};if($n.enableConfigDiscovery&&$o&&!$n.provider&&!$n.gitHubToken){let $m=await this.createBuiltInGitHubMcpConfig($o);$m&&($a.mcpServers={"github-mcp-server":$m,...$a.mcpServers})}}
-async resumeSession(l,$n){let $o=await this.resolveSessionAuth($n);let $p={};if($n.enableConfigDiscovery&&$o&&!$n.provider&&!$n.gitHubToken){let $h=await this.createBuiltInGitHubMcpConfig($o);$h&&($p.mcpServers={"github-mcp-server":$h,...$p.mcpServers})}}
-`;
 const CONFIG_CALL_SITES_1_0_70 = `
 async createSession(e){let s=await this.resolveSessionAuth(e),c={};if(this.shouldInjectBuiltInGitHubMcp(e)&&s&&!e.provider){let S=await this.createBuiltInGitHubMcpConfig(s);S&&(c.mcpServers={"github-mcp-server":S,...c.mcpServers})}}
 async resumeSession(l,e){let o=await this.resolveSessionAuth(e),g={};if(this.shouldInjectBuiltInGitHubMcp(e)&&o&&!e.provider){let S=await this.createBuiltInGitHubMcpConfig(o);S&&(g.mcpServers={"github-mcp-server":S,...g.mcpServers})}}
+`;
+// Same helper shape, but every identifier renamed — including "$"-prefixed ones
+// the Copilot minifier emits — so the patch survives a minifier reshuffle.
+const CONFIG_CALL_SITES_RENAMED_DOLLAR_VARS = `
+async createSession($n){let $o=await this.resolveSessionAuth($n),$a={};if(this.shouldInjectBuiltInGitHubMcp($n)&&$o&&!$n.provider){let $m=await this.createBuiltInGitHubMcpConfig($o);$m&&($a.mcpServers={"github-mcp-server":$m,...$a.mcpServers})}}
+async resumeSession(l,$n){let $p=await this.resolveSessionAuth($n),$q={};if(this.shouldInjectBuiltInGitHubMcp($n)&&$p&&!$n.provider){let $h=await this.createBuiltInGitHubMcpConfig($p);$h&&($q.mcpServers={"github-mcp-server":$h,...$q.mcpServers})}}
 `;
 const GITHUB_MCP_CONFIG_METHOD_1_0_71 = `
 async createBuiltInGitHubMcpConfig(e,n,r,o){let s;try{s=await ji(e)}catch{return}if(!s)return;let a=await HR(),l=await pn.load(o??this.options.settings),c=await this.coreServices.createFeatureFlagService({sessionId:n}).isFidesIfcEnabled().catch(()=>this.options.featureFlags?.FIDES_IFC??!1),u=KF({settings:VF(l),session:r},c);return rwe(s,e,{...u,excludeGhReplaceableTools:a},x)}
@@ -46,11 +38,8 @@ function callbacks(B){return{requestElicitation:B.toolConfig.enableRequestElicit
 const SUPPORTS_ELICITATION = `
 class Caps{supportsElicitation(){return m.sessionCapabilitiesEffectiveHas(this.nativeSessionId,"elicitation")}}
 `;
-const PENDING_INTERACTION_RUNTIME = `
-class Session{getPendingUserInputRequests(){return an(m.sessionPendingRequestsListJson(this.nativeSessionId,"userInput")).items}getPendingElicitationRequests(){return an(m.sessionPendingRequestsListJson(this.nativeSessionId,"elicitation")).items.map(e=>({requestId:e.requestId}))}}
-`;
 const NATIVE_ASK_USER_SOURCE =
-  `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${SUPPORTS_ELICITATION}${PENDING_INTERACTION_RUNTIME}`;
+  `${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${SUPPORTS_ELICITATION}`;
 
 describe("copilot-cli-loader installed-package contract", () => {
   // The Copilot bundle patches are regex-driven, so a dependency bump can break
@@ -77,28 +66,56 @@ describe("copilot-cli-loader installed-package contract", () => {
     expect(patched).toContain("||this.supportsElicitation())?");
     expect(patched).toContain(".toolConfig.enableRequestElicitation||this.supportsElicitation()");
   });
+});
 
-  // Not enforced by the loader on purpose — see `patchCopilotPendingInteractionRpcSource`.
-  it.each(installedAppSources)(
-    "keeps pending interaction listing runtime-owned at %s",
-    (appPath) => {
-      const source = readFileSync(appPath, "utf-8");
+describe("installed @github/copilot-sdk pending-interaction contract", () => {
+  // Bridge serves pending `ask_user` / elicitation listings exclusively from its
+  // own event-derived index (`SessionEventBus`), because the SDK exposes no wire
+  // method that enumerates them: `session.permissions.pendingRequests` answers
+  // with permission prompts only. This test pins that fact to the *installed*
+  // generated RPC surface so an SDK bump that grows a real listing method fails
+  // here — at which point runtime-sourced listing should be reconsidered, rather
+  // than Bridge silently staying on the index forever.
+  const rpcTypesPath = findInstalledSdkGeneratedRpcTypes();
 
-      expect(patchCopilotPendingInteractionRpcSource(source)).toBe(source);
-    },
-  );
+  it("resolves the installed generated RPC type declarations", () => {
+    expect(
+      rpcTypesPath,
+      "No installed @github/copilot-sdk generated rpc.d.ts found. Run `npm ci` before the server test lane.",
+    ).toBeTruthy();
+  });
+
+  it("exposes a permissions.pendingRequests method whose result carries only `items`", () => {
+    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
+
+    const listType = rpcTypes.match(
+      /export interface PendingPermissionRequestList \{(.*?)\n\}/s,
+    )?.[1];
+    expect(listType, "PendingPermissionRequestList is no longer declared").toBeTruthy();
+
+    const fields = [...listType!.matchAll(/^\s{4}(\w+)\??:/gm)].map((match) => match[1]);
+    expect(fields).toEqual(["items"]);
+  });
+
+  it("declares no wire method that enumerates pending user input or elicitation requests", () => {
+    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
+
+    expect(rpcTypes).not.toMatch(/pendingUserInputs|pendingElicitations/);
+  });
 });
 
 describe("copilot-cli-loader", () => {
   it("patches the current simple GitHub MCP config method shape", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${NATIVE_ASK_USER_SOURCE}}`;
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES_1_0_70}${NATIVE_ASK_USER_SOURCE}}`;
 
     const patched = patchCopilotAppSource(source);
 
     expect(patched).toContain("async createBuiltInGitHubMcpConfig(e,__bridgeGithubMcpOptions={})");
+    // An empty config object literal cannot be spread into positionally, so the
+    // patch must emit `{...opts}` rather than a leading-comma `{,...opts}`.
     expect(patched).toContain("return _0t(r,e,{...__bridgeGithubMcpOptions},N)");
-    expect(patched).toContain("if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&o&&!r.provider&&!r.gitHubToken)");
-    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions)");
+    expect(patched).toContain("if((this.shouldInjectBuiltInGitHubMcp(e)||(e.githubMcpToolOptions&&!e.gitHubToken))&&s&&!e.provider)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,e.githubMcpToolOptions)");
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
     expect(patched).toContain(
       "requestElicitation:(B.toolConfig.enableRequestElicitation||this.supportsElicitation())?",
@@ -106,62 +123,50 @@ describe("copilot-cli-loader", () => {
   });
 
   it("keeps the replaceable-tool exclusion from the older GitHub MCP config method shape", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES}${NATIVE_ASK_USER_SOURCE}}`;
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_1_0_70}${NATIVE_ASK_USER_SOURCE}}`;
 
     const patched = patchCopilotAppSource(source);
 
     expect(patched).toContain("async createBuiltInGitHubMcpConfig(e,__bridgeGithubMcpOptions={})");
     expect(patched).toContain("return _0t(r,e,{excludeGhReplaceableTools:n,...__bridgeGithubMcpOptions},N)");
-    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,e.githubMcpToolOptions)");
   });
 
-  it("patches call sites when the minified options variable is renamed", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_RENAMED_OPTIONS}${NATIVE_ASK_USER_SOURCE}}`;
+  it("patches call sites that use different minified session and target variables", () => {
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_1_0_70}${NATIVE_ASK_USER_SOURCE}}`;
 
     const patched = patchCopilotAppSource(source);
 
-    expect(patched).toContain("if((n.enableConfigDiscovery||n.githubMcpToolOptions)&&o&&!n.provider&&!n.gitHubToken)");
-    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,n.githubMcpToolOptions)");
-    expect(patched).toContain(`{"github-mcp-server":m,...a.mcpServers}`);
-    expect(patched).toContain(`{"github-mcp-server":h,...p.mcpServers}`);
-    expect(patched).not.toContain("r.githubMcpToolOptions");
-  });
-
-  it("patches call sites that use different minified session variables", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_DIFFERENT_SESSION_VARS}${NATIVE_ASK_USER_SOURCE}}`;
-
-    const patched = patchCopilotAppSource(source);
-
-    expect(patched).toContain("if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&s&&!r.provider&&!r.gitHubToken)");
-    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,r.githubMcpToolOptions)");
-    expect(patched).toContain(`{"github-mcp-server":g,...c.mcpServers}`);
-    expect(patched).toContain("if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&o&&!r.provider&&!r.gitHubToken)");
-    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions)");
-    expect(patched).toContain(`{"github-mcp-server":y,...p.mcpServers}`);
+    expect(patched).toContain("if((this.shouldInjectBuiltInGitHubMcp(e)||(e.githubMcpToolOptions&&!e.gitHubToken))&&s&&!e.provider)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,e.githubMcpToolOptions)");
+    expect(patched).toContain(`{"github-mcp-server":S,...c.mcpServers}`);
+    expect(patched).toContain("if((this.shouldInjectBuiltInGitHubMcp(e)||(e.githubMcpToolOptions&&!e.gitHubToken))&&o&&!e.provider)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,e.githubMcpToolOptions)");
+    expect(patched).toContain(`{"github-mcp-server":S,...g.mcpServers}`);
   });
 
   it("patches the 1.0.68 method shape whose resolver is minified with a $ identifier", () => {
     // Real @github/copilot 1.0.68 minified shape: replaceable-tools resolver is "$R".
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await pi(e)}catch{return}if(!n)return;let r=await $R();return SSe(n,e,{excludeGhReplaceableTools:r},x)}${CONFIG_CALL_SITES}${NATIVE_ASK_USER_SOURCE}}`;
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await pi(e)}catch{return}if(!n)return;let r=await $R();return SSe(n,e,{excludeGhReplaceableTools:r},x)}${CONFIG_CALL_SITES_1_0_70}${NATIVE_ASK_USER_SOURCE}}`;
 
     const patched = patchCopilotAppSource(source);
 
     expect(patched).toContain("async createBuiltInGitHubMcpConfig(e,__bridgeGithubMcpOptions={})");
     expect(patched).toContain("let r=await $R()");
     expect(patched).toContain("return SSe(n,e,{excludeGhReplaceableTools:r,...__bridgeGithubMcpOptions},x)");
-    expect(patched).toContain("if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&o&&!r.provider&&!r.gitHubToken)");
-    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions)");
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig(s,e.githubMcpToolOptions)");
   });
 
-  it("patches call sites whose minified variables contain $ identifiers", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_DOLLAR_VARS}${NATIVE_ASK_USER_SOURCE}}`;
+  it("patches call sites whose minified variables are renamed and contain $ identifiers", () => {
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(!r)return;let n=await Qze();return _0t(r,e,{excludeGhReplaceableTools:n},N)}${CONFIG_CALL_SITES_RENAMED_DOLLAR_VARS}${NATIVE_ASK_USER_SOURCE}}`;
 
     const patched = patchCopilotAppSource(source);
 
-    expect(patched).toContain("if(($n.enableConfigDiscovery||$n.githubMcpToolOptions)&&$o&&!$n.provider&&!$n.gitHubToken)");
+    expect(patched).toContain("if((this.shouldInjectBuiltInGitHubMcp($n)||($n.githubMcpToolOptions&&!$n.gitHubToken))&&$o&&!$n.provider)");
     expect(patched).toContain("this.createBuiltInGitHubMcpConfig($o,$n.githubMcpToolOptions)");
     expect(patched).toContain(`{"github-mcp-server":$m,...$a.mcpServers}`);
-    expect(patched).toContain(`{"github-mcp-server":$h,...$p.mcpServers}`);
+    expect(patched).toContain("this.createBuiltInGitHubMcpConfig($p,$n.githubMcpToolOptions)");
+    expect(patched).toContain(`{"github-mcp-server":$h,...$q.mcpServers}`);
   });
 
   it("patches the 1.0.70 helper-based GitHub MCP config call sites", () => {
@@ -194,55 +199,36 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
   });
 
-  it("rejects single-helper-based and mixed legacy/helper config call sites", () => {
+  it("rejects config call sites that are missing, partial, or reverted to the legacy shape", () => {
+    const method =
+      `async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}`;
+
     // rejects a single helper-based config call site
     {
-    const oneCallSite = CONFIG_CALL_SITES_1_0_70.trim().split(/\r?\n/)[0];
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}${oneCallSite}${NATIVE_ASK_USER_SOURCE}}`;
+      const oneCallSite = CONFIG_CALL_SITES_1_0_70.trim().split(/\r?\n/)[0];
+      const source = `class App{${method}${oneCallSite}${NATIVE_ASK_USER_SOURCE}}`;
 
-    expect(() => patchCopilotAppSource(source)).toThrow("found 0 legacy and 1 helper");
+      expect(() => patchCopilotAppSource(source)).toThrow(
+        "expected exactly 2 helper config call sites, found 1",
+      );
     }
 
-    // rejects mixed legacy and helper-based config call sites
+    // A bundle that reverts to the pre-1.0.71 call-site shape is no longer
+    // patched, so it must fail loudly rather than launch unpatched.
     {
-    const legacyCallSite = CONFIG_CALL_SITES.trim().split(/\r?\n/)[0];
-    const helperCallSite = CONFIG_CALL_SITES_1_0_70.trim().split(/\r?\n/)[0];
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}${legacyCallSite}${helperCallSite}${NATIVE_ASK_USER_SOURCE}}`;
+      const source = `class App{${method}${LEGACY_CONFIG_CALL_SITES}${NATIVE_ASK_USER_SOURCE}}`;
 
-    expect(() => patchCopilotAppSource(source)).toThrow("found 1 legacy and 1 helper");
+      expect(() => patchCopilotAppSource(source)).toThrow(
+        "expected exactly 2 helper config call sites, found 0",
+      );
     }
-  });
-  it("rejects SDK drift that removes the runtime pending getters", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${SUPPORTS_ELICITATION}}`;
-
-    // The loader itself tolerates this; only the contract canary rejects it.
-    expect(() => patchCopilotAppSource(source)).not.toThrow();
-    expect(() => patchCopilotPendingInteractionRpcSource(source)).toThrow(
-      "expected 1 runtime getter pair, found 0",
-    );
   });
 
   it("rejects SDK drift that removes the runtime elicitation capability probe", () => {
-    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}${PENDING_INTERACTION_RUNTIME}}`;
+    const source = `class App{async createBuiltInGitHubMcpConfig(e){let r;try{r=await Fa(e)}catch{return}if(r)return _0t(r,e,{},N)}${CONFIG_CALL_SITES_1_0_70}${ASK_USER_TOOL_SELECTION}${ELICITATION_CALLBACK_SELECTION}}`;
 
     expect(() => patchCopilotAppSource(source)).toThrow(
       "expected 1 supportsElicitation definition, found 0",
-    );
-  });
-
-  it("asserts the native pending interaction runtime without rewriting it", () => {
-    const source = `${PENDING_INTERACTION_RUNTIME}`;
-
-    expect(patchCopilotPendingInteractionRpcSource(source)).toBe(source);
-  });
-
-  it("rejects a pending interaction runtime that reverts to JS-owned state", () => {
-    const source = `
-class Session{getPendingUserInputRequests(){return this.pendingRequests.getPendingUserInputRequests()}getPendingElicitationRequests(){return this.pendingRequests.getPendingElicitationRequests()}}
-`;
-
-    expect(() => patchCopilotPendingInteractionRpcSource(source)).toThrow(
-      "expected 1 runtime getter pair, found 0",
     );
   });
 });
@@ -272,4 +258,12 @@ function findGithubScopeDir(): string | undefined {
     dir = parent;
   }
   return undefined;
+}
+
+/** Locate the installed SDK's generated RPC type declarations, if present. */
+function findInstalledSdkGeneratedRpcTypes(): string | undefined {
+  const scopeDir = findGithubScopeDir();
+  if (!scopeDir) return undefined;
+  const candidate = join(scopeDir, "copilot-sdk", "dist", "generated", "rpc.d.ts");
+  return existsSync(candidate) ? candidate : undefined;
 }

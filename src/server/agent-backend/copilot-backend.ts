@@ -17,8 +17,6 @@ import {
   CopilotClient,
 } from "@github/copilot-sdk";
 
-import { AgentPendingInteractionUnsupportedError } from "./types.js";
-
 import type {
   AgentBackend,
   AgentBackgroundTask,
@@ -26,8 +24,6 @@ import type {
   AgentElicitationResponse,
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
-  AgentPendingElicitationRequest,
-  AgentPendingUserInputRequest,
   AgentToolMetadata,
   AgentModelInfo,
   AgentPermissionPolicy,
@@ -188,9 +184,6 @@ class CopilotAgentSession implements AgentSession {
   }
 
   sendAndWait(args: AgentSendArgs, timeoutMs?: number): Promise<unknown> {
-    if (typeof this.session.sendAndWait !== "function") {
-      throw new Error("Session sendAndWait is not available in this Copilot SDK build");
-    }
     return this.session.sendAndWait(args, timeoutMs);
   }
 
@@ -211,27 +204,7 @@ class CopilotAgentSession implements AgentSession {
   }
 
   getEvents(): Promise<unknown> {
-    if (typeof this.session.getEvents !== "function") {
-      return Promise.reject(new Error("Copilot SDK session event API is not available"));
-    }
     return this.session.getEvents();
-  }
-
-  async getPendingUserInputRequests(): Promise<AgentPendingUserInputRequest[]> {
-    const pendingRequests = this.session?.rpc?.permissions?.pendingRequests;
-    if (typeof pendingRequests !== "function") {
-      throw new AgentPendingInteractionUnsupportedError(
-        "Pending user input snapshots are not available in this Copilot SDK build",
-      );
-    }
-    const result = await pendingRequests.call(this.session.rpc.permissions);
-    const pending = (result as any)?.pendingUserInputs;
-    if (!Array.isArray(pending)) {
-      throw new AgentPendingInteractionUnsupportedError(
-        "This Copilot runtime does not expose pending user input snapshots",
-      );
-    }
-    return pending;
   }
 
   async respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean> {
@@ -241,23 +214,6 @@ class CopilotAgentSession implements AgentSession {
     }
     const result = await handle.call(this.session.rpc.ui, { requestId, response });
     return (result as any)?.success === true;
-  }
-
-  async getPendingElicitationRequests(): Promise<AgentPendingElicitationRequest[]> {
-    const pendingRequests = this.session?.rpc?.permissions?.pendingRequests;
-    if (typeof pendingRequests !== "function") {
-      throw new AgentPendingInteractionUnsupportedError(
-        "Pending elicitation snapshots are not available in this Copilot SDK build",
-      );
-    }
-    const result = await pendingRequests.call(this.session.rpc.permissions);
-    const pending = (result as any)?.pendingElicitations;
-    if (!Array.isArray(pending)) {
-      throw new AgentPendingInteractionUnsupportedError(
-        "This Copilot runtime does not expose pending elicitation snapshots",
-      );
-    }
-    return pending;
   }
 
   async tryRespondToElicitation(

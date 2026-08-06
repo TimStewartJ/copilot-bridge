@@ -9,7 +9,7 @@ import {
 } from "../session-manager.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
-import { createTestBus, makeTestDir, setupTestDb } from "./helpers.js";
+import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
 
 function createBackend(models: Array<{ id: string; name: string }>) {
   return {
@@ -142,7 +142,7 @@ describe("SessionManager model refresh", () => {
     const disconnect = vi.fn();
 
     await manager.initialize();
-    (manager as any).sessionObjects.set("idle-session", { disconnect });
+    (manager as any).sessionObjects.set("idle-session", makeAgentSessionStub({ disconnect }));
 
     await manager.refreshModels();
 
