@@ -192,18 +192,12 @@ export class SessionAgentRegistry {
       if (entry.refreshPromise) await entry.refreshPromise;
 
       const session = this.deps.getLiveSession(sessionId);
-      if (
-        !session
-        || typeof session.listTasks !== "function"
-        || typeof session.removeTask !== "function"
-      ) {
-        return 0;
-      }
+      if (!session) return 0;
 
       try {
         const removedIds = new Set<string>();
         const readTasks = async (): Promise<SessionAgentTask[] | undefined> => {
-          const result = await session.listTasks!();
+          const result = await session.listTasks();
           if (this.deps.getLiveSession(sessionId) !== session) return undefined;
           const tasks = (Array.isArray(result?.tasks) ? result.tasks : [])
             .filter((task) => task.kind === "agent")
@@ -226,7 +220,7 @@ export class SessionAgentRegistry {
           for (const task of candidates) {
             try {
               if (task.status === "idle") {
-                const cancelResult = await session.cancelTask?.(task.id);
+                const cancelResult = await session.cancelTask(task.id);
                 if (cancelResult?.cancelled) changed = true;
               }
               const removeResult = await session.removeTask(task.id);
@@ -280,7 +274,7 @@ export class SessionAgentRegistry {
    */
   async refresh(sessionId: string, reason: string): Promise<void> {
     const session = this.deps.getLiveSession(sessionId);
-    if (!session || typeof session.listTasks !== "function") return;
+    if (!session) return;
     const listTasks = session.listTasks.bind(session);
 
     const existing = this.entries.get(sessionId);

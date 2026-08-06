@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { forceClearRestartPending, refreshRestartState, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus, testPath } from "./helpers.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub, testPath } from "./helpers.js";
 import type { BrowserLifecycle, BrowserShutdownOutcome } from "../browser-lifecycle.js";
 
 function createFakeBrowserLifecycle(overrides: Partial<{ result: BrowserShutdownOutcome; error: Error }> = {}) {
@@ -44,7 +44,7 @@ describe("SessionManager graceful shutdown", () => {
 
   function makeSession() {
     const handlers: Array<(event: any) => void> = [];
-    const session = {
+    const session = makeAgentSessionStub({
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((handler: (event: any) => void) => {
         handlers.push(handler);
@@ -64,7 +64,7 @@ describe("SessionManager graceful shutdown", () => {
         }
       }),
       disconnect: vi.fn(),
-    };
+    });
     return session;
   }
 

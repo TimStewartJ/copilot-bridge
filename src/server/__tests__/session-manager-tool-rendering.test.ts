@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { createTestBus, setupTestDb } from "./helpers.js";
+import { createTestBus, makeAgentSessionStub, setupTestDb } from "./helpers.js";
 import { transformEventsToMessages } from "../event-transform.js";
 
 describe("SessionManager tool result rendering", () => {
@@ -29,7 +29,7 @@ describe("SessionManager tool result rendering", () => {
 
   function createSession(events: any[]) {
     const handlers: Array<(event: any) => void> = [];
-    return {
+    return makeAgentSessionStub({
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on(handler: (event: any) => void) {
         handlers.push(handler);
@@ -45,7 +45,7 @@ describe("SessionManager tool result rendering", () => {
           }
         });
       }),
-    };
+    });
   }
 
   it("streams detailed results, sub-agent responses, and failed tool errors", async () => {

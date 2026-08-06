@@ -196,21 +196,10 @@ export interface BusTerminalState {
   runNotice?: RunNotice;
 }
 
+/** A point-in-time listing of the interaction requests still awaiting a response. */
 export interface PendingInteractionSnapshot {
   pendingUserInputs: PendingUserInputRequestView[];
   pendingElicitations: PendingElicitationRequestView[];
-}
-
-/** Where a pending interaction listing came from. The runtime is authoritative. */
-export type PendingInteractionListingSource = "runtime" | "index";
-
-export interface PendingInteractionListing<T> {
-  items: T[];
-  source: PendingInteractionListingSource;
-}
-
-export interface PendingInteractionHydration extends PendingInteractionSnapshot {
-  runtimeSourced: { userInput: boolean; elicitation: boolean };
 }
 
 export interface ProjectedUserMessage {
@@ -631,16 +620,16 @@ export class SessionEventBus {
   }
 
   /**
-   * Listing cache only — never an authority.
+   * The only listing of in-flight interaction requests Bridge has.
    *
-   * Copilot CLI >= 1.0.74 serves `session.permissions.pendingRequests` from its
-   * native runtime and exposes no wire method that enumerates pending user
-   * input / elicitation requests, so a browser reconnecting mid-`ask_user` had
-   * no way to re-hydrate the prompt. These maps are keyed by the *runtime's own*
-   * request ids, taken straight off its `*.requested` events, and exist purely
-   * so a reconnect can render what is already in flight. Every response still
-   * goes through the runtime, which remains the sole adjudicator of whether an
-   * id is live or stale.
+   * The Copilot runtime owns the requests and remains the sole adjudicator of
+   * whether an id is live or stale — every *response* still goes through it —
+   * but it exposes no wire method that *enumerates* them
+   * (`session.permissions.pendingRequests` answers with permission prompts
+   * only). Without this index a browser reconnecting mid-`ask_user` would have
+   * no way to re-render the prompt. These maps are keyed by the runtime's own
+   * request ids, taken straight off its `*.requested` events and normalized
+   * per event at ingest by `session-runner`.
    */
   getPendingInteractionIndex(): PendingInteractionSnapshot {
     return {
@@ -899,7 +888,7 @@ export class SessionEventBus {
     const turnId = this.currentTurnId ?? this.terminalTurnId;
     const turnInstanceId = this.currentTurnInstanceId ?? this.terminalTurnInstanceId;
     // A completed run has nothing in flight by definition, so never replay the
-    // listing cache past terminal even if cancellation could not drain it.
+    // listing index past terminal even if cancellation could not drain it.
     const pending = pendingInteractions
       ?? (this._complete
         ? { pendingUserInputs: [], pendingElicitations: [] }

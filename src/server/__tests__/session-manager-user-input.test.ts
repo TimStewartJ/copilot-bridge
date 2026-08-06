@@ -1,28 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentPendingUserInputRequest, AgentSession } from "../agent-backend/index.js";
+import type { AgentSession } from "../agent-backend/index.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { PendingInteractionError } from "../pending-interaction-validation.js";
 import { SessionManager } from "../session-manager.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
-import { createTestBus, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
+import type { PendingUserInputRequestView } from "../user-input-types.js";
+import { createTestBus, makeAgentSessionStub, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 
-function createManager(pending: AgentPendingUserInputRequest[] = []) {
+function createManager(pending: PendingUserInputRequestView[] = []) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
   const runtimePaths = makeTestRuntimePaths("user-input-manager");
+  const bus = eventBusRegistry.getOrCreateBus("session-1");
+  // The runtime owns the requests but cannot enumerate them, so Bridge's
+  // event-derived listing index is the only listing source. Seed it the way
+  // `session-runner` does when the runtime raises `user_input.requested`.
+  for (const request of pending) bus.emitUserInputRequested(request);
   const respondToUserInput = vi.fn(async (requestId: string) => {
     const index = pending.findIndex((request) => request.requestId === requestId);
     if (index < 0) return false;
     pending.splice(index, 1);
+    bus.emitUserInputAnswered(requestId, { answer: "", wasFreeform: false });
     return true;
   });
   const session = {
     sessionId: "session-1",
-    getPendingUserInputRequests: vi.fn(async () => structuredClone(pending)),
-    getPendingElicitationRequests: vi.fn(async () => []),
     respondToUserInput,
   } as unknown as AgentSession;
   const manager = new SessionManager({
@@ -36,18 +41,16 @@ function createManager(pending: AgentPendingUserInputRequest[] = []) {
     runtimePaths,
   });
   (Reflect.get(manager, "sessionObjects") as Map<string, AgentSession>).set("session-1", session);
-  return { manager, session, respondToUserInput, globalBus, eventBusRegistry };
+  return { manager, session, respondToUserInput, globalBus, eventBusRegistry, bus };
 }
 
-function pendingRequest(): AgentPendingUserInputRequest {
+function pendingRequest(): PendingUserInputRequestView {
   return {
     requestId: "request-1",
-    request: {
-      question: "Continue?",
-      choices: ["yes", "no"],
-      allowFreeform: false,
-      toolCallId: "tool-1",
-    },
+    question: "Continue?",
+    choices: ["yes", "no"],
+    allowFreeform: false,
+    toolCallId: "tool-1",
   };
 }
 
@@ -102,10 +105,10 @@ describe("SessionManager SDK-owned user input", () => {
     } satisfies Partial<PendingInteractionError>);
   });
 
-  it("hydrates reconnect snapshots from the SDK-owned pending store", async () => {
+  it("hydrates reconnect snapshots from the listing index", async () => {
     const { manager } = createManager([pendingRequest()]);
 
-    await expect(manager.getPendingInteractionSnapshot("session-1")).resolves.toEqual({
+    await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
       pendingUserInputs: [{
         requestId: "request-1",
         question: "Continue?",
@@ -115,22 +118,6 @@ describe("SessionManager SDK-owned user input", () => {
       }],
       pendingElicitations: [],
     });
-  });
-
-  it("surfaces unsupported backends clearly", async () => {
-    const { manager } = createManager([pendingRequest()]);
-    (Reflect.get(manager, "sessionObjects") as Map<string, AgentSession>).set("session-1", {
-      sessionId: "session-1",
-    } as AgentSession);
-
-    await expect(manager.submitUserInputResponse("session-1", "request-1", {
-      answer: "yes",
-      wasFreeform: false,
-    })).rejects.toMatchObject({
-      code: "unsupported",
-      statusCode: 501,
-      message: "Pending user input is not supported by this agent backend",
-    } satisfies Partial<PendingInteractionError>);
   });
 
   it("emits synchronous pending status before snapshot reconciliation completes", () => {
@@ -155,26 +142,17 @@ describe("SessionManager SDK-owned user input", () => {
     });
   });
 
-  it("discards out-of-order SDK count reconciliations", async () => {
-    const { manager, session } = createManager();
-    let resolveOlder!: (value: AgentPendingUserInputRequest[]) => void;
-    let resolveNewer!: (value: AgentPendingUserInputRequest[]) => void;
-    vi.mocked(session.getPendingUserInputRequests!)
-      .mockImplementationOnce(() => new Promise((resolve) => {
-        resolveOlder = resolve;
-      }))
-      .mockImplementationOnce(() => new Promise((resolve) => {
-        resolveNewer = resolve;
-      }));
+  it("discards a reconciliation that a newer read superseded", async () => {
+    const { manager, session, bus } = createManager([pendingRequest()]);
 
     const reconcile = Reflect.get(manager, "reconcilePendingInteractionCounts") as Function;
     const older = reconcile.call(manager, "session-1", session);
+    // A newer reconcile claims the generation before the older one resumes.
     const newer = reconcile.call(manager, "session-1", session);
-    resolveNewer([]);
-    await newer;
-    resolveOlder([pendingRequest()]);
-    await older;
+    bus.emitUserInputAnswered("request-1", { answer: "yes", wasFreeform: false });
+    await Promise.all([older, newer]);
 
+    // The superseded pass must not resurrect the count it read first.
     expect(manager.getPendingUserInputCount("session-1")).toBe(0);
   });
 
@@ -196,7 +174,7 @@ describe("SessionManager SDK-owned user input", () => {
     controller.completeAborted("");
 
     expect(manager.getPendingUserInputCount("session-1")).toBe(0);
-    await expect(manager.getPendingInteractionSnapshot("session-1")).resolves.toEqual({
+    await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
       pendingUserInputs: [],
       pendingElicitations: [],
     });
@@ -207,12 +185,11 @@ describe("SessionManager SDK-owned user input", () => {
     });
   });
 
-  it("bounds unresponsive backend lookups", async () => {
+  it("bounds unresponsive backend responses", async () => {
     vi.useFakeTimers();
     try {
-      const { manager, session } = createManager([pendingRequest()]);
-      vi.mocked(session.getPendingUserInputRequests!)
-        .mockImplementation(() => new Promise(() => {}));
+      const { manager, respondToUserInput } = createManager([pendingRequest()]);
+      respondToUserInput.mockImplementation(() => new Promise(() => {}));
 
       const response = manager.submitUserInputResponse("session-1", "request-1", {
         answer: "yes",
@@ -261,7 +238,7 @@ describe("SessionManager projected user message lifecycle", () => {
     let handler: ((event: any) => void) | undefined;
     let releaseSend: (() => void) | undefined;
 
-    const session = {
+    const session = makeAgentSessionStub({
       setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((cb: (event: any) => void) => {
         handler = cb;
@@ -278,7 +255,7 @@ describe("SessionManager projected user message lifecycle", () => {
           releaseSend = resolve;
         });
       }),
-    };
+    });
 
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),

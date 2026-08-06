@@ -4,7 +4,7 @@ import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createTestBus, setupTestDb } from "./helpers.js";
+import { createTestBus, makeAgentSessionStub, setupTestDb } from "./helpers.js";
 
 type FakeSession = {
   sessionId?: string;
@@ -12,10 +12,10 @@ type FakeSession = {
 };
 
 function fakeSession(sessionId?: string): FakeSession {
-  return {
-    ...(sessionId ? { sessionId } : {}),
+  return makeAgentSessionStub({
+    sessionId: sessionId as string,
     disconnect: vi.fn().mockResolvedValue(undefined),
-  };
+  });
 }
 
 function fakeSessionWithAgent(
@@ -28,7 +28,7 @@ function fakeSessionWithAgent(
   setStatus(status: "running" | "idle" | "completed" | "cancelled"): void;
 } {
   let status: "running" | "idle" | "completed" | "cancelled" | "removed" = initialStatus;
-  return {
+  return makeAgentSessionStub({
     sessionId,
     disconnect: vi.fn().mockResolvedValue(undefined),
     listTasks: vi.fn(async () => ({
@@ -47,7 +47,7 @@ function fakeSessionWithAgent(
     setStatus(nextStatus) {
       status = nextStatus;
     },
-  };
+  });
 }
 
 function createManager(options: { telemetry?: boolean } = {}): {
@@ -293,11 +293,11 @@ describe("SessionManager bounded session lifecycle", () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     let releaseFirst!: () => void;
-    const first = {
+    const first = makeAgentSessionStub({
       disconnect: vi.fn(() => new Promise<void>((resolve) => {
         releaseFirst = resolve;
       })),
-    };
+    });
     const second = fakeSession();
     const third = fakeSession();
     await manager.cacheResumedSession("first", first);
@@ -310,6 +310,9 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.cleanupOwnership.has(second)).toBe(true);
     expect(second.disconnect).not.toHaveBeenCalled();
 
+    // The cleanup worker reaps background tasks before disconnecting, so wait
+    // for the hung disconnect to actually start before releasing it.
+    await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalled());
     releaseFirst();
     await manager._drainCacheQueue();
     expect(second.disconnect).toHaveBeenCalledTimes(1);
@@ -334,11 +337,11 @@ describe("SessionManager bounded session lifecycle", () => {
   it("retries a rejected disconnect in the cleanup worker", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
-    const first = {
+    const first = makeAgentSessionStub({
       disconnect: vi.fn()
         .mockRejectedValueOnce(new Error("transient"))
         .mockResolvedValue(undefined),
-    };
+    });
 
     await manager.cacheResumedSession("first", first);
     await manager.cacheResumedSession("second", fakeSession());
@@ -425,9 +428,9 @@ describe("SessionManager bounded session lifecycle", () => {
   it("self-heals when disconnect reports that the upstream session is already absent", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
-    const vanished = {
+    const vanished = makeAgentSessionStub({
       disconnect: vi.fn().mockRejectedValue(new Error("Session not found: vanished")),
-    };
+    });
     await manager.cacheResumedSession("vanished", vanished);
     await manager.cacheResumedSession("next", fakeSession());
     await manager._drainCacheQueue();
@@ -447,11 +450,11 @@ describe("SessionManager bounded session lifecycle", () => {
   it("self-heals cleanup after the SDK connection is closed", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
-    const disconnected = {
+    const disconnected = makeAgentSessionStub({
       disconnect: vi.fn().mockRejectedValue(
         new ConnectionError(ConnectionErrors.Closed, "Connection is closed."),
       ),
-    };
+    });
     await manager.cacheResumedSession("disconnected", disconnected);
     await manager.cacheResumedSession("next", fakeSession());
     await manager._drainCacheQueue();
@@ -469,7 +472,7 @@ describe("SessionManager bounded session lifecycle", () => {
     const { manager } = createManager();
     manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedSessions = 1;
-    const stuck = { disconnect: vi.fn().mockRejectedValue(new Error("still running")) };
+    const stuck = makeAgentSessionStub({ disconnect: vi.fn().mockRejectedValue(new Error("still running")) });
     await manager.cacheResumedSession("stuck", stuck);
     await manager.cacheResumedSession("next", fakeSession());
     await manager._drainCacheQueue();
@@ -490,7 +493,7 @@ describe("SessionManager bounded session lifecycle", () => {
     vi.useFakeTimers();
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
-    const stuck = { disconnect: vi.fn(() => new Promise<void>(() => {})) };
+    const stuck = makeAgentSessionStub({ disconnect: vi.fn(() => new Promise<void>(() => {})) });
     await manager.cacheResumedSession("stuck", stuck);
 
     await manager.cacheResumedSession("next", fakeSession());
@@ -513,11 +516,11 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.maxCachedSessions = 1;
     manager.maxPendingSessionCleanups = 1;
     let release!: () => void;
-    const first = {
+    const first = makeAgentSessionStub({
       disconnect: vi.fn(() => new Promise<void>((resolve) => {
         release = resolve;
       })),
-    };
+    });
     await manager.cacheResumedSession("first", first);
     await manager.cacheResumedSession("second", fakeSession());
     await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalledTimes(1));
@@ -539,11 +542,11 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.maxCachedContexts = 1;
     manager.maxPendingSessionCleanups = 10;
     let release!: () => void;
-    const first = {
+    const first = makeAgentSessionStub({
       disconnect: vi.fn(() => new Promise<void>((resolve) => {
         release = resolve;
       })),
-    };
+    });
     await manager.cacheResumedSession("first", first);
     await manager.cacheResumedSession("second", fakeSession());
     await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalledTimes(1));
@@ -563,7 +566,7 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedContexts = 2;
     let status: "idle" | "cancelled" | "removed" = "idle";
-    const parent = {
+    const parent = makeAgentSessionStub({
       sessionId: "parent",
       disconnect: vi.fn().mockResolvedValue(undefined),
       listTasks: vi.fn(async () => ({
@@ -585,7 +588,7 @@ describe("SessionManager bounded session lifecycle", () => {
         status = "removed";
         return { removed: true };
       }),
-    };
+    });
     await manager.cacheResumedSession("parent", parent);
     await manager.agentRegistry.refresh("parent", "test");
     manager.getActiveSessions = () => ["parent"];
@@ -607,7 +610,7 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedContexts = 2;
     let taskPresent = true;
-    const parent = {
+    const parent = makeAgentSessionStub({
       sessionId: "parent",
       disconnect: vi.fn().mockResolvedValue(undefined),
       listTasks: vi.fn(async () => ({
@@ -622,7 +625,7 @@ describe("SessionManager bounded session lifecycle", () => {
       })),
       cancelTask: vi.fn().mockResolvedValue({ cancelled: false }),
       removeTask: vi.fn().mockResolvedValue({ removed: false }),
-    };
+    });
     await manager.cacheResumedSession("parent", parent);
     await manager.agentRegistry.refresh("parent", "test");
     manager.getActiveSessions = () => ["parent"];
@@ -699,10 +702,10 @@ describe("SessionManager bounded session lifecycle", () => {
 
     // The backend hands back a different session ID than requested, and its
     // disconnect never settles, so cleanup ownership stays pending.
-    const rejected = {
+    const rejected = makeAgentSessionStub({
       sessionId: "backend-chose-this",
       disconnect: vi.fn(() => new Promise<void>(() => {})),
-    };
+    });
 
     manager.rejectMismatchedCreatedSession(
       "bridge-requested-this",

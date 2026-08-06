@@ -13,7 +13,7 @@ import {
 } from "../session-manager.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { defineBridgeTool } from "../agent-tools-mcp/adapter.js";
-import { createTestBus, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
+import { createTestBus, makeAgentSessionStub, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 
 const EXTRA_MCP_SERVER_NAME = "extra-tools";
 
@@ -34,7 +34,7 @@ function createCapabilities() {
 }
 
 function createFakeSession(sessionId: string, tools: any[] = []) {
-  return {
+  return makeAgentSessionStub({
     sessionId,
     send: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
@@ -54,7 +54,7 @@ function createFakeSession(sessionId: string, tools: any[] = []) {
     listMcpServers: vi.fn(async () => ({
       servers: [] as Array<{ name: string; status: string; source?: string }>,
     })),
-  };
+  });
 }
 
 function createInteractiveFakeSession(sessionId: string, tools: any[] = []) {
@@ -109,7 +109,8 @@ function createDeferred<T>() {
 }
 
 async function flushMicrotasks() {
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  // Deep enough to drain the agent-registry reap the resume path now awaits.
+  for (let i = 0; i < 80; i++) await Promise.resolve();
 }
 
 function createBridgeToolServer() {
@@ -454,10 +455,10 @@ describe("SessionManager native Bridge tools", () => {
     const startMcpOauthLogin = vi.fn(async () => ({}));
     try {
       await manager.initialize();
-      const session = {
+      const session = makeAgentSessionStub({
         ...createFakeSession("oauth-session"),
         startMcpOauthLogin,
-      };
+      });
       session.initializeTools.mockImplementationOnce(async () => {
         await initializationGate.promise;
       });
@@ -489,10 +490,10 @@ describe("SessionManager native Bridge tools", () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await manager.initialize();
-      const session = {
+      const session = makeAgentSessionStub({
         ...createFakeSession("oauth-timeout-session"),
         startMcpOauthLogin,
-      };
+      });
       session.initializeTools.mockImplementationOnce(async () => {
         await initializationGate.promise;
       });

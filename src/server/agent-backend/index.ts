@@ -22,9 +22,7 @@ export type {
   AgentElicitationRequest,
   AgentElicitationResponse,
   AgentModelInfo,
-  AgentPendingElicitationRequest,
   AgentPendingInteractionEvent,
-  AgentPendingUserInputRequest,
   AgentPermissionDecision,
   AgentPermissionPolicy,
   AgentPermissionRequest,
@@ -43,11 +41,6 @@ export type {
   AgentSetModelOptions,
   AgentUserInputRequest,
   AgentUserInputResponse,
-} from "./types.js";
-
-export {
-  AgentPendingInteractionUnsupportedError,
-  isAgentPendingInteractionUnsupportedError,
 } from "./types.js";
 
 export { CopilotBackend };

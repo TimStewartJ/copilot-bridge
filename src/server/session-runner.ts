@@ -140,10 +140,6 @@ export interface StartWorkOptions {
 }
 
 async function setSessionModeForSend(session: AgentSession, mode: string): Promise<void> {
-  if (typeof session.setSendMode !== "function") {
-    if (mode === DEFAULT_SEND_MODE) return;
-    throw new Error("Session mode switching is not available in this Copilot SDK build");
-  }
   await session.setSendMode({ mode });
 }
 
@@ -163,9 +159,6 @@ function slashCommandResultToText(result: Extract<AgentSlashCommandResult, { kin
 }
 
 async function invokeSlashCommand(session: AgentSession, command: ParsedSlashCommand): Promise<AgentSlashCommandResult> {
-  if (typeof session.invokeSlashCommand !== "function") {
-    throw new Error("Slash command invocation is not available in this agent backend");
-  }
   return session.invokeSlashCommand({ name: command.name, input: command.input });
 }
 

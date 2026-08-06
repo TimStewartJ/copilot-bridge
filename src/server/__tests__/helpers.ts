@@ -16,6 +16,7 @@ import { createGlobalBus } from "../global-bus.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
+import type { AgentSession } from "../agent-backend/index.js";
 
 const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
 const TEST_CLEANUP_MAX_RETRIES = 20;
@@ -205,14 +206,9 @@ export function createMockSessionManager() {
     cancelSessionAgent: async () => ({ cancelled: false }),
     listSlashCommands: async () => ({ supported: false, commands: [] }),
     getPendingUserInputCount: () => 0,
-    getPendingInteractionSnapshot: async () => ({
-      pendingUserInputs: [],
-      pendingElicitations: [],
-    }),
     hydratePendingInteractions: async () => ({
       pendingUserInputs: [],
       pendingElicitations: [],
-      runtimeSourced: { userInput: false, elicitation: false },
     }),
     getActiveSessions: () => [],
     getLifecycleBlockingSessionCount: () => 0,
@@ -300,3 +296,46 @@ export {
   testPath,
 } from "./test-paths.js";
 
+
+/**
+ * Fills a partial session double out to the full `AgentSession` facade.
+ *
+ * `AgentSession` requires every method: the Copilot wrapper defines them all
+ * unconditionally and reports capability absence through the *result* (either
+ * `undefined` or a thrown error), never through method presence. Callers
+ * therefore no longer guard with `typeof session.x === "function"`, so a mock
+ * that omits a method fails at runtime — and the `as unknown as AgentSession`
+ * casts these doubles rely on mean the compiler will not catch it.
+ *
+ * Build session doubles through this helper and override only what the test
+ * asserts on. The returned object keeps the caller's concrete mock types.
+ */
+export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentSession {
+  const defaults: AgentSession = {
+    sessionId: "session-1",
+    send: async () => undefined,
+    sendAndWait: async () => undefined,
+    abort: async () => undefined,
+    setModel: async () => undefined,
+    disconnect: () => undefined,
+    on: () => () => {},
+    getEvents: async () => [],
+    respondToUserInput: async () => true,
+    tryRespondToElicitation: async () => true,
+    setSendMode: async () => undefined,
+    invokeSlashCommand: async () => ({ kind: "text", text: "" }),
+    listSlashCommands: async () => undefined,
+    getCurrentModel: async () => undefined,
+    truncateHistory: async () => undefined,
+    listMcpServers: async () => undefined,
+    initializeTools: async () => undefined,
+    getCurrentToolMetadata: async () => undefined,
+    startMcpOauthLogin: async () => undefined,
+    getName: async () => undefined,
+    setName: async () => undefined,
+    listTasks: async () => ({ tasks: [] }),
+    cancelTask: async () => ({ cancelled: false }),
+    removeTask: async () => ({ removed: false }),
+  };
+  return Object.assign(defaults, overrides) as T & AgentSession;
+}

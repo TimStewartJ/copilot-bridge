@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { forceClearRestartPending, SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, createMockSessionManager, makeTestDir } from "./helpers.js";
+import { setupTestDb, createTestBus, createMockSessionManager, makeAgentSessionStub, makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -29,11 +29,11 @@ function createManager(copilotHome?: string) {
 function createMockSession(currentModelId?: string) {
   const setModel = vi.fn(async () => {});
   const getCurrent = vi.fn(async () => ({ modelId: currentModelId }));
-  return {
+  return makeAgentSessionStub({
     setModel,
     getCurrentModel: getCurrent,
     disconnect: vi.fn(),
-  };
+  });
 }
 
 const GPT_55_TIERED_MODEL = {
@@ -348,11 +348,11 @@ describe("SessionManager.setSessionModel", () => {
       .mockResolvedValueOnce({ modelId: "gpt-5.5" })
       .mockResolvedValueOnce({ modelId: "gpt-5.5" })
       .mockResolvedValueOnce({ modelId: "claude-opus-4.7" });
-    const session = {
+    const session = makeAgentSessionStub({
       setModel,
       getCurrentModel: getCurrent,
       disconnect: vi.fn(),
-    };
+    });
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 

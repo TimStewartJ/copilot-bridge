@@ -3,7 +3,7 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub } from "./helpers.js";
 
 type EmitSdkEvent = (event: any) => void;
 
@@ -37,7 +37,7 @@ function createManager() {
 
 function createSession(sendImpl: (emit: EmitSdkEvent) => Promise<void> | void) {
   const handlers: Array<(event: any) => void> = [];
-  const session = {
+  const session = makeAgentSessionStub({
     setSendMode: vi.fn().mockResolvedValue(undefined),
     on: vi.fn((handler: (event: any) => void) => {
       handlers.push(handler);
@@ -52,7 +52,7 @@ function createSession(sendImpl: (emit: EmitSdkEvent) => Promise<void> | void) {
       });
     }),
     disconnect: vi.fn(),
-  };
+  });
   return session;
 }
 

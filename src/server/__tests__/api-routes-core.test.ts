@@ -246,17 +246,12 @@ describe("Session stream route", () => {
     ctx.sessionManager.hydratePendingInteractions = vi.fn().mockResolvedValue({
       pendingUserInputs: snapshot.pendingUserInputs,
       pendingElicitations: [],
-      runtimeSourced: { userInput: true, elicitation: true },
     });
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribeWithSnapshot(listener: (event: unknown) => void) {
         queueMicrotask(() => listener({ type: "done", content: "" }));
         return {
-          snapshot: {
-            ...snapshot,
-            pendingUserInputs: [],
-            pendingElicitations: [],
-          },
+          snapshot: { ...snapshot, pendingElicitations: [] },
           unsubscribe: () => {},
         };
       },
@@ -269,7 +264,7 @@ describe("Session stream route", () => {
     expect(res.text).toContain('"pendingUserInputs":[{"requestId":"request-1"');
   });
 
-  it("keeps the bus listing index when the runtime cannot enumerate pending requests", async () => {
+  it("never lets hydration overwrite the bus snapshot's listing index", async () => {
     const busPending = {
       requestId: "request-index",
       question: "Pick one",
@@ -277,12 +272,12 @@ describe("Session stream route", () => {
       allowFreeform: false,
       requestedAt: "2026-04-29T12:00:00.000Z",
     };
-    // Copilot CLI >= 1.0.74 cannot list pending requests, so hydration reports
-    // the kind as non-authoritative and must not overwrite the bus snapshot.
+    // `subscribeWithSnapshot` is the linearization barrier, and its copy of the
+    // listing index is the one buffered cancellations refer to. Hydration only
+    // settles terminal cleanup; it must never replace what the barrier captured.
     ctx.sessionManager.hydratePendingInteractions = vi.fn().mockResolvedValue({
       pendingUserInputs: [],
       pendingElicitations: [],
-      runtimeSourced: { userInput: false, elicitation: false },
     });
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribeWithSnapshot(listener: (event: unknown) => void) {
