@@ -1143,10 +1143,7 @@ async function runStagingDeployJobImpl(
   if (hasUncommittedChanges) {
     const msgFile = join(stagingDir, ".commit-msg");
     try {
-      writeFileSync(
-        msgFile,
-        `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
-      );
+      writeFileSync(msgFile, `${String(message ?? "").replace(/\s+$/, "")}\n`);
       const commitResult = await runCommand(`git commit -F "${msgFile}"`, stagingDir);
       if (!commitResult.ok) {
         return commandFailure(
@@ -1808,7 +1805,11 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       type: "object",
       properties: {
         stagingDir: { type: "string", description: "Path to the staging worktree (returned by staging_init)" },
-        message: { type: "string", description: "Commit message describing the changes" },
+        message: {
+          type: "string",
+          description:
+            "Commit message describing the changes. Written to the commit verbatim, including any trailers you supply.",
+        },
       },
       required: ["stagingDir", "message"],
     },

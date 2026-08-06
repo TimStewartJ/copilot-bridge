@@ -2975,3 +2975,39 @@ describe("staging seed runtime isolation", () => {
     }
   });
 });
+
+describe("deploy commit message", () => {
+  it("writes the supplied message verbatim without adding a co-author trailer", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-msg-");
+    const stagingDir = join(stagingParent, "preview-msg");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "git --no-pager status --porcelain") return " M src/server/staging-tools.ts\n";
+      return "";
+    });
+
+    const message = "Subject line\n\nBody paragraph.\n\nCo-authored-by: Someone <someone@example.com>";
+    await deployTool.handler(
+      { stagingDir, message },
+      {
+        sessionId: "session-deploy-msg",
+        toolCallId: "deploy-msg",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    );
+
+    const commitMsgWrite = writeFileSyncCallMock.mock.calls.find(
+      ([file]) => basename(String(file)) === ".commit-msg",
+    );
+    expect(commitMsgWrite).toBeDefined();
+    expect(String(commitMsgWrite![1])).toBe(`${message}\n`);
+  });
+});
