@@ -1,8 +1,10 @@
-import type { ModelInfo } from "../api";
+import type { ModelFamilyDefaults, ModelInfo } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
-import { LaunchModelSelect, LaunchOptionRow } from "./shared/LaunchOptionControls";
+import { LaunchOptionRow } from "./shared/LaunchOptionControls";
+import ModelFamilyPicker from "./shared/ModelFamilyPicker";
+import type { ModelFamily } from "../../shared/model-families.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
 
@@ -11,12 +13,14 @@ interface NewSessionLaunchPanelProps {
   modelsLoading: boolean;
   modelsError?: string;
   defaultModelId?: string;
+  familyDefaults?: ModelFamilyDefaults;
   selectedModelId: string;
   reasoningEffortOptions: readonly LaunchOption<string>[];
   selectedReasoningEffort?: string;
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
   selectedContextTier?: CopilotContextTier;
   mode: SendMode;
+  onModelFamilyChange: (family: ModelFamily) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string) => void;
   onContextTierChange: (contextTier: CopilotContextTier) => void;
@@ -33,24 +37,20 @@ export default function NewSessionLaunchPanel({
   modelsLoading,
   modelsError,
   defaultModelId,
+  familyDefaults,
   selectedModelId,
   reasoningEffortOptions,
   selectedReasoningEffort,
   contextOptions,
   selectedContextTier,
   mode,
+  onModelFamilyChange,
   onModelChange,
   onReasoningEffortChange,
   onContextTierChange,
   onModeChange,
 }: NewSessionLaunchPanelProps) {
-  const availableModels = models
-    .filter((model) => model.policy?.state !== "disabled")
-    .sort((left, right) => left.name.localeCompare(right.name));
-  const defaultModel = availableModels.find((model) => model.id === defaultModelId);
-  const defaultLabel = defaultModel
-    ? `Default - ${defaultModel.name}`
-    : "Default model";
+  const availableModels = models.filter((model) => model.policy?.state !== "disabled");
 
   return (
     <div className="flex flex-1 items-center justify-center px-4 py-8">
@@ -64,18 +64,22 @@ export default function NewSessionLaunchPanel({
 
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <label htmlFor="new-session-model" className="sr-only">
-              Model
-            </label>
-            <LaunchModelSelect
-              id="new-session-model"
-              ariaLabel="Model for new session"
-              models={availableModels}
-              value={selectedModelId}
-              placeholderLabel={modelsLoading ? "Loading models..." : defaultLabel}
-              disabled={modelsLoading || Boolean(modelsError)}
-              onChange={onModelChange}
-            />
+            {modelsLoading ? (
+              <div className="rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-faint">
+                Loading models...
+              </div>
+            ) : (
+              <ModelFamilyPicker
+                idPrefix="new-session"
+                models={availableModels}
+                selectedModelId={selectedModelId}
+                globalDefaultModelId={defaultModelId}
+                familyDefaults={familyDefaults}
+                disabled={Boolean(modelsError)}
+                onSelectFamily={onModelFamilyChange}
+                onSelectModel={onModelChange}
+              />
+            )}
             {modelsError && (
               <p className="text-xs text-error" role="alert">
                 Models could not be loaded. The default model will be used.
