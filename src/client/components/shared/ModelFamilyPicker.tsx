@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import type { ModelFamilyDefaults, ModelInfo } from "../../api";
 import type { ModelFamily } from "../../../shared/model-families.js";
@@ -8,12 +8,22 @@ import {
   type ModelFamilyTile,
 } from "../../lib/model-family-defaults";
 import { formatModelMultiplier } from "./LaunchOptionControls";
+import {
+  computeMenuPlacement,
+  type MenuPlacement,
+} from "../../lib/menu-placement";
+
+function readViewport(): { width: number; height: number } {
+  if (typeof window === "undefined") return { width: 0, height: 0 };
+  return { width: window.innerWidth || 0, height: window.innerHeight || 0 };
+}
 
 function FamilyRefineMenu({
   tile,
   models,
   selectedModelId,
   globalDefaultModelId,
+  tileRefs,
   onSelect,
   onClose,
 }: {
@@ -21,11 +31,51 @@ function FamilyRefineMenu({
   models: readonly ModelInfo[];
   selectedModelId?: string;
   globalDefaultModelId?: string;
+  tileRefs: { current: Partial<Record<ModelFamily, HTMLDivElement | null>> };
   onSelect: (modelId: string) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const firstItemRef = useRef<HTMLButtonElement | null>(null);
+  const [placement, setPlacement] = useState<MenuPlacement | null>(null);
+  const family = tile.family;
+
+  const reposition = useCallback(() => {
+    const anchor = tileRefs.current[family];
+    const menu = menuRef.current;
+    if (!anchor?.getBoundingClientRect || !menu?.getBoundingClientRect) return;
+    const next = computeMenuPlacement(
+      anchor.getBoundingClientRect(),
+      menu.getBoundingClientRect(),
+      readViewport(),
+    );
+    // Bail on an unchanged placement so repositioning cannot loop through state.
+    setPlacement((prev) => {
+      if (prev === next) return prev;
+      if (prev && next
+        && prev.top === next.top
+        && prev.left === next.left
+        && prev.minWidth === next.minWidth
+        && prev.maxHeight === next.maxHeight) {
+        return prev;
+      }
+      return next;
+    });
+  }, [family, tileRefs]);
+
+  useLayoutEffect(() => {
+    reposition();
+  }, [reposition, models.length]);
+
+  // The tile row scrolls horizontally, so track scrolls from any ancestor.
+  useEffect(() => {
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [reposition]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -44,7 +94,17 @@ function FamilyRefineMenu({
       ref={menuRef}
       role="listbox"
       aria-label={`${tile.label} models`}
-      className="absolute left-0 top-full z-30 mt-1 max-h-64 min-w-52 overflow-y-auto rounded-md border border-border bg-bg-elevated p-1 shadow-xl"
+      className={`z-50 min-w-52 overflow-y-auto overscroll-contain rounded-md border border-border bg-bg-elevated p-1 shadow-xl ${
+        placement ? "fixed" : "absolute left-0 top-full mt-1 max-h-64"
+      }`}
+      style={placement
+        ? {
+          top: placement.top,
+          left: placement.left,
+          minWidth: placement.minWidth,
+          maxHeight: placement.maxHeight,
+        }
+        : undefined}
     >
       {models.map((model, index) => {
         const selected = model.id === selectedModelId;
@@ -104,6 +164,7 @@ export default function ModelFamilyPicker({
 }) {
   const [openFamily, setOpenFamily] = useState<ModelFamily | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const tileRefs = useRef<Partial<Record<ModelFamily, HTMLDivElement | null>>>({});
 
   const state: ModelFamilyPickerState = resolveModelFamilyState({
     models,
@@ -142,6 +203,9 @@ export default function ModelFamilyPicker({
         return (
           <div
             key={tile.family}
+            ref={(node) => {
+              tileRefs.current[tile.family] = node;
+            }}
             className={`relative min-w-28 flex-1 shrink-0 snap-start rounded-md border transition-colors ${
               live ? "border-accent bg-accent/10" : "border-border bg-bg-surface"
             } ${tileDisabled ? "opacity-60" : ""}`}
@@ -183,6 +247,7 @@ export default function ModelFamilyPicker({
                 models={familyModels}
                 selectedModelId={tile.model?.id}
                 globalDefaultModelId={globalDefaultModelId}
+                tileRefs={tileRefs}
                 onSelect={(modelId) => {
                   setOpenFamily(null);
                   onSelectModel(modelId);
