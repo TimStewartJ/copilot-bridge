@@ -55,6 +55,57 @@ describe("CLI session store cleanup", () => {
     }
   });
 
+  it("deletes rows from new tables that reference sessions", () => {
+    const copilotHome = makeTestDir("cli-session-store-foreign-keys");
+    const db = createCliStore(copilotHome);
+    try {
+      db.exec(`
+        CREATE TABLE assistant_usage_events (
+          id INTEGER PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id)
+        );
+        CREATE TABLE forge_trajectory_events (
+          id INTEGER PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id)
+        );
+        CREATE TABLE future_session_events (
+          id INTEGER PRIMARY KEY,
+          owner_session_id TEXT NOT NULL REFERENCES sessions(id)
+        );
+      `);
+      const insertSession = db.prepare(
+        "INSERT INTO sessions (id, summary, created_at, updated_at) VALUES (?, ?, ?, ?)",
+      );
+      insertSession.run("delete-me", null, "2026-08-06 00:00:00", "2026-08-06 00:00:00");
+      insertSession.run("keep-me", null, "2026-08-06 00:00:00", "2026-08-06 00:00:00");
+      for (const table of ["assistant_usage_events", "forge_trajectory_events"]) {
+        const insert = db.prepare(`INSERT INTO ${table} (session_id) VALUES (?)`);
+        insert.run("delete-me");
+        insert.run("keep-me");
+      }
+      const insertFuture = db.prepare("INSERT INTO future_session_events (owner_session_id) VALUES (?)");
+      insertFuture.run("delete-me");
+      insertFuture.run("keep-me");
+    } finally {
+      db.close();
+    }
+
+    deleteCliSessionStoreRows(copilotHome, "delete-me");
+
+    const readDb = new DatabaseSync(join(copilotHome, "session-store.db"), { readOnly: true });
+    try {
+      expect(readDb.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([{ id: "keep-me" }]);
+      expect(readDb.prepare("SELECT session_id FROM assistant_usage_events").all())
+        .toEqual([{ session_id: "keep-me" }]);
+      expect(readDb.prepare("SELECT session_id FROM forge_trajectory_events").all())
+        .toEqual([{ session_id: "keep-me" }]);
+      expect(readDb.prepare("SELECT owner_session_id FROM future_session_events").all())
+        .toEqual([{ owner_session_id: "keep-me" }]);
+    } finally {
+      readDb.close();
+    }
+  });
+
   it("sweeps only old helper rows whose session directories are gone", () => {
     const copilotHome = makeTestDir("cli-session-store-sweep");
     const db = createCliStore(copilotHome);
@@ -195,4 +246,3 @@ Reply with ONLY the title text for a stale helper',
     ]);
   });
 });
-
