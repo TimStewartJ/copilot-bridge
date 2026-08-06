@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
@@ -204,6 +204,8 @@ export function scheduleStartupBackendWarmup(
 
 export interface SeedStagingDataOptions {
   productionDataDir?: string;
+  /** Copilot home to copy the login pointer from. Defaults to the real user home. */
+  sourceCopilotHome?: string;
 }
 
 export interface RestoreStagingBackendWithRetryOptions {
@@ -302,6 +304,78 @@ function resolveStagingPreviewRuntimePaths(stagingDir: string): RuntimePaths {
   });
 }
 
+/**
+ * Fields in the Copilot CLI config that identify the signed-in account. These
+ * are plain identifiers (host and login) and hold no secret material: the token
+ * itself lives in the OS credential store, which the preview backend can
+ * already read because it runs as the same OS user.
+ */
+const COPILOT_LOGIN_POINTER_FIELDS = ["loggedInUsers", "lastLoggedInUser"] as const;
+
+export function resolveDefaultCopilotHome(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const home = (env.USERPROFILE ?? env.HOME ?? "").trim();
+  return home ? join(home, ".copilot") : undefined;
+}
+
+/**
+ * Merges the signed-in-account pointer from the real Copilot home into the
+ * isolated staging one.
+ *
+ * The staging preview deliberately runs against its own COPILOT_HOME so preview
+ * sessions cannot write into the real session store. That directory also holds
+ * the record of which account is signed in, so isolating session state also
+ * left the preview backend looking signed out and every model-backed API
+ * failing with "Not authenticated". Copying just the pointer keeps session
+ * isolation intact while letting the preview resolve the existing credential.
+ */
+export function seedStagingCopilotLogin(
+  targetCopilotHome: string,
+  options: SeedStagingDataOptions = {},
+): boolean {
+  const sourceHome = options.sourceCopilotHome ?? resolveDefaultCopilotHome();
+  if (!sourceHome) return false;
+
+  const sourceConfigPath = join(sourceHome, "config.json");
+  if (!existsSync(sourceConfigPath)) return false;
+
+  let sourceConfig: Record<string, unknown>;
+  try {
+    sourceConfig = JSON.parse(readFileSync(sourceConfigPath, "utf8")) as Record<string, unknown>;
+  } catch (err) {
+    log(`Warning: could not read the Copilot login pointer: ${err}`);
+    return false;
+  }
+
+  const pointer: Record<string, unknown> = {};
+  for (const field of COPILOT_LOGIN_POINTER_FIELDS) {
+    if (sourceConfig[field] !== undefined) pointer[field] = sourceConfig[field];
+  }
+  if (Object.keys(pointer).length === 0) return false;
+
+  const targetConfigPath = join(targetCopilotHome, "config.json");
+  let targetConfig: Record<string, unknown> = {};
+  if (existsSync(targetConfigPath)) {
+    try {
+      targetConfig = JSON.parse(readFileSync(targetConfigPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      // A corrupt staged config is disposable; start from an empty one.
+      targetConfig = {};
+    }
+  }
+
+  try {
+    mkdirSync(targetCopilotHome, { recursive: true });
+    writeFileSync(targetConfigPath, JSON.stringify({ ...targetConfig, ...pointer }, null, 2));
+  } catch (err) {
+    log(`Warning: could not seed the Copilot login pointer: ${err}`);
+    return false;
+  }
+
+  return true;
+}
+
 /** Seed a staging data directory from production data, with runtime-only state isolated.
  *  Uses the worktree's own data/ directory (already gitignored). */
 export function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): RuntimePaths {
@@ -341,6 +415,12 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
     cpSync(docsSrc, runtimePaths.docsDir, { recursive: true });
   }
 
+  if (runtimePaths.copilotHome && !seedStagingCopilotLogin(runtimePaths.copilotHome, options)) {
+    // Not fatal: the preview still boots, but model-backed UI will report that
+    // models could not be loaded.
+    log("Warning: staging preview has no Copilot login pointer; model-backed APIs will be unauthenticated");
+  }
+
   log(`Seeded staging data at ${dataDir}`);
   return runtimePaths;
 }
@@ -365,7 +445,13 @@ async function preparePreviewRuntime(
 ): Promise<RuntimePaths> {
   if (options.preserveExisting) {
     const existing = getExistingPreviewRuntime(stagingDir);
-    if (existing) return existing;
+    if (existing) {
+      // Restores skip the full seed, but the login pointer must still be
+      // refreshed here or a preview created before this ran (or one whose
+      // account changed) would come back unauthenticated after a restart.
+      if (existing.copilotHome) seedStagingCopilotLogin(existing.copilotHome);
+      return existing;
+    }
   }
 
   return Promise.resolve(seedStagingData(stagingDir));
