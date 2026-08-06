@@ -54,6 +54,7 @@ import {
   type CapturedCommandOutput,
 } from "./staging-command-utils.js";
 import { log } from "./staging-log.js";
+import { parseJsonc } from "./jsonc.js";
 
 export interface ActiveStagingBackend {
   child: ChildProcess;
@@ -342,7 +343,7 @@ export function seedStagingCopilotLogin(
 
   let sourceConfig: Record<string, unknown>;
   try {
-    sourceConfig = JSON.parse(readFileSync(sourceConfigPath, "utf8")) as Record<string, unknown>;
+    sourceConfig = parseJsonc<Record<string, unknown>>(readFileSync(sourceConfigPath, "utf8"));
   } catch (err) {
     log(`Warning: could not read the Copilot login pointer: ${err}`);
     return false;
@@ -358,7 +359,7 @@ export function seedStagingCopilotLogin(
   let targetConfig: Record<string, unknown> = {};
   if (existsSync(targetConfigPath)) {
     try {
-      targetConfig = JSON.parse(readFileSync(targetConfigPath, "utf8")) as Record<string, unknown>;
+      targetConfig = parseJsonc<Record<string, unknown>>(readFileSync(targetConfigPath, "utf8"));
     } catch {
       // A corrupt staged config is disposable; start from an empty one.
       targetConfig = {};

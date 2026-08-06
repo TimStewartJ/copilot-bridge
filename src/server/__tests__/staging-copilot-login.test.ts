@@ -66,6 +66,24 @@ describe("seedStagingCopilotLogin", () => {
     expect(seeded.staff).toBeUndefined();
   });
 
+  it("reads a source config written as JSONC with a comment header", () => {
+    // The real Copilot CLI config is JSONC: it opens with a comment header and
+    // stores "https://github.com", so neither JSON.parse nor a naive comment
+    // regex handles it. Earlier fixtures used JSON.stringify and missed this.
+    const root = makeTestDir("bridge-staging-copilot-login-");
+    const source = join(root, "source");
+    const target = join(root, "target");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "config.json"), [
+      "// User settings belong in settings.json.",
+      "// This file is managed automatically.",
+      JSON.stringify(LOGIN_POINTER, null, 2),
+    ].join("\n"));
+
+    expect(seedStagingCopilotLogin(target, { sourceCopilotHome: source })).toBe(true);
+    expect(readConfig(target)).toMatchObject(LOGIN_POINTER);
+  });
+
   it("reports failure when the source copilot home has no config", () => {
     const root = makeTestDir("bridge-staging-copilot-login-");
     const target = join(root, "target");
