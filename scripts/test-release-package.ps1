@@ -160,8 +160,14 @@ try {
   $nodeModulesRoot = Join-Path $appRoot "node_modules"
   if (Test-Path $nodeModulesRoot) {
     Assert-PathExists "Copilot SDK runtime" (Join-Path $nodeModulesRoot "@github\copilot-sdk\dist\index.js")
-    Assert-PathExists "Copilot CLI JavaScript entrypoint" (Join-Path $nodeModulesRoot "@github\copilot\index.js")
-    $copilotPrebuildRoot = Join-Path $nodeModulesRoot "@github\copilot\prebuilds\win32-x64"
+    Assert-PathExists "Copilot CLI npm loader" (Join-Path $nodeModulesRoot "@github\copilot\npm-loader.js")
+    $copilotPlatformRoot = Join-Path $nodeModulesRoot "@github\copilot-win32-x64"
+    Assert-PathExists "Copilot CLI Windows x64 package" $copilotPlatformRoot
+    Assert-PathExists "Copilot CLI Windows x64 executable" (Join-Path $copilotPlatformRoot "copilot.exe")
+    Assert-PathExists "Copilot CLI Windows x64 app entrypoint" (Join-Path $copilotPlatformRoot "app.js")
+    Assert-PathExists "Copilot CLI Windows x64 command entrypoint" (Join-Path $copilotPlatformRoot "index.js")
+    Assert-PathExists "Copilot CLI Windows x64 SDK entrypoint" (Join-Path $copilotPlatformRoot "sdk\index.js")
+    $copilotPrebuildRoot = Join-Path $copilotPlatformRoot "prebuilds\win32-x64"
     Assert-PathExists "Copilot CLI Windows x64 prebuilds" $copilotPrebuildRoot
     Assert-PathExists "Copilot CLI Windows x64 native addon" (Join-Path $copilotPrebuildRoot "cli-native.node")
   }
@@ -183,9 +189,9 @@ try {
   if ($hasNodeModules) {
     Push-Location $appRoot
     try {
-      & $nodeExe --input-type=module -e "import('@github/copilot-sdk').then(({ CopilotClient }) => { new CopilotClient({ autoStart: false }); console.log('Copilot SDK runtime import passed'); })"
+      & $nodeExe --input-type=module -e "Promise.all([import('@github/copilot-sdk'), import('@github/copilot-win32-x64/sdk')]).then(([{ CopilotClient }]) => { new CopilotClient({ autoStart: false }); console.log('Copilot SDK and Windows x64 runtime imports passed'); })"
       if ($LASTEXITCODE -ne 0) {
-        throw "Copilot SDK runtime import failed with exit code $LASTEXITCODE."
+        throw "Copilot SDK or Windows x64 runtime import failed with exit code $LASTEXITCODE."
       }
     } finally {
       Pop-Location
