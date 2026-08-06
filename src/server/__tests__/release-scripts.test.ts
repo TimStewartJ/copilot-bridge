@@ -49,4 +49,9 @@ describe("release scripts", () => {
     expect(workflowSource).not.toMatch(/actions\/upload-artifact@v[1-5]\b/);
     expect(workflowSource).not.toMatch(/actions\/download-artifact@v[1-6]\b/);
   });
+
+  it("runs CI for pushed staging branches", () => {
+    const ciWorkflow = readFileSync(join(process.cwd(), ".github", "workflows", "ci.yml"), "utf-8");
+    expect(ciWorkflow).toContain('- "staging/**"');
+  });
 });
