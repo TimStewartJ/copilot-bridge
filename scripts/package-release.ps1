@@ -61,7 +61,6 @@ function Optimize-RuntimeNodeModules([string]$AppDir) {
   Remove-ChildrenExcept (Join-Path $copilotRoot "mxc-bin") @("x64")
   Remove-ChildrenExcept (Join-Path $copilotRoot "koffi\build\koffi") @("win32_x64")
   Remove-ChildrenExcept (Join-Path $copilotRoot "clipboard\node_modules\@teddyzhu") @("clipboard", "clipboard-win32-x64-msvc")
-  Remove-PathIfExists (Join-Path $AppDir "node_modules\@github\copilot-win32-x64")
 }
 
 function Read-UpdateManifestPublicKeyPem {
@@ -168,7 +167,8 @@ if (-not [string]::IsNullOrWhiteSpace($updateManifestPublicKeyPem)) {
 if ($IncludeNodeModules) {
   Push-Location $appDir
   try {
-    npm install --omit=dev --omit=optional --no-audit --no-fund
+    # The Copilot CLI native runtime is an optional dependency selected by OS and architecture.
+    npm install --omit=dev --include=optional --no-audit --no-fund
   } finally {
     Pop-Location
   }
