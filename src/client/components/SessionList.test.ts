@@ -370,6 +370,19 @@ describe("SessionList change model dialog", () => {
     });
   }
 
+  async function clickFamilyTile(
+    harness: { act: any; dom: { container: any } },
+    family: string,
+  ) {
+    const tile = findAllByTag(harness.dom.container, "BUTTON")
+      .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
+        .startsWith(`${family}:`));
+    if (!tile) throw new Error(`Family tile not found: ${family}`);
+    await harness.act(async () => {
+      getReactProps(tile)?.onClick?.();
+    });
+  }
+
   it("submits the effort and context tier picked from the option rows", async () => {
     const harness = await openModelDialog(
       { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
@@ -408,10 +421,8 @@ describe("SessionList change model dialog", () => {
       );
 
       await clickButton(harness, "High");
-      const select = findAllByTag(harness.dom.container, "SELECT")[0];
-      await harness.act(async () => {
-        getReactProps(select)?.onChange?.({ target: { value: "plain-model" } });
-      });
+      // "plain-model" has no gpt-/claude- prefix, so it lives in the Other family.
+      await clickFamilyTile(harness, "Other");
 
       await clickButton(harness, "Save");
       await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {

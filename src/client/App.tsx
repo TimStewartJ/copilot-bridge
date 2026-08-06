@@ -63,6 +63,14 @@ import {
   resolveNewSessionLaunchState,
   type ScopedLaunchSelection,
 } from "./lib/new-session-launch";
+import {
+  resolveModelFamilyState,
+  selectFamily,
+  selectModelInFamily,
+  type ModelFamilySelection,
+} from "./lib/model-family-defaults";
+import { useStickyModelFamilyDefaults } from "./hooks/useStickyModelFamilyDefaults";
+import type { ModelFamily } from "../shared/model-families.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
@@ -2300,19 +2308,66 @@ function SessionRoute({
     reasoningEffortSelection: launchReasoningEffort,
     contextTierSelection: launchContextTier,
   });
+  const {
+    familyDefaults,
+    markTouched: markLaunchTouched,
+    resetTouched: resetLaunchTouched,
+  } = useStickyModelFamilyDefaults({
+    enabled: isDraft,
+    modelId: launchState.modelKey,
+    reasoningEffort: launchState.selectedReasoningEffort,
+    contextTier: launchState.selectedContextTier,
+  });
 
   const resetLaunchOptions = useCallback(() => {
     setLaunchModel("");
     setLaunchMode(DEFAULT_SEND_MODE);
     setLaunchReasoningEffort(null);
     setLaunchContextTier(null);
-  }, []);
+    resetLaunchTouched();
+  }, [resetLaunchTouched]);
+
+  /**
+   * Applies a family selection as one unit so the restored effort and context
+   * tier arrive scoped to the new model instead of being cleared.
+   */
+  const applyLaunchSelection = useCallback((selection: ModelFamilySelection) => {
+    markLaunchTouched();
+    setLaunchModel(selection.modelId);
+    setLaunchReasoningEffort(
+      selection.reasoningEffort
+        ? { modelId: selection.resolvedModelId, value: selection.reasoningEffort }
+        : null,
+    );
+    setLaunchContextTier(
+      selection.contextTier
+        ? { modelId: selection.resolvedModelId, value: selection.contextTier }
+        : null,
+    );
+  }, [markLaunchTouched]);
+
+  const handleLaunchFamilyChange = useCallback((family: ModelFamily) => {
+    const selection = selectFamily({
+      family,
+      state: resolveModelFamilyState({
+        models: launchState.availableModels,
+        selectedModelId: launchModel,
+        globalDefaultModelId: defaultModelId,
+        familyDefaults,
+      }),
+      globalDefaultModelId: defaultModelId,
+      familyDefaults,
+    });
+    if (selection) applyLaunchSelection(selection);
+  }, [applyLaunchSelection, defaultModelId, familyDefaults, launchModel, launchState.availableModels]);
 
   const handleLaunchModelChange = useCallback((modelId: string) => {
-    setLaunchModel(modelId);
-    setLaunchReasoningEffort(null);
-    setLaunchContextTier(null);
-  }, []);
+    applyLaunchSelection(selectModelInFamily({
+      modelId,
+      globalDefaultModelId: defaultModelId,
+      familyDefaults,
+    }));
+  }, [applyLaunchSelection, defaultModelId, familyDefaults]);
 
   useEffect(() => {
     if (previousDraftRouteKeyRef.current === draftRouteKey) return;
@@ -2409,20 +2464,24 @@ function SessionRoute({
       modelsLoading={modelsQuery.isLoading}
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
       defaultModelId={defaultModelId}
+      familyDefaults={familyDefaults}
       selectedModelId={launchModel}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
       selectedContextTier={launchState.selectedContextTier}
       mode={launchMode}
+      onModelFamilyChange={handleLaunchFamilyChange}
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={(reasoningEffort) => {
+        markLaunchTouched();
         setLaunchReasoningEffort({
           modelId: launchState.modelKey,
           value: reasoningEffort,
         });
       }}
       onContextTierChange={(contextTier) => {
+        markLaunchTouched();
         setLaunchContextTier({
           modelId: launchState.modelKey,
           value: contextTier,

@@ -22,11 +22,20 @@ import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
-import { LaunchModelSelect, LaunchOptionRow } from "./shared/LaunchOptionControls";
+import { LaunchOptionRow } from "./shared/LaunchOptionControls";
+import ModelFamilyPicker from "./shared/ModelFamilyPicker";
 import {
   buildContextTierOptions,
   buildReasoningEffortOptions,
 } from "../lib/new-session-launch";
+import {
+  resolveModelFamilyState,
+  selectFamily,
+  selectModelInFamily,
+  type ModelFamilySelection,
+} from "../lib/model-family-defaults";
+import { useStickyModelFamilyDefaults } from "../hooks/useStickyModelFamilyDefaults";
+import type { ModelFamily } from "../../shared/model-families.js";
 import {
   getContextTierLabel,
   modelSupportsLongContext,
@@ -393,7 +402,55 @@ export default function SessionList({
   const reasoningDraftCanBeSubmitted =
     !!reasoningDraft
     && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
-  const showDraftModelOption = !!modelDraft && !availableModels.some((model) => model.id === modelDraft);
+  const {
+    familyDefaults: dialogFamilyDefaults,
+    markTouched: markDialogTouched,
+  } = useStickyModelFamilyDefaults({
+    enabled: !!modelDialogSessionId,
+    modelId: modelDraft,
+    reasoningEffort: dialogSelectedReasoningEffort,
+    contextTier: dialogSelectedContextTier,
+  });
+
+  /**
+   * Applies a family or model pick to all three drafts at once. Restored
+   * effort/context are dropped when the target model cannot support them.
+   */
+  const applyDialogSelection = useCallback((selection: ModelFamilySelection) => {
+    markDialogTouched();
+    const modelInfo = modelOptions?.find((model) => model.id === selection.resolvedModelId);
+    setModelDraft(selection.resolvedModelId);
+    setReasoningDraft(
+      selection.reasoningEffort
+        && modelInfo?.supportedReasoningEfforts?.includes(selection.reasoningEffort)
+        ? selection.reasoningEffort
+        : "",
+    );
+    setContextTierDraft(
+      modelSupportsLongContext(modelInfo) ? (selection.contextTier ?? "default") : "",
+    );
+  }, [markDialogTouched, modelOptions]);
+
+  const handleDialogFamilyChange = useCallback((family: ModelFamily) => {
+    const selection = selectFamily({
+      family,
+      state: resolveModelFamilyState({
+        models: availableModels,
+        selectedModelId: modelDraft,
+        familyDefaults: dialogFamilyDefaults,
+      }),
+      familyDefaults: dialogFamilyDefaults,
+    });
+    if (selection) applyDialogSelection(selection);
+  }, [applyDialogSelection, availableModels, dialogFamilyDefaults, modelDraft]);
+
+  const handleDialogModelChange = useCallback((modelId: string) => {
+    applyDialogSelection(selectModelInFamily({
+      modelId,
+      familyDefaults: dialogFamilyDefaults,
+    }));
+  }, [applyDialogSelection, dialogFamilyDefaults]);
+
   const canSaveModelSwitch =
     !!modelDialogSessionId
     && !!modelDraft.trim()
@@ -1056,9 +1113,6 @@ export default function SessionList({
 
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <label className="sr-only" htmlFor="session-model-select">
-                  Model
-                </label>
                 {modelOptionsError ? (
                   <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
                     <div>Failed to load models: {modelOptionsError}</div>
@@ -1072,22 +1126,19 @@ export default function SessionList({
                       Retry
                     </button>
                   </div>
+                ) : modelOptionsLoading ? (
+                  <div className="rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-faint">
+                    Loading models...
+                  </div>
                 ) : (
-                  <LaunchModelSelect
-                    id="session-model-select"
-                    ariaLabel="Model for this session"
+                  <ModelFamilyPicker
+                    idPrefix="session-model"
                     models={availableModels}
-                    value={modelDraft}
-                    placeholderLabel={modelOptionsLoading ? "Loading models..." : "Select a model"}
-                    placeholderDisabled
-                    unlistedModelId={showDraftModelOption ? modelDraft : undefined}
-                    disabled={modelOptionsLoading || modelSwitchSaving}
-                    onChange={(nextModel) => {
-                      setModelDraft(nextModel);
-                      setReasoningDraft("");
-                      const modelInfo = modelOptions?.find((model) => model.id === nextModel);
-                      setContextTierDraft(modelSupportsLongContext(modelInfo) ? "default" : "");
-                    }}
+                    selectedModelId={modelDraft}
+                    familyDefaults={dialogFamilyDefaults}
+                    disabled={modelSwitchSaving}
+                    onSelectFamily={handleDialogFamilyChange}
+                    onSelectModel={handleDialogModelChange}
                   />
                 )}
                 {!modelOptionsError && (
