@@ -47,6 +47,7 @@ function findTextarea(root: any): any {
 
 describe("ChatInput voice retry", () => {
   let harness: ReactDomHarness | null = null;
+  let pointerFineMatches = true;
 
   function getHarness() {
     if (!harness) throw new Error("ChatInput harness has not been initialized");
@@ -60,8 +61,9 @@ describe("ChatInput voice retry", () => {
       return 1;
     });
     harness = await createReactDomHarness();
-    (globalThis.window as any).matchMedia = vi.fn(() => ({
-      matches: false,
+    pointerFineMatches = true;
+    (globalThis.window as any).matchMedia = vi.fn((query: string) => ({
+      matches: query === "(pointer: fine)" ? pointerFineMatches : false,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     }));
@@ -378,8 +380,60 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("run autonomously", undefined, "autopilot");
   });
 
-  it("shows slash command suggestions and inserts a selected command", async () => {
-    await renderChatInput({
+  it("keeps Enter as a newline on touch devices so only the send button submits", async () => {
+    pointerFineMatches = false;
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, isDraft: true });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "first line",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+      getReactProps(textarea)?.onKeyDown?.({
+        key: "Enter",
+        shiftKey: false,
+        preventDefault,
+      });
+    });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("still sends on Ctrl+Enter when a touch device has a hardware keyboard", async () => {
+    pointerFineMatches = false;
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, isDraft: true });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "send me",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+      getReactProps(textarea)?.onKeyDown?.({
+        key: "Enter",
+        shiftKey: false,
+        ctrlKey: true,
+        preventDefault,
+      });
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("send me", undefined, "interactive");
+  });
+
+  it("shows slash command suggestions and inserts a selected command", async () => {    await renderChatInput({
       slashCommandsSupported: true,
       slashCommands: [{
         name: "goal",

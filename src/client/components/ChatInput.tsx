@@ -16,6 +16,7 @@ import {
   type VoiceSubmitMode,
 } from "../lib/voice-submit-mode";
 import { isDraftComposerKey } from "../lib/composer-key";
+import { hasFinePointer, usesSoftKeyboard } from "../lib/pointer";
 import {
   shouldClearAcceptedFlashHandoff,
   shouldFlashAcceptedHandoff,
@@ -326,7 +327,7 @@ export default function ChatInput({
 
   // Auto-focus on session change (desktop only — avoids keyboard popup on mobile)
   useEffect(() => {
-    if (composerKey && window.matchMedia("(pointer: fine)").matches) {
+    if (composerKey && hasFinePointer()) {
       textareaRef.current?.focus();
     }
   }, [composerKey]);
@@ -483,7 +484,7 @@ export default function ChatInput({
     }
     clearComposer();
 
-    if (textareaRef.current && !window.matchMedia("(pointer: fine)").matches) {
+    if (textareaRef.current && usesSoftKeyboard()) {
       textareaRef.current.blur();
     }
   }, [clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, onAbort, onClearVoiceJobError, onSend, uploading]);
@@ -508,6 +509,9 @@ export default function ChatInput({
       }
     }
     if (e.key === "Enter" && !e.shiftKey) {
+      // On-screen keyboards have no Shift+Enter, so Enter inserts a newline there and
+      // the send button is the only way to submit. Ctrl/Cmd+Enter still sends.
+      if (usesSoftKeyboard() && !e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       handleSend();
     }
@@ -772,6 +776,7 @@ export default function ChatInput({
               onChange={handleInput}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
+              enterKeyHint="enter"
               placeholder="Type a message, use the mic, or attach a file..."
               rows={1}
               className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
