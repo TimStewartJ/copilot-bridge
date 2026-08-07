@@ -11,8 +11,16 @@ const ADO_FIELDS: ProviderEditorField[] = [
 ];
 
 const GITHUB_FIELDS: ProviderEditorField[] = [
-  { key: "owner", label: "Owner (org or user)", placeholder: "e.g. microsoft", required: true },
-  { key: "defaultRepo", label: "Default repository (optional)", placeholder: "e.g. vscode" },
+  { key: "owner", label: "Default owner (optional)", placeholder: "e.g. microsoft" },
+  {
+    key: "defaultRepo",
+    label: "Default repository (optional)",
+    placeholder: "e.g. vscode",
+    validate: (value, values) =>
+      value && !values.owner
+        ? "Default owner is required when a default repository is set"
+        : null,
+  },
 ];
 
 const LINEAR_FIELDS: ProviderEditorField[] = [
@@ -139,7 +147,7 @@ export function ProvidersSection({
         {/* GitHub Provider */}
         {editingProvider === "github" ? (
           <ProviderEditor
-            title="GitHub"
+            title="GitHub short-reference defaults"
             fields={GITHUB_FIELDS}
             initialValues={
               providers.github
@@ -152,7 +160,7 @@ export function ProvidersSection({
                 : undefined
             }
             onSave={(values) => {
-              const cfg: GitHubProviderConfig = { owner: values.owner };
+              const cfg: GitHubProviderConfig = { owner: values.owner ?? "" };
               if (values.defaultRepo) cfg.defaultRepo = values.defaultRepo;
               updateProvider({ ...providers, github: cfg });
             }}
@@ -180,12 +188,14 @@ export function ProvidersSection({
             </div>
             {providers.github && (
               <div className="mt-2 space-y-1">
-                <div className="text-xs text-text-muted">
-                  <span className="text-text-faint">owner:</span>{" "}
-                  <code className="text-text-secondary">
-                    {providers.github.owner}
-                  </code>
-                </div>
+                {providers.github.owner && (
+                  <div className="text-xs text-text-muted">
+                    <span className="text-text-faint">owner:</span>{" "}
+                    <code className="text-text-secondary">
+                      {providers.github.owner}
+                    </code>
+                  </div>
+                )}
                 {providers.github.defaultRepo && (
                   <div className="text-xs text-text-muted">
                     <span className="text-text-faint">default repo:</span>{" "}

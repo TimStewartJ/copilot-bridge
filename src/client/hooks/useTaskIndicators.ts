@@ -11,31 +11,63 @@ export interface TaskIndicator {
   lastActivity: string;
 }
 
-/** Count non-archived tasks whose linked sessions currently show unread activity. */
-export function countTaskTabUnread(
-  tasks: Task[],
-  taskIndicators: Map<string, TaskIndicator>,
-): number {
-  let unread = 0;
-  for (const task of tasks) {
-    if (task.status === "archived") continue;
-    if (task.muted) continue;
-    if (taskIndicators.get(task.id)?.unread) unread++;
-  }
-  return unread;
+export interface TabAttentionSummary {
+  count: number;
+  needsUserInputCount: number;
 }
 
-/** Count unread orphan chats using the same nav-tab semantics as the task rail. */
-export function countChatTabUnread(
+/** Summarize non-archived, unmuted tasks that have unread activity or need an answer. */
+export function summarizeTaskTabAttention(
+  tasks: Task[],
+  taskIndicators: Map<string, TaskIndicator>,
+): TabAttentionSummary {
+  let count = 0;
+  let needsUserInputCount = 0;
+  for (const task of tasks) {
+    if (task.status === "archived" || task.muted) continue;
+    const indicator = taskIndicators.get(task.id);
+    if (!indicator) continue;
+    const needsUserInput = (indicator.needsUserInputCount ?? 0) > 0;
+    if (indicator.unreadCount <= 0 && !needsUserInput) continue;
+    count++;
+    if (needsUserInput) needsUserInputCount++;
+  }
+  return { count, needsUserInputCount };
+}
+
+/** Summarize orphan chats that have unread activity or need an answer. */
+export function summarizeChatTabAttention(
   orphanSessions: Session[],
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
-): number {
-  let unread = 0;
+  activeSessionId?: string | null,
+): TabAttentionSummary {
+  let count = 0;
+  let needsUserInputCount = 0;
   for (const session of orphanSessions) {
-    if (session.archived || isSessionActive(session)) continue;
-    if (isUnread?.(session.sessionId, getSessionActivityTime(session))) unread++;
+    if (session.archived) continue;
+    const needsUserInput = sessionNeedsUserInput(session);
+    const unread = !isSessionActive(session)
+      && session.sessionId !== activeSessionId
+      && Boolean(isUnread?.(session.sessionId, getSessionActivityTime(session)));
+    if (!unread && !needsUserInput) continue;
+    count++;
+    if (needsUserInput) needsUserInputCount++;
   }
-  return unread;
+  return { count, needsUserInputCount };
+}
+
+export function describeTabAttention(
+  summary: TabAttentionSummary,
+  singular: string,
+  plural: string,
+): string | null {
+  if (summary.count <= 0) return null;
+  const entity = summary.count === 1 ? singular : plural;
+  const attentionVerb = summary.count === 1 ? "needs" : "need";
+  const attention = `${summary.count} ${entity} ${attentionVerb} attention`;
+  if (summary.needsUserInputCount <= 0) return attention;
+  const answerVerb = summary.needsUserInputCount === 1 ? "needs" : "need";
+  return `${attention}; ${summary.needsUserInputCount} ${answerVerb} an answer`;
 }
 
 /** Max of task.updatedAt and the latest session activity across all linked sessions (including archived). */

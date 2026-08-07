@@ -7,6 +7,10 @@ export interface ProviderEditorField {
   label: string;
   placeholder: string;
   required?: boolean;
+  validate?: (
+    value: string,
+    values: Readonly<Record<string, string>>,
+  ) => string | null;
 }
 
 export interface ProviderEditorProps {
@@ -34,12 +38,15 @@ export function ProviderEditor({
     ),
   );
 
+  const trimmedValues = Object.fromEntries(
+    fields.map((field) => [field.key, values[field.key]?.trim() ?? ""]),
+  );
   const errors: Record<string, string | null> = {};
   for (const f of fields) {
-    if (f.required && (values[f.key]?.trim() ?? "") === "") {
+    if (f.required && trimmedValues[f.key] === "") {
       errors[f.key] = `${f.label} is required`;
     } else {
-      errors[f.key] = null;
+      errors[f.key] = f.validate?.(trimmedValues[f.key] ?? "", trimmedValues) ?? null;
     }
   }
   const canSave = Object.values(errors).every((e) => e === null);
@@ -87,7 +94,7 @@ export function ProviderEditor({
             if (!canSave) return;
             const trimmed: Record<string, string> = {};
             for (const f of fields) {
-              const v = values[f.key]?.trim() ?? "";
+              const v = trimmedValues[f.key] ?? "";
               if (v) trimmed[f.key] = v;
             }
             onSave(trimmed);

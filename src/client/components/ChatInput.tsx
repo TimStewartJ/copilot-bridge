@@ -637,7 +637,8 @@ export default function ChatInput({
                 )}
                 <button
                   onClick={() => removeAttachment(i)}
-                  className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-text-secondary hover:text-error"
+                  className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity text-text-secondary hover:text-error"
+                  aria-label={`Remove attachment ${att.displayName ?? "file"}`}
                   type="button"
                 >
                   <X size={12} />
@@ -708,6 +709,7 @@ export default function ChatInput({
               onClick={() => fileInputRef.current?.click()}
               className="h-12 px-3 text-text-faint hover:text-text-secondary transition-colors flex flex-shrink-0 items-center justify-center"
               title="Attach file"
+              aria-label="Attach file"
               type="button"
             >
               <Paperclip size={18} />

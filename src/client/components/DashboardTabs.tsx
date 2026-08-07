@@ -1,5 +1,9 @@
 import { CheckSquare, Inbox } from "lucide-react";
-import type { DashboardTab } from "../lib/dashboard-routes";
+import {
+  getDashboardPanelId,
+  getDashboardTabId,
+  type DashboardTab,
+} from "../lib/dashboard-routes";
 
 interface DashboardTabsProps {
   activeTab: DashboardTab;
@@ -31,6 +35,8 @@ export default function DashboardTabs({
       <button
         type="button"
         role="tab"
+        id={getDashboardTabId("checklist")}
+        aria-controls={getDashboardPanelId("checklist")}
         aria-selected={activeTab === "checklist"}
         onClick={() => onTabChange("checklist")}
         className={tabClass(activeTab === "checklist")}
@@ -49,6 +55,8 @@ export default function DashboardTabs({
       <button
         type="button"
         role="tab"
+        id={getDashboardTabId("feed")}
+        aria-controls={getDashboardPanelId("feed")}
         aria-selected={activeTab === "feed"}
         onClick={() => onTabChange("feed")}
         className={tabClass(activeTab === "feed")}

@@ -17,6 +17,20 @@ function findRemoveButton(root: any): any {
   return button;
 }
 
+function findEditButtons(root: any): any[] {
+  return findAllByTag(root, "BUTTON").filter(
+    (candidate) => getReactProps(candidate)?.title === "Edit",
+  );
+}
+
+function findButtonByText(root: any, text: string): any {
+  const button = findAllByTag(root, "BUTTON").find(
+    (candidate) => candidate.textContent === text,
+  );
+  if (!button) throw new Error(`Button not found: ${text}`);
+  return button;
+}
+
 function createDraft(): AppSettings {
   return {
     mcpServers: {},
@@ -102,11 +116,98 @@ describe("ProvidersSection GitHub defaults badge", () => {
   });
 
   it("says defaults are set once an owner is configured", async () => {
-    const text = await renderProviders({ github: { owner: "microsoft" } });
+    const text = await renderProviders({
+      github: { owner: "microsoft", defaultRepo: "vscode" },
+    });
 
     expect(text).toContain("defaults set");
     expect(text).not.toContain("no defaults");
     expect(text).toContain("microsoft");
+    expect(text).toContain("vscode");
     expect(text).toContain("link without configuration");
+  });
+
+  it("allows saving with no defaults but rejects a repository without its owner", async () => {
+    const setDraft = vi.fn();
+    harness = await createReactDomHarness();
+    await harness.render(
+      createElement(ProvidersSection, {
+        draft: { mcpServers: {} },
+        setDraft,
+      }),
+    );
+
+    const githubEditButton = findEditButtons(harness.dom.container)[1];
+    if (!githubEditButton) throw new Error("GitHub edit button not found");
+    await harness.act(async () => {
+      getReactProps(githubEditButton)?.onClick?.();
+    });
+
+    const configureButton = findButtonByText(harness.dom.container, "Configure");
+    expect(getReactProps(configureButton)?.disabled).toBe(false);
+    await harness.act(async () => {
+      getReactProps(configureButton)?.onClick?.();
+    });
+
+    expect(setDraft).toHaveBeenCalledWith({
+      mcpServers: {},
+      providers: undefined,
+    });
+
+    await harness.render(
+      createElement(ProvidersSection, {
+        draft: { mcpServers: {} },
+        setDraft,
+      }),
+    );
+    const nextGithubEditButton = findEditButtons(harness.dom.container)[1];
+    if (!nextGithubEditButton) throw new Error("GitHub edit button not found");
+    await harness.act(async () => {
+      getReactProps(nextGithubEditButton)?.onClick?.();
+    });
+    const inputs = findAllByTag(harness.dom.container, "INPUT");
+    await harness.act(async () => {
+      getReactProps(inputs[1])?.onChange?.({ target: { value: "vscode" } });
+    });
+
+    expect(harness.dom.container.textContent).toContain(
+      "Default owner is required when a default repository is set",
+    );
+    expect(getReactProps(findButtonByText(harness.dom.container, "Configure"))?.disabled).toBe(true);
+  });
+
+  it("persists optional owner and repository defaults together", async () => {
+    const setDraft = vi.fn();
+    harness = await createReactDomHarness();
+    await harness.render(
+      createElement(ProvidersSection, {
+        draft: { mcpServers: {} },
+        setDraft,
+      }),
+    );
+
+    const githubEditButton = findEditButtons(harness.dom.container)[1];
+    if (!githubEditButton) throw new Error("GitHub edit button not found");
+    await harness.act(async () => {
+      getReactProps(githubEditButton)?.onClick?.();
+    });
+    const inputs = findAllByTag(harness.dom.container, "INPUT");
+    await harness.act(async () => {
+      getReactProps(inputs[0])?.onChange?.({ target: { value: "microsoft" } });
+      getReactProps(inputs[1])?.onChange?.({ target: { value: "vscode" } });
+    });
+    await harness.act(async () => {
+      getReactProps(findButtonByText(harness!.dom.container, "Configure"))?.onClick?.();
+    });
+
+    expect(setDraft).toHaveBeenCalledWith({
+      mcpServers: {},
+      providers: {
+        github: {
+          owner: "microsoft",
+          defaultRepo: "vscode",
+        },
+      },
+    });
   });
 });
