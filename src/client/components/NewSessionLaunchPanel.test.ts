@@ -89,6 +89,24 @@ describe("NewSessionLaunchPanel", () => {
     expect(getReactProps(findTile(harness!.dom.container, "GPT"))?.["aria-pressed"]).toBe(false);
   });
 
+  it("marks the remembered family live when the model inherits the Bridge default", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "claude-opus-5", name: "Claude Opus 5" },
+      ],
+      defaultModelId: "gpt-5.6",
+      selectedModelId: "",
+      selectedModelFamily: "claude",
+      reasoningEffortOptions: [{ value: null, label: "Default" }],
+      contextOptions: [{ value: null, label: "Default context" }],
+    }));
+
+    expect(getReactProps(findTile(harness!.dom.container, "Claude"))?.["aria-pressed"]).toBe(true);
+    expect(getReactProps(findTile(harness!.dom.container, "GPT"))?.["aria-pressed"]).toBe(false);
+  });
+
   it("reports family switches and the other launch selections", async () => {
     const props = requiredProps();
     await harness!.render(createElement(NewSessionLaunchPanel, {

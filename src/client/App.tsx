@@ -41,6 +41,7 @@ import {
   type TaskGroup,
   type McpServerStatus,
   type CreateSessionOptions,
+  type ModelFamilyDefaults,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
@@ -70,7 +71,7 @@ import {
   type ModelFamilySelection,
 } from "./lib/model-family-defaults";
 import { useStickyModelFamilyDefaults } from "./hooks/useStickyModelFamilyDefaults";
-import type { ModelFamily } from "../shared/model-families.js";
+import { getModelFamily, type ModelFamily } from "../shared/model-families.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
@@ -1930,6 +1931,8 @@ export default function App() {
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
+                  familyDefaults={settings?.familyDefaults}
+                  lastModelFamily={settings?.lastModelFamily}
                 />
               }
             />
@@ -2008,6 +2011,8 @@ export default function App() {
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
+                  familyDefaults={settings?.familyDefaults}
+                  lastModelFamily={settings?.lastModelFamily}
                 />
               }
             />
@@ -2247,6 +2252,8 @@ function SessionRoute({
   newWorkDisabledHint,
   defaultModelId,
   defaultReasoningEffort,
+  familyDefaults: savedFamilyDefaults,
+  lastModelFamily,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -2274,10 +2281,13 @@ function SessionRoute({
   newWorkDisabledHint?: string;
   defaultModelId?: string;
   defaultReasoningEffort?: string;
+  familyDefaults?: ModelFamilyDefaults;
+  lastModelFamily?: ModelFamily;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
   const [launchModel, setLaunchModel] = useState("");
+  const [launchFamily, setLaunchFamily] = useState<ModelFamily | null>(null);
   const [launchMode, setLaunchMode] = useState<SendMode>(DEFAULT_SEND_MODE);
   const [launchReasoningEffort, setLaunchReasoningEffort] =
     useState<ScopedLaunchSelection<string> | null>(null);
@@ -2303,17 +2313,48 @@ function SessionRoute({
   const draft = getDraft(composerKey);
   const voiceJob = getVoiceJob(composerKey);
   const previousDraftRouteKeyRef = useRef(draftRouteKey);
+  const activeLaunchFamily = launchFamily ?? lastModelFamily;
+  const rememberedLaunchSelection = launchFamily === null && lastModelFamily
+    ? selectFamily({
+      family: lastModelFamily,
+      state: resolveModelFamilyState({
+        models: modelsQuery.data ?? [],
+        selectedModelId: "",
+        selectedFamily: lastModelFamily,
+        globalDefaultModelId: defaultModelId,
+        familyDefaults: savedFamilyDefaults,
+      }),
+      globalDefaultModelId: defaultModelId,
+      familyDefaults: savedFamilyDefaults,
+    })
+    : null;
+  const effectiveLaunchModel = launchModel || rememberedLaunchSelection?.modelId || "";
   const launchState = resolveNewSessionLaunchState({
     models: modelsQuery.data ?? [],
-    selectedModelId: launchModel,
+    selectedModelId: effectiveLaunchModel,
     defaultModelId,
     defaultReasoningEffort,
-    reasoningEffortSelection: launchReasoningEffort,
-    contextTierSelection: launchContextTier,
+    reasoningEffortSelection: launchReasoningEffort ?? (
+      rememberedLaunchSelection?.reasoningEffort
+        ? {
+          modelId: rememberedLaunchSelection.resolvedModelId,
+          value: rememberedLaunchSelection.reasoningEffort,
+        }
+        : null
+    ),
+    contextTierSelection: launchContextTier ?? (
+      rememberedLaunchSelection?.contextTier
+        ? {
+          modelId: rememberedLaunchSelection.resolvedModelId,
+          value: rememberedLaunchSelection.contextTier,
+        }
+        : null
+    ),
   });
   const {
     familyDefaults,
     markTouched: markLaunchTouched,
+    rememberLastModelFamily,
     resetTouched: resetLaunchTouched,
   } = useStickyModelFamilyDefaults({
     enabled: isDraft,
@@ -2323,7 +2364,8 @@ function SessionRoute({
   });
 
   const resetLaunchOptions = useCallback(() => {
-    setLaunchModel("");
+    // Model and family are intentionally retained as the starting point for the
+    // next new chat; the per-chat mode, effort, and context choices still reset.
     setLaunchMode(DEFAULT_SEND_MODE);
     setLaunchReasoningEffort(null);
     setLaunchContextTier(null);
@@ -2335,7 +2377,10 @@ function SessionRoute({
    * tier arrive scoped to the new model instead of being cleared.
    */
   const applyLaunchSelection = useCallback((selection: ModelFamilySelection) => {
+    const family = getModelFamily(selection.resolvedModelId);
     markLaunchTouched();
+    setLaunchFamily(family);
+    rememberLastModelFamily(family);
     setLaunchModel(selection.modelId);
     setLaunchReasoningEffort(
       selection.reasoningEffort
@@ -2347,14 +2392,15 @@ function SessionRoute({
         ? { modelId: selection.resolvedModelId, value: selection.contextTier }
         : null,
     );
-  }, [markLaunchTouched]);
+  }, [markLaunchTouched, rememberLastModelFamily]);
 
   const handleLaunchFamilyChange = useCallback((family: ModelFamily) => {
     const selection = selectFamily({
       family,
       state: resolveModelFamilyState({
         models: launchState.availableModels,
-        selectedModelId: launchModel,
+        selectedModelId: launchState.modelKey,
+        selectedFamily: activeLaunchFamily,
         globalDefaultModelId: defaultModelId,
         familyDefaults,
       }),
@@ -2362,7 +2408,14 @@ function SessionRoute({
       familyDefaults,
     });
     if (selection) applyLaunchSelection(selection);
-  }, [applyLaunchSelection, defaultModelId, familyDefaults, launchModel, launchState.availableModels]);
+  }, [
+    activeLaunchFamily,
+    applyLaunchSelection,
+    defaultModelId,
+    familyDefaults,
+    launchState.availableModels,
+    launchState.modelKey,
+  ]);
 
   const handleLaunchModelChange = useCallback((modelId: string) => {
     applyLaunchSelection(selectModelInFamily({
@@ -2415,7 +2468,7 @@ function SessionRoute({
     const newSessionId = await materializeSession(
       taskId,
       {
-        ...(launchModel ? { model: launchModel } : {}),
+        ...(effectiveLaunchModel ? { model: effectiveLaunchModel } : {}),
         ...(launchState.selectedReasoningEffort
           ? { reasoningEffort: launchState.selectedReasoningEffort }
           : {}),
@@ -2450,7 +2503,7 @@ function SessionRoute({
     clearDraft,
     composerKey,
     draftRouteKey,
-    launchModel,
+    effectiveLaunchModel,
     launchState.selectedContextTier,
     launchState.selectedReasoningEffort,
     materializeSession,
@@ -2468,7 +2521,8 @@ function SessionRoute({
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
       defaultModelId={defaultModelId}
       familyDefaults={familyDefaults}
-      selectedModelId={launchModel}
+      selectedModelId={launchState.modelKey}
+      selectedModelFamily={activeLaunchFamily}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}

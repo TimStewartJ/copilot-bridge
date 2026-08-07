@@ -15,6 +15,7 @@ interface NewSessionLaunchPanelProps {
   defaultModelId?: string;
   familyDefaults?: ModelFamilyDefaults;
   selectedModelId: string;
+  selectedModelFamily?: ModelFamily;
   reasoningEffortOptions: readonly LaunchOption<string>[];
   selectedReasoningEffort?: string;
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
@@ -39,6 +40,7 @@ export default function NewSessionLaunchPanel({
   defaultModelId,
   familyDefaults,
   selectedModelId,
+  selectedModelFamily,
   reasoningEffortOptions,
   selectedReasoningEffort,
   contextOptions,
@@ -73,6 +75,7 @@ export default function NewSessionLaunchPanel({
                 idPrefix="new-session"
                 models={availableModels}
                 selectedModelId={selectedModelId}
+                selectedFamily={selectedModelFamily}
                 globalDefaultModelId={defaultModelId}
                 familyDefaults={familyDefaults}
                 disabled={Boolean(modelsError)}

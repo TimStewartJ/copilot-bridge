@@ -1811,6 +1811,7 @@ export interface AppSettings {
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
   familyDefaults?: ModelFamilyDefaults;
+  lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
 }
 
@@ -1824,6 +1825,9 @@ export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
   }
   if ("contextTier" in updates && updates.contextTier === undefined) {
     normalized.contextTier = "";
+  }
+  if ("lastModelFamily" in updates && updates.lastModelFamily === undefined) {
+    normalized.lastModelFamily = "";
   }
   return JSON.stringify(normalized);
 }

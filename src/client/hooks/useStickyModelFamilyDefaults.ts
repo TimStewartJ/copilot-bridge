@@ -3,12 +3,32 @@ import { patchSettings, type AppSettings, type ModelFamilyDefaults } from "../ap
 import { queryClient, queryKeys } from "../queryClient";
 import { buildFamilyDefaultsPatch } from "../lib/model-family-defaults";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
+import type { ModelFamily } from "../../shared/model-families.js";
 
 // Small debounce so clicking through effort options doesn't fire a write per click.
 const STICKY_WRITE_DELAY_MS = 400;
+let stickySettingsWriteChain = Promise.resolve();
+let latestStickySettingsWrite = 0;
 
 function readFamilyDefaults(): ModelFamilyDefaults | undefined {
   return queryClient.getQueryData<AppSettings>(queryKeys.settings)?.familyDefaults;
+}
+
+function enqueueStickySettingsPatch(updates: Partial<AppSettings>, failureMessage: string): void {
+  const writeId = ++latestStickySettingsWrite;
+  stickySettingsWriteChain = stickySettingsWriteChain.then(async () => {
+    try {
+      const settings = await patchSettings(updates);
+      if (writeId === latestStickySettingsWrite) {
+        queryClient.setQueryData(queryKeys.settings, settings);
+      }
+    } catch (error) {
+      console.error(failureMessage, error);
+      if (writeId === latestStickySettingsWrite) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+      }
+    }
+  });
 }
 
 /**
@@ -47,6 +67,16 @@ export function useStickyModelFamilyDefaults({
     touchedRef.current = false;
   }, []);
 
+  const rememberLastModelFamily = useCallback((family: ModelFamily) => {
+    queryClient.setQueryData<AppSettings>(queryKeys.settings, (current) => (
+      current ? { ...current, lastModelFamily: family } : current
+    ));
+    enqueueStickySettingsPatch(
+      { lastModelFamily: family },
+      "[model-family] Failed to remember selected family",
+    );
+  }, []);
+
   // Pick up settings loaded or changed elsewhere, including from another device.
   useEffect(() => {
     if (!enabled) return;
@@ -67,14 +97,13 @@ export function useStickyModelFamilyDefaults({
     if (!patch) return;
     const timer = setTimeout(() => {
       // Fire and forget: a failed write must never block starting or switching a chat.
-      void patchSettings({ familyDefaults: patch })
-        .then((settings) => {
-          queryClient.setQueryData(queryKeys.settings, settings);
-        })
-        .catch(() => {});
+      enqueueStickySettingsPatch(
+        { familyDefaults: patch },
+        "[model-family] Failed to remember family defaults",
+      );
     }, STICKY_WRITE_DELAY_MS);
     return () => clearTimeout(timer);
   }, [enabled, modelId, reasoningEffort, contextTier, familyDefaults]);
 
-  return { familyDefaults, markTouched, resetTouched };
+  return { familyDefaults, markTouched, rememberLastModelFamily, resetTouched };
 }

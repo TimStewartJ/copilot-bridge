@@ -179,4 +179,18 @@ describe("settings-store", () => {
       familyDefaults: [] as any,
     })).toThrow("familyDefaults must be an object");
   });
+
+  it("persists, clears, and validates the last selected model family", () => {
+    const updated = store.updateSettings({ lastModelFamily: "claude" });
+    expect(updated.lastModelFamily).toBe("claude");
+    expect(store.getSettings().lastModelFamily).toBe("claude");
+
+    const cleared = store.updateSettings({ lastModelFamily: undefined });
+    expect(cleared.lastModelFamily).toBeUndefined();
+    expect(store.getSettings().lastModelFamily).toBeUndefined();
+
+    expect(() => store.updateSettings({
+      lastModelFamily: "gemini" as any,
+    })).toThrow("lastModelFamily must be gpt, claude, or other");
+  });
 });

@@ -46,6 +46,7 @@ export interface AppSettings {
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
   familyDefaults?: ModelFamilyDefaults;
+  lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
 }
 
@@ -239,6 +240,13 @@ export function createSettingsStore(db: DatabaseSync) {
     }
     if ("familyDefaults" in updates) {
       current.familyDefaults = normalizeModelFamilyDefaults(updates.familyDefaults);
+    }
+    if ("lastModelFamily" in updates) {
+      const lastModelFamily = updates.lastModelFamily as unknown;
+      if (lastModelFamily !== undefined && lastModelFamily !== "" && !isModelFamily(lastModelFamily)) {
+        throw new Error("lastModelFamily must be gpt, claude, or other");
+      }
+      current.lastModelFamily = isModelFamily(lastModelFamily) ? lastModelFamily : undefined;
     }
     if ("browser" in updates) current.browser = normalizeBrowserSettings(updates.browser);
 

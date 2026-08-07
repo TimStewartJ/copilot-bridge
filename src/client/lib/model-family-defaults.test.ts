@@ -101,6 +101,26 @@ describe("resolveModelFamilyState", () => {
     expect(state.liveFamily).toBe("claude");
   });
 
+  it("lets a remembered family override the global default for an empty model override", () => {
+    const state = resolveModelFamilyState({
+      models: MODELS,
+      selectedModelId: "",
+      selectedFamily: "claude",
+      globalDefaultModelId: "gpt-5.6-sol",
+    });
+    expect(state.liveFamily).toBe("claude");
+  });
+
+  it("ignores a remembered family that has no available models", () => {
+    const state = resolveModelFamilyState({
+      models: [model("gpt-5.6-sol", "GPT-5.6 Sol")],
+      selectedModelId: "",
+      selectedFamily: "claude",
+      globalDefaultModelId: "gpt-5.6-sol",
+    });
+    expect(state.liveFamily).toBe("gpt");
+  });
+
   it("derives the live family from an unlisted selected model", () => {
     const state = resolveModelFamilyState({ models: MODELS, selectedModelId: "claude-preview-9" });
     expect(state.liveFamily).toBe("claude");
