@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import request from "supertest";
+import request from "./test-http.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createTestApp } from "./test-app.js";

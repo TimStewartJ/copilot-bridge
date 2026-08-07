@@ -10,6 +10,10 @@ export const sharedTestConfig = {
     // functions directly or clear this var explicitly.
     BRIDGE_DISABLE_BACKGROUND_LOG_RETENTION: "1",
   },
+  // Test-only HTTP clients keep one listener and agent per isolated test file.
+  // Pin this invariant so a future Vitest default or optimization cannot share
+  // and close that transport while another file is still using it.
+  isolate: true,
   // Deploy validation runs the full suite in parallel while the live bridge
   // server is still serving, so wall-clock work (SQLite migrations, docs FTS
   // indexing, React/esbuild transforms, real-timer deadline tests) can stall
