@@ -146,6 +146,7 @@ function FamilyRefineMenu({
 export default function ModelFamilyPicker({
   models,
   selectedModelId,
+  selectedFamily,
   globalDefaultModelId,
   familyDefaults,
   disabled = false,
@@ -155,6 +156,7 @@ export default function ModelFamilyPicker({
 }: {
   models: readonly ModelInfo[];
   selectedModelId: string;
+  selectedFamily?: ModelFamily;
   globalDefaultModelId?: string;
   familyDefaults?: ModelFamilyDefaults;
   disabled?: boolean;
@@ -169,6 +171,7 @@ export default function ModelFamilyPicker({
   const state: ModelFamilyPickerState = resolveModelFamilyState({
     models,
     selectedModelId,
+    selectedFamily,
     globalDefaultModelId,
     familyDefaults,
   });

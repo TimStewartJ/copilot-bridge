@@ -40,6 +40,7 @@ export interface ModelFamilySelection {
 interface ResolveModelFamilyStateOptions {
   models: readonly ModelInfo[];
   selectedModelId: string;
+  selectedFamily?: ModelFamily;
   globalDefaultModelId?: string;
   familyDefaults?: ModelFamilyDefaults;
 }
@@ -98,11 +99,13 @@ function resolveFamilyModel(
 
 function resolveLiveFamily(
   selectedModelId: string,
+  selectedFamily: ModelFamily | undefined,
   globalDefaultModelId: string | undefined,
   modelsByFamily: Record<ModelFamily, ModelInfo[]>,
 ): ModelFamily {
   // Family is derived from the raw id so an unlisted model still lands somewhere.
   if (selectedModelId) return getModelFamily(selectedModelId);
+  if (selectedFamily && modelsByFamily[selectedFamily].length > 0) return selectedFamily;
   if (globalDefaultModelId) return getModelFamily(globalDefaultModelId);
   const firstPopulated = MODEL_FAMILIES.find((family) => modelsByFamily[family].length > 0);
   return firstPopulated ?? "other";
@@ -111,11 +114,17 @@ function resolveLiveFamily(
 export function resolveModelFamilyState({
   models,
   selectedModelId,
+  selectedFamily,
   globalDefaultModelId,
   familyDefaults,
 }: ResolveModelFamilyStateOptions): ModelFamilyPickerState {
   const modelsByFamily = groupModelsByFamily(models);
-  const liveFamily = resolveLiveFamily(selectedModelId, globalDefaultModelId, modelsByFamily);
+  const liveFamily = resolveLiveFamily(
+    selectedModelId,
+    selectedFamily,
+    globalDefaultModelId,
+    modelsByFamily,
+  );
 
   const tiles = MODEL_FAMILIES.map<ModelFamilyTile>((family) => {
     const model = resolveFamilyModel(
