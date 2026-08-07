@@ -75,7 +75,10 @@ import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
 import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
-import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
+import useTaskIndicators, {
+  summarizeChatTabAttention,
+  summarizeTaskTabAttention,
+} from "./hooks/useTaskIndicators";
 import { getHomeChecklistIndicator } from "./checklist-helpers";
 import TaskRail from "./components/TaskRail";
 import TaskPanel, { TaskPanelRouteSkeleton } from "./components/TaskPanel";
@@ -773,12 +776,12 @@ export default function App() {
     return getQuickChatSessions(sessions, tasks);
   }, [sessions, tasks]);
   const navTaskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
-  const mobileTaskUnreadCount = useMemo(() => {
-    return countTaskTabUnread(tasks, navTaskIndicators);
+  const mobileTaskAttention = useMemo(() => {
+    return summarizeTaskTabAttention(tasks, navTaskIndicators);
   }, [tasks, navTaskIndicators]);
-  const mobileChatUnreadCount = useMemo(() => {
-    return countChatTabUnread(globalSessions, isUnread);
-  }, [globalSessions, isUnread]);
+  const mobileChatAttention = useMemo(() => {
+    return summarizeChatTabAttention(globalSessions, isUnread, activeSessionId);
+  }, [globalSessions, isUnread, activeSessionId]);
   const homeChecklistIndicator = useMemo(() => {
     return getHomeChecklistIndicator(openChecklistItems);
   }, [openChecklistItems]);
@@ -2034,8 +2037,8 @@ export default function App() {
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
           homeChecklistIndicator={homeChecklistIndicator}
-          taskUnreadCount={mobileTaskUnreadCount}
-          chatUnreadCount={mobileChatUnreadCount}
+          taskAttention={mobileTaskAttention}
+          chatAttention={mobileChatAttention}
         />
       )}
     </div>

@@ -55,6 +55,10 @@ describe("ChatInput voice retry", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
     harness = await createReactDomHarness();
     (globalThis.window as any).matchMedia = vi.fn(() => ({
       matches: false,
@@ -84,6 +88,7 @@ describe("ChatInput voice retry", () => {
   afterEach(async () => {
     await harness?.cleanup();
     harness = null;
+    vi.unstubAllGlobals();
   });
 
   async function renderChatInput(props: Partial<ComponentProps<typeof ChatInput>> = {}) {
@@ -163,6 +168,64 @@ describe("ChatInput voice retry", () => {
 
     expect(getHarness().dom.container.textContent).toContain("Auto-send failed after upload.");
     expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.textContent === "Try again")).toBe(false);
+  });
+
+  it("names composer icon buttons and reveals attachment removal on keyboard focus", async () => {
+    await renderChatInput({
+      draft: {
+        text: "",
+        attachments: [{
+          type: "blob",
+          data: "",
+          mimeType: "text/plain",
+          displayName: "notes.txt",
+        }],
+      },
+    });
+
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Attach file")).toBeDefined();
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Record voice input")).toBeDefined();
+    const removeButton = findButtonByAriaLabel(
+      getHarness().dom.container,
+      "Remove attachment notes.txt",
+    );
+    expect(getReactProps(removeButton)?.className).toContain("focus-visible:opacity-100");
+    expect(getReactProps(removeButton)?.className).toContain("group-focus-within:opacity-100");
+
+    useVoiceInputMock.mockReturnValue({
+      browserSupported: true,
+      status: {
+        available: true,
+        provider: "whisper.cpp",
+        label: "whisper.cpp",
+        maxDurationSeconds: 120,
+      },
+      statusError: null,
+      isCheckingStatus: false,
+      phase: "recording",
+      isRecording: true,
+      isTranscribing: false,
+      error: null,
+      startRecording: vi.fn(),
+      stopRecording: vi.fn(),
+      refreshStatus: vi.fn(),
+    });
+    await renderChatInput({
+      draft: {
+        text: "",
+        attachments: [{
+          type: "blob",
+          data: "",
+          mimeType: "text/plain",
+          displayName: "notes.txt",
+        }],
+      },
+    });
+
+    expect(findButtonByAriaLabel(
+      getHarness().dom.container,
+      "Stop recording and transcribe",
+    )).toBeDefined();
   });
 
   it("switches the streaming action between stop and steering send", async () => {

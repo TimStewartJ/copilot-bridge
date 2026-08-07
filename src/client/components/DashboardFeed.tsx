@@ -21,6 +21,7 @@ import FeedCard from "./FeedCard";
 import FeedKindFilter from "./FeedKindFilter";
 import { Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
+import { getDashboardPanelId, getDashboardTabId } from "../lib/dashboard-routes";
 
 interface FeedActionDraft {
   source: "action" | "chat";
@@ -947,7 +948,13 @@ export default function DashboardFeed({
   return (
     <>
       {active && (
-      <section className={`space-y-2 ${feedFeedback ? "pb-24 sm:pb-0" : ""}`}>
+      <section
+        id={getDashboardPanelId("feed")}
+        role="tabpanel"
+        aria-labelledby={getDashboardTabId("feed")}
+        tabIndex={0}
+        className={`space-y-2 ${feedFeedback ? "pb-24 sm:pb-0" : ""}`}
+      >
         <div className="flex items-center justify-between">
           <h2 className={UI.text.sectionTitle}>
             <Inbox size={14} />

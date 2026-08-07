@@ -7,6 +7,16 @@ const DASHBOARD_TAB_PATHS: Record<DashboardTab, string> = {
   feed: "/dashboard/feed",
 };
 
+const DASHBOARD_TAB_IDS: Record<DashboardTab, string> = {
+  checklist: "dashboard-checklist-tab",
+  feed: "dashboard-feed-tab",
+};
+
+const DASHBOARD_PANEL_IDS: Record<DashboardTab, string> = {
+  checklist: "dashboard-checklist-panel",
+  feed: "dashboard-feed-panel",
+};
+
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === "/") return "/";
   const trimmed = pathname.replace(/\/+$/, "");
@@ -15,6 +25,14 @@ function normalizePathname(pathname: string): string {
 
 export function getDashboardTabPath(tab: DashboardTab): string {
   return DASHBOARD_TAB_PATHS[tab];
+}
+
+export function getDashboardTabId(tab: DashboardTab): string {
+  return DASHBOARD_TAB_IDS[tab];
+}
+
+export function getDashboardPanelId(tab: DashboardTab): string {
+  return DASHBOARD_PANEL_IDS[tab];
 }
 
 function isDashboardTab(value: string | null): value is DashboardTab {

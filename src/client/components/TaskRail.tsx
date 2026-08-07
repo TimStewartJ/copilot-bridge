@@ -11,7 +11,11 @@ import NotesSheet from "./NotesSheet";
 import EmptyState from "./shared/EmptyState";
 import SessionList from "./SessionList";
 import useLongPressMenu from "../hooks/useLongPressMenu";
-import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "../hooks/useTaskIndicators";
+import useTaskIndicators, {
+  describeTabAttention,
+  summarizeChatTabAttention,
+  summarizeTaskTabAttention,
+} from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
@@ -192,12 +196,16 @@ export default function TaskRail({
     }
   }, [isQuickChatsActive, activeSessionId, activeTaskId]);
 
-  // Badge counts for tabs (unread only — busy resolves to unread naturally)
-  const taskTabUnread = useMemo(() => {
-    return countTaskTabUnread(tasks, taskIndicators);
+  const taskTabAttention = useMemo(() => {
+    return summarizeTaskTabAttention(tasks, taskIndicators);
   }, [tasks, taskIndicators]);
 
-  const chatTabUnread = useMemo(() => countChatTabUnread(orphanSessions, isUnread), [orphanSessions, isUnread]);
+  const chatTabAttention = useMemo(
+    () => summarizeChatTabAttention(orphanSessions, isUnread, activeSessionId),
+    [orphanSessions, isUnread, activeSessionId],
+  );
+  const taskTabAttentionDescription = describeTabAttention(taskTabAttention, "task", "tasks");
+  const chatTabAttentionDescription = describeTabAttention(chatTabAttention, "chat", "chats");
 
   // Context menu state (tasks)
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();
@@ -256,6 +264,7 @@ export default function TaskRail({
         {/* Brand / Home */}
         <div className="flex items-center justify-center py-3">
           <button
+            type="button"
             onClick={onGoHome}
             className="p-1.5 rounded-lg text-accent hover:bg-bg-hover transition-colors"
             title="Home"
@@ -358,9 +367,10 @@ export default function TaskRail({
           )}
         </div>
 
-        {/* Dashboard + Docs + New Task */}
+        {/* Dashboard + Chats + Docs + New Task */}
         <div className="flex flex-col items-center gap-2 py-2">
           <button
+            type="button"
             onClick={onGoHome}
             title={homeIndicatorDescription ? `Dashboard • ${homeIndicatorDescription}` : "Dashboard"}
             aria-label={homeIndicatorDescription ? `Dashboard, ${homeIndicatorDescription}` : "Dashboard"}
@@ -375,15 +385,41 @@ export default function TaskRail({
             )}
           </button>
           <button
+            type="button"
+            onClick={() => {
+              setRailTab("chats");
+              onRailTabChange?.("chats");
+            }}
+            title={chatTabAttentionDescription ? `Chats • ${chatTabAttentionDescription}` : "Chats"}
+            aria-label={chatTabAttentionDescription ? `Chats, ${chatTabAttentionDescription}` : "Chats"}
+            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isQuickChatsActive)}`}
+          >
+            <MessageSquare size={18} />
+            {chatTabAttention.count > 0 && (
+              <span
+                aria-hidden="true"
+                className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-semibold flex items-center justify-center ${
+                  chatTabAttention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
+                }`}
+              >
+                {chatTabAttention.count > 99 ? "99+" : chatTabAttention.count}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
             onClick={onOpenDocs}
             title="Docs"
+            aria-label="Docs"
             className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDocsActive)}`}
           >
             <BookOpen size={18} />
           </button>
           <button
+            type="button"
             onClick={() => onNewTask()}
             title="New Task"
+            aria-label="New Task"
             className="p-1.5 rounded-lg text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
           >
             <Plus size={16} />
@@ -393,15 +429,19 @@ export default function TaskRail({
         {/* Bottom: expand + settings */}
         <div className="flex flex-col items-center gap-1 py-3 mt-auto">
           <button
+            type="button"
             onClick={onToggleExpanded}
             title="Expand task list"
+            aria-label="Expand task list"
             className="p-1.5 rounded-lg text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
           >
             <PanelLeftOpen size={16} />
           </button>
           <button
+            type="button"
             onClick={onOpenSettings}
             title="Settings"
+            aria-label="Settings"
             className="p-1.5 rounded-lg text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
           >
             <Settings size={18} />
@@ -435,7 +475,9 @@ export default function TaskRail({
       {/* ── Tab bar ─────────────────────────────────────────── */}
       <div className="flex items-center border-b border-border">
         <button
+          type="button"
           onClick={() => { setRailTab("tasks"); onRailTabChange?.("tasks"); }}
+          aria-label={taskTabAttentionDescription ? `Tasks, ${taskTabAttentionDescription}` : "Tasks"}
           className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative ${
             railTab === "tasks"
               ? "text-text-primary"
@@ -444,9 +486,14 @@ export default function TaskRail({
         >
           <ListTodo size={13} />
           Tasks
-          {taskTabUnread > 0 && (
-            <span className="min-w-[16px] h-4 px-1 rounded-full bg-success text-white text-[10px] font-semibold flex items-center justify-center">
-              {taskTabUnread}
+          {taskTabAttention.count > 0 && (
+            <span
+              aria-hidden="true"
+              className={`min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-semibold flex items-center justify-center ${
+                taskTabAttention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
+              }`}
+            >
+              {taskTabAttention.count}
             </span>
           )}
           {railTab === "tasks" && (
@@ -454,7 +501,9 @@ export default function TaskRail({
           )}
         </button>
         <button
+          type="button"
           onClick={() => { setRailTab("chats"); onRailTabChange?.("chats"); }}
+          aria-label={chatTabAttentionDescription ? `Chats, ${chatTabAttentionDescription}` : "Chats"}
           className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative ${
             railTab === "chats"
               ? "text-text-primary"
@@ -463,9 +512,14 @@ export default function TaskRail({
         >
           <MessageSquare size={13} />
           Chats
-          {chatTabUnread > 0 && (
-            <span className="min-w-[16px] h-4 px-1 rounded-full bg-success text-white text-[10px] font-semibold flex items-center justify-center">
-              {chatTabUnread}
+          {chatTabAttention.count > 0 && (
+            <span
+              aria-hidden="true"
+              className={`min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-semibold flex items-center justify-center ${
+                chatTabAttention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
+              }`}
+            >
+              {chatTabAttention.count}
             </span>
           )}
           {railTab === "chats" && (

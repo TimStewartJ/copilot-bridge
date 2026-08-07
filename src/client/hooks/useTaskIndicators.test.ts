@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Session, Task } from "../api";
-import { countChatTabUnread, countTaskTabUnread, countTaskUnread, getTaskIndicator } from "./useTaskIndicators";
+import {
+  countTaskUnread,
+  describeTabAttention,
+  getTaskIndicator,
+  summarizeChatTabAttention,
+  summarizeTaskTabAttention,
+  type TaskIndicator,
+} from "./useTaskIndicators";
 
 const NOW = "2026-04-17T15:00:00.000Z";
 
@@ -36,38 +43,110 @@ function createSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
-describe("countTaskTabUnread", () => {
-  it("counts only non-archived tasks with unread indicators", () => {
+function createIndicator(overrides: Partial<TaskIndicator> = {}): TaskIndicator {
+  return {
+    busy: false,
+    stalled: false,
+    unread: false,
+    busyCount: 0,
+    unreadCount: 0,
+    needsUserInputCount: 0,
+    lastActivity: NOW,
+    ...overrides,
+  };
+}
+
+describe("summarizeTaskTabAttention", () => {
+  it("counts each non-archived, unmuted task once and tracks needs-answer tasks", () => {
     const tasks = [
       createTask({ id: "task-unread" }),
+      createTask({ id: "task-needs-answer" }),
+      createTask({ id: "task-both" }),
       createTask({ id: "task-read" }),
       createTask({ id: "task-muted", muted: true }),
       createTask({ id: "task-archived", status: "archived" }),
     ];
-    const indicators = new Map([
-      ["task-unread", { busy: false, unread: true, busyCount: 0, unreadCount: 1, lastActivity: NOW }],
-      ["task-read", { busy: false, unread: false, busyCount: 0, unreadCount: 0, lastActivity: NOW }],
-      ["task-muted", { busy: false, unread: true, busyCount: 0, unreadCount: 1, lastActivity: NOW }],
-      ["task-archived", { busy: false, unread: true, busyCount: 0, unreadCount: 1, lastActivity: NOW }],
+    const indicators = new Map<string, TaskIndicator>([
+      ["task-unread", createIndicator({ unread: true, unreadCount: 1 })],
+      ["task-needs-answer", createIndicator({ unread: true, needsUserInputCount: 2 })],
+      ["task-both", createIndicator({ unread: true, unreadCount: 1, needsUserInputCount: 1 })],
+      ["task-read", createIndicator()],
+      ["task-muted", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
+      ["task-archived", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
     ]);
 
-    expect(countTaskTabUnread(tasks, indicators)).toBe(1);
+    expect(summarizeTaskTabAttention(tasks, indicators)).toEqual({
+      count: 3,
+      needsUserInputCount: 2,
+    });
+  });
+
+  it("does not double-count a task with unread and needs-answer sessions", () => {
+    const task = createTask({
+      sessionIds: ["unread-session", "needs-answer-session"],
+    });
+    const sessionMap = new Map<string, Session>([
+      ["unread-session", createSession({ sessionId: "unread-session" })],
+      ["needs-answer-session", createSession({
+        sessionId: "needs-answer-session",
+        busy: true,
+        runState: "busy",
+        needsUserInput: true,
+      })],
+    ]);
+    const indicator = getTaskIndicator(
+      task,
+      sessionMap,
+      (sessionId) => sessionId === "unread-session",
+    );
+
+    expect(summarizeTaskTabAttention(
+      [task],
+      new Map([[task.id, indicator]]),
+    )).toEqual({
+      count: 1,
+      needsUserInputCount: 1,
+    });
   });
 });
 
-describe("countChatTabUnread", () => {
-  it("counts only idle, non-archived unread orphan sessions", () => {
+describe("summarizeChatTabAttention", () => {
+  it("counts unread or needs-answer chats once while preserving attention exclusions", () => {
     const sessions = [
       createSession({ sessionId: "chat-unread" }),
-      createSession({ sessionId: "chat-busy", busy: true }),
-      createSession({ sessionId: "chat-stalled", runState: "stalled", busy: true }),
-      createSession({ sessionId: "chat-archived", archived: true }),
+      createSession({
+        sessionId: "chat-needs-answer",
+        busy: true,
+        runState: "busy",
+        needsUserInput: true,
+      }),
+      createSession({
+        sessionId: "chat-both",
+        needsUserInput: true,
+      }),
+      createSession({ sessionId: "chat-busy", busy: true, runState: "busy" }),
+      createSession({ sessionId: "chat-current" }),
+      createSession({
+        sessionId: "chat-archived",
+        archived: true,
+        needsUserInput: true,
+      }),
       createSession({ sessionId: "chat-read" }),
     ];
 
-    const isUnread = (sessionId: string) => !["chat-read", "chat-stalled"].includes(sessionId);
+    const isUnread = (sessionId: string) => ![
+      "chat-needs-answer",
+      "chat-read",
+    ].includes(sessionId);
 
-    expect(countChatTabUnread(sessions, isUnread)).toBe(1);
+    expect(summarizeChatTabAttention(
+      sessions,
+      isUnread,
+      "chat-current",
+    )).toEqual({
+      count: 3,
+      needsUserInputCount: 2,
+    });
   });
 
   it("checks the latest visible activity timestamp", () => {
@@ -77,9 +156,27 @@ describe("countChatTabUnread", () => {
       lastVisibleActivityAt: "2026-04-17T16:00:00.000Z",
     });
 
-    expect(countChatTabUnread([session], (_sessionId, modifiedTime) => {
+    expect(summarizeChatTabAttention([session], (_sessionId: string, modifiedTime?: string) => {
       return modifiedTime === "2026-04-17T16:00:00.000Z";
-    })).toBe(1);
+    })).toEqual({
+      count: 1,
+      needsUserInputCount: 0,
+    });
+  });
+});
+
+describe("describeTabAttention", () => {
+  it("distinguishes total attention from needs-answer counts", () => {
+    expect(describeTabAttention(
+      { count: 3, needsUserInputCount: 1 },
+      "task",
+      "tasks",
+    )).toBe("3 tasks need attention; 1 needs an answer");
+    expect(describeTabAttention(
+      { count: 1, needsUserInputCount: 0 },
+      "chat",
+      "chats",
+    )).toBe("1 chat needs attention");
   });
 });
 

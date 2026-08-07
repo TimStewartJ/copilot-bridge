@@ -1,394 +1,481 @@
-[
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 28,
-    "character": 33,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'."
-  },
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 29,
-    "character": 33,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'."
-  },
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 36,
-    "character": 7,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
-  },
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 47,
-    "character": 7,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
-  },
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 57,
-    "character": 7,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'."
-  },
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 69,
-    "character": 9,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
-  },
-  {
-    "code": 2353,
-    "file": "src/client/api.test.ts",
-    "line": 90,
-    "character": 9,
-    "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/App.tsx",
-    "line": 563,
-    "character": 55,
-    "message": "Argument of type '\"done\" | \"archived\" | \"active\"' is not assignable to parameter of type '\"archived\" | \"active\"'.\n  Type '\"done\"' is not assignable to type '\"archived\" | \"active\"'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/DocsView.tsx",
-    "line": 1643,
-    "character": 57,
-    "message": "Argument of type 'string | null' is not assignable to parameter of type 'string'.\n  Type 'null' is not assignable to type 'string'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/DocsView.tsx",
-    "line": 1704,
-    "character": 17,
-    "message": "Argument of type '(prev: DbSortState) => { field: string; order: string; }' is not assignable to parameter of type 'SetStateAction<DbSortState>'.\n  Type '(prev: DbSortState) => { field: string; order: string; }' is not assignable to type '(prevState: DbSortState) => DbSortState'.\n    Call signature return types '{ field: string; order: string; }' and 'DbSortState' are incompatible.\n      The types of 'order' are incompatible between these types.\n        Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/DocsView.tsx",
-    "line": 1708,
-    "character": 30,
-    "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/shared/Skeleton.test.ts",
-    "line": 22,
-    "character": 9,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ isLoading: true; label: string; }' is not assignable to parameter of type 'Attributes & LoadingSkeletonRegionProps'.\n      Property 'children' is missing in type '{ isLoading: true; label: string; }' but required in type 'LoadingSkeletonRegionProps'."
-  },
-  {
-    "code": 2367,
-    "file": "src/client/components/task-momentum-alerts.ts",
-    "line": 75,
-    "character": 14,
-    "message": "This comparison appears to be unintentional because the types '\"done\" | \"archived\" | \"active\"' and '\"paused\"' have no overlap."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskList.tsx",
-    "line": 161,
-    "character": 15,
-    "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskList.tsx",
-    "line": 265,
-    "character": 25,
-    "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskList.tsx",
-    "line": 281,
-    "character": 26,
-    "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 387,
-    "character": 39,
-    "message": "Argument of type 'Task | null' is not assignable to parameter of type 'Pick<Task, \"status\" | \"kind\" | \"doneWhen\">'.\n  Type 'null' is not assignable to type 'Pick<Task, \"status\" | \"kind\" | \"doneWhen\">'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 391,
-    "character": 32,
-    "message": "'currentTask' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 392,
-    "character": 16,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 392,
-    "character": 49,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 394,
-    "character": 33,
-    "message": "'currentTask' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 396,
-    "character": 7,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 397,
-    "character": 33,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 398,
-    "character": 30,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 408,
-    "character": 9,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 409,
-    "character": 33,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 410,
-    "character": 23,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 442,
-    "character": 37,
-    "message": "'currentTask' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 529,
-    "character": 18,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 530,
-    "character": 18,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 540,
-    "character": 17,
-    "message": "Type 'Task | null' is not assignable to type 'Task'.\n  Type 'null' is not assignable to type 'Task'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 595,
-    "character": 34,
-    "message": "'currentTask' is possibly 'null'."
-  },
-  {
-    "code": 18047,
-    "file": "src/client/components/TaskPanel.tsx",
-    "line": 595,
-    "character": 68,
-    "message": "'completionState' is possibly 'null'."
-  },
-  {
-    "code": 7053,
-    "file": "src/client/components/TaskRail.tsx",
-    "line": 288,
-    "character": 164,
-    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'."
-  },
-  {
-    "code": 7053,
-    "file": "src/client/components/TaskRail.tsx",
-    "line": 318,
-    "character": 158,
-    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'."
-  },
-  {
-    "code": 7053,
-    "file": "src/client/components/TaskRail.tsx",
-    "line": 351,
-    "character": 160,
-    "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskRail.tsx",
-    "line": 558,
-    "character": 35,
-    "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskRail.tsx",
-    "line": 581,
-    "character": 23,
-    "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/TaskRail.tsx",
-    "line": 588,
-    "character": 32,
-    "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/hooks/queries/useSessions.ts",
-    "line": 65,
-    "character": 31,
-    "message": "Argument of type 'unknown' is not assignable to parameter of type 'Session[]'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/hooks/useTaskIndicators.test.ts",
-    "line": 54,
-    "character": 38,
-    "message": "Argument of type 'Map<string, { busy: boolean; unread: boolean; busyCount: number; unreadCount: number; lastActivity: string; }>' is not assignable to parameter of type 'Map<string, TaskIndicator>'.\n  Property 'stalled' is missing in type '{ busy: boolean; unread: boolean; busyCount: number; unreadCount: number; lastActivity: string; }' but required in type 'TaskIndicator'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/hooks/useTaskWorkspace.ts",
-    "line": 100,
-    "character": 30,
-    "message": "Argument of type 'Promise<QueryObserverResult<TaskGitStatusResponse, Error>>' is not assignable to parameter of type 'void | Promise<QueryObserverResult<ChecklistItem[], Error>>'.\n  Type 'Promise<QueryObserverResult<TaskGitStatusResponse, Error>>' is not assignable to type 'Promise<QueryObserverResult<ChecklistItem[], Error>>'.\n    Type 'QueryObserverResult<TaskGitStatusResponse, Error>' is not assignable to type 'QueryObserverResult<ChecklistItem[], Error>'.\n      Type 'QueryObserverRefetchErrorResult<TaskGitStatusResponse, Error>' is not assignable to type 'QueryObserverResult<ChecklistItem[], Error>'.\n        Type 'QueryObserverRefetchErrorResult<TaskGitStatusResponse, Error>' is not assignable to type 'QueryObserverRefetchErrorResult<ChecklistItem[], Error>'.\n          Type 'TaskGitStatusResponse' is not assignable to type 'ChecklistItem[]'.\n            Type 'GitWorktreeStatusOk' is missing the following properties from type 'ChecklistItem[]': length, pop, push, concat, and 29 more."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/hooks/useVoiceInput.ts",
-    "line": 270,
-    "character": 24,
-    "message": "Property 'AudioContext' does not exist on type 'WindowWithWebkitAudioContext'."
-  },
-  {
-    "code": 2783,
-    "file": "src/client/lib/mobile-route-meta.ts",
-    "line": 54,
-    "character": 5,
-    "message": "'route' is specified more than once, so this usage will be overwritten."
-  },
-  {
-    "code": 2783,
-    "file": "src/client/lib/mobile-route-meta.ts",
-    "line": 55,
-    "character": 5,
-    "message": "'activeTab' is specified more than once, so this usage will be overwritten."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/lib/tool-args.ts",
-    "line": 34,
-    "character": 24,
-    "message": "Argument of type 'ToolArgs | undefined' is not assignable to parameter of type 'ToolArgs'.\n  Type 'undefined' is not assignable to type 'ToolArgs'."
-  },
-  {
-    "code": 2345,
-    "file": "src/client/lib/tool-args.ts",
-    "line": 34,
-    "character": 51,
-    "message": "Argument of type 'string | number | boolean | ToolArgs[] | null | undefined' is not assignable to parameter of type 'ToolArgs'.\n  Type 'undefined' is not assignable to type 'ToolArgs'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/push-notifications.ts",
-    "line": 130,
-    "character": 7,
-    "message": "Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'string | BufferSource | null | undefined'.\n  Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'ArrayBufferView<ArrayBuffer>'.\n    Types of property 'buffer' are incompatible.\n      Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.\n        Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.\n          Types of property '[Symbol.toStringTag]' are incompatible.\n            Type '\"SharedArrayBuffer\"' is not assignable to type '\"ArrayBuffer\"'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/task-completion-helpers.test.ts",
-    "line": 71,
-    "character": 9,
-    "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'."
-  },
-  {
-    "code": 2741,
-    "file": "src/client/task-completion-helpers.test.ts",
-    "line": 333,
-    "character": 24,
-    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
-  },
-  {
-    "code": 2741,
-    "file": "src/client/task-completion-helpers.test.ts",
-    "line": 355,
-    "character": 11,
-    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
-  },
-  {
-    "code": 2741,
-    "file": "src/client/task-completion-helpers.test.ts",
-    "line": 356,
-    "character": 11,
-    "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/task-completion-helpers.test.ts",
-    "line": 359,
-    "character": 7,
-    "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\"'."
-  },
-  {
-    "code": 2307,
-    "file": "src/client/task-helpers.ts",
-    "line": 1,
-    "character": 38,
-    "message": "Cannot find module '../api' or its corresponding type declarations."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/task-kind.ts",
-    "line": 20,
-    "character": 7,
-    "message": "Type 'null' is not assignable to type 'string | undefined'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/task-momentum-alerts.test.ts",
-    "line": 99,
-    "character": 9,
-    "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'."
-  }
-]
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "code": 2353,
+      "file": "src/client/api.test.ts",
+      "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"busy\" | \"runState\">'.",
+      "count": 2,
+      "locations": [
+        {
+          "line": 28,
+          "character": 33
+        },
+        {
+          "line": 29,
+          "character": 33
+        }
+      ]
+    },
+    {
+      "code": 2353,
+      "file": "src/client/api.test.ts",
+      "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'.",
+      "count": 2,
+      "locations": [
+        {
+          "line": 69,
+          "character": 9
+        },
+        {
+          "line": 90,
+          "character": 9
+        }
+      ]
+    },
+    {
+      "code": 2353,
+      "file": "src/client/api.test.ts",
+      "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"startTime\" | \"modifiedTime\" | \"lastVisibleActivityAt\" | \"lastAttentionAt\" | \"lastActivityAt\">'.",
+      "count": 3,
+      "locations": [
+        {
+          "line": 36,
+          "character": 7
+        },
+        {
+          "line": 47,
+          "character": 7
+        },
+        {
+          "line": 57,
+          "character": 7
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/App.tsx",
+      "message": "Argument of type '\"done\" | \"archived\" | \"active\"' is not assignable to parameter of type '\"archived\" | \"active\"'.\n  Type '\"done\"' is not assignable to type '\"archived\" | \"active\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 566,
+          "character": 55
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/components/DocsView.tsx",
+      "message": "Argument of type '(prev: DbSortState) => { field: string; order: string; }' is not assignable to parameter of type 'SetStateAction<DbSortState>'.\n  Type '(prev: DbSortState) => { field: string; order: string; }' is not assignable to type '(prevState: DbSortState) => DbSortState'.\n    Call signature return types '{ field: string; order: string; }' and 'DbSortState' are incompatible.\n      The types of 'order' are incompatible between these types.\n        Type 'string' is not assignable to type '\"asc\" | \"desc\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 1704,
+          "character": 17
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/components/DocsView.tsx",
+      "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 1708,
+          "character": 30
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/components/DocsView.tsx",
+      "message": "Argument of type 'string | null' is not assignable to parameter of type 'string'.\n  Type 'null' is not assignable to type 'string'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 1643,
+          "character": 57
+        }
+      ]
+    },
+    {
+      "code": 2769,
+      "file": "src/client/components/shared/Skeleton.test.ts",
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ isLoading: true; label: string; }' is not assignable to parameter of type 'Attributes & LoadingSkeletonRegionProps'.\n      Property 'children' is missing in type '{ isLoading: true; label: string; }' but required in type 'LoadingSkeletonRegionProps'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 22,
+          "character": 9
+        }
+      ]
+    },
+    {
+      "code": 2367,
+      "file": "src/client/components/task-momentum-alerts.ts",
+      "message": "This comparison appears to be unintentional because the types '\"done\" | \"archived\" | \"active\"' and '\"paused\"' have no overlap.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 75,
+          "character": 14
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/components/TaskList.tsx",
+      "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'.",
+      "count": 2,
+      "locations": [
+        {
+          "line": 161,
+          "character": 15
+        },
+        {
+          "line": 265,
+          "character": 25
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/components/TaskList.tsx",
+      "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 281,
+          "character": 26
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/components/TaskPanel.tsx",
+      "message": "Type 'Task | null' is not assignable to type 'Task'.\n  Type 'null' is not assignable to type 'Task'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 540,
+          "character": 17
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/components/TaskPanel.tsx",
+      "message": "Argument of type 'Task | null' is not assignable to parameter of type 'Pick<Task, \"status\" | \"kind\" | \"doneWhen\">'.\n  Type 'null' is not assignable to type 'Pick<Task, \"status\" | \"kind\" | \"doneWhen\">'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 387,
+          "character": 39
+        }
+      ]
+    },
+    {
+      "code": 18047,
+      "file": "src/client/components/TaskPanel.tsx",
+      "message": "'completionState' is possibly 'null'.",
+      "count": 11,
+      "locations": [
+        {
+          "line": 392,
+          "character": 16
+        },
+        {
+          "line": 392,
+          "character": 49
+        },
+        {
+          "line": 396,
+          "character": 7
+        },
+        {
+          "line": 397,
+          "character": 33
+        },
+        {
+          "line": 398,
+          "character": 30
+        },
+        {
+          "line": 408,
+          "character": 9
+        },
+        {
+          "line": 409,
+          "character": 33
+        },
+        {
+          "line": 410,
+          "character": 23
+        },
+        {
+          "line": 529,
+          "character": 18
+        },
+        {
+          "line": 530,
+          "character": 18
+        },
+        {
+          "line": 595,
+          "character": 68
+        }
+      ]
+    },
+    {
+      "code": 18047,
+      "file": "src/client/components/TaskPanel.tsx",
+      "message": "'currentTask' is possibly 'null'.",
+      "count": 4,
+      "locations": [
+        {
+          "line": 391,
+          "character": 32
+        },
+        {
+          "line": 394,
+          "character": 33
+        },
+        {
+          "line": 442,
+          "character": 37
+        },
+        {
+          "line": 595,
+          "character": 34
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/components/TaskRail.tsx",
+      "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'.",
+      "count": 2,
+      "locations": [
+        {
+          "line": 612,
+          "character": 35
+        },
+        {
+          "line": 635,
+          "character": 23
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/components/TaskRail.tsx",
+      "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 642,
+          "character": 32
+        }
+      ]
+    },
+    {
+      "code": 7053,
+      "file": "src/client/components/TaskRail.tsx",
+      "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"done\" | \"archived\" | \"active\", string>'.",
+      "count": 3,
+      "locations": [
+        {
+          "line": 297,
+          "character": 164
+        },
+        {
+          "line": 327,
+          "character": 158
+        },
+        {
+          "line": 360,
+          "character": 160
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/hooks/queries/useSessions.ts",
+      "message": "Argument of type 'unknown' is not assignable to parameter of type 'Session[]'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 65,
+          "character": 31
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/hooks/useTaskWorkspace.ts",
+      "message": "Argument of type 'Promise<QueryObserverResult<TaskGitStatusResponse, Error>>' is not assignable to parameter of type 'void | Promise<QueryObserverResult<ChecklistItem[], Error>>'.\n  Type 'Promise<QueryObserverResult<TaskGitStatusResponse, Error>>' is not assignable to type 'Promise<QueryObserverResult<ChecklistItem[], Error>>'.\n    Type 'QueryObserverResult<TaskGitStatusResponse, Error>' is not assignable to type 'QueryObserverResult<ChecklistItem[], Error>'.\n      Type 'QueryObserverRefetchErrorResult<TaskGitStatusResponse, Error>' is not assignable to type 'QueryObserverResult<ChecklistItem[], Error>'.\n        Type 'QueryObserverRefetchErrorResult<TaskGitStatusResponse, Error>' is not assignable to type 'QueryObserverRefetchErrorResult<ChecklistItem[], Error>'.\n          Type 'TaskGitStatusResponse' is not assignable to type 'ChecklistItem[]'.\n            Type 'GitWorktreeStatusOk' is missing the following properties from type 'ChecklistItem[]': length, pop, push, concat, and 29 more.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 100,
+          "character": 30
+        }
+      ]
+    },
+    {
+      "code": 2339,
+      "file": "src/client/hooks/useVoiceInput.ts",
+      "message": "Property 'AudioContext' does not exist on type 'WindowWithWebkitAudioContext'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 270,
+          "character": 24
+        }
+      ]
+    },
+    {
+      "code": 2783,
+      "file": "src/client/lib/mobile-route-meta.ts",
+      "message": "'activeTab' is specified more than once, so this usage will be overwritten.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 55,
+          "character": 5
+        }
+      ]
+    },
+    {
+      "code": 2783,
+      "file": "src/client/lib/mobile-route-meta.ts",
+      "message": "'route' is specified more than once, so this usage will be overwritten.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 54,
+          "character": 5
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/lib/tool-args.ts",
+      "message": "Argument of type 'string | number | boolean | ToolArgs[] | null | undefined' is not assignable to parameter of type 'ToolArgs'.\n  Type 'undefined' is not assignable to type 'ToolArgs'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 34,
+          "character": 51
+        }
+      ]
+    },
+    {
+      "code": 2345,
+      "file": "src/client/lib/tool-args.ts",
+      "message": "Argument of type 'ToolArgs | undefined' is not assignable to parameter of type 'ToolArgs'.\n  Type 'undefined' is not assignable to type 'ToolArgs'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 34,
+          "character": 24
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/push-notifications.ts",
+      "message": "Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'string | BufferSource | null | undefined'.\n  Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'ArrayBufferView<ArrayBuffer>'.\n    Types of property 'buffer' are incompatible.\n      Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.\n        Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.\n          Types of property '[Symbol.toStringTag]' are incompatible.\n            Type '\"SharedArrayBuffer\"' is not assignable to type '\"ArrayBuffer\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 130,
+          "character": 7
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/task-completion-helpers.test.ts",
+      "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 359,
+          "character": 7
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/task-completion-helpers.test.ts",
+      "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 71,
+          "character": 9
+        }
+      ]
+    },
+    {
+      "code": 2741,
+      "file": "src/client/task-completion-helpers.test.ts",
+      "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'.",
+      "count": 3,
+      "locations": [
+        {
+          "line": 333,
+          "character": 24
+        },
+        {
+          "line": 355,
+          "character": 11
+        },
+        {
+          "line": 356,
+          "character": 11
+        }
+      ]
+    },
+    {
+      "code": 2307,
+      "file": "src/client/task-helpers.ts",
+      "message": "Cannot find module '../api' or its corresponding type declarations.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 1,
+          "character": 38
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/task-kind.ts",
+      "message": "Type 'null' is not assignable to type 'string | undefined'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 20,
+          "character": 7
+        }
+      ]
+    },
+    {
+      "code": 2322,
+      "file": "src/client/task-momentum-alerts.test.ts",
+      "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'.",
+      "count": 1,
+      "locations": [
+        {
+          "line": 99,
+          "character": 9
+        }
+      ]
+    }
+  ]
+}

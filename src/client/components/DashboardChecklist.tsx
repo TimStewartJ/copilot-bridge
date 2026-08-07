@@ -5,6 +5,7 @@ import ChecklistItemRow from "./ChecklistItemRow";
 import EmptyState from "./shared/EmptyState";
 import { UI } from "./shared/design-system";
 import { SORT_LABELS, type ChecklistSort } from "./dashboard-checklist-helpers";
+import { getDashboardPanelId, getDashboardTabId } from "../lib/dashboard-routes";
 
 interface DashboardChecklistProps {
   active: boolean;
@@ -20,7 +21,13 @@ export default function DashboardChecklist({
   if (!active) return null;
 
   return (
-    <section className="space-y-3">
+    <section
+      id={getDashboardPanelId("checklist")}
+      role="tabpanel"
+      aria-labelledby={getDashboardTabId("checklist")}
+      tabIndex={0}
+      className="space-y-3"
+    >
       <div className="flex items-center justify-between">
         <h2 className={UI.text.sectionTitle}>
           <CheckSquare size={14} />
