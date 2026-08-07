@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import request from "supertest";
+import request from "./test-http.js";
 import type { Express } from "express";
 import { createTestApp } from "./test-app.js";
 

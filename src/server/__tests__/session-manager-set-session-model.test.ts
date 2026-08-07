@@ -6,7 +6,7 @@ import { setupTestDb, createTestBus, createMockSessionManager, makeAgentSessionS
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import supertest from "supertest";
+import supertest from "./test-http.js";
 
 function createManager(copilotHome?: string) {
   const db = setupTestDb();

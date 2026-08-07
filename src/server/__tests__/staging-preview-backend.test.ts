@@ -1,5 +1,5 @@
 import express from "express";
-import request from "supertest";
+import request from "./test-http.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

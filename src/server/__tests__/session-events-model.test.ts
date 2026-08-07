@@ -10,7 +10,7 @@ import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import supertest from "supertest";
+import supertest from "./test-http.js";
 
 // ── Parser unit tests ───────────────────────────────────────────────────────
 

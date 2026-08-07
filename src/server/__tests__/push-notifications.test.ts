@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import request from "supertest";
+import request from "./test-http.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

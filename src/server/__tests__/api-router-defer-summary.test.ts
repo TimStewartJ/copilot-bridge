@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import request from "supertest";
+import request from "./test-http.js";
 import { createMockSessionManager } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 

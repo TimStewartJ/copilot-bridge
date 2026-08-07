@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { get } from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
-import request from "supertest";
+import request from "./test-http.js";
 import type { Express } from "express";
 import { join } from "node:path";
 import type { AppContext } from "../app-context.js";

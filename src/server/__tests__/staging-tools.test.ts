@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import express from "express";
-import request from "supertest";
+import request from "./test-http.js";
 
 type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
