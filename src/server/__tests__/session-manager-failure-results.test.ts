@@ -5,6 +5,7 @@ import { toolFailure } from "../tool-results.js";
 import { createChecklistToolDefinitions } from "../tools/checklist-tools.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
 import { createTagToolDefinitions } from "../tools/tag-tools.js";
+import { createTaskGroupToolDefinitions } from "../tools/task-group-tools.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { createTestApp } from "./test-app.js";
 
@@ -15,6 +16,7 @@ function getTool(ctx: AppContext, name: string) {
     ...getBridgeToolDefinitions(ctx),
     ...createTaskToolDefinitions(ctx),
     ...createChecklistToolDefinitions(ctx),
+    ...createTaskGroupToolDefinitions(ctx),
     ...createTagToolDefinitions(ctx),
     ...createDocsToolDefinitions(ctx),
   ].find((candidate) => candidate.name === name);
@@ -42,6 +44,62 @@ describe("session manager failure results", () => {
     const checklistAddTool = getTool(ctx, "checklist_add");
     await expect(checklistAddTool.handler({ taskId: "missing-task", text: "Ship it" }, createInvocation("checklist_add")))
       .resolves.toEqual(toolFailure("Task missing-task not found"));
+  });
+
+  it("checklist_list can list global items with omitted or null taskId", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Checklist host");
+    const globalItem = ctx.checklistStore.createChecklistItem(null, "Global");
+    ctx.checklistStore.createChecklistItem(task.id, "Task-specific");
+    const listTool = getTool(ctx, "checklist_list");
+
+    for (const args of [{}, { taskId: null }]) {
+      await expect(listTool.handler(args, createInvocation("checklist_list"))).resolves.toMatchObject({
+        checklistItems: [expect.objectContaining({ id: globalItem.id, text: "Global" })],
+        total: 1,
+      });
+    }
+
+    await expect(listTool.handler({ taskId: task.id }, createInvocation("checklist_list"))).resolves.toMatchObject({
+      checklistItems: [expect.objectContaining({ text: "Task-specific" })],
+      total: 1,
+    });
+  });
+
+  it("task_group_delete uses the atomic store operation and reports failures", async () => {
+    const { ctx } = createTestApp();
+    const group = ctx.taskGroupStore.createGroup("Delete me");
+    const task = ctx.taskStore.createTask("Grouped", group.id);
+    const tag = ctx.tagStore!.createTag("group-tag");
+    ctx.tagStore!.setEntityTags("task_group", group.id, [tag.id]);
+    const deleteTool = getTool(ctx, "task_group_delete");
+
+    await expect(deleteTool.handler({
+      groupId: group.id,
+    }, createInvocation("task_group_delete"))).resolves.toEqual({
+      success: true,
+      message: "Group deleted, 1 task(s) ungrouped",
+    });
+    expect(ctx.taskStore.getTask(task.id)?.groupId).toBeUndefined();
+    expect(ctx.taskGroupStore.getGroup(group.id)).toBeUndefined();
+    expect(ctx.tagStore!.getEntityTags("task_group", group.id)).toEqual([]);
+    await expect(deleteTool.handler({
+      groupId: group.id,
+    }, createInvocation("task_group_delete"))).resolves.toEqual({
+      success: true,
+      message: "Group already absent; no changes were needed",
+    });
+
+    const preserved = ctx.taskGroupStore.createGroup("Preserved");
+    vi.spyOn(ctx.taskGroupStore, "deleteGroup").mockImplementationOnce(() => {
+      throw new Error("injected delete failure");
+    });
+    await expect(deleteTool.handler({
+      groupId: preserved.id,
+    }, createInvocation("task_group_delete"))).resolves.toEqual(
+      toolFailure("injected delete failure"),
+    );
+    expect(ctx.taskGroupStore.getGroup(preserved.id)?.id).toBe(preserved.id);
   });
 
   it("normalizes duplicate tag creation failures", async () => {

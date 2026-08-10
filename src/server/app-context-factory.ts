@@ -69,7 +69,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const dataDir = runtimePaths.dataDir;
   const db = openDatabase(dataDir);
   const taskStore = createTaskStore(db, defaultGlobalBus, { runtimePaths });
-  const taskGroupStore = createTaskGroupStore(db);
+  const taskGroupStore = createTaskGroupStore(db, defaultGlobalBus);
   const scheduleStore = createScheduleStore(db);
   const settingsStore = createSettingsStore(db);
   const sessionMetaStore = createSessionMetaStore(db);

@@ -68,6 +68,22 @@ export function areSessionUnreadBubblesMuted(tasks: Task[]): boolean {
   return visibleLinkedTasks.length > 0 && visibleLinkedTasks.every((task) => task.muted);
 }
 
+export const TASK_UPDATE_FIELDS = [
+  "title",
+  "kind",
+  "muted",
+  "status",
+  "notes",
+  "priority",
+  "cwd",
+  "groupId",
+  "doneWhen",
+  "nextAction",
+  "waitingOn",
+  "nextTouchAt",
+  "completionAction",
+] as const;
+
 type TaskUpdate = {
   title?: string;
   kind?: TaskKind;
@@ -132,6 +148,26 @@ function normalizeCompletionAction(value: unknown): TaskCompletionAction | undef
 function normalizeTaskMutedUpdate(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   throw new InvalidTaskUpdateError("muted must be a boolean");
+}
+
+function normalizeTaskPriority(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) return value;
+  throw new InvalidTaskUpdateError("priority must be a finite integer");
+}
+
+function normalizeTaskGroupId(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new InvalidTaskUpdateError("groupId must be a string or null");
+  const groupId = value.trim();
+  return groupId === "" ? null : groupId;
+}
+
+function assertTaskGroupExists(db: DatabaseSync, groupId: string | null | undefined): void {
+  if (groupId === undefined || groupId === null) return;
+  if (!db.prepare("SELECT 1 FROM task_groups WHERE id = ?").get(groupId)) {
+    throw new InvalidTaskUpdateError(`Task group ${groupId} not found`);
+  }
 }
 
 function isLeapYear(year: number): boolean {
@@ -265,8 +301,9 @@ export function createTaskStore(
     return row ? hydrate(row) : undefined;
   }
 
-  function createTask(title: string, groupId?: string, kind?: TaskKind): Task {
+  function createTask(title: string, groupId?: string | null, kind?: TaskKind): Task {
     const normalizedKind = kind === undefined ? "task" : normalizeTaskKind(kind, { strict: true });
+    const normalizedGroupId = normalizeTaskGroupId(groupId);
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -276,13 +313,14 @@ export function createTaskStore(
     // active task must not keep the +1, or each failed create permanently
     // inflates the ordering.
     runTransaction(db, () => {
+      assertTaskGroupExists(db, normalizedGroupId);
       // Bump order of all existing active tasks to make room at top
       db.prepare('UPDATE tasks SET "order" = "order" + 1 WHERE status = \'active\'').run();
 
       db.prepare(`
         INSERT INTO tasks (id, title, kind, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
         VALUES (?, ?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
-      `).run(id, title, normalizedKind, groupId || null, cwd ?? null, now, now);
+      `).run(id, title, normalizedKind, normalizedGroupId ?? null, cwd ?? null, now, now);
     });
 
     const task = getTask(id)!;
@@ -297,6 +335,8 @@ export function createTaskStore(
     const oldStatus = normalizeStoredTaskStatus(row.status);
     const oldCompletedAt = normalizeOptionalTimestamp(row.completedAt);
     const completionAction = normalizeCompletionAction(updates.completionAction);
+    const priority = updates.priority !== undefined ? normalizeTaskPriority(updates.priority) : undefined;
+    const groupId = normalizeTaskGroupId(updates.groupId);
     const legacyDoneRequested = updates.status === "done";
     if (completionAction && updates.status !== undefined) {
       throw new InvalidTaskUpdateError("completionAction cannot be combined with status");
@@ -355,9 +395,9 @@ export function createTaskStore(
     if (updates.muted !== undefined) { fields.push("muted = ?"); values.push(normalizeTaskMutedUpdate(updates.muted) ? 1 : 0); }
     if (shouldPersistStatus) { fields.push("status = ?"); values.push(targetStatus); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
-    if (updates.priority !== undefined) { fields.push("priority = ?"); values.push(updates.priority); }
+    if (priority !== undefined) { fields.push("priority = ?"); values.push(priority); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
-    if (updates.groupId !== undefined) { fields.push("groupId = ?"); values.push(updates.groupId || null); }
+    if (groupId !== undefined) { fields.push("groupId = ?"); values.push(groupId); }
     const nextAction = hasNextActionUpdate ? normalizeOptionalText(updates.nextAction) ?? null : undefined;
     const waitingOn = hasWaitingOnUpdate ? normalizeOptionalText(updates.waitingOn) ?? null : undefined;
     const nextTouchAt = hasNextTouchAtUpdate
@@ -408,6 +448,7 @@ export function createTaskStore(
     // Cohort bump and the row's own write are one unit, so a failure cannot
     // leave the destination cohort shifted without the moved task landing at 0.
     runTransaction(db, () => {
+      assertTaskGroupExists(db, groupId);
       if (shouldBumpCohort) {
         db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
       }

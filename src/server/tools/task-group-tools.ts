@@ -34,11 +34,18 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
     description: "Delete a task group. Tasks in the group become ungrouped.",
     parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to delete" } }, required: ["groupId"] },
     handler: async (args: any) => {
-      const tasks = ctx.taskStore.listTasks().filter((t) => t.groupId === args.groupId);
-      for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: null });
-      ctx.tagStore?.setEntityTags("task_group", args.groupId, []);
-      ctx.taskGroupStore.deleteGroup(args.groupId);
-      return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
+      try {
+        const result = ctx.taskGroupStore.deleteGroup(args.groupId);
+        if (!result.deleted && result.affectedTaskIds.length === 0) {
+          return { success: true, message: "Group already absent; no changes were needed" };
+        }
+        if (!result.deleted) {
+          return { success: true, message: `Group already absent, ${result.affectedTaskIds.length} stale task(s) ungrouped` };
+        }
+        return { success: true, message: `Group deleted, ${result.affectedTaskIds.length} task(s) ungrouped` };
+      } catch (error) {
+        return toolFailure(error instanceof Error ? error.message : String(error));
+      }
     },
   }),
   defineBridgeTool("task_group_update", {

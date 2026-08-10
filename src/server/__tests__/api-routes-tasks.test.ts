@@ -33,6 +33,24 @@ installApiRouteTestHooks((state) => {
   ({ app, ctx, db } = state);
 });
 
+function failOnStatement(match: string): () => void {
+  const original = db.prepare.bind(db);
+  const restore = () => { (db as any).prepare = original; };
+  (db as any).prepare = (sql: string) => {
+    const stmt = original(sql);
+    if (!sql.includes(match)) return stmt;
+    return new Proxy(stmt, {
+      get(target, prop, receiver) {
+        if (prop === "run") {
+          return () => { throw new Error("injected write failure"); };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  };
+  return restore;
+}
+
 describe("Task routes", () => {
   it("GET /api/tasks/:id/session-storage returns recursive size for linked sessions only", async () => {
     const task = ctx.taskStore.createTask("Storage task");
@@ -456,6 +474,59 @@ describe("Task routes", () => {
     expect(get.status).toBe(200);
     expect(get.body.task.status).toBe("active");
   });
+
+  it("PATCH /api/tasks/:id rejects unknown fields before mutation", async () => {
+    const task = ctx.taskStore.createTask("Known title");
+    const before = ctx.taskStore.getTask(task.id);
+
+    const invalid = await request(app)
+      .patch(`/api/tasks/${task.id}`)
+      .send({ titel: "Typo" });
+
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe('Unknown field: "titel"');
+    expect(ctx.taskStore.getTask(task.id)).toEqual(before);
+  });
+
+  it("rejects missing task-group references on create and update", async () => {
+    const invalidType = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Invalid group type", groupId: 42 });
+    expect(invalidType.status).toBe(400);
+    expect(invalidType.body.error).toContain("groupId must be a string or null");
+
+    const invalidCreate = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Invalid group", groupId: "missing-group" });
+    expect(invalidCreate.status).toBe(400);
+    expect(invalidCreate.body.error).toContain("Task group missing-group not found");
+
+    const group = ctx.taskGroupStore.createGroup("Valid group");
+    const task = ctx.taskStore.createTask("Grouped", group.id);
+    const before = ctx.taskStore.getTask(task.id);
+    const invalidUpdate = await request(app)
+      .patch(`/api/tasks/${task.id}`)
+      .send({ groupId: "missing-group" });
+
+    expect(invalidUpdate.status).toBe(400);
+    expect(invalidUpdate.body.error).toContain("Task group missing-group not found");
+    expect(ctx.taskStore.getTask(task.id)).toEqual(before);
+    expect(ctx.taskStore.listTasks().map((item) => item.title)).toEqual(["Grouped"]);
+  });
+
+  it("PATCH /api/tasks/:id rejects invalid priority values", async () => {
+    const task = ctx.taskStore.createTask("Priority");
+
+    for (const priority of ["high", 1.5]) {
+      const invalid = await request(app)
+        .patch(`/api/tasks/${task.id}`)
+        .send({ priority });
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toContain("priority must be a finite integer");
+    }
+
+    expect(ctx.taskStore.getTask(task.id)?.priority).toBe(0);
+  });
 });
 
 // ── Task Group CRUD ──────────────────────────────────────────────
@@ -534,9 +605,48 @@ describe("Task group routes", () => {
     const del = await request(app).delete(`/api/task-groups/${id}`);
     expect(del.status).toBe(200);
     expect(del.body.success).toBe(true);
+    expect(del.body.deleted).toBe(true);
 
     const list = await request(app).get("/api/task-groups");
     expect(list.body.groups).toEqual([]);
+  });
+
+  it("DELETE /api/task-groups/:id reports an idempotent no-op for a missing group", async () => {
+    const del = await request(app).delete("/api/task-groups/missing-group");
+
+    expect(del.status).toBe(200);
+    expect(del.body).toEqual({
+      success: true,
+      deleted: false,
+      ungroupedTaskCount: 0,
+    });
+  });
+
+  it("DELETE /api/task-groups/:id returns JSON and rolls back on cascade failure", async () => {
+    const first = ctx.taskGroupStore.createGroup("First");
+    const second = ctx.taskGroupStore.createGroup("Second");
+    const task = ctx.taskStore.createTask("Grouped", first.id);
+    const tag = ctx.tagStore!.createTag("group-tag");
+    ctx.tagStore!.setEntityTags("task_group", first.id, [tag.id]);
+    const beforeTask = ctx.taskStore.getTask(task.id);
+    const beforeGroups = ctx.taskGroupStore.listGroups();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const restore = failOnStatement('UPDATE task_groups SET "order" = ? WHERE id = ?');
+
+    let res;
+    try {
+      res = await request(app).delete(`/api/task-groups/${first.id}`);
+    } finally {
+      restore();
+      consoleError.mockRestore();
+    }
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("injected write failure");
+    expect(ctx.taskStore.getTask(task.id)).toEqual(beforeTask);
+    expect(ctx.tagStore!.getEntityTags("task_group", first.id).map((item) => item.id)).toEqual([tag.id]);
+    expect(ctx.taskGroupStore.listGroups()).toEqual(beforeGroups);
+    expect(ctx.taskGroupStore.getGroup(second.id)?.order).toBe(1);
   });
 
   it("PUT /api/task-groups/reorder reorders groups", async () => {

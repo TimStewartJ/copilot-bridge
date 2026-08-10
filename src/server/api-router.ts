@@ -80,7 +80,7 @@ import {
   emptyBackgroundAgentsSummary,
 } from "../shared/session-agents.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
-import { InvalidTaskUpdateError, type Task } from "./task-store.js";
+import { InvalidTaskUpdateError, TASK_UPDATE_FIELDS, type Task } from "./task-store.js";
 import {
   resolvePullRequestLink,
   resolvePullRequestUnlink,
@@ -3147,12 +3147,17 @@ export function createApiRouter(
   });
 
   router.delete("/task-groups/:id", (req, res) => {
-    // Ungroup any tasks that belong to this group
-    const tasks = ctx.taskStore.listTasks().filter((t) => t.groupId === req.params.id);
-    for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: null });
-    ctx.tagStore?.setEntityTags("task_group", req.params.id, []);
-    ctx.taskGroupStore.deleteGroup(req.params.id);
-    res.json({ success: true });
+    try {
+      const result = ctx.taskGroupStore.deleteGroup(req.params.id);
+      res.json({
+        success: true,
+        deleted: result.deleted,
+        ungroupedTaskCount: result.affectedTaskIds.length,
+      });
+    } catch (err) {
+      console.error("[task-groups] Delete failed:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.put("/task-groups/reorder", (req, res) => {
@@ -3560,6 +3565,10 @@ export function createApiRouter(
 
   router.patch("/tasks/:id", (req, res) => {
     try {
+      const unknownFields = findUnknownFields(req.body, TASK_UPDATE_FIELDS);
+      if (unknownFields.length > 0) {
+        return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
+      }
       const task = ctx.taskStore.updateTask(req.params.id, {
         title: req.body?.title,
         kind: req.body?.kind,

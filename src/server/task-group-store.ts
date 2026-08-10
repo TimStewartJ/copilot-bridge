@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import type { GlobalBus } from "./global-bus.js";
 import { findUnknownFields, formatUnknownFieldsError } from "./schedule-validation.js";
 import { runTransaction } from "./db-transaction.js";
 
@@ -62,7 +63,7 @@ export interface TaskGroup {
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createTaskGroupStore(db: DatabaseSync) {
+export function createTaskGroupStore(db: DatabaseSync, bus: GlobalBus) {
   function hydrate(row: any): TaskGroup {
     return {
       id: row.id,
@@ -125,14 +126,28 @@ export function createTaskGroupStore(db: DatabaseSync) {
     return getGroup(id)!;
   }
 
-  function deleteGroup(id: string): void {
-    runTransaction(db, () => {
-      db.prepare("DELETE FROM task_groups WHERE id = ?").run(id);
+  function deleteGroup(id: string): { affectedTaskIds: string[]; deleted: boolean } {
+    const result = runTransaction(db, () => {
+      const affectedTaskIds = (db
+        .prepare('SELECT id FROM tasks WHERE groupId = ? ORDER BY "order", id')
+        .all(id) as Array<{ id: string }>).map((row) => row.id);
+      db.prepare("UPDATE tasks SET groupId = NULL, updatedAt = ? WHERE groupId = ?")
+        .run(new Date().toISOString(), id);
+      db.prepare("DELETE FROM entity_tags WHERE entityType = 'task_group' AND entityId = ?").run(id);
+      const deletion = db.prepare("DELETE FROM task_groups WHERE id = ?").run(id) as { changes?: number };
       // Re-order remaining groups
       const remaining = db.prepare('SELECT id FROM task_groups ORDER BY "order"').all() as any[];
       const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
       remaining.forEach((r, i) => stmt.run(i, r.id));
+      return {
+        affectedTaskIds,
+        deleted: (deletion.changes ?? 0) > 0,
+      };
     });
+    for (const taskId of result.affectedTaskIds) {
+      bus.emit({ type: "task:changed", taskId });
+    }
+    return result;
   }
 
   function reorderGroups(groupIds: string[]): TaskGroup[] {

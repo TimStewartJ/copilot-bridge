@@ -43,6 +43,10 @@ describe("session manager task tools", () => {
       enum: ["task", "ongoing"],
       description: "Task kind",
     });
+    expect(updateTool.inputSchema.properties.status.enum).toEqual(["active", "done", "archived"]);
+    expect(updateTool.inputSchema.properties.completionAction.enum).toEqual(["complete-and-archive"]);
+    expect(updateTool.inputSchema.properties.priority.type).toBe("integer");
+    expect(updateTool.inputSchema.properties.groupId.anyOf).toEqual([{ type: "string" }, { type: "null" }]);
     expect(updateTool.inputSchema.properties.nextAction).toBeUndefined();
     expect(updateTool.inputSchema.properties.waitingOn).toBeUndefined();
     expect(updateTool.inputSchema.properties.nextTouchAt).toBeUndefined();
@@ -144,6 +148,92 @@ describe("session manager task tools", () => {
         doneWhen: undefined,
       }),
     );
+  });
+
+  it("task_update changes priority and supports status or completionAction", async () => {
+    const { ctx } = createTestApp();
+    const priorityTask = ctx.taskStore.createTask("Priority update");
+    const statusTask = ctx.taskStore.createTask("Status update");
+    const completionTask = ctx.taskStore.createTask("Completion update");
+    const group = ctx.taskGroupStore.createGroup("Temporary group");
+    const groupedTask = ctx.taskStore.createTask("Ungroup update", group.id);
+    const tool = getTool(ctx, "task_update");
+
+    await expect(tool.handler({
+      taskId: priorityTask.id,
+      priority: 7,
+    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
+    expect(ctx.taskStore.getTask(priorityTask.id)?.priority).toBe(7);
+    await tool.handler({
+      taskId: priorityTask.id,
+      priority: 0,
+    }, createInvocation("task_update"));
+    expect(ctx.taskStore.getTask(priorityTask.id)?.priority).toBe(0);
+
+    await expect(tool.handler({
+      taskId: statusTask.id,
+      status: "done",
+    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
+    expect(ctx.taskStore.getTask(statusTask.id)).toEqual(expect.objectContaining({
+      status: "archived",
+      completedAt: expect.any(String),
+    }));
+
+    await expect(tool.handler({
+      taskId: completionTask.id,
+      completionAction: "complete-and-archive",
+    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
+    expect(ctx.taskStore.getTask(completionTask.id)).toEqual(expect.objectContaining({
+      status: "archived",
+      completedAt: expect.any(String),
+    }));
+
+    await expect(tool.handler({
+      taskId: groupedTask.id,
+      groupId: null,
+    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
+    expect(ctx.taskStore.getTask(groupedTask.id)?.groupId).toBeUndefined();
+  });
+
+  it("task_update rejects invalid status combinations, priorities, and group references", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Invalid update");
+    const tool = getTool(ctx, "task_update");
+    const createTool = getTool(ctx, "task_create");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      status: "archived",
+      completionAction: "complete-and-archive",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("completionAction cannot be combined with status"),
+    );
+
+    const invalidPriority: any = await tool.handler({
+      taskId: task.id,
+      priority: 1.5,
+    }, createInvocation("task_update"));
+    expect(String(invalidPriority.textResultForLlm)).toContain("Invalid arguments for task_update");
+    expect(String(invalidPriority.textResultForLlm)).toContain("priority must be integer");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      groupId: "missing-group",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("Task group missing-group not found"),
+    );
+
+    await expect(createTool.handler({
+      title: "Invalid group create",
+      groupId: "missing-group",
+    }, createInvocation("task_create"))).resolves.toEqual(
+      toolFailure("Task group missing-group not found"),
+    );
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
+      status: "active",
+      priority: 0,
+      groupId: undefined,
+    }));
   });
 
   it("task_update_momentum sets and clears nullable momentum fields", async () => {
@@ -319,7 +409,7 @@ describe("session manager task tools", () => {
 
     expect(result).toEqual(expect.objectContaining({
       id: task.id,
-      sessionIds: sessionIds.slice(0, 10),
+      sessionIds: sessionIds.slice(2),
       sessionCount: sessionIds.length,
       omittedSessionCount: 2,
     }));
