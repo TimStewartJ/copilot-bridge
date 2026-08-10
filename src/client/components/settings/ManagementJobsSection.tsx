@@ -36,6 +36,7 @@ import {
   useRestartBridgeMutation,
 } from "../../hooks/queries/useBridgeRuntimeStatus";
 import { useRestartStatusQuery } from "../../hooks/queries/useRestartStatus";
+import { isRecord } from "../../../shared/is-record.js";
 import EmptyState from "../shared/EmptyState";
 import { SettingsSection } from "./SettingsSection";
 
@@ -1437,16 +1438,12 @@ function formatJson(value: unknown): string {
 
 function redactSensitive(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
-  if (!isPlainObject(value)) return value;
+  if (!isRecord(value)) return value;
   const redacted: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     redacted[key] = isSensitiveKey(key) ? "[redacted]" : redactSensitive(item);
   }
   return redacted;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isSensitiveKey(key: string): boolean {

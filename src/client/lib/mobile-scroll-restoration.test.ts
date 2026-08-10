@@ -65,6 +65,9 @@ describe("getMobileScrollRestorationPolicy", () => {
 describe("mobile scroll restoration helpers", () => {
   it("identifies explicit mobile restore state", () => {
     expect(hasBridgeMobileScrollRestoreState({ [BRIDGE_MOBILE_SCROLL_RESTORE_STATE]: true })).toBe(true);
+    expect(hasBridgeMobileScrollRestoreState(
+      Object.assign([], { [BRIDGE_MOBILE_SCROLL_RESTORE_STATE]: true }),
+    )).toBe(false);
     expect(hasBridgeMobileScrollRestoreState({ [BRIDGE_MOBILE_SCROLL_RESTORE_STATE]: false })).toBe(false);
     expect(hasBridgeMobileScrollRestoreState(null)).toBe(false);
   });

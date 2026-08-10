@@ -9,6 +9,7 @@ import {
 import type { AppContext } from "../app-context.js";
 import { isAdaptedToolHandler } from "./adapter.js";
 import { sniffImageMimeFromBase64 } from "../image-mime.js";
+import { isRecord } from "../../shared/is-record.js";
 
 export type BridgeToolHandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 export type BridgeToolHandlerResult = string | CallToolResult | object;
@@ -26,10 +27,6 @@ export interface BridgeToolDefinition {
 }
 
 type RegistryScope = "global" | "session";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Relabel image content items whose declared MIME type disagrees with their

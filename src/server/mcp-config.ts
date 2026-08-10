@@ -1,3 +1,5 @@
+import { isRecord } from "../shared/is-record.js";
+
 export interface McpServerConfigBase {
   tools?: string[];
 }
@@ -23,10 +25,6 @@ export interface RemoteMcpServerConfig extends McpServerConfigBase {
 }
 
 export type McpServerConfig = LocalMcpServerConfig | RemoteMcpServerConfig;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");

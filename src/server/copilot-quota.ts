@@ -14,6 +14,8 @@
  * Note the bucket named `premium_interactions` is billed in AI credits, not
  * premium requests, whenever `tokenBasedBilling` is set.
  */
+import { isRecord } from "../shared/is-record.js";
+
 export type CopilotQuotaUnit = "ai_credits" | "premium_requests";
 
 export interface CopilotQuotaSnapshot {
@@ -259,9 +261,7 @@ function hasMeasuredUsage(snapshot: CopilotQuotaSnapshot): boolean {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+  return isRecord(value) ? value : null;
 }
 
 function readFiniteNumber(value: unknown): number | null {

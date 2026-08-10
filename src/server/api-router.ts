@@ -63,6 +63,7 @@ import {
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
+import { isRecord } from "../shared/is-record.js";
 import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
@@ -198,10 +199,6 @@ async function getSessionEventLogSizeBytes(ctx: AppContext, sessionId: string): 
     );
     return 0;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 interface DashboardChecklistItem extends ChecklistItem {

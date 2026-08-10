@@ -13,6 +13,7 @@ import type { SendMode } from "../shared/send-mode.js";
 import type { RunNotice } from "../shared/session-stream.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
+import { isRecord } from "../shared/is-record.js";
 
 /**
  * Live stream state.
@@ -159,10 +160,6 @@ function createState(status: StreamStatus, partial: Partial<StreamState> = {}): 
     streamStatus: status,
     isStreaming: status !== "idle",
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function optionalString(value: unknown): string | undefined {

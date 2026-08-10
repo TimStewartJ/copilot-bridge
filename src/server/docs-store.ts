@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlin
 import { basename, dirname, join, resolve, sep, win32 } from "node:path";
 import matter from "gray-matter";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { isRecord } from "../shared/is-record.js";
 import { tagNamesMatch } from "./tag-name.js";
 import { isPathAtOrUnder, type PathComparisonApi } from "./path-utils.js";
 
@@ -222,10 +223,6 @@ export function createDocsStore(docsDir: string) {
       }
       throw error;
     }
-  }
-
-  function isPlainObject(value: unknown): value is Record<string, any> {
-    return !!value && typeof value === "object" && !Array.isArray(value);
   }
 
   function buildDbUsageError(mode: "add" | "update", folder?: string): string {
@@ -618,13 +615,13 @@ export function createDocsStore(docsDir: string) {
         throw new Error(`Invalid frontmatter: ${message}`);
       }
       const contentFields = createSafeFieldMap();
-      if (isPlainObject(parsed.data)) {
+      if (isRecord(parsed.data)) {
         assignDbFields(contentFields, parsed.data);
       }
       return { fields: contentFields, body: parsed.content };
     }
 
-    const explicitFields = isPlainObject(input.fields) ? input.fields : undefined;
+    const explicitFields = isRecord(input.fields) ? input.fields : undefined;
     let normalizedBody = typeof input.body === "string" ? input.body : undefined;
     const inferredFields = createSafeFieldMap();
     const fields = createSafeFieldMap();
@@ -632,7 +629,7 @@ export function createDocsStore(docsDir: string) {
     if (normalizedBody) {
       try {
         const parsed = matter(normalizedBody);
-        if (isPlainObject(parsed.data) && Object.keys(parsed.data).length > 0) {
+        if (isRecord(parsed.data) && Object.keys(parsed.data).length > 0) {
           assignDbFields(inferredFields, parsed.data);
           normalizedBody = parsed.content;
         }

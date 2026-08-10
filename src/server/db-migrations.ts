@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isRecord } from "../shared/is-record.js";
 import {
   isMcpServerConfig,
   mcpServerConfigsEqual,
@@ -142,9 +143,7 @@ function withForeignKeysDisabled(db: DatabaseSync, apply: () => void): void {
 function parseJsonObject(value: string): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(value) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : undefined;
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -267,8 +266,8 @@ function migrateMcpRegistry(db: DatabaseSync): void {
   runMigrationInTransaction(db, () => {
     const appSettingsRow = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string } | undefined;
     const appSettings = appSettingsRow ? parseJsonObject(appSettingsRow.value) : undefined;
-    const legacyMcpServers = appSettings?.mcpServers;
-    if (legacyMcpServers && typeof legacyMcpServers === "object" && !Array.isArray(legacyMcpServers)) {
+    if (isRecord(appSettings) && isRecord(appSettings.mcpServers)) {
+      const legacyMcpServers = appSettings.mcpServers;
       for (const [name, config] of Object.entries(legacyMcpServers)) {
         if (typeof name === "string" && isMcpServerConfig(config)) {
           upsertDefaultMcpServer(db, name, config);

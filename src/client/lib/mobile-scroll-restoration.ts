@@ -1,4 +1,5 @@
 import type { MobileRouteMeta } from "./mobile-route-meta";
+import { isRecord } from "../../shared/is-record.js";
 
 export const BRIDGE_MOBILE_SCROLL_RESTORE_STATE = "bridgeMobileScrollRestore" as const;
 
@@ -33,10 +34,6 @@ const ROOT_ROUTE_KEYS = {
 } as const satisfies Partial<Record<MobileRouteMeta["route"], MobileScrollRestorationKey>>;
 
 type MobileRootScrollRoute = keyof typeof ROOT_ROUTE_KEYS;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function isMobileRootScrollRoute(route: MobileRouteMeta["route"]): route is MobileRootScrollRoute {
   return Object.prototype.hasOwnProperty.call(ROOT_ROUTE_KEYS, route);

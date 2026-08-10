@@ -2,6 +2,7 @@ import {
   isCopilotModelPriceable,
   type CopilotModelMetadataForPricing,
 } from "../shared/copilot-pricing.js";
+import { isRecord } from "../shared/is-record.js";
 import { createDeadline, settleByDeadline } from "./deadline.js";
 import type { CopilotModelPriceStore } from "./copilot-model-price-store.js";
 
@@ -171,10 +172,6 @@ function loadCachedModelPrices(
     console.warn("[copilot-usage] Failed to hydrate cached model prices.", error);
     return [];
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toCopilotModelMetadataForPricing(value: unknown): CopilotModelMetadataForPricing | null {

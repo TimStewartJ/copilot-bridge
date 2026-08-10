@@ -1,4 +1,5 @@
 import { isToolErrorResult, getToolResultDisplayText } from "./tool-results.js";
+import { isRecord } from "../shared/is-record.js";
 import { runSelfUpdateJob } from "./self-update-job.js";
 import {
   runStagingDeployJob,
@@ -23,9 +24,7 @@ export class ManagementJobExecutionError extends Error {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+  return isRecord(value) ? value : {};
 }
 
 function stagingPreviewInput(value: unknown): StagingPreviewJobInput {

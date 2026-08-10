@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
+import { isRecord } from "../shared/is-record.js";
 import type { DatabaseSync } from "./db.js";
 import { runInOwnOrOuterTransaction } from "./db-transaction.js";
 import {
@@ -175,9 +176,7 @@ function parseJsonObject(value: string | null): Record<string, unknown> | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
+    return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }

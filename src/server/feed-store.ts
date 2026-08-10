@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
 import { hydrateRowsSafely, type RowHydrationContext } from "./store-row-hydration.js";
+import { isRecord } from "../shared/is-record.js";
 
 const FEED_CARD_HYDRATION: RowHydrationContext<any> = {
   store: "feed-cards",
@@ -700,10 +701,6 @@ function feedPageOrderBy(order: FeedListOrder): string {
   }
 }
 
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function normalizeListFilters(filters: FeedCardPageFilters): NormalizedFeedListFilters {
   let statusFilter: FeedCardStatus | undefined;
   if (filters.status !== undefined) {
@@ -794,7 +791,7 @@ function decodeFeedCursor(cursor: string): FeedCursorPayload {
   } catch {
     throw new FeedCardValidationError("cursor is invalid");
   }
-  if (!isRecordValue(parsed) || parsed.v !== FEED_CURSOR_VERSION) {
+  if (!isRecord(parsed) || parsed.v !== FEED_CURSOR_VERSION) {
     throw new FeedCardValidationError("cursor is invalid");
   }
   const pinned = parsed.pinned;

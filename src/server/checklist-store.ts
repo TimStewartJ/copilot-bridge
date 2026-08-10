@@ -2,6 +2,7 @@
 
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
+import { isRecord } from "../shared/is-record.js";
 import { runTransaction } from "./db-transaction.js";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -43,10 +44,6 @@ export type ChecklistItemUpdate = Partial<Pick<ChecklistItem, "text" | "done">> 
 const CHECKLIST_CREATE_FIELDS = ["text", "deadline"] as const;
 const CHECKLIST_UPDATE_FIELDS = ["text", "done", "deadline"] as const;
 const CHECKLIST_DEADLINE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function findUnknownFields(input: Record<string, unknown>, allowedFields: readonly string[]): string[] {
   const allowed = new Set(allowedFields);
