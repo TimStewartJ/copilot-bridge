@@ -1,8 +1,10 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { patchCopilotAppSource } from "../copilot-cli-loader.js";
+import { makeTestDir } from "./helpers.js";
 
 // Retained only as a rejection fixture: the legacy (<= 1.0.70) call-site shape is
 // no longer patched, so a bundle that reverts to it must fail loudly instead of
@@ -24,6 +26,16 @@ async resumeSession(l,$n){let $p=await this.resolveSessionAuth($n),$q={};if(this
 `;
 const GITHUB_MCP_CONFIG_METHOD_1_0_71 = `
 async createBuiltInGitHubMcpConfig(e,n,r,o){let s;try{s=await ji(e)}catch{return}if(!s)return;let a=await HR(),l=await pn.load(o??this.options.settings),c=await this.coreServices.createFeatureFlagService({sessionId:n}).isFidesIfcEnabled().catch(()=>this.options.featureFlags?.FIDES_IFC??!1),u=KF({settings:VF(l),session:r},c);return rwe(s,e,{...u,excludeGhReplaceableTools:a},x)}
+`;
+// Real @github/copilot 1.0.77 shape: the config method gained a defaulted
+// parameter (`o=!1`), the settings argument moved from position 4 to 5, and the
+// builder call grew a second trailing argument.
+const GITHUB_MCP_CONFIG_METHOD_1_0_77 = `
+async createBuiltInGitHubMcpConfig(e,n,r,o=!1,s){let a;try{a=await go(e)}catch{return}if(!a)return;let l=await eR(),c=await Yt.load(s??this.options.settings),d=await this.coreServices.createFeatureFlagService({sessionId:n}).isFidesIfcEnabled().catch(()=>this.options.featureFlags?.FIDES_IFC??!1),u=VL({settings:WL(c),session:r},d);return sfe(a,e,{...u,excludeGhReplaceableTools:l,copilotIntegrationId:iF},k,o)}
+`;
+const CONFIG_CALL_SITES_1_0_77 = `
+async createSession(e){let a=await this.resolveSessionAuth(e),l=this.sessionId,s={};if(this.shouldInjectBuiltInGitHubMcp(e)&&a&&!e.provider){let T=await this.createBuiltInGitHubMcpConfig(a,l,s,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0);T&&(g.mcpServers={"github-mcp-server":T,...g.mcpServers})}}
+async resumeSession(l,e){let s=await this.resolveSessionAuth(e),o=void 0,m={};if(this.shouldInjectBuiltInGitHubMcp(e)&&s&&!e.provider){let x=await this.createBuiltInGitHubMcpConfig(s,e.sessionId,o,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0);x&&(m.mcpServers={"github-mcp-server":x,...m.mcpServers})}}
 `;
 const CONFIG_CALL_SITES_1_0_71 = `
 async createSession(e){let a=await this.resolveSessionAuth(e),l=this.sessionId,s={};if(this.shouldInjectBuiltInGitHubMcp(e)&&a&&!e.provider){let E=await this.createBuiltInGitHubMcpConfig(a,l,s,e.configDir?{configDir:e.configDir}:void 0);E&&(u.mcpServers={"github-mcp-server":E,...u.mcpServers})}}
@@ -65,6 +77,21 @@ describe("copilot-cli-loader installed-package contract", () => {
     expect(patched).toContain("__bridgeGithubMcpOptions");
     expect(patched).toContain("||this.supportsElicitation())?");
     expect(patched).toContain(".toolConfig.enableRequestElicitation||this.supportsElicitation()");
+  });
+
+  // Match counts alone cannot prove the rewritten bundle is loadable: a regex
+  // that matches the wrong span still produces confident-looking output that
+  // only fails when Node parses it at app-mode launch. Parse it here instead.
+  it.each(installedAppSources)("emits syntactically valid ESM for %s", (appPath) => {
+    const patched = patchCopilotAppSource(readFileSync(appPath, "utf-8"));
+
+    const dir = makeTestDir("bridge-copilot-loader-syntax-");
+    const modulePath = join(dir, "patched-app.mjs");
+    writeFileSync(modulePath, patched);
+
+    expect(() =>
+      execFileSync(process.execPath, ["--check", modulePath], { stdio: "pipe" }),
+    ).not.toThrow();
   });
 });
 
@@ -199,8 +226,52 @@ describe("copilot-cli-loader", () => {
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
   });
 
-  it("rejects config call sites that are missing, partial, or reverted to the legacy shape", () => {
+  it("patches the 1.0.77 defaulted-parameter GitHub MCP config shape", () => {
+    const source = `class App{${GITHUB_MCP_CONFIG_METHOD_1_0_77}${CONFIG_CALL_SITES_1_0_77}${NATIVE_ASK_USER_SOURCE}}`;
+
+    const patched = patchCopilotAppSource(source);
+
+    // The defaulted parameter and the added 5th parameter are preserved
+    // verbatim, with the Bridge options appended after them.
+    expect(patched).toContain(
+      "async createBuiltInGitHubMcpConfig(e,n,r,o=!1,s,__bridgeGithubMcpOptions={})",
+    );
+    // Both trailing builder arguments survive; only the config object is spread.
+    expect(patched).toContain(
+      "return sfe(a,e,{...u,excludeGhReplaceableTools:l,copilotIntegrationId:iF,...__bridgeGithubMcpOptions},k,o)",
+    );
+    // Bridge options land as the 6th positional argument at both call sites,
+    // after the runtime's own five arguments.
+    expect(patched).toContain(
+      "this.createBuiltInGitHubMcpConfig(a,l,s,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0,e.githubMcpToolOptions)",
+    );
+    expect(patched).toContain(
+      "this.createBuiltInGitHubMcpConfig(s,e.sessionId,o,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0,e.githubMcpToolOptions)",
+    );
+    expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
+  });
+
+  it("rejects a config return whose trailing argument list drifts beyond the known shapes", () => {
     const method =
+      `async createBuiltInGitHubMcpConfig(e,n,r,o=!1,s){let a;try{a=await go(e)}catch{return}if(!a)return;return sfe(a,e,{excludeGhReplaceableTools:l},k,o,z)}`;
+    const source = `class App{${method}${CONFIG_CALL_SITES_1_0_77}${NATIVE_ASK_USER_SOURCE}}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "expected 1 config return, found 0",
+    );
+  });
+
+  it("rejects a signature whose defaulted parameter drifts to a comma-bearing value", () => {
+    const method =
+      `async createBuiltInGitHubMcpConfig(e,n,r,o={a:1,b:2},s){let a;try{a=await go(e)}catch{return}if(!a)return;return sfe(a,e,{excludeGhReplaceableTools:l},k,o)}`;
+    const source = `class App{${method}${CONFIG_CALL_SITES_1_0_77}${NATIVE_ASK_USER_SOURCE}}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "expected 1 config method, found 0",
+    );
+  });
+
+  it("rejects config call sites that are missing, partial, or reverted to the legacy shape", () => {    const method =
       `async createBuiltInGitHubMcpConfig(e){let n;try{n=await lo(e)}catch{return}if(!n)return;let r=await vR();return SSe(n,e,{excludeGhReplaceableTools:r},T)}`;
 
     // rejects a single helper-based config call site
