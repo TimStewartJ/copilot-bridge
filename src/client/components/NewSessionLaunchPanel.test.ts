@@ -152,6 +152,42 @@ describe("NewSessionLaunchPanel", () => {
     expect(props.onModeChange).toHaveBeenCalledWith("autopilot");
   });
 
+  it("shows inherited effort and context as selected, clearable Default choices", async () => {
+    const props = requiredProps();
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...props,
+      models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
+      selectedModelId: "",
+      reasoningEffortOptions: [
+        { value: null, label: "Default" },
+        { value: "high", label: "High" },
+      ],
+      contextOptions: [
+        { value: null, label: "Default" },
+        { value: "default", label: "Standard context" },
+        { value: "long_context", label: "Long context" },
+      ],
+    }));
+
+    const defaults = findAllByTag(harness!.dom.container, "BUTTON")
+      .filter((button) => button.textContent === "Default");
+    expect(defaults).toHaveLength(2);
+    for (const button of defaults) {
+      expect(getReactProps(button)?.disabled).toBe(false);
+      expect(getReactProps(button)?.["aria-pressed"]).toBe(true);
+    }
+
+    const high = findAllByTag(harness!.dom.container, "BUTTON")
+      .find((button) => button.textContent === "High");
+    if (!high) throw new Error("High effort choice was not rendered");
+    await harness!.act(async () => {
+      getReactProps(high)?.onClick?.();
+      getReactProps(defaults[0])?.onClick?.();
+    });
+    expect(props.onReasoningEffortChange).toHaveBeenNthCalledWith(1, "high");
+    expect(props.onReasoningEffortChange).toHaveBeenNthCalledWith(2, undefined);
+  });
+
   it("opens the refine menu and reports a specific model pick", async () => {
     const props = requiredProps();
     await harness!.render(createElement(NewSessionLaunchPanel, {

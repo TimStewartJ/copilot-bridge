@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   fetchModels,
-  fetchSessionModelState,
   getSessionActivityTime,
   getSessionRunState,
   patchSessionModel,
@@ -35,14 +34,14 @@ import {
   selectModelInFamily,
   type ModelFamilySelection,
 } from "../lib/model-family-defaults";
-import { useStickyModelFamilyDefaults } from "../hooks/useStickyModelFamilyDefaults";
 import type { ModelFamily } from "../../shared/model-families.js";
 import {
-  getContextTierLabel,
   modelSupportsLongContext,
 } from "../../shared/copilot-context.js";
 import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
+import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
+import { formatSessionModelLabel } from "../lib/session-model";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -53,27 +52,6 @@ function formatSize(bytes?: number): string {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function formatContextTierFallbackLabel(tier?: CopilotContextTier): string | undefined {
-  if (tier === "long_context") return "Long context";
-  if (tier === "default") return "Standard context";
-  return undefined;
-}
-
-export function formatSessionModelLabel(
-  state?: SessionModelState,
-  models?: readonly ModelInfo[] | null,
-): string {
-  if (!state) return "Loading...";
-  if (!state.model) return "Unknown";
-  const modelLabel = models?.find((model) => model.id === state.model)?.name ?? state.model;
-  const effortLabel = formatReasoningEffortLabel(state.reasoningEffort);
-  const contextTierLabel = getContextTierLabel(
-    models?.find((model) => model.id === state.model),
-    state.contextTier,
-  ) ?? formatContextTierFallbackLabel(state.contextTier);
-  return [modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
 }
 
 export function formatDeferSummaryLabel(deferSummary?: Session["deferSummary"]): string | null {
@@ -128,12 +106,6 @@ export function canKeepCurrentReasoningEffortForModel({
   }
   if (!currentReasoningEffort) return true;
   return supportedReasoningEfforts.includes(currentReasoningEffort);
-}
-
-interface SessionModelLookup {
-  data?: SessionModelState;
-  loading: boolean;
-  error?: string;
 }
 
 const styles = {
@@ -317,7 +289,6 @@ export default function SessionList({
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const anchorRef = useRef<string | null>(null);
-  const [sessionModelLookups, setSessionModelLookups] = useState<Record<string, SessionModelLookup>>({});
   const [modelOptions, setModelOptions] = useState<ModelInfo[] | null>(null);
   const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
   const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
@@ -328,7 +299,7 @@ export default function SessionList({
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
-  const sessionModelLookupVersionRef = useRef<Record<string, number>>({});
+  const modelDialogTouchedRef = useRef(false);
   const copyRequestRef = useRef(0);
 
   const closeMenu = useCallback(() => {
@@ -363,20 +334,17 @@ export default function SessionList({
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
-  const ctxModelLookup = ctxSession ? sessionModelLookups[ctxSession.sessionId] : undefined;
+  const ctxModelQuery = useSessionModelQuery(ctxSession?.sessionId);
   const modelDialogSession = modelDialogSessionId
     ? sessions.find((session) => session.sessionId === modelDialogSessionId)
     : null;
-  const modelDialogLookup = modelDialogSessionId ? sessionModelLookups[modelDialogSessionId] : undefined;
+  const modelDialogQuery = useSessionModelQuery(modelDialogSessionId);
   const availableModels = getAvailableModels(modelOptions);
   const selectedDialogModel = modelOptions?.find((model) => model.id === modelDraft);
   const selectedDialogModelSupportsLongContext = modelSupportsLongContext(selectedDialogModel);
   const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;
-  const currentReasoningEffort = modelDialogLookup?.data?.reasoningEffort;
-  const currentEffortLookupReady = !!modelDialogLookup
-    && !modelDialogLookup.loading
-    && !modelDialogLookup.error
-    && !!modelDialogLookup.data;
+  const currentReasoningEffort = modelDialogQuery.data?.reasoningEffort;
+  const currentEffortLookupReady = modelDialogQuery.isSuccess && !!modelDialogQuery.data;
   const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
   const canKeepCurrentReasoningEffort = canKeepCurrentReasoningEffortForModel({
     supportedReasoningEfforts,
@@ -403,34 +371,14 @@ export default function SessionList({
   const reasoningDraftCanBeSubmitted =
     !!reasoningDraft
     && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
-  const {
-    familyDefaults: dialogFamilyDefaults,
-    markTouched: markDialogTouched,
-  } = useStickyModelFamilyDefaults({
-    enabled: !!modelDialogSessionId,
-    modelId: modelDraft,
-    reasoningEffort: dialogSelectedReasoningEffort,
-    contextTier: dialogSelectedContextTier,
-  });
-
-  /**
-   * Applies a family or model pick to all three drafts at once. Restored
-   * effort/context are dropped when the target model cannot support them.
-   */
+  /** Applies a family or model pick to the unsaved dialog drafts only. */
   const applyDialogSelection = useCallback((selection: ModelFamilySelection) => {
-    markDialogTouched();
-    const modelInfo = modelOptions?.find((model) => model.id === selection.resolvedModelId);
-    setModelDraft(selection.resolvedModelId);
-    setReasoningDraft(
-      selection.reasoningEffort
-        && modelInfo?.supportedReasoningEfforts?.includes(selection.reasoningEffort)
-        ? selection.reasoningEffort
-        : "",
-    );
-    setContextTierDraft(
-      modelSupportsLongContext(modelInfo) ? (selection.contextTier ?? "default") : "",
-    );
-  }, [markDialogTouched, modelOptions]);
+    modelDialogTouchedRef.current = true;
+    const modelInfo = modelOptions?.find((model) => model.id === selection.modelId);
+    setModelDraft(selection.modelId);
+    setReasoningDraft("");
+    setContextTierDraft(modelSupportsLongContext(modelInfo) ? "default" : "");
+  }, [modelOptions]);
 
   const handleDialogFamilyChange = useCallback((family: ModelFamily) => {
     const selection = selectFamily({
@@ -438,19 +386,14 @@ export default function SessionList({
       state: resolveModelFamilyState({
         models: availableModels,
         selectedModelId: modelDraft,
-        familyDefaults: dialogFamilyDefaults,
       }),
-      familyDefaults: dialogFamilyDefaults,
     });
     if (selection) applyDialogSelection(selection);
-  }, [applyDialogSelection, availableModels, dialogFamilyDefaults, modelDraft]);
+  }, [applyDialogSelection, availableModels, modelDraft]);
 
   const handleDialogModelChange = useCallback((modelId: string) => {
-    applyDialogSelection(selectModelInFamily({
-      modelId,
-      familyDefaults: dialogFamilyDefaults,
-    }));
-  }, [applyDialogSelection, dialogFamilyDefaults]);
+    applyDialogSelection(selectModelInFamily({ modelId }));
+  }, [applyDialogSelection]);
 
   const canSaveModelSwitch =
     !!modelDialogSessionId
@@ -481,37 +424,6 @@ export default function SessionList({
     });
   }, [activeSessions, selectMode, sessions]);
 
-  useEffect(() => {
-    if (!ctxSession) return;
-    const sessionId = ctxSession.sessionId;
-    const requestVersion = (sessionModelLookupVersionRef.current[sessionId] ?? 0) + 1;
-    sessionModelLookupVersionRef.current[sessionId] = requestVersion;
-    setSessionModelLookups((prev) => ({
-      ...prev,
-      [sessionId]: { data: prev[sessionId]?.data, loading: true },
-    }));
-
-    void fetchSessionModelState(sessionId)
-      .then((data) => {
-        if (sessionModelLookupVersionRef.current[sessionId] !== requestVersion) return;
-        setSessionModelLookups((prev) => ({
-          ...prev,
-          [sessionId]: { data, loading: false },
-        }));
-      })
-      .catch((error: unknown) => {
-        if (sessionModelLookupVersionRef.current[sessionId] !== requestVersion) return;
-        setSessionModelLookups((prev) => ({
-          ...prev,
-          [sessionId]: {
-            data: prev[sessionId]?.data,
-            loading: false,
-            error: getErrorMessage(error),
-          },
-        }));
-      });
-  }, [ctxSession?.sessionId]);
-
   const loadModelOptions = useCallback(async (forceRefresh = false) => {
     setModelOptionsLoading(true);
     setModelOptionsError(null);
@@ -532,6 +444,12 @@ export default function SessionList({
     if (!modelDialogSessionId || modelOptions || modelOptionsLoading || modelOptionsError) return;
     void loadModelOptions();
   }, [loadModelOptions, modelDialogSessionId, modelOptions, modelOptionsError, modelOptionsLoading]);
+
+  useEffect(() => {
+    if (!modelDialogSessionId || modelDialogTouchedRef.current || !modelDialogQuery.data) return;
+    setModelDraft(modelDialogQuery.data.model ?? "");
+    setContextTierDraft(modelDialogQuery.data.contextTier ?? "");
+  }, [modelDialogQuery.data, modelDialogSessionId]);
 
   useEffect(() => {
     if (!supportedReasoningEfforts) {
@@ -568,7 +486,8 @@ export default function SessionList({
   }, []);
 
   const openModelDialog = useCallback((sessionId: string) => {
-    const currentState = sessionModelLookups[sessionId]?.data;
+    const currentState = queryClient.getQueryData<SessionModelState>(queryKeys.sessionModel(sessionId));
+    modelDialogTouchedRef.current = false;
     setModelDialogSessionId(sessionId);
     setModelDraft(currentState?.model ?? "");
     setReasoningDraft("");
@@ -576,7 +495,7 @@ export default function SessionList({
     setModelSwitchError(null);
     setModelOptionsError(null);
     closeMenu();
-  }, [closeMenu, sessionModelLookups]);
+  }, [closeMenu]);
 
   const closeModelDialog = useCallback(() => {
     if (modelSwitchSaving) return;
@@ -614,19 +533,15 @@ export default function SessionList({
         submittedContextTier,
       );
       const nextReasoningEffort = result.reasoningEffort
-        ?? (submittedReasoningEffort || modelDialogLookup?.data?.reasoningEffort);
+        ?? (submittedReasoningEffort || modelDialogQuery.data?.reasoningEffort);
+      const nextContextTier = result.contextTier ?? submittedContextTier;
       const nextState: SessionModelState = {
         model: result.modelId ?? result.model,
         ...(nextReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
-        ...(result.contextTier ? { contextTier: result.contextTier } : {}),
+        ...(nextContextTier ? { contextTier: nextContextTier } : {}),
         source: "live",
       };
-      sessionModelLookupVersionRef.current[modelDialogSessionId] =
-        (sessionModelLookupVersionRef.current[modelDialogSessionId] ?? 0) + 1;
-      setSessionModelLookups((prev) => ({
-        ...prev,
-        [modelDialogSessionId]: { data: nextState, loading: false },
-      }));
+      queryClient.setQueryData(queryKeys.sessionModel(modelDialogSessionId), nextState);
       setModelDialogSessionId(null);
     } catch (error) {
       setModelSwitchError(getErrorMessage(error));
@@ -634,7 +549,7 @@ export default function SessionList({
       setModelSwitchSaving(false);
     }
   }, [
-    modelDialogLookup?.data?.reasoningEffort,
+    modelDialogQuery.data?.reasoningEffort,
     contextTierDraft,
     modelDialogSessionId,
     modelDraft,
@@ -974,17 +889,17 @@ export default function SessionList({
                 <div className="min-w-0">
                   <div className="text-text-faint">Session model</div>
                   <div
-                    className={`truncate ${ctxModelLookup?.error ? "text-error" : "text-text-secondary"}`}
-                    title={ctxModelLookup?.error ?? undefined}
+                    className={`truncate ${ctxModelQuery.error ? "text-error" : "text-text-secondary"}`}
+                    title={ctxModelQuery.error ? getErrorMessage(ctxModelQuery.error) : undefined}
                   >
-                    {ctxModelLookup?.error
+                    {ctxModelQuery.error
                       ? "Unable to load model"
-                      : formatSessionModelLabel(ctxModelLookup?.data, modelOptions)}
+                      : formatSessionModelLabel(ctxModelQuery.data, modelOptions)}
                   </div>
                   <div className="text-[10px] text-text-faint">
-                    {ctxModelLookup?.loading && ctxModelLookup.data
+                    {ctxModelQuery.isFetching && ctxModelQuery.data
                       ? "Refreshing..."
-                      : getSessionModelSourceLabel(ctxModelLookup?.data?.source)}
+                      : getSessionModelSourceLabel(ctxModelQuery.data?.source)}
                   </div>
                 </div>
               </div>
@@ -1111,9 +1026,9 @@ export default function SessionList({
             <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs">
               <div className="text-text-faint">Current model</div>
               <div className="mt-0.5 text-text-secondary truncate">
-                {modelDialogLookup?.error
+                {modelDialogQuery.error
                   ? "Unable to load current model"
-                  : formatSessionModelLabel(modelDialogLookup?.data, modelOptions)}
+                  : formatSessionModelLabel(modelDialogQuery.data, modelOptions)}
               </div>
             </div>
 
@@ -1141,7 +1056,6 @@ export default function SessionList({
                     idPrefix="session-model"
                     models={availableModels}
                     selectedModelId={modelDraft}
-                    familyDefaults={dialogFamilyDefaults}
                     disabled={modelSwitchSaving}
                     onSelectFamily={handleDialogFamilyChange}
                     onSelectModel={handleDialogModelChange}
@@ -1165,7 +1079,10 @@ export default function SessionList({
                   ariaLabel="Effort for this session"
                   options={dialogReasoningOptions}
                   selectedValue={dialogSelectedReasoningEffort}
-                  onChange={setReasoningDraft}
+                  onChange={(value) => {
+                    modelDialogTouchedRef.current = true;
+                    setReasoningDraft(value ?? "");
+                  }}
                   disabled={modelSwitchSaving}
                 />
                 {!canKeepCurrentReasoningEffort && currentEffortLookupReady && currentReasoningEffort && (
@@ -1180,7 +1097,10 @@ export default function SessionList({
                 ariaLabel="Context for this session"
                 options={dialogContextOptions}
                 selectedValue={dialogSelectedContextTier}
-                onChange={setContextTierDraft}
+                onChange={(value) => {
+                  modelDialogTouchedRef.current = true;
+                  setContextTierDraft(value ?? "");
+                }}
                 disabled={modelSwitchSaving}
               />
             </div>

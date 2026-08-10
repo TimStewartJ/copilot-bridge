@@ -1,4 +1,4 @@
-import type { ModelFamilyDefaults, ModelInfo } from "../api";
+import type { ModelInfo } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
@@ -13,7 +13,6 @@ interface NewSessionLaunchPanelProps {
   modelsLoading: boolean;
   modelsError?: string;
   defaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
   selectedModelId: string;
   selectedModelFamily?: ModelFamily;
   reasoningEffortOptions: readonly LaunchOption<string>[];
@@ -23,8 +22,8 @@ interface NewSessionLaunchPanelProps {
   mode: SendMode;
   onModelFamilyChange: (family: ModelFamily) => void;
   onModelChange: (modelId: string) => void;
-  onReasoningEffortChange: (reasoningEffort: string) => void;
-  onContextTierChange: (contextTier: CopilotContextTier) => void;
+  onReasoningEffortChange: (reasoningEffort?: string) => void;
+  onContextTierChange: (contextTier?: CopilotContextTier) => void;
   onModeChange: (mode: SendMode) => void;
 }
 
@@ -38,7 +37,6 @@ export default function NewSessionLaunchPanel({
   modelsLoading,
   modelsError,
   defaultModelId,
-  familyDefaults,
   selectedModelId,
   selectedModelFamily,
   reasoningEffortOptions,
@@ -77,7 +75,6 @@ export default function NewSessionLaunchPanel({
                 selectedModelId={selectedModelId}
                 selectedFamily={selectedModelFamily}
                 globalDefaultModelId={defaultModelId}
-                familyDefaults={familyDefaults}
                 disabled={Boolean(modelsError)}
                 onSelectFamily={onModelFamilyChange}
                 onSelectModel={onModelChange}
@@ -94,14 +91,16 @@ export default function NewSessionLaunchPanel({
             ariaLabel="Effort for new session"
             options={reasoningEffortOptions}
             selectedValue={selectedReasoningEffort}
-            onChange={onReasoningEffortChange}
+            onChange={(value) => onReasoningEffortChange(value ?? undefined)}
+            allowDefaultSelection
           />
 
           <LaunchOptionRow
             ariaLabel="Context for new session"
             options={contextOptions}
             selectedValue={selectedContextTier}
-            onChange={onContextTierChange}
+            onChange={(value) => onContextTierChange(value ?? undefined)}
+            allowDefaultSelection
           />
 
           <div className="space-y-1.5">
@@ -109,7 +108,9 @@ export default function NewSessionLaunchPanel({
               ariaLabel="Run mode for new session"
               options={MODE_OPTIONS}
               selectedValue={mode}
-              onChange={onModeChange}
+              onChange={(value) => {
+                if (value) onModeChange(value);
+              }}
             />
           </div>
         </div>

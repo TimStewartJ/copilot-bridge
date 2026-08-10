@@ -1,5 +1,4 @@
-import type { ModelFamilyDefault, ModelFamilyDefaults, ModelInfo } from "../api";
-import type { CopilotContextTier } from "../../shared/copilot-context.js";
+import type { ModelInfo } from "../api";
 import {
   MODEL_FAMILIES,
   getModelFamily,
@@ -25,16 +24,7 @@ export interface ModelFamilyPickerState {
 }
 
 export interface ModelFamilySelection {
-  /**
-   * Value handed to the caller's model state. Empty string when the pick equals
-   * the Bridge default, so that selection keeps inheriting future changes to the
-   * global default instead of pinning today's id.
-   */
   modelId: string;
-  /** The concrete model behind the selection, even when `modelId` is inherited. */
-  resolvedModelId: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
 }
 
 interface ResolveModelFamilyStateOptions {
@@ -42,7 +32,6 @@ interface ResolveModelFamilyStateOptions {
   selectedModelId: string;
   selectedFamily?: ModelFamily;
   globalDefaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
 }
 
 function emptyModelsByFamily(): Record<ModelFamily, ModelInfo[]> {
@@ -66,27 +55,19 @@ export function groupModelsByFamily(
 
 /**
  * The model a family tile shows. The live selection wins so the tile always
- * reflects reality, then sticky memory, then the global default, then the
- * family's first model.
+ * reflects reality, then the global default, then the family's first model.
  */
 function resolveFamilyModel(
   family: ModelFamily,
   familyModels: readonly ModelInfo[],
   selectedModelId: string,
   globalDefaultModelId: string | undefined,
-  familyDefaults: ModelFamilyDefaults | undefined,
 ): ModelInfo | undefined {
   if (familyModels.length === 0) return undefined;
 
   if (selectedModelId && getModelFamily(selectedModelId) === family) {
     const selected = familyModels.find((model) => model.id === selectedModelId);
     if (selected) return selected;
-  }
-
-  const remembered = familyDefaults?.[family]?.model;
-  if (remembered) {
-    const rememberedModel = familyModels.find((model) => model.id === remembered);
-    if (rememberedModel) return rememberedModel;
   }
 
   if (globalDefaultModelId && getModelFamily(globalDefaultModelId) === family) {
@@ -116,7 +97,6 @@ export function resolveModelFamilyState({
   selectedModelId,
   selectedFamily,
   globalDefaultModelId,
-  familyDefaults,
 }: ResolveModelFamilyStateOptions): ModelFamilyPickerState {
   const modelsByFamily = groupModelsByFamily(models);
   const liveFamily = resolveLiveFamily(
@@ -132,7 +112,6 @@ export function resolveModelFamilyState({
       modelsByFamily[family],
       selectedModelId,
       globalDefaultModelId,
-      familyDefaults,
     );
     return {
       family,
@@ -146,88 +125,23 @@ export function resolveModelFamilyState({
   return { tiles, liveFamily, modelsByFamily };
 }
 
-/**
- * Builds the launch selection for a concrete model. Sticky effort/context are
- * only restored when the model matches the one they were stored against, so a
- * different pick in the same family resolves its own supported defaults.
- */
 export function selectModelInFamily({
   modelId,
-  globalDefaultModelId,
-  familyDefaults,
 }: {
   modelId: string;
-  globalDefaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
 }): ModelFamilySelection {
-  const family = getModelFamily(modelId);
-  const remembered = familyDefaults?.[family];
-  const matchesRemembered = remembered?.model === modelId;
-
-  return {
-    modelId: modelId === globalDefaultModelId ? "" : modelId,
-    resolvedModelId: modelId,
-    ...(matchesRemembered && remembered?.reasoningEffort
-      ? { reasoningEffort: remembered.reasoningEffort }
-      : {}),
-    ...(matchesRemembered && remembered?.contextTier
-      ? { contextTier: remembered.contextTier }
-      : {}),
-  };
+  return { modelId };
 }
 
 /** Selection produced by clicking a family tile rather than a menu entry. */
 export function selectFamily({
   family,
   state,
-  globalDefaultModelId,
-  familyDefaults,
 }: {
   family: ModelFamily;
   state: ModelFamilyPickerState;
-  globalDefaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
 }): ModelFamilySelection | null {
   const tile = state.tiles.find((candidate) => candidate.family === family);
   if (!tile?.model) return null;
-  return selectModelInFamily({
-    modelId: tile.model.id,
-    globalDefaultModelId,
-    familyDefaults,
-  });
-}
-
-function sameFamilyDefault(
-  left: ModelFamilyDefault | undefined,
-  right: ModelFamilyDefault,
-): boolean {
-  return left?.model === right.model
-    && left?.reasoningEffort === right.reasoningEffort
-    && left?.contextTier === right.contextTier;
-}
-
-/**
- * Sticky memory update for the family that owns `modelId`. Returns null when
- * nothing changed so callers can skip a redundant settings write.
- */
-export function buildFamilyDefaultsPatch({
-  current,
-  modelId,
-  reasoningEffort,
-  contextTier,
-}: {
-  current: ModelFamilyDefaults | undefined;
-  modelId: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
-}): ModelFamilyDefaults | null {
-  if (!modelId) return null;
-  const family = getModelFamily(modelId);
-  const next: ModelFamilyDefault = {
-    model: modelId,
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(contextTier ? { contextTier } : {}),
-  };
-  if (sameFamilyDefault(current?.[family], next)) return null;
-  return { ...(current ?? {}), [family]: next };
+  return selectModelInFamily({ modelId: tile.model.id });
 }

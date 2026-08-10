@@ -1,4 +1,4 @@
-import type { ModelInfo } from "../api";
+import type { CreateSessionOptions, ModelInfo } from "../api";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
 import {
   formatContextWindowTokens,
@@ -22,7 +22,6 @@ interface ResolveNewSessionLaunchStateOptions {
   models: readonly ModelInfo[];
   selectedModelId: string;
   defaultModelId?: string;
-  defaultReasoningEffort?: string;
   reasoningEffortSelection?: ScopedLaunchSelection<string> | null;
   contextTierSelection?: ScopedLaunchSelection<CopilotContextTier> | null;
 }
@@ -35,6 +34,22 @@ export interface NewSessionLaunchState {
   selectedReasoningEffort?: string;
   contextOptions: LaunchOption<CopilotContextTier>[];
   selectedContextTier?: CopilotContextTier;
+}
+
+export function buildNewSessionCreateOptions({
+  model,
+  reasoningEffort,
+  contextTier,
+}: {
+  model?: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}): CreateSessionOptions {
+  return {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(contextTier ? { contextTier } : {}),
+  };
 }
 
 /**
@@ -87,7 +102,6 @@ export function resolveNewSessionLaunchState({
   models,
   selectedModelId,
   defaultModelId,
-  defaultReasoningEffort,
   reasoningEffortSelection,
   contextTierSelection,
 }: ResolveNewSessionLaunchStateOptions): NewSessionLaunchState {
@@ -101,25 +115,27 @@ export function resolveNewSessionLaunchState({
   const modelKey = effectiveModel?.id ?? effectiveModelId ?? "";
 
   const supportedEfforts = [...(effectiveModel?.supportedReasoningEfforts ?? [])];
-  const reasoningEffortOptions = buildReasoningEffortOptions(supportedEfforts);
-  const automaticEffort = supportedEfforts.includes(defaultReasoningEffort ?? "")
-    ? defaultReasoningEffort
-    : supportedEfforts.includes(effectiveModel?.defaultReasoningEffort ?? "")
-      ? effectiveModel?.defaultReasoningEffort
-      : supportedEfforts[0];
+  const supportedEffortOptions = buildReasoningEffortOptions(supportedEfforts);
+  const reasoningEffortOptions: LaunchOption<string>[] = supportedEfforts.length > 0
+    ? [{ value: null, label: "Default" }, ...supportedEffortOptions]
+    : supportedEffortOptions;
   const selectedReasoningEffort =
     reasoningEffortSelection?.modelId === modelKey
       && supportedEfforts.includes(reasoningEffortSelection.value)
       ? reasoningEffortSelection.value
-      : automaticEffort;
+      : undefined;
 
-  const contextOptions = buildContextTierOptions(effectiveModel);
+  const supportedContextOptions = buildContextTierOptions(effectiveModel);
   if (modelSupportsLongContext(effectiveModel)) {
+    const contextOptions: LaunchOption<CopilotContextTier>[] = [
+      { value: null, label: "Default" },
+      ...supportedContextOptions,
+    ];
     const selectedContextTier =
       contextTierSelection?.modelId === modelKey
         && contextOptions.some((option) => option.value === contextTierSelection.value)
         ? contextTierSelection.value
-        : "long_context";
+        : undefined;
     return {
       availableModels,
       effectiveModel,
@@ -137,6 +153,6 @@ export function resolveNewSessionLaunchState({
     modelKey,
     reasoningEffortOptions,
     selectedReasoningEffort,
-    contextOptions,
+    contextOptions: supportedContextOptions,
   };
 }

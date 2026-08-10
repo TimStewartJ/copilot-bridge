@@ -133,6 +133,7 @@ describe("database migration registry", () => {
   it("keeps the compatibility migration order explicit", () => {
     expect(listDatabaseMigrations().map((migration) => migration.id)).toEqual([
       "mcp-registry-from-legacy-settings-and-tag-configs",
+      "legacy_launch_default_settings_drop_v1",
       "tag-name-key-normalization",
       "task-sessions-linked-at-column",
       "session-meta-last-visible-activity-column",
@@ -242,6 +243,33 @@ describe("database migration registry", () => {
       scheduleId: null,
     });
     expect(scheduleRunCount).toBe(0);
+  });
+
+  it("removes legacy cross-session launch defaults from app settings once", () => {
+    const dataDir = createTempDataDir();
+    let db = openDatabase(dataDir);
+    db.prepare(`
+      INSERT INTO settings (key, value)
+      VALUES ('app', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(JSON.stringify({
+      theme: "dark",
+      familyDefaults: {
+        gpt: { model: "gpt-5-mini", reasoningEffort: "high" },
+      },
+      lastModelFamily: "gpt",
+    }));
+    db.prepare("DELETE FROM schema_migrations WHERE id = 'legacy_launch_default_settings_drop_v1'").run();
+    db.close();
+
+    db = openDatabase(dataDir);
+    const migrated = JSON.parse(
+      (db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string }).value,
+    );
+    expect(migrated).toEqual({ theme: "dark" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE id = ?")
+      .get("legacy_launch_default_settings_drop_v1")).toEqual({ count: 1 });
+    db.close();
   });
 
   it("drops orphaned legacy session tables only after their backfills land", () => {

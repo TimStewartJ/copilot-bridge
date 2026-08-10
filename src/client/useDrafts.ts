@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { Session, Attachment } from "./api";
+import type { CopilotContextTier } from "../shared/copilot-context.js";
 
 const STORAGE_KEY = "copilot-bridge:session-drafts";
 const DEBOUNCE_MS = 500;
@@ -7,9 +8,26 @@ const DEBOUNCE_MS = 500;
 export interface Draft {
   text: string;
   attachments?: Attachment[];
+  launch?: DraftLaunchOptions;
 }
 
 type DraftState = Record<string, Draft>; // composerKey → Draft
+
+export interface DraftScopedLaunchSelection<T extends string> {
+  modelId: string;
+  value: T;
+}
+
+export interface DraftLaunchOptions {
+  model?: string;
+  reasoningEffort?: DraftScopedLaunchSelection<string>;
+  contextTier?: DraftScopedLaunchSelection<CopilotContextTier>;
+}
+
+type DraftLaunchOptionsUpdate =
+  | DraftLaunchOptions
+  | undefined
+  | ((current: DraftLaunchOptions | undefined) => DraftLaunchOptions | undefined);
 
 function isRouteDraftKey(key: string): boolean {
   return key.startsWith("draft:");
@@ -23,8 +41,9 @@ function buildNextDraftState(
 ): DraftState {
   const trimmed = text.trim();
   const hasContent = trimmed.length > 0 || (attachments && attachments.length > 0);
+  const launch = prev[sessionId]?.launch;
 
-  if (!hasContent) {
+  if (!hasContent && !launch) {
     if (!(sessionId in prev)) return prev;
     const next = { ...prev };
     delete next[sessionId];
@@ -33,9 +52,11 @@ function buildNextDraftState(
 
   return {
     ...prev,
-    [sessionId]: attachments?.length
-      ? { text, attachments }
-      : { text },
+    [sessionId]: {
+      text,
+      ...(attachments?.length ? { attachments } : {}),
+      ...(launch ? { launch } : {}),
+    },
   };
 }
 
@@ -55,7 +76,10 @@ function save(state: DraftState): void {
     // localStorage quota exceeded — try without attachments
     const slim: DraftState = {};
     for (const [id, draft] of Object.entries(state)) {
-      slim[id] = { text: draft.text };
+      slim[id] = {
+        text: draft.text,
+        ...(draft.launch ? { launch: draft.launch } : {}),
+      };
     }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
@@ -140,6 +164,40 @@ export function useDrafts(sessions: Session[]) {
     save(next);
   }, [clearDraftTimer]);
 
+  const setDraftLaunchOptions = useCallback((
+    sessionId: string,
+    update: DraftLaunchOptionsUpdate,
+  ) => {
+    clearDraftTimer(sessionId);
+    setState((prev) => {
+      const currentDraft = prev[sessionId] ?? { text: "" };
+      const nextLaunch = typeof update === "function"
+        ? update(currentDraft.launch)
+        : update;
+      const hasContent = currentDraft.text.trim().length > 0
+        || (currentDraft.attachments?.length ?? 0) > 0;
+
+      if (!hasContent && !nextLaunch) {
+        if (!(sessionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        stateRef.current = next;
+        save(next);
+        return next;
+      }
+
+      const nextDraft: Draft = {
+        ...currentDraft,
+        ...(nextLaunch ? { launch: nextLaunch } : {}),
+      };
+      if (!nextLaunch) delete nextDraft.launch;
+      const next = { ...prev, [sessionId]: nextDraft };
+      stateRef.current = next;
+      save(next);
+      return next;
+    });
+  }, [clearDraftTimer]);
+
   const clearDraft = useCallback((sessionId: string) => {
     clearDraftTimer(sessionId);
     setState((prev) => {
@@ -173,5 +231,12 @@ export function useDrafts(sessions: Session[]) {
     [state],
   );
 
-  return { getDraft, setDraft, setDraftImmediate, clearDraft, hasDraft };
+  return {
+    getDraft,
+    setDraft,
+    setDraftImmediate,
+    setDraftLaunchOptions,
+    clearDraft,
+    hasDraft,
+  };
 }

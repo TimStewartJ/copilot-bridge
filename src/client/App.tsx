@@ -41,12 +41,14 @@ import {
   type TaskGroup,
   type McpServerStatus,
   type CreateSessionOptions,
-  type ModelFamilyDefaults,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
 import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type VoiceBackgroundJob, type VoiceSessionActivity, type VoiceSessionSettled } from "./hooks/useBackgroundVoiceJobs";
-import { useDrafts } from "./useDrafts";
+import {
+  useDrafts,
+  type DraftLaunchOptions,
+} from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
@@ -54,15 +56,17 @@ import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
+import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
+import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
 import {
+  buildNewSessionCreateOptions,
   resolveNewSessionLaunchState,
-  type ScopedLaunchSelection,
 } from "./lib/new-session-launch";
 import {
   resolveModelFamilyState,
@@ -70,7 +74,6 @@ import {
   selectModelInFamily,
   type ModelFamilySelection,
 } from "./lib/model-family-defaults";
-import { useStickyModelFamilyDefaults } from "./hooks/useStickyModelFamilyDefaults";
 import { getModelFamily, type ModelFamily } from "../shared/model-families.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
@@ -88,6 +91,7 @@ import TaskList from "./components/TaskList";
 import ConfirmTaskDeleteDialog, { useTaskDeletionProgress } from "./components/ConfirmTaskDeleteDialog";
 import ChatView from "./components/ChatView";
 import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
+import SessionModelSummary from "./components/SessionModelSummary";
 import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
@@ -104,7 +108,6 @@ import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, get
 import { createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
-import type { CopilotContextTier } from "../shared/copilot-context.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
@@ -300,7 +303,14 @@ export default function App() {
   // Ref for read-state SSE handler (avoids stale closure in useCallback)
   const applyServerStateRef = useRef(applyServerState);
   applyServerStateRef.current = applyServerState;
-  const { getDraft, setDraft, setDraftImmediate, clearDraft, hasDraft } = useDrafts(sessions);
+  const {
+    getDraft,
+    setDraft,
+    setDraftImmediate,
+    setDraftLaunchOptions,
+    clearDraft,
+    hasDraft,
+  } = useDrafts(sessions);
   const [draftSessionMap, setDraftSessionMap] = useState<Record<string, string>>({});
 
   const getDraftSession = useCallback((composerKey: string) => {
@@ -1932,6 +1942,7 @@ export default function App() {
                   getDraft={getDraft}
                   getDraftSession={getDraftSession}
                   setDraft={setDraft}
+                  setDraftLaunchOptions={setDraftLaunchOptions}
                   clearDraft={clearDraft}
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
@@ -1951,9 +1962,6 @@ export default function App() {
                   newWorkDisabled={newWorkDisabledByRestart}
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
-                  defaultReasoningEffort={settings?.reasoningEffort}
-                  familyDefaults={settings?.familyDefaults}
-                  lastModelFamily={settings?.lastModelFamily}
                 />
               }
             />
@@ -2012,6 +2020,7 @@ export default function App() {
                   getDraft={getDraft}
                   getDraftSession={getDraftSession}
                   setDraft={setDraft}
+                  setDraftLaunchOptions={setDraftLaunchOptions}
                   clearDraft={clearDraft}
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
@@ -2031,9 +2040,6 @@ export default function App() {
                   newWorkDisabled={newWorkDisabledByRestart}
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
-                  defaultReasoningEffort={settings?.reasoningEffort}
-                  familyDefaults={settings?.familyDefaults}
-                  lastModelFamily={settings?.lastModelFamily}
                 />
               }
             />
@@ -2253,6 +2259,7 @@ function SessionRoute({
   getDraft,
   getDraftSession,
   setDraft,
+  setDraftLaunchOptions,
   clearDraft,
   clearDraftSession,
   clearDraftSessionBySessionId,
@@ -2272,9 +2279,6 @@ function SessionRoute({
   newWorkDisabled,
   newWorkDisabledHint,
   defaultModelId,
-  defaultReasoningEffort,
-  familyDefaults: savedFamilyDefaults,
-  lastModelFamily,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -2282,6 +2286,12 @@ function SessionRoute({
   getDraft: (composerKey: string) => import("./useDrafts").Draft | null;
   getDraftSession: (composerKey: string) => string | null;
   setDraft: (composerKey: string, text: string, attachments?: import("./api").Attachment[]) => void;
+  setDraftLaunchOptions: (
+    composerKey: string,
+    update: DraftLaunchOptions | undefined | (
+      (current: DraftLaunchOptions | undefined) => DraftLaunchOptions | undefined
+    ),
+  ) => void;
   clearDraft: (composerKey: string) => void;
   clearDraftSession: (composerKey: string) => void;
   clearDraftSessionBySessionId: (sessionId: string) => void;
@@ -2301,19 +2311,11 @@ function SessionRoute({
   newWorkDisabled?: boolean;
   newWorkDisabledHint?: string;
   defaultModelId?: string;
-  defaultReasoningEffort?: string;
-  familyDefaults?: ModelFamilyDefaults;
-  lastModelFamily?: ModelFamily;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
-  const [launchModel, setLaunchModel] = useState("");
-  const [launchFamily, setLaunchFamily] = useState<ModelFamily | null>(null);
+  const queryClient = useQueryClient();
   const [launchMode, setLaunchMode] = useState<SendMode>(DEFAULT_SEND_MODE);
-  const [launchReasoningEffort, setLaunchReasoningEffort] =
-    useState<ScopedLaunchSelection<string> | null>(null);
-  const [launchContextTier, setLaunchContextTier] =
-    useState<ScopedLaunchSelection<CopilotContextTier> | null>(null);
 
   const draftRouteKey = getDraftComposerKey(taskId);
   const isDraftRoute = rawSessionId === "new";
@@ -2324,7 +2326,8 @@ function SessionRoute({
   const sessionId = isDraftRoute ? validMappedDraftSessionId : (rawSessionId ?? null);
   const composerKey = sessionId ?? draftRouteKey;
   const isDraft = sessionId === null;
-  const modelsQuery = useModelsQuery({ enabled: isDraft });
+  const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
+  const sessionModelQuery = useSessionModelQuery(sessionId);
   const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
   const historySignal = sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0;
@@ -2332,119 +2335,54 @@ function SessionRoute({
   const hasPlan = activeSession?.hasPlan;
   const activeSessionActivityAt = activeSession?.lastVisibleActivityAt;
   const draft = getDraft(composerKey);
+  const draftLaunch = draft?.launch;
   const voiceJob = getVoiceJob(composerKey);
   const previousDraftRouteKeyRef = useRef(draftRouteKey);
-  const activeLaunchFamily = launchFamily ?? lastModelFamily;
-  const rememberedLaunchSelection = launchFamily === null && lastModelFamily
-    ? selectFamily({
-      family: lastModelFamily,
-      state: resolveModelFamilyState({
-        models: modelsQuery.data ?? [],
-        selectedModelId: "",
-        selectedFamily: lastModelFamily,
-        globalDefaultModelId: defaultModelId,
-        familyDefaults: savedFamilyDefaults,
-      }),
-      globalDefaultModelId: defaultModelId,
-      familyDefaults: savedFamilyDefaults,
-    })
-    : null;
-  const effectiveLaunchModel = launchModel || rememberedLaunchSelection?.modelId || "";
   const launchState = resolveNewSessionLaunchState({
     models: modelsQuery.data ?? [],
-    selectedModelId: effectiveLaunchModel,
+    selectedModelId: draftLaunch?.model ?? "",
     defaultModelId,
-    defaultReasoningEffort,
-    reasoningEffortSelection: launchReasoningEffort ?? (
-      rememberedLaunchSelection?.reasoningEffort
-        ? {
-          modelId: rememberedLaunchSelection.resolvedModelId,
-          value: rememberedLaunchSelection.reasoningEffort,
-        }
-        : null
-    ),
-    contextTierSelection: launchContextTier ?? (
-      rememberedLaunchSelection?.contextTier
-        ? {
-          modelId: rememberedLaunchSelection.resolvedModelId,
-          value: rememberedLaunchSelection.contextTier,
-        }
-        : null
-    ),
+    reasoningEffortSelection: draftLaunch?.reasoningEffort,
+    contextTierSelection: draftLaunch?.contextTier,
   });
-  const {
-    familyDefaults,
-    markTouched: markLaunchTouched,
-    rememberLastModelFamily,
-    resetTouched: resetLaunchTouched,
-  } = useStickyModelFamilyDefaults({
-    enabled: isDraft,
-    modelId: launchState.modelKey,
-    reasoningEffort: launchState.selectedReasoningEffort,
-    contextTier: launchState.selectedContextTier,
-  });
+
+  useEffect(() => {
+    if (!sessionId || !activeSession || activeSession.isOptimistic) return;
+    void sessionModelQuery.refetch();
+  }, [activeSession?.isOptimistic, sessionId, sessionModelQuery.refetch]);
 
   const resetLaunchOptions = useCallback(() => {
-    // Model and family are intentionally retained as the starting point for the
-    // next new chat; the per-chat mode, effort, and context choices still reset.
     setLaunchMode(DEFAULT_SEND_MODE);
-    setLaunchReasoningEffort(null);
-    setLaunchContextTier(null);
-    resetLaunchTouched();
-  }, [resetLaunchTouched]);
+  }, []);
 
   /**
-   * Applies a family selection as one unit so the restored effort and context
-   * tier arrive scoped to the new model instead of being cleared.
+   * A model choice is explicit draft state. Effort and context selections are
+   * model-scoped, so changing the model clears both.
    */
   const applyLaunchSelection = useCallback((selection: ModelFamilySelection) => {
-    const family = getModelFamily(selection.resolvedModelId);
-    markLaunchTouched();
-    setLaunchFamily(family);
-    rememberLastModelFamily(family);
-    setLaunchModel(selection.modelId);
-    setLaunchReasoningEffort(
-      selection.reasoningEffort
-        ? { modelId: selection.resolvedModelId, value: selection.reasoningEffort }
-        : null,
-    );
-    setLaunchContextTier(
-      selection.contextTier
-        ? { modelId: selection.resolvedModelId, value: selection.contextTier }
-        : null,
-    );
-  }, [markLaunchTouched, rememberLastModelFamily]);
+    setDraftLaunchOptions(composerKey, { model: selection.modelId });
+  }, [composerKey, setDraftLaunchOptions]);
 
   const handleLaunchFamilyChange = useCallback((family: ModelFamily) => {
     const selection = selectFamily({
       family,
       state: resolveModelFamilyState({
         models: launchState.availableModels,
-        selectedModelId: launchState.modelKey,
-        selectedFamily: activeLaunchFamily,
+        selectedModelId: draftLaunch?.model ?? "",
         globalDefaultModelId: defaultModelId,
-        familyDefaults,
       }),
-      globalDefaultModelId: defaultModelId,
-      familyDefaults,
     });
     if (selection) applyLaunchSelection(selection);
   }, [
-    activeLaunchFamily,
     applyLaunchSelection,
     defaultModelId,
-    familyDefaults,
+    draftLaunch?.model,
     launchState.availableModels,
-    launchState.modelKey,
   ]);
 
   const handleLaunchModelChange = useCallback((modelId: string) => {
-    applyLaunchSelection(selectModelInFamily({
-      modelId,
-      globalDefaultModelId: defaultModelId,
-      familyDefaults,
-    }));
-  }, [applyLaunchSelection, defaultModelId, familyDefaults]);
+    applyLaunchSelection(selectModelInFamily({ modelId }));
+  }, [applyLaunchSelection]);
 
   useEffect(() => {
     if (previousDraftRouteKeyRef.current === draftRouteKey) return;
@@ -2486,18 +2424,16 @@ function SessionRoute({
     attachments?: import("./api").Attachment[],
     mode?: SendMode,
   ) => {
-    const newSessionId = await materializeSession(
-      taskId,
-      {
-        ...(effectiveLaunchModel ? { model: effectiveLaunchModel } : {}),
-        ...(launchState.selectedReasoningEffort
-          ? { reasoningEffort: launchState.selectedReasoningEffort }
-          : {}),
-        ...(launchState.selectedContextTier
-          ? { contextTier: launchState.selectedContextTier }
-          : {}),
-      },
-    );
+    const createOptions = buildNewSessionCreateOptions({
+      model: draftLaunch?.model,
+      reasoningEffort: launchState.selectedReasoningEffort,
+      contextTier: launchState.selectedContextTier,
+    });
+    const newSessionId = await materializeSession(taskId, createOptions);
+    const optimisticModelState = buildOptimisticSessionModelState(createOptions, defaultModelId);
+    if (optimisticModelState) {
+      queryClient.setQueryData(queryKeys.sessionModel(newSessionId), optimisticModelState);
+    }
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
@@ -2510,28 +2446,27 @@ function SessionRoute({
       mode,
       onRejected: async () => {
         await cleanupFailedFirstSendSession(newSessionId, taskId);
-        setDraft(draftRouteKey, prompt, attachments);
         migrateVoiceRecording(newSessionId, composerKey);
         navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new", { replace: true });
       },
     });
-    clearDraft(composerKey);
     navigate(path, { replace: true });
     await delivery;
+    clearDraft(composerKey);
     resetLaunchOptions();
   }, [
     cleanupFailedFirstSendSession,
     clearDraft,
     composerKey,
-    draftRouteKey,
-    effectiveLaunchModel,
+    draftLaunch?.model,
+    defaultModelId,
     launchState.selectedContextTier,
     launchState.selectedReasoningEffort,
     materializeSession,
     migrateVoiceRecording,
     navigate,
+    queryClient,
     resetLaunchOptions,
-    setDraft,
     taskId,
   ]);
 
@@ -2541,9 +2476,8 @@ function SessionRoute({
       modelsLoading={modelsQuery.isLoading}
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
       defaultModelId={defaultModelId}
-      familyDefaults={familyDefaults}
-      selectedModelId={launchState.modelKey}
-      selectedModelFamily={activeLaunchFamily}
+      selectedModelId={draftLaunch?.model ?? ""}
+      selectedModelFamily={draftLaunch?.model ? getModelFamily(draftLaunch.model) : undefined}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
@@ -2552,17 +2486,31 @@ function SessionRoute({
       onModelFamilyChange={handleLaunchFamilyChange}
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={(reasoningEffort) => {
-        markLaunchTouched();
-        setLaunchReasoningEffort({
-          modelId: launchState.modelKey,
-          value: reasoningEffort,
+        setDraftLaunchOptions(composerKey, (current) => {
+          const next = { ...(current ?? {}) };
+          if (reasoningEffort) {
+            next.reasoningEffort = {
+              modelId: launchState.modelKey,
+              value: reasoningEffort,
+            };
+          } else {
+            delete next.reasoningEffort;
+          }
+          return next.model || next.reasoningEffort || next.contextTier ? next : undefined;
         });
       }}
       onContextTierChange={(contextTier) => {
-        markLaunchTouched();
-        setLaunchContextTier({
-          modelId: launchState.modelKey,
-          value: contextTier,
+        setDraftLaunchOptions(composerKey, (current) => {
+          const next = { ...(current ?? {}) };
+          if (contextTier) {
+            next.contextTier = {
+              modelId: launchState.modelKey,
+              value: contextTier,
+            };
+          } else {
+            delete next.contextTier;
+          }
+          return next.model || next.reasoningEffort || next.contextTier ? next : undefined;
         });
       }}
       onModeChange={setLaunchMode}
@@ -2577,6 +2525,17 @@ function SessionRoute({
       composerKey={composerKey}
       sessionId={sessionId}
       hasPlan={hasPlan}
+      sessionModelSummary={sessionId ? (
+        <SessionModelSummary
+          state={sessionModelQuery.data}
+          models={modelsQuery.data}
+          loading={sessionModelQuery.isLoading || sessionModelQuery.isFetching}
+          error={sessionModelQuery.error instanceof Error ? sessionModelQuery.error.message : undefined}
+          onRetry={() => {
+            void sessionModelQuery.refetch();
+          }}
+        />
+      ) : undefined}
       onMessageSent={handleMessageSent}
       onRenderedReadThrough={onRenderedReadThrough}
       draft={draft}

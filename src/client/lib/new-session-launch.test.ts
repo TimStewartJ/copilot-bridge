@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildContextTierOptions,
+  buildNewSessionCreateOptions,
   buildReasoningEffortOptions,
   resolveNewSessionLaunchState,
 } from "./new-session-launch";
@@ -26,18 +27,18 @@ const TIERED_MODEL = {
 };
 
 describe("resolveNewSessionLaunchState", () => {
-  it("prefers the configured effort and highest context tier", () => {
+  it("shows inherited defaults without materializing them as selections", () => {
     const state = resolveNewSessionLaunchState({
       models: [TIERED_MODEL],
       selectedModelId: "",
       defaultModelId: TIERED_MODEL.id,
-      defaultReasoningEffort: "high",
     });
 
-    expect(state.selectedReasoningEffort).toBe("high");
-    expect(state.selectedContextTier).toBe("long_context");
-    expect(state.reasoningEffortOptions.map((option) => option.label)).toEqual(["Low", "High"]);
+    expect(state.selectedReasoningEffort).toBeUndefined();
+    expect(state.selectedContextTier).toBeUndefined();
+    expect(state.reasoningEffortOptions.map((option) => option.label)).toEqual(["Default", "Low", "High"]);
     expect(state.contextOptions.map((option) => option.label)).toEqual([
+      "Default",
       "Standard context (272K)",
       "Long context (922K)",
     ]);
@@ -76,8 +77,12 @@ describe("resolveNewSessionLaunchState", () => {
       contextTierSelection: { modelId: TIERED_MODEL.id, value: "long_context" },
     });
 
-    expect(state.selectedReasoningEffort).toBe("medium");
+    expect(state.selectedReasoningEffort).toBeUndefined();
     expect(state.selectedContextTier).toBeUndefined();
+    expect(state.reasoningEffortOptions).toEqual([
+      { value: null, label: "Default" },
+      { value: "medium", label: "Medium" },
+    ]);
     expect(state.contextOptions).toEqual([{ value: null, label: "Default context (128K)" }]);
   });
 
@@ -102,6 +107,24 @@ describe("launch option builders", () => {
     ]);
     expect(buildReasoningEffortOptions([])).toEqual([{ value: null, label: "Default" }]);
     expect(buildReasoningEffortOptions(undefined)).toEqual([{ value: null, label: "Default" }]);
+  });
+
+  describe("buildNewSessionCreateOptions", () => {
+    it("omits inherited values instead of materializing SDK defaults", () => {
+      expect(buildNewSessionCreateOptions({})).toEqual({});
+    });
+
+    it("includes only explicit draft selections", () => {
+      expect(buildNewSessionCreateOptions({
+        model: "gpt-5.6",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      })).toEqual({
+        model: "gpt-5.6",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+    });
   });
 
   it("builds tier choices only for models with a distinct long-context tier", () => {

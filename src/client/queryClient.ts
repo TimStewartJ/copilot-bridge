@@ -50,6 +50,7 @@ export const queryKeys = {
   scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,
   sessionWorkspace: (sessionId: string, taskId?: string) =>
     ["session-workspace", sessionId, taskId ?? null] as const,
+  sessionModel: (sessionId: string) => ["session-model", sessionId] as const,
   chatMessages: (sessionId: string) =>
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,
