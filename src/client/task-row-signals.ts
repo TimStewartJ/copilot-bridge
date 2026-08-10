@@ -111,10 +111,6 @@ export function getTaskRowSignals(
 export function shouldShowTaskRowUnreadDot(
   task: Task,
   indicator: TaskIndicator | undefined,
-  primarySignal: TaskRowSignal | undefined,
 ): boolean {
-  return getTaskLifecycleDisplayState(task) === "active"
-    && !task.muted
-    && (indicator?.unreadCount ?? 0) > 0
-    && primarySignal?.kind !== "unread";
+  return !task.muted && (indicator?.unreadCount ?? 0) > 0;
 }

@@ -139,7 +139,7 @@ describe("getTaskRowSignals", () => {
     expect(getTaskRowSignals(makeTask(), undefined, NOW)[0]?.kind).toBe("needs-decision");
   });
 
-  it("shows the supporting unread dot only for active tasks with actual new results", () => {
+  it("shows the unread dot for every task with actual new results", () => {
     const task = makeTask({ nextAction: "Review results" });
     const busyAndUnread = makeIndicator({
       busy: true,
@@ -147,8 +147,7 @@ describe("getTaskRowSignals", () => {
       busyCount: 1,
       unreadCount: 1,
     });
-    const busySignal = getTaskRowSignals(task, busyAndUnread, NOW)[0];
-    expect(shouldShowTaskRowUnreadDot(task, busyAndUnread, busySignal)).toBe(true);
+    expect(shouldShowTaskRowUnreadDot(task, busyAndUnread)).toBe(true);
 
     const answerOnly = makeIndicator({
       busy: true,
@@ -157,11 +156,26 @@ describe("getTaskRowSignals", () => {
       unreadCount: 0,
       needsUserInputCount: 1,
     });
-    const answerSignal = getTaskRowSignals(task, answerOnly, NOW)[0];
-    expect(shouldShowTaskRowUnreadDot(task, answerOnly, answerSignal)).toBe(false);
+    expect(shouldShowTaskRowUnreadDot(task, answerOnly)).toBe(false);
+    expect(shouldShowTaskRowUnreadDot(task, undefined)).toBe(false);
+
+    expect(getTaskRowSignals(task, busyAndUnread, NOW)[0]?.kind).toBe("busy");
+    expect(shouldShowTaskRowUnreadDot(task, busyAndUnread)).toBe(true);
+
+    const unreadOnly = makeIndicator({ unread: true, unreadCount: 1 });
+    expect(getTaskRowSignals(task, unreadOnly, NOW)[0]?.kind).toBe("unread");
+    expect(shouldShowTaskRowUnreadDot(task, unreadOnly)).toBe(true);
+
+    const mutedTask = makeTask({ muted: true });
+    expect(getTaskRowSignals(mutedTask, busyAndUnread, NOW)).toEqual([]);
+    expect(shouldShowTaskRowUnreadDot(mutedTask, busyAndUnread)).toBe(false);
 
     const completedTask = makeTask({ completedAt: NOW_ISO });
-    const completedSignal = getTaskRowSignals(completedTask, busyAndUnread, NOW)[0];
-    expect(shouldShowTaskRowUnreadDot(completedTask, busyAndUnread, completedSignal)).toBe(false);
+    expect(getTaskRowSignals(completedTask, busyAndUnread, NOW)[0]?.kind).toBe("completed");
+    expect(shouldShowTaskRowUnreadDot(completedTask, busyAndUnread)).toBe(true);
+
+    const archivedTask = makeTask({ status: "archived" });
+    expect(getTaskRowSignals(archivedTask, busyAndUnread, NOW)[0]?.kind).toBe("archived");
+    expect(shouldShowTaskRowUnreadDot(archivedTask, busyAndUnread)).toBe(true);
   });
 });
