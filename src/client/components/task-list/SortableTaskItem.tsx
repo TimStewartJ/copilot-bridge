@@ -4,10 +4,9 @@ import { GripVertical } from "lucide-react";
 import { timeAgo } from "../../time";
 import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
-import { getFollowUpState } from "../TaskMomentumFields";
 import TaskKindBadge from "../TaskKindBadge";
-import { getTaskStatusLabel, getTaskStatusTextClass } from "../../task-completion-helpers";
 import { UI } from "../shared/design-system";
+import { getTaskRowSignals, shouldShowTaskRowUnreadDot, type TaskRowSignalTone } from "../../task-row-signals";
 
 
 
@@ -22,6 +21,14 @@ interface SortableTaskItemProps {
   /** "rail" shows status text and uses tighter padding; "list" is the mobile/simple variant */
   variant?: "rail" | "list";
 }
+
+const SIGNAL_TONE_CLASS: Record<TaskRowSignalTone, string> = {
+  info: "border border-info-border bg-info-surface text-info",
+  warning: "bg-warning/15 text-warning",
+  success: "bg-success/15 text-success",
+  danger: "bg-error/15 text-error",
+  faint: "bg-text-faint/15 text-text-faint",
+};
 
 export default function SortableTaskItem({
   task,
@@ -42,8 +49,12 @@ export default function SortableTaskItem({
   };
 
   const isRail = variant === "rail";
-  const momentumBadges = getTaskListMomentumBadges(task);
-  const needsUserInputCount = indicator?.needsUserInputCount ?? 0;
+  const signals = getTaskRowSignals(task, indicator);
+  const primarySignal = signals[0];
+  const supportingSignal = signals
+    .slice(1)
+    .find((candidate) => candidate.kind !== "unread");
+  const showUnreadDot = shouldShowTaskRowUnreadDot(task, indicator, primarySignal);
 
   return (
     <div ref={setNodeRef} style={style} className="group">
@@ -58,81 +69,51 @@ export default function SortableTaskItem({
               : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
-        {indicator?.unread && (
-          <span className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-success" />
+        {showUnreadDot && (
+          <>
+            <span aria-hidden="true" className="absolute left-1 top-3.5 h-1.5 w-1.5 rounded-full bg-success" />
+            <span className="sr-only">New results</span>
+          </>
         )}
-        <div className="flex items-center">
+        <div className="flex items-center gap-1.5">
           <span
             {...attributes}
             {...listeners}
-            className="w-0 overflow-hidden group-hover:w-4 text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing touch-none transition-all duration-150"
+            className={`${isRail ? "w-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" : "w-4 opacity-60"} shrink-0 overflow-hidden text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing touch-none transition-opacity duration-150`}
             onClick={(e) => e.stopPropagation()}
           >
             <GripVertical size={12} />
           </span>
-          {indicator?.busy ? (
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ml-1 animate-pulse ${indicator.stalled ? "bg-warning" : "bg-info"}`} />
-          ) : indicator?.unread ? (
-            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-success" />
-          ) : null}
-          <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
+          <span className={`truncate flex-1 font-medium ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
             {task.title}
           </span>
-          <TaskKindBadge kind={task.kind} iconOnly className="ml-1 shrink-0" />
-          {isRail && (
-            <span className={`text-[10px] ml-1 ${getTaskStatusTextClass(task)}`}>
-              {getTaskStatusLabel(task) !== "Active" ? getTaskStatusLabel(task) : ""}
+          <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
+          {primarySignal && (
+            <span
+              className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${SIGNAL_TONE_CLASS[primarySignal.tone]}`}
+              title={primarySignal.label}
+            >
+              {primarySignal.animated && (
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+              )}
+              {isRail ? primarySignal.shortLabel : primarySignal.label}
             </span>
           )}
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-text-muted transition-all duration-150 pl-0 group-hover:pl-4">
-          {momentumBadges.map((badge) => (
-            <span
-              key={badge.label}
-              className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
-              title={badge.title}
-            >
-              {badge.label}
-            </span>
-          ))}
-          <span>{timeAgo(indicator?.lastActivity ?? task.updatedAt)}</span>
-          {(indicator?.busyCount ?? 0) > 0 && <span>· {indicator!.busyCount} in flight</span>}
-          {needsUserInputCount > 0 && (
-            <span>· {needsUserInputCount} answer{needsUserInputCount === 1 ? "" : "s"} needed</span>
+        <div className={`${isRail ? "pl-[18px]" : "pl-[22px]"} mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-text-muted`}>
+          {task.muted && <span className="font-medium">muted</span>}
+          {task.muted && <span className="text-text-faint">•</span>}
+          {!task.muted && supportingSignal && (
+            <>
+              <span className="truncate font-medium" title={supportingSignal.label}>
+                {isRail ? supportingSignal.shortLabel : supportingSignal.label}
+              </span>
+              <span className="text-text-faint">•</span>
+            </>
           )}
-          {(indicator?.unreadCount ?? 0) > 0 && <span>· {indicator!.unreadCount} unread</span>}
-          {task.muted && <span>· muted</span>}
+          <span className="shrink-0">{timeAgo(indicator?.lastActivity ?? task.updatedAt)}</span>
         </div>
       </button>
     </div>
   );
-}
-
-export function getTaskListMomentumBadges(task: Task): Array<{ label: string; className: string; title?: string }> {
-  const badges: Array<{ label: string; className: string; title?: string }> = [];
-  const followUpState = task.status === "active" ? getFollowUpState(task.nextTouchAt) : null;
-
-  if (followUpState === "overdue" || followUpState === "due") {
-    badges.push({
-      label: "Follow up",
-      className: followUpState === "overdue" ? "bg-error/15 text-error" : "bg-warning/15 text-warning",
-      title: task.nextTouchAt
-        ? `Due ${new Date(task.nextTouchAt).toLocaleString(undefined, {
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          })}`
-        : undefined,
-    });
-  }
-  if (task.status === "active" && !task.nextAction && !task.waitingOn && !task.nextTouchAt) {
-    badges.push({
-      label: "Needs decision",
-      className: "bg-warning/15 text-warning",
-      title: "No next action, waiting reason, or follow-up is set",
-    });
-  }
-
-  return badges;
 }
