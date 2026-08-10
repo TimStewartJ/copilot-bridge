@@ -312,3 +312,45 @@ body {
 .no-callout {
   -webkit-touch-callout: none;
 }
+
+[data-message-text-selection="true"] {
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+[data-message-selection-controls="true"],
+[data-message-selection-controls="true"] * {
+  cursor: default;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: none), (pointer: coarse) {
+  [data-message-actions-trigger="true"],
+  [data-message-actions-trigger="true"] * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  [data-message-actions-trigger="true"] a,
+  [data-message-actions-trigger="true"] img {
+    -webkit-touch-callout: default;
+  }
+
+  [data-message-text-selection="true"],
+  [data-message-text-selection="true"] * {
+    -webkit-touch-callout: default;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  [data-message-selection-controls="true"],
+  [data-message-selection-controls="true"] * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}

@@ -1,4 +1,4 @@
-import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal, Undo2 } from "lucide-react";
+import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal, TextSelect, Undo2 } from "lucide-react";
 import type { ChatMessage } from "../api";
 import { timeAgo } from "../time";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
@@ -16,6 +16,11 @@ function formatMessageTimestamp(timestamp?: string): { primary: string; detail?:
     primary: date.toLocaleString(),
     detail: timeAgo(timestamp),
   };
+}
+
+function hasSelectableText(message: ChatMessage): boolean {
+  const content = message.content.trim();
+  return content.length > 0 && content !== "(image)" && content !== "(attachment)";
 }
 
 interface MessageActionToolbarProps {
@@ -78,6 +83,7 @@ interface MessageActionsMenuProps {
   undoDisabled: boolean;
   onClose: () => void;
   onCopy: () => void;
+  onSelectText: () => void;
   onFork: () => void;
   onUndo: () => void;
 }
@@ -92,6 +98,7 @@ export function MessageActionsMenu({
   undoDisabled,
   onClose,
   onCopy,
+  onSelectText,
   onFork,
   onUndo,
 }: MessageActionsMenuProps) {
@@ -119,6 +126,14 @@ export function MessageActionsMenu({
         onClick={onCopy}
         title="Copy the message text"
       />
+      {hasSelectableText(target.message) && (
+        <CtxItem
+          icon={<TextSelect size={14} />}
+          label="Select text"
+          onClick={onSelectText}
+          title="Enable native text selection for this message"
+        />
+      )}
       {forkBoundaryEventId && (
         <CtxItem
           icon={forkLoading ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}

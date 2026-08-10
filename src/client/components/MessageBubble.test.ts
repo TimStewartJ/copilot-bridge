@@ -99,3 +99,40 @@ describe("MessageBubble failed user messages", () => {
     }
   });
 });
+
+describe("MessageBubble text selection mode", () => {
+  it("renders clear instructions and a Done control beside selectable text", async () => {
+    const harness = await createReactDomHarness();
+    const onFinishSelectingText = vi.fn();
+    const message = {
+      id: "assistant-1",
+      role: "assistant",
+      content: "Select part of this response.",
+    } satisfies ChatMessage;
+
+    try {
+      await harness.render(createElement(MessageBubble, {
+        message,
+        selectingText: true,
+        onFinishSelectingText,
+      }));
+
+      expect(harness.dom.container.textContent).toContain("Press and hold or drag to select");
+      const doneButton = findAllByTag(harness.dom.container, "BUTTON").find((candidate) => (
+        candidate.getAttribute?.("aria-label") === "Finish selecting message text"
+      ));
+      expect(doneButton).toBeDefined();
+      const controls = findAllByTag(harness.dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-message-selection-controls") === "true"
+      ));
+      expect(controls).toBeDefined();
+
+      await harness.act(async () => {
+        getReactProps(doneButton)?.onClick?.();
+      });
+      expect(onFinishSelectingText).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});

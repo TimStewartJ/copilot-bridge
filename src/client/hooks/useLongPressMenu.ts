@@ -12,7 +12,7 @@ interface LongPressBindings {
   onTouchMove: (e: React.TouchEvent) => void;
   onTouchEnd: () => void;
   onTouchCancel: () => void;
-  onClick: () => void;
+  onClick: (e?: React.MouseEvent) => void;
 }
 
 interface UseLongPressMenuReturn<T> {
@@ -48,6 +48,7 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
       clearTimeout(timer.current);
       timer.current = null;
     }
+    origin.current = null;
     setLongPressTarget(null);
   }, []);
 
@@ -56,8 +57,10 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
 
   const bind = useCallback(
     (id: T, onClick: () => void): LongPressBindings => ({
-      onClick: () => {
+      onClick: (e) => {
         if (triggered.current) {
+          e?.preventDefault();
+          e?.stopPropagation();
           triggered.current = false;
           return;
         }
@@ -69,10 +72,13 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
       },
       onTouchStart: (e: React.TouchEvent) => {
         const touch = e.touches[0];
+        if (!touch) return;
+        if (timer.current) clearTimeout(timer.current);
         origin.current = { x: touch.clientX, y: touch.clientY };
         triggered.current = false;
         setLongPressTarget(id);
         timer.current = setTimeout(() => {
+          timer.current = null;
           triggered.current = true;
           setLongPressTarget(null);
           setMenu({ x: touch.clientX, y: touch.clientY, id });
@@ -81,6 +87,7 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
       onTouchMove: (e: React.TouchEvent) => {
         if (!origin.current) return;
         const touch = e.touches[0];
+        if (!touch) return;
         const dx = touch.clientX - origin.current.x;
         const dy = touch.clientY - origin.current.y;
         if (dx * dx + dy * dy > MOVE_THRESHOLD_SQ) cancelLongPress();

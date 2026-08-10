@@ -71,17 +71,22 @@ vi.mock("./MessageBubble", () => ({
     actionSlot,
     isStreaming,
     onRetry,
+    selectingText,
+    onFinishSelectingText,
   }: {
     message: ChatMessage;
     actionSlot?: ReactNode;
     isStreaming?: boolean;
     onRetry?: () => void;
+    selectingText?: boolean;
+    onFinishSelectingText?: () => void;
   }) => createElement(
     "div",
     {
       "data-testid": "message-bubble",
       "data-role": message.role,
       "data-streaming": isStreaming ? "true" : "false",
+      "data-selecting-text": selectingText ? "true" : "false",
       "data-delivery-state": message.delivery
         ? message.delivery.failed ? "failed" : "sending"
         : "sent",
@@ -91,6 +96,12 @@ vi.mock("./MessageBubble", () => ({
     actionSlot,
     onRetry
       ? createElement("button", { "aria-label": "Retry sending message", onClick: onRetry }, "Retry")
+      : null,
+    onFinishSelectingText
+      ? createElement("button", {
+          "aria-label": "Finish selecting message text",
+          onClick: onFinishSelectingText,
+        }, "Done")
       : null,
   ),
 }));
@@ -2058,6 +2069,211 @@ describe("ChatView message actions", () => {
         await waitTick();
       });
       expect(onForkSession).toHaveBeenCalledWith("session-1", { toEventId: "event-after-assistant-1" });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("uses actions-first message bindings and offers an explicit text-selection mode", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          content: "Select any part of this reply",
+          timestamp: "2026-04-29T12:00:00.000Z",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Select any part") ?? false);
+      let wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      expect(wrapper.getAttribute("data-message-actions-trigger")).toBe("true");
+      expect(wrapper.getAttribute("data-message-text-selection")).toBeNull();
+
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(wrapper, "Open message actions"));
+      });
+      expect(dom.container.textContent).toContain("Select text");
+
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Select text"));
+      });
+
+      wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      const bubble = findMessageBubble(wrapper, false);
+      expect(wrapper.getAttribute("data-message-actions-trigger")).toBeNull();
+      expect(wrapper.getAttribute("data-message-text-selection")).toBe("true");
+      expect(getReactProps(wrapper)?.onTouchStart).toBeUndefined();
+      expect(getReactProps(wrapper)?.onContextMenu).toBeUndefined();
+      expect(bubble.getAttribute("data-selecting-text")).toBe("true");
+
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(wrapper, "Finish selecting message text"));
+      });
+
+      wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      expect(wrapper.getAttribute("data-message-actions-trigger")).toBe("true");
+      expect(wrapper.getAttribute("data-message-text-selection")).toBeNull();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("opens message actions from a long-press or an unselected desktop right-click", async () => {
+    vi.useFakeTimers();
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          content: "Open my message actions",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Open my message") ?? false);
+      let wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      await act(async () => {
+        getReactProps(wrapper)?.onTouchStart?.({
+          target: wrapper,
+          touches: [{ clientX: 24, clientY: 32 }],
+        });
+      });
+      await advanceTimersByTimeAct(act, 500);
+      expect(dom.container.textContent).toContain("Select text");
+
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Select text"));
+      });
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(dom.container, "Finish selecting message text"));
+      });
+
+      wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      const preventDefault = vi.fn();
+      await act(async () => {
+        getReactProps(wrapper)?.onContextMenu?.({
+          currentTarget: wrapper,
+          target: wrapper,
+          clientX: 40,
+          clientY: 52,
+          preventDefault,
+        });
+      });
+      expect(preventDefault).toHaveBeenCalled();
+      expect(dom.container.textContent).toContain("Copy message");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("leaves the native desktop context menu available for selected message text", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          content: "Keep this selection native",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Keep this selection") ?? false);
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      Object.defineProperty(window, "getSelection", {
+        configurable: true,
+        value: () => ({
+          anchorNode: wrapper,
+          focusNode: wrapper,
+          isCollapsed: false,
+          rangeCount: 1,
+          toString: () => "this selection",
+          getRangeAt: () => ({ intersectsNode: (node: unknown) => node === wrapper }),
+          removeAllRanges: vi.fn(),
+        }),
+      });
+      const preventDefault = vi.fn();
+
+      await act(async () => {
+        getReactProps(wrapper)?.onContextMenu?.({
+          currentTarget: wrapper,
+          target: wrapper,
+          clientX: 40,
+          clientY: 52,
+          preventDefault,
+        });
+      });
+
+      expect(preventDefault).not.toHaveBeenCalled();
+      expect(dom.container.textContent).not.toContain("Timestamp");
+    } finally {
+      delete (window as unknown as { getSelection?: unknown }).getSelection;
+      await cleanup();
+    }
+  });
+
+  it("preserves native link menus and ignores long-presses on nested controls", async () => {
+    vi.useFakeTimers();
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          content: "Interactive message content",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Interactive message") ?? false);
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
+      const nativeTarget = { closest: () => ({}) };
+      const preventDefault = vi.fn();
+
+      await act(async () => {
+        getReactProps(wrapper)?.onContextMenu?.({
+          currentTarget: wrapper,
+          target: nativeTarget,
+          clientX: 40,
+          clientY: 52,
+          preventDefault,
+        });
+      });
+      expect(preventDefault).not.toHaveBeenCalled();
+      expect(dom.container.textContent).not.toContain("Timestamp");
+
+      await act(async () => {
+        getReactProps(wrapper)?.onTouchStart?.({
+          target: nativeTarget,
+          touches: [{ clientX: 24, clientY: 32 }],
+        });
+      });
+      await advanceTimersByTimeAct(act, 500);
+      expect(dom.container.textContent).not.toContain("Select text");
     } finally {
       await cleanup();
     }

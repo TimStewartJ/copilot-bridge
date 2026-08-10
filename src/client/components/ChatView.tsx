@@ -1,4 +1,14 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type TouchEvent as ReactTouchEvent,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fetchSlashCommands,
@@ -179,7 +189,48 @@ function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): strin
   return `${message.role}:${fallbackIndex}`;
 }
 
+const MESSAGE_TOUCH_CONTROL_SELECTOR = "button, input, textarea, select, [contenteditable]:not([contenteditable=\"false\"]), a, img";
+const MESSAGE_NATIVE_CONTEXT_SELECTOR = MESSAGE_TOUCH_CONTROL_SELECTOR;
 
+function targetMatchesSelector(target: EventTarget | null, selector: string): boolean {
+  const candidate = target as { closest?: (value: string) => unknown } | null;
+  if (typeof candidate?.closest === "function") {
+    return Boolean(candidate.closest(selector));
+  }
+  const parent = (target as { parentElement?: { closest?: (value: string) => unknown } } | null)?.parentElement;
+  return typeof parent?.closest === "function" && Boolean(parent.closest(selector));
+}
+
+function browserSelectionIntersects(container: Node): boolean {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !selection.toString().trim()) {
+    return false;
+  }
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    try {
+      if (selection.getRangeAt(index).intersectsNode(container)) return true;
+    } catch {
+      if (container.contains(selection.anchorNode) || container.contains(selection.focusNode)) return true;
+    }
+  }
+  return false;
+}
+
+function shouldUseNativeMessageContextMenu(container: Node, target: EventTarget | null): boolean {
+  return targetMatchesSelector(target, MESSAGE_NATIVE_CONTEXT_SELECTOR)
+    || browserSelectionIntersects(container);
+}
+
+function isSameMessageTarget(
+  target: MessageActionMenuTarget | null,
+  message: ChatMessage,
+  anchorKey: string,
+): boolean {
+  if (!target) return false;
+  if (target.message.id || target.message.turnId) return target.key === anchorKey;
+  return target.message === message;
+}
 
 function getLatestMessageAnchorKey(entries: ChatEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -543,6 +594,7 @@ export default function ChatView({
   const [undoingEventId, setUndoingEventId] = useState<string | null>(null);
   const [undoError, setUndoError] = useState<string | null>(null);
   const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
+  const [selectingMessageTarget, setSelectingMessageTarget] = useState<MessageActionMenuTarget | null>(null);
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
@@ -556,6 +608,11 @@ export default function ChatView({
     closeMenu,
     isTarget: isMessageLongPressTarget,
   } = useLongPressMenu<string>();
+
+  useEffect(() => {
+    setSelectingMessageTarget(null);
+  }, [sessionId]);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
@@ -1909,6 +1966,18 @@ export default function ChatView({
     });
     return keys;
   }, [displayEntries]);
+  useEffect(() => {
+    if (!selectingMessageTarget) return;
+    const stillVisible = displayEntries.some((entry, index) => (
+      isChatMessageEntry(entry)
+      && isSameMessageTarget(
+        selectingMessageTarget,
+        entry,
+        messageAnchorKeys.get(entry) ?? getMessageAnchorKey(entry, index),
+      )
+    ));
+    if (!stillVisible) setSelectingMessageTarget(null);
+  }, [displayEntries, messageAnchorKeys, selectingMessageTarget]);
   const latestMessageAnchorKey = useMemo(
     () => getLatestMessageAnchorKey(displayEntries),
     [displayEntries],
@@ -2146,6 +2215,19 @@ export default function ChatView({
     handleCopySpecificMessage(target.key, target.message);
   }, [closeMessageMenu, handleCopySpecificMessage, messageMenuTarget]);
 
+  const handleSelectMessageText = useCallback(() => {
+    const target = messageMenuTarget;
+    if (!target) return;
+    closeMessageMenu();
+    window.getSelection?.()?.removeAllRanges();
+    setSelectingMessageTarget(target);
+  }, [closeMessageMenu, messageMenuTarget]);
+
+  const handleFinishSelectingMessageText = useCallback(() => {
+    window.getSelection?.()?.removeAllRanges();
+    setSelectingMessageTarget(null);
+  }, []);
+
   const handleForkMessageMenu = useCallback(() => {
     const target = messageMenuTarget;
     if (!target) return;
@@ -2261,17 +2343,20 @@ export default function ChatView({
       const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
       const messageAnchorKey = messageAnchorKeys.get(msg) ?? getMessageAnchorKey(msg, index);
       const isLiveStreamingMessage = msg.id === LIVE_STREAMING_MESSAGE_ID;
+      const isSelectingText = isSameMessageTarget(selectingMessageTarget, msg, messageAnchorKey);
       const failedOptimisticMessage = isFailedOptimisticChatMessage(msg) ? msg : null;
       const canRetryFailedMessage = Boolean(
         failedOptimisticMessage && (sessionId !== null || onCreateAndSend),
       );
-      const menuBindings = isLiveStreamingMessage ? null : bindMessageMenu(messageKey, () => {});
-      const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageKey);
-      const actionSlot = isLiveStreamingMessage ? undefined : (
+      const menuBindings = isLiveStreamingMessage || isSelectingText
+        ? null
+        : bindMessageMenu(messageAnchorKey, () => {});
+      const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageAnchorKey);
+      const actionSlot = isLiveStreamingMessage || isSelectingText ? undefined : (
         <MessageActionToolbar
-          messageKey={messageKey}
+          messageKey={messageAnchorKey}
           message={msg}
-          copied={copiedMessageKey === messageKey}
+          copied={copiedMessageKey === messageAnchorKey}
           onCopy={handleCopySpecificMessage}
           onOpenMenu={openMessageActionsMenu}
         />
@@ -2288,15 +2373,23 @@ export default function ChatView({
           }}
           data-chat-message-key={messageAnchorKey}
           data-latest-chat-message={messageAnchorKey === latestMessageAnchorKey ? "true" : undefined}
+          data-message-actions-trigger={menuBindings ? "true" : undefined}
+          data-message-text-selection={isSelectingText ? "true" : undefined}
           className={`${CHAT_RAIL_CLASS} relative pt-4 transition-colors ${
             isLongPressTarget ? "bg-accent/5" : ""
           }`}
           onClick={menuBindings?.onClick}
-          onTouchStart={(event) => {
+          onContextMenu={menuBindings ? (event: ReactMouseEvent<HTMLDivElement>) => {
+            if (shouldUseNativeMessageContextMenu(event.currentTarget, event.target)) return;
+            event.preventDefault();
+            openMessageActionsMenu(event.clientX, event.clientY, messageAnchorKey, msg);
+          } : undefined}
+          onTouchStart={menuBindings ? (event: ReactTouchEvent<HTMLDivElement>) => {
+            if (targetMatchesSelector(event.target, MESSAGE_TOUCH_CONTROL_SELECTOR)) return;
             if (!menuBindings) return;
-            setMessageMenuTarget({ key: messageKey, message: msg });
+            setMessageMenuTarget({ key: messageAnchorKey, message: msg });
             menuBindings.onTouchStart(event);
-          }}
+          } : undefined}
           onTouchMove={menuBindings?.onTouchMove}
           onTouchEnd={menuBindings?.onTouchEnd}
           onTouchCancel={menuBindings?.onTouchCancel}
@@ -2305,6 +2398,8 @@ export default function ChatView({
             message={msg}
             actionSlot={actionSlot}
             isStreaming={isLiveStreamingMessage}
+            selectingText={isSelectingText}
+            onFinishSelectingText={isSelectingText ? handleFinishSelectingMessageText : undefined}
             onRetry={canRetryFailedMessage && failedOptimisticMessage
               ? () => { void handleRetryMessage(failedOptimisticMessage); }
               : undefined}
@@ -2322,10 +2417,12 @@ export default function ChatView({
     messageAnchorKeys,
     activeToolCallIds,
     handleCopySpecificMessage,
+    handleFinishSelectingMessageText,
     handleRetryMessage,
     isMessageLongPressTarget,
     onCreateAndSend,
     openMessageActionsMenu,
+    selectingMessageTarget,
     sessionId,
     toolForest,
   ]);
@@ -2468,6 +2565,7 @@ export default function ChatView({
           undoDisabled={forkFromHereDisabled}
           onClose={closeMessageMenu}
           onCopy={handleCopyMessage}
+          onSelectText={handleSelectMessageText}
           onFork={handleForkMessageMenu}
           onUndo={handleUndoMessageMenu}
         />
