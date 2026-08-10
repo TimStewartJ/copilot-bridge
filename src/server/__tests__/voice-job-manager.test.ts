@@ -33,6 +33,7 @@ function createManagerHarness(transcribe = vi.fn()) {
   const runtimePaths = createRestartRuntimePaths();
   const db = openMemoryDatabase();
   const store = createVoiceJobStore(db);
+  const globalBus = createGlobalBus();
   const sessionManager = {
     isSessionBusy: vi.fn(() => false),
     startWork: vi.fn(),
@@ -51,8 +52,8 @@ function createManagerHarness(transcribe = vi.fn()) {
       transcribe,
     },
     sessionManager,
-    taskStore: createTaskStore(db, createGlobalBus(), { runtimePaths }),
-    taskGroupStore: createTaskGroupStore(db),
+    taskStore: createTaskStore(db, globalBus, { runtimePaths }),
+    taskGroupStore: createTaskGroupStore(db, globalBus),
   });
   return { runtimePaths, store, sessionManager, manager };
 }
@@ -83,7 +84,8 @@ describe("voice job restart gating", () => {
 
     const db = openMemoryDatabase();
     const store = createVoiceJobStore(db);
-    const taskStore = createTaskStore(db, createGlobalBus(), { runtimePaths });
+    const globalBus = createGlobalBus();
+    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
     const sessionManager = {
       createSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
     } as any;
@@ -101,7 +103,7 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db),
+      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
 
     const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
@@ -235,7 +237,8 @@ describe("voice job restart gating", () => {
 
     const db = openMemoryDatabase();
     const store = createVoiceJobStore(db);
-    const taskStore = createTaskStore(db, createGlobalBus(), { runtimePaths });
+    const globalBus = createGlobalBus();
+    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
     const sessionManager = {
       createSession: vi.fn(),
     } as any;
@@ -253,7 +256,7 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db),
+      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
 
     const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
@@ -282,7 +285,8 @@ describe("voice job restart gating", () => {
 
     const db = openMemoryDatabase();
     const store = createVoiceJobStore(db);
-    const taskStore = createTaskStore(db, createGlobalBus(), { runtimePaths });
+    const globalBus = createGlobalBus();
+    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
     const sessionManager = {
       isSessionBusy: vi.fn(() => false),
       startWork: vi.fn(),
@@ -311,7 +315,7 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db),
+      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
 
     const audioPath = join(runtimePaths.dataDir, "voice-jobs", "persisted", "recording.wav");
@@ -350,7 +354,8 @@ describe("voice job restart gating", () => {
 
     const db = openMemoryDatabase();
     const store = createVoiceJobStore(db);
-    const taskStore = createTaskStore(db, createGlobalBus(), { runtimePaths });
+    const globalBus = createGlobalBus();
+    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
     const sessionManager = {
       isSessionBusy: vi.fn(() => false),
       startWork: vi.fn(),
@@ -370,7 +375,7 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db),
+      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
 
     const audioPath = join(runtimePaths.dataDir, "voice-jobs", "persisted", "recording.wav");

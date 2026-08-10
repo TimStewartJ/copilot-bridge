@@ -43,10 +43,10 @@ export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefin
     },
   }),
   defineBridgeTool("checklist_list", {
-    description: "List all checklist items for a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
+    description: "List checklist items for a task, or global checklist items if no taskId is provided",
+    parameters: { type: "object", properties: { taskId: { type: ["string", "null"], description: "The task ID. Omit or pass null to list global checklist items." } } },
     handler: async (args: any) => {
-      const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
+      const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId ?? null);
       const today = new Date().toISOString().slice(0, 10);
       return {
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null, isOverdue: !t.done && !!t.deadline && t.deadline < today })),

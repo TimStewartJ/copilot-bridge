@@ -46,7 +46,7 @@ function compactTaskInfoSessionIds(sessionIds: readonly string[]): {
   sessionCount: number;
   omittedSessionCount: number;
 } {
-  const preview = sessionIds.slice(0, TASK_INFO_SESSION_ID_PREVIEW_LIMIT);
+  const preview = sessionIds.slice(-TASK_INFO_SESSION_ID_PREVIEW_LIMIT);
   return {
     sessionIds: preview,
     sessionCount: sessionIds.length,
@@ -112,7 +112,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_update", {
-    description: "Update a task's title, kind, muted state, notes, working directory, group, and/or tags. Only provided fields are changed.",
+    description: "Update a task's title, kind, muted state, status, priority, notes, working directory, group, and/or tags. Only provided fields are changed.",
     parameters: {
       type: "object",
       properties: {
@@ -120,9 +120,12 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         title: { type: "string", description: "New title" },
         kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
         muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
+        status: { type: "string", enum: ["active", "done", "archived"], description: "Task status" },
+        completionAction: { type: "string", enum: ["complete-and-archive"], description: "Complete and archive the task. Cannot be combined with status." },
+        priority: { type: "integer", description: "Task priority" },
         notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },
         cwd: { type: "string", description: "Working directory path for the task" },
-        groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" },
+        groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Task group ID to assign to. Empty string or null ungroups the task." },
         doneWhen: { anyOf: [{ type: "string" }, { type: "null" }], description: "Definition of done for this task. Null clears it." },
         tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." },
       },
@@ -136,12 +139,15 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         if (typeof args.muted !== "boolean") return toolFailure("muted must be a boolean");
         updates.muted = args.muted;
       }
+      if (args.status !== undefined) updates.status = args.status;
+      if (args.completionAction !== undefined) updates.completionAction = args.completionAction;
+      if (args.priority !== undefined) updates.priority = args.priority;
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
-      if (args.groupId !== undefined) updates.groupId = args.groupId || "";
+      if (args.groupId !== undefined) updates.groupId = args.groupId;
       if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, notes, cwd, groupId, doneWhen, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, status, completionAction, priority, notes, cwd, groupId, doneWhen, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
@@ -305,7 +311,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_create", {
     description: "Create a new task",
-    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind. Defaults to task." }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { type: "string", description: "Optional task group ID to create the task in" } }, required: ["title"] },
+    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind. Defaults to task." }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional task group ID to create the task in" } }, required: ["title"] },
     handler: async (args: any) => {
       let tagStore: TagStore | undefined;
       if (Array.isArray(args.tags) && args.tags.length > 0) {

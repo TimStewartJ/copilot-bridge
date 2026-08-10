@@ -12,12 +12,13 @@ let taskStore: TaskStore;
 let groupStore: TaskGroupStore;
 let checklistStore: ChecklistStore;
 let tagStore: TagStore;
+let bus: ReturnType<typeof createTestBus>;
 
 beforeEach(() => {
   db = setupTestDb();
-  const bus = createTestBus();
+  bus = createTestBus();
   taskStore = createTaskStore(db, bus);
-  groupStore = createTaskGroupStore(db);
+  groupStore = createTaskGroupStore(db, bus);
   checklistStore = createChecklistStore(db, bus);
   tagStore = createTagStore(db);
 });
@@ -115,21 +116,117 @@ describe("store write transactions", () => {
 
       expect(taskOrders()).toEqual(before);
     });
+
+    it("rejects missing task-group references before task writes or events", () => {
+      const task = taskStore.createTask("Existing");
+      const beforeOrders = taskOrders();
+      const beforeTask = taskStore.getTask(task.id);
+      const events: unknown[] = [];
+      const unsubscribe = bus.subscribe((event) => events.push(event));
+
+      try {
+        expect(() => taskStore.createTask("Invalid create", "missing-group"))
+          .toThrow("Task group missing-group not found");
+        expect(() => taskStore.updateTask(task.id, { groupId: "missing-group" }))
+          .toThrow("Task group missing-group not found");
+      } finally {
+        unsubscribe();
+      }
+
+      expect(taskOrders()).toEqual(beforeOrders);
+      expect(taskStore.getTask(task.id)).toEqual(beforeTask);
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(events).toEqual([]);
+    });
   });
 
   describe("task-group-store", () => {
-    it("rolls back the delete when the recompact fails", () => {
+    it.each([
+      ["task ungrouping", "UPDATE tasks SET groupId = NULL"],
+      ["group tag cleanup", "DELETE FROM entity_tags WHERE entityType = 'task_group'"],
+      ["group recompact", 'UPDATE task_groups SET "order" = ? WHERE id = ?'],
+    ])("rolls back the full cascade when %s fails", (_stage, match) => {
       const first = groupStore.createGroup("First");
-      groupStore.createGroup("Second");
+      const second = groupStore.createGroup("Second");
+      const task = taskStore.createTask("Grouped", first.id);
+      const tag = tagStore.createTag("group-tag");
+      tagStore.setEntityTags("task_group", first.id, [tag.id]);
+      const beforeTask = taskStore.getTask(task.id);
+      const beforeGroups = groupStore.listGroups();
+      const events: unknown[] = [];
+      const unsubscribe = bus.subscribe((event) => events.push(event));
 
-      const restore = failOnStatement('UPDATE task_groups SET "order" = ? WHERE id = ?');
+      const restore = failOnStatement(match);
       try {
         expect(() => groupStore.deleteGroup(first.id)).toThrow(/injected write failure/);
       } finally {
         restore();
+        unsubscribe();
       }
 
-      expect(groupStore.listGroups().map((group) => group.name)).toEqual(["First", "Second"]);
+      expect(taskStore.getTask(task.id)).toEqual(beforeTask);
+      expect(tagStore.getEntityTags("task_group", first.id).map((item) => item.id)).toEqual([tag.id]);
+      expect(groupStore.listGroups()).toEqual(beforeGroups);
+      expect(groupStore.getGroup(first.id)?.id).toBe(first.id);
+      expect(groupStore.getGroup(second.id)?.id).toBe(second.id);
+      expect(events).toEqual([]);
+    });
+
+    it("commits the full cascade before emitting affected task events", () => {
+      const first = groupStore.createGroup("First");
+      const second = groupStore.createGroup("Second");
+      const taskA = taskStore.createTask("A", first.id);
+      const taskB = taskStore.createTask("B", first.id);
+      const unaffected = taskStore.createTask("Other", second.id);
+      db.prepare("UPDATE tasks SET updatedAt = '2020-01-01T00:00:00.000Z' WHERE id IN (?, ?)")
+        .run(taskA.id, taskB.id);
+      const tag = tagStore.createTag("group-tag");
+      tagStore.setEntityTags("task_group", first.id, [tag.id]);
+      const observed: Array<{
+        taskId?: string;
+        groupMissing: boolean;
+        taskGroupId?: string;
+        taskUpdatedAt?: string;
+      }> = [];
+      const unsubscribe = bus.subscribe((event) => {
+        if (event.type !== "task:changed") return;
+        const task = event.taskId ? taskStore.getTask(event.taskId) : undefined;
+        observed.push({
+          taskId: event.taskId,
+          groupMissing: groupStore.getGroup(first.id) === undefined,
+          taskGroupId: task?.groupId,
+          taskUpdatedAt: task?.updatedAt,
+        });
+      });
+
+      let result;
+      try {
+        result = groupStore.deleteGroup(first.id);
+      } finally {
+        unsubscribe();
+      }
+
+      expect(result).toEqual({
+        affectedTaskIds: expect.arrayContaining([taskA.id, taskB.id]),
+        deleted: true,
+      });
+      expect(result.affectedTaskIds).toHaveLength(2);
+      expect(taskStore.getTask(taskA.id)?.groupId).toBeUndefined();
+      expect(taskStore.getTask(taskB.id)?.groupId).toBeUndefined();
+      expect(taskStore.getTask(taskA.id)?.updatedAt).not.toBe("2020-01-01T00:00:00.000Z");
+      expect(taskStore.getTask(taskB.id)?.updatedAt).not.toBe("2020-01-01T00:00:00.000Z");
+      expect(taskStore.getTask(unaffected.id)?.groupId).toBe(second.id);
+      expect(tagStore.getEntityTags("task_group", first.id)).toEqual([]);
+      expect(groupStore.listGroups()).toEqual([
+        expect.objectContaining({ id: second.id, order: 0 }),
+      ]);
+      expect(observed).toHaveLength(2);
+      expect(observed.map((item) => item.taskId)).toEqual(expect.arrayContaining([taskA.id, taskB.id]));
+      expect(observed.every((item) =>
+        item.groupMissing
+        && item.taskGroupId === undefined
+        && item.taskUpdatedAt !== "2020-01-01T00:00:00.000Z"
+      )).toBe(true);
     });
   });
 

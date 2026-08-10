@@ -88,7 +88,7 @@ function createManager(copilotHome: string): TestSessionManager {
     sessionTitles: createSessionTitlesStore(db),
     sessionWorkspaceStore: createSessionWorkspaceStore(db),
     taskStore: createTaskStore(db, globalBus, { runtimePaths }),
-    taskGroupStore: createTaskGroupStore(db),
+    taskGroupStore: createTaskGroupStore(db, globalBus),
     settingsStore: createSettingsStore(db),
     config: { sessionMcpServers: {} },
     clientEnv: runtimePaths.env,

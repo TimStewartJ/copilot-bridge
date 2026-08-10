@@ -86,7 +86,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   const transcriptionService = createMockTranscriptionService();
   const sessionManager = createMockSessionManager();
   const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, { runtimePaths });
-  const taskGroupStore = createTaskGroupStore(db);
+  const taskGroupStore = createTaskGroupStore(db, globalBus);
   const pushSubscriptionStore = createPushSubscriptionStore(db);
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {

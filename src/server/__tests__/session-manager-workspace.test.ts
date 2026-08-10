@@ -89,7 +89,7 @@ describe("SessionManager workspace resolution", () => {
       sessionTitles,
       sessionWorkspaceStore,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db),
+      taskGroupStore: createTaskGroupStore(db, globalBus),
       scheduleStore: undefined as any,
       settingsStore: createSettingsStore(db),
       checklistStore: createChecklistStore(db, globalBus),
@@ -97,7 +97,7 @@ describe("SessionManager workspace resolution", () => {
     } as any) as any;
     const ctx = {
       taskStore,
-      taskGroupStore: createTaskGroupStore(db),
+      taskGroupStore: createTaskGroupStore(db, globalBus),
       scheduleStore: createScheduleStore(db),
       settingsStore: createSettingsStore(db),
       sessionMetaStore: createSessionMetaStore(db),

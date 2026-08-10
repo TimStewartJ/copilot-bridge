@@ -129,8 +129,11 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     bus.emit({ type: "task:changed", taskId: taskId ?? undefined });
   }
 
-  function listChecklistItems(taskId: string): ChecklistItem[] {
-    return (db.prepare('SELECT * FROM checklist_items WHERE taskId = ? ORDER BY "order"').all(taskId) as any[]).map(hydrate);
+  function listChecklistItems(taskId: string | null): ChecklistItem[] {
+    const rows = taskId === null
+      ? db.prepare('SELECT * FROM checklist_items WHERE taskId IS NULL ORDER BY "order"').all()
+      : db.prepare('SELECT * FROM checklist_items WHERE taskId = ? ORDER BY "order"').all(taskId);
+    return (rows as any[]).map(hydrate);
   }
 
   function getChecklistItem(id: string): ChecklistItem | undefined {
