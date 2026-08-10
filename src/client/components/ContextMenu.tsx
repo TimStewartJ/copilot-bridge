@@ -62,7 +62,7 @@ export default function ContextMenu({ position, onClose, children }: ContextMenu
   return (
     <div
       ref={ref}
-      className="fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm animate-ctx-menu-in"
+      className="fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] select-none cursor-default bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm animate-ctx-menu-in"
       style={{
         top: adjusted?.top ?? position.y,
         left: adjusted?.left ?? position.x,
@@ -101,7 +101,8 @@ export function CtxItem({
 
   return (
     <button
-      className={`w-full min-h-[44px] px-3 py-2 text-left hover:bg-bg-hover active:bg-bg-hover flex items-center gap-2 transition-colors ${
+      type="button"
+      className={`w-full min-h-[44px] px-3 py-2 text-left select-none cursor-default hover:bg-bg-hover active:bg-bg-hover flex items-center gap-2 transition-colors ${
         tapped ? "bg-bg-hover" : ""
       } ${disabled ? "opacity-40 pointer-events-none" : ""} ${className}`}
       onClick={handleClick}

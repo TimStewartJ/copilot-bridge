@@ -2,7 +2,7 @@ import { memo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { CircleAlert, FileText, RotateCcw } from "lucide-react";
+import { CircleAlert, FileText, RotateCcw, TextSelect } from "lucide-react";
 import type { ChatMessage } from "../api";
 import { buildToolCallForest } from "../lib/tool-call-tree";
 import ToolCallTree from "./ToolCallTree";
@@ -14,6 +14,8 @@ interface MessageBubbleProps {
   actionSlot?: ReactNode;
   isStreaming?: boolean;
   onRetry?: () => void;
+  selectingText?: boolean;
+  onFinishSelectingText?: () => void;
 }
 
 function BubbleActions({ side, children }: { side: "left" | "right"; children?: ReactNode }) {
@@ -31,6 +33,36 @@ function BubbleActions({ side, children }: { side: "left" | "right"; children?: 
   );
 }
 
+function TextSelectionControls({
+  side,
+  onDone,
+}: {
+  side: "left" | "right";
+  onDone: () => void;
+}) {
+  return (
+    <div
+      data-message-selection-controls="true"
+      className={`mb-1 flex items-center gap-2 text-[11px] text-text-muted ${
+        side === "right" ? "justify-end" : "justify-start"
+      }`}
+    >
+      <span role="status" className="inline-flex items-center gap-1">
+        <TextSelect size={12} aria-hidden="true" />
+        Press and hold or drag to select
+      </span>
+      <button
+        type="button"
+        onClick={onDone}
+        className="rounded-full border border-border bg-bg-secondary px-2 py-1 font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        aria-label="Finish selecting message text"
+      >
+        Done
+      </button>
+    </div>
+  );
+}
+
 function renderToolCalls(toolCalls: NonNullable<ChatMessage["toolCalls"]>) {
   const { roots } = buildToolCallForest(toolCalls);
   return roots.map((node) => (
@@ -43,6 +75,8 @@ export default memo(function MessageBubble({
   actionSlot,
   isStreaming = false,
   onRetry,
+  selectingText = false,
+  onFinishSelectingText,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
@@ -66,6 +100,9 @@ export default memo(function MessageBubble({
               ? `Failed to send${message.delivery?.error ? `: ${message.delivery.error}` : ""}`
               : undefined}
         >
+          {selectingText && onFinishSelectingText && (
+            <TextSelectionControls side="right" onDone={onFinishSelectingText} />
+          )}
           <BubbleActions side="right">{actionSlot}</BubbleActions>
           <div className={`rounded-2xl rounded-br-sm border px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words ${
             isFailed ? "border-error/40 bg-error/10" : "border-accent-border bg-accent-surface"
@@ -144,6 +181,9 @@ export default memo(function MessageBubble({
   return (
     <div className="flex justify-start min-w-0">
       <div className="group/message-bubble relative w-full max-w-full min-w-0 break-words space-y-2">
+        {selectingText && onFinishSelectingText && (
+          <TextSelectionControls side="left" onDone={onFinishSelectingText} />
+        )}
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
           <div
