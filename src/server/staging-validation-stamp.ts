@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isRecord } from "../shared/is-record.js";
 
 export interface StagingValidationStamp {
   stagingPrefix: string;
@@ -23,10 +24,6 @@ export interface StagingValidationStampExpectation {
 }
 
 const STAGING_VALIDATION_STAMPS_DIR = "staging-validation-stamps";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function sanitizePrefix(prefix: string): string {
   return prefix.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "staging";

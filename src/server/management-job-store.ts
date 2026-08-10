@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readSync, statSync, closeSync } from "node:fs";
 import { basename, join } from "node:path";
+import { isRecord } from "../shared/is-record.js";
 import type { DatabaseSync } from "./db.js";
 import { runImmediateTransaction } from "./db-transaction.js";
 import {
@@ -232,10 +233,6 @@ function findActiveExclusiveJob(db: DatabaseSync): ManagementJob | null {
     LIMIT 1
   `).get(...EXCLUSIVE_DEPLOY_TYPES, ...ACTIVE_STATUSES) as ManagementJobRow | undefined;
   return row ? rowToJob(row) : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizedPreviewStagingDir(input: unknown): string {

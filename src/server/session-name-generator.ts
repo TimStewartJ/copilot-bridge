@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isRecord } from "../shared/is-record.js";
 import type { AgentModelInfo } from "./agent-backend/index.js";
 
 export const DISPOSABLE_TITLE_SESSION_ID_PREFIX = "b17e1000";
@@ -19,9 +20,7 @@ const DISALLOWED_TITLE_MODEL_IDS = new Set(["auto"]);
 const TOKEN_PRICE_FIELDS = ["inputPrice", "outputPrice", "cachePrice"] as const;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function finiteNumber(value: unknown): number | undefined {

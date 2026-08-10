@@ -9,6 +9,7 @@ import {
 import type { AppContext } from "./app-context.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
+import { isRecord } from "../shared/is-record.js";
 import { PRODUCTION_DATA_DIR } from "./staging-preview-shared.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 
@@ -41,10 +42,6 @@ const REUSE_ELIGIBLE_TYPES: readonly ManagementJobType[] = ["self_update", "stag
 interface NormalizedRequest {
   type: ManagementJobType;
   input: Record<string, unknown>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireString(value: unknown, field: string): string {

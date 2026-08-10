@@ -765,6 +765,7 @@ describe("stream helpers", () => {
 
   it("normalizes run notices and rejects unknown kinds", () => {
     expect(normalizeRunNotice({ kind: "stopped" })).toMatchObject({ kind: "stopped" });
+    expect(normalizeRunNotice(Object.assign([], { kind: "stopped" }))).toBeNull();
     expect(normalizeRunNotice({ kind: "nonsense" })).toBeNull();
     expect(normalizeRunNotice(null)).toBeNull();
   });

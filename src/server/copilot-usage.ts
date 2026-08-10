@@ -16,6 +16,7 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import { isRecord } from "../shared/is-record.js";
 import {
   copilotUsageDayKey,
   DEFAULT_COPILOT_USAGE_RANGE,
@@ -1185,8 +1186,8 @@ async function readPersistedUsageModelState(
 ): Promise<{ model?: string; contextTier?: CopilotContextTier }> {
   try {
     const raw = JSON.parse(await readFile(join(sessionStateDir, BRIDGE_SESSION_MODEL_STATE_FILE), "utf8"));
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const record = raw as Record<string, unknown>;
+    if (!isRecord(raw)) return {};
+    const record = raw;
     const model = normalizeModelName(record.model) ?? undefined;
     const contextTier = normalizeContextTier(record.contextTier);
     return {
@@ -1220,9 +1221,7 @@ function cloneSessionRow(row: CopilotUsageSessionRow): CopilotUsageSessionRow {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+  return isRecord(value) ? value : null;
 }
 
 function getErrorCode(error: unknown): string | undefined {

@@ -21,6 +21,7 @@ import type {
   NativeUserInputResponse,
   PendingUserInputRequestView,
 } from "./user-input-types.js";
+import { isRecord } from "../shared/is-record.js";
 
 export type PendingInteractionErrorCode =
   | "invalid_request"
@@ -51,10 +52,6 @@ export class PendingInteractionError extends Error {
 
 const DANGEROUS_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const FIELD_BASE_KEYS = new Set(["type", "title", "description"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function makeError(
   code: PendingInteractionErrorCode,

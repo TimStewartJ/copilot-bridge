@@ -8,6 +8,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { BridgeToolDefinition, BridgeToolHandlerResult } from "./agent-tools-mcp/server.js";
 import { normalizeToolResult } from "./agent-tools-mcp/server.js";
+import { isRecord } from "../shared/is-record.js";
 import { sniffImageMimeFromBase64 } from "./image-mime.js";
 
 export type BridgeNativeTool = Tool<Record<string, unknown>> & {
@@ -25,10 +26,6 @@ const SDK_TOOL_RESULT_TYPES = new Set([
   "denied",
   "timeout",
 ]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function normalizeArgs(args: unknown): Record<string, unknown> {
   return isRecord(args) ? args : {};

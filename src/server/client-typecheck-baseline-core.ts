@@ -1,3 +1,5 @@
+import { isRecord } from "../shared/is-record.js";
+
 export interface DiagnosticRecord {
   code: number;
   file: string;
@@ -35,10 +37,6 @@ export interface DiagnosticBaselineChange {
 export interface DiagnosticBaselineDiff {
   added: DiagnosticBaselineChange[];
   removed: DiagnosticBaselineChange[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeFile(file: string): string {
@@ -205,4 +203,3 @@ export function compareClientTypecheckBaselines(
     removed: changes.filter((change) => change.currentCount < change.previousCount),
   };
 }
-

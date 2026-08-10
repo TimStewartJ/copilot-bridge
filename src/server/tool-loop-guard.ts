@@ -3,6 +3,8 @@
 // findings. Use detected candidates to monitor whether the protocol-level
 // loop-prevention work is sufficient before adding any runtime enforcement.
 
+import { isRecord } from "../shared/is-record.js";
+
 export interface ToolLoopCandidate {
   reason: "no_op_shell" | "repeated_mutating_call";
   detail: string;
@@ -47,10 +49,6 @@ const MUTATING_OR_CONTROL_TOOL_PATTERNS = [
 const NO_OP_INTENTION_PATTERN = /\b(no[-\s]?op|placeholder|marker)\b/i;
 const EMPTY_PRINTF_PATTERN = /^printf\s+(?:""|''|["']\\?n["'])$/i;
 const SHELL_NO_EFFECT_PATTERN = /^(?::|true|exit\s+0)$/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, " ");

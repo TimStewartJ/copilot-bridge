@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { isRecord } from "../shared/is-record.js";
 
 export interface DeployValidationStamp {
   commitSha: string;
@@ -24,10 +25,6 @@ const STAMP_FILE = "deploy-validation-stamp.json";
 
 function stampPath(dataDir: string): string {
   return join(dataDir, STAMP_FILE);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function readDeployValidationStamp(dataDir: string): DeployValidationStamp | null {

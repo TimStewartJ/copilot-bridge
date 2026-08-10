@@ -13,6 +13,8 @@
  * instead of silently widening the contract.
  */
 
+import { isRecord } from "../../shared/is-record.js";
+
 export const SUPPORTED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   // annotations — ignored by validation
   "description",
@@ -49,10 +51,6 @@ export const SUPPORTED_SCHEMA_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 type JsonSchema = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function describeType(value: unknown): string {
   if (value === null) return "null";
