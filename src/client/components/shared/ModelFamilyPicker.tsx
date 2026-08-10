@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
-import type { ModelFamilyDefaults, ModelInfo } from "../../api";
+import type { ModelInfo } from "../../api";
 import type { ModelFamily } from "../../../shared/model-families.js";
 import {
   resolveModelFamilyState,
@@ -139,16 +139,15 @@ function FamilyRefineMenu({
 }
 
 /**
- * Family-first model picker. Clicking a tile body switches to that family's
- * remembered model in one click; the caret opens a menu to refine within the
- * family. Families with no selectable models render disabled.
+ * Family-first model picker. Clicking a tile body switches to the model shown
+ * for that family; the caret opens a menu to refine within the family. Families
+ * with no selectable models render disabled.
  */
 export default function ModelFamilyPicker({
   models,
   selectedModelId,
   selectedFamily,
   globalDefaultModelId,
-  familyDefaults,
   disabled = false,
   idPrefix,
   onSelectFamily,
@@ -158,7 +157,6 @@ export default function ModelFamilyPicker({
   selectedModelId: string;
   selectedFamily?: ModelFamily;
   globalDefaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
   disabled?: boolean;
   idPrefix: string;
   onSelectFamily: (family: ModelFamily) => void;
@@ -173,7 +171,6 @@ export default function ModelFamilyPicker({
     selectedModelId,
     selectedFamily,
     globalDefaultModelId,
-    familyDefaults,
   });
 
   useEffect(() => {

@@ -94,6 +94,7 @@ interface ChatViewProps {
   composerKey: string;
   sessionId: string | null;
   hasPlan?: boolean;
+  sessionModelSummary?: ReactNode;
   onMessageSent: () => void;
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
@@ -547,6 +548,7 @@ export default function ChatView({
   composerKey,
   sessionId,
   hasPlan,
+  sessionModelSummary,
   onMessageSent,
   draft,
   onDraftChange,
@@ -2455,6 +2457,7 @@ export default function ChatView({
           </button>
         </div>
       )}
+      {sessionModelSummary}
       {/* MCP server status */}
       <McpStatusBar
         chatEntries={displayEntries}

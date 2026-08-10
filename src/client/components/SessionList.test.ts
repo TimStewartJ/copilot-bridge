@@ -10,10 +10,9 @@ import {
 } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
-import {
-  canKeepCurrentReasoningEffortForModel,
-  formatSessionModelLabel,
-} from "./SessionList";
+import { queryClient, queryKeys } from "../queryClient";
+import { formatSessionModelLabel } from "../lib/session-model";
+import { canKeepCurrentReasoningEffortForModel } from "./SessionList";
 
 const apiMocks = vi.hoisted(() => ({
   fetchModels: vi.fn(),
@@ -56,6 +55,7 @@ function minutesFromNow(minutes: number): string {
 }
 
 beforeEach(() => {
+  queryClient.clear();
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-04-27T12:00:00.000Z"));
   apiMocks.fetchModels.mockResolvedValue([]);
@@ -65,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  queryClient.clear();
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -403,6 +404,12 @@ describe("SessionList change model dialog", () => {
       });
 
       expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "gpt-5.6", "high", "long_context");
+      expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual({
+        model: "gpt-5.6",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+        source: "live",
+      });
     } finally {
       await harness.cleanup();
     }
@@ -457,6 +464,97 @@ describe("SessionList change model dialog", () => {
       });
 
       expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "mystery-model", undefined, undefined);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps dialog changes local when Cancel is pressed", async () => {
+    const originalState: SessionModelState = {
+      model: "gpt-5.6",
+      reasoningEffort: "low",
+      contextTier: "default",
+      source: "live",
+    };
+    const harness = await openModelDialog(originalState, [
+      TIERED_MODEL,
+      { id: "claude-opus-5", name: "Claude Opus 5" },
+    ]);
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
+        { label: "model metadata" },
+      );
+      await clickFamilyTile(harness, "Claude");
+      await clickButton(harness, "Cancel");
+
+      expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
+      expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(originalState);
+      expect(harness.dom.container.textContent).not.toContain("Change session model");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("refreshes untouched dialog drafts when a stale cached model is replaced", async () => {
+    let resolveModelState!: (state: SessionModelState) => void;
+    apiMocks.fetchSessionModelState.mockReturnValue(new Promise((resolve) => {
+      resolveModelState = resolve;
+    }));
+    apiMocks.fetchModels.mockResolvedValue([
+      TIERED_MODEL,
+      { id: "claude-opus-5", name: "Claude Opus 5" },
+    ]);
+    queryClient.setQueryData(
+      queryKeys.sessionModel("session-1"),
+      { model: "gpt-5.6", source: "events" } satisfies SessionModelState,
+      { updatedAt: 0 },
+    );
+
+    const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    const { default: SessionList } = await import("./SessionList");
+    await harness.render(createElement(SessionList, {
+      variant: "global",
+      sessions: [createSession({ sessionId: "session-1", summary: "Model session" })],
+      activeSessionId: null,
+      onSelectSession: vi.fn(),
+      onNewSession: vi.fn(),
+      showNewButton: false,
+    }));
+
+    try {
+      const row = findAllByTag(harness.dom.container, "BUTTON")
+        .find((candidate) => typeof getReactProps(candidate)?.onContextMenu === "function");
+      if (!row) throw new Error("Session row button not found");
+      await harness.act(async () => {
+        getReactProps(row)?.onContextMenu?.({ preventDefault: vi.fn(), clientX: 10, clientY: 10 });
+      });
+      await clickButton(harness, "Change Model...");
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Change session model"),
+        { label: "change model dialog" },
+      );
+
+      const findFamily = (family: string) => findAllByTag(harness.dom.container, "BUTTON")
+        .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
+          .startsWith(`${family}:`));
+      expect(getReactProps(findFamily("GPT"))?.["aria-pressed"]).toBe(true);
+
+      await harness.act(async () => {
+        resolveModelState({
+          model: "claude-opus-5",
+          contextTier: "default",
+          source: "live",
+        });
+      });
+      await waitUntilAct(
+        harness.act,
+        () => getReactProps(findFamily("Claude"))?.["aria-pressed"] === true,
+        { label: "fresh model dialog state" },
+      );
+      expect(getReactProps(findFamily("GPT"))?.["aria-pressed"]).toBe(false);
     } finally {
       await harness.cleanup();
     }

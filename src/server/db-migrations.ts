@@ -16,6 +16,7 @@ const BRIDGE_SESSION_STATE_LEGACY_BACKFILL = "bridge_session_state_legacy_backfi
 const SCHEDULE_REUSE_COLUMNS_DROP = "schedule-reuse-columns-drop-v1";
 const SCHEDULE_RUNS_LEGACY_BACKFILL = "schedule_runs_legacy_backfill_v1";
 const LEGACY_SESSION_OVERLAY_TABLES_DROP = "legacy_session_overlay_tables_drop_v1";
+const LEGACY_LAUNCH_DEFAULT_SETTINGS_DROP = "legacy_launch_default_settings_drop_v1";
 
 type DatabaseMigrationCategory =
   | "schema-upgrade"
@@ -311,6 +312,18 @@ function migrateMcpRegistry(db: DatabaseSync): void {
       );
     }
   });
+}
+
+function dropLegacyLaunchDefaultSettings(db: DatabaseSync): void {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string } | undefined;
+  if (!row) return;
+  const settings = parseJsonObject(row.value);
+  if (!settings) return;
+  const hadLegacyLaunchDefaults = "familyDefaults" in settings || "lastModelFamily" in settings;
+  if (!hadLegacyLaunchDefaults) return;
+  delete settings.familyDefaults;
+  delete settings.lastModelFamily;
+  db.prepare("UPDATE settings SET value = ? WHERE key = 'app'").run(JSON.stringify(settings));
 }
 
 function hasSchemaMigration(db: DatabaseSync, id: string): boolean {
@@ -1217,6 +1230,13 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "self",
     description: "Promote legacy settings.mcpServers and tag_mcp_servers rows into the canonical MCP server registry.",
     apply: migrateMcpRegistry,
+  },
+  {
+    id: LEGACY_LAUNCH_DEFAULT_SETTINGS_DROP,
+    category: "legacy-data",
+    runMode: "once",
+    description: "Remove hidden per-family and last-family launch defaults from persisted app settings.",
+    apply: dropLegacyLaunchDefaultSettings,
   },
   {
     id: "tag-name-key-normalization",

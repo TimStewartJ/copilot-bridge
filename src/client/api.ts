@@ -7,7 +7,6 @@ import type {
   CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
-import type { ModelFamily } from "../shared/model-families.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../shared/session-stream.js";
@@ -1792,14 +1791,6 @@ export interface BrowserSettings {
   headed?: boolean;
 }
 
-export interface ModelFamilyDefault {
-  model: string;
-  reasoningEffort?: ReasoningEffort;
-  contextTier?: CopilotContextTier;
-}
-
-export type ModelFamilyDefaults = Partial<Record<ModelFamily, ModelFamilyDefault>>;
-
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -1810,8 +1801,6 @@ export interface AppSettings {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
-  familyDefaults?: ModelFamilyDefaults;
-  lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
 }
 
@@ -1825,9 +1814,6 @@ export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
   }
   if ("contextTier" in updates && updates.contextTier === undefined) {
     normalized.contextTier = "";
-  }
-  if ("lastModelFamily" in updates && updates.lastModelFamily === undefined) {
-    normalized.lastModelFamily = "";
   }
   return JSON.stringify(normalized);
 }
