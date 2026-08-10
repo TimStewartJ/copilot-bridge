@@ -98,6 +98,8 @@ import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
+import { useDocumentTitle } from "./useDocumentTitle";
+import { resolveDocumentTitle } from "./lib/document-title";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
 import { createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
 import { useToast } from "./useToast";
@@ -786,6 +788,25 @@ export default function App() {
   const homeChecklistIndicator = useMemo(() => {
     return getHomeChecklistIndicator(openChecklistItems);
   }, [openChecklistItems]);
+
+  // ── Browser tab title ────────────────────────────────────────
+  // DocsView publishes its resolved page title upward; everything else is
+  // derived from the route plus the task/session it points at.
+  const [docTitle, setDocTitle] = useState<string | null>(null);
+  const activeSessionForTitle = activeSessionId
+    ? sessions.find((s) => s.sessionId === activeSessionId)
+    : undefined;
+  const documentTitle = resolveDocumentTitle({
+    route: mobileRouteMeta.route,
+    pathname: location.pathname,
+    isDraft: mobileRouteMeta.isDraft,
+    taskTitle: selectedTask?.id === activeTaskId ? selectedTask?.title : null,
+    sessionLabel: activeSessionForTitle?.summary || activeSessionForTitle?.intentText,
+    docTitle,
+    docPath: mobileRouteMeta.docPath,
+    unreadCount: mobileTaskAttention.count + mobileChatAttention.count,
+  });
+  useDocumentTitle(documentTitle);
 
   const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
@@ -2016,7 +2037,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="docs/*" element={<DocsView />} />
+            <Route path="docs/*" element={<DocsView onDocTitleChange={setDocTitle} />} />
             <Route path="settings" element={<SettingsView />} />
           </Routes>
         </main>
