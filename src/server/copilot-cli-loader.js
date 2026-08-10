@@ -2,13 +2,23 @@
 // bundle's minifier uses for some helper names (e.g. "$R"). Match the full set
 // of valid identifier characters so pattern matching survives minifier renames.
 const ID = String.raw`[$A-Za-z_][\w$]*`;
+// Copilot CLI >= 1.0.76 gives the config method a defaulted parameter
+// (`o=!1`), so parameters are no longer bare identifiers. Only comma- and
+// paren-free defaults are accepted: a default containing either character
+// fails the whole signature match, which surfaces as a loud drift error
+// instead of a silently mis-captured parameter list.
+const PARAM = String.raw`${ID}(?:=[^,()]*)?`;
 
 const GITHUB_MCP_CONFIG_METHOD_SIGNATURE_PATTERN = new RegExp(
-  String.raw`async createBuiltInGitHubMcpConfig\((${ID}(?:,${ID})*)\)\{`,
+  String.raw`async createBuiltInGitHubMcpConfig\((${PARAM}(?:,${PARAM})*)\)\{`,
   "g",
 );
+// The config object stays the third argument, but the trailing arguments after
+// it grew from one (logger) to two (logger + the MCP-apps flag) in 1.0.76.
+// Trailing arguments are preserved verbatim, so their meaning stays owned by
+// Copilot; the bound keeps the drift check tight.
 const GITHUB_MCP_CONFIG_RETURN_PATTERN = new RegExp(
-  String.raw`return (${ID})\((${ID}),(${ID}),(\{[^{}]*\}),(${ID})\)`,
+  String.raw`return (${ID})\((${ID}),(${ID}),(\{[^{}]*\})((?:,${ID}){1,2})\)`,
   "g",
 );
 const GITHUB_MCP_CONFIG_HELPER_CALL_PATTERN = new RegExp(
@@ -84,12 +94,12 @@ export function patchCopilotAppSource(source) {
   );
   methodSource = methodSource.replace(
     GITHUB_MCP_CONFIG_RETURN_PATTERN,
-    (match, configBuilder, tokenVar, authParam, configObject, logger) => {
+    (match, configBuilder, tokenVar, authParam, configObject, trailingArgs) => {
       returnMatches++;
       const patchedConfigObject = configObject === "{}"
         ? "{...__bridgeGithubMcpOptions}"
         : `${configObject.slice(0, -1)},...__bridgeGithubMcpOptions}`;
-      return `return ${configBuilder}(${tokenVar},${authParam},${patchedConfigObject},${logger})`;
+      return `return ${configBuilder}(${tokenVar},${authParam},${patchedConfigObject}${trailingArgs})`;
     },
   );
   if (returnMatches !== 1) {
