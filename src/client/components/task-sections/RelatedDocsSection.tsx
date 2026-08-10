@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { RelatedDoc } from "../../api";
 import { BookOpen } from "lucide-react";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
@@ -9,18 +9,14 @@ export interface RelatedDocsSectionProps {
   docs: RelatedDoc[];
   variant?: "compact" | "card" | "summary";
   onPreview?: (path: string) => void;
-  /** Reset expansion state when this key changes (e.g. task ID). */
-  resetKey?: string;
+  taskId?: string;
 }
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function RelatedDocsSection({ docs, variant = "compact", onPreview, resetKey }: RelatedDocsSectionProps) {
+export default function RelatedDocsSection({ docs, variant = "compact", onPreview, taskId }: RelatedDocsSectionProps) {
   const [expanded, setExpanded] = useState(false);
   const isCompact = variant === "compact";
-
-  // Reset expansion when task changes
-  useEffect(() => { setExpanded(false); }, [resetKey]);
 
   if (docs.length === 0) return null;
 
@@ -38,7 +34,8 @@ export default function RelatedDocsSection({ docs, variant = "compact", onPrevie
         subtitle={subtitle}
         subtitleClassName={docs.length === 1 ? "truncate font-mono" : undefined}
         itemCount={docs.length}
-        resetKey={resetKey}
+        taskId={taskId}
+        disclosureId="docs"
         onOpenSingle={onPreview ? () => onPreview(primaryDoc.path) : undefined}
       >
         <RelatedDocsSection docs={docs} variant="compact" onPreview={onPreview} />

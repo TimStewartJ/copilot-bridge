@@ -13,7 +13,6 @@ export interface PullRequestListProps {
   enrichedPRs: EnrichedPR[];
   rawPRs: PRRef[];
   variant?: "compact" | "card" | "summary";
-  resetKey?: string;
   /** Task the rows are linked to. When provided, each row gets an unlink affordance. */
   taskId?: string;
   onTasksChanged?: () => void;
@@ -37,7 +36,7 @@ function errorMessage(err: unknown): string {
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", resetKey, taskId, onTasksChanged }: PullRequestListProps) {
+export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", taskId, onTasksChanged }: PullRequestListProps) {
   const isCompact = variant === "compact";
   const [unlinkingKeys, setUnlinkingKeys] = useState<string[]>([]);
   const { showToast, dismissToast } = useToast();
@@ -175,7 +174,8 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
         subtitle={subtitle || undefined}
         chips={chips}
         itemCount={items.length}
-        resetKey={resetKey}
+        taskId={taskId}
+        disclosureId="pull-requests"
         onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
         expandWhenSingle={!singleUrl}
         trailing={showTrailingUnlink

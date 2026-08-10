@@ -1,4 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import {
+  getTaskPanelDisclosureExpanded,
+  setTaskPanelDisclosureExpanded,
+  type TaskPanelDisclosureId,
+} from "../task-panel-disclosure-state";
 import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "./TaskPanelSummaryRow";
 
 export interface TaskPanelSummaryDisclosureProps {
@@ -15,8 +20,9 @@ export interface TaskPanelSummaryDisclosureProps {
   // Disclosure control
   /** Total number of items represented by this row. */
   itemCount: number;
-  /** Resets expanded state when this value changes (e.g. active task ID). */
-  resetKey?: string;
+  /** Task and section identity used to persist expansion state. */
+  taskId?: string;
+  disclosureId?: TaskPanelDisclosureId;
   /**
    * Called when itemCount === 1 and the row is clicked.
    * Omit to make the row non-clickable for single items (e.g. missing provider URLs).
@@ -38,7 +44,7 @@ export interface TaskPanelSummaryDisclosureProps {
  * - Single item with `onOpenSingle`: clicking the row fires the action.
  * - Single item without `onOpenSingle` and `expandWhenSingle`: row is non-interactive.
  * - Single item without `onOpenSingle` but with `expandWhenSingle`: row toggles expansion.
- * - `resetKey` change collapses any open disclosure.
+ * - Task disclosures restore their last expanded state from browser storage.
  */
 export default function TaskPanelSummaryDisclosure({
   label,
@@ -50,21 +56,35 @@ export default function TaskPanelSummaryDisclosure({
   titleClassName,
   subtitleClassName,
   itemCount,
-  resetKey,
+  taskId,
+  disclosureId,
   onOpenSingle,
   expandWhenSingle,
   children,
 }: TaskPanelSummaryDisclosureProps) {
-  const [expanded, setExpanded] = useState(false);
+  const persistenceKey = taskId && disclosureId ? `${taskId}:${disclosureId}` : null;
+  const [expansionState, setExpansionState] = useState(() => ({
+    persistenceKey,
+    expanded: taskId && disclosureId
+      ? getTaskPanelDisclosureExpanded(taskId, disclosureId)
+      : false,
+  }));
+  const expanded = expansionState.persistenceKey === persistenceKey
+    ? expansionState.expanded
+    : taskId && disclosureId
+      ? getTaskPanelDisclosureExpanded(taskId, disclosureId)
+      : false;
   const hasMultiple = itemCount > 1;
   const canExpand = hasMultiple || (expandWhenSingle === true && !onOpenSingle);
 
-  useEffect(() => {
-    setExpanded(false);
-  }, [resetKey]);
-
   const handleClick = canExpand
-    ? () => setExpanded((prev) => !prev)
+    ? () => {
+        const nextExpanded = !expanded;
+        if (taskId && disclosureId) {
+          setTaskPanelDisclosureExpanded(taskId, disclosureId, nextExpanded);
+        }
+        setExpansionState({ persistenceKey, expanded: nextExpanded });
+      }
     : onOpenSingle;
 
   return (

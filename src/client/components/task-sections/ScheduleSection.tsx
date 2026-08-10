@@ -20,7 +20,7 @@ export interface ScheduleSectionProps {
   onEdit?: (schedule: Schedule) => void;
   onDelete?: (id: string) => void;
   emptyMessage?: string;
-  resetKey?: string;
+  taskId?: string;
 }
 
 function toTime(value: string | undefined, fallback: number): number {
@@ -74,7 +74,7 @@ export default function ScheduleSection({
   onEdit,
   onDelete,
   emptyMessage = "No schedules",
-  resetKey,
+  taskId,
 }: ScheduleSectionProps) {
   const activeSchedules = schedules.filter((s) => s.enabled);
   const disabledSchedules = schedules.filter((s) => !s.enabled);
@@ -116,7 +116,8 @@ export default function ScheduleSection({
         subtitle={subtitle}
         chips={chips}
         itemCount={schedules.length}
-        resetKey={resetKey}
+        taskId={taskId}
+        disclosureId="schedules"
         onOpenSingle={() => onOpen(primarySchedule)}
         trailing={onAdd ? (
           <button

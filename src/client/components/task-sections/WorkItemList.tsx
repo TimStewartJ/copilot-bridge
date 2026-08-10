@@ -13,7 +13,6 @@ export interface WorkItemListProps {
   enrichedWIs: EnrichedWorkItem[];
   rawWIs: WorkItemRef[];
   variant?: "compact" | "card" | "summary";
-  resetKey?: string;
   /** Task the rows are linked to. When provided, each row gets an unlink affordance. */
   taskId?: string;
   onTasksChanged?: () => void;
@@ -31,7 +30,7 @@ function errorMessage(err: unknown): string {
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact", resetKey, taskId, onTasksChanged }: WorkItemListProps) {
+export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact", taskId, onTasksChanged }: WorkItemListProps) {
   const isCompact = variant === "compact";
   const [unlinkingKeys, setUnlinkingKeys] = useState<string[]>([]);
   const { showToast, dismissToast } = useToast();
@@ -163,7 +162,8 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
         subtitle={subtitle || undefined}
         chips={chips}
         itemCount={items.length}
-        resetKey={resetKey}
+        taskId={taskId}
+        disclosureId="work-items"
         onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
         expandWhenSingle={!singleUrl}
         trailing={showTrailingUnlink

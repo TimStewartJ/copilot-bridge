@@ -105,30 +105,6 @@ describe("WorkItemList - summary variant", () => {
     });
   });
 
-  it("changing resetKey collapses expanded content", async () => {
-    await withWorkItemList({
-      enrichedWIs: [wiA, wiB],
-      rawWIs: [],
-      variant: "summary",
-      resetKey: "task-1",
-    }, async (harness) => {
-      const { default: WorkItemList } = await import("./WorkItemList");
-      const items = [wiA, wiB];
-
-      await clickFirstSummaryButton(harness);
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
-
-      await harness.render(createElement(WorkItemList, {
-        enrichedWIs: items,
-        rawWIs: [],
-        variant: "summary",
-        resetKey: "task-2",
-      }));
-
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
-
   it("expanded rows contain external anchor links", async () => {
     await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);
