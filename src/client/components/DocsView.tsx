@@ -65,6 +65,11 @@ const DEFAULT_DB_SORT = { field: "modified", order: "desc" } as const;
 const MOBILE_SHEET_SAFE_AREA = { paddingBottom: "env(safe-area-inset-bottom)" };
 
 type DbSortState = { field: string; order: "asc" | "desc" };
+
+export interface DocsViewProps {
+  /** Publishes the resolved page/collection title so the app can title the browser tab. */
+  onDocTitleChange?: (title: string | null) => void;
+}
 type DocHeading = { id: string; text: string; level: number };
 type DocCrumb = { label: string; path: string | null };
 type DocsSheetProps = { title: string; onClose: () => void; children: ReactNode };
@@ -861,7 +866,7 @@ function DocsPageSkeleton() {
   );
 }
 
-export default function DocsView() {
+export default function DocsView({ onDocTitleChange }: DocsViewProps = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
@@ -1276,6 +1281,15 @@ export default function DocsView() {
   useEffect(() => {
     setActiveHeadingId(pageHeadings[0]?.id ?? null);
   }, [pageHeadings]);
+
+  // Publish the resolved doc title upward so App can build the browser tab title.
+  // While a page is loading the previous page's title is stale, so report null and
+  // let App fall back to the slug from the URL.
+  const publishedDocTitle = pageLoading ? null : (page?.title ?? dbSchema?.name ?? null);
+  useEffect(() => {
+    onDocTitleChange?.(publishedDocTitle);
+  }, [publishedDocTitle, onDocTitleChange]);
+  useEffect(() => () => onDocTitleChange?.(null), [onDocTitleChange]);
 
   useEffect(() => {
     if (!pageHeadings.length) return;
