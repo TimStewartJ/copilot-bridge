@@ -605,7 +605,6 @@ export default function TaskPanel({
                     enrichedWIs={enrichedWIs}
                     rawWIs={task.workItems}
                     variant="summary"
-                    resetKey={task.id}
                     taskId={task.id}
                     onTasksChanged={onTasksChanged}
                   />
@@ -615,7 +614,6 @@ export default function TaskPanel({
                     enrichedPRs={enrichedPRs}
                     rawPRs={task.pullRequests}
                     variant="summary"
-                    resetKey={task.id}
                     taskId={task.id}
                     onTasksChanged={onTasksChanged}
                   />
@@ -633,14 +631,14 @@ export default function TaskPanel({
                     docs={relatedDocs}
                     variant="summary"
                     onPreview={(path) => setPreviewDocPath(path)}
-                    resetKey={task.id}
+                    taskId={task.id}
                   />
                 )}
                 {sched.schedules.length > 0 && (
                   <ScheduleSection
                     schedules={sched.schedules}
                     variant="summary"
-                    resetKey={task.id}
+                    taskId={task.id}
                     onAdd={() => schedDetail.openForCreate(task.id)}
                     onOpen={(schedule) => schedDetail.openSheet(schedule)}
                     onTrigger={(id) => sched.trigger(id)}

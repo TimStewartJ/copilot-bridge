@@ -105,30 +105,6 @@ describe("PullRequestList - summary variant", () => {
     });
   });
 
-  it("changing resetKey collapses expanded content", async () => {
-    await withPullRequestList({
-      enrichedPRs: [prA, prB],
-      rawPRs: [],
-      variant: "summary",
-      resetKey: "task-1",
-    }, async (harness) => {
-      const { default: PullRequestList } = await import("./PullRequestList");
-      const prs = [prA, prB];
-
-      await clickFirstSummaryButton(harness);
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
-
-      await harness.render(createElement(PullRequestList, {
-        enrichedPRs: prs,
-        rawPRs: [],
-        variant: "summary",
-        resetKey: "task-2",
-      }));
-
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
-
   it("expanded rows contain external anchor links", async () => {
     await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);
