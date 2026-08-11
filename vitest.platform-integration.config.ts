@@ -4,11 +4,10 @@ import { sharedTestConfig } from "./vitest.shared.js";
 export default defineProject({
   test: {
     ...sharedTestConfig,
-    name: "launcher",
-    include: ["src/launcher*.test.ts"],
-    exclude: ["src/launcher-windows-supervision.test.ts"],
+    name: "platform-integration",
+    include: ["src/server/__tests__/platform-process-tree.windows.test.ts"],
     sequence: {
-      groupOrder: process.platform === "win32" ? 1 : 0,
+      groupOrder: process.platform === "win32" ? 3 : 0,
     },
   },
 });
