@@ -2148,8 +2148,15 @@ export interface McpLoginResponse {
 }
 
 
-export async function fetchMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
-  const result = await apiFetch<{ servers: McpServerStatus[] }>(`/api/sessions/${sessionId}/mcp-status`);
+export async function fetchMcpStatus(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<McpServerStatus[]> {
+  const result = await apiFetch<{ servers: McpServerStatus[] }>(
+    `/api/sessions/${sessionId}/mcp-status`,
+    undefined,
+    options,
+  );
   return result.servers;
 }
 export async function loginMcpServer(

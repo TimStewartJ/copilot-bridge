@@ -127,8 +127,11 @@ import {
 } from "./session-run-state-controller.js";
 import {
   isStaleAgentSessionError,
+  mergeMcpServerStatuses,
+  normalizeMcpServerStatuses,
   SessionRunner,
   type McpServerStatus,
+  type McpStatusSnapshot,
   type SessionResumeLease,
   type StartWorkOptions,
 } from "./session-runner.js";
@@ -396,20 +399,11 @@ export interface ModelRefreshResult {
   clientCreatedAt: string | null;
 }
 
+type SessionOverlayBusyReason = "model-switching" | "history-undo";
+
 function isMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /not found|does not exist|no such (file|session)|ENOENT/i.test(message);
-}
-
-const MCP_SERVER_STATUS_VALUES = new Set<McpServerStatus["status"]>([
-  "connected", "failed", "needs-auth", "pending", "disabled", "not_configured", "unknown",
-]);
-
-function coerceMcpServerStatus(value: unknown): McpServerStatus["status"] {
-  if (typeof value === "string" && MCP_SERVER_STATUS_VALUES.has(value as McpServerStatus["status"])) {
-    return value as McpServerStatus["status"];
-  }
-  return "unknown";
 }
 
 function isModelRefreshClientRotationTimeoutError(error: unknown): error is ModelRefreshClientRotationTimeoutError {
@@ -595,15 +589,13 @@ export class SessionManager {
   private readonly inFlightSessionCreations = new Set<Promise<void>>();
   private readonly deletingSessions = new Set<string>();
   private shuttingDown = false;
-  private modelSwitchingSessions = new Set<string>();
-  private historyUndoingSessions = new Set<string>();
+  private sessionOverlayBusyReasons = new Map<string, SessionOverlayBusyReason>();
   private sessionObjects = new Map<string, AgentSession>();
   private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
   private readonly sessionToolInitialization = new WeakMap<AgentSession, Promise<void>>();
   private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
   private sessionToolInitializationWaitTimeoutMs = SESSION_TOOL_INITIALIZATION_TIMEOUT_MS;
-  private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
-  private liveSessionModelState = new Map<string, DerivedModelState>();
+  private mcpStatus = new Map<string, McpStatusSnapshot>();
   private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
   private pendingSessionEvictions = new Set<string>();
   private readonly pendingInteractionCounts = new Map<string, {
@@ -1269,7 +1261,6 @@ export class SessionManager {
         console.warn(`[sdk] Failed to unlink rejected session ${sessionId} from task ${task.id}:`, error);
       }
     }
-    this.liveSessionModelState.delete(sessionId);
     this.mcpStatus.delete(sessionId);
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
     this.invalidateSessionListCache("session:create:failed");
@@ -1366,7 +1357,6 @@ export class SessionManager {
           ...(contextTier ? { contextTier } : {}),
           ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
         };
-        this.liveSessionModelState.set(session.sessionId, state);
         this.persistSessionModelState(session.sessionId, state);
       }
       this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
@@ -1653,7 +1643,6 @@ export class SessionManager {
     if (!session || (expectedSession && session !== expectedSession)) return undefined;
     this.sessionObjects.delete(sessionId);
     this.sessionTreeLastActivityAt.delete(sessionId);
-    this.liveSessionModelState.delete(sessionId);
     this.slashCommandListCache.delete(sessionId);
     this.agentRegistry.markSessionUnavailable(sessionId);
     this.pendingInteractionReconcileGeneration.delete(sessionId);
@@ -3050,8 +3039,10 @@ export class SessionManager {
 
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
   private probeMcpStatus(sessionId: string, session: AgentSession): void {
+    if (this.mcpStatus.get(sessionId)?.complete) return;
     const list = session.listMcpServers;
     if (typeof list !== "function") return;
+    const startingSnapshot = this.mcpStatus.get(sessionId);
     void this.waitForSessionToolInitialization(sessionId, session)
       .then((initialized) => {
         if (!initialized || this.sessionObjects.get(sessionId) !== session) return undefined;
@@ -3059,18 +3050,24 @@ export class SessionManager {
       })
       .then((result) => {
         if (result?.servers && this.sessionObjects.get(sessionId) === session) {
-          const servers: McpServerStatus[] = result.servers.map((s) => ({
-            name: s.name,
-            status: coerceMcpServerStatus(s.status),
-            error: typeof s.error === "string" ? s.error : undefined,
-            source: typeof s.source === "string" ? s.source : undefined,
-          }));
-          this.mcpStatus.set(sessionId, servers);
+          const current = this.mcpStatus.get(sessionId);
+          if (current?.complete) return;
+          const probed = normalizeMcpServerStatuses(result.servers);
+          const servers = current && current !== startingSnapshot
+            ? mergeMcpServerStatuses(probed, current.servers)
+            : probed;
+          this.mcpStatus.set(sessionId, { servers, complete: true });
           const sid = sessionId.slice(0, 8);
           console.log(`[sdk] [${sid}] 🔌 MCP probe: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
         }
       })
-      .catch(() => { /* best-effort */ });
+      .catch((error) => {
+        if (this.mcpStatus.get(sessionId)?.complete) return;
+        console.warn(
+          `[sdk] [${sessionId.slice(0, 8)}] MCP status probe failed:`,
+          error instanceof Error ? error.message : error,
+        );
+      });
   }
 
   private cacheResumedSession(
@@ -3103,29 +3100,31 @@ export class SessionManager {
     return { supported: true, commands };
   }
 
-  /** Get cached MCP status for a session, or probe live if session is cached */
+  /** Get the latest complete MCP snapshot, probing only until one is available. */
   async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
+    const cached = this.mcpStatus.get(sessionId);
+    if (cached?.complete) return cached.servers;
+
     const session = this.sessionObjects.get(sessionId);
     if (session) {
-      try {
-        const initialized = await this.waitForSessionToolInitialization(sessionId, session);
-        if (!initialized || this.sessionObjects.get(sessionId) !== session) {
-          return this.mcpStatus.get(sessionId) ?? [];
-        }
-        const result = await session.listMcpServers();
-        if (result?.servers && this.sessionObjects.get(sessionId) === session) {
-          const servers: McpServerStatus[] = result.servers.map((s) => ({
-            name: s.name,
-            status: coerceMcpServerStatus(s.status),
-            error: typeof s.error === "string" ? s.error : undefined,
-            source: typeof s.source === "string" ? s.source : undefined,
-          }));
-          this.mcpStatus.set(sessionId, servers);
-          return servers;
-        }
-      } catch { /* fall through to cached */ }
+      const startingSnapshot = cached;
+      const initialized = await this.waitForSessionToolInitialization(sessionId, session);
+      if (!initialized || this.sessionObjects.get(sessionId) !== session) {
+        return this.mcpStatus.get(sessionId)?.servers ?? [];
+      }
+      const result = await session.listMcpServers();
+      if (result?.servers && this.sessionObjects.get(sessionId) === session) {
+        const current = this.mcpStatus.get(sessionId);
+        if (current?.complete) return current.servers;
+        const probed = normalizeMcpServerStatuses(result.servers);
+        const servers = current && current !== startingSnapshot
+          ? mergeMcpServerStatuses(probed, current.servers)
+          : probed;
+        this.mcpStatus.set(sessionId, { servers, complete: true });
+        return servers;
+      }
     }
-    return this.mcpStatus.get(sessionId) ?? [];
+    return this.mcpStatus.get(sessionId)?.servers ?? [];
   }
   async loginMcpServer(
     sessionId: string,
@@ -3196,8 +3195,8 @@ export class SessionManager {
   /** Get latest MCP status from any session (for settings page) */
   getLatestMcpStatus(): McpServerStatus[] {
     // Return the most recent non-empty status from any session
-    for (const [, status] of this.mcpStatus) {
-      if (status.length > 0) return status;
+    for (const [, snapshot] of this.mcpStatus) {
+      if (snapshot.servers.length > 0) return snapshot.servers;
     }
     return [];
   }
@@ -3237,8 +3236,7 @@ export class SessionManager {
       this.sessionObjects.has(sessionId)
       || this.runStateController.hasSessionRun(sessionId)
       || this.isSessionResuming(sessionId)
-      || this.modelSwitchingSessions.has(sessionId)
-      || this.historyUndoingSessions.has(sessionId)
+      || this.sessionOverlayBusyReasons.has(sessionId)
       || this.getPendingInteractionCount(sessionId) > 0
     ) {
       return true;
@@ -3470,7 +3468,7 @@ export class SessionManager {
 
     const backend = this.getBackend();
     const startedAt = Date.now();
-    this.historyUndoingSessions.add(sessionId);
+    this.sessionOverlayBusyReasons.set(sessionId, "history-undo");
     this.syncRestartWaitingIfPending();
 
     try {
@@ -3623,7 +3621,7 @@ export class SessionManager {
       });
       throw error;
     } finally {
-      this.historyUndoingSessions.delete(sessionId);
+      this.sessionOverlayBusyReasons.delete(sessionId);
       this.syncRestartWaitingIfPending();
       this.flushPendingSessionEviction(sessionId);
     }
@@ -3926,15 +3924,14 @@ export class SessionManager {
       return;
     }
 
-    const skipReason = this.modelSwitchingSessions.has(sessionId)
-      ? "model-switching"
-      : this.historyUndoingSessions.has(sessionId)
-        ? "history-undo"
-        : this.isSessionResuming(sessionId)
+    const skipReason = this.sessionOverlayBusyReasons.get(sessionId)
+      ?? (
+        this.isSessionResuming(sessionId)
           ? "resuming"
           : this.runStateController.isSessionBusy(sessionId)
             ? "running"
-            : undefined;
+            : undefined
+      );
     if (skipReason) {
       this.recordSpan("session.warm.skipped", 0, sessionId, { reason: skipReason });
       return;
@@ -4066,16 +4063,14 @@ export class SessionManager {
   }
 
   isSessionBusy(sessionId: string): boolean {
-    return this.modelSwitchingSessions.has(sessionId)
-      || this.historyUndoingSessions.has(sessionId)
+    return this.sessionOverlayBusyReasons.has(sessionId)
       || this.isSessionResuming(sessionId)
       || this.runStateController.isSessionBusy(sessionId);
   }
 
   /** Returns user-visible agent work state, excluding passive session lifecycle operations such as warmup. */
   getSessionRunState(sessionId: string): SessionRunState {
-    if (this.modelSwitchingSessions.has(sessionId)) return "busy";
-    if (this.historyUndoingSessions.has(sessionId)) return "busy";
+    if (this.sessionOverlayBusyReasons.has(sessionId)) return "busy";
     return this.runStateController.getSessionRunState(sessionId);
   }
 
@@ -4155,8 +4150,7 @@ export class SessionManager {
     return Array.from(new Set([
       ...this.runStateController.getActiveSessions(),
       ...this.resumingSessions.keys(),
-      ...this.modelSwitchingSessions,
-      ...this.historyUndoingSessions,
+      ...this.sessionOverlayBusyReasons.keys(),
     ]));
   }
 
@@ -4242,7 +4236,7 @@ export class SessionManager {
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
 
     const sid = sessionId.slice(0, 8);
-    this.modelSwitchingSessions.add(sessionId);
+    this.sessionOverlayBusyReasons.set(sessionId, "model-switching");
     this.syncRestartWaitingIfPending();
 
     try {
@@ -4271,27 +4265,26 @@ export class SessionManager {
         }
       }
 
-      const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
       const persistedState = this.readPersistedSessionModelState(sessionId);
-      const liveState = this.liveSessionModelState.get(sessionId);
-      let currentModelBeforeSwitch: string | undefined;
-      if (reasoningEffort === undefined && liveState?.reasoningEffort !== undefined) {
-        try {
-          const current = await session.getCurrentModel();
-          currentModelBeforeSwitch = current?.modelId;
-        } catch { /* best-effort */ }
-      }
-      const knownLiveReasoningEffort =
-        liveState && (!currentModelBeforeSwitch || liveState.model === currentModelBeforeSwitch)
-          ? liveState.reasoningEffort
-          : undefined;
+      let currentBeforeSwitch: Awaited<ReturnType<AgentSession["getCurrentModel"]>>;
+      try {
+        currentBeforeSwitch = await session.getCurrentModel();
+      } catch { /* fall back to persisted state when the live RPC is unavailable */ }
+      const hasAuthoritativeCurrentModel = Boolean(currentBeforeSwitch?.modelId);
+      const fallbackState = hasAuthoritativeCurrentModel
+        ? undefined
+        : {
+            ...persistedState,
+            ...deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId)),
+          };
       const effectiveReasoningEffort = reasoningEffort
-        ?? knownLiveReasoningEffort
-        ?? eventsState.reasoningEffort;
+        ?? currentBeforeSwitch?.reasoningEffort
+        ?? fallbackState?.reasoningEffort;
       const effectiveRequestedContextTier = contextTier
-        ?? (liveState?.model === model ? liveState.contextTier : undefined)
-        ?? (eventsState.model === model ? eventsState.contextTier : undefined)
-        ?? (persistedState.model === model ? persistedState.contextTier : undefined);
+        ?? (currentBeforeSwitch?.modelId === model
+          ? normalizeCopilotContextTier(currentBeforeSwitch.contextTier)
+          : undefined)
+        ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
       const resolvedContext = this.resolveModelContextTier(model, effectiveRequestedContextTier, modelMetadata);
       const setModelOptions = {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
@@ -4305,33 +4298,34 @@ export class SessionManager {
         })`,
       );
 
-      let modelId: string | undefined;
+      let currentAfterSwitch: Awaited<ReturnType<AgentSession["getCurrentModel"]>>;
       try {
-        const current = await session.getCurrentModel();
-        modelId = current?.modelId;
+        currentAfterSwitch = await session.getCurrentModel();
       } catch { /* best-effort */ }
 
-      const liveModel = modelId ?? model;
-      this.liveSessionModelState.set(sessionId, {
-        model: liveModel,
-        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
-        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
-      });
+      const hasAuthoritativeUpdatedModel = Boolean(currentAfterSwitch?.modelId);
+      const liveModel = currentAfterSwitch?.modelId ?? model;
+      const liveReasoningEffort = hasAuthoritativeUpdatedModel
+        ? currentAfterSwitch?.reasoningEffort
+        : effectiveReasoningEffort;
+      const liveContextTier = hasAuthoritativeUpdatedModel
+        ? normalizeCopilotContextTier(currentAfterSwitch?.contextTier)
+        : resolvedContext.contextTier;
       this.persistSessionModelState(sessionId, {
         model: liveModel,
-        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
-        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
+        ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),
+        ...(liveContextTier ? { contextTier: liveContextTier } : {}),
         ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
       });
 
       return {
         model,
-        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
-        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
-        ...(modelId ? { modelId } : {}),
+        ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),
+        ...(liveContextTier ? { contextTier: liveContextTier } : {}),
+        ...(currentAfterSwitch?.modelId ? { modelId: currentAfterSwitch.modelId } : {}),
       };
     } finally {
-      this.modelSwitchingSessions.delete(sessionId);
+      this.sessionOverlayBusyReasons.delete(sessionId);
       this.syncRestartWaitingIfPending();
       this.flushPendingSessionEviction(sessionId);
       this.scheduleCacheOperation(
@@ -4345,8 +4339,7 @@ export class SessionManager {
    * Return the current model / reasoning effort for a session on demand.
    *
    * - For active (cached) sessions, calls rpc.model.getCurrent() for the live
-   *   modelId, then uses the latest explicit switch state or events.jsonl for
-   *   reasoningEffort (the RPC only exposes modelId, not reasoningEffort).
+   *   model, reasoning effort, and context tier snapshot.
    * - For inactive sessions (not in cache), falls back entirely to events.jsonl.
    * - Returns source='live' when the live RPC was used, 'events' when only the
    *   event log was used, or 'unknown' if neither had useful data.
@@ -4354,25 +4347,16 @@ export class SessionManager {
   async getSessionModelState(
     sessionId: string,
   ): Promise<{ model?: string; reasoningEffort?: string; contextTier?: CopilotContextTier; source: "live" | "events" | "unknown" }> {
-    const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
-    const persistedState = this.readPersistedSessionModelState(sessionId);
-
     const cached = this.sessionObjects.get(sessionId);
     if (cached) {
       try {
         const current = await cached.getCurrentModel();
-        const liveModelId: string | undefined = current?.modelId;
-        if (liveModelId) {
-          const liveState = this.liveSessionModelState.get(sessionId);
-          const reasoningEffort = liveState?.model === liveModelId
-            ? liveState.reasoningEffort
-            : eventsState.reasoningEffort ?? persistedState.reasoningEffort;
-          const contextTier = liveState?.model === liveModelId
-            ? liveState.contextTier
-            : eventsState.contextTier ?? (persistedState.model === liveModelId ? persistedState.contextTier : undefined);
+        if (current?.modelId) {
+          const liveModelId = current.modelId;
+          const contextTier = normalizeCopilotContextTier(current.contextTier);
           return {
             model: liveModelId,
-            ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+            ...(current.reasoningEffort !== undefined ? { reasoningEffort: current.reasoningEffort } : {}),
             ...(contextTier !== undefined ? { contextTier } : {}),
             source: "live",
           };
@@ -4380,6 +4364,8 @@ export class SessionManager {
       } catch { /* best-effort */ }
     }
 
+    const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
+    const persistedState = this.readPersistedSessionModelState(sessionId);
     const mergedEventsState = {
       ...persistedState,
       ...eventsState,

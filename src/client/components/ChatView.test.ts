@@ -462,6 +462,24 @@ afterEach(() => {
 });
 
 describe("ChatView cached resume loading state", () => {
+  it("routes streamed MCP status into the query-owned status bar data", async () => {
+    const { act, cleanup } = await renderChatView({
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+
+    try {
+      const onMcpStatus = useSessionStreamMock.mock.calls.at(-1)?.[3] as
+        | ((servers: Array<{ name: string; status: string }>) => void)
+        | undefined;
+      await act(async () => onMcpStatus?.([{ name: "demo", status: "connected" }]));
+      await waitUntilAct(act, () => mcpStatusBarMock.mock.calls.some((call) => (
+        (call[0] as { servers?: Array<{ name: string; status: string }> }).servers?.[0]?.name === "demo"
+      )));
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("passes restart cutover disabled state to the composer", async () => {
     const hint = "Bridge is restarting; new messages and chats will resume after reconnect.";
     const { cleanup } = await renderChatView({

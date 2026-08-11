@@ -67,7 +67,10 @@ describe("first-send session cleanup", () => {
       queryKeys.tasks,
       [createTask({ sessionIds: ["session-existing", "session-new"] })],
     );
-    let selectedTask: Task | null = createTask({ sessionIds: ["session-new"] });
+    queryClient.setQueryData<Task>(
+      queryKeys.task("task-1"),
+      createTask({ sessionIds: ["session-new"] }),
+    );
     const sendError = new Error("send failed");
     const sendChatMessage = vi.fn(async () => {
       throw sendError;
@@ -98,9 +101,6 @@ describe("first-send session cleanup", () => {
         clearDraftSessionBySessionId,
         clearLastViewedSession,
         clearLastActiveQuickChat,
-        updateSelectedTask: (updater) => {
-          selectedTask = updater(selectedTask);
-        },
         invalidateAllSessionQueries,
         invalidateTasks,
       }),
@@ -128,7 +128,7 @@ describe("first-send session cleanup", () => {
     }
     expect(queryClient.getQueryData<Task[]>(queryKeys.tasks)?.[0]?.sessionIds)
       .toEqual(["session-existing"]);
-    expect(selectedTask?.sessionIds).toEqual([]);
+    expect(queryClient.getQueryData<Task>(queryKeys.task("task-1"))?.sessionIds).toEqual([]);
     expect(invalidateAllSessionQueries).toHaveBeenCalledTimes(1);
     expect(invalidateTasks).toHaveBeenCalledTimes(1);
   });

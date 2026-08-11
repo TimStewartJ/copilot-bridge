@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionManager } from "../session-manager.js";
+import {
+  applyMcpServerStatusChange,
+  normalizeMcpServerStatuses,
+} from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub } from "./helpers.js";
@@ -59,6 +63,72 @@ function createSession(sendImpl: (emit: EmitSdkEvent) => Promise<void> | void) {
 describe("SessionManager stale cached session recovery", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("normalizes unknown MCP status values on full and incremental SDK events", () => {
+    expect(normalizeMcpServerStatuses([
+      { name: "full", status: "future-status", error: "bad", source: "sdk" },
+    ])).toEqual([
+      { name: "full", status: "unknown", error: "bad", source: "sdk" },
+    ]);
+
+    const partial = applyMcpServerStatusChange(undefined, {
+      serverName: "incremental",
+      status: "future-status",
+      error: "bad",
+    });
+    expect(partial.snapshot).toEqual({
+      servers: [{ name: "incremental", status: "unknown", error: "bad" }],
+      complete: false,
+    });
+  });
+
+  it("does not probe again after a pushed complete MCP snapshot, including empty", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const session = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "session.mcp_servers_loaded",
+          data: { servers: [] },
+        });
+        emit({ type: "session.idle", data: {} });
+      });
+    });
+    session.listMcpServers = vi.fn().mockResolvedValue({
+      servers: [{ name: "stale-probe", status: "connected" }],
+    });
+    manager.sessionObjects.set("session-1", session);
+
+    await manager._doWork("session-1", "hello", bus);
+
+    await expect(manager.getMcpStatus("session-1")).resolves.toEqual([]);
+    expect(session.listMcpServers).not.toHaveBeenCalled();
+  });
+
+  it("does not let an in-flight fallback probe overwrite a pushed snapshot", async () => {
+    const { manager } = createManager();
+    let resolveProbe!: (value: { servers: Array<{ name: string; status: string }> }) => void;
+    const session = makeAgentSessionStub({
+      listMcpServers: vi.fn(() => new Promise((resolve) => {
+        resolveProbe = resolve;
+      })),
+    });
+    manager.sessionObjects.set("session-1", session);
+
+    manager.probeMcpStatus("session-1", session);
+    await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
+    manager.mcpStatus.set("session-1", {
+      servers: [{ name: "event", status: "failed" }],
+      complete: true,
+    });
+    resolveProbe({ servers: [{ name: "probe", status: "connected" }] });
+    await flushMicrotasks();
+
+    expect(manager.mcpStatus.get("session-1")).toEqual({
+      servers: [{ name: "event", status: "failed" }],
+      complete: true,
+    });
   });
 
   it("evicts a cached closed SDK connection and retries on a fresh session", async () => {

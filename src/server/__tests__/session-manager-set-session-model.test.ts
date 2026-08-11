@@ -7,6 +7,7 @@ import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import supertest from "./test-http.js";
+import type { AgentCurrentModel, AgentSetModelOptions } from "../agent-backend/types.js";
 
 function createManager(copilotHome?: string) {
   const db = setupTestDb();
@@ -27,8 +28,18 @@ function createManager(copilotHome?: string) {
 }
 
 function createMockSession(currentModelId?: string) {
-  const setModel = vi.fn(async () => {});
-  const getCurrent = vi.fn(async () => ({ modelId: currentModelId }));
+  let current: AgentCurrentModel = {
+    ...(currentModelId ? { modelId: currentModelId } : {}),
+  };
+  const setModel = vi.fn(async (model: string, options?: AgentSetModelOptions) => {
+    current = {
+      modelId: model,
+      ...(options?.reasoningEffort
+        ? { reasoningEffort: options.reasoningEffort }
+        : current.reasoningEffort ? { reasoningEffort: current.reasoningEffort } : {}),
+    };
+  });
+  const getCurrent = vi.fn(async (): Promise<AgentCurrentModel> => current);
   return makeAgentSessionStub({
     setModel,
     getCurrentModel: getCurrent,
@@ -104,6 +115,10 @@ describe("SessionManager.setSessionModel", () => {
   it("caps tiered models when selecting the default context tier", async () => {
     const manager = createManager(makeTestDir("model-context-default"));
     const session = createMockSession("gpt-5.5");
+    session.getCurrentModel
+      .mockResolvedValueOnce({ modelId: "gpt-5.5" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", contextTier: "default" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", contextTier: "default" });
     manager.backend = {};
     manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
     manager.sessionObjects.set("session-1", session);
@@ -123,6 +138,9 @@ describe("SessionManager.setSessionModel", () => {
   it("passes explicit model limits when selecting long context", async () => {
     const manager = createManager(makeTestDir("model-context-long"));
     const session = createMockSession("gpt-5.5");
+    session.getCurrentModel
+      .mockResolvedValueOnce({ modelId: "gpt-5.5" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", contextTier: "long_context" });
     manager.backend = {};
     manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
     manager.sessionObjects.set("session-1", session);
@@ -303,6 +321,9 @@ describe("SessionManager.setSessionModel", () => {
     );
     const manager = createManager(copilotHome);
     const session = createMockSession("claude-opus-4.7");
+    session.getCurrentModel
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "high" })
+      .mockResolvedValueOnce({ modelId: "claude-opus-4.7", reasoningEffort: "high" });
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
@@ -322,6 +343,9 @@ describe("SessionManager.setSessionModel", () => {
     );
     const manager = createManager(copilotHome);
     const session = createMockSession("gpt-5.5");
+    session.getCurrentModel
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "low" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "high" });
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
@@ -345,9 +369,10 @@ describe("SessionManager.setSessionModel", () => {
     const manager = createManager(copilotHome);
     const setModel = vi.fn(async () => {});
     const getCurrent = vi.fn()
-      .mockResolvedValueOnce({ modelId: "gpt-5.5" })
-      .mockResolvedValueOnce({ modelId: "gpt-5.5" })
-      .mockResolvedValueOnce({ modelId: "claude-opus-4.7" });
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "low" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "high" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "high" })
+      .mockResolvedValueOnce({ modelId: "claude-opus-4.7", reasoningEffort: "high" });
     const session = makeAgentSessionStub({
       setModel,
       getCurrentModel: getCurrent,

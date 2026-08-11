@@ -6,7 +6,7 @@ import {
   type Session,
   type Task,
 } from "./api";
-import { queryKeys } from "./queryClient";
+import { updateTaskInQueryCaches } from "./lib/task-query-cache";
 import type { SendMode } from "../shared/send-mode.js";
 
 type DeleteSession = (sessionId: string) => Promise<void>;
@@ -18,8 +18,6 @@ type SendChatMessage = (
   options?: { waitForDelivery?: boolean },
 ) => Promise<unknown>;
 type QueryInvalidator = () => Promise<unknown>;
-type SelectedTaskUpdater = (updater: (task: Task | null) => Task | null) => void;
-
 export interface FailedFirstSendSessionCleanupOptions {
   sessionId: string;
   taskId?: string;
@@ -29,7 +27,6 @@ export interface FailedFirstSendSessionCleanupOptions {
   clearDraftSessionBySessionId?: (sessionId: string) => void;
   clearLastViewedSession?: (sessionId: string) => void;
   clearLastActiveQuickChat?: (sessionId: string) => void;
-  updateSelectedTask?: SelectedTaskUpdater;
   deleteSession?: DeleteSession;
   invalidateAllSessionQueries?: QueryInvalidator;
   invalidateTasks?: QueryInvalidator;
@@ -58,7 +55,6 @@ export function removeFailedFirstSendSessionFromCache(
   queryClient: QueryClient,
   sessionId: string,
   taskId?: string,
-  updateSelectedTask?: SelectedTaskUpdater,
 ): void {
   queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) => {
     if (!prev?.some((session) => session.sessionId === sessionId)) return prev;
@@ -67,12 +63,7 @@ export function removeFailedFirstSendSessionFromCache(
 
   if (!taskId) return;
 
-  queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => {
-    if (!prev?.some((task) => task.id === taskId && task.sessionIds.includes(sessionId))) return prev;
-    return prev.map((task) => removeSessionFromTask(task, sessionId, taskId));
-  });
-
-  updateSelectedTask?.((prev) => (prev ? removeSessionFromTask(prev, sessionId, taskId) : prev));
+  updateTaskInQueryCaches(queryClient, taskId, (task) => removeSessionFromTask(task, sessionId, taskId));
 }
 
 export async function cleanupFailedFirstSendSession({
@@ -84,7 +75,6 @@ export async function cleanupFailedFirstSendSession({
   clearDraftSessionBySessionId,
   clearLastViewedSession,
   clearLastActiveQuickChat,
-  updateSelectedTask,
   deleteSession = deleteSessionApi,
   invalidateAllSessionQueries,
   invalidateTasks,
@@ -95,7 +85,7 @@ export async function cleanupFailedFirstSendSession({
   clearDraftSessionBySessionId?.(sessionId);
   clearLastViewedSession?.(sessionId);
   clearLastActiveQuickChat?.(sessionId);
-  removeFailedFirstSendSessionFromCache(queryClient, sessionId, taskId, updateSelectedTask);
+  removeFailedFirstSendSessionFromCache(queryClient, sessionId, taskId);
 
   try {
     await deleteSession(sessionId);

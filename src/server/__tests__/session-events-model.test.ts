@@ -203,15 +203,37 @@ describe("SessionManager.getSessionModelState", () => {
     );
     const manager = createManager(dir);
     const mockSession = {
-      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "live-model-id" }),
+      getCurrentModel: vi.fn().mockResolvedValue({
+        modelId: "live-model-id",
+        reasoningEffort: "medium",
+        contextTier: "long_context",
+      }),
     };
     manager.sessionObjects.set("live-session", mockSession);
 
     const result = await manager.getSessionModelState("live-session");
     expect(result.source).toBe("live");
     expect(result.model).toBe("live-model-id");
-    // reasoning from events.jsonl
-    expect(result.reasoningEffort).toBe("high");
+    expect(result.reasoningEffort).toBe("medium");
+    expect(result.contextTier).toBe("long_context");
+  });
+
+  it("does not fill missing live SDK fields from stale events", async () => {
+    const dir = makeTestDir("model-state-live-no-event-fill");
+    const sessionDir = join(dir, "session-state", "live-session");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      JSON.stringify({ type: "session.start", data: { selectedModel: "old-model", reasoningEffort: "high" } }),
+    );
+    const manager = createManager(dir);
+    manager.sessionObjects.set("live-session", {
+      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "live-model-id" }),
+    });
+
+    const result = await manager.getSessionModelState("live-session");
+
+    expect(result).toEqual({ model: "live-model-id", source: "live" });
   });
 
   it("falls back to events when live rpc.getCurrent throws", async () => {
@@ -252,7 +274,7 @@ describe("SessionManager.getSessionModelState", () => {
     expect(result.model).toBe("event-model");
   });
 
-  it("cached live model overrides event model while retaining reasoning from events", async () => {
+  it("uses the complete live SDK snapshot instead of stale event model state", async () => {
     const dir = makeTestDir("model-state-live-override");
     const sessionDir = join(dir, "session-state", "session-z");
     mkdirSync(sessionDir, { recursive: true });
@@ -265,14 +287,19 @@ describe("SessionManager.getSessionModelState", () => {
     );
     const manager = createManager(dir);
     const mockSession = {
-      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "live-current" }),
+      getCurrentModel: vi.fn().mockResolvedValue({
+        modelId: "live-current",
+        reasoningEffort: "medium",
+        contextTier: "default",
+      }),
     };
     manager.sessionObjects.set("session-z", mockSession);
 
     const result = await manager.getSessionModelState("session-z");
     expect(result.source).toBe("live");
     expect(result.model).toBe("live-current");
-    expect(result.reasoningEffort).toBe("high");
+    expect(result.reasoningEffort).toBe("medium");
+    expect(result.contextTier).toBe("default");
   });
 });
 

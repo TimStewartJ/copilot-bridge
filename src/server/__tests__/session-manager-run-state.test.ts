@@ -953,9 +953,18 @@ describe("SessionManager run state", () => {
     manager.backend = {
       resumeSession: vi.fn(),
     };
-    (manager as any).modelSwitchingSessions.add("session-1");
+    (manager as any).sessionOverlayBusyReasons.set("session-1", "model-switching");
 
     await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("not accepting steering");
+  });
+
+  it("derives busy and active state from the owned overlay reason", () => {
+    const { manager } = createManager();
+    (manager as any).sessionOverlayBusyReasons.set("session-1", "history-undo");
+
+    expect(manager.isSessionBusy("session-1")).toBe(true);
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+    expect(manager.getActiveSessions()).toContain("session-1");
   });
 
   it("rejects steering if the active run completes before the immediate send returns", async () => {

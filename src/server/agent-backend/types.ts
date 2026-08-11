@@ -245,6 +245,12 @@ export type AgentSessionEvent = AgentPendingInteractionEvent | {
 
 export type AgentSessionEventHandler = (event: AgentSessionEvent) => void;
 
+export interface AgentCurrentModel {
+  modelId?: string;
+  reasoningEffort?: string;
+  contextTier?: string;
+}
+
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
  * through typed methods.
@@ -300,8 +306,8 @@ export interface AgentSession {
   /** List session-scoped slash commands. Resolves `undefined` when unsupported. */
   listSlashCommands(): Promise<AgentSlashCommandList | undefined>;
 
-  /** Fetch the session's currently-selected model id. Resolves `undefined` when unsupported. */
-  getCurrentModel(): Promise<{ modelId?: string } | undefined>;
+  /** Fetch the session's current model settings snapshot. Resolves `undefined` when unsupported. */
+  getCurrentModel(): Promise<AgentCurrentModel | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;

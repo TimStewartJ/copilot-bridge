@@ -5,9 +5,7 @@ import { queryKeys } from "./queryClient";
 import {
   createSession,
   patchSession,
-  fetchTasks,
   createTask,
-  fetchTask,
   patchTask,
   deleteTask,
   deleteSession,
@@ -39,7 +37,6 @@ import {
   type TaskDeletionErrorBody,
   type TaskDeletionPreview,
   type TaskGroup,
-  type McpServerStatus,
   type CreateSessionOptions,
 } from "./api";
 import { useReadState } from "./useReadState";
@@ -58,6 +55,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
+import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
@@ -76,6 +74,7 @@ import {
 } from "./lib/model-family-defaults";
 import { getModelFamily, type ModelFamily } from "../shared/model-families.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
+import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
 import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
@@ -153,12 +152,11 @@ export default function App() {
     [activeSessions, archivedQuerySessions, archivedLoaded, restoringArchivedSessionIds],
   );
   const archivedLoading = archivedLoaded && !archivedSessionsFetched;
-  const { data: tasks = [] } = useTasksQuery();
+  const tasksQuery = useTasksQuery();
+  const tasks = tasksQuery.data ?? [];
   const { data: taskGroups = [] } = useTaskGroupsQuery();
   const { data: openChecklistItems = [] } = useOpenChecklistItemsQuery();
 
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [taskNotFound, setTaskNotFound] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
   const [quickChatsExpanded, setQuickChatsExpanded] = useState(() => {
     try { return localStorage.getItem("bridge-quick-chats-expanded") === "true"; } catch { return false; }
@@ -178,7 +176,7 @@ export default function App() {
     pendingSnapshotSeen: false,
     pendingServerInstanceId: null,
   });
-  const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
+  const [sessionReloadSignals, setSessionReloadSignals] = useState<Record<string, number>>({});
   const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
   // Incremented per-session when an external source (e.g. schedule) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
@@ -211,6 +209,11 @@ export default function App() {
   const mobileRouteMeta = getMobileRouteMeta(location.pathname, location.search);
   const activeSessionId = mobileRouteMeta.sessionId;
   const activeTaskId = mobileRouteMeta.taskId;
+  const { task: selectedTask, taskNotFound } = useActiveTask(
+    activeTaskId,
+    tasks,
+    !tasksQuery.isPending,
+  );
   const activeComposerKey = getComposerKeyFromPathname(location.pathname);
   const quickChatsRoute = mobileRouteMeta.route === "chat-list";
   const quickChatsMode = quickChatsRoute || mobileRouteMeta.route === "quick-chat";
@@ -236,39 +239,12 @@ export default function App() {
     ? mobileScrollRestorationPolicy
     : undefined;
 
-  // Sync selectedTask when activeTaskId changes
-  useEffect(() => {
-    if (activeTaskId) {
-      setTaskNotFound(false);
-      // Try local cache first
-      const cached = tasks.find((t) => t.id === activeTaskId);
-      if (cached) {
-        setSelectedTask(cached);
-      } else {
-        fetchTask(activeTaskId).then(setSelectedTask).catch(() => {
-          setSelectedTask(null);
-          setTaskNotFound(true);
-        });
-      }
-    } else {
-      setTaskNotFound(false);
-    }
-  }, [activeTaskId]);
-
   // Auto-expand quick chats section when entering quick-chats mode on desktop
   useEffect(() => {
     if (!isMobile && quickChatsMode) {
       persistQuickChatsExpanded(true);
     }
   }, [quickChatsMode, isMobile]);
-
-  // Keep selectedTask in sync with tasks list updates
-  useEffect(() => {
-    if (selectedTask) {
-      const updated = tasks.find((t) => t.id === selectedTask.id);
-      if (updated) setSelectedTask(updated);
-    }
-  }, [tasks]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
   const renderedReadThroughRef = useRef<Record<string, string>>({});
@@ -729,10 +705,7 @@ export default function App() {
         ? { ...task, sessionIds: [...task.sessionIds, sessionId] }
         : task;
 
-    queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
-      prev?.map(addSessionToTask),
-    );
-    setSelectedTask((prev) => (prev?.id === taskId ? addSessionToTask(prev) : prev));
+    updateTaskInQueryCaches(queryClient, taskId, addSessionToTask);
   }, [queryClient]);
 
   const patchVoiceSessionActivityInCache = useCallback((activity: VoiceSessionActivity) => {
@@ -873,17 +846,14 @@ export default function App() {
   };
 
   const handleOpenTaskList = useCallback(() => {
-    setSelectedTask(null);
     navigate("/");
   }, [navigate]);
 
   const handleOpenDashboard = useCallback(() => {
-    setSelectedTask(null);
     navigate(getRememberedDashboardPath(location.pathname));
   }, [location.pathname, navigate]);
 
   const handleOpenQuickChatsList = () => {
-    setSelectedTask(null);
     navigate("/chats");
   };
 
@@ -923,7 +893,6 @@ export default function App() {
           return;
         }
       }
-      setSelectedTask(null);
       handleOpenTaskList();
     } else {
       handleSelectQuickChats();
@@ -982,7 +951,6 @@ export default function App() {
       clearDraftSessionBySessionId,
       clearLastViewedSession,
       clearLastActiveQuickChat,
-      updateSelectedTask: setSelectedTask,
       invalidateAllSessionQueries,
       invalidateTasks,
     }), [
@@ -1004,8 +972,7 @@ export default function App() {
       addPendingPromptSession(sessionId);
       const addSession = (t: Task) =>
         t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
-      queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => prev?.map(addSession));
-      setSelectedTask((prev) => (prev ? addSession(prev) : prev));
+      updateTaskInQueryCaches(queryClient, taskId, addSession);
       return sessionId;
     } else {
       const sessionId = await createSession(options);
@@ -1094,7 +1061,6 @@ export default function App() {
     try {
       const task = await createTask("New Task", { groupId });
       queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => prev ? [task, ...prev] : [task]);
-      setSelectedTask(task);
       navigate(`/tasks/${task.id}/sessions/new`);
     } catch (err) {
       console.error("Failed to create task:", err);
@@ -1107,15 +1073,11 @@ export default function App() {
   ): Promise<Task | null> => {
     try {
       const updated = await patchTask(taskId, updates);
+      setTaskInQueryCaches(queryClient, updated);
       if (updates.status || updates.kind !== undefined || updates.completionAction) {
         // When status, kind, or completion changes, refetch all tasks since ordering can shift
         await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
-      } else {
-        queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
-          prev?.map((t) => (t.id === taskId ? updated : t)),
-        );
       }
-      setSelectedTask((prev) => (prev?.id === taskId ? updated : prev));
       return updated;
     } catch (err) {
       console.error("Failed to update task:", err);
@@ -1169,7 +1131,6 @@ export default function App() {
   const finishTaskDeletion = useCallback(async (taskId: string) => {
     setPendingTaskDeletion(null);
     clearLastActiveTask(taskId);
-    setSelectedTask(null);
     navigate("/");
     await Promise.all([invalidateTasks(), invalidateAllSessionQueries()]);
   }, [navigate, invalidateTasks, invalidateAllSessionQueries]);
@@ -1288,9 +1249,7 @@ export default function App() {
 
   const handleMoveTaskToGroup = async (taskId: string, groupId: string | undefined) => {
     // Optimistic update
-    queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
-      prev?.map((t) => (t.id === taskId ? { ...t, groupId } : t)),
-    );
+    updateTaskInQueryCaches(queryClient, taskId, (task) => ({ ...task, groupId }));
     taskChangeInvalidator.beginTaskMutation();
     try {
       await patchTask(taskId, { groupId: groupId ?? ("" as any) });
@@ -1340,17 +1299,16 @@ export default function App() {
   }, [taskCompletionFeedback, showToast]);
 
   const handleMoveAndReorder = async (taskId: string, groupId: string | undefined, taskIds: string[]) => {
-    // Single optimistic update: group move + reorder combined
+    updateTaskInQueryCaches(queryClient, taskId, (task) => ({ ...task, groupId }));
     queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => {
       if (!prev) return prev;
-      const withGroup = prev.map((t) => (t.id === taskId ? { ...t, groupId } : t));
-      const map = new Map(withGroup.map((t) => [t.id, t]));
+      const map = new Map(prev.map((t) => [t.id, t]));
       const reordered = taskIds.map((id, i) => {
         const t = map.get(id);
         return t ? { ...t, order: i } : null;
       }).filter(Boolean) as Task[];
       const reorderedIds = new Set(taskIds);
-      const rest = withGroup.filter((t) => !reorderedIds.has(t.id));
+      const rest = prev.filter((t) => !reorderedIds.has(t.id));
       return [...reordered, ...rest];
     });
     taskChangeInvalidator.beginTaskMutation();
@@ -1370,10 +1328,7 @@ export default function App() {
   const handleSetTaskTags = async (taskId: string, tagIds: string[]) => {
     try {
       const tags = await setTaskTags(taskId, tagIds);
-      queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
-        prev?.map((t) => (t.id === taskId ? { ...t, tags } : t)),
-      );
-      setSelectedTask((prev) => (prev?.id === taskId ? { ...prev, tags } : prev));
+      updateTaskInQueryCaches(queryClient, taskId, (task) => ({ ...task, tags }));
     } catch (err) {
       console.error("Failed to set task tags:", err);
     }
@@ -1466,14 +1421,10 @@ export default function App() {
       const linkedTaskId = tasks.find((t) => t.sessionIds.includes(sessionId))?.id;
       if (linkedTaskId) {
         // Update task to include the new session
-        queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
-          prev?.map((t) =>
-            t.id === linkedTaskId ? { ...t, sessionIds: [...t.sessionIds, newId] } : t,
-          ),
-        );
-        setSelectedTask((prev) =>
-          prev?.id === linkedTaskId ? { ...prev, sessionIds: [...prev.sessionIds, newId] } : prev,
-        );
+        updateTaskInQueryCaches(queryClient, linkedTaskId, (task) => ({
+          ...task,
+          sessionIds: [...task.sessionIds, newId],
+        }));
         navigate(`/tasks/${linkedTaskId}/sessions/${newId}`);
       } else {
         navigate(`/sessions/${newId}`);
@@ -1488,12 +1439,12 @@ export default function App() {
   const handleReloadSession = async (sessionId: string) => {
     try {
       const result = await reloadSession(sessionId);
-      setSessionReloads((prev) => ({
+      const mcpStatusQueryKey = queryKeys.mcpStatus(sessionId);
+      await queryClient.cancelQueries({ queryKey: mcpStatusQueryKey, exact: true });
+      queryClient.setQueryData(mcpStatusQueryKey, result.servers);
+      setSessionReloadSignals((prev) => ({
         ...prev,
-        [sessionId]: {
-          token: (prev[sessionId]?.token ?? 0) + 1,
-          servers: result.servers,
-        },
+        [sessionId]: (prev[sessionId] ?? 0) + 1,
       }));
     } catch (err) {
       console.error("Failed to reload session MCPs:", err);
@@ -1955,7 +1906,7 @@ export default function App() {
                   clearVoiceJobError={clearVoiceJobError}
                   discardVoiceRecording={discardVoiceRecording}
                   migrateVoiceRecording={migrateVoiceRecording}
-                  sessionReloads={sessionReloads}
+                  sessionReloadSignals={sessionReloadSignals}
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
                   sessionHistorySignals={sessionHistorySignals}
@@ -2033,7 +1984,7 @@ export default function App() {
                   clearVoiceJobError={clearVoiceJobError}
                   discardVoiceRecording={discardVoiceRecording}
                   migrateVoiceRecording={migrateVoiceRecording}
-                  sessionReloads={sessionReloads}
+                  sessionReloadSignals={sessionReloadSignals}
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
                   sessionHistorySignals={sessionHistorySignals}
@@ -2272,7 +2223,7 @@ function SessionRoute({
   clearVoiceJobError,
   discardVoiceRecording,
   migrateVoiceRecording,
-  sessionReloads,
+  sessionReloadSignals,
   sessionBusySignals,
   onForkSession,
   sessionHistorySignals,
@@ -2304,7 +2255,7 @@ function SessionRoute({
   clearVoiceJobError: (composerKey: string) => void;
   discardVoiceRecording: (composerKey: string) => void;
   migrateVoiceRecording: (fromComposerKey: string, toComposerKey: string) => void;
-  sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
+  sessionReloadSignals: Record<string, number>;
   sessionBusySignals: Record<string, number>;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   sessionHistorySignals: Record<string, number>;
@@ -2328,7 +2279,7 @@ function SessionRoute({
   const isDraft = sessionId === null;
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
   const sessionModelQuery = useSessionModelQuery(sessionId);
-  const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
+  const sessionReloadToken = sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
   const historySignal = sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0;
   const activeSession = sessions.find((s) => s.sessionId === sessionId);
@@ -2550,8 +2501,7 @@ function SessionRoute({
       onClearVoiceJobError={clearVoiceJobError}
       onDiscardVoiceRecording={discardVoiceRecording}
       onRetryVoiceJobUpload={retryVoiceJobUpload}
-      reloadToken={sessionReload?.token ?? 0}
-      reloadMcpServers={sessionReload?.servers}
+      reloadToken={sessionReloadToken}
       busySignal={busySignal}
       historySignal={historySignal}
       activeSessionActivityAt={activeSessionActivityAt}

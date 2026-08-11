@@ -774,7 +774,7 @@ describe("SessionManager bounded session lifecycle", () => {
     const { manager } = createManager();
     manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedContexts = 1;
-    manager.modelSwitchingSessions.add("switching");
+    manager.sessionOverlayBusyReasons.set("switching", "model-switching");
 
     const switchingLease = await manager.beginSessionResume(
       "switching",
@@ -782,7 +782,7 @@ describe("SessionManager bounded session lifecycle", () => {
     );
 
     manager.endSessionResume(switchingLease);
-    manager.modelSwitchingSessions.delete("switching");
+    manager.sessionOverlayBusyReasons.delete("switching");
   });
 
   it("rejects concurrent and queued duplicate resumes for the same session id", async () => {
@@ -878,7 +878,7 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.sessionObjects.set("switching", switching);
     manager.sessionRuns.set("active", { state: "busy", startedAt: Date.now(), lastEventAt: Date.now() });
     manager.resumingSessions.set("resuming", 1);
-    manager.modelSwitchingSessions.add("switching");
+    manager.sessionOverlayBusyReasons.set("switching", "model-switching");
 
     await manager.cacheResumedSession("new", fakeSession());
     expect(manager.sessionObjects.size).toBe(4);
@@ -886,7 +886,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
     manager.sessionRuns.delete("active");
     manager.resumingSessions.clear();
-    manager.modelSwitchingSessions.clear();
+    manager.sessionOverlayBusyReasons.clear();
     await manager.trimSessionCache("test protection ended");
     await manager._drainCacheQueue();
 

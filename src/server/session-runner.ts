@@ -125,6 +125,91 @@ export interface McpServerStatus {
   source?: string;
 }
 
+export interface McpStatusSnapshot {
+  servers: McpServerStatus[];
+  complete: boolean;
+}
+
+const MCP_SERVER_STATUS_VALUES = new Set<McpServerStatus["status"]>([
+  "connected", "failed", "needs-auth", "pending", "disabled", "not_configured", "unknown",
+]);
+
+export function coerceMcpServerStatus(value: unknown): McpServerStatus["status"] {
+  if (typeof value === "string" && MCP_SERVER_STATUS_VALUES.has(value as McpServerStatus["status"])) {
+    return value as McpServerStatus["status"];
+  }
+  return "unknown";
+}
+
+function optionalNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+export function normalizeMcpServerStatuses(value: unknown): McpServerStatus[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const server = entry as Record<string, unknown>;
+    const name = optionalNonEmptyString(server.name);
+    if (!name) return [];
+    return [{
+      name,
+      status: coerceMcpServerStatus(server.status),
+      ...(optionalNonEmptyString(server.error) ? { error: optionalNonEmptyString(server.error) } : {}),
+      ...(optionalNonEmptyString(server.source) ? { source: optionalNonEmptyString(server.source) } : {}),
+    }];
+  });
+}
+
+export function mergeMcpServerStatuses(
+  base: McpServerStatus[],
+  updates: McpServerStatus[],
+): McpServerStatus[] {
+  const merged = new Map(base.map((server) => [server.name, server]));
+  for (const server of updates) merged.set(server.name, server);
+  return [...merged.values()];
+}
+
+export function applyMcpServerStatusChange(
+  snapshot: McpStatusSnapshot | undefined,
+  value: unknown,
+): {
+  snapshot: McpStatusSnapshot;
+  name?: string;
+  status: McpServerStatus["status"];
+  previousStatus?: McpServerStatus["status"];
+} {
+  const data = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const name = optionalNonEmptyString(data.serverName);
+  const status = coerceMcpServerStatus(data.status);
+  if (!name) {
+    return {
+      snapshot: snapshot ?? { servers: [], complete: false },
+      status,
+    };
+  }
+
+  const previous = snapshot?.servers.find((server) => server.name === name);
+  const next: McpServerStatus = {
+    name,
+    status,
+    ...(optionalNonEmptyString(data.error) ? { error: optionalNonEmptyString(data.error) } : {}),
+    ...(optionalNonEmptyString(data.source) ? { source: optionalNonEmptyString(data.source) } : {}),
+  };
+  return {
+    snapshot: {
+      servers: mergeMcpServerStatuses(snapshot?.servers ?? [], [{
+        ...previous,
+        ...next,
+      }]),
+      complete: snapshot?.complete ?? false,
+    },
+    name,
+    status,
+    ...(previous ? { previousStatus: previous.status } : {}),
+  };
+}
+
 export type SessionAttentionMode = "normal" | "quiet";
 
 export interface CompletionAttentionOptions {
@@ -190,7 +275,7 @@ export interface SessionRunnerDeps {
   /** Shared cache of CopilotSession objects (owned by SessionManager). */
   sessionObjects: Map<string, any>;
   /** Shared per-session MCP status cache (owned by SessionManager). */
-  mcpStatus: Map<string, McpServerStatus[]>;
+  mcpStatus: Map<string, McpStatusSnapshot>;
   /** Shared map of in-flight run controllers (owned by SessionManager). */
   activeRunControllers: Map<string, SessionRunController>;
   runStateController: SessionRunStateController;
@@ -1497,13 +1582,8 @@ export class SessionRunner {
           break;
         }
         case "session.mcp_servers_loaded": {
-          const servers: McpServerStatus[] = (data?.servers ?? []).map((s: any) => ({
-            name: s.name,
-            status: s.status ?? "unknown",
-            error: s.error,
-            source: s.source,
-          }));
-          this.deps.mcpStatus.set(sessionId, servers);
+          const servers = normalizeMcpServerStatuses(data?.servers);
+          this.deps.mcpStatus.set(sessionId, { servers, complete: true });
           const failed = servers.filter((s) => s.status === "failed");
           if (failed.length > 0) {
             console.warn(`[sdk] [${sid}] ⚠️ MCP failures: ${failed.map((s) => `${s.name} (${s.error ?? "unknown"})`).join(", ")}`);
@@ -1513,18 +1593,9 @@ export class SessionRunner {
           break;
         }
         case "session.mcp_server_status_changed": {
-          const current = this.deps.mcpStatus.get(sessionId) ?? [];
-          const name = data?.serverName;
-          const status = data?.status ?? "unknown";
-          const existing = current.find((s) => s.name === name);
-          const previousStatus = existing?.status;
-          if (existing) {
-            existing.status = status;
-            if (data?.error) existing.error = data.error;
-          } else if (name) {
-            current.push({ name, status, error: data?.error, source: data?.source });
-          }
-          this.deps.mcpStatus.set(sessionId, current);
+          const update = applyMcpServerStatusChange(this.deps.mcpStatus.get(sessionId), data);
+          const { name, status, previousStatus } = update;
+          this.deps.mcpStatus.set(sessionId, update.snapshot);
           if (
             context.origin === "live"
             && previousStatus === "connected"
@@ -1534,7 +1605,7 @@ export class SessionRunner {
             this.deps.deferMcpStatusSessionEviction(sessionId, "mcp_status_connected_to_not_configured");
           }
           console.log(`[sdk] [${sid}] 🔌 MCP ${name}: ${status}${data?.error ? ` — ${data.error}` : ""}`);
-          bus.emit({ type: "mcp_status", servers: current });
+          bus.emit({ type: "mcp_status", servers: update.snapshot.servers });
           break;
         }
         default:
@@ -1581,8 +1652,8 @@ export class SessionRunner {
     };
 
     const cachedMcp = this.deps.mcpStatus.get(sessionId);
-    if (cachedMcp?.length) {
-      bus.emit({ type: "mcp_status", servers: cachedMcp });
+    if (cachedMcp?.complete || cachedMcp?.servers.length) {
+      bus.emit({ type: "mcp_status", servers: cachedMcp.servers });
     }
     publishContextSummary(this.deps.sessionContextStore?.getSummary(sessionId) ?? null);
 

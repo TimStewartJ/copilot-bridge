@@ -317,10 +317,18 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(wrapped.getCurrentModel!()).resolves.toBeUndefined();
 
-    const getCurrent = vi.fn(async () => ({ modelId: "gpt-5" }));
+    const getCurrent = vi.fn(async () => ({
+      modelId: "gpt-5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    }));
     const session2 = createFakeSession({ model: { getCurrent } });
     const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
-    await expect(wrapped2.getCurrentModel!()).resolves.toEqual({ modelId: "gpt-5" });
+    await expect(wrapped2.getCurrentModel!()).resolves.toEqual({
+      modelId: "gpt-5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
     }
 
     // truncateHistory returns undefined when rpc.history.truncate is missing
