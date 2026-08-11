@@ -148,6 +148,7 @@ export default function ModelFamilyPicker({
   selectedModelId,
   selectedFamily,
   globalDefaultModelId,
+  allowUnselected = false,
   disabled = false,
   idPrefix,
   onSelectFamily,
@@ -157,6 +158,7 @@ export default function ModelFamilyPicker({
   selectedModelId: string;
   selectedFamily?: ModelFamily;
   globalDefaultModelId?: string;
+  allowUnselected?: boolean;
   disabled?: boolean;
   idPrefix: string;
   onSelectFamily: (family: ModelFamily) => void;
@@ -172,6 +174,11 @@ export default function ModelFamilyPicker({
     selectedFamily,
     globalDefaultModelId,
   });
+  const hasResolvedSelection = selectedModelId
+    ? models.some((model) => model.id === selectedModelId)
+    : selectedFamily
+      ? state.modelsByFamily[selectedFamily].length > 0
+      : Boolean(globalDefaultModelId && models.some((model) => model.id === globalDefaultModelId));
 
   useEffect(() => {
     if (!openFamily) return;
@@ -199,7 +206,7 @@ export default function ModelFamilyPicker({
         const unavailable = !tile.model;
         const tileDisabled = disabled || unavailable;
         const open = openFamily === tile.family;
-        const live = tile.isLive && !unavailable;
+        const live = tile.isLive && !unavailable && (!allowUnselected || hasResolvedSelection);
         return (
           <div
             key={tile.family}

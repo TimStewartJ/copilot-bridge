@@ -31,6 +31,11 @@ describe("voice recording store", () => {
       submitMode: "autosend",
       audio: audioBuffer("hello"),
       mimeType: "audio/wav",
+      sessionOptions: {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        contextTier: "long_context",
+      },
     });
 
     // No IndexedDB in the test environment, so the store falls back to memory and says so.
@@ -44,6 +49,11 @@ describe("voice recording store", () => {
       submitMode: "autosend",
       mimeType: "audio/wav",
       sizeBytes: 5,
+      sessionOptions: {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        contextTier: "long_context",
+      },
     });
     expect(pendingVoiceRecordingToBlob(stored!).size).toBe(5);
   });

@@ -6,6 +6,7 @@ import {
   markVoiceJobRecovered,
   transcribeAudio,
   type Attachment,
+  type CreateSessionOptions,
   type VoiceJobStatusResponse,
 } from "../api";
 import { getTaskIdFromDraftComposerKey, isDraftComposerKey } from "../lib/composer-key";
@@ -58,6 +59,8 @@ export interface VoiceBackgroundJob {
   restored?: boolean;
   /** Set when the audio could not be written to durable client storage. */
   persistWarning?: string;
+  /** Session configuration captured when a draft autosend recording started. */
+  sessionOptions?: CreateSessionOptions;
 }
 
 /** A voice job that is still in flight, narrowed away from the terminal `error` status. */
@@ -75,6 +78,7 @@ export interface StartBackgroundVoiceJobOptions {
   composerKey: string;
   audio: Blob;
   submitMode: VoiceSubmitMode;
+  sessionOptions?: CreateSessionOptions;
 }
 
 interface UseBackgroundVoiceJobsOptions {
@@ -383,7 +387,7 @@ export function useBackgroundVoiceJobs({
   const markError = useCallback((
     composerKey: string,
     message: string,
-    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning">>,
+    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning" | "sessionOptions">>,
   ) => {
     const nextJob: VoiceBackgroundJob = {
       composerKey,
@@ -629,7 +633,12 @@ export function useBackgroundVoiceJobs({
     }, SERVER_POLL_DELAY_MS);
   }, [applyServerSnapshot, clearJob, findDisplayKeyForServerJob, stopPolling]);
 
-  const startServerAutoSendJob = useCallback((composerKey: string, audio: Blob, recordingId?: string) => {
+  const startServerAutoSendJob = useCallback((
+    composerKey: string,
+    audio: Blob,
+    recordingId?: string,
+    sessionOptions?: CreateSessionOptions,
+  ) => {
     clearUploadTracking(composerKey);
     const controller = new AbortController();
     const existingSessionComposer = !isDraftComposerKey(composerKey);
@@ -647,6 +656,7 @@ export function useBackgroundVoiceJobs({
       serverOwned: true,
       originComposerKey: composerKey,
       persistWarning: persistWarningsRef.current[composerKey],
+      ...(sessionOptions ? { sessionOptions } : {}),
     });
     if (existingSessionComposer) {
       optionsRef.current.onVoiceSessionActivity?.({
@@ -663,6 +673,7 @@ export function useBackgroundVoiceJobs({
             composerKey,
             sessionId: isDraftComposerKey(composerKey) ? undefined : composerKey,
             taskId: getTaskIdFromDraftComposerKey(composerKey),
+            ...(isDraftComposerKey(composerKey) && sessionOptions ? { sessionOptions } : {}),
           },
           audio,
           { signal: controller.signal },
@@ -695,6 +706,7 @@ export function useBackgroundVoiceJobs({
           retryable: true,
           serverOwned: true,
           originComposerKey: composerKey,
+          ...(sessionOptions ? { sessionOptions } : {}),
         });
       }
     };
@@ -710,6 +722,7 @@ export function useBackgroundVoiceJobs({
     composerKey,
     audio,
     submitMode,
+    sessionOptions,
   }: StartBackgroundVoiceJobOptions) => {
     const effectiveSubmitMode = resolveBackgroundVoiceSubmitMode({
       submitMode,
@@ -728,6 +741,7 @@ export function useBackgroundVoiceJobs({
         submitMode: effectiveSubmitMode,
         audio: await audio.arrayBuffer(),
         mimeType: audio.type || "audio/wav",
+        ...(sessionOptions ? { sessionOptions } : {}),
       });
     } catch {
       persistResult = { durable: false, reason: "unavailable" };
@@ -753,7 +767,7 @@ export function useBackgroundVoiceJobs({
     if (effectiveSubmitMode === "insert") {
       startLocalInsertJob(composerKey, audio, recordingId);
     } else {
-      startServerAutoSendJob(composerKey, audio, recordingId);
+      startServerAutoSendJob(composerKey, audio, recordingId, sessionOptions);
     }
   }, [draftHasContent, markError, startLocalInsertJob, startServerAutoSendJob]);
 
@@ -813,6 +827,9 @@ export function useBackgroundVoiceJobs({
             retryable: true,
             serverOwned: existing.serverOwned,
             serverJobId: knownServerJobId,
+            ...((record?.sessionOptions ?? existing.sessionOptions)
+              ? { sessionOptions: record?.sessionOptions ?? existing.sessionOptions }
+              : {}),
           });
           return;
         }
@@ -832,7 +849,12 @@ export function useBackgroundVoiceJobs({
 
       const retrySubmitMode = record?.submitMode ?? existing.submitMode;
       if (retrySubmitMode === "autosend") {
-        startServerAutoSendJob(composerKey, retainedAudio, recordingId);
+        startServerAutoSendJob(
+          composerKey,
+          retainedAudio,
+          recordingId,
+          record?.sessionOptions ?? existing.sessionOptions,
+        );
       } else {
         startLocalInsertJob(composerKey, retainedAudio, recordingId);
       }
@@ -899,6 +921,7 @@ export function useBackgroundVoiceJobs({
                 : RESTORED_RECORDING_MESSAGE,
               retryable: true,
               restored: true,
+              ...(record.sessionOptions ? { sessionOptions: record.sessionOptions } : {}),
             });
           }
           return;

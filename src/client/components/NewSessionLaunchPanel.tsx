@@ -51,6 +51,9 @@ export default function NewSessionLaunchPanel({
   onModeChange,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
+  const hasResolvedModelSelection = Boolean(
+    selectedModelId && availableModels.some((model) => model.id === selectedModelId),
+  );
 
   return (
     <div className="flex flex-1 items-center justify-center px-4 py-8">
@@ -75,6 +78,7 @@ export default function NewSessionLaunchPanel({
                 selectedModelId={selectedModelId}
                 selectedFamily={selectedModelFamily}
                 globalDefaultModelId={defaultModelId}
+                allowUnselected
                 disabled={Boolean(modelsError)}
                 onSelectFamily={onModelFamilyChange}
                 onSelectModel={onModelChange}
@@ -82,26 +86,44 @@ export default function NewSessionLaunchPanel({
             )}
             {modelsError && (
               <p className="text-xs text-error" role="alert">
-                Models could not be loaded. The default model will be used.
+                Models could not be loaded. The server will resolve the launch model when this chat starts.
+              </p>
+            )}
+            {!modelsLoading && !modelsError && !hasResolvedModelSelection && (
+              <p className="text-xs text-text-faint">
+                No concrete default model is available. Choose one to override the server selection.
               </p>
             )}
           </div>
 
-          <LaunchOptionRow
-            ariaLabel="Effort for new session"
-            options={reasoningEffortOptions}
-            selectedValue={selectedReasoningEffort}
-            onChange={(value) => onReasoningEffortChange(value ?? undefined)}
-            allowDefaultSelection
-          />
+          {reasoningEffortOptions.length > 0 && (
+            <div className="space-y-1.5">
+              <LaunchOptionRow
+                ariaLabel="Effort for new session"
+                options={reasoningEffortOptions}
+                selectedValue={selectedReasoningEffort}
+                onChange={(value) => {
+                  if (value) onReasoningEffortChange(value);
+                }}
+              />
+              {!selectedReasoningEffort && (
+                <p className="text-xs text-text-faint">
+                  The SDK does not report this model&apos;s default effort. Choose a level to override it.
+                </p>
+              )}
+            </div>
+          )}
 
-          <LaunchOptionRow
-            ariaLabel="Context for new session"
-            options={contextOptions}
-            selectedValue={selectedContextTier}
-            onChange={(value) => onContextTierChange(value ?? undefined)}
-            allowDefaultSelection
-          />
+          {contextOptions.length > 0 && (
+            <LaunchOptionRow
+              ariaLabel="Context for new session"
+              options={contextOptions}
+              selectedValue={selectedContextTier}
+              onChange={(value) => {
+                if (value) onContextTierChange(value);
+              }}
+            />
+          )}
 
           <div className="space-y-1.5">
             <LaunchOptionRow

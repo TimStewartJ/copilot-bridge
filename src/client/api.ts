@@ -2056,6 +2056,7 @@ export interface CreateVoiceJobRequest {
   composerKey: string;
   sessionId?: string;
   taskId?: string;
+  sessionOptions?: CreateSessionOptions;
 }
 
 export async function fetchTranscriptionStatus(): Promise<TranscriptionStatus> {
@@ -2087,6 +2088,7 @@ export async function createVoiceJob(
   form.append("composerKey", request.composerKey);
   if (request.sessionId) form.append("sessionId", request.sessionId);
   if (request.taskId) form.append("taskId", request.taskId);
+  if (request.sessionOptions) form.append("sessionOptions", JSON.stringify(request.sessionOptions));
 
   const res = await fetch(`${API_BASE}/api/voice-jobs`, {
     method: "POST",

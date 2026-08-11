@@ -1114,12 +1114,35 @@ export function createApiRouter(
       const composerKey = String(req.body?.composerKey ?? "").trim();
       const taskId = String(req.body?.taskId ?? "").trim() || undefined;
       const sessionId = String(req.body?.sessionId ?? "").trim() || undefined;
+      const rawSessionOptions = String(req.body?.sessionOptions ?? "").trim();
       if (!composerKey) {
         await cleanupTranscriptionUpload(req);
         return res.status(400).json({ error: "composerKey is required" });
       }
 
       try {
+        let sessionOptions: {
+          model?: string;
+          reasoningEffort?: string;
+          contextTier?: CopilotContextTier;
+        } | undefined;
+        if (rawSessionOptions) {
+          if (sessionId) {
+            return res.status(400).json({ error: "sessionOptions only apply when creating a draft session" });
+          }
+          let parsedSessionOptions: unknown;
+          try {
+            parsedSessionOptions = JSON.parse(rawSessionOptions);
+          } catch {
+            return res.status(400).json({ error: "sessionOptions must be valid JSON" });
+          }
+          const resolved = await resolveSessionCreationOptions(parsedSessionOptions);
+          if (resolved.error) {
+            return res.status(resolved.status ?? 400).json({ error: resolved.error });
+          }
+          sessionOptions = resolved.options;
+        }
+
         const status = transcriptionService.getStatus();
         if (!status.available) {
           return res.status(503).json({ error: status.reason ?? "Voice input is unavailable." });
@@ -1136,6 +1159,7 @@ export function createApiRouter(
           targetSessionId: sessionId,
           sourceFilePath: req.file.path,
           originalFilename: req.file.originalname,
+          ...(sessionOptions && Object.keys(sessionOptions).length > 0 ? { sessionOptions } : {}),
         });
         return res.status(202).json(job);
       } catch (error) {
