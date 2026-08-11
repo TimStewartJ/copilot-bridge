@@ -15,6 +15,7 @@ import {
   DEFAULT_COPILOT_USAGE_RANGE,
   type CopilotUsageRangeKey,
 } from "../../../shared/copilot-usage-range";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../../shared/copilot-usage";
 import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing";
 import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
@@ -107,7 +108,7 @@ export function CopilotUsageSection() {
   const busy = refreshing || indexing || (isLoading && !data);
   const isEmpty = Boolean(data && data.models.length === 0 && data.coverage.sessionsIncluded === 0);
   const isRanged = Boolean(data?.range.startAt);
-  // GitHub's own per-model metering. Older session logs predate the field, so a
+  // GitHub's own session metering. Older session logs predate the field, so a
   // range can be partially metered; the estimate stays the headline and the
   // metered figure carries its own coverage so it is never read as complete.
   const meteredAiCredits = data?.totals.meteredAiCredits ?? 0;
@@ -175,7 +176,7 @@ export function CopilotUsageSection() {
         />
 
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-          Metered cost is what GitHub actually billed, read from each session log, and only covers sessions recent enough to carry that field. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded.
+          Metered cost is what GitHub actually billed, read from each session log, and only covers sessions recent enough to carry that field. Cost that GitHub did not assign to a named model appears as Unattributed. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded.
         </div>
 
         {data && indexing && (
@@ -328,7 +329,8 @@ export function CopilotUsageSection() {
                         <th className="px-4 py-3 text-right font-medium">Sessions</th>
                         <th className="px-4 py-3 text-right font-medium">Requests</th>
                         <th className="px-4 py-3 text-right font-medium">Est. cost</th>
-                        <th className="px-4 py-3 text-right font-medium">AI credits</th>
+                        <th className="px-4 py-3 text-right font-medium">Est. credits</th>
+                        <th className="px-4 py-3 text-right font-medium">Metered credits</th>
                         <th className="px-4 py-3 text-right font-medium">Pricing</th>
                         <th className="px-4 py-3 text-right font-medium">Total tokens</th>
                         <th className="px-4 py-3 text-right font-medium">Input</th>
@@ -552,6 +554,9 @@ function ModelRow({ row }: { row: CopilotUsageModelRow }) {
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.requests)}</td>
       <td className="px-4 py-3 text-right font-medium text-text-primary">{formatCurrencyUsd(row.estimatedCostUsd)}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatAiCredits(row.estimatedAiCredits)}</td>
+      <td className="px-4 py-3 text-right text-text-muted">
+        {row.meteredAiCredits > 0 || row.meteredTokens > 0 ? formatAiCredits(row.meteredAiCredits) : "—"}
+      </td>
       <PricingStatusCell row={row} />
       <td className="px-4 py-3 text-right font-medium text-text-primary">{formatNumber(row.totalTokens)}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.inputTokens)}</td>
@@ -564,6 +569,19 @@ function ModelRow({ row }: { row: CopilotUsageModelRow }) {
 }
 
 function PricingStatusCell({ row }: { row: CopilotUsageModelRow }) {
+  if (row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL) {
+    return (
+      <td className="px-4 py-3 text-right text-text-muted">
+        <div className="flex flex-col items-end gap-1">
+          <span className="rounded-full bg-bg-primary px-2 py-0.5 text-[11px] font-medium text-text-secondary">
+            Not model-attributed
+          </span>
+          <span className="text-[11px] text-text-faint">metered total only</span>
+        </div>
+      </td>
+    );
+  }
+
   const pricedAs = row.pricedAs ?? row.pricingKey;
   const showPricedAs = Boolean(pricedAs && pricedAs !== row.model);
 

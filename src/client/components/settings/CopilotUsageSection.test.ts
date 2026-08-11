@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CopilotQuotaStatus, CopilotUsageCostEstimate, CopilotUsageSummary } from "../../api";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../../shared/copilot-usage";
 import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import {
@@ -326,6 +327,73 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("unknown-model");
     expect(text).toContain("Exact public price");
     expect(text).toContain("Unpriced");
+  });
+
+  it("shows unattributed GitHub metering separately from estimated model credits", () => {
+    const html = renderSection(createUsageSummary({
+      totals: {
+        ...createUsageTotals({
+          inputTokens: 100,
+          totalTokens: 100,
+          meteredAiCredits: 223.45,
+          meteredTokens: 100,
+        }),
+        ...createCostEstimate(),
+        unpricedModelCount: 0,
+        unpricedTokens: createUsageTotals(),
+      },
+      coverage: {
+        sessionsSeen: 1,
+        sessionsWithEvents: 1,
+        sessionsIncluded: 1,
+        sessionsSkipped: 0,
+        skippedByReason: {
+          no_events: 0,
+          no_shutdown: 0,
+          empty_model_metrics: 0,
+          parse_error: 0,
+        },
+        earliestIncludedAt: NOW,
+        latestIncludedAt: NOW,
+        earliestSkippedAt: null,
+        latestSkippedAt: null,
+      },
+      models: [
+        {
+          model: "gpt-5.4",
+          sessions: 1,
+          ...createUsageTotals({
+            inputTokens: 100,
+            totalTokens: 100,
+            meteredAiCredits: 100,
+            meteredTokens: 100,
+          }),
+          ...createCostEstimate(),
+          pricingKey: "gpt-5.4",
+          pricedAs: "gpt-5.4",
+          pricingStatus: "exact",
+          normalizedPricingModel: "gpt-5.4",
+        },
+        {
+          model: COPILOT_USAGE_UNATTRIBUTED_MODEL,
+          sessions: 1,
+          ...createUsageTotals({ meteredAiCredits: 123.45 }),
+          ...createCostEstimate(),
+          pricingKey: null,
+          pricedAs: null,
+          pricingStatus: "unpriced",
+          normalizedPricingModel: "unattributed",
+        },
+      ],
+    }));
+    const text = html.replace(/<!-- -->/g, "");
+
+    expect(text).toContain("Metered credits");
+    expect(text).toContain(COPILOT_USAGE_UNATTRIBUTED_MODEL);
+    expect(text).toContain("123.45");
+    expect(text).toContain("Not model-attributed");
+    expect(text).toContain("metered total only");
+    expect(text).not.toContain("Unknown pricing excluded from cost totals");
   });
 
   it("renders every range button with all time selected by default", () => {

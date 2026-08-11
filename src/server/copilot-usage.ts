@@ -24,6 +24,7 @@ import {
   type CopilotUsageRange,
   type CopilotUsageRangeKey,
 } from "../shared/copilot-usage-range.js";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage.js";
 import { BRIDGE_SESSION_MODEL_STATE_FILE } from "./session-model-state-sidecar.js";
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
@@ -208,12 +209,27 @@ interface AssistantUsageAccumulator {
   timestamp: string | null;
 }
 
+interface PendingMeteringDelta {
+  model: string;
+  contextTier: CopilotContextTier | undefined;
+  bucketDay: string | null;
+  meteredAiCredits: number;
+  fallbackMeteredTokens: number;
+  coveredTokens: number;
+}
+
+interface UndatedUsageDelta {
+  model: string;
+  contextTier: CopilotContextTier | undefined;
+  delta: CopilotUsageTotals;
+}
+
 const DEFAULT_SCAN_CONCURRENCY = 8;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 /** nanoAIU per AI credit. The CLI reports metered cost as `totalNanoAiu`. */
 const NANO_AIU_PER_AI_CREDIT = 1_000_000_000;
-export const COPILOT_USAGE_PARSER_VERSION = 4;
+export const COPILOT_USAGE_PARSER_VERSION = 5;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -510,7 +526,8 @@ function hasUsageTotals(totals: CopilotUsageTotals): boolean {
     || totals.outputTokens > 0
     || totals.cacheReadTokens > 0
     || totals.cacheWriteTokens > 0
-    || totals.reasoningTokens > 0;
+    || totals.reasoningTokens > 0
+    || totals.meteredAiCredits > 0;
 }
 
 export async function scanCopilotUsageSession(
@@ -541,7 +558,11 @@ export async function scanCopilotUsageSession(
     selectedModel = persistedState.model;
     selectedContextTier = persistedState.contextTier;
   }
-  const usableShutdowns: Array<{ shutdownAt: string | null; modelMetrics: Record<string, unknown> }> = [];
+  const usableShutdowns: Array<{
+    shutdownAt: string | null;
+    modelMetrics: Record<string, unknown>;
+    topLevelMeteredAiCredits: number | null;
+  }> = [];
   const assistantUsageByRequest = new Map<string, AssistantUsageAccumulator>();
   let fallbackEventIndex = 0;
   const stream = createReadStream(eventsPath, { encoding: "utf-8" });
@@ -621,8 +642,13 @@ export async function scanCopilotUsageSession(
       latestShutdownAt = eventAt ?? latestShutdownAt;
 
       const modelMetrics = asRecord(data?.modelMetrics);
-      if (modelMetrics && Object.keys(modelMetrics).length > 0) {
-        usableShutdowns.push({ shutdownAt: eventAt, modelMetrics });
+      const topLevelMeteredAiCredits = extractMeteredAiCredits(data?.totalNanoAiu);
+      if ((modelMetrics && Object.keys(modelMetrics).length > 0) || (topLevelMeteredAiCredits ?? 0) > 0) {
+        usableShutdowns.push({
+          shutdownAt: eventAt,
+          modelMetrics: modelMetrics ?? {},
+          topLevelMeteredAiCredits,
+        });
       }
     }
   } catch {
@@ -647,14 +673,15 @@ export async function scanCopilotUsageSession(
   const modelTotals = new Map<string, CopilotUsageModelRow>();
   const previousCumulativeTotals = new Map<string, CopilotUsageTotals>();
   const dailyTotals = new Map<string, CopilotUsageDailyModelRow>();
-  const undatedDeltas: Array<{
-    model: string;
-    contextTier: CopilotContextTier | undefined;
-    delta: CopilotUsageTotals;
-  }> = [];
+  const undatedDeltas: UndatedUsageDelta[] = [];
   const includedShutdownAts: string[] = [];
   let lastDayKey: string | null = null;
   let firstDayKey: string | null = null;
+  const hasAuthoritativeMetering = usableShutdowns.some(
+    (shutdown) => shutdown.topLevelMeteredAiCredits !== null,
+  );
+  const pendingMeteringDeltas: PendingMeteringDelta[] = [];
+  let previousTopLevelMeteredAiCredits: number | undefined;
   for (const usableShutdown of usableShutdowns) {
     if (usableShutdown.shutdownAt) {
       includedShutdownAts.push(usableShutdown.shutdownAt);
@@ -665,18 +692,45 @@ export async function scanCopilotUsageSession(
       firstDayKey ??= dayKey;
     }
     const bucketDay = dayKey ?? lastDayKey;
+    const snapshotDeltas: Array<{
+      model: string;
+      contextTier: CopilotContextTier | undefined;
+      key: string;
+      delta: CopilotUsageTotals;
+    }> = [];
     for (const [modelName, metrics] of Object.entries(usableShutdown.modelMetrics)) {
       const model = modelName.trim() || "unknown";
       const contextTier = model === persistedState.model ? persistedState.contextTier : undefined;
       const key = usageModelKey(model, contextTier);
+      const cumulative = extractTotals(metrics);
+      const delta = diffCumulativeTotals(previousCumulativeTotals.get(key), cumulative);
+      previousCumulativeTotals.set(key, cumulative);
+      if (hasAuthoritativeMetering) {
+        pendingMeteringDeltas.push({
+          model,
+          contextTier,
+          bucketDay,
+          meteredAiCredits: delta.meteredAiCredits,
+          fallbackMeteredTokens: delta.meteredTokens,
+          coveredTokens: delta.totalTokens,
+        });
+      }
+      snapshotDeltas.push({
+        model,
+        contextTier,
+        key,
+        delta: hasAuthoritativeMetering
+          ? { ...delta, meteredAiCredits: 0, meteredTokens: 0 }
+          : delta,
+      });
+    }
+
+    for (const { model, contextTier, key, delta } of snapshotDeltas) {
       const existing = modelTotals.get(key) ?? createZeroModelRow(model, 0, contextTier);
       if (existing.sessions === 0) {
         existing.sessions = 1;
       }
-      const cumulative = extractTotals(metrics);
-      const delta = diffCumulativeTotals(previousCumulativeTotals.get(key), cumulative);
       addTotals(existing, delta);
-      previousCumulativeTotals.set(key, cumulative);
       modelTotals.set(key, existing);
       // Every shutdown snapshot repeats cumulative totals for every model the
       // session ever used, so idle models yield zero deltas. Bucketing those
@@ -688,7 +742,42 @@ export async function scanCopilotUsageSession(
         undatedDeltas.push({ model, contextTier, delta });
       }
     }
+
+    if (usableShutdown.topLevelMeteredAiCredits === null) continue;
+
+    const authoritativeDelta = previousTopLevelMeteredAiCredits === undefined
+      ? usableShutdown.topLevelMeteredAiCredits
+      : diffCumulativeMetric(
+          previousTopLevelMeteredAiCredits,
+          usableShutdown.topLevelMeteredAiCredits,
+        );
+    previousTopLevelMeteredAiCredits = usableShutdown.topLevelMeteredAiCredits;
+    const unattributedMeteredAiCredits = applyAuthoritativeMetering(
+      pendingMeteringDeltas,
+      authoritativeDelta,
+      modelTotals,
+      dailyTotals,
+      undatedDeltas,
+    );
+    pendingMeteringDeltas.length = 0;
+    addMeteringUsage(
+      modelTotals,
+      dailyTotals,
+      undatedDeltas,
+      COPILOT_USAGE_UNATTRIBUTED_MODEL,
+      undefined,
+      bucketDay,
+      unattributedMeteredAiCredits,
+      0,
+    );
   }
+
+  applyFallbackMetering(
+    pendingMeteringDeltas,
+    modelTotals,
+    dailyTotals,
+    undatedDeltas,
+  );
 
   // Usage recorded before the first timestamped shutdown is attributed to this
   // session's earliest known day. A session where no shutdown carries a
@@ -810,7 +899,7 @@ function applyCopilotUsageCostEstimates(
   for (const row of summary.models) {
     applyCostEstimateToModelRow(row, sdkModels);
     addCostEstimate(summaryCost, row);
-    if (row.pricingStatus === "unpriced") {
+    if (row.pricingStatus === "unpriced" && row.model !== COPILOT_USAGE_UNATTRIBUTED_MODEL) {
       addTotals(summaryUnpricedTokens, row);
       summaryUnpricedModels.push(createUnpricedModelReportRow(row));
     }
@@ -832,7 +921,7 @@ function applyCopilotUsageCostEstimates(
     for (const row of session.models) {
       applyCostEstimateToModelRow(row, sdkModels);
       addCostEstimate(sessionCost, row);
-      if (row.pricingStatus === "unpriced") {
+      if (row.pricingStatus === "unpriced" && row.model !== COPILOT_USAGE_UNATTRIBUTED_MODEL) {
         sessionUnpricedModels.push(createUnpricedModelReportRow(row));
       }
     }
@@ -1108,7 +1197,7 @@ function extractTotals(value: unknown): CopilotUsageTotals {
     cacheWriteTokens,
     reasoningTokens: toNumber(usageRecord?.reasoningTokens),
     totalTokens: 0,
-    meteredAiCredits: toNumber(metricRecord?.totalNanoAiu) / NANO_AIU_PER_AI_CREDIT,
+    meteredAiCredits: extractMeteredAiCredits(metricRecord?.totalNanoAiu) ?? 0,
     meteredTokens: 0,
   };
   totals.totalTokens = sumBilledTokens(totals);
@@ -1118,8 +1207,7 @@ function extractTotals(value: unknown): CopilotUsageTotals {
 
 /** True when this snapshot carries GitHub's metered cost field at all. */
 function hasMeteredCost(metricRecord: Record<string, unknown> | null | undefined): boolean {
-  const value = metricRecord?.totalNanoAiu;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return extractMeteredAiCredits(metricRecord?.totalNanoAiu) !== null;
 }
 
 /**
@@ -1156,7 +1244,8 @@ function sumBilledTokens(totals: Omit<CopilotUsageTotals, "totalTokens">): numbe
     + totals.outputTokens;
 }
 
-function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {  target.requests += delta.requests;
+function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {
+  target.requests += delta.requests;
   target.inputTokens += delta.inputTokens;
   target.uncachedInputTokens += delta.uncachedInputTokens;
   target.outputTokens += delta.outputTokens;
@@ -1196,6 +1285,84 @@ function diffCumulativeTotals(
 // A decrease means the counter restarted, so the snapshot itself is the new progress.
 function diffCumulativeMetric(previous: number, current: number): number {
   return current >= previous ? current - previous : current;
+}
+
+function applyAuthoritativeMetering(
+  rows: readonly PendingMeteringDelta[],
+  authoritativeMeteredAiCredits: number,
+  modelTotals: Map<string, CopilotUsageModelRow>,
+  dailyTotals: Map<string, CopilotUsageDailyModelRow>,
+  undatedDeltas: UndatedUsageDelta[],
+): number {
+  const attributedMeteredAiCredits = rows.reduce(
+    (total, row) => total + row.meteredAiCredits,
+    0,
+  );
+  const scale = attributedMeteredAiCredits > authoritativeMeteredAiCredits
+    && attributedMeteredAiCredits > 0
+    ? authoritativeMeteredAiCredits / attributedMeteredAiCredits
+    : 1;
+  for (const row of rows) {
+    addMeteringUsage(
+      modelTotals,
+      dailyTotals,
+      undatedDeltas,
+      row.model,
+      row.contextTier,
+      row.bucketDay,
+      row.meteredAiCredits * scale,
+      row.coveredTokens,
+    );
+  }
+
+  return Math.max(0, authoritativeMeteredAiCredits - attributedMeteredAiCredits);
+}
+
+function applyFallbackMetering(
+  rows: readonly PendingMeteringDelta[],
+  modelTotals: Map<string, CopilotUsageModelRow>,
+  dailyTotals: Map<string, CopilotUsageDailyModelRow>,
+  undatedDeltas: UndatedUsageDelta[],
+): void {
+  for (const row of rows) {
+    addMeteringUsage(
+      modelTotals,
+      dailyTotals,
+      undatedDeltas,
+      row.model,
+      row.contextTier,
+      row.bucketDay,
+      row.meteredAiCredits,
+      row.fallbackMeteredTokens,
+    );
+  }
+}
+
+function addMeteringUsage(
+  modelTotals: Map<string, CopilotUsageModelRow>,
+  dailyTotals: Map<string, CopilotUsageDailyModelRow>,
+  undatedDeltas: UndatedUsageDelta[],
+  model: string,
+  contextTier: CopilotContextTier | undefined,
+  bucketDay: string | null,
+  meteredAiCredits: number,
+  meteredTokens: number,
+): void {
+  if (meteredAiCredits <= 0 && meteredTokens <= 0) return;
+  const delta = {
+    ...createZeroTotals(),
+    meteredAiCredits,
+    meteredTokens,
+  };
+  const key = usageModelKey(model, contextTier);
+  const existing = modelTotals.get(key) ?? createZeroModelRow(model, 1, contextTier);
+  addTotals(existing, delta);
+  modelTotals.set(key, existing);
+  if (bucketDay) {
+    addDailyUsage(dailyTotals, bucketDay, model, contextTier, delta);
+  } else {
+    undatedDeltas.push({ model, contextTier, delta });
+  }
 }
 
 function updateCoverageWindow(
@@ -1241,6 +1408,15 @@ function toNumber(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function extractMeteredAiCredits(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? parsed / NANO_AIU_PER_AI_CREDIT
+    : null;
 }
 
 function normalizeModelName(value: unknown): string | null {

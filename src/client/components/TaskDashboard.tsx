@@ -12,6 +12,7 @@ import type {
   TaskPatch,
 } from "../api";
 import { getSessionActivityTime } from "../api";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../shared/copilot-usage";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
@@ -1260,8 +1261,9 @@ function getUnpricedModelRows(row: CopilotUsageSessionRow): Array<CopilotUsageMo
   return (row.models ?? []).filter(isUnpricedUsageModel);
 }
 
-function isUnpricedUsageModel(model: Pick<CopilotUsageModelRow, "pricingStatus">): boolean {
-  return model.pricingStatus === "unpriced";
+function isUnpricedUsageModel(model: Pick<CopilotUsageModelRow, "model" | "pricingStatus">): boolean {
+  return model.pricingStatus === "unpriced"
+    && model.model !== COPILOT_USAGE_UNATTRIBUTED_MODEL;
 }
 
 function isFiniteNumber(value: unknown): value is number {
