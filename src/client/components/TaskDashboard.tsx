@@ -951,7 +951,7 @@ interface SessionUsageDayBucket extends CopilotUsageTotals, CopilotUsageCostEsti
   hasCostEstimate: boolean;
 }
 
-function buildSessionUsageAnalytics({
+export function buildSessionUsageAnalytics({
   taskSessionIds,
   linkedSessions,
   usageSessions,
@@ -990,20 +990,19 @@ function buildSessionUsageAnalytics({
       modelTotals.set(model.model, existing);
     }
 
-    const bucketKey = row.shutdownAt?.slice(0, 10);
-    if (bucketKey) {
-      const bucket = dayBuckets.get(bucketKey) ?? {
+    for (const day of row.days ?? []) {
+      const bucket = dayBuckets.get(day.date) ?? {
         ...ZERO_USAGE_TOTALS,
         ...createZeroCostEstimate(),
-        key: bucketKey,
-        label: formatDateLabel(row.shutdownAt!),
+        key: day.date,
+        label: formatUsageDayLabel(day.date),
         sessionIds: new Set<string>(),
         hasCostEstimate: false,
       };
-      addUsageTotals(bucket, row);
-      addUsageCostEstimate(bucket, row);
+      addUsageTotals(bucket, day);
+      addUsageCostEstimate(bucket, day);
       bucket.sessionIds.add(row.sessionId);
-      dayBuckets.set(bucketKey, bucket);
+      dayBuckets.set(day.date, bucket);
     }
   }
 
@@ -1104,6 +1103,16 @@ function formatDateTime(value: string): string {
 function formatDateLabel(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatUsageDayLabel(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return formatDateLabel(value);
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   return date.toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",

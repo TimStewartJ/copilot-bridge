@@ -61,6 +61,12 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     ...serializeCostEstimate(row),
     ...serializePricingMetadata(row),
   });
+  const serializeDayRow = (row: CopilotUsageSummary["days"][number]) => ({
+    date: row.date,
+    ...serializeTokenTotals(row),
+    ...serializeCostEstimate(row),
+    models: (row.models ?? []).map(serializeModelRow),
+  });
   const index = summary.index;
   if (!index) {
     throw new Error("Copilot usage index status is required for API serialization.");
@@ -111,12 +117,14 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
       latestSkippedAt: summary.coverage.latestSkippedAt,
     },
     models: (summary.models ?? []).map(serializeModelRow),
+    days: (summary.days ?? []).map(serializeDayRow),
     sessions: (summary.sessions ?? []).map((row) => ({
       sessionId: row.sessionId,
       shutdownAt: row.shutdownAt,
       ...serializeTokenTotals(row),
       ...serializeCostEstimate(row),
       models: (row.models ?? []).map(serializeModelRow),
+      days: (row.days ?? []).map(serializeDayRow),
       unpricedModels: (row.unpricedModels ?? []).map(serializeUnpricedModelRow),
     })),
     unpricedModels: (summary.unpricedModels ?? []).map(serializeUnpricedModelRow),

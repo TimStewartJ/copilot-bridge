@@ -245,6 +245,15 @@ describe("Copilot usage routes", () => {
       pricingStatus: "unpriced",
       normalizedPricingModel: "unknown-model",
     };
+    const dayRow = {
+      date: "2026-05-01",
+      ...aggregateTotals,
+      ...aggregateCostEstimate,
+      models: [
+        pricedModelRow,
+        unpricedModelRow,
+      ],
+    };
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -288,6 +297,7 @@ describe("Copilot usage routes", () => {
         pricedModelRow,
         unpricedModelRow,
       ],
+      days: [dayRow],
       sessions: [
         {
           sessionId: "usage-session",
@@ -298,6 +308,7 @@ describe("Copilot usage routes", () => {
             pricedModelRow,
             unpricedModelRow,
           ],
+          days: [dayRow],
           unpricedModels: [unpricedModelReportRow],
         },
       ],
@@ -848,6 +859,20 @@ describe("Copilot usage range filtering", () => {
       const all = await requestUsageUntil((body) => body.index.state === "idle");
       expect(all.body.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
       expect(all.body.totals.inputTokens).toBe(1_500);
+      expect(all.body.days.map((day) => ({
+        date: day.date,
+        inputTokens: day.inputTokens,
+      }))).toEqual([
+        { date: "2026-02-10", inputTokens: 300 },
+        { date: "2026-05-12", inputTokens: 1_200 },
+      ]);
+      expect(all.body.sessions[0].days.map((day) => ({
+        date: day.date,
+        inputTokens: day.inputTokens,
+      }))).toEqual([
+        { date: "2026-02-10", inputTokens: 300 },
+        { date: "2026-05-12", inputTokens: 1_200 },
+      ]);
 
       const mtd = await requestUsageUntil(
         (body) => body.index.state === "idle",
@@ -857,6 +882,12 @@ describe("Copilot usage range filtering", () => {
       expect(mtd.body.range.startDate).toBe("2026-05-01");
       expect(mtd.body.totals.inputTokens).toBe(1_200);
       expect(mtd.body.coverage.sessionsIncluded).toBe(1);
+      expect(mtd.body.days).toEqual([
+        expect.objectContaining({ date: "2026-05-12", inputTokens: 1_200 }),
+      ]);
+      expect(mtd.body.sessions[0].days).toEqual([
+        expect.objectContaining({ date: "2026-05-12", inputTokens: 1_200 }),
+      ]);
 
       const bogus = await requestUsageUntil(
         (body) => body.index.state === "idle",

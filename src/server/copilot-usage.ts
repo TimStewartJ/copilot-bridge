@@ -110,6 +110,7 @@ export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsage
   sessionId: string;
   shutdownAt: string | null;
   models: CopilotUsageModelRow[];
+  days?: CopilotUsageDayRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
@@ -121,6 +122,11 @@ export interface CopilotUsageDailyModelRow extends CopilotUsageTotals {
   date: string;
   model: string;
   contextTier?: CopilotContextTier;
+}
+
+export interface CopilotUsageDayRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  date: string;
+  models: CopilotUsageModelRow[];
 }
 
 export interface CopilotUsageCoverage {
@@ -158,6 +164,7 @@ export interface CopilotUsageSummary {
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
+  days: CopilotUsageDayRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
   index?: CopilotUsageIndexStatus;
@@ -279,6 +286,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
   const summary = createEmptySummary(now, resolvedRange);
   const requestedSessionIds = sessionIds ? new Set(sessionIds) : null;
   const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const dailyModelTotals = new Map<string, Map<string, CopilotUsageModelRow>>();
   const startDate = resolvedRange.startDate;
   const startAtMs = resolvedRange.startAt ? Date.parse(resolvedRange.startAt) : null;
   let resultCount = 0;
@@ -290,6 +298,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
       accumulateRangedSessionResult(result, {
         summary,
         modelTotals,
+        dailyModelTotals,
         requestedSessionIds,
         startDate,
         startAtMs,
@@ -300,16 +309,18 @@ export function buildCopilotUsageSummaryFromSessionResults({
     if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
 
     if (result.included) {
+      const dailyRows = (result.dailyRows ?? []).filter(hasUsageTotals);
       summary.coverage.sessionsIncluded += 1;
       for (const usageAt of result.includedUsageAts) {
         updateCoverageWindow(summary.coverage, "included", usageAt);
       }
       addTotals(summary.totals, result.totals);
+      addDailyModelRows(dailyModelTotals, dailyRows);
       if (
         result.sessionRow
         && (!requestedSessionIds || requestedSessionIds.has(result.sessionRow.sessionId))
       ) {
-        summary.sessions.push(cloneSessionRow(result.sessionRow));
+        summary.sessions.push(cloneSessionRow(result.sessionRow, dailyRows));
       }
 
       for (const row of result.modelRows) {
@@ -333,6 +344,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
     ? sessionsSeen ?? resultCount
     : summary.coverage.sessionsIncluded + summary.coverage.sessionsSkipped;
   summary.models = sortUsageModelRows([...modelTotals.values()]);
+  summary.days = createUsageDayRows(dailyModelTotals);
   summary.sessions.sort((left, right) => (
     compareNullableTimestampsDesc(left.shutdownAt, right.shutdownAt)
     || right.totalTokens - left.totalTokens
@@ -353,12 +365,20 @@ function accumulateRangedSessionResult(
   context: {
     summary: CopilotUsageSummary;
     modelTotals: Map<string, CopilotUsageModelRow>;
+    dailyModelTotals: Map<string, Map<string, CopilotUsageModelRow>>;
     requestedSessionIds: Set<string> | null;
     startDate: string;
     startAtMs: number | null;
   },
 ): void {
-  const { summary, modelTotals, requestedSessionIds, startDate, startAtMs } = context;
+  const {
+    summary,
+    modelTotals,
+    dailyModelTotals,
+    requestedSessionIds,
+    startDate,
+    startAtMs,
+  } = context;
 
   if (!result.included) {
     if (!isAtOrAfter(result.skippedAt, startAtMs)) return;
@@ -378,6 +398,7 @@ function accumulateRangedSessionResult(
   );
   if (dailyRows.length === 0) return;
 
+  addDailyModelRows(dailyModelTotals, dailyRows);
   summary.coverage.sessionsIncluded += 1;
   if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
 
@@ -414,6 +435,7 @@ function accumulateRangedSessionResult(
       sessionId,
       shutdownAt: maxTimestampFromList(inRangeUsageAts),
       models: sortUsageModelRows([...sessionModelRows.values()]),
+      days: createUsageDayRowsFromDailyRows(dailyRows),
       unpricedModels: [],
       ...sessionTotals,
       ...createZeroCostEstimate(),
@@ -428,6 +450,49 @@ function sortUsageModelRows(rows: CopilotUsageModelRow[]): CopilotUsageModelRow[
     || right.sessions - left.sessions
     || left.model.localeCompare(right.model)
   ));
+}
+
+function addDailyModelRows(
+  target: Map<string, Map<string, CopilotUsageModelRow>>,
+  rows: readonly CopilotUsageDailyModelRow[],
+): void {
+  for (const row of rows) {
+    const models = target.get(row.date) ?? new Map<string, CopilotUsageModelRow>();
+    const key = usageModelKey(row.model, row.contextTier);
+    const existing = models.get(key) ?? createZeroModelRow(row.model, 0, row.contextTier);
+    existing.sessions += 1;
+    addTotals(existing, row);
+    models.set(key, existing);
+    target.set(row.date, models);
+  }
+}
+
+function createUsageDayRowsFromDailyRows(
+  rows: readonly CopilotUsageDailyModelRow[],
+): CopilotUsageDayRow[] {
+  const dailyModelTotals = new Map<string, Map<string, CopilotUsageModelRow>>();
+  addDailyModelRows(dailyModelTotals, rows);
+  return createUsageDayRows(dailyModelTotals);
+}
+
+function createUsageDayRows(
+  dailyModelTotals: ReadonlyMap<string, Map<string, CopilotUsageModelRow>>,
+): CopilotUsageDayRow[] {
+  return [...dailyModelTotals.entries()]
+    .map(([date, models]) => {
+      const modelRows = sortUsageModelRows([...models.values()]);
+      const totals = createZeroTotals();
+      for (const row of modelRows) {
+        addTotals(totals, row);
+      }
+      return {
+        date,
+        models: modelRows,
+        ...totals,
+        ...createZeroCostEstimate(),
+      };
+    })
+    .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 function isAtOrAfter(value: string | null, startAtMs: number | null): boolean {
@@ -756,6 +821,10 @@ function applyCopilotUsageCostEstimates(
   summary.totals.unpricedTokens = summaryUnpricedTokens;
   summary.unpricedModels = summaryUnpricedModels;
 
+  for (const day of summary.days) {
+    applyCostEstimateToDayRow(day, sdkModels);
+  }
+
   for (const session of summary.sessions) {
     const sessionCost = createZeroCostEstimate();
     const sessionUnpricedModels: CopilotUsageUnpricedModelRow[] = [];
@@ -770,7 +839,22 @@ function applyCopilotUsageCostEstimates(
 
     assignCostEstimate(session, sessionCost);
     session.unpricedModels = sessionUnpricedModels;
+    for (const day of session.days ?? []) {
+      applyCostEstimateToDayRow(day, sdkModels);
+    }
   }
+}
+
+function applyCostEstimateToDayRow(
+  day: CopilotUsageDayRow,
+  sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
+): void {
+  const dayCost = createZeroCostEstimate();
+  for (const row of day.models) {
+    applyCostEstimateToModelRow(row, sdkModels);
+    addCostEstimate(dayCost, row);
+  }
+  assignCostEstimate(day, dayCost);
 }
 
 function applyCostEstimateToModelRow(
@@ -907,6 +991,7 @@ function createEmptySummary(now: () => number, range: CopilotUsageRange): Copilo
       latestSkippedAt: null,
     },
     models: [],
+    days: [],
     sessions: [],
     unpricedModels: [],
   };
@@ -1208,7 +1293,10 @@ function normalizeTimestamp(value: unknown): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-function cloneSessionRow(row: CopilotUsageSessionRow): CopilotUsageSessionRow {
+function cloneSessionRow(
+  row: CopilotUsageSessionRow,
+  dailyRows: readonly CopilotUsageDailyModelRow[],
+): CopilotUsageSessionRow {
   return {
     ...row,
     costBreakdownUsd: { ...row.costBreakdownUsd },
@@ -1216,6 +1304,7 @@ function cloneSessionRow(row: CopilotUsageSessionRow): CopilotUsageSessionRow {
       ...model,
       costBreakdownUsd: { ...model.costBreakdownUsd },
     })),
+    days: createUsageDayRowsFromDailyRows(dailyRows),
     unpricedModels: row.unpricedModels.map((model) => ({ ...model })),
   };
 }

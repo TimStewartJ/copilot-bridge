@@ -1635,10 +1635,16 @@ export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCo
   sessions: number;
 }
 
+export interface CopilotUsageDayRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  date: string;
+  models: CopilotUsageModelRow[];
+}
+
 export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
   sessionId: string;
   shutdownAt: string | null;
   models: CopilotUsageModelRow[];
+  days: CopilotUsageDayRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
@@ -1685,6 +1691,7 @@ export interface CopilotUsageSummary {
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
+  days: CopilotUsageDayRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
 }
