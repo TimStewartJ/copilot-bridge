@@ -60,7 +60,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 566,
+          "line": 579,
           "character": 55
         }
       ]
@@ -72,7 +72,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 1704,
+          "line": 1718,
           "character": 17
         }
       ]
@@ -84,7 +84,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 1708,
+          "line": 1722,
           "character": 30
         }
       ]
@@ -96,7 +96,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 1643,
+          "line": 1657,
           "character": 57
         }
       ]
@@ -398,50 +398,6 @@
       ]
     },
     {
-      "code": 2322,
-      "file": "src/client/task-completion-helpers.test.ts",
-      "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\"'.",
-      "count": 1,
-      "locations": [
-        {
-          "line": 359,
-          "character": 7
-        }
-      ]
-    },
-    {
-      "code": 2322,
-      "file": "src/client/task-completion-helpers.test.ts",
-      "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'.",
-      "count": 1,
-      "locations": [
-        {
-          "line": 71,
-          "character": 9
-        }
-      ]
-    },
-    {
-      "code": 2741,
-      "file": "src/client/task-completion-helpers.test.ts",
-      "message": "Property 'repoId' is missing in type '{ provider: \"github\"; repoName: string; prId: number; }' but required in type 'PRRef'.",
-      "count": 3,
-      "locations": [
-        {
-          "line": 333,
-          "character": 24
-        },
-        {
-          "line": 355,
-          "character": 11
-        },
-        {
-          "line": 356,
-          "character": 11
-        }
-      ]
-    },
-    {
       "code": 2307,
       "file": "src/client/task-helpers.ts",
       "message": "Cannot find module '../api' or its corresponding type declarations.",
@@ -462,18 +418,6 @@
         {
           "line": 20,
           "character": 7
-        }
-      ]
-    },
-    {
-      "code": 2322,
-      "file": "src/client/task-momentum-alerts.test.ts",
-      "message": "Type '\"paused\"' is not assignable to type '\"done\" | \"archived\" | \"active\"'.",
-      "count": 1,
-      "locations": [
-        {
-          "line": 99,
-          "character": 9
         }
       ]
     }

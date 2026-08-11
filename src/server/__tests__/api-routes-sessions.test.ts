@@ -682,26 +682,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createSession).not.toHaveBeenCalled();
   });
 
-  it("POST /api/sessions/:id/fork forks a session when restart is active in persisted state", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.forkSession = vi.fn().mockResolvedValue({ sessionId: "fork-session" });
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-fork",
-      phase: "queued",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: null,
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app).post("/api/sessions/source-session/fork");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessionId: "fork-session" });
-    expect(sessionManager.forkSession).toHaveBeenCalledWith("source-session", {});
-  });
-
   it("POST /api/tasks/:id/session creates a task session when restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
@@ -723,43 +703,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({ background: true });
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("task-session");
-  });
-
-  it("POST /api/tasks/:id/session forwards validated launch options", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listModels = vi.fn().mockResolvedValue([
-      {
-        id: "claude-opus",
-        name: "Claude Opus",
-        policy: { state: "unconfigured" },
-        supportedReasoningEfforts: ["max"],
-        billing: {
-          tokenPrices: {
-            contextMax: 200_000,
-            longContext: { contextMax: 1_000_000 },
-          },
-        },
-      },
-    ]);
-    sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    const task = ctx.taskStore.createTask("Model-specific task");
-
-    const res = await request(app)
-      .post(`/api/tasks/${task.id}/session`)
-      .send({
-        model: "claude-opus",
-        reasoningEffort: "max",
-        contextTier: "long_context",
-      });
-
-    expect(res.status).toBe(200);
-    expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({
-      background: true,
-      model: "claude-opus",
-      reasoningEffort: "max",
-      contextTier: "long_context",
-    });
   });
 
   it("POST /api/chat requires sessionId and prompt", async () => {

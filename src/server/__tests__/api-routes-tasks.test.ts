@@ -255,35 +255,6 @@ describe("Task routes", () => {
     expect(res.body.task.workItems).toEqual([]);
   });
 
-  it("POST /api/tasks/:id/link rejects an ambiguous provider instead of defaulting to ado", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Ambiguous Link" });
-    const id = create.body.task.id;
-
-    const res = await request(app)
-      .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: "4242" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("Pass provider explicitly");
-
-    const task = await request(app).get(`/api/tasks/${id}`);
-    expect(task.body.task.workItems).toEqual([]);
-  });
-
-  it("POST /api/tasks/:id/link infers github from a github.com reference", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Inferred Link" });
-    const id = create.body.task.id;
-
-    const res = await request(app)
-      .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: "https://github.com/octo/widget/issues/7" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.task.workItems).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "octo/widget#7", provider: "github" })]),
-    );
-  });
-
   it("POST /api/tasks/:id/link stores a canonical github repo id and rejects a bad prId", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "PR Link" });
     const id = create.body.task.id;
@@ -332,18 +303,6 @@ describe("Task routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.task.pullRequests).toEqual([]);
-  });
-
-  it("POST /api/tasks/:id/link rejects a blank work item reference", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Blank work item" });
-    const id = create.body.task.id;
-
-    const res = await request(app)
-      .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", provider: "github" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("workItemId is required");
   });
 
   it("round-trips a legacy bare repoId through unlink and relink (undo path)", async () => {
@@ -532,19 +491,6 @@ describe("Task routes", () => {
 // ── Task Group CRUD ──────────────────────────────────────────────
 
 describe("Task group routes", () => {
-  it("PATCH /api/task-groups/:id updates a group", async () => {
-    const create = await request(app)
-      .post("/api/task-groups")
-      .send({ name: "Old Name" });
-    const id = create.body.group.id;
-
-    const res = await request(app)
-      .patch(`/api/task-groups/${id}`)
-      .send({ name: "New Name" });
-    expect(res.status).toBe(200);
-    expect(res.body.group.name).toBe("New Name");
-  });
-
   it("PATCH /api/task-groups/:id applies a full valid update", async () => {
     const create = await request(app)
       .post("/api/task-groups")

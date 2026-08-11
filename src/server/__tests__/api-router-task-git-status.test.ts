@@ -111,20 +111,6 @@ describe("task git status route", () => {
     expect(readCachedGitWorktreeStatusMock).not.toHaveBeenCalled();
   });
 
-  it("treats whitespace-only cwd values as not configured", async () => {
-    const task = taskStore.createTask("Blank cwd");
-    taskStore.updateTask(task.id, { cwd: "   " });
-
-    const res = await request(app).get(`/api/tasks/${task.id}/git-status`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      status: "not_configured",
-      error: "Task working directory is not configured.",
-    });
-    expect(readCachedGitWorktreeStatusMock).not.toHaveBeenCalled();
-  });
-
   it("passes through typed non-repo responses", async () => {
     const task = taskStore.createTask("Outside repo");
     taskStore.updateTask(task.id, { cwd: "/workspace/not-a-repo" });

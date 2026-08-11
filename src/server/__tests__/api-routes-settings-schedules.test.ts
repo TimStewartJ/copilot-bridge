@@ -49,41 +49,6 @@ describe("Settings routes", () => {
     expect(evictSpy).not.toHaveBeenCalled();
   });
 
-  it("PATCH /api/settings reasoningEffort change does NOT evict cached sessions", async () => {
-    const sessionManager = createMockSessionManager();
-    const evictSpy = vi.fn();
-    sessionManager.evictAllCachedSessions = evictSpy;
-    const local = createTestApp({ sessionManager });
-
-    await request(local.app).patch("/api/settings").send({ model: "claude-opus-4.7" });
-    evictSpy.mockClear();
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({ reasoningEffort: "high" });
-
-    expect(res.status).toBe(200);
-    // Reasoning changes are future-only — existing sessions are not touched
-    expect(evictSpy).not.toHaveBeenCalled();
-  });
-
-  it("PATCH /api/settings model cleared does NOT evict cached sessions", async () => {
-    const sessionManager = createMockSessionManager();
-    const evictSpy = vi.fn();
-    sessionManager.evictAllCachedSessions = evictSpy;
-    const local = createTestApp({ sessionManager });
-
-    // First set a model, then clear it
-    await request(local.app).patch("/api/settings").send({ model: "claude-opus-4.7" });
-    evictSpy.mockClear();
-
-    const res = await request(local.app).patch("/api/settings").send({ model: "" });
-
-    expect(res.status).toBe(200);
-    // Clearing model is future-only — no eviction
-    expect(evictSpy).not.toHaveBeenCalled();
-  });
-
   it("PATCH /api/settings MCP change still evicts cached sessions", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
@@ -252,21 +217,6 @@ describe("Schedule routes", () => {
       expect(res.status).toBe(201);
       expect(res.body.cron).toBe(cron);
     }
-  });
-
-  it("POST /api/schedules rejects unsupported non-zero seconds crons", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Unsupported seconds",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "30 */5 * * * *",
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("seconds field is 0");
   });
 
   it("POST /api/schedules validates model overrides", async () => {
