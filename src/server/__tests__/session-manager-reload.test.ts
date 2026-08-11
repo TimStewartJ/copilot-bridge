@@ -53,7 +53,10 @@ describe("SessionManager reloadSession", () => {
     manager.backend = { resumeSession };
     manager.sessionObjects.set("session-1", oldSession);
     manager.sessionObjects.set("session-2", otherSession);
-    manager.mcpStatus.set("session-1", [{ name: "stale", status: "failed" }]);
+    manager.mcpStatus.set("session-1", {
+      servers: [{ name: "stale", status: "failed" }],
+      complete: true,
+    });
 
     const servers = await manager.reloadSession("session-1");
 

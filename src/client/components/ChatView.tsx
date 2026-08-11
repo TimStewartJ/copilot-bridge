@@ -15,7 +15,6 @@ import {
   fetchMessagesFast,
   warmSession,
   loginMcpServer,
-  fetchMcpStatus,
   fetchSessionContext,
   reportTiming,
   submitElicitationResponse,
@@ -44,7 +43,9 @@ import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoot
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
+import { useMcpStatusQuery } from "../hooks/queries/useMcpStatus";
 import useLongPressMenu from "../hooks/useLongPressMenu";
+import { queryKeys } from "../queryClient";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
@@ -109,7 +110,6 @@ interface ChatViewProps {
   onRetryVoiceJobUpload?: (composerKey: string) => void;
   onDiscardVoiceRecording?: (composerKey: string) => void;
   reloadToken?: number;
-  reloadMcpServers?: McpServerStatus[];
   /** Incremented when an external source (e.g. schedule) starts work on this session */
   busySignal?: number;
   /** Incremented when server history was truncated and the loaded window must be replaced. */
@@ -563,7 +563,6 @@ export default function ChatView({
   onRetryVoiceJobUpload,
   onDiscardVoiceRecording,
   reloadToken = 0,
-  reloadMcpServers,
   busySignal = 0,
   historySignal = 0,
   activeSessionActivityAt,
@@ -584,8 +583,7 @@ export default function ChatView({
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
-  const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
-  const [manualMcpOverride, setManualMcpOverride] = useState<McpServerStatus[] | null>(null);
+  const mcpStatusQuery = useMcpStatusQuery(sessionId);
   const [sessionContext, setSessionContext] = useState<SessionContextResponse | null>(null);
   const [sessionContextError, setSessionContextError] = useState<string | null>(null);
   const [sessionContextLoading, setSessionContextLoading] = useState(false);
@@ -728,6 +726,12 @@ export default function ChatView({
     onMessageSent();
     loadAndReconnectRef.current({ background: true, replace: true, silent: true });
   }, [onMessageSent]);
+  const updateMcpStatus = useCallback((servers: McpServerStatus[]) => {
+    if (!sessionId) return;
+    const queryKey = queryKeys.mcpStatus(sessionId);
+    void queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.setQueryData<McpServerStatus[]>(queryKey, servers);
+  }, [queryClient, sessionId]);
 
   const {
     streamingContent,
@@ -747,14 +751,13 @@ export default function ChatView({
     elicitationCancellation,
     runNotice,
     historyEpoch,
-    mcpServers: streamMcpServers,
     contextSummary: streamContextSummary,
     sendMessage,
     abortSession,
     reconnect,
     activeTurnId,
     activeTurnInstanceId,
-  } = useSessionStream(sessionId, handleStreamSettled, onMessageSent);
+  } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, updateMcpStatus);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
   // disappears from the overlay the moment its persisted entry is present in the loaded window.
@@ -869,14 +872,10 @@ export default function ChatView({
     };
   }, [creating, isStreaming, loading, sessionId]);
 
-  // Prefer a manual override immediately after reload, then return to live stream updates.
-  const effectiveMcpServers = (manualMcpOverride ?? (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus)) ?? [];
   const refreshMcpStatus = useCallback(async () => {
     if (!sessionId) return;
-    const servers = await fetchMcpStatus(sessionId);
-    setMcpStatus(servers);
-    setManualMcpOverride(servers);
-  }, [sessionId]);
+    await mcpStatusQuery.refetch();
+  }, [mcpStatusQuery.refetch, sessionId]);
 
   const handleMcpAuthenticate = useCallback(async (
     serverName: string,
@@ -884,10 +883,9 @@ export default function ChatView({
   ) => {
     if (!sessionId) throw new Error("Open a session before signing in to an MCP server.");
     const result = await loginMcpServer(sessionId, serverName, options);
-    setMcpStatus(result.servers);
-    setManualMcpOverride(result.servers);
+    updateMcpStatus(result.servers);
     return result;
-  }, [sessionId]);
+  }, [sessionId, updateMcpStatus]);
 
   const refreshSessionContext = useCallback(async (
     targetSessionId: string,
@@ -1098,8 +1096,6 @@ export default function ChatView({
       setHasMore(false);
       setLoadMoreError(null);
       setShowJumpToLatest(false);
-      setMcpStatus([]);
-      setManualMcpOverride(null);
       cancelFollowScroll();
       clearProgrammaticScroll();
       anchoredMessageKeyRef.current = null;
@@ -1257,15 +1253,6 @@ export default function ChatView({
         });
 
       })();
-
-      // MCP status loads independently — doesn't block message rendering
-      fetchMcpStatus(sessionId)
-        .then((mcpServers) => {
-          if (!controller.signal.aborted && requestId === loadRequestIdRef.current) {
-            setMcpStatus(mcpServers);
-          }
-        })
-        .catch(() => {});
 
       return historyRead;
     };
@@ -1449,17 +1436,6 @@ export default function ChatView({
     pendingRenderedReadThroughRef.current = null;
     onRenderedReadThrough?.(pending.sessionId, pending.readThroughActivityAt);
   }, [entries, onRenderedReadThrough, sessionId]);
-
-  useEffect(() => {
-    if (!sessionId || reloadMcpServers === undefined) return;
-    setManualMcpOverride(reloadMcpServers);
-    setMcpStatus(reloadMcpServers);
-  }, [sessionId, reloadToken, reloadMcpServers]);
-
-  useEffect(() => {
-    if ((streamMcpServers?.length ?? 0) === 0) return;
-    setManualMcpOverride(null);
-  }, [streamMcpServers]);
 
   // Scroll preservation on prepend + auto-scroll on message changes.
   // useLayoutEffect runs before paint, preventing flash.
@@ -2465,7 +2441,15 @@ export default function ChatView({
         contextError={sessionContextError}
         contextLoading={sessionContextLoading}
         liveContextSummary={streamContextSummary}
-        servers={effectiveMcpServers}
+        servers={mcpStatusQuery.data ?? []}
+        statusState={!sessionId
+          ? "ready"
+          : mcpStatusQuery.error
+            ? mcpStatusQuery.data === undefined ? "error" : "stale"
+            : mcpStatusQuery.data === undefined ? "loading" : "ready"}
+        statusError={mcpStatusQuery.error instanceof Error
+          ? mcpStatusQuery.error.message
+          : mcpStatusQuery.error ? String(mcpStatusQuery.error) : undefined}
         onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
         onRefresh={sessionId ? refreshMcpStatus : undefined}
       />

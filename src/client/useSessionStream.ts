@@ -124,7 +124,6 @@ export interface StreamState {
   streamStatus: StreamStatus;
   isStreaming: boolean;
   hadVisibleOutput: boolean;
-  mcpServers: McpServerStatus[];
   contextSummary: SessionContextSummary | null;
   pendingOrigin: PendingOrigin;
   runMode?: SendMode;
@@ -152,7 +151,6 @@ function createState(status: StreamStatus, partial: Partial<StreamState> = {}): 
     runNotice: null,
     intentText: "",
     hadVisibleOutput: false,
-    mcpServers: [],
     contextSummary: null,
     pendingOrigin: null,
     historyEpoch: 0,
@@ -168,6 +166,27 @@ function optionalString(value: unknown): string | undefined {
 
 function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+const MCP_SERVER_STATUSES = new Set<McpServerStatus["status"]>([
+  "connected", "failed", "needs-auth", "pending", "disabled", "not_configured", "unknown",
+]);
+
+function normalizeMcpServerStatuses(value: unknown): McpServerStatus[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry) || typeof entry.name !== "string" || !entry.name.trim()) return [];
+    const status = typeof entry.status === "string"
+      && MCP_SERVER_STATUSES.has(entry.status as McpServerStatus["status"])
+      ? entry.status as McpServerStatus["status"]
+      : "unknown";
+    return [{
+      name: entry.name,
+      status,
+      ...(typeof entry.error === "string" ? { error: entry.error } : {}),
+      ...(typeof entry.source === "string" ? { source: entry.source } : {}),
+    }];
+  });
 }
 
 function getEventTurnId(event: Record<string, unknown>): string | undefined {
@@ -469,6 +488,7 @@ export function useSessionStream(
   sessionId: string | null,
   onSettled: () => void,
   onTitleChanged: () => void,
+  onMcpStatus?: (servers: McpServerStatus[]) => void,
 ) {
   const [streamState, setStreamState] = useState<StreamState>(() => createState("idle"));
   const streamStateRef = useRef(streamState);
@@ -481,6 +501,8 @@ export function useSessionStream(
   onSettledRef.current = onSettled;
   const onTitleChangedRef = useRef(onTitleChanged);
   onTitleChangedRef.current = onTitleChanged;
+  const onMcpStatusRef = useRef(onMcpStatus);
+  onMcpStatusRef.current = onMcpStatus;
 
   const closeStream = useCallback(() => {
     eventSourceRef.current?.close();
@@ -495,7 +517,6 @@ export function useSessionStream(
     closeStream();
     const generation = ++generationRef.current;
     setStreamState((current) => createState("sending", {
-      mcpServers: current.mcpServers,
       contextSummary: current.contextSummary,
       historyEpoch: current.historyEpoch,
       elicitationCancellation: pendingOrigin === "reconnect" ? current.elicitationCancellation : null,
@@ -534,7 +555,6 @@ export function useSessionStream(
       if (source.readyState === EventSource.CLOSED) {
         closeCurrent();
         setStreamState((current) => createState("idle", {
-          mcpServers: current.mcpServers,
           contextSummary: current.contextSummary,
           elicitationCancellation: current.elicitationCancellation,
           runNotice: current.runNotice,
@@ -571,6 +591,9 @@ export function useSessionStream(
         const pendingUserMessages = normalizePendingUserMessages(event.pendingUserMessages);
         const streamingContent = optionalString(event.streamingContent) ?? "";
         const contextSummary = getStreamContextSummary(event);
+        if (Array.isArray(event.mcpServers)) {
+          onMcpStatusRef.current?.(normalizeMcpServerStatuses(event.mcpServers));
+        }
         const complete = event.complete === true;
         const previousRunId = lastRunIdRef.current;
         lastRunIdRef.current = snapshotRunId;
@@ -594,9 +617,6 @@ export function useSessionStream(
               ? []
               : normalizePendingElicitationRequests(event.pendingElicitations),
             intentText: complete ? "" : optionalString(event.intentText) ?? "",
-            mcpServers: Array.isArray(event.mcpServers)
-              ? event.mcpServers as McpServerStatus[]
-              : current.mcpServers,
             contextSummary: contextSummary ?? current.contextSummary,
             elicitationCancellation: current.elicitationCancellation,
             runNotice: normalizeRunNotice(event.runNotice) ?? (complete ? null : current.runNotice),
@@ -627,7 +647,6 @@ export function useSessionStream(
       if (eventType === "resync_required") {
         closeCurrent();
         setStreamState((current) => createState("idle", {
-          mcpServers: current.mcpServers,
           contextSummary: current.contextSummary,
           elicitationCancellation: current.elicitationCancellation,
           runNotice: current.runNotice,
@@ -893,10 +912,7 @@ export function useSessionStream(
         return;
       }
       if (eventType === "mcp_status") {
-        setStreamState((current) => ({
-          ...current,
-          mcpServers: Array.isArray(event.servers) ? event.servers as McpServerStatus[] : [],
-        }));
+        onMcpStatusRef.current?.(normalizeMcpServerStatuses(event.servers));
         return;
       }
       if (eventType === "context_update") {
@@ -928,7 +944,6 @@ export function useSessionStream(
               : { ...tool, completedAt: optionalString(event.timestamp) ?? new Date().toISOString(), success: eventType === "done" }),
             liveVisuals: current.liveVisuals,
             liveCompletion: normalizeLiveCompletion(event.liveCompletion) ?? current.liveCompletion,
-            mcpServers: current.mcpServers,
             contextSummary: current.contextSummary,
             runNotice: normalizeRunNotice(event.runNotice),
             historyEpoch: current.historyEpoch + 1,
@@ -969,7 +984,6 @@ export function useSessionStream(
     const startedFromIdle = streamStateRef.current.streamStatus === "idle";
     if (startedFromIdle) {
       setStreamState((current) => createState("sending", {
-        mcpServers: current.mcpServers,
         contextSummary: current.contextSummary,
         historyEpoch: current.historyEpoch,
         pendingOrigin: "message",
@@ -988,7 +1002,6 @@ export function useSessionStream(
     } catch (error) {
       if (startedFromIdle && sessionRef.current === sessionId) {
         setStreamState((current) => createState("idle", {
-          mcpServers: current.mcpServers,
           contextSummary: current.contextSummary,
           historyEpoch: current.historyEpoch,
         }));

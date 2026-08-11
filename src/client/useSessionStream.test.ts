@@ -76,6 +76,7 @@ async function withHarness(
     getSource: () => MockEventSource;
     settled: ReturnType<typeof vi.fn<() => void>>;
     titleChanged: ReturnType<typeof vi.fn<() => void>>;
+    mcpStatusChanged: ReturnType<typeof vi.fn<(servers: unknown[]) => void>>;
     setSessionId: (sessionId: string | null) => void;
     act: Act;
   }) => Promise<void>,
@@ -85,11 +86,12 @@ async function withHarness(
   let updateSessionId: ((sessionId: string | null) => void) | null = null;
   const settled = vi.fn<() => void>();
   const titleChanged = vi.fn<() => void>();
+  const mcpStatusChanged = vi.fn<(servers: unknown[]) => void>();
 
   function TestComponent() {
     const [sessionId, setSessionId] = useState<string | null>("session-1");
     updateSessionId = setSessionId;
-    state = useSessionStream(sessionId, settled, titleChanged);
+    state = useSessionStream(sessionId, settled, titleChanged, mcpStatusChanged);
     return null;
   }
 
@@ -108,6 +110,7 @@ async function withHarness(
       },
       settled,
       titleChanged,
+      mcpStatusChanged,
       setSessionId: (sessionId) => {
         if (!updateSessionId) throw new Error("Session setter is unavailable");
         updateSessionId(sessionId);
@@ -163,6 +166,33 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 describe("useSessionStream EventSource lifecycle", () => {
+  it("publishes normalized MCP snapshots without mirroring them in stream state", async () => {
+    await withHarness(async ({ getState, getSource, mcpStatusChanged, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await act(async () => source.emit(snapshot({
+        mcpServers: [
+          { name: "demo", status: "connected", source: "sdk" },
+          { name: "future", status: "new-sdk-value" },
+        ],
+      })));
+      expect(mcpStatusChanged).toHaveBeenLastCalledWith([
+        { name: "demo", status: "connected", source: "sdk" },
+        { name: "future", status: "unknown" },
+      ]);
+      expect(getState()).not.toHaveProperty("mcpServers");
+
+      await act(async () => source.emit({
+        type: "mcp_status",
+        servers: [{ name: "demo", status: "failed", error: "offline" }],
+      }));
+      expect(mcpStatusChanged).toHaveBeenLastCalledWith([
+        { name: "demo", status: "failed", error: "offline" },
+      ]);
+    });
+  });
+
   it("sends a message and opens the session EventSource", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({

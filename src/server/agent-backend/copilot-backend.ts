@@ -21,6 +21,7 @@ import type {
   AgentBackend,
   AgentBackgroundTask,
   AgentCapabilities,
+  AgentCurrentModel,
   AgentElicitationResponse,
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
@@ -259,7 +260,7 @@ class CopilotAgentSession implements AgentSession {
     return normalizeCopilotSlashCommandList(result);
   }
 
-  async getCurrentModel(): Promise<{ modelId?: string } | undefined> {
+  async getCurrentModel(): Promise<AgentCurrentModel | undefined> {
     const get = this.session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
     return get.call(this.session.rpc.model);

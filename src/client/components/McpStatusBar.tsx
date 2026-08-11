@@ -14,6 +14,8 @@ interface McpStatusBarProps {
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
   servers: McpServerStatus[];
+  statusError?: string;
+  statusState: "loading" | "ready" | "error" | "stale";
 }
 
 function StatusIcon({ status }: { status: McpServerStatus["status"] }) {
@@ -55,6 +57,8 @@ export default function McpStatusBar({
   onAuthenticate,
   onRefresh,
   servers,
+  statusError,
+  statusState,
 }: McpStatusBarProps) {
   const [authenticatingServer, setAuthenticatingServer] = useState<string | null>(null);
   const [authLinks, setAuthLinks] = useState<Record<string, string>>({});
@@ -67,7 +71,8 @@ export default function McpStatusBar({
     : null;
   const capabilities = context?.capabilities;
   const hasContextSignal = Boolean(contextLoading || contextError || summary || (context?.turns?.length ?? 0) > 0 || (context?.events?.length ?? 0) > 0);
-  if ((!servers || servers.length === 0) && !hasContextSignal) return null;
+  const hasMcpSignal = statusState !== "ready" || servers.length > 0;
+  if (!hasMcpSignal && !hasContextSignal) return null;
 
   const connected = servers.filter((s) => s.status === "connected").length;
   const needsAuth = servers.filter((s) => s.status === "needs-auth").length;
@@ -75,6 +80,11 @@ export default function McpStatusBar({
   const pending = servers.filter((s) => s.status === "pending").length;
   const hasProblem = failed > 0 || needsAuth > 0;
   const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError);
+  const statusSummary = statusState === "loading"
+    ? "MCP: Loading status..."
+    : statusState === "error"
+      ? "MCP status unavailable"
+      : `MCP: ${connected}/${servers.length} connected`;
 
   const startAuth = async (serverName: string, forceReauth = false) => {
     if (!onAuthenticate) return;
@@ -115,8 +125,9 @@ export default function McpStatusBar({
           <span className="flex items-center gap-1.5">
             <Plug size={12} />
             <span>
-              MCP: {connected}/{servers.length} connected
+              {statusSummary}
               {pending > 0 && <span className="text-warning ml-1">({pending} connecting)</span>}
+              {statusState === "stale" && <span className="text-warning ml-1">(status may be stale)</span>}
             </span>
           </span>
           {hasProblem && (
@@ -139,6 +150,26 @@ export default function McpStatusBar({
             <div className="mb-2 flex items-center gap-1 text-xs font-medium text-text-primary">
               <Plug size={12} /> MCP servers
             </div>
+            {statusState === "loading" ? (
+              <p className="flex items-center gap-1.5 text-xs text-text-muted" role="status">
+                <Loader2 size={12} className="animate-spin" />
+                Loading MCP server status...
+              </p>
+            ) : statusState === "error" || statusState === "stale" ? (
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-error" role="alert">
+                <AlertTriangle size={12} />
+                <span>{statusError || "MCP server status could not be loaded."}</span>
+                {onRefresh && (
+                  <button
+                    type="button"
+                    onClick={() => void onRefresh()}
+                    className="rounded border border-error/30 px-2 py-0.5 text-[11px] font-medium text-error transition-colors hover:bg-error/10"
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+            ) : null}
             {servers.length > 0 ? (
               <div className="space-y-1">
                 {servers.map((server) => (
@@ -192,9 +223,9 @@ export default function McpStatusBar({
                   </div>
                 ))}
               </div>
-            ) : (
+            ) : statusState === "ready" ? (
               <p className="text-xs text-text-muted">No MCP servers reported for this session.</p>
-            )}
+            ) : null}
           </section>
 
           {hasContextSignal && (
