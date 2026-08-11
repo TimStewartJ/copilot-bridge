@@ -84,6 +84,12 @@ export default function SortableTaskItem({
           >
             <GripVertical size={12} />
           </span>
+          {indicator?.busy && (
+            <span
+              aria-hidden="true"
+              className={`h-1.5 w-1.5 shrink-0 rounded-full animate-pulse ${indicator.stalled ? "bg-warning" : "bg-info"}`}
+            />
+          )}
           <span className={`truncate flex-1 font-medium ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
             {task.title}
           </span>
@@ -93,7 +99,7 @@ export default function SortableTaskItem({
               className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${SIGNAL_TONE_CLASS[primarySignal.tone]}`}
               title={primarySignal.label}
             >
-              {primarySignal.animated && (
+              {primarySignal.animated && !indicator?.busy && (
                 <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
               )}
               {isRail ? primarySignal.shortLabel : primarySignal.label}
