@@ -3,12 +3,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CopilotUsageCostEstimate, CopilotUsageSummary, Task } from "./api";
+import type {
+  CopilotUsageCostEstimate,
+  CopilotUsageSessionRow,
+  CopilotUsageSummary,
+  Task,
+} from "./api";
 import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
 import { useTaskSessionStorageQuery } from "./hooks/queries/useTaskSessionStorage";
 import { useTagsQuery } from "./hooks/queries/useTags";
 import { useTaskWorkspace } from "./hooks/useTaskWorkspace";
-import TaskDashboard from "./components/TaskDashboard";
+import TaskDashboard, { buildSessionUsageAnalytics } from "./components/TaskDashboard";
 import TaskKindBadge from "./components/TaskKindBadge";
 import TaskMomentumFields from "./components/TaskMomentumFields";
 import TaskContextMenu from "./components/task-list/TaskContextMenu";
@@ -234,6 +239,7 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
       latestSkippedAt: null,
     },
     models: [],
+    days: [],
     sessions: [],
     unpricedModels: [],
     ...overrides,
@@ -550,6 +556,27 @@ describe("TaskDashboard unique overview", () => {
               ...createPricedModelMetadata("gpt-5.5"),
             },
           ],
+          days: [
+            {
+              date: "2026-05-01",
+              ...createUsageTotals({
+                requests: 3,
+                inputTokens: 1_000,
+                uncachedInputTokens: 600,
+                outputTokens: 500,
+                cacheReadTokens: 300,
+                cacheWriteTokens: 100,
+                reasoningTokens: 100,
+                totalTokens: 2_000,
+              }),
+              ...createZeroCostEstimate({
+                estimatedCostUsd: 0.12,
+                estimatedAiCredits: 12,
+                billableOutputTokens: 600,
+              }),
+              models: [],
+            },
+          ],
           unpricedModels: [],
         },
         {
@@ -624,6 +651,27 @@ describe("TaskDashboard unique overview", () => {
               ...createUnpricedModelMetadata(),
             },
           ],
+          days: [
+            {
+              date: "2026-05-02",
+              ...createUsageTotals({
+                requests: 3,
+                inputTokens: 800,
+                uncachedInputTokens: 500,
+                outputTokens: 500,
+                cacheReadTokens: 200,
+                cacheWriteTokens: 100,
+                reasoningTokens: 400,
+                totalTokens: 2_000,
+              }),
+              ...createZeroCostEstimate({
+                estimatedCostUsd: 0.08,
+                estimatedAiCredits: 8,
+                billableOutputTokens: 900,
+              }),
+              models: [],
+            },
+          ],
           unpricedModels: [
             {
               model: "mystery-model",
@@ -673,6 +721,47 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Estimated cost excludes");
     expect(html).toContain("500 tokens");
     expect(html).not.toContain("Activity timeline");
+  });
+
+  it("buckets a long-lived session by its recorded daily deltas", () => {
+    const session = {
+      sessionId: "long-lived",
+      shutdownAt: "2026-05-10T20:00:00.000Z",
+      ...createUsageTotals({ totalTokens: 4_000 }),
+      ...createZeroCostEstimate({ estimatedCostUsd: 0.16, estimatedAiCredits: 16 }),
+      models: [],
+      days: [
+        {
+          date: "2026-04-30",
+          ...createUsageTotals({ totalTokens: 1_000 }),
+          ...createZeroCostEstimate({ estimatedCostUsd: 0.04, estimatedAiCredits: 4 }),
+          models: [],
+        },
+        {
+          date: "2026-05-10",
+          ...createUsageTotals({ totalTokens: 3_000 }),
+          ...createZeroCostEstimate({ estimatedCostUsd: 0.12, estimatedAiCredits: 12 }),
+          models: [],
+        },
+      ],
+      unpricedModels: [],
+    } satisfies CopilotUsageSessionRow;
+
+    const analytics = buildSessionUsageAnalytics({
+      taskSessionIds: [session.sessionId],
+      linkedSessions: [],
+      usageSessions: [session],
+      totalDiskSizeBytes: 0,
+    });
+
+    expect(analytics.dayBuckets.map((bucket) => ({
+      date: bucket.key,
+      tokens: bucket.totalTokens,
+      credits: bucket.estimatedAiCredits,
+    }))).toEqual([
+      { date: "2026-05-10", tokens: 3_000, credits: 12 },
+      { date: "2026-04-30", tokens: 1_000, credits: 4 },
+    ]);
   });
 
   it("shows a skeleton while session usage is loading from the backend", () => {

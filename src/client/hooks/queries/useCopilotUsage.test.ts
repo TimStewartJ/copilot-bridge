@@ -106,6 +106,7 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
       pricingStatus: "exact",
       normalizedPricingModel: "gpt-5.4",
     }],
+    days: [],
     sessions: [],
     unpricedModels: [],
   };

@@ -103,6 +103,7 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
       latestSkippedAt: null,
     },
     models: [],
+    days: [],
     sessions: [],
     unpricedModels: [],
     ...overrides,
