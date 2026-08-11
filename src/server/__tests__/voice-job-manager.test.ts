@@ -113,6 +113,11 @@ describe("voice job restart gating", () => {
       composerKey: "draft:quickchat",
       sourceFilePath,
       originalFilename: "recording.wav",
+      sessionOptions: {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        contextTier: "long_context",
+      },
     });
 
     expect(result).toMatchObject({
@@ -121,7 +126,11 @@ describe("voice job restart gating", () => {
       status: "accepted",
       safeToLeave: true,
     });
-    expect(sessionManager.createSession).toHaveBeenCalledOnce();
+    expect(sessionManager.createSession).toHaveBeenCalledWith({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      contextTier: "long_context",
+    });
     expect(store.getVoiceJob(result.id)).toMatchObject({
       composerKey: "draft:quickchat",
       targetSessionId: "new-session",

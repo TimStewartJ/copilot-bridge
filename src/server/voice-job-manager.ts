@@ -12,6 +12,7 @@ import {
 import type { TaskGroupStore } from "./task-group-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
+import type { CopilotContextTier } from "../shared/copilot-context.js";
 import {
   type StoredVoiceJob,
   type VoiceJob,
@@ -28,6 +29,11 @@ interface AcceptVoiceJobInput {
   targetSessionId?: string;
   sourceFilePath: string;
   originalFilename?: string;
+  sessionOptions?: {
+    model?: string;
+    reasoningEffort?: string;
+    contextTier?: CopilotContextTier;
+  };
 }
 
 interface CreateVoiceJobManagerOptions {
@@ -94,6 +100,7 @@ export function createVoiceJobManager({
     targetSessionId,
     sourceFilePath,
     originalFilename,
+    sessionOptions,
   }: AcceptVoiceJobInput): Promise<VoiceJobSnapshot> {
     if (isRestartCutoverInProgress(await refreshRestartState())) {
       throw new Error(RESTART_PENDING_MESSAGE);
@@ -108,7 +115,7 @@ export function createVoiceJobManager({
       const audioPath = join(jobDir, safeFilename);
       await copyFile(sourceFilePath, audioPath);
 
-      const resolvedTargetSessionId = targetSessionId ?? await createTargetSession(taskId);
+      const resolvedTargetSessionId = targetSessionId ?? await createTargetSession(taskId, sessionOptions);
       const job = store.createVoiceJob({
         id,
         composerKey,
@@ -385,9 +392,16 @@ export function createVoiceJobManager({
     throw new Error("Timed out waiting for the session to accept the message.");
   }
 
-  async function createTargetSession(taskId?: string): Promise<string> {
+  async function createTargetSession(
+    taskId?: string,
+    sessionOptions?: {
+      model?: string;
+      reasoningEffort?: string;
+      contextTier?: CopilotContextTier;
+    },
+  ): Promise<string> {
     if (!taskId) {
-      const result = await sessionManager.createSession();
+      const result = await sessionManager.createSession(sessionOptions);
       return result.sessionId;
     }
 
@@ -410,6 +424,7 @@ export function createVoiceJobManager({
       task.cwd,
       undefined,
       groupNotes,
+      sessionOptions,
     );
     taskStore.linkSession(task.id, result.sessionId);
     return result.sessionId;

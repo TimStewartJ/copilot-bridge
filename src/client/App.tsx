@@ -73,6 +73,7 @@ import {
   type ModelFamilySelection,
 } from "./lib/model-family-defaults";
 import { getModelFamily, type ModelFamily } from "../shared/model-families.js";
+import type { CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
@@ -184,7 +185,7 @@ export default function App() {
   const sessionBusyHintExpiresAtRef = useRef<Record<string, number>>({});
 
   // Settings query (shared with useTheme, SettingsView, etc.)
-  const { data: settings } = useSettingsQuery();
+  const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
   const { data: restartStatus, refetch: refetchRestartStatus } = useRestartStatusQuery();
   useFavicon(settings?.favicon);
 
@@ -1913,6 +1914,9 @@ export default function App() {
                   newWorkDisabled={newWorkDisabledByRestart}
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
+                  defaultReasoningEffort={settings?.reasoningEffort}
+                  defaultContextTier={settings?.contextTier}
+                  launchDefaultsLoading={settingsLoading}
                 />
               }
             />
@@ -1991,6 +1995,9 @@ export default function App() {
                   newWorkDisabled={newWorkDisabledByRestart}
                   newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
+                  defaultReasoningEffort={settings?.reasoningEffort}
+                  defaultContextTier={settings?.contextTier}
+                  launchDefaultsLoading={settingsLoading}
                 />
               }
             />
@@ -2230,6 +2237,9 @@ function SessionRoute({
   newWorkDisabled,
   newWorkDisabledHint,
   defaultModelId,
+  defaultReasoningEffort,
+  defaultContextTier,
+  launchDefaultsLoading,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -2262,6 +2272,9 @@ function SessionRoute({
   newWorkDisabled?: boolean;
   newWorkDisabledHint?: string;
   defaultModelId?: string;
+  defaultReasoningEffort?: string;
+  defaultContextTier?: CopilotContextTier;
+  launchDefaultsLoading: boolean;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -2293,9 +2306,20 @@ function SessionRoute({
     models: modelsQuery.data ?? [],
     selectedModelId: draftLaunch?.model ?? "",
     defaultModelId,
+    defaultReasoningEffort,
+    defaultContextTier,
     reasoningEffortSelection: draftLaunch?.reasoningEffort,
     contextTierSelection: draftLaunch?.contextTier,
   });
+  const launchCreateOptions = useMemo(
+    () => buildNewSessionCreateOptions(launchState),
+    [
+      launchState.modelForCreate,
+      launchState.selectedContextTier,
+      launchState.selectedReasoningEffort,
+    ],
+  );
+  const launchConfigurationLoading = isDraft && (launchDefaultsLoading || modelsQuery.isLoading);
 
   useEffect(() => {
     if (!sessionId || !activeSession || activeSession.isOptimistic) return;
@@ -2319,7 +2343,7 @@ function SessionRoute({
       family,
       state: resolveModelFamilyState({
         models: launchState.availableModels,
-        selectedModelId: draftLaunch?.model ?? "",
+        selectedModelId: launchState.modelKey,
         globalDefaultModelId: defaultModelId,
       }),
     });
@@ -2327,8 +2351,8 @@ function SessionRoute({
   }, [
     applyLaunchSelection,
     defaultModelId,
-    draftLaunch?.model,
     launchState.availableModels,
+    launchState.modelKey,
   ]);
 
   const handleLaunchModelChange = useCallback((modelId: string) => {
@@ -2375,11 +2399,7 @@ function SessionRoute({
     attachments?: import("./api").Attachment[],
     mode?: SendMode,
   ) => {
-    const createOptions = buildNewSessionCreateOptions({
-      model: draftLaunch?.model,
-      reasoningEffort: launchState.selectedReasoningEffort,
-      contextTier: launchState.selectedContextTier,
-    });
+    const createOptions = launchCreateOptions;
     const newSessionId = await materializeSession(taskId, createOptions);
     const optimisticModelState = buildOptimisticSessionModelState(createOptions, defaultModelId);
     if (optimisticModelState) {
@@ -2409,10 +2429,8 @@ function SessionRoute({
     cleanupFailedFirstSendSession,
     clearDraft,
     composerKey,
-    draftLaunch?.model,
     defaultModelId,
-    launchState.selectedContextTier,
-    launchState.selectedReasoningEffort,
+    launchCreateOptions,
     materializeSession,
     migrateVoiceRecording,
     navigate,
@@ -2421,13 +2439,24 @@ function SessionRoute({
     taskId,
   ]);
 
+  const handleSubmitVoiceCapture = useCallback((capture: {
+    composerKey: string;
+    audio: Blob;
+    submitMode: import("./lib/voice-submit-mode").VoiceSubmitMode;
+  }) => startBackgroundVoiceJob({
+    ...capture,
+    ...(isDraft && Object.keys(launchCreateOptions).length > 0
+      ? { sessionOptions: launchCreateOptions }
+      : {}),
+  }), [isDraft, launchCreateOptions, startBackgroundVoiceJob]);
+
   const draftEmptyState = isDraft ? (
     <NewSessionLaunchPanel
       models={launchState.availableModels}
-      modelsLoading={modelsQuery.isLoading}
+      modelsLoading={modelsQuery.isLoading || launchDefaultsLoading}
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
       defaultModelId={defaultModelId}
-      selectedModelId={draftLaunch?.model ?? ""}
+      selectedModelId={launchState.modelKey}
       selectedModelFamily={draftLaunch?.model ? getModelFamily(draftLaunch.model) : undefined}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
@@ -2496,7 +2525,7 @@ function SessionRoute({
       emptyState={draftEmptyState}
       defaultSendMode={isDraft ? launchMode : DEFAULT_SEND_MODE}
       voiceJob={voiceJob}
-      onSubmitVoiceCapture={startBackgroundVoiceJob}
+      onSubmitVoiceCapture={handleSubmitVoiceCapture}
       onReviewVoiceJob={reviewVoiceJob}
       onClearVoiceJobError={clearVoiceJobError}
       onDiscardVoiceRecording={discardVoiceRecording}
@@ -2507,8 +2536,12 @@ function SessionRoute({
       activeSessionActivityAt={activeSessionActivityAt}
       backgroundAgents={activeSession?.backgroundAgents}
       onForkSession={onForkSession}
-      newWorkDisabled={newWorkDisabled}
-      newWorkDisabledHint={newWorkDisabledHint}
+      newWorkDisabled={newWorkDisabled || launchConfigurationLoading}
+      newWorkDisabledHint={newWorkDisabled
+        ? newWorkDisabledHint
+        : launchConfigurationLoading
+          ? "Loading model defaults…"
+          : newWorkDisabledHint}
     />
   );
 }

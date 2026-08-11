@@ -222,6 +222,16 @@ describe("Voice job routes", () => {
   it("POST /api/voice-jobs accepts draft-session autosend while restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
+    sessionManager.listModels = vi.fn().mockResolvedValue([{
+      id: "gpt-5.6-sol",
+      supportedReasoningEfforts: ["xhigh"],
+      billing: {
+        tokenPrices: {
+          contextMax: 272_000,
+          longContext: { contextMax: 922_000 },
+        },
+      },
+    }]);
     const runtimePaths = createRestartRuntimePaths();
     await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
       requestId: "req-voice-job",
@@ -246,6 +256,11 @@ describe("Voice job routes", () => {
     const res = await request(app)
       .post("/api/voice-jobs")
       .field("composerKey", "draft:quickchat")
+      .field("sessionOptions", JSON.stringify({
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        contextTier: "long_context",
+      }))
       .attach("audio", createWavBuffer(1), {
         filename: "recording.wav",
         contentType: "audio/wav",
@@ -258,7 +273,11 @@ describe("Voice job routes", () => {
       status: "accepted",
       safeToLeave: true,
     });
-    expect(sessionManager.createSession).toHaveBeenCalledOnce();
+    expect(sessionManager.createSession).toHaveBeenCalledWith({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      contextTier: "long_context",
+    });
   });
 
   it("draft-route voice jobs recover through the materialized session when autosend fails", async () => {

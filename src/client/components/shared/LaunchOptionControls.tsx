@@ -19,14 +19,12 @@ export function LaunchOptionRow<T extends string>({
   selectedValue,
   onChange,
   disabled = false,
-  allowDefaultSelection = false,
 }: {
   ariaLabel: string;
   options: readonly LaunchOption<T>[];
   selectedValue?: T;
   onChange: (value: T | null) => void;
   disabled?: boolean;
-  allowDefaultSelection?: boolean;
 }) {
   return (
     <div
@@ -44,9 +42,9 @@ export function LaunchOptionRow<T extends string>({
             key={option.value === null ? "__inherited_default__" : option.value}
             type="button"
             aria-pressed={selected}
-            disabled={disabled || (option.value === null && !allowDefaultSelection)}
+            disabled={disabled || option.value === null}
             onClick={() => {
-              if (option.value !== null || allowDefaultSelection) onChange(option.value);
+              if (option.value !== null) onChange(option.value);
             }}
             className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
               selected

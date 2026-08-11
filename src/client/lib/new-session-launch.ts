@@ -22,6 +22,8 @@ interface ResolveNewSessionLaunchStateOptions {
   models: readonly ModelInfo[];
   selectedModelId: string;
   defaultModelId?: string;
+  defaultReasoningEffort?: string;
+  defaultContextTier?: CopilotContextTier;
   reasoningEffortSelection?: ScopedLaunchSelection<string> | null;
   contextTierSelection?: ScopedLaunchSelection<CopilotContextTier> | null;
 }
@@ -30,6 +32,7 @@ export interface NewSessionLaunchState {
   availableModels: ModelInfo[];
   effectiveModel?: ModelInfo;
   modelKey: string;
+  modelForCreate?: string;
   reasoningEffortOptions: LaunchOption<string>[];
   selectedReasoningEffort?: string;
   contextOptions: LaunchOption<CopilotContextTier>[];
@@ -37,18 +40,17 @@ export interface NewSessionLaunchState {
 }
 
 export function buildNewSessionCreateOptions({
-  model,
-  reasoningEffort,
-  contextTier,
-}: {
-  model?: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
-}): CreateSessionOptions {
+  modelForCreate,
+  selectedReasoningEffort,
+  selectedContextTier,
+}: Pick<
+  NewSessionLaunchState,
+  "modelForCreate" | "selectedReasoningEffort" | "selectedContextTier"
+>): CreateSessionOptions {
   return {
-    ...(model ? { model } : {}),
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(contextTier ? { contextTier } : {}),
+    ...(modelForCreate ? { model: modelForCreate } : {}),
+    ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
+    ...(selectedContextTier ? { contextTier: selectedContextTier } : {}),
   };
 }
 
@@ -98,10 +100,41 @@ export function buildContextTierOptions(
   }];
 }
 
+function buildNewSessionContextTierOptions(
+  model: ModelInfo | undefined,
+): LaunchOption<CopilotContextTier>[] {
+  if (!model) return [];
+  if (modelSupportsLongContext(model)) return buildContextTierOptions(model);
+
+  const defaultContextTokens = getContextWindowTokensForTier(model, "default");
+  return [{
+    value: "default",
+    label: defaultContextTokens
+      ? `Standard context (${formatContextWindowTokens(defaultContextTokens)})`
+      : "Standard context",
+  }];
+}
+
+function resolveAutomaticReasoningEffort(
+  model: ModelInfo | undefined,
+  defaultReasoningEffort: string | undefined,
+): string | undefined {
+  const supportedEfforts = model?.supportedReasoningEfforts ?? [];
+  if (defaultReasoningEffort && supportedEfforts.includes(defaultReasoningEffort)) {
+    return defaultReasoningEffort;
+  }
+  const modelDefault = model?.defaultReasoningEffort;
+  return modelDefault && supportedEfforts.includes(modelDefault)
+    ? modelDefault
+    : undefined;
+}
+
 export function resolveNewSessionLaunchState({
   models,
   selectedModelId,
   defaultModelId,
+  defaultReasoningEffort,
+  defaultContextTier,
   reasoningEffortSelection,
   contextTierSelection,
 }: ResolveNewSessionLaunchStateOptions): NewSessionLaunchState {
@@ -113,46 +146,34 @@ export function resolveNewSessionLaunchState({
     ? availableModels.find((model) => model.id === effectiveModelId)
     : undefined;
   const modelKey = effectiveModel?.id ?? effectiveModelId ?? "";
+  const modelForCreate = effectiveModel?.id;
 
   const supportedEfforts = [...(effectiveModel?.supportedReasoningEfforts ?? [])];
-  const supportedEffortOptions = buildReasoningEffortOptions(supportedEfforts);
-  const reasoningEffortOptions: LaunchOption<string>[] = supportedEfforts.length > 0
-    ? [{ value: null, label: "Default" }, ...supportedEffortOptions]
-    : supportedEffortOptions;
+  const reasoningEffortOptions = supportedEfforts.length > 0
+    ? buildReasoningEffortOptions(supportedEfforts)
+    : [];
   const selectedReasoningEffort =
     reasoningEffortSelection?.modelId === modelKey
       && supportedEfforts.includes(reasoningEffortSelection.value)
       ? reasoningEffortSelection.value
-      : undefined;
+      : resolveAutomaticReasoningEffort(effectiveModel, defaultReasoningEffort);
 
-  const supportedContextOptions = buildContextTierOptions(effectiveModel);
-  if (modelSupportsLongContext(effectiveModel)) {
-    const contextOptions: LaunchOption<CopilotContextTier>[] = [
-      { value: null, label: "Default" },
-      ...supportedContextOptions,
-    ];
-    const selectedContextTier =
-      contextTierSelection?.modelId === modelKey
-        && contextOptions.some((option) => option.value === contextTierSelection.value)
-        ? contextTierSelection.value
+  const contextOptions = buildNewSessionContextTierOptions(effectiveModel);
+  const selectedContextTier =
+    contextTierSelection?.modelId === modelKey
+      && contextOptions.some((option) => option.value === contextTierSelection.value)
+      ? contextTierSelection.value
+      : effectiveModel
+        ? (modelSupportsLongContext(effectiveModel) ? (defaultContextTier ?? "default") : "default")
         : undefined;
-    return {
-      availableModels,
-      effectiveModel,
-      modelKey,
-      reasoningEffortOptions,
-      selectedReasoningEffort,
-      contextOptions,
-      selectedContextTier,
-    };
-  }
-
   return {
     availableModels,
     effectiveModel,
     modelKey,
+    modelForCreate,
     reasoningEffortOptions,
     selectedReasoningEffort,
-    contextOptions: supportedContextOptions,
+    contextOptions,
+    selectedContextTier,
   };
 }

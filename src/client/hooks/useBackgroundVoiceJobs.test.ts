@@ -204,6 +204,46 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     expect(options.rememberDraftSession).toHaveBeenCalledWith("draft:task:task-1", "new-session");
   });
 
+  it("retries a draft autosend with its persisted launch configuration", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    const sessionOptions = {
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      contextTier: "long_context" as const,
+    };
+    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "draft:task:task-1",
+        audio,
+        submitMode: "autosend",
+        sessionOptions,
+      });
+    });
+    await waitUntilAct(
+      getHarness().act,
+      () => result?.getJobForComposer("draft:task:task-1")?.status === "error",
+    );
+
+    expect(await getPendingVoiceRecording("draft:task:task-1")).toMatchObject({
+      sessionOptions,
+    });
+    expect(createVoiceJobMock.mock.calls[0][0]).toMatchObject({ sessionOptions });
+
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot({
+      composerKey: "draft:task:task-1",
+      taskId: "task-1",
+      targetSessionId: "new-session",
+    }));
+    await getHarness().act(async () => {
+      result?.retryVoiceJobUpload("draft:task:task-1");
+    });
+    await waitUntilAct(getHarness().act, () => createVoiceJobMock.mock.calls.length === 2);
+
+    expect(createVoiceJobMock.mock.calls[1][0]).toMatchObject({ sessionOptions });
+  });
+
   it("notifies session activity when autosend completes before the client observes sending", async () => {
     const audio = new Blob(["voice"], { type: "audio/wav" });
     createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot({

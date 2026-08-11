@@ -11,7 +11,11 @@ import NewSessionLaunchPanel from "./NewSessionLaunchPanel";
 
 function requiredProps() {
   return {
+    models: [],
     modelsLoading: false,
+    selectedModelId: "",
+    reasoningEffortOptions: [],
+    contextOptions: [],
     mode: "interactive" as const,
     onModelFamilyChange: vi.fn(),
     onModelChange: vi.fn(),
@@ -57,8 +61,6 @@ describe("NewSessionLaunchPanel", () => {
       ],
       defaultModelId: "gpt-5.6",
       selectedModelId: "",
-      reasoningEffortOptions: [{ value: null, label: "Default" }],
-      contextOptions: [{ value: null, label: "Default context" }],
     }));
 
     // Each family tile surfaces a concrete model rather than an empty placeholder.
@@ -81,8 +83,6 @@ describe("NewSessionLaunchPanel", () => {
       ],
       defaultModelId: "gpt-5.6",
       selectedModelId: "claude-opus-5",
-      reasoningEffortOptions: [{ value: null, label: "Default" }],
-      contextOptions: [{ value: null, label: "Default context" }],
     }));
 
     expect(getReactProps(findTile(harness!.dom.container, "Claude"))?.["aria-pressed"]).toBe(true);
@@ -99,12 +99,26 @@ describe("NewSessionLaunchPanel", () => {
       defaultModelId: "gpt-5.6",
       selectedModelId: "",
       selectedModelFamily: "claude",
-      reasoningEffortOptions: [{ value: null, label: "Default" }],
-      contextOptions: [{ value: null, label: "Default context" }],
     }));
 
     expect(getReactProps(findTile(harness!.dom.container, "Claude"))?.["aria-pressed"]).toBe(true);
     expect(getReactProps(findTile(harness!.dom.container, "GPT"))?.["aria-pressed"]).toBe(false);
+  });
+
+  it("does not mark a fallback model as selected when the SDK default is unresolved", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "claude-opus-5", name: "Claude Opus 5" },
+      ],
+    }));
+
+    expect(getReactProps(findTile(harness!.dom.container, "GPT"))?.["aria-pressed"]).toBe(false);
+    expect(getReactProps(findTile(harness!.dom.container, "Claude"))?.["aria-pressed"]).toBe(false);
+    expect(harness!.dom.container.textContent).toContain(
+      "No concrete default model is available.",
+    );
   });
 
   it("reports family switches and the other launch selections", async () => {
@@ -152,40 +166,43 @@ describe("NewSessionLaunchPanel", () => {
     expect(props.onModeChange).toHaveBeenCalledWith("autopilot");
   });
 
-  it("shows inherited effort and context as selected, clearable Default choices", async () => {
-    const props = requiredProps();
+  it("shows inherited effort and context as concrete selected choices", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...props,
+      ...requiredProps(),
       models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
       selectedModelId: "",
       reasoningEffortOptions: [
-        { value: null, label: "Default" },
+        { value: "low", label: "Low" },
         { value: "high", label: "High" },
       ],
+      selectedReasoningEffort: "high",
       contextOptions: [
-        { value: null, label: "Default" },
         { value: "default", label: "Standard context" },
         { value: "long_context", label: "Long context" },
       ],
+      selectedContextTier: "long_context",
     }));
 
-    const defaults = findAllByTag(harness!.dom.container, "BUTTON")
-      .filter((button) => button.textContent === "Default");
-    expect(defaults).toHaveLength(2);
-    for (const button of defaults) {
-      expect(getReactProps(button)?.disabled).toBe(false);
-      expect(getReactProps(button)?.["aria-pressed"]).toBe(true);
-    }
+    const buttons = findAllByTag(harness!.dom.container, "BUTTON");
+    expect(buttons.some((button) => button.textContent === "Default")).toBe(false);
+    expect(getReactProps(buttons.find((button) => button.textContent === "High"))?.["aria-pressed"]).toBe(true);
+    expect(getReactProps(buttons.find((button) => button.textContent === "Long context"))?.["aria-pressed"]).toBe(true);
+  });
 
-    const high = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => button.textContent === "High");
-    if (!high) throw new Error("High effort choice was not rendered");
-    await harness!.act(async () => {
-      getReactProps(high)?.onClick?.();
-      getReactProps(defaults[0])?.onClick?.();
-    });
-    expect(props.onReasoningEffortChange).toHaveBeenNthCalledWith(1, "high");
-    expect(props.onReasoningEffortChange).toHaveBeenNthCalledWith(2, undefined);
+  it("explains when the SDK does not report a concrete effort default", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
+      selectedModelId: "gpt-5.6",
+      reasoningEffortOptions: [
+        { value: "low", label: "Low" },
+        { value: "high", label: "High" },
+      ],
+    }));
+
+    expect(harness!.dom.container.textContent).toContain(
+      "The SDK does not report this model's default effort.",
+    );
   });
 
   it("opens the refine menu and reports a specific model pick", async () => {
@@ -197,8 +214,6 @@ describe("NewSessionLaunchPanel", () => {
         { id: "gpt-5-mini", name: "GPT-5 mini" },
       ],
       selectedModelId: "gpt-5.6",
-      reasoningEffortOptions: [{ value: null, label: "Default" }],
-      contextOptions: [{ value: null, label: "Default context" }],
     }));
 
     const caret = findAllByTag(harness!.dom.container, "BUTTON")
@@ -230,8 +245,6 @@ describe("NewSessionLaunchPanel", () => {
       ],
       defaultModelId: "gpt-5-mini",
       selectedModelId: "",
-      reasoningEffortOptions: [{ value: null, label: "Default" }],
-      contextOptions: [{ value: null, label: "Default context" }],
     }));
 
     // The tile stays a single bare model name.
