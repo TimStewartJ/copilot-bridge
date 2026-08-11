@@ -9,6 +9,7 @@ import type {
   CopilotUsageSummary,
   Task,
 } from "./api";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage";
 import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
 import { useTaskSessionStorageQuery } from "./hooks/queries/useTaskSessionStorage";
 import { useTagsQuery } from "./hooks/queries/useTags";
@@ -721,6 +722,37 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Estimated cost excludes");
     expect(html).toContain("500 tokens");
     expect(html).not.toContain("Activity timeline");
+  });
+
+  it("does not classify unattributed metering as unknown model pricing", () => {
+    const usageSession = {
+      sessionId: "session-1",
+      shutdownAt: "2026-08-11T12:00:00.000Z",
+      ...createUsageTotals({ meteredAiCredits: 125 }),
+      ...createZeroCostEstimate(),
+      models: [
+        {
+          model: COPILOT_USAGE_UNATTRIBUTED_MODEL,
+          sessions: 1,
+          ...createUsageTotals({ meteredAiCredits: 125 }),
+          ...createZeroCostEstimate(),
+          ...createUnpricedModelMetadata(),
+        },
+      ],
+      days: [],
+      unpricedModels: [],
+    } satisfies CopilotUsageSessionRow;
+
+    const analytics = buildSessionUsageAnalytics({
+      taskSessionIds: ["session-1"],
+      linkedSessions: [],
+      usageSessions: [usageSession],
+      totalDiskSizeBytes: 0,
+    });
+
+    expect(analytics.cost.unpricedModelNames).toEqual([]);
+    expect(analytics.cost.unpricedTokens.meteredAiCredits).toBe(0);
+    expect(analytics.modelRows.map((row) => row.model)).toEqual([COPILOT_USAGE_UNATTRIBUTED_MODEL]);
   });
 
   it("buckets a long-lived session by its recorded daily deltas", () => {

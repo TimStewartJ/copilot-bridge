@@ -7,6 +7,7 @@ import { createCopilotModelPriceStore } from "../copilot-model-price-store.js";
 import { createCopilotUsageStore } from "../copilot-usage-store.js";
 import { openMemoryDatabase } from "../db.js";
 import type { serializeCopilotUsageSummary } from "../copilot-usage-serializer.js";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../shared/copilot-usage.js";
 import { createApiRouter } from "../api-router.js";
 import type { ApiRouteTestState } from "./api-routes-test-helpers.js";
 import {
@@ -118,6 +119,40 @@ function expectedCostEstimate(overrides: {
 }
 
 describe("Copilot usage routes", () => {
+  it("GET /api/copilot-usage preserves authoritative metering and its unattributed daily bucket", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-08-11T12:00:00.000Z",
+        data: {
+          totalNanoAiu: 300_000_000_000,
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100 },
+              totalNanoAiu: 100_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
+    const unattributed = res.body.models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL);
+
+    expect(res.body.totals.meteredAiCredits).toBe(300);
+    expect(unattributed?.meteredAiCredits).toBe(200);
+    expect(res.body.days[0].meteredAiCredits).toBe(300);
+    expect(res.body.days[0].models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL)?.meteredAiCredits)
+      .toBe(200);
+    expect(res.body.sessions[0].meteredAiCredits).toBe(300);
+    expect(res.body.sessions[0].days[0].meteredAiCredits).toBe(300);
+    expect(res.body.totals.unpricedModelCount).toBe(1);
+    expect(res.body.unpricedModels.map((row) => row.model)).toEqual(["gpt-5.4"]);
+  });
+
   it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeCopilotUsageEvents(copilotHome, "usage-session", [

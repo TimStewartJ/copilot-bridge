@@ -7,6 +7,7 @@ import {
   type CopilotUsageSummary,
   type CopilotUsageTotals,
 } from "../copilot-usage.js";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../shared/copilot-usage.js";
 import { makeTestDir } from "./helpers.js";
 
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
@@ -458,6 +459,191 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.totals.meteredAiCredits).toBeCloseTo(400);
     expect(summary.models[0].meteredAiCredits).toBeCloseTo(400);
     expect(summary.totals.meteredTokens).toBe(summary.totals.totalTokens);
+  });
+
+  it("uses the top-level metered total and carries the unattributed remainder into daily rows", async () => {
+    const copilotHome = createCopilotHome();
+    const shutdownAt = (day: number) => new Date(2026, 7, day, 10, 0, 0).toISOString();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: shutdownAt(6),
+        data: {
+          totalNanoAiu: 407_200_000_000,
+          modelMetrics: {
+            "claude-opus-5": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100 },
+              totalNanoAiu: 407_200_000_000,
+            },
+          },
+        },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: shutdownAt(7),
+        data: {
+          totalNanoAiu: 10_025_100_000_000,
+          modelMetrics: {
+            "claude-opus-5": {
+              requests: { count: 2 },
+              usage: { inputTokens: 200 },
+              totalNanoAiu: 1_901_500_000_000,
+            },
+          },
+        },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: shutdownAt(11),
+        data: {
+          totalNanoAiu: 34_013_900_000_000,
+          modelMetrics: {
+            "claude-opus-5": {
+              requests: { count: 3 },
+              usage: { inputTokens: 300 },
+              totalNanoAiu: 11_321_200_000_000,
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+    const named = summary.models.find((row) => row.model === "claude-opus-5");
+    const unattributed = summary.models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL);
+
+    expect(summary.totals.meteredAiCredits).toBeCloseTo(34_013.9);
+    expect(named?.meteredAiCredits).toBeCloseTo(11_321.2);
+    expect(unattributed).toMatchObject({
+      requests: 0,
+      totalTokens: 0,
+      meteredTokens: 0,
+    });
+    expect(unattributed?.meteredAiCredits).toBeCloseTo(22_692.7);
+    expect(summary.models.reduce((total, row) => total + row.meteredAiCredits, 0))
+      .toBeCloseTo(summary.totals.meteredAiCredits);
+    expect(summary.totals.unpricedModelCount).toBe(1);
+    expect(summary.unpricedModels.map((row) => row.model)).toEqual(["claude-opus-5"]);
+
+    expect(summary.days.map((day) => day.date)).toEqual([
+      "2026-08-06",
+      "2026-08-07",
+      "2026-08-11",
+    ]);
+    expect(summary.days[0].meteredAiCredits).toBeCloseTo(407.2);
+    expect(summary.days[1].meteredAiCredits).toBeCloseTo(9_617.9);
+    expect(summary.days[2].meteredAiCredits).toBeCloseTo(23_988.8);
+    for (const day of summary.days) {
+      expect(day.models.reduce((total, row) => total + row.meteredAiCredits, 0))
+        .toBeCloseTo(day.meteredAiCredits);
+    }
+    expect(summary.sessions[0].meteredAiCredits).toBeCloseTo(34_013.9);
+    expect(summary.sessions[0].days?.[0].meteredAiCredits).toBeCloseTo(407.2);
+    expect(summary.sessions[0].days?.[1].meteredAiCredits).toBeCloseTo(9_617.9);
+    expect(summary.sessions[0].days?.[2].meteredAiCredits).toBeCloseTo(23_988.8);
+  });
+
+  it("keeps named model metering within an authoritative top-level total", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-08-11T21:45:10.000Z",
+        data: {
+          totalNanoAiu: 100_000_000_000,
+          modelMetrics: {
+            "model-a": {
+              requests: { count: 1 },
+              usage: { inputTokens: 80 },
+              totalNanoAiu: 80_000_000_000,
+            },
+            "model-b": {
+              requests: { count: 1 },
+              usage: { inputTokens: 70 },
+              totalNanoAiu: 70_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.meteredAiCredits).toBeCloseTo(100);
+    expect(summary.models).toHaveLength(2);
+    expect(summary.models.reduce((total, row) => total + row.meteredAiCredits, 0)).toBeCloseTo(100);
+    expect(summary.models.some((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL)).toBe(false);
+  });
+
+  it("reconciles model metering from missing-top-level snapshots when an authoritative total arrives", async () => {
+    const copilotHome = createCopilotHome();
+    const shutdownAt = (day: number) => new Date(2026, 7, day, 10, 0, 0).toISOString();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: shutdownAt(10),
+        data: {
+          modelMetrics: {
+            "model-a": {
+              requests: { count: 1 },
+              usage: { inputTokens: 80 },
+              totalNanoAiu: 80_000_000_000,
+            },
+          },
+        },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: shutdownAt(11),
+        data: {
+          totalNanoAiu: 100_000_000_000,
+          modelMetrics: {
+            "model-a": {
+              requests: { count: 2 },
+              usage: { inputTokens: 150 },
+              totalNanoAiu: 150_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.meteredAiCredits).toBeCloseTo(100);
+    expect(summary.models[0].meteredAiCredits).toBeCloseTo(100);
+    expect(summary.days[0].meteredAiCredits).toBeCloseTo(80 * (2 / 3));
+    expect(summary.days[1].meteredAiCredits).toBeCloseTo(70 * (2 / 3));
+    expect(summary.days.reduce((total, day) => total + day.meteredAiCredits, 0)).toBeCloseTo(100);
+  });
+
+  it("indexes top-level metering even when the shutdown has no model breakdown", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-08-11T21:45:10.000Z",
+        data: {
+          totalNanoAiu: 125_000_000_000,
+          modelMetrics: {},
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.coverage.sessionsIncluded).toBe(1);
+    expect(summary.coverage.skippedByReason.empty_model_metrics).toBe(0);
+    expect(summary.totals.meteredAiCredits).toBe(125);
+    expect(summary.models).toEqual([
+      expect.objectContaining({
+        model: COPILOT_USAGE_UNATTRIBUTED_MODEL,
+        sessions: 1,
+        meteredAiCredits: 125,
+      }),
+    ]);
+    expect(summary.days[0]).toMatchObject({ date: "2026-08-11", meteredAiCredits: 125 });
   });
 
   it("tracks metered coverage separately so a partly metered range is not read as complete", async () => {
