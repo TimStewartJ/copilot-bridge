@@ -103,6 +103,17 @@ describe("ChatInput voice retry", () => {
     }));
   }
 
+  function setVisualViewport(layoutHeight: number, visualHeight: number): void {
+    Object.defineProperty(globalThis.document.documentElement, "clientHeight", {
+      configurable: true,
+      value: layoutHeight,
+    });
+    (globalThis.window as any).visualViewport = {
+      height: visualHeight,
+      scale: 1,
+    };
+  }
+
   it("renders a retry action beside retryable voice upload errors", async () => {
     const retryVoiceJobUpload = vi.fn();
     await renderChatInput({
@@ -380,8 +391,9 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("run autonomously", undefined, "autopilot");
   });
 
-  it("keeps Enter as a newline on touch devices so only the send button submits", async () => {
+  it("keeps Enter as a newline while the on-screen keyboard is visible", async () => {
     pointerFineMatches = false;
+    setVisualViewport(800, 480);
     const onSend = vi.fn();
     await renderChatInput({ onSend, isDraft: true });
 
@@ -398,6 +410,60 @@ describe("ChatInput voice retry", () => {
       getReactProps(textarea)?.onKeyDown?.({
         key: "Enter",
         shiftKey: false,
+        preventDefault,
+      });
+    });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("sends on Enter from a hardware keyboard connected to a touch device", async () => {
+    pointerFineMatches = false;
+    setVisualViewport(800, 800);
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, isDraft: true });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "send from bluetooth",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+      getReactProps(textarea)?.onKeyDown?.({
+        key: "Enter",
+        shiftKey: false,
+        preventDefault,
+      });
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("send from bluetooth", undefined, "interactive");
+  });
+
+  it("keeps Shift+Enter as a newline with a hardware keyboard on a touch device", async () => {
+    pointerFineMatches = false;
+    setVisualViewport(800, 800);
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, isDraft: true });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "first line",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+      getReactProps(textarea)?.onKeyDown?.({
+        key: "Enter",
+        shiftKey: true,
         preventDefault,
       });
     });

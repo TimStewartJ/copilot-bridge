@@ -1,8 +1,4 @@
-/**
- * Primary-pointer helpers. A fine pointer (mouse/trackpad) means a desktop-style
- * device with a hardware keyboard; a coarse pointer means touch input where text is
- * typed on an on-screen keyboard.
- */
+const SOFT_KEYBOARD_VIEWPORT_RATIO = 0.8;
 
 function matchesMedia(query: string, fallback: boolean): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return fallback;
@@ -18,9 +14,25 @@ export function hasFinePointer(): boolean {
 }
 
 /**
- * True when typing happens on an on-screen keyboard. Its return key should insert a
- * newline rather than submit, because there is no Shift+Enter affordance on touch.
+ * Best-effort detection for an open on-screen keyboard. Browsers do not expose
+ * hardware-keyboard presence, so a coarse pointer plus a substantially reduced visual
+ * viewport is the closest practical signal. Preserve newline behavior when the Visual
+ * Viewport API is unavailable.
  */
 export function usesSoftKeyboard(): boolean {
-  return !hasFinePointer();
+  if (hasFinePointer()) return false;
+  if (
+    typeof window === "undefined"
+    || typeof document === "undefined"
+    || !window.visualViewport
+  ) {
+    return true;
+  }
+
+  const layoutHeight = document.documentElement?.clientHeight ?? 0;
+  const visualHeight = window.visualViewport.height;
+  if (layoutHeight <= 0 || visualHeight <= 0) return true;
+
+  const scale = window.visualViewport.scale > 0 ? window.visualViewport.scale : 1;
+  return (visualHeight * scale) / layoutHeight < SOFT_KEYBOARD_VIEWPORT_RATIO;
 }
