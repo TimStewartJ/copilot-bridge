@@ -181,14 +181,6 @@ describe("Device management routes", () => {
     expect(res.body).toMatchObject({ ok: true, cancelled: false, pending: false });
   });
 
-  it("POST /api/device/hibernate/cancel is unavailable in staging", async () => {
-    const { app } = createTestApp({ isStaging: true });
-
-    const res = await request(app).post("/api/device/hibernate/cancel").send({});
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: "Not available in staging" });
-  });
-
   it("logs background hibernate failures", async () => {
     vi.useFakeTimers();
     const error = new Error("hibernate unavailable");

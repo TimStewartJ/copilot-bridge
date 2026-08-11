@@ -204,42 +204,18 @@ describe("session model menu labels", () => {
     expect(formatReasoningEffortLabel("experimental")).toBe("Experimental");
   });
 
-  it("does not keep current reasoning effort before lookup completes for constrained models", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["xhigh"],
-      currentEffortLookupReady: false,
-    })).toBe(false);
-  });
+  it("keeps the current reasoning effort only when lookup confirms it is supported", () => {
+    const cases = [
+      [{ supportedReasoningEfforts: ["xhigh"], currentEffortLookupReady: false }, false],
+      [{ supportedReasoningEfforts: ["xhigh"], currentEffortLookupReady: true }, true],
+      [{ supportedReasoningEfforts: [], currentReasoningEffort: "high", currentEffortLookupReady: true }, false],
+      [{ supportedReasoningEfforts: ["high"], currentReasoningEffort: "xhigh", currentEffortLookupReady: true }, false],
+      [{ supportedReasoningEfforts: ["xhigh"], currentReasoningEffort: "xhigh", currentEffortLookupReady: true }, true],
+    ] as const;
 
-  it("allows keeping current when lookup confirms no reasoning effort is set", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["xhigh"],
-      currentEffortLookupReady: true,
-    })).toBe(true);
-  });
-
-  it("does not keep a current effort for models with no reasoning efforts", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: [],
-      currentReasoningEffort: "high",
-      currentEffortLookupReady: true,
-    })).toBe(false);
-  });
-
-  it("does not keep unsupported current reasoning effort for constrained models", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["high"],
-      currentReasoningEffort: "xhigh",
-      currentEffortLookupReady: true,
-    })).toBe(false);
-  });
-
-  it("keeps supported current reasoning effort for constrained models", () => {
-    expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["xhigh"],
-      currentReasoningEffort: "xhigh",
-      currentEffortLookupReady: true,
-    })).toBe(true);
+    for (const [input, expected] of cases) {
+      expect(canKeepCurrentReasoningEffortForModel(input)).toBe(expected);
+    }
   });
 });
 

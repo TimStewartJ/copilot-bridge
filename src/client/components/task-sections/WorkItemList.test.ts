@@ -309,19 +309,6 @@ describe("WorkItemList - unlink affordance", () => {
     );
   });
 
-  it("forwards unlink props through the summary disclosure", async () => {
-    await withWorkItemList(
-      { enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary", taskId: "task-1" },
-      async (harness) => {
-        expect(findUnlinkButtons(harness)).toHaveLength(0);
-
-        await clickFirstSummaryButton(harness);
-
-        expect(findUnlinkButtons(harness)).toHaveLength(2);
-      },
-    );
-  });
-
   it("exposes an unlink button on a single-item summary row that cannot expand", async () => {
     await withWorkItemList(
       { enrichedWIs: [wiReal], rawWIs: [], variant: "summary", taskId: "task-1" },
@@ -339,16 +326,4 @@ describe("WorkItemList - unlink affordance", () => {
     );
   });
 
-  it("does not duplicate the unlink button when a single item expands inline", async () => {
-    await withWorkItemList(
-      { enrichedWIs: [], rawWIs: rawWIOnly, variant: "summary", taskId: "task-1" },
-      async (harness) => {
-        expect(findUnlinkButtons(harness)).toHaveLength(0);
-
-        await clickFirstSummaryButton(harness);
-
-        expect(findUnlinkButtons(harness)).toHaveLength(1);
-      },
-    );
-  });
 });

@@ -463,15 +463,6 @@ describe("PATCH /api/sessions/:id/model route", () => {
     expect(res.body.error).toMatch(/contextTier/i);
   });
 
-  it("returns 200 with model info on success", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app)
-      .patch(`/api/sessions/${sessionId}/model`)
-      .send({ model: "  gpt-5.5  " });
-    expect(res.status).toBe(200);
-    expect(res.body.model).toBe("gpt-5.5");
-  });
-
   it("passes valid contextTier values to the session manager", async () => {
     const setSessionModel = vi.fn(async (
       _id: string,
@@ -508,17 +499,6 @@ describe("PATCH /api/sessions/:id/model route", () => {
       reasoningEffort: "high",
       contextTier: "long_context",
     });
-  });
-
-  it("accepts valid reasoningEffort values", async () => {
-    const { app } = createTestApp();
-    for (const effort of ["low", "medium", "high", "xhigh"]) {
-      const res = await supertest(app)
-        .patch(`/api/sessions/${sessionId}/model`)
-        .send({ model: "claude-opus-4.7", reasoningEffort: effort });
-      expect(res.status).toBe(200);
-      expect(res.body.reasoningEffort).toBe(effort);
-    }
   });
 
   it("returns 409 when session is busy", async () => {

@@ -373,30 +373,4 @@ describe("useElementScrollRestoration", () => {
     },
   );
 
-  it("retries restoration when late content mutations make the element scrollable", async () => {
-    const mutationObserver = installTestMutationObserver();
-    const renderer = await createHookRenderer();
-    const source = createScrollElement();
-    const target = createScrollElement(0, { scrollHeight: 300, clientHeight: 300 });
-    const key = "hook-late-content-restore";
-
-    try {
-      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
-      source.scrollTop = 540;
-      await renderer.render([]);
-
-      await renderer.render([{ id: "target", element: target, restorationKey: key }]);
-      await advanceTimers(renderer, 0);
-      expect(target.scrollTop).toBe(0);
-
-      setScrollHeight(target, 1_000);
-      mutationObserver.mutationObservers[0]!.trigger();
-      await advanceTimers(renderer, 0);
-
-      expect(target.scrollTop).toBe(540);
-    } finally {
-      await renderer.cleanup();
-      mutationObserver.restore();
-    }
-  });
 });

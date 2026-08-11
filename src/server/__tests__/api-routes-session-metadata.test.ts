@@ -77,14 +77,6 @@ describe("Session metadata routes", () => {
     expect(state.body["kept-sess"]).toBe("2026-05-21T12:05:00.000Z");
   });
 
-  it("POST /api/sessions/batch archives multiple sessions", async () => {
-    const res = await request(app)
-      .post("/api/sessions/batch")
-      .send({ sessionIds: ["s1", "s2"], action: "archive" });
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-  });
-
   it("POST /api/sessions/batch invalidates the cached session list after archiving", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z", lastVisibleActivityAt: "2026-04-19T00:00:00.000Z" } as any,

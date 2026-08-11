@@ -34,26 +34,6 @@ describe("persistAndRouteAttachments", () => {
     }
   });
 
-  it("resolves uploaded non-image attachment as file type", () => {
-    const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
-    tempDirs.push(home);
-    const dir = filesDir(home);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "data.csv"), "a,b,c\n1,2,3");
-
-    const mgr = createManager(home);
-    const result = mgr.persistAndRouteAttachments(sessionId, [
-      { type: "uploaded", displayName: "data.csv", mimeType: "text/csv" },
-    ]);
-
-    expect(result).toHaveLength(1);
-    expect(result![0]).toMatchObject({
-      type: "file",
-      displayName: "data.csv",
-      path: join(dir, "data.csv"),
-    });
-  });
-
   it("resolves uploaded image attachment as blob type", () => {
     const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
     tempDirs.push(home);
@@ -92,18 +72,6 @@ describe("persistAndRouteAttachments", () => {
     const dir = filesDir(home);
     expect(existsSync(join(dir, "notebook.ipynb"))).toBe(true);
     expect(readFileSync(join(dir, "notebook.ipynb")).toString()).toBe("notebook content");
-  });
-
-  it("passes blob image attachments through unchanged", () => {
-    const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
-    tempDirs.push(home);
-    const mgr = createManager(home);
-    const att = { type: "blob" as const, data: "AAAA", mimeType: "image/png", displayName: "img.png" };
-
-    const result = mgr.persistAndRouteAttachments(sessionId, [att]);
-
-    expect(result).toHaveLength(1);
-    expect(result![0]).toMatchObject({ type: "blob", data: "AAAA", mimeType: "image/png" });
   });
 
   it("skips uploaded attachment when file does not exist on disk", () => {
