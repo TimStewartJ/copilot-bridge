@@ -23,6 +23,7 @@ import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
+import { getTaskActivityDot } from "../task-row-signals";
 import { UI } from "./shared/design-system";
 
 interface TaskRailProps {
@@ -287,6 +288,7 @@ export default function TaskRail({
                   {!isCollapsed && section.tasks.map((task) => {
                     const isActive = task.id === activeTaskId;
                     const indicator = taskIndicators.get(task.id);
+                    const activityDot = getTaskActivityDot(indicator);
                     const initials = task.title.slice(0, 2).toUpperCase();
 
                     return (
@@ -300,10 +302,12 @@ export default function TaskRail({
                         {task.kind === "ongoing" && (
                           <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                         )}
-                        {indicator?.busy && (
-                          <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full animate-pulse ring-2 ring-bg-secondary ${indicator.stalled ? "bg-warning" : "bg-info"}`} />
+                        {activityDot && (
+                          <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-bg-secondary ${
+                            activityDot.animated ? "animate-pulse" : ""
+                          } ${activityDot.tone === "warning" ? "bg-warning" : "bg-info"}`} />
                         )}
-                        {indicator?.unread && !indicator?.busy && (
+                        {indicator?.unread && !activityDot && (
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
                         )}
                       </button>
@@ -317,6 +321,7 @@ export default function TaskRail({
             sortedTasks.map((task) => {
               const isActive = task.id === activeTaskId;
               const indicator = taskIndicators.get(task.id);
+              const activityDot = getTaskActivityDot(indicator);
               const initials = task.title.slice(0, 2).toUpperCase();
 
               return (
@@ -330,10 +335,12 @@ export default function TaskRail({
                   {task.kind === "ongoing" && (
                     <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                   )}
-                  {indicator?.busy && (
-                    <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full animate-pulse ring-2 ring-bg-secondary ${indicator.stalled ? "bg-warning" : "bg-info"}`} />
+                  {activityDot && (
+                    <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-bg-secondary ${
+                      activityDot.animated ? "animate-pulse" : ""
+                    } ${activityDot.tone === "warning" ? "bg-warning" : "bg-info"}`} />
                   )}
-                  {indicator?.unread && !indicator?.busy && (
+                  {indicator?.unread && !activityDot && (
                     <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
                   )}
                 </button>

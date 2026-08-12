@@ -8,6 +8,7 @@ import {
   summarizeTaskTabAttention,
   type TaskIndicator,
 } from "./useTaskIndicators";
+import { getTaskActivityDot } from "../task-row-signals";
 
 const NOW = "2026-04-17T15:00:00.000Z";
 
@@ -246,6 +247,21 @@ describe("getTaskIndicator", () => {
     expect(indicator).toMatchObject({
       unread: false,
       unreadCount: 1,
+    });
+  });
+
+  describe("getTaskActivityDot", () => {
+    it("gives answer-needed warning precedence over working and stalled states", () => {
+      expect(getTaskActivityDot(createIndicator({
+        busy: true,
+        stalled: true,
+        needsUserInputCount: 1,
+      }))).toEqual({ tone: "warning", animated: false });
+      expect(getTaskActivityDot(createIndicator({ busy: true, stalled: true })))
+        .toEqual({ tone: "warning", animated: true });
+      expect(getTaskActivityDot(createIndicator({ busy: true })))
+        .toEqual({ tone: "info", animated: true });
+      expect(getTaskActivityDot(createIndicator())).toBeNull();
     });
   });
 });
