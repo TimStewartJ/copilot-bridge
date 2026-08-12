@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
-import type { ModelInfo } from "../../api";
+import type { ModelFamilyDefaults, ModelInfo } from "../../api";
 import type { ModelFamily } from "../../../shared/model-families.js";
 import {
   resolveModelFamilyState,
@@ -148,6 +148,7 @@ export default function ModelFamilyPicker({
   selectedModelId,
   selectedFamily,
   globalDefaultModelId,
+  familyDefaults,
   allowUnselected = false,
   disabled = false,
   idPrefix,
@@ -158,6 +159,7 @@ export default function ModelFamilyPicker({
   selectedModelId: string;
   selectedFamily?: ModelFamily;
   globalDefaultModelId?: string;
+  familyDefaults?: ModelFamilyDefaults;
   allowUnselected?: boolean;
   disabled?: boolean;
   idPrefix: string;
@@ -173,6 +175,7 @@ export default function ModelFamilyPicker({
     selectedModelId,
     selectedFamily,
     globalDefaultModelId,
+    familyDefaults,
   });
   const hasResolvedSelection = selectedModelId
     ? models.some((model) => model.id === selectedModelId)

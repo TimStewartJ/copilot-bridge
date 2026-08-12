@@ -314,16 +314,9 @@ function migrateMcpRegistry(db: DatabaseSync): void {
   });
 }
 
-function dropLegacyLaunchDefaultSettings(db: DatabaseSync): void {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string } | undefined;
-  if (!row) return;
-  const settings = parseJsonObject(row.value);
-  if (!settings) return;
-  const hadLegacyLaunchDefaults = "familyDefaults" in settings || "lastModelFamily" in settings;
-  if (!hadLegacyLaunchDefaults) return;
-  delete settings.familyDefaults;
-  delete settings.lastModelFamily;
-  db.prepare("UPDATE settings SET value = ? WHERE key = 'app'").run(JSON.stringify(settings));
+function preserveLaunchDefaultSettings(): void {
+  // This migration id previously deleted model-family memory. Keep the marker
+  // stable for existing databases and direct upgrades, but preserve the data.
 }
 
 function hasSchemaMigration(db: DatabaseSync, id: string): boolean {
@@ -1235,8 +1228,8 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: LEGACY_LAUNCH_DEFAULT_SETTINGS_DROP,
     category: "legacy-data",
     runMode: "once",
-    description: "Remove hidden per-family and last-family launch defaults from persisted app settings.",
-    apply: dropLegacyLaunchDefaultSettings,
+    description: "Preserve remembered model-family launch defaults.",
+    apply: preserveLaunchDefaultSettings,
   },
   {
     id: "tag-name-key-normalization",

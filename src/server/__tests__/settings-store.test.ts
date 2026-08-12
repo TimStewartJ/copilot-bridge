@@ -125,4 +125,26 @@ describe("settings-store", () => {
     })).toThrow("browser.headed must be a boolean");
   });
 
+  it("persists and validates remembered model-family defaults", () => {
+    const updated = store.updateSettings({
+      familyDefaults: {
+        gpt: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+        claude: { model: "claude-opus-5", contextTier: "long_context" },
+      },
+      lastModelFamily: "claude",
+    });
+    expect(updated.familyDefaults).toEqual({
+      gpt: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+      claude: { model: "claude-opus-5", contextTier: "long_context" },
+    });
+    expect(store.getSettings().lastModelFamily).toBe("claude");
+
+    expect(() => store.updateSettings({
+      familyDefaults: { gemini: { model: "gemini-3.1-pro" } } as any,
+    })).toThrow('familyDefaults key "gemini" is not a known model family');
+    expect(() => store.updateSettings({
+      lastModelFamily: "gemini" as any,
+    })).toThrow("lastModelFamily must be gpt, claude, or other");
+  });
+
 });

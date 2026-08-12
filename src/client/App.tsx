@@ -38,6 +38,7 @@ import {
   type TaskDeletionPreview,
   type TaskGroup,
   type CreateSessionOptions,
+  type ModelFamilyDefaults,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
@@ -62,6 +63,7 @@ import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
 import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
+import { useStickyModelFamilyDefaults } from "./hooks/useStickyModelFamilyDefaults";
 import {
   buildNewSessionCreateOptions,
   resolveNewSessionLaunchState,
@@ -1916,6 +1918,8 @@ export default function App() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
+                  familyDefaults={settings?.familyDefaults}
+                  lastModelFamily={settings?.lastModelFamily}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -1997,6 +2001,8 @@ export default function App() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
+                  familyDefaults={settings?.familyDefaults}
+                  lastModelFamily={settings?.lastModelFamily}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2239,6 +2245,8 @@ function SessionRoute({
   defaultModelId,
   defaultReasoningEffort,
   defaultContextTier,
+  familyDefaults,
+  lastModelFamily,
   launchDefaultsLoading,
 }: {
   sessions: Session[];
@@ -2274,6 +2282,8 @@ function SessionRoute({
   defaultModelId?: string;
   defaultReasoningEffort?: string;
   defaultContextTier?: CopilotContextTier;
+  familyDefaults?: ModelFamilyDefaults;
+  lastModelFamily?: ModelFamily;
   launchDefaultsLoading: boolean;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
@@ -2302,15 +2312,46 @@ function SessionRoute({
   const draftLaunch = draft?.launch;
   const voiceJob = getVoiceJob(composerKey);
   const previousDraftRouteKeyRef = useRef(draftRouteKey);
+  const rememberedLaunchSelection = !draftLaunch?.model && lastModelFamily
+    ? selectFamily({
+      family: lastModelFamily,
+      state: resolveModelFamilyState({
+        models: modelsQuery.data ?? [],
+        selectedModelId: "",
+        selectedFamily: lastModelFamily,
+        globalDefaultModelId: defaultModelId,
+        familyDefaults,
+      }),
+      familyDefaults,
+    })
+    : null;
+  const effectiveSelectedModelId = draftLaunch?.model
+    || rememberedLaunchSelection?.modelId
+    || "";
   const launchState = resolveNewSessionLaunchState({
     models: modelsQuery.data ?? [],
-    selectedModelId: draftLaunch?.model ?? "",
+    selectedModelId: effectiveSelectedModelId,
     defaultModelId,
     defaultReasoningEffort,
     defaultContextTier,
-    reasoningEffortSelection: draftLaunch?.reasoningEffort,
-    contextTierSelection: draftLaunch?.contextTier,
+    reasoningEffortSelection: draftLaunch?.reasoningEffort ?? (
+      rememberedLaunchSelection?.reasoningEffort
+        ? {
+          modelId: rememberedLaunchSelection.modelId,
+          value: rememberedLaunchSelection.reasoningEffort,
+        }
+        : undefined
+    ),
+    contextTierSelection: draftLaunch?.contextTier ?? (
+      rememberedLaunchSelection?.contextTier
+        ? {
+          modelId: rememberedLaunchSelection.modelId,
+          value: rememberedLaunchSelection.contextTier,
+        }
+        : undefined
+    ),
   });
+  const rememberModelFamilyDefaults = useStickyModelFamilyDefaults(familyDefaults);
   const launchCreateOptions = useMemo(
     () => buildNewSessionCreateOptions(launchState),
     [
@@ -2332,11 +2373,43 @@ function SessionRoute({
 
   /**
    * A model choice is explicit draft state. Effort and context selections are
-   * model-scoped, so changing the model clears both.
+   * model-scoped, so changing the model restores only values remembered for it.
    */
   const applyLaunchSelection = useCallback((selection: ModelFamilySelection) => {
-    setDraftLaunchOptions(composerKey, { model: selection.modelId });
-  }, [composerKey, setDraftLaunchOptions]);
+    const reasoningEffortSelection = selection.reasoningEffort
+      ? { modelId: selection.modelId, value: selection.reasoningEffort }
+      : undefined;
+    const contextTierSelection = selection.contextTier
+      ? { modelId: selection.modelId, value: selection.contextTier }
+      : undefined;
+    const nextLaunchState = resolveNewSessionLaunchState({
+      models: launchState.availableModels,
+      selectedModelId: selection.modelId,
+      defaultModelId,
+      defaultReasoningEffort,
+      defaultContextTier,
+      reasoningEffortSelection,
+      contextTierSelection,
+    });
+    setDraftLaunchOptions(composerKey, {
+      model: selection.modelId,
+      ...(reasoningEffortSelection ? { reasoningEffort: reasoningEffortSelection } : {}),
+      ...(contextTierSelection ? { contextTier: contextTierSelection } : {}),
+    });
+    rememberModelFamilyDefaults({
+      modelId: selection.modelId,
+      reasoningEffort: nextLaunchState.selectedReasoningEffort,
+      contextTier: nextLaunchState.selectedContextTier,
+    });
+  }, [
+    composerKey,
+    defaultContextTier,
+    defaultModelId,
+    defaultReasoningEffort,
+    launchState.availableModels,
+    rememberModelFamilyDefaults,
+    setDraftLaunchOptions,
+  ]);
 
   const handleLaunchFamilyChange = useCallback((family: ModelFamily) => {
     const selection = selectFamily({
@@ -2345,19 +2418,68 @@ function SessionRoute({
         models: launchState.availableModels,
         selectedModelId: launchState.modelKey,
         globalDefaultModelId: defaultModelId,
+        familyDefaults,
       }),
+      familyDefaults,
     });
     if (selection) applyLaunchSelection(selection);
   }, [
     applyLaunchSelection,
     defaultModelId,
+    familyDefaults,
     launchState.availableModels,
     launchState.modelKey,
   ]);
 
   const handleLaunchModelChange = useCallback((modelId: string) => {
-    applyLaunchSelection(selectModelInFamily({ modelId }));
-  }, [applyLaunchSelection]);
+    applyLaunchSelection(selectModelInFamily({ modelId, familyDefaults }));
+  }, [applyLaunchSelection, familyDefaults]);
+
+  const handleLaunchReasoningEffortChange = useCallback((reasoningEffort?: string) => {
+    if (!reasoningEffort) return;
+    setDraftLaunchOptions(composerKey, (current) => {
+      const next = { ...(current ?? {}) };
+      next.reasoningEffort = {
+        modelId: launchState.modelKey,
+        value: reasoningEffort,
+      };
+      return next;
+    });
+    rememberModelFamilyDefaults({
+      modelId: launchState.modelKey,
+      reasoningEffort,
+      contextTier: launchState.selectedContextTier,
+    });
+  }, [
+    composerKey,
+    launchState.modelKey,
+    launchState.selectedContextTier,
+    rememberModelFamilyDefaults,
+    setDraftLaunchOptions,
+  ]);
+
+  const handleLaunchContextTierChange = useCallback((contextTier?: CopilotContextTier) => {
+    if (!contextTier) return;
+    setDraftLaunchOptions(composerKey, (current) => {
+      const next = { ...(current ?? {}) };
+      next.contextTier = {
+        modelId: launchState.modelKey,
+        value: contextTier,
+      };
+      return next;
+    });
+    rememberModelFamilyDefaults({
+      modelId: launchState.modelKey,
+      reasoningEffort: launchState.selectedReasoningEffort,
+      contextTier,
+    });
+  }, [
+    composerKey,
+    launchState.modelKey,
+    launchState.selectedReasoningEffort,
+    rememberModelFamilyDefaults,
+    setDraftLaunchOptions,
+  ]);
 
   useEffect(() => {
     if (previousDraftRouteKeyRef.current === draftRouteKey) return;
@@ -2456,8 +2578,11 @@ function SessionRoute({
       modelsLoading={modelsQuery.isLoading || launchDefaultsLoading}
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
       defaultModelId={defaultModelId}
+      familyDefaults={familyDefaults}
       selectedModelId={launchState.modelKey}
-      selectedModelFamily={draftLaunch?.model ? getModelFamily(draftLaunch.model) : undefined}
+      selectedModelFamily={draftLaunch?.model
+        ? getModelFamily(draftLaunch.model)
+        : lastModelFamily}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
@@ -2465,34 +2590,8 @@ function SessionRoute({
       mode={launchMode}
       onModelFamilyChange={handleLaunchFamilyChange}
       onModelChange={handleLaunchModelChange}
-      onReasoningEffortChange={(reasoningEffort) => {
-        setDraftLaunchOptions(composerKey, (current) => {
-          const next = { ...(current ?? {}) };
-          if (reasoningEffort) {
-            next.reasoningEffort = {
-              modelId: launchState.modelKey,
-              value: reasoningEffort,
-            };
-          } else {
-            delete next.reasoningEffort;
-          }
-          return next.model || next.reasoningEffort || next.contextTier ? next : undefined;
-        });
-      }}
-      onContextTierChange={(contextTier) => {
-        setDraftLaunchOptions(composerKey, (current) => {
-          const next = { ...(current ?? {}) };
-          if (contextTier) {
-            next.contextTier = {
-              modelId: launchState.modelKey,
-              value: contextTier,
-            };
-          } else {
-            delete next.contextTier;
-          }
-          return next.model || next.reasoningEffort || next.contextTier ? next : undefined;
-        });
-      }}
+      onReasoningEffortChange={handleLaunchReasoningEffortChange}
+      onContextTierChange={handleLaunchContextTierChange}
       onModeChange={setLaunchMode}
     />
   ) : undefined;

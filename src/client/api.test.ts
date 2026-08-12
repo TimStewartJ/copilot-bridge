@@ -102,6 +102,12 @@ describe("serializeSettingsPatch", () => {
     );
   });
 
+  it("preserves an explicit remembered-family clear", () => {
+    expect(serializeSettingsPatch({ lastModelFamily: undefined })).toBe(
+      JSON.stringify({ lastModelFamily: "" }),
+    );
+  });
+
   describe("session creation client API", () => {
     afterEach(() => {
       vi.unstubAllGlobals();
