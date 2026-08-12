@@ -14,6 +14,39 @@ const MODELS: ModelInfo[] = [
 ];
 
 describe("model family defaults", () => {
+  it("uses SDK order as the family fallback while preserving explicit precedence", () => {
+    const sdkOrderedModels: ModelInfo[] = [
+      { id: "gpt-5.6", name: "GPT-5.6" },
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+      { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
+    ];
+
+    const fallback = resolveModelFamilyState({
+      models: sdkOrderedModels,
+      selectedModelId: "gpt-5.6",
+    });
+    const selected = resolveModelFamilyState({
+      models: sdkOrderedModels,
+      selectedModelId: "claude-haiku-4.5",
+    });
+    const globalDefault = resolveModelFamilyState({
+      models: sdkOrderedModels,
+      selectedModelId: "",
+      globalDefaultModelId: "claude-haiku-4.5",
+    });
+
+    expect(fallback.modelsByFamily.claude.map((model) => model.id)).toEqual([
+      "claude-sonnet-5",
+      "claude-haiku-4.5",
+    ]);
+    expect(fallback.tiles.find((tile) => tile.family === "claude")?.model?.id)
+      .toBe("claude-sonnet-5");
+    expect(selected.tiles.find((tile) => tile.family === "claude")?.model?.id)
+      .toBe("claude-haiku-4.5");
+    expect(globalDefault.tiles.find((tile) => tile.family === "claude")?.model?.id)
+      .toBe("claude-haiku-4.5");
+  });
+
   it("uses the remembered model for each family", () => {
     const state = resolveModelFamilyState({
       models: MODELS,

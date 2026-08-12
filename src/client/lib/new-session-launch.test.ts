@@ -25,6 +25,26 @@ const TIERED_MODEL: ModelInfo = {
 };
 
 describe("new-session launch state", () => {
+  it("preserves SDK model order while filtering disabled models", () => {
+    const state = resolveNewSessionLaunchState({
+      models: [
+        { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+        { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
+        {
+          id: "claude-disabled",
+          name: "Claude Aardvark",
+          policy: { state: "disabled" },
+        },
+      ],
+      selectedModelId: "",
+    });
+
+    expect(state.availableModels.map((model) => model.id)).toEqual([
+      "claude-sonnet-5",
+      "claude-haiku-4.5",
+    ]);
+  });
+
   it("selects concrete inherited effort and context values", () => {
     const state = resolveNewSessionLaunchState({
       models: [TIERED_MODEL],

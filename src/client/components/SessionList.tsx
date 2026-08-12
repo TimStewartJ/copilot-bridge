@@ -27,6 +27,7 @@ import ModelFamilyPicker from "./shared/ModelFamilyPicker";
 import {
   buildContextTierOptions,
   buildReasoningEffortOptions,
+  getSelectableModels,
 } from "../lib/new-session-launch";
 import {
   resolveModelFamilyState,
@@ -73,12 +74,6 @@ function getSessionModelSourceLabel(source?: SessionModelState["source"]): strin
     case "unknown": return "No saved model state";
     default: return "Checking session model";
   }
-}
-
-function getAvailableModels(models: readonly ModelInfo[] | null): ModelInfo[] {
-  return [...(models ?? [])]
-    .filter((model) => !model.policy || model.policy.state !== "disabled")
-    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getPreferredReasoningEffort(model?: ModelInfo): ReasoningEffort | undefined {
@@ -339,7 +334,7 @@ export default function SessionList({
     ? sessions.find((session) => session.sessionId === modelDialogSessionId)
     : null;
   const modelDialogQuery = useSessionModelQuery(modelDialogSessionId);
-  const availableModels = getAvailableModels(modelOptions);
+  const availableModels = getSelectableModels(modelOptions ?? []);
   const selectedDialogModel = modelOptions?.find((model) => model.id === modelDraft);
   const selectedDialogModelSupportsLongContext = modelSupportsLongContext(selectedDialogModel);
   const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;

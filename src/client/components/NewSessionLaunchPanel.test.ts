@@ -257,6 +257,46 @@ describe("NewSessionLaunchPanel", () => {
     expect(props.onModelFamilyChange).not.toHaveBeenCalled();
   });
 
+  it("keeps SDK order in family tiles and keyboard-focused refine choices", async () => {
+    const props = requiredProps();
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...props,
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+        { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
+        {
+          id: "claude-disabled",
+          name: "Claude Aardvark",
+          policy: { state: "disabled" },
+        },
+      ],
+      selectedModelId: "gpt-5.6",
+    }));
+
+    expect(findTile(harness!.dom.container, "Claude").textContent).toBe("Claude Sonnet 5");
+
+    const caret = findAllByTag(harness!.dom.container, "BUTTON")
+      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Claude model");
+    if (!caret) throw new Error("Claude refine caret was not rendered");
+    await harness!.act(async () => {
+      getReactProps(caret)?.onClick?.();
+    });
+
+    const options = findAllByTag(harness!.dom.container, "BUTTON")
+      .filter((button) => getReactProps(button)?.role === "option");
+    expect(options.map((button) => button.textContent)).toEqual([
+      "Claude Sonnet 5",
+      "Claude Haiku 4.5",
+    ]);
+    expect(document.activeElement).toBe(options[0]);
+
+    await harness!.act(async () => {
+      getReactProps(options[1])?.onClick?.();
+    });
+    expect(props.onModelChange).toHaveBeenCalledWith("claude-haiku-4.5");
+  });
+
   it("marks the Bridge default inside the refine menu rather than on the tile", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
