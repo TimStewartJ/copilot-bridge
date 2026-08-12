@@ -1,4 +1,4 @@
-import type { ModelInfo } from "../api";
+import type { ModelFamilyDefaults, ModelInfo } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
@@ -13,6 +13,7 @@ interface NewSessionLaunchPanelProps {
   modelsLoading: boolean;
   modelsError?: string;
   defaultModelId?: string;
+  familyDefaults?: ModelFamilyDefaults;
   selectedModelId: string;
   selectedModelFamily?: ModelFamily;
   reasoningEffortOptions: readonly LaunchOption<string>[];
@@ -37,6 +38,7 @@ export default function NewSessionLaunchPanel({
   modelsLoading,
   modelsError,
   defaultModelId,
+  familyDefaults,
   selectedModelId,
   selectedModelFamily,
   reasoningEffortOptions,
@@ -61,7 +63,7 @@ export default function NewSessionLaunchPanel({
         <div className="mb-5">
           <h2 className="text-base font-semibold text-text-primary">Start a new chat</h2>
           <p className="mt-1 text-sm text-text-muted">
-            Choose how this session should start. These choices only apply to this chat.
+            Model, effort, and context choices are remembered per family. Mode applies only to this chat.
           </p>
         </div>
 
@@ -78,6 +80,7 @@ export default function NewSessionLaunchPanel({
                 selectedModelId={selectedModelId}
                 selectedFamily={selectedModelFamily}
                 globalDefaultModelId={defaultModelId}
+                familyDefaults={familyDefaults}
                 allowUnselected
                 disabled={Boolean(modelsError)}
                 onSelectFamily={onModelFamilyChange}

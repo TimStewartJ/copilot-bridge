@@ -105,6 +105,27 @@ describe("NewSessionLaunchPanel", () => {
     expect(getReactProps(findTile(harness!.dom.container, "GPT"))?.["aria-pressed"]).toBe(false);
   });
 
+  it("shows the last remembered model for each family", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "gpt-5-mini", name: "GPT-5 mini" },
+        { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+        { id: "claude-opus-5", name: "Claude Opus 5" },
+      ],
+      selectedModelId: "claude-opus-5",
+      selectedModelFamily: "claude",
+      familyDefaults: {
+        gpt: { model: "gpt-5-mini" },
+        claude: { model: "claude-opus-5" },
+      },
+    }));
+
+    expect(findTile(harness!.dom.container, "GPT").textContent).toBe("GPT-5 mini");
+    expect(findTile(harness!.dom.container, "Claude").textContent).toBe("Claude Opus 5");
+  });
+
   it("does not mark a fallback model as selected when the SDK default is unresolved", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),

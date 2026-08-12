@@ -9,6 +9,7 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import { isModelFamily, type ModelFamily } from "../shared/model-families.js";
 
 export type ThemePreference = "light" | "dark" | "system";
 // Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
@@ -21,6 +22,14 @@ export interface BrowserSettings {
   headed?: boolean;
 }
 
+export interface ModelFamilyDefault {
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
+}
+
+export type ModelFamilyDefaults = Partial<Record<ModelFamily, ModelFamilyDefault>>;
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -31,6 +40,8 @@ export interface AppSettings {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
+  familyDefaults?: ModelFamilyDefaults;
+  lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
 }
 
@@ -72,6 +83,66 @@ function normalizeBrowserSettings(value: unknown): BrowserSettings | undefined {
     ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
     ...(headed ? { headed } : {}),
   };
+}
+
+function normalizeModelFamilyDefault(
+  value: unknown,
+  family: ModelFamily,
+): ModelFamilyDefault | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`familyDefaults.${family} must be an object`);
+  }
+  const raw = value as Record<string, unknown>;
+
+  if (raw.model !== undefined && raw.model !== null && typeof raw.model !== "string") {
+    throw new Error(`familyDefaults.${family}.model must be a string`);
+  }
+  const model = typeof raw.model === "string" ? raw.model.trim() : "";
+  if (!model) return undefined;
+
+  if (
+    raw.reasoningEffort !== undefined
+    && raw.reasoningEffort !== null
+    && typeof raw.reasoningEffort !== "string"
+  ) {
+    throw new Error(`familyDefaults.${family}.reasoningEffort must be a string`);
+  }
+  const reasoningEffort = typeof raw.reasoningEffort === "string"
+    ? raw.reasoningEffort.trim()
+    : "";
+
+  const contextTier = raw.contextTier;
+  if (
+    contextTier !== undefined
+    && contextTier !== null
+    && contextTier !== ""
+    && !isCopilotContextTier(contextTier)
+  ) {
+    throw new Error(`familyDefaults.${family}.contextTier must be default or long_context`);
+  }
+
+  return {
+    model,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
+  };
+}
+
+function normalizeModelFamilyDefaults(value: unknown): ModelFamilyDefaults | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("familyDefaults must be an object");
+  }
+  const normalized: ModelFamilyDefaults = {};
+  for (const [family, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!isModelFamily(family)) {
+      throw new Error(`familyDefaults key "${family}" is not a known model family`);
+    }
+    const normalizedEntry = normalizeModelFamilyDefault(entry, family);
+    if (normalizedEntry) normalized[family] = normalizedEntry;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -164,6 +235,20 @@ export function createSettingsStore(db: DatabaseSync) {
         throw new Error("contextTier must be default or long_context");
       }
       current.contextTier = isCopilotContextTier(contextTier) ? contextTier : undefined;
+    }
+    if ("familyDefaults" in updates) {
+      current.familyDefaults = normalizeModelFamilyDefaults(updates.familyDefaults);
+    }
+    if ("lastModelFamily" in updates) {
+      const lastModelFamily = updates.lastModelFamily as unknown;
+      if (
+        lastModelFamily !== undefined
+        && lastModelFamily !== ""
+        && !isModelFamily(lastModelFamily)
+      ) {
+        throw new Error("lastModelFamily must be gpt, claude, or other");
+      }
+      current.lastModelFamily = isModelFamily(lastModelFamily) ? lastModelFamily : undefined;
     }
     if ("browser" in updates) current.browser = normalizeBrowserSettings(updates.browser);
 
