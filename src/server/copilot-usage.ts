@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -200,6 +201,27 @@ export interface CopilotUsageSessionScanResult {
   dailyRows?: CopilotUsageDailyModelRow[];
   totals: CopilotUsageTotals;
   sessionRow?: CopilotUsageSessionRow;
+  forkAccounting?: CopilotUsageForkAccounting;
+}
+
+export interface CopilotUsageForkAccounting {
+  sessionCreatedAt: string | null;
+  sessionStartTime: number;
+  firstShutdownTotalNanoAiu: number;
+  shutdowns: CopilotUsageShutdownSnapshot[];
+}
+
+export interface CopilotUsageShutdownSnapshot {
+  key: string;
+  shutdownAt: string | null;
+  models: CopilotUsageShutdownModelSnapshot[];
+  topLevelMeteredAiCredits: number | null;
+}
+
+export interface CopilotUsageShutdownModelSnapshot {
+  model: string;
+  contextTier?: CopilotContextTier;
+  totals: CopilotUsageTotals;
 }
 
 interface AssistantUsageAccumulator {
@@ -229,7 +251,7 @@ const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage his
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 /** nanoAIU per AI credit. The CLI reports metered cost as `totalNanoAiu`. */
 const NANO_AIU_PER_AI_CREDIT = 1_000_000_000;
-export const COPILOT_USAGE_PARSER_VERSION = 5;
+export const COPILOT_USAGE_PARSER_VERSION = 6;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -300,6 +322,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
 }): CopilotUsageSummary {
   const resolvedRange = resolveCopilotUsageRange(range, now());
   const summary = createEmptySummary(now, resolvedRange);
+  const normalizedSessionResults = deduplicateForkSessionResults([...sessionResults]);
   const requestedSessionIds = sessionIds ? new Set(sessionIds) : null;
   const modelTotals = new Map<string, CopilotUsageModelRow>();
   const dailyModelTotals = new Map<string, Map<string, CopilotUsageModelRow>>();
@@ -307,7 +330,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
   const startAtMs = resolvedRange.startAt ? Date.parse(resolvedRange.startAt) : null;
   let resultCount = 0;
 
-  for (const result of sessionResults) {
+  for (const result of normalizedSessionResults) {
     resultCount += 1;
 
     if (startDate !== null) {
@@ -530,6 +553,75 @@ function hasUsageTotals(totals: CopilotUsageTotals): boolean {
     || totals.meteredAiCredits > 0;
 }
 
+function deduplicateForkSessionResults(
+  sessionResults: readonly CopilotUsageSessionScanResult[],
+): CopilotUsageSessionScanResult[] {
+  const forkGroups = new Map<string, CopilotUsageSessionScanResult[]>();
+  for (const result of sessionResults) {
+    if (!result.included || !result.sessionRow || !result.forkAccounting) continue;
+    const groupKey = JSON.stringify([
+      result.forkAccounting.sessionStartTime,
+      result.forkAccounting.firstShutdownTotalNanoAiu,
+    ]);
+    const group = forkGroups.get(groupKey) ?? [];
+    group.push(result);
+    forkGroups.set(groupKey, group);
+  }
+
+  const replacements = new Map<CopilotUsageSessionScanResult, CopilotUsageSessionScanResult>();
+  for (const group of forkGroups.values()) {
+    if (group.length < 2) continue;
+    group.sort(compareForkSessionResults);
+    const countedShutdowns = new Set<string>();
+    for (const result of group) {
+      const accounting = result.forkAccounting;
+      const sessionId = result.sessionRow?.sessionId;
+      if (!accounting || !sessionId) continue;
+      const includedShutdowns = new Set<string>();
+      let hasInheritedShutdown = false;
+      for (const shutdown of accounting.shutdowns) {
+        if (countedShutdowns.has(shutdown.key)) {
+          hasInheritedShutdown = true;
+          continue;
+        }
+        countedShutdowns.add(shutdown.key);
+        includedShutdowns.add(shutdown.key);
+      }
+      if (!hasInheritedShutdown) continue;
+      const deduplicatedResult = createIncludedResult(
+        sessionId,
+        buildShutdownUsageRows(
+          accounting.shutdowns,
+          (shutdown) => includedShutdowns.has(shutdown.key),
+        ),
+        accounting,
+      );
+      replacements.set(
+        result,
+        hasUsageTotals(deduplicatedResult.totals)
+          ? deduplicatedResult
+          : { ...deduplicatedResult, sessionRow: undefined },
+      );
+    }
+  }
+
+  return sessionResults.map((result) => replacements.get(result) ?? result);
+}
+
+function compareForkSessionResults(
+  left: CopilotUsageSessionScanResult,
+  right: CopilotUsageSessionScanResult,
+): number {
+  const leftCreatedAt = left.forkAccounting?.sessionCreatedAt;
+  const rightCreatedAt = right.forkAccounting?.sessionCreatedAt;
+  if (leftCreatedAt && rightCreatedAt && leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt.localeCompare(rightCreatedAt);
+  }
+  if (leftCreatedAt) return -1;
+  if (rightCreatedAt) return 1;
+  return (left.sessionRow?.sessionId ?? "").localeCompare(right.sessionRow?.sessionId ?? "");
+}
+
 export async function scanCopilotUsageSession(
   sessionStateDir: string,
   sessionId: string,
@@ -553,16 +645,16 @@ export async function scanCopilotUsageSession(
   let latestShutdownAt: string | null = null;
   let selectedModel = "unknown";
   let selectedContextTier: CopilotContextTier | undefined;
+  let sessionCreatedAt: string | null = null;
+  let firstShutdownSessionStartTime: number | null = null;
+  let firstShutdownTotalNanoAiu: number | null = null;
+  let capturedFirstShutdown = false;
   const persistedState = await readPersistedUsageModelState(join(sessionStateDir, sessionId));
   if (persistedState.model) {
     selectedModel = persistedState.model;
     selectedContextTier = persistedState.contextTier;
   }
-  const usableShutdowns: Array<{
-    shutdownAt: string | null;
-    modelMetrics: Record<string, unknown>;
-    topLevelMeteredAiCredits: number | null;
-  }> = [];
+  const usableShutdowns: CopilotUsageShutdownSnapshot[] = [];
   const assistantUsageByRequest = new Map<string, AssistantUsageAccumulator>();
   let fallbackEventIndex = 0;
   const stream = createReadStream(eventsPath, { encoding: "utf-8" });
@@ -589,6 +681,7 @@ export async function scanCopilotUsageSession(
       const eventAt = normalizeTimestamp(eventRecord?.timestamp);
       const data = asRecord(eventRecord?.data);
       if (eventRecord?.type === "session.start") {
+        sessionCreatedAt ??= eventAt;
         selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
         selectedContextTier = normalizeContextTier(data?.contextTier)
           ?? (persistedState.model === selectedModel ? persistedState.contextTier : undefined);
@@ -642,11 +735,34 @@ export async function scanCopilotUsageSession(
       latestShutdownAt = eventAt ?? latestShutdownAt;
 
       const modelMetrics = asRecord(data?.modelMetrics);
+      const shutdownSessionStartTime = extractNonNegativeNumber(data?.sessionStartTime);
+      const shutdownTotalNanoAiu = extractNonNegativeNumber(data?.totalNanoAiu);
+      if (!capturedFirstShutdown) {
+        capturedFirstShutdown = true;
+        firstShutdownSessionStartTime = shutdownSessionStartTime;
+        firstShutdownTotalNanoAiu = shutdownTotalNanoAiu;
+      }
       const topLevelMeteredAiCredits = extractMeteredAiCredits(data?.totalNanoAiu);
       if ((modelMetrics && Object.keys(modelMetrics).length > 0) || (topLevelMeteredAiCredits ?? 0) > 0) {
+        const models = Object.entries(modelMetrics ?? {}).map(([modelName, metrics]) => {
+          const model = modelName.trim() || "unknown";
+          const contextTier = model === persistedState.model ? persistedState.contextTier : undefined;
+          return {
+            model,
+            ...(contextTier ? { contextTier } : {}),
+            totals: extractTotals(metrics),
+          };
+        });
         usableShutdowns.push({
+          key: createShutdownSnapshotKey({
+            eventId: normalizeNonEmptyString(eventRecord?.id),
+            shutdownAt: eventAt,
+            sessionStartTime: shutdownSessionStartTime,
+            totalNanoAiu: shutdownTotalNanoAiu,
+            models,
+          }),
           shutdownAt: eventAt,
-          modelMetrics: modelMetrics ?? {},
+          models,
           topLevelMeteredAiCredits,
         });
       }
@@ -670,6 +786,29 @@ export async function scanCopilotUsageSession(
     return createSkippedResult("empty_model_metrics", latestShutdownAt, true);
   }
 
+  const forkAccounting = firstShutdownSessionStartTime !== null
+    && firstShutdownTotalNanoAiu !== null
+    // A missing authoritative snapshot makes the billed split between an
+    // inherited gap and a later divergent shutdown unknowable.
+    && usableShutdowns.every((shutdown) => shutdown.topLevelMeteredAiCredits !== null)
+    ? {
+        sessionCreatedAt,
+        sessionStartTime: firstShutdownSessionStartTime,
+        firstShutdownTotalNanoAiu,
+        shutdowns: usableShutdowns,
+      }
+    : undefined;
+  return createIncludedResult(
+    sessionId,
+    buildShutdownUsageRows(usableShutdowns),
+    forkAccounting,
+  );
+}
+
+function buildShutdownUsageRows(
+  usableShutdowns: readonly CopilotUsageShutdownSnapshot[],
+  includeShutdown: (shutdown: CopilotUsageShutdownSnapshot) => boolean = () => true,
+) {
   const modelTotals = new Map<string, CopilotUsageModelRow>();
   const previousCumulativeTotals = new Map<string, CopilotUsageTotals>();
   const dailyTotals = new Map<string, CopilotUsageDailyModelRow>();
@@ -683,7 +822,8 @@ export async function scanCopilotUsageSession(
   const pendingMeteringDeltas: PendingMeteringDelta[] = [];
   let previousTopLevelMeteredAiCredits: number | undefined;
   for (const usableShutdown of usableShutdowns) {
-    if (usableShutdown.shutdownAt) {
+    const included = includeShutdown(usableShutdown);
+    if (included && usableShutdown.shutdownAt) {
       includedShutdownAts.push(usableShutdown.shutdownAt);
     }
     const dayKey = usableShutdown.shutdownAt ? copilotUsageDayKey(usableShutdown.shutdownAt) : null;
@@ -698,11 +838,10 @@ export async function scanCopilotUsageSession(
       key: string;
       delta: CopilotUsageTotals;
     }> = [];
-    for (const [modelName, metrics] of Object.entries(usableShutdown.modelMetrics)) {
-      const model = modelName.trim() || "unknown";
-      const contextTier = model === persistedState.model ? persistedState.contextTier : undefined;
+    for (const modelSnapshot of usableShutdown.models) {
+      const { model, contextTier } = modelSnapshot;
       const key = usageModelKey(model, contextTier);
-      const cumulative = extractTotals(metrics);
+      const cumulative = modelSnapshot.totals;
       const delta = diffCumulativeTotals(previousCumulativeTotals.get(key), cumulative);
       previousCumulativeTotals.set(key, cumulative);
       if (hasAuthoritativeMetering) {
@@ -723,6 +862,14 @@ export async function scanCopilotUsageSession(
           ? { ...delta, meteredAiCredits: 0, meteredTokens: 0 }
           : delta,
       });
+    }
+
+    if (!included) {
+      if (usableShutdown.topLevelMeteredAiCredits !== null) {
+        previousTopLevelMeteredAiCredits = usableShutdown.topLevelMeteredAiCredits;
+        pendingMeteringDeltas.length = 0;
+      }
+      continue;
     }
 
     for (const { model, contextTier, key, delta } of snapshotDeltas) {
@@ -788,11 +935,11 @@ export async function scanCopilotUsageSession(
     }
   }
 
-  return createIncludedResult(sessionId, {
+  return {
     modelRows: [...modelTotals.values()],
     includedUsageAts: includedShutdownAts,
     dailyRows: [...dailyTotals.values()],
-  });
+  };
 }
 
 function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccumulator>) {
@@ -853,6 +1000,7 @@ function createIncludedResult(
     includedUsageAts: string[];
     dailyRows: CopilotUsageDailyModelRow[];
   },
+  forkAccounting?: CopilotUsageForkAccounting,
 ): CopilotUsageSessionScanResult {
   const modelRows = usage.modelRows.sort((left, right) => (
     right.totalTokens - left.totalTokens
@@ -877,6 +1025,7 @@ function createIncludedResult(
     modelRows,
     dailyRows,
     totals,
+    ...(forkAccounting ? { forkAccounting } : {}),
     sessionRow: {
       sessionId,
       shutdownAt: maxTimestampFromList(usage.includedUsageAts),
@@ -1417,6 +1566,48 @@ function extractMeteredAiCredits(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed >= 0
     ? parsed / NANO_AIU_PER_AI_CREDIT
     : null;
+}
+
+function extractNonNegativeNumber(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function createShutdownSnapshotKey({
+  eventId,
+  shutdownAt,
+  sessionStartTime,
+  totalNanoAiu,
+  models,
+}: {
+  eventId: string | null;
+  shutdownAt: string | null;
+  sessionStartTime: number | null;
+  totalNanoAiu: number | null;
+  models: readonly CopilotUsageShutdownModelSnapshot[];
+}): string {
+  if (eventId) return `event:${eventId}`;
+  const normalizedModels = [...models].sort((left, right) => (
+    left.model.localeCompare(right.model)
+    || (left.contextTier ?? "").localeCompare(right.contextTier ?? "")
+  ));
+  const digest = createHash("sha256")
+    .update(JSON.stringify({
+      shutdownAt,
+      sessionStartTime,
+      totalNanoAiu,
+      models: normalizedModels,
+    }))
+    .digest("hex");
+  return `snapshot:${digest}`;
+}
+
+function normalizeNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized || null;
 }
 
 function normalizeModelName(value: unknown): string | null {

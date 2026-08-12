@@ -1318,6 +1318,159 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.models).toMatchObject([{ model: "gpt-4o", sessions: 1, requests: 320 }]);
   });
 
+  it("counts a fork's inherited shutdown prefix once and each divergent suffix normally", async () => {
+    const copilotHome = createCopilotHome();
+    const sharedShutdowns = [
+      {
+        id: "shared-shutdown-1",
+        type: "session.shutdown",
+        timestamp: "2026-08-01T08:00:00.000Z",
+        data: {
+          sessionStartTime: 1_785_000_000_000,
+          totalNanoAiu: 150_000_000_000,
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100, outputTokens: 20 },
+              totalNanoAiu: 100_000_000_000,
+            },
+          },
+        },
+      },
+      {
+        id: "shared-shutdown-2",
+        type: "session.shutdown",
+        timestamp: "2026-08-02T08:00:00.000Z",
+        data: {
+          sessionStartTime: 1_785_000_000_000,
+          totalNanoAiu: 240_000_000_000,
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 2 },
+              usage: { inputTokens: 160, outputTokens: 40 },
+              totalNanoAiu: 180_000_000_000,
+            },
+          },
+        },
+      },
+    ];
+    writeEvents(copilotHome, "parent-session", [
+      {
+        type: "session.start",
+        timestamp: "2026-08-01T07:00:00.000Z",
+        data: { selectedModel: "gpt-5.5" },
+      },
+      ...sharedShutdowns,
+      {
+        id: "parent-shutdown-3",
+        type: "session.shutdown",
+        timestamp: "2026-08-03T08:00:00.000Z",
+        data: {
+          sessionStartTime: 1_785_000_000_000,
+          totalNanoAiu: 330_000_000_000,
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 3 },
+              usage: { inputTokens: 220, outputTokens: 60 },
+              totalNanoAiu: 250_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+    writeEvents(copilotHome, "fork-session", [
+      {
+        type: "session.start",
+        timestamp: "2026-08-02T12:00:00.000Z",
+        data: { selectedModel: "gpt-5.5" },
+      },
+      ...sharedShutdowns,
+      {
+        id: "fork-shutdown-3",
+        type: "session.shutdown",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        data: {
+          sessionStartTime: 1_785_000_000_000,
+          totalNanoAiu: 390_000_000_000,
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 4 },
+              usage: { inputTokens: 260, outputTokens: 80 },
+              totalNanoAiu: 280_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      now: () => Date.parse("2026-08-05T00:00:00.000Z"),
+    });
+
+    expect(summary.totals).toMatchObject({
+      requests: 5,
+      inputTokens: 320,
+      uncachedInputTokens: 320,
+      outputTokens: 100,
+      totalTokens: 420,
+      meteredAiCredits: 480,
+      meteredTokens: 420,
+    });
+    expect(summary.models.find((row) => row.model === "gpt-5.5")).toMatchObject({
+      sessions: 2,
+      requests: 5,
+      totalTokens: 420,
+      meteredAiCredits: 350,
+    });
+    expect(summary.models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL)).toMatchObject({
+      sessions: 2,
+      totalTokens: 0,
+      meteredAiCredits: 130,
+    });
+
+    const sessions = new Map(summary.sessions.map((session) => [session.sessionId, session]));
+    expect(sessions.get("parent-session")).toMatchObject({
+      requests: 3,
+      totalTokens: 280,
+      meteredAiCredits: 330,
+    });
+    expect(sessions.get("fork-session")).toMatchObject({
+      requests: 2,
+      totalTokens: 140,
+      meteredAiCredits: 150,
+    });
+
+    const dailyTotals = summary.days.reduce((totals, day) => {
+      totals.requests += day.requests;
+      totals.totalTokens += day.totalTokens;
+      totals.meteredAiCredits += day.meteredAiCredits;
+      totals.meteredTokens += day.meteredTokens;
+      return totals;
+    }, {
+      requests: 0,
+      totalTokens: 0,
+      meteredAiCredits: 0,
+      meteredTokens: 0,
+    });
+    expect(dailyTotals).toEqual({
+      requests: summary.totals.requests,
+      totalTokens: summary.totals.totalTokens,
+      meteredAiCredits: summary.totals.meteredAiCredits,
+      meteredTokens: summary.totals.meteredTokens,
+    });
+    expect(summary.days.map((day) => ({
+      date: day.date,
+      totalTokens: day.totalTokens,
+      meteredAiCredits: day.meteredAiCredits,
+    }))).toEqual([
+      { date: "2026-08-01", totalTokens: 120, meteredAiCredits: 150 },
+      { date: "2026-08-02", totalTokens: 80, meteredAiCredits: 90 },
+      { date: "2026-08-03", totalTokens: 80, meteredAiCredits: 90 },
+      { date: "2026-08-04", totalTokens: 140, meteredAiCredits: 150 },
+    ]);
+  });
+
   it("treats a decreasing shutdown snapshot as a restarted counter", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
