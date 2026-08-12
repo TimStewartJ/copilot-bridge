@@ -418,6 +418,50 @@ describe("SessionList change model dialog", () => {
     }
   });
 
+  it("keeps SDK order in change-model family tiles and refine choices", async () => {
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+      [
+        TIERED_MODEL,
+        { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+        { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
+        {
+          id: "claude-disabled",
+          name: "Claude Aardvark",
+          policy: { state: "disabled" },
+        },
+      ],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Claude Sonnet 5"),
+        { label: "ordered model metadata" },
+      );
+
+      const claudeTile = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Claude:"));
+      expect(claudeTile?.textContent).toBe("Claude Sonnet 5");
+
+      const caret = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => getReactProps(button)?.["aria-label"] === "Choose Claude model");
+      if (!caret) throw new Error("Claude refine caret was not rendered");
+      await harness.act(async () => {
+        getReactProps(caret)?.onClick?.();
+      });
+
+      const options = findAllByTag(harness.dom.container, "BUTTON")
+        .filter((button) => getReactProps(button)?.role === "option");
+      expect(options.map((button) => button.textContent)).toEqual([
+        "Claude Sonnet 5",
+        "Claude Haiku 4.5",
+      ]);
+      expect(document.activeElement).toBe(options[0]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("keeps the current effort when the selected model has no effort metadata", async () => {
     const harness = await openModelDialog(
       { model: "mystery-model", reasoningEffort: "high", source: "events" },

@@ -1,6 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { Session, Attachment } from "./api";
-import type { CopilotContextTier } from "../shared/copilot-context.js";
+import {
+  isCopilotContextTier,
+  type CopilotContextTier,
+} from "../shared/copilot-context.js";
+import { isRecord } from "../shared/is-record.js";
 
 const STORAGE_KEY = "copilot-bridge:session-drafts";
 const DEBOUNCE_MS = 500;
@@ -29,8 +33,204 @@ type DraftLaunchOptionsUpdate =
   | undefined
   | ((current: DraftLaunchOptions | undefined) => DraftLaunchOptions | undefined);
 
+interface NormalizedValue<T> {
+  value?: T;
+  changed: boolean;
+}
+
+interface LoadedDraftState {
+  state: DraftState;
+  needsRewrite: boolean;
+}
+
 function isRouteDraftKey(key: string): boolean {
   return key.startsWith("draft:");
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function normalizeAttachment(value: unknown): NormalizedValue<Attachment> {
+  if (!isRecord(value) || typeof value.type !== "string") {
+    return { changed: true };
+  }
+
+  if (value.type === "blob") {
+    if (typeof value.data !== "string" || typeof value.mimeType !== "string") {
+      return { changed: true };
+    }
+    const displayName = typeof value.displayName === "string" ? value.displayName : undefined;
+    return {
+      value: {
+        type: "blob",
+        data: value.data,
+        mimeType: value.mimeType,
+        ...(displayName !== undefined ? { displayName } : {}),
+      },
+      changed: !hasOnlyKeys(value, ["type", "data", "mimeType", "displayName"])
+        || ("displayName" in value && displayName === undefined),
+    };
+  }
+
+  if (value.type === "uploaded") {
+    if (
+      typeof value.displayName !== "string"
+      || typeof value.mimeType !== "string"
+      || typeof value.size !== "number"
+      || !Number.isFinite(value.size)
+      || value.size < 0
+    ) {
+      return { changed: true };
+    }
+    return {
+      value: {
+        type: "uploaded",
+        displayName: value.displayName,
+        mimeType: value.mimeType,
+        size: value.size,
+      },
+      changed: !hasOnlyKeys(value, ["type", "displayName", "mimeType", "size"]),
+    };
+  }
+
+  if (value.type === "file") {
+    if (typeof value.path !== "string") {
+      return { changed: true };
+    }
+    const displayName = typeof value.displayName === "string" ? value.displayName : undefined;
+    return {
+      value: {
+        type: "file",
+        path: value.path,
+        ...(displayName !== undefined ? { displayName } : {}),
+      },
+      changed: !hasOnlyKeys(value, ["type", "path", "displayName"])
+        || ("displayName" in value && displayName === undefined),
+    };
+  }
+
+  return { changed: true };
+}
+
+function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOptions> {
+  if (!isRecord(value)) return { changed: true };
+
+  let changed = !hasOnlyKeys(value, ["model", "reasoningEffort", "contextTier"]);
+  const launch: DraftLaunchOptions = {};
+
+  if ("model" in value) {
+    if (isNonEmptyString(value.model)) {
+      launch.model = value.model;
+    } else {
+      changed = true;
+    }
+  }
+
+  if ("reasoningEffort" in value) {
+    const selection = value.reasoningEffort;
+    if (
+      isRecord(selection)
+      && isNonEmptyString(selection.modelId)
+      && isNonEmptyString(selection.value)
+      && hasOnlyKeys(selection, ["modelId", "value"])
+    ) {
+      launch.reasoningEffort = {
+        modelId: selection.modelId,
+        value: selection.value,
+      };
+    } else {
+      changed = true;
+    }
+  }
+
+  if ("contextTier" in value) {
+    const selection = value.contextTier;
+    if (
+      isRecord(selection)
+      && isNonEmptyString(selection.modelId)
+      && isCopilotContextTier(selection.value)
+      && hasOnlyKeys(selection, ["modelId", "value"])
+    ) {
+      launch.contextTier = {
+        modelId: selection.modelId,
+        value: selection.value,
+      };
+    } else {
+      changed = true;
+    }
+  }
+
+  if (!launch.model && !launch.reasoningEffort && !launch.contextTier) {
+    return { changed: true };
+  }
+  return { value: launch, changed };
+}
+
+function normalizeDraft(value: unknown): NormalizedValue<Draft> {
+  if (!isRecord(value) || typeof value.text !== "string") {
+    return { changed: true };
+  }
+
+  let changed = !hasOnlyKeys(value, ["text", "attachments", "launch"]);
+  let attachments: Attachment[] | undefined;
+  if ("attachments" in value) {
+    if (Array.isArray(value.attachments)) {
+      const normalized = value.attachments.flatMap((attachment) => {
+        const result = normalizeAttachment(attachment);
+        if (result.changed) changed = true;
+        return result.value ? [result.value] : [];
+      });
+      if (normalized.length > 0) {
+        attachments = normalized;
+      } else {
+        changed = true;
+      }
+    } else {
+      changed = true;
+    }
+  }
+
+  let launch: DraftLaunchOptions | undefined;
+  if ("launch" in value) {
+    const normalized = normalizeLaunchOptions(value.launch);
+    if (normalized.changed) changed = true;
+    launch = normalized.value;
+  }
+
+  const hasContent = value.text.trim().length > 0
+    || Boolean(attachments?.length)
+    || Boolean(launch);
+  if (!hasContent) return { changed: true };
+
+  return {
+    value: {
+      text: value.text,
+      ...(attachments ? { attachments } : {}),
+      ...(launch ? { launch } : {}),
+    },
+    changed,
+  };
+}
+
+function normalizeDraftState(value: unknown): LoadedDraftState {
+  if (!isRecord(value)) {
+    return { state: {}, needsRewrite: true };
+  }
+
+  const state: DraftState = {};
+  let needsRewrite = false;
+  for (const [composerKey, draft] of Object.entries(value)) {
+    const normalized = normalizeDraft(draft);
+    if (normalized.changed) needsRewrite = true;
+    if (normalized.value) state[composerKey] = normalized.value;
+  }
+  return { state, needsRewrite };
 }
 
 function buildNextDraftState(
@@ -60,12 +260,19 @@ function buildNextDraftState(
   };
 }
 
-function load(): DraftState {
+function load(): LoadedDraftState {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    raw = localStorage.getItem(STORAGE_KEY);
   } catch {
-    return {};
+    return { state: {}, needsRewrite: false };
+  }
+  if (!raw) return { state: {}, needsRewrite: false };
+
+  try {
+    return normalizeDraftState(JSON.parse(raw));
+  } catch {
+    return { state: {}, needsRewrite: true };
   }
 }
 
@@ -90,13 +297,21 @@ function save(state: DraftState): void {
 }
 
 export function useDrafts(sessions: Session[]) {
-  const [state, setState] = useState<DraftState>(load);
+  const [initialLoad] = useState(load);
+  const [state, setState] = useState<DraftState>(initialLoad.state);
   const stateRef = useRef(state);
   const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const sanitizedStorageWrittenRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    if (!initialLoad.needsRewrite || sanitizedStorageWrittenRef.current) return;
+    sanitizedStorageWrittenRef.current = true;
+    save(stateRef.current);
+  }, [initialLoad.needsRewrite]);
 
   // GC: prune drafts for sessions that no longer exist
   useEffect(() => {

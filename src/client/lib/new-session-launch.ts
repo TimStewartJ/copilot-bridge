@@ -100,6 +100,10 @@ export function buildContextTierOptions(
   }];
 }
 
+export function getSelectableModels(models: readonly ModelInfo[]): ModelInfo[] {
+  return models.filter((model) => model.policy?.state !== "disabled");
+}
+
 function buildNewSessionContextTierOptions(
   model: ModelInfo | undefined,
 ): LaunchOption<CopilotContextTier>[] {
@@ -138,9 +142,7 @@ export function resolveNewSessionLaunchState({
   reasoningEffortSelection,
   contextTierSelection,
 }: ResolveNewSessionLaunchStateOptions): NewSessionLaunchState {
-  const availableModels = models
-    .filter((model) => model.policy?.state !== "disabled")
-    .sort((left, right) => left.name.localeCompare(right.name));
+  const availableModels = getSelectableModels(models);
   const effectiveModelId = selectedModelId || defaultModelId;
   const effectiveModel = effectiveModelId
     ? availableModels.find((model) => model.id === effectiveModelId)
