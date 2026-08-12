@@ -24,6 +24,11 @@ export interface TaskRowSignal {
   animated?: boolean;
 }
 
+export interface TaskActivityDot {
+  tone: "info" | "warning";
+  animated: boolean;
+}
+
 function signal(
   kind: TaskRowSignalKind,
   label: string,
@@ -106,6 +111,19 @@ export function getTaskRowSignals(
   }
 
   return signals;
+}
+
+export function getTaskActivityDot(indicator?: TaskIndicator): TaskActivityDot | null {
+  if ((indicator?.needsUserInputCount ?? 0) > 0) {
+    return { tone: "warning", animated: false };
+  }
+  if (indicator?.stalled) {
+    return { tone: "warning", animated: true };
+  }
+  if (indicator?.busy) {
+    return { tone: "info", animated: true };
+  }
+  return null;
 }
 
 export function shouldShowTaskRowUnreadDot(
