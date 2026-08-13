@@ -1322,6 +1322,7 @@ export class SessionManager {
       this.endSessionCreation(creationReservation);
     };
     try {
+      const settings = this.deps.settingsStore?.getSettings();
       session = await client.createSession(sessionConfig);
       if (expectedSessionId && session.sessionId !== expectedSessionId) {
         await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
@@ -1347,7 +1348,6 @@ export class SessionManager {
         try { await client.deleteSession(session.sessionId); } catch { /* backend shutdown may already own cleanup */ }
         throw new Error("Session manager shut down before session creation completed");
       }
-      const settings = this.deps.settingsStore?.getSettings();
       const model = sessionConfig.model;
       if (typeof model === "string" && model.trim()) {
         const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);

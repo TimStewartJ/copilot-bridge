@@ -4,6 +4,7 @@ import { isLocalMcpServerConfig } from "../mcp-config.js";
 import { createSettingsStore } from "../settings-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { DatabaseSync } from "../db.js";
+import { testExecutablePath } from "./test-paths.js";
 
 let db: DatabaseSync;
 let store: SettingsStore;
@@ -12,6 +13,16 @@ beforeEach(() => {
   db = setupTestDb();
   store = createSettingsStore(db);
 });
+
+function writeRawSettings(value: string): void {
+  db.prepare(
+    "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+  ).run(value, value);
+}
+
+function readRawSettings(): string {
+  return (db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string }).value;
+}
 
 describe("settings-store", () => {
   it("updateSettings persists and returns updated settings", () => {
@@ -145,6 +156,119 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({
       lastModelFamily: "gemini" as any,
     })).toThrow("lastModelFamily must be gpt, claude, or other");
+  });
+
+  it("validates the full update before changing MCP registry rows", () => {
+    store.updateSettings({
+      mcpServers: { before: { command: "before", args: [] } },
+      theme: "dark",
+    });
+
+    expect(() => store.updateSettings({
+      mcpServers: { after: { command: "after", args: [] } },
+      contextTier: "invalid" as any,
+    })).toThrow("contextTier must be default or long_context");
+
+    expect(store.getMcpServers()).toEqual({
+      before: { command: "before", args: [] },
+    });
+    expect(store.getSettings().theme).toBe("dark");
+  });
+
+  it("rolls back MCP registry changes when the settings row write fails", () => {
+    store.updateSettings({
+      mcpServers: { before: { command: "before", args: [] } },
+      theme: "dark",
+    });
+    db.exec(`
+      CREATE TRIGGER block_app_settings_update
+      BEFORE UPDATE ON settings
+      WHEN NEW.key = 'app'
+      BEGIN
+        SELECT RAISE(ABORT, 'settings write blocked');
+      END;
+    `);
+
+    expect(() => store.updateSettings({
+      mcpServers: { after: { command: "after", args: [] } },
+      theme: "light",
+    })).toThrow("settings write blocked");
+
+    expect(store.getMcpServers()).toEqual({
+      before: { command: "before", args: [] },
+    });
+    expect(store.getSettings().theme).toBe("dark");
+  });
+
+  it.each([
+    ["malformed JSON", "{"],
+    ["null", "null"],
+    ["an array", "[]"],
+    ["a string", '"settings"'],
+    ["a number", "42"],
+  ])("fails visibly when the persisted row contains %s", (_label, raw) => {
+    writeRawSettings(raw);
+
+    expect(() => store.getSettings()).toThrow("Persisted app settings are unreadable");
+    expect(readRawSettings()).toBe(raw);
+  });
+
+  it.each([
+    ["browser settings", { browser: { headed: "true" } }],
+    ["model-family settings", { familyDefaults: { gpt: { model: "gpt-5.6-sol", contextTier: "invalid" } } }],
+  ])("rejects invalid nested persisted %s", (_label, raw) => {
+    writeRawSettings(JSON.stringify(raw));
+
+    expect(() => store.getSettings()).toThrow("Persisted app settings are unreadable");
+  });
+
+  it("hydrates and normalizes valid legacy app settings", () => {
+    const executablePath = testExecutablePath("chromium");
+    writeRawSettings(JSON.stringify({
+      providers: { github: { owner: "octo", defaultRepo: "bridge" } },
+      theme: "dark",
+      identity: "Bridge operator",
+      model: " gpt-5.6-sol ",
+      reasoningEffort: " high ",
+      contextTier: "long_context",
+      familyDefaults: {
+        gpt: { model: " gpt-5.6-sol ", reasoningEffort: " high " },
+      },
+      browser: {
+        executablePath: ` ${executablePath} `,
+        headed: true,
+      },
+      mcpServers: {
+        legacy: { command: "legacy", args: [] },
+      },
+      obsoleteSetting: true,
+    }));
+
+    expect(store.getSettings()).toEqual({
+      providers: { github: { owner: "octo", defaultRepo: "bridge" } },
+      mcpServers: {},
+      theme: "dark",
+      identity: "Bridge operator",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+      familyDefaults: {
+        gpt: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+      },
+      browser: {
+        executablePath,
+        headed: true,
+      },
+    });
+  });
+
+  it("does not overwrite an unreadable row when a later update is attempted", () => {
+    const raw = "{broken";
+    writeRawSettings(raw);
+
+    expect(() => store.updateSettings({ theme: "light" }))
+      .toThrow("Persisted app settings are unreadable");
+    expect(readRawSettings()).toBe(raw);
   });
 
 });
