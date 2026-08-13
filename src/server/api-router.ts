@@ -8,6 +8,7 @@ import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
+import { SettingsValidationError } from "./settings-store.js";
 import {
   createServerShutdownCoordinator,
   type ServerShutdownCoordinator,
@@ -4771,7 +4772,7 @@ export function createApiRouter(
     try {
       res.json(ctx.settingsStore.getSettings());
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -4805,7 +4806,8 @@ export function createApiRouter(
       console.log("[settings] Settings updated");
       res.json(updated);
     } catch (err) {
-      res.status(400).json({ error: String(err) });
+      const status = err instanceof SettingsValidationError ? 400 : 500;
+      res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

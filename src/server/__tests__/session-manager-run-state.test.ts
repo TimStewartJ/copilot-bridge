@@ -24,7 +24,15 @@ import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 describe("SessionManager run state", () => {
-  function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths; telemetry?: boolean } = {}) {
+  function createManager(opts: {
+    copilotHome?: string;
+    runtimePaths?: RuntimePaths;
+    telemetry?: boolean;
+    settingsStore?: {
+      getMcpServers: () => Record<string, never>;
+      getSettings: () => { mcpServers: Record<string, never> };
+    };
+  } = {}) {
     const db = setupTestDb();
     const telemetryStore = opts.telemetry ? createTelemetryStore(db) : undefined;
     const sessionContextStore = createSessionContextStore(db);
@@ -45,10 +53,10 @@ describe("SessionManager run state", () => {
       taskStore: {
         findTaskBySessionId: vi.fn().mockReturnValue(null),
       } as any,
-      settingsStore: {
+      settingsStore: (opts.settingsStore ?? {
         getMcpServers: () => ({}),
         getSettings: () => ({ mcpServers: {} }),
-      } as any,
+      }) as any,
       config: { sessionMcpServers: {} },
       telemetryStore,
       sessionContextStore,
@@ -1467,6 +1475,28 @@ describe("SessionManager run state", () => {
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
+  });
+
+  it("fails before backend creation when settings become unreadable at the creation boundary", async () => {
+    const getSettings = vi.fn()
+      .mockReturnValueOnce({ mcpServers: {} })
+      .mockImplementation(() => {
+        throw new Error("persisted settings unreadable");
+      });
+    const { manager } = createManager({
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings,
+      },
+    });
+    manager.backend = {
+      createSession: vi.fn(),
+    };
+
+    await expect(manager.createSession()).rejects.toThrow("persisted settings unreadable");
+    expect(manager.backend.createSession).not.toHaveBeenCalled();
+    expect(manager.getRuntimeActivity().capacity.contexts.retained).toBe(0);
+    expect(manager.getRuntimeActivity().capacity.weightedUnits.retained).toBe(0);
   });
 
   it("blocks session creation paths when persisted restart state advances to cutover after the cache was queued", async () => {

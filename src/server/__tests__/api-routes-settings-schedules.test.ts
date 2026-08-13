@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionStorageReader } from "../session-storage-reader.js";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
 import {
@@ -33,6 +33,10 @@ installApiRouteTestHooks((state) => {
   ({ app, ctx, db } = state);
 });
 
+afterEach(() => {
+  providers.clearProviderCache();
+});
+
 describe("Settings routes", () => {
   it("PATCH /api/settings model change does NOT evict cached sessions", async () => {
     const sessionManager = createMockSessionManager();
@@ -54,6 +58,7 @@ describe("Settings routes", () => {
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
     const local = createTestApp({ sessionManager });
+    const cachedProvider = providers.getProvider("github");
 
     const res = await request(local.app)
       .patch("/api/settings")
@@ -61,6 +66,96 @@ describe("Settings routes", () => {
 
     expect(res.status).toBe(200);
     expect(evictSpy).toHaveBeenCalledOnce();
+    expect(providers.getProvider("github")).not.toBe(cachedProvider);
+  });
+
+  it("PATCH /api/settings rejects mixed invalid updates without runtime side effects", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      mcpServers: { before: { command: "before", args: [] } },
+    });
+    const cachedProvider = providers.getProvider("github");
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({
+        mcpServers: { after: { command: "after", args: [] } },
+        contextTier: "invalid",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("contextTier must be default or long_context");
+    expect(local.ctx.settingsStore.getMcpServers()).toEqual({
+      before: { command: "before", args: [] },
+    });
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(providers.getProvider("github")).toBe(cachedProvider);
+  });
+
+  it("GET /api/settings surfaces an unreadable persisted row", async () => {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run("{broken");
+
+    const res = await request(app).get("/api/settings");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Persisted app settings are unreadable");
+    expect(res.body.error).toContain('repair or remove key "app"');
+  });
+
+  it("PATCH /api/settings preserves unreadable settings without clearing caches or sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    const cachedProvider = providers.getProvider("github");
+    const raw = "{broken";
+    local.db.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run(raw);
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ theme: "dark" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Persisted app settings are unreadable");
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(providers.getProvider("github")).toBe(cachedProvider);
+    expect(
+      (local.db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string }).value,
+    ).toBe(raw);
+  });
+
+  it("PATCH /api/settings reports storage failures after rolling back MCP changes", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      mcpServers: { before: { command: "before", args: [] } },
+    });
+    local.db.exec(`
+      CREATE TRIGGER block_app_settings_update
+      BEFORE UPDATE ON settings
+      WHEN NEW.key = 'app'
+      BEGIN
+        SELECT RAISE(ABORT, 'settings write blocked');
+      END;
+    `);
+    const cachedProvider = providers.getProvider("github");
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ mcpServers: { after: { command: "after", args: [] } } });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("settings write blocked");
+    expect(local.ctx.settingsStore.getMcpServers()).toEqual({
+      before: { command: "before", args: [] },
+    });
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(providers.getProvider("github")).toBe(cachedProvider);
   });
 });
 

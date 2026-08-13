@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import type express from "express";
 import type { RequestHandler } from "express";
-import { createSettingsStore } from "./settings-store.js";
+import { createSettingsStore, SettingsReadError } from "./settings-store.js";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
@@ -249,10 +249,22 @@ function applyStagingSeedOverrides(dbPath: string): void {
     stagingDb = new DatabaseSync(dbPath);
     stagingDb.exec("PRAGMA journal_mode = WAL");
 
-    createSettingsStore(stagingDb).updateSettings({
-      model: STAGING_PREVIEW_MODEL,
-      reasoningEffort: undefined,
-    });
+    const settingsStore = createSettingsStore(stagingDb);
+    try {
+      settingsStore.updateSettings({
+        model: STAGING_PREVIEW_MODEL,
+        reasoningEffort: undefined,
+      });
+    } catch (error) {
+      if (!(error instanceof SettingsReadError)) throw error;
+      // This is an isolated copy: discard only its unreadable app row so staging
+      // can start without weakening production settings reads or PATCH behavior.
+      stagingDb.prepare("DELETE FROM settings WHERE key = 'app'").run();
+      settingsStore.updateSettings({
+        model: STAGING_PREVIEW_MODEL,
+        reasoningEffort: undefined,
+      });
+    }
 
     const db = stagingDb;
     const hasTable = (name: string): boolean =>
