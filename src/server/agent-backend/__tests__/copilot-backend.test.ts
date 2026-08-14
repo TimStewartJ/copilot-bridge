@@ -52,6 +52,7 @@ describe("CopilotBackend wrap fidelity", () => {
       bidirectionalStdin: false,
       externalToolEvents: true,
       forkBoundaries: true,
+      customAgentSelection: true,
     });
   });
 
@@ -329,6 +330,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
       reasoningEffort: "high",
       contextTier: "long_context",
     });
+
     }
 
     // truncateHistory returns undefined when rpc.history.truncate is missing
@@ -360,6 +362,27 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped.listTasks!()).resolves.toBeUndefined();
     }
   });
+
+  it("selectAgent delegates to the native session agent RPC", async () => {
+    const missing = await new CopilotBackend(
+      createFakeClient(createFakeSession({})) as any,
+    ).createSession({} as any);
+    await expect(missing.selectAgent("reviewer")).resolves.toBeUndefined();
+
+    const select = vi.fn(async ({ name }: { name: string }) => ({
+      agent: { name, displayName: "Reviewer" },
+    }));
+    const wrapped = await new CopilotBackend(
+      createFakeClient(createFakeSession({ agent: { select } })) as any,
+    ).createSession({} as any);
+
+    await expect(wrapped.selectAgent("reviewer")).resolves.toEqual({
+      name: "reviewer",
+      displayName: "Reviewer",
+    });
+    expect(select).toHaveBeenCalledWith({ name: "reviewer" });
+  });
+
   it("listTasks maps SDK TaskInfo into backend-neutral tasks", async () => {
     const list = vi.fn(async () => ({
       tasks: [

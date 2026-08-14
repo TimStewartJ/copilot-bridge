@@ -26,6 +26,7 @@ export interface DraftLaunchOptions {
   model?: string;
   reasoningEffort?: DraftScopedLaunchSelection<string>;
   contextTier?: DraftScopedLaunchSelection<CopilotContextTier>;
+  agent?: string;
 }
 
 type DraftLaunchOptionsUpdate =
@@ -121,12 +122,20 @@ function normalizeAttachment(value: unknown): NormalizedValue<Attachment> {
 function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOptions> {
   if (!isRecord(value)) return { changed: true };
 
-  let changed = !hasOnlyKeys(value, ["model", "reasoningEffort", "contextTier"]);
+  let changed = !hasOnlyKeys(value, ["model", "reasoningEffort", "contextTier", "agent"]);
   const launch: DraftLaunchOptions = {};
 
   if ("model" in value) {
     if (isNonEmptyString(value.model)) {
       launch.model = value.model;
+    } else {
+      changed = true;
+    }
+  }
+
+  if ("agent" in value) {
+    if (isNonEmptyString(value.agent)) {
+      launch.agent = value.agent;
     } else {
       changed = true;
     }
@@ -166,7 +175,7 @@ function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOpti
     }
   }
 
-  if (!launch.model && !launch.reasoningEffort && !launch.contextTier) {
+  if (!launch.model && !launch.reasoningEffort && !launch.contextTier && !launch.agent) {
     return { changed: true };
   }
   return { value: launch, changed };

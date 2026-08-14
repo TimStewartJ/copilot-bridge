@@ -16,6 +16,7 @@ describe("invalidateTaskChangeQueries", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openChecklistItems });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskAgentDefinitions("task-123") });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace"] });
 
     const predicate = invalidateQueries.mock.calls
@@ -56,15 +57,16 @@ describe("createDeferredTaskChangeInvalidator", () => {
 
     invalidator.endTaskMutation();
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(7);
+    expect(invalidateQueries).toHaveBeenCalledTimes(8);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.dashboard });
     expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
     expect(invalidateQueries).toHaveBeenNthCalledWith(5, { queryKey: queryKeys.taskChecklistItems("task-123") });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(6, { queryKey: ["session-workspace"] });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(6, { queryKey: queryKeys.taskAgentDefinitions("task-123") });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(7, { queryKey: ["session-workspace"] });
 
-    const predicate = invalidateQueries.mock.calls[6]?.[0]?.predicate;
+    const predicate = invalidateQueries.mock.calls[7]?.[0]?.predicate;
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
     expect(predicate?.({ queryKey: queryKeys.taskGitStatus("task-123") })).toBe(true);

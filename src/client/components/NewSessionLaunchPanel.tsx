@@ -1,4 +1,4 @@
-import type { ModelFamilyDefaults, ModelInfo } from "../api";
+import type { ModelFamilyDefaults, ModelInfo, TaskAgentDefinitionSummary } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
@@ -21,11 +21,15 @@ interface NewSessionLaunchPanelProps {
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
   selectedContextTier?: CopilotContextTier;
   mode: SendMode;
+  agentDefinitions?: readonly TaskAgentDefinitionSummary[];
+  agentDefinitionsLoading?: boolean;
+  selectedAgentName?: string;
   onModelFamilyChange: (family: ModelFamily) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort?: string) => void;
   onContextTierChange: (contextTier?: CopilotContextTier) => void;
   onModeChange: (mode: SendMode) => void;
+  onAgentChange?: (agentName?: string) => void;
 }
 
 const MODE_OPTIONS: LaunchOption<SendMode>[] = [
@@ -46,11 +50,15 @@ export default function NewSessionLaunchPanel({
   contextOptions,
   selectedContextTier,
   mode,
+  agentDefinitions,
+  agentDefinitionsLoading,
+  selectedAgentName,
   onModelFamilyChange,
   onModelChange,
   onReasoningEffortChange,
   onContextTierChange,
   onModeChange,
+  onAgentChange,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
   const hasResolvedModelSelection = Boolean(
@@ -63,11 +71,41 @@ export default function NewSessionLaunchPanel({
         <div className="mb-5">
           <h2 className="text-base font-semibold text-text-primary">Start a new chat</h2>
           <p className="mt-1 text-sm text-text-muted">
-            Model, effort, and context choices are remembered per family. Mode applies only to this chat.
+            Model, effort, context, and agent choices apply when this chat starts.
           </p>
         </div>
 
         <div className="space-y-4">
+          {agentDefinitions !== undefined && (
+            <div className="space-y-1.5">
+              <label htmlFor="new-session-agent" className="text-xs font-medium text-text-muted">
+                Agent definition
+              </label>
+              <select
+                id="new-session-agent"
+                value={selectedAgentName ?? ""}
+                disabled={agentDefinitionsLoading}
+                onChange={(event) => onAgentChange?.(event.target.value || undefined)}
+                className="w-full rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
+              >
+                <option value="">Default Copilot agent</option>
+                {agentDefinitions
+                  .filter((definition) => definition.userInvocable)
+                  .map((definition) => (
+                    <option key={definition.name} value={definition.name}>
+                      {definition.displayName ?? definition.name}
+                    </option>
+                  ))}
+              </select>
+              <p className="text-xs text-text-faint">
+                {agentDefinitionsLoading
+                  ? "Loading attached agents..."
+                  : agentDefinitions.length === 0
+                    ? "No agent definitions are attached to this task."
+                    : "Blank starts with the default agent. Selecting one makes the new chat run as that specialist."}
+              </p>
+            </div>
+          )}
           <div className="space-y-1.5">
             {modelsLoading ? (
               <div className="rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-faint">

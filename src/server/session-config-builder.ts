@@ -11,6 +11,11 @@ import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
+import {
+  TaskAgentDefinitionValidationError,
+  toCopilotCustomAgentConfig,
+  type TaskAgentDefinitionStore,
+} from "./task-agent-definition-store.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import {
   AGENT_LIFECYCLE_GUIDANCE,
@@ -61,6 +66,7 @@ export interface SessionConfigOptions {
   modelOverride?: string;
   reasoningEffortOverride?: string;
   contextTierOverride?: CopilotContextTier;
+  agentOverride?: string;
   /** Group notes to inject into context (looked up by caller) */
   groupNotes?: { groupName: string; notes: string } | null;
   /**
@@ -76,6 +82,7 @@ export interface SessionConfigOptions {
 
 export interface SessionConfigBuilderDeps {
   checklistStore?: ChecklistStore;
+  taskAgentDefinitionStore?: TaskAgentDefinitionStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;
@@ -199,12 +206,30 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     modelOverride,
     reasoningEffortOverride,
     contextTierOverride,
+    agentOverride,
     groupNotes,
     forResume,
   } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
+  const taskAgentDefinitions = task
+    ? deps.taskAgentDefinitionStore?.listTaskAgentDefinitions(task.id) ?? []
+    : [];
+  const selectedTaskAgent = agentOverride?.trim();
+  if (selectedTaskAgent) {
+    const definition = taskAgentDefinitions.find((candidate) => candidate.name === selectedTaskAgent);
+    if (!definition) {
+      throw new TaskAgentDefinitionValidationError(
+        `Agent definition "${selectedTaskAgent}" is not available for task ${task?.id ?? "unknown"}`,
+      );
+    }
+    if (!definition.userInvocable) {
+      throw new TaskAgentDefinitionValidationError(
+        `Agent definition "${selectedTaskAgent}" cannot be selected for a new chat`,
+      );
+    }
+  }
   const cfg: any = {
     pendingInteractionEvents: true,
     streaming: true,
@@ -216,6 +241,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
     ],
+    ...(taskAgentDefinitions.length > 0
+      ? { customAgents: taskAgentDefinitions.map(toCopilotCustomAgentConfig) }
+      : {}),
+    ...(!forResume && selectedTaskAgent ? { agent: selectedTaskAgent } : {}),
   };
   // Explicitly disable Copilot's cloud-backed agentic memory. The feature stores
   // and recalls facts via the remote Memory API (`/v1/memory_stores/.../memories`)
@@ -308,6 +337,21 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
     if (task.notes.trim()) {
       contextParts.push(`Task notes:\n${task.notes}`);
+    }
+    if (taskAgentDefinitions.length > 0) {
+      const definitions = taskAgentDefinitions.map((definition) => {
+        const invocation = definition.infer ? "automatic or explicit" : "explicit only";
+        const description = definition.description.replace(/\s+/g, " ");
+        const tools = definition.tools === null
+          ? "all session tools"
+          : definition.tools.length === 0
+            ? "no tools"
+            : definition.tools.join(", ");
+        return `- ${definition.name}: ${description} (${invocation}; tools: ${tools})`;
+      }).join("\n");
+      contextParts.push(
+        `Task agent definitions available through Copilot's native task/custom-agent surface:\n${definitions}`,
+      );
     }
     // Inject group notes if provided
     if (groupNotes?.notes?.trim()) {

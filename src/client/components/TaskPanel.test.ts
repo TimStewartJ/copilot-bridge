@@ -10,6 +10,7 @@ const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
 const sessionListMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 const taskPanelSummaryRowMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
+const agentDefinitionsSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const fetchTaskGitStatusMock = vi.hoisted(() => vi.fn());
 const patchTaskMock = vi.hoisted(() => vi.fn());
 const queryClientMock = vi.hoisted(() => ({
@@ -82,6 +83,10 @@ vi.mock("./DocPreviewSheet", () => ({
   default: () => null,
 }));
 
+vi.mock("./AgentDefinitionPreviewSheet", () => ({
+  default: () => null,
+}));
+
 vi.mock("./task-sections", () => ({
   WorkItemList: () => null,
   PullRequestList: () => null,
@@ -89,6 +94,7 @@ vi.mock("./task-sections", () => ({
   TaskNotesSection: () => null,
   RelatedDocsSection: () => null,
   ScheduleSection: () => null,
+  AgentDefinitionsSection: (props: unknown) => agentDefinitionsSectionMock(props),
 }));
 
 function createTask(overrides: Partial<Task> = {}): Task {
@@ -168,6 +174,7 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
     inheritedTagIds: new Set(),
     effectiveTags: [],
     relatedDocs: [],
+    agentDefinitions: [],
     refresh: async () => {},
     ...overrides,
   };
@@ -175,6 +182,7 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   taskPanelSummaryRowMock.mockClear();
+  agentDefinitionsSectionMock.mockClear();
   queryClientMock.fetchQuery.mockReset();
   queryClientMock.fetchQuery.mockResolvedValue(null);
   queryClientMock.invalidateQueries.mockReset();
@@ -311,6 +319,27 @@ describe("TaskPanel", () => {
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("renders attached task agent definitions in the Details section", async () => {
+    const definitions = [{
+      taskId: "task-1",
+      name: "api-reviewer",
+      description: "Reviews APIs",
+      tools: null,
+      infer: false,
+      userInvocable: true,
+      fileName: "api-reviewer.agent.md",
+      createdAt: "2026-08-13T00:00:00.000Z",
+      updatedAt: "2026-08-13T00:00:00.000Z",
+    }];
+    await renderTaskPanelHtml(createTask(), { agentDefinitions: definitions });
+
+    expect(agentDefinitionsSectionMock).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "task-1",
+      definitions,
+      onPreview: expect.any(Function),
+    }));
   });
 
   it("keeps the archived accordion loading while unloaded linked sessions are being fetched", async () => {

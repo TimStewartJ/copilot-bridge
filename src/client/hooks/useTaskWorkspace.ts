@@ -12,6 +12,7 @@ import {
   useChecklistItemCacheUpdaters,
 } from "./queries/useChecklistItems";
 import { useTaskGitStatusQuery } from "./queries/useTaskGitStatus";
+import { useTaskAgentDefinitionsQuery } from "./queries/useTaskAgentDefinitions";
 
 /**
  * Consolidates shared setup for TaskPanel and TaskDashboard:
@@ -59,6 +60,10 @@ export function useTaskWorkspace(
     onDelete: onChecklistItemDelete,
   } = useChecklistItemCacheUpdaters(task?.id);
   const [newChecklistItemText, setNewChecklistItemText] = useState("");
+  const {
+    data: agentDefinitions = [],
+    refetch: refetchAgentDefinitions,
+  } = useTaskAgentDefinitionsQuery(task?.id);
   // ── Git status ───────────────────────────────────────────────
   const { data: taskGitStatus, refetch: refetchTaskGitStatus } = useTaskGitStatusQuery(
     task?.id,
@@ -99,7 +104,8 @@ export function useTaskWorkspace(
     ];
     if (task?.cwd) work.push(refetchTaskGitStatus());
     await Promise.all(work);
-  }, [reloadEnriched, refetchChecklistItems, refetchTaskGitStatus, sched.reload, task?.cwd]);
+    await refetchAgentDefinitions();
+  }, [reloadEnriched, refetchAgentDefinitions, refetchChecklistItems, refetchTaskGitStatus, sched.reload, task?.cwd]);
 
   return {
     // Enrichment
@@ -120,6 +126,7 @@ export function useTaskWorkspace(
     onChecklistItemDelete,
     newChecklistItemText,
     setNewChecklistItemText,
+    agentDefinitions,
     // Git status
     taskGitStatus,
     // Sessions

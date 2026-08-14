@@ -14,8 +14,9 @@ import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
+import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { FEED_GUIDANCE } from "../session-instructions.js";
-import { setupTestDb, createTestBus, withTestEnv } from "./helpers.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
   const tempDirs: string[] = [];
@@ -247,6 +248,7 @@ describe("SessionManager session config", () => {
       waitingOn: "Design review",
       nextTouchAt: "9999-05-04T11:00:00.000Z",
     });
+
     const manager = new SessionManager({
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
@@ -274,6 +276,57 @@ describe("SessionManager session config", () => {
     expect(content).toContain("- Next action: Open the preview");
     expect(content).toContain("- Waiting on: Design review");
     expect(content).toContain("- Follow up: 9999-05-04T11:00:00.000Z (upcoming)");
+  });
+
+  it("selects the requested task agent before returning a new session", async () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const dataDir = makeTestDir("bridge-selected-agent");
+    const copilotHome = join(dataDir, ".copilot");
+    const taskStore = createTaskStore(db, globalBus);
+    const task = taskStore.createTask("Selected agent");
+    const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir });
+    taskAgentDefinitionStore.createTaskAgentDefinition({
+      taskId: task.id,
+      name: "api-reviewer",
+      description: "Reviews APIs",
+      prompt: "Review APIs.",
+    });
+    const selectAgent = vi.fn(async (name: string) => ({ name }));
+    const session = makeAgentSessionStub({
+      sessionId: "selected-session",
+      selectAgent,
+    });
+    const manager = new SessionManager({
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore,
+      taskAgentDefinitionStore,
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+    manager.backend = {
+      createSession: vi.fn(async () => session),
+      deleteSession: vi.fn(async () => undefined),
+    };
+
+    await manager.createTaskSession(
+      task.id,
+      task.title,
+      task.workItems,
+      [],
+      task.notes,
+      task.cwd,
+      undefined,
+      undefined,
+      { agent: "api-reviewer" },
+    );
+
+    expect(manager.backend.createSession.mock.calls[0][0]).toMatchObject({
+      agent: "api-reviewer",
+    });
+    expect(selectAgent).toHaveBeenCalledWith("api-reviewer");
   });
 
   it("keeps stored non-active task status in newly created task sessions", async () => {

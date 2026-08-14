@@ -237,7 +237,10 @@ export function normalizeOptionalTimestamp(value: unknown, opts: { strict?: bool
 export function createTaskStore(
   db: DatabaseSync,
   bus: GlobalBus,
-  _opts: { runtimePaths?: RuntimePaths } = {},
+  opts: {
+    runtimePaths?: RuntimePaths;
+    onTaskDeleted?: (taskId: string) => void;
+  } = {},
 ) {
   function defaultTaskCwd(): string | undefined {
     return undefined;
@@ -280,6 +283,17 @@ export function createTaskStore(
 
   function emitChange(taskId: string): void {
     bus.emit({ type: "task:changed", taskId });
+  }
+
+  function notifyTaskDeleted(taskId: string): void {
+    try {
+      opts.onTaskDeleted?.(taskId);
+    } catch (error) {
+      console.warn(
+        `[tasks] Task ${taskId} was deleted but attached agent files could not be cleaned up:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 
   // ── CRUD ──────────────────────────────────────────────────────────
@@ -461,7 +475,8 @@ export function createTaskStore(
   }
 
   function deleteTask(id: string): void {
-    db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+    const result = db.prepare("DELETE FROM tasks WHERE id = ?").run(id) as { changes?: number };
+    if ((result.changes ?? 0) > 0) notifyTaskDeleted(id);
     emitChange(id);
   }
 
@@ -562,6 +577,7 @@ export function createTaskStore(
       db.exec("ROLLBACK");
       throw error;
     }
+    notifyTaskDeleted(id);
     emitChange(id);
     return { deletedScheduleIds };
   }
@@ -602,6 +618,7 @@ export function createTaskStore(
       db.exec("ROLLBACK");
       throw error;
     }
+    notifyTaskDeleted(id);
     emitChange(id);
     return { deletedScheduleIds, archivedSessionIds };
   }

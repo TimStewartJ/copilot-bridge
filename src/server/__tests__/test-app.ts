@@ -10,6 +10,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createTaskStore } from "../task-store.js";
+import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createScheduleStore } from "../schedule-store.js";
 import { createSettingsStore } from "../settings-store.js";
@@ -85,12 +86,19 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   );
   const transcriptionService = createMockTranscriptionService();
   const sessionManager = createMockSessionManager();
-  const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, { runtimePaths });
+  const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir: runtimePaths.dataDir });
+  const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, {
+    runtimePaths,
+    onTaskDeleted: (taskId) => {
+      taskAgentDefinitionStore.removeTaskAgentDefinitions(taskId);
+    },
+  });
   const taskGroupStore = createTaskGroupStore(db, globalBus);
   const pushSubscriptionStore = createPushSubscriptionStore(db);
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
     taskStore,
+    taskAgentDefinitionStore,
     taskGroupStore,
     scheduleStore: createScheduleStore(db),
     settingsStore: createSettingsStore(db),

@@ -34,6 +34,7 @@ import type {
   AgentSlashCommandList,
   AgentSlashCommandResult,
   AgentSession,
+  AgentSelectedProfile,
   AgentSessionConfig,
   AgentSessionEventHandler,
   AgentSessionSummary,
@@ -55,6 +56,7 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   nativeBridgeTools: true,
   eagerNativeTools: true,
   toolMetadataWarmup: true,
+  customAgentSelection: true,
 };
 
 function normalizeString(value: unknown): string | undefined {
@@ -264,6 +266,18 @@ class CopilotAgentSession implements AgentSession {
     const get = this.session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
     return get.call(this.session.rpc.model);
+  }
+
+  async selectAgent(name: string): Promise<AgentSelectedProfile | undefined> {
+    const select = this.session?.rpc?.agent?.select;
+    if (typeof select !== "function") return undefined;
+    const result = await select.call(this.session.rpc.agent, { name });
+    const selected = (result as any)?.agent;
+    if (!selected || typeof selected.name !== "string") return undefined;
+    return {
+      name: selected.name,
+      ...(typeof selected.displayName === "string" ? { displayName: selected.displayName } : {}),
+    };
   }
 
   async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {

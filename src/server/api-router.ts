@@ -67,6 +67,7 @@ import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js"
 import { isRecord } from "../shared/is-record.js";
 import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
+import { TaskAgentDefinitionValidationError } from "./task-agent-definition-store.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
 import {
@@ -1137,7 +1138,7 @@ export function createApiRouter(
           } catch {
             return res.status(400).json({ error: "sessionOptions must be valid JSON" });
           }
-          const resolved = await resolveSessionCreationOptions(parsedSessionOptions);
+          const resolved = await resolveSessionCreationOptions(parsedSessionOptions, { taskId });
           if (resolved.error) {
             return res.status(resolved.status ?? 400).json({ error: resolved.error });
           }
@@ -1164,6 +1165,9 @@ export function createApiRouter(
         });
         return res.status(202).json(job);
       } catch (error) {
+        if (error instanceof TaskAgentDefinitionValidationError) {
+          return res.status(400).json({ error: error.message });
+        }
         if (isRestartPendingError(error)) {
           res.set("Retry-After", "5");
           return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
@@ -2328,6 +2332,9 @@ export function createApiRouter(
       res.json({ ready: true });
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
+      if (err instanceof TaskAgentDefinitionValidationError) {
+        return res.status(400).json({ error: err.message });
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -2378,11 +2385,15 @@ export function createApiRouter(
     return union.size > 0 ? union : null;
   }
 
-  async function resolveSessionCreationOptions(body: unknown): Promise<{
+  async function resolveSessionCreationOptions(
+    body: unknown,
+    scope: { taskId?: string } = {},
+  ): Promise<{
     options?: {
       model?: string;
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
+      agent?: string;
     };
     error?: string;
     status?: number;
@@ -2403,6 +2414,9 @@ export function createApiRouter(
     if (payload.contextTier !== undefined && !isCopilotContextTier(payload.contextTier)) {
       return { error: "contextTier must be default or long_context", status: 400 };
     }
+    if (payload.agent !== undefined && payload.agent !== null && typeof payload.agent !== "string") {
+      return { error: "agent must be a string", status: 400 };
+    }
     const model = typeof payload.model === "string" ? payload.model.trim() : "";
     const reasoningEffort = typeof payload.reasoningEffort === "string"
       ? payload.reasoningEffort.trim()
@@ -2410,7 +2424,32 @@ export function createApiRouter(
     const contextTier = isCopilotContextTier(payload.contextTier)
       ? payload.contextTier
       : undefined;
-    if (!model && !reasoningEffort && !contextTier) return { options: {} };
+    const agent = typeof payload.agent === "string" ? payload.agent.trim() : "";
+    if (agent) {
+      if (!scope.taskId) {
+        return { error: "agent selection is only available for task sessions", status: 400 };
+      }
+      let definition;
+      try {
+        definition = ctx.taskAgentDefinitionStore
+          ?.listTaskAgentDefinitions(scope.taskId)
+          .find((candidate) => candidate.name === agent);
+      } catch (error) {
+        if (error instanceof TaskAgentDefinitionValidationError) {
+          return { error: error.message, status: 400 };
+        }
+        throw error;
+      }
+      if (!definition) {
+        return { error: `Agent definition is not available for this task: ${agent}`, status: 400 };
+      }
+      if (!definition.userInvocable) {
+        return { error: `Agent definition cannot be selected for a new chat: ${agent}`, status: 400 };
+      }
+    }
+    if (!model && !reasoningEffort && !contextTier) {
+      return { options: agent ? { agent } : {} };
+    }
 
     let models: Array<{
       id: string;
@@ -2465,6 +2504,7 @@ export function createApiRouter(
         ...(model ? { model } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(contextTier ? { contextTier } : {}),
+        ...(agent ? { agent } : {}),
       },
     };
   }
@@ -2550,6 +2590,9 @@ export function createApiRouter(
       res.json(result);
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
+      if (err instanceof TaskAgentDefinitionValidationError) {
+        return res.status(400).json({ error: err.message });
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -3513,6 +3556,40 @@ export function createApiRouter(
     }
   });
 
+  router.get("/tasks/:id/agent-definitions", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!ctx.taskAgentDefinitionStore) {
+      return res.status(501).json({ error: "Task agent definitions are not available" });
+    }
+    try {
+      const agentDefinitions = ctx.taskAgentDefinitionStore
+        .listTaskAgentDefinitions(task.id)
+        .map(({ prompt: _prompt, frontmatter: _frontmatter, raw: _raw, ...summary }) => summary);
+      res.json({ agentDefinitions });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(error instanceof TaskAgentDefinitionValidationError ? 400 : 500).json({ error: message });
+    }
+  });
+
+  router.get("/tasks/:id/agent-definitions/:name", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!ctx.taskAgentDefinitionStore) {
+      return res.status(501).json({ error: "Task agent definitions are not available" });
+    }
+    try {
+      const agentDefinition = ctx.taskAgentDefinitionStore
+        .getTaskAgentDefinition(task.id, req.params.name);
+      if (!agentDefinition) return res.status(404).json({ error: "Agent definition not found" });
+      res.json({ agentDefinition });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(error instanceof TaskAgentDefinitionValidationError ? 400 : 500).json({ error: message });
+    }
+  });
+
   router.get("/tasks/:id", (req, res) => {
     const task = ctx.taskStore.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
@@ -3782,7 +3859,7 @@ export function createApiRouter(
       if (isRestartCutoverInProgress(await refreshRestartState())) {
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
-      const creationResult = await resolveSessionCreationOptions(req.body);
+      const creationResult = await resolveSessionCreationOptions(req.body, { taskId: task.id });
       if (creationResult.error) {
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
@@ -3813,6 +3890,9 @@ export function createApiRouter(
       res.json(result);
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
+      if (err instanceof TaskAgentDefinitionValidationError) {
+        return res.status(400).json({ error: err.message });
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

@@ -239,6 +239,7 @@ export function createMockSessionManager() {
     deleteSession: async () => {},
     gracefulShutdown: async () => {},
     evictAllCachedSessions: async () => {},
+    invalidateTaskSessionConfig: () => 0,
     evictIdleCachedSessions: async () => ({ evictedSessions: 0, protectedSessions: 0 }),
     setSessionModel: async (_id: string, model: string, reasoningEffort?: string, contextTier?: string) => ({
       model,
@@ -326,6 +327,7 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     invokeSlashCommand: async () => ({ kind: "text", text: "" }),
     listSlashCommands: async () => undefined,
     getCurrentModel: async () => undefined,
+    selectAgent: async (name) => ({ name }),
     truncateHistory: async () => undefined,
     listMcpServers: async () => undefined,
     initializeTools: async () => undefined,

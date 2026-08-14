@@ -44,6 +44,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
+import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
@@ -448,6 +449,7 @@ export interface SessionManagerDeps {
   sessionMetaStore?: SessionMetaStore;
   cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
   taskStore: TaskStore;
+  taskAgentDefinitionStore?: TaskAgentDefinitionStore;
   taskGroupStore?: TaskGroupStore;
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
@@ -542,6 +544,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     sessionMetaStore: ctx.sessionMetaStore,
     cliSessionCatalog: ctx.cliSessionCatalog,
     taskStore: ctx.taskStore,
+    taskAgentDefinitionStore: ctx.taskAgentDefinitionStore,
     taskGroupStore: ctx.taskGroupStore,
     checklistStore: ctx.checklistStore,
     settingsStore: ctx.settingsStore,
@@ -1300,6 +1303,7 @@ export class SessionManager {
     spanMetadata?: Record<string, unknown>;
     logMessage: (sessionId: string, duration: number) => string;
     cleanupLabel: string;
+    selectedAgent?: string;
   }): Promise<AgentSession> {
     const {
       client,
@@ -1313,6 +1317,7 @@ export class SessionManager {
       spanMetadata,
       logMessage,
       cleanupLabel,
+      selectedAgent,
     } = options;
     let session: AgentSession | undefined;
     let reservationReleased = false;
@@ -1326,6 +1331,24 @@ export class SessionManager {
       session = await client.createSession(sessionConfig);
       if (expectedSessionId && session.sessionId !== expectedSessionId) {
         await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
+      }
+      if (selectedAgent) {
+        try {
+          const selected = await session.selectAgent(selectedAgent);
+          if (!selected || selected.name !== selectedAgent) {
+            throw new Error(`Agent backend did not select "${selectedAgent}"`);
+          }
+        } catch (error) {
+          try {
+            await client.deleteSession(session.sessionId);
+          } catch (cleanupError) {
+            console.warn(
+              `[sdk] Failed to delete ${cleanupLabel} ${session.sessionId} after agent selection failed:`,
+              cleanupError,
+            );
+          }
+          throw error;
+        }
       }
 
       try {
@@ -1984,6 +2007,17 @@ export class SessionManager {
 
   private findLinkedTask(sessionId: string): Task | undefined {
     return this.workspaceController.findLinkedTask(sessionId);
+  }
+
+  invalidateTaskSessionConfig(taskId: string, reason: string): number {
+    const sessionIds = this.deps.taskStore.listSessionIdsForTask(taskId);
+    let invalidatedSessions = 0;
+    for (const sessionId of sessionIds) {
+      if (!this.sessionObjects.has(sessionId)) continue;
+      this.markCachedSessionForEviction(sessionId, reason);
+      invalidatedSessions += 1;
+    }
+    return invalidatedSessions;
   }
 
   private resolveEffectiveSessionCwd(opts: { sessionId?: string; task?: Pick<Task, "cwd"> | null }): string | undefined {
@@ -3641,6 +3675,7 @@ export class SessionManager {
       model?: string;
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
+      agent?: string;
     } = {},
   ): Promise<{ sessionId: string }> {
     if (this.shuttingDown) {
@@ -3693,6 +3728,7 @@ export class SessionManager {
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
+        ...(options.agent ? { agentOverride: options.agent } : {}),
         groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
         ...(modelMetadata ? { modelMetadata } : {}),
       });
@@ -3710,6 +3746,7 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
+        ...(options.agent ? { selectedAgent: options.agent } : {}),
       });
       if (bridgeSessionId && options.background) {
         this.trackPendingSessionCreation(bridgeSessionId, creation);

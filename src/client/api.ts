@@ -381,6 +381,25 @@ export interface Task {
   tags?: Tag[];
 }
 
+export interface TaskAgentDefinitionSummary {
+  taskId: string;
+  name: string;
+  displayName?: string;
+  description: string;
+  tools: string[] | null;
+  infer: boolean;
+  userInvocable: boolean;
+  fileName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskAgentDefinition extends TaskAgentDefinitionSummary {
+  prompt: string;
+  frontmatter: Record<string, unknown>;
+  raw: string;
+}
+
 export type TaskCompletionAction = "complete-and-archive";
 
 export interface TaskPatch {
@@ -637,6 +656,7 @@ export interface CreateSessionOptions {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
+  agent?: string;
 }
 
 export async function createSession(options: CreateSessionOptions = {}): Promise<string> {
@@ -1079,9 +1099,27 @@ export async function createTaskSession(
       ...(options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
       ...(options.contextTier ? { contextTier: options.contextTier } : {}),
+      ...(options.agent ? { agent: options.agent } : {}),
     },
   );
   return data.sessionId;
+}
+
+export async function fetchTaskAgentDefinitions(taskId: string): Promise<TaskAgentDefinitionSummary[]> {
+  const data = await apiFetch<{ agentDefinitions: TaskAgentDefinitionSummary[] }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/agent-definitions`,
+  );
+  return data.agentDefinitions;
+}
+
+export async function fetchTaskAgentDefinition(
+  taskId: string,
+  name: string,
+): Promise<TaskAgentDefinition> {
+  const data = await apiFetch<{ agentDefinition: TaskAgentDefinition }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/agent-definitions/${encodeURIComponent(name)}`,
+  );
+  return data.agentDefinition;
 }
 
 // ── Task Group API ────────────────────────────────────────────────
