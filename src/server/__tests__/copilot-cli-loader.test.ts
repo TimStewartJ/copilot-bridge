@@ -33,6 +33,9 @@ async createBuiltInGitHubMcpConfig(e,n,r,o){let s;try{s=await ji(e)}catch{return
 const GITHUB_MCP_CONFIG_METHOD_1_0_77 = `
 async createBuiltInGitHubMcpConfig(e,n,r,o=!1,s){let a;try{a=await go(e)}catch{return}if(!a)return;let l=await eR(),c=await Yt.load(s??this.options.settings),d=await this.coreServices.createFeatureFlagService({sessionId:n}).isFidesIfcEnabled().catch(()=>this.options.featureFlags?.FIDES_IFC??!1),u=VL({settings:WL(c),session:r},d);return sfe(a,e,{...u,excludeGhReplaceableTools:l,copilotIntegrationId:iF},k,o)}
 `;
+const GITHUB_MCP_CONFIG_RESOLVER_1_0_78 = `
+async resolveBuiltInGitHubMcpConfig(e,n,r,o,s=!1){if(!this.shouldInjectBuiltInGitHubMcp(e)||!n||e.provider)return;let a;try{a=await Io(n)}catch{return}if(!a)return;let l=await C0(),c=await nn.load(e.configDir?{configDir:e.configDir}:this.options.settings),d=await this.coreServices.createFeatureFlagService({sessionId:r}).isFidesIfcEnabled().catch(()=>this.options.featureFlags?.FIDES_IFC??!1),u=P3({settings:R3(c),session:o},d,l);return{config:Uwe(a,n,{...u,copilotIntegrationId:q3},I,s),userOverrode:u.userOverrode}}
+`;
 const CONFIG_CALL_SITES_1_0_77 = `
 async createSession(e){let a=await this.resolveSessionAuth(e),l=this.sessionId,s={};if(this.shouldInjectBuiltInGitHubMcp(e)&&a&&!e.provider){let T=await this.createBuiltInGitHubMcpConfig(a,l,s,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0);T&&(g.mcpServers={"github-mcp-server":T,...g.mcpServers})}}
 async resumeSession(l,e){let s=await this.resolveSessionAuth(e),o=void 0,m={};if(this.shouldInjectBuiltInGitHubMcp(e)&&s&&!e.provider){let x=await this.createBuiltInGitHubMcpConfig(s,e.sessionId,o,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0);x&&(m.mcpServers={"github-mcp-server":x,...m.mcpServers})}}
@@ -249,6 +252,47 @@ describe("copilot-cli-loader", () => {
       "this.createBuiltInGitHubMcpConfig(s,e.sessionId,o,this.resolveSessionMcpApps(e),e.configDir?{configDir:e.configDir}:void 0,e.githubMcpToolOptions)",
     );
     expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
+  });
+
+  it("patches the 1.0.78 session-options resolver GitHub MCP config shape", () => {
+    const source = `class App{${GITHUB_MCP_CONFIG_RESOLVER_1_0_78}${NATIVE_ASK_USER_SOURCE}}`;
+
+    const patched = patchCopilotAppSource(source);
+
+    expect(patched).toContain(
+      "async resolveBuiltInGitHubMcpConfig(e,n,r,o,s=!1){const __bridgeGithubMcpOptions=e.githubMcpToolOptions;",
+    );
+    expect(patched).toContain(
+      "if((!this.shouldInjectBuiltInGitHubMcp(e)&&!(__bridgeGithubMcpOptions&&!e.gitHubToken))||!n||e.provider)return",
+    );
+    expect(patched).toContain(
+      "return{config:Uwe(a,n,{...u,copilotIntegrationId:q3,...__bridgeGithubMcpOptions},I,s),userOverrode:u.userOverrode}",
+    );
+    expect(patched).toContain("let G=!!f.requestUserInput,W=!!f.requestElicitation");
+  });
+
+  it("rejects a 1.0.78 resolver whose injection guard drifts", () => {
+    const method = GITHUB_MCP_CONFIG_RESOLVER_1_0_78.replace(
+      "if(!this.shouldInjectBuiltInGitHubMcp(e)||!n||e.provider)return;",
+      "if(!this.shouldInjectBuiltInGitHubMcp(e)||!n)return;",
+    );
+    const source = `class App{${method}${NATIVE_ASK_USER_SOURCE}}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "expected 1 config resolver guard, found 0",
+    );
+  });
+
+  it("rejects a 1.0.78 resolver whose config return drifts", () => {
+    const method = GITHUB_MCP_CONFIG_RESOLVER_1_0_78.replace(
+      ",userOverrode:u.userOverrode}",
+      ",override:u.userOverrode}",
+    );
+    const source = `class App{${method}${NATIVE_ASK_USER_SOURCE}}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "expected 1 config resolver return, found 0",
+    );
   });
 
   it("rejects a config return whose trailing argument list drifts beyond the known shapes", () => {
