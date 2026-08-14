@@ -13,6 +13,9 @@ import {
   GITHUB_COPILOT_MCP_READONLY_URL,
   GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
 } from "../github-copilot-mcp.js";
+import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
+import { createTaskStore } from "../task-store.js";
+import { createTestBus } from "./helpers.js";
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -92,6 +95,80 @@ function createGitHubCopilotMcpToolOptions() {
 }
 
 describe("session-config-builder", () => {
+  it("injects task agent definitions into both create and resume configs", () => {
+    const db = setupTestDb();
+    const taskStore = createTaskStore(db, createTestBus());
+    const taskAgentDefinitionStore = createTaskAgentDefinitionStore({
+      dataDir: makeTestRuntimePaths("session-config-task-agent").dataDir,
+    });
+    const task = taskStore.createTask("Config task");
+    taskAgentDefinitionStore.createTaskAgentDefinition({
+      taskId: task.id,
+      name: "migration-reviewer",
+      displayName: "Migration Reviewer",
+      description: "Reviews migration compatibility",
+      prompt: "Review migrations for compatibility regressions.",
+      tools: ["view", "grep"],
+    });
+
+    for (const forResume of [false, true]) {
+      const cfg = buildSessionConfig({
+        deps: createDeps({ taskAgentDefinitionStore }),
+        options: { task, ...(forResume ? { forResume: true } : {}) },
+        callbacks: createCallbacks(),
+      });
+
+      expect(cfg.customAgents).toEqual([{
+        name: "migration-reviewer",
+        displayName: "Migration Reviewer",
+        description: "Reviews migration compatibility",
+        prompt: "Review migrations for compatibility regressions.",
+        tools: ["view", "grep"],
+        infer: false,
+      }]);
+      expect(cfg.systemMessage.content).toContain(
+        "Task agent definitions available through Copilot's native task/custom-agent surface",
+      );
+      expect(cfg.systemMessage.content).toContain(
+        "migration-reviewer: Reviews migration compatibility (explicit only; tools: view, grep)",
+      );
+    }
+
+    db.close();
+  });
+
+  it("selects a task agent only on initial session creation", () => {
+    const taskAgentDefinitionStore = createTaskAgentDefinitionStore({
+      dataDir: makeTestRuntimePaths("session-config-selected-agent").dataDir,
+    });
+    const task = createTask();
+    taskAgentDefinitionStore.createTaskAgentDefinition({
+      taskId: task.id,
+      name: "selected-reviewer",
+      description: "Reviews selected work",
+      prompt: "Review the selected work.",
+    });
+
+    const created = buildSessionConfig({
+      deps: createDeps({ taskAgentDefinitionStore }),
+      options: { task, agentOverride: "selected-reviewer" },
+      callbacks: createCallbacks(),
+    });
+    const resumed = buildSessionConfig({
+      deps: createDeps({ taskAgentDefinitionStore }),
+      options: { task, agentOverride: "selected-reviewer", forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(created.agent).toBe("selected-reviewer");
+    expect(resumed.agent).toBeUndefined();
+    expect(() => buildSessionConfig({
+      deps: createDeps({ taskAgentDefinitionStore }),
+      options: { task, agentOverride: "missing-agent" },
+      callbacks: createCallbacks(),
+    })).toThrow('Agent definition "missing-agent" is not available');
+  });
+
   it("renders identity, custom instructions, model settings, and common system guidance", () => {
     const settingsStore = {
       getSettings: () => ({

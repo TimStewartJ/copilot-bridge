@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { setMcpServersGetter } from "./config.js";
 import { openDatabase } from "./db.js";
 import { createTaskStore } from "./task-store.js";
+import { createTaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createSessionMetaStore } from "./session-meta-store.js";
 import { createSessionWorkspaceStore } from "./session-workspace-store.js";
@@ -68,7 +69,13 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 
   const dataDir = runtimePaths.dataDir;
   const db = openDatabase(dataDir);
-  const taskStore = createTaskStore(db, defaultGlobalBus, { runtimePaths });
+  const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir });
+  const taskStore = createTaskStore(db, defaultGlobalBus, {
+    runtimePaths,
+    onTaskDeleted: (taskId) => {
+      taskAgentDefinitionStore.removeTaskAgentDefinitions(taskId);
+    },
+  });
   const taskGroupStore = createTaskGroupStore(db, defaultGlobalBus);
   const scheduleStore = createScheduleStore(db);
   const settingsStore = createSettingsStore(db);
@@ -128,10 +135,22 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
 
+  try {
+    taskAgentDefinitionStore.sweepOrphanedTaskAgentDirectories(
+      new Set(taskStore.listTasks().map((task) => task.id)),
+    );
+  } catch (error) {
+    console.warn(
+      "[task-agent-definitions] Startup orphan sweep failed:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+
   setMcpServersGetter(() => settingsStore.getMcpServers());
 
   const ctx: AppContext = {
     taskStore,
+    taskAgentDefinitionStore,
     taskGroupStore,
     scheduleStore,
     settingsStore,

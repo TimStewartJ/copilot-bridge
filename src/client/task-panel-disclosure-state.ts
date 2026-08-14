@@ -1,6 +1,6 @@
 export const TASK_PANEL_DISCLOSURE_STORAGE_KEY = "bridge-task-panel-disclosures";
 
-export type TaskPanelDisclosureId = "work-items" | "pull-requests" | "docs" | "schedules";
+export type TaskPanelDisclosureId = "work-items" | "pull-requests" | "docs" | "schedules" | "agent-definitions";
 
 type DisclosureStore = Record<string, Partial<Record<TaskPanelDisclosureId, boolean>>>;
 
@@ -21,7 +21,7 @@ function readDisclosureStore(): DisclosureStore {
       if (!isRecord(value)) continue;
 
       const taskState: Partial<Record<TaskPanelDisclosureId, boolean>> = {};
-      for (const disclosureId of ["work-items", "pull-requests", "docs", "schedules"] as const) {
+      for (const disclosureId of ["work-items", "pull-requests", "docs", "schedules", "agent-definitions"] as const) {
         if (typeof value[disclosureId] === "boolean") {
           taskState[disclosureId] = value[disclosureId];
         }

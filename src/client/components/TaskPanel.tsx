@@ -36,6 +36,7 @@ import { getTaskKindUpdate } from "../task-kind";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonRow, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
 import {
+  AgentDefinitionsSection,
   WorkItemList,
   PullRequestList,
   TaskChecklistSection,
@@ -43,6 +44,8 @@ import {
   RelatedDocsSection,
   ScheduleSection,
 } from "./task-sections";
+import AgentDefinitionPreviewSheet from "./AgentDefinitionPreviewSheet";
+import type { TaskAgentDefinitionSummary } from "../api";
 
 function SectionLabel({ label, count, progress }: { label: string; count?: number; progress?: string }) {
   return (
@@ -209,6 +212,7 @@ export default function TaskPanel({
     inheritedTagIds,
     effectiveTags,
     relatedDocs,
+    agentDefinitions,
     refresh,
   } = ws;
   const activeSession = linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
@@ -218,6 +222,7 @@ export default function TaskPanel({
   const [titleDraft, setTitleDraft] = useState("");
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
+  const [previewAgentDefinition, setPreviewAgentDefinition] = useState<TaskAgentDefinitionSummary | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [highlightChecklistItemId, setHighlightChecklistItemId] = useState<string | null>(null);
   const [panelHighlightRequest, setPanelHighlightRequest] = useState<{ highlightId: string | null } | null>(null);
@@ -634,6 +639,13 @@ export default function TaskPanel({
                     taskId={task.id}
                   />
                 )}
+                {agentDefinitions.length > 0 && (
+                  <AgentDefinitionsSection
+                    taskId={task.id}
+                    definitions={agentDefinitions}
+                    onPreview={setPreviewAgentDefinition}
+                  />
+                )}
                 {sched.schedules.length > 0 && (
                   <ScheduleSection
                     schedules={sched.schedules}
@@ -698,6 +710,13 @@ export default function TaskPanel({
             <DocPreviewSheet
               docPath={previewDocPath}
               onClose={() => setPreviewDocPath(null)}
+            />
+          )}
+          {previewAgentDefinition && (
+            <AgentDefinitionPreviewSheet
+              taskId={task.id}
+              definition={previewAgentDefinition}
+              onClose={() => setPreviewAgentDefinition(null)}
             />
           )}
 

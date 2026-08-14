@@ -137,6 +137,55 @@ describe("voice job restart gating", () => {
     });
   });
 
+  it("passes a selected task agent through draft voice session creation", async () => {
+    const runtimePaths = createRestartRuntimePaths();
+    const db = openMemoryDatabase();
+    const store = createVoiceJobStore(db);
+    const globalBus = createGlobalBus();
+    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
+    const task = taskStore.createTask("Voice agent task");
+    const sessionManager = {
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "task-session" }),
+    } as any;
+    const manager = createVoiceJobManager({
+      dataDir: runtimePaths.dataDir,
+      store,
+      transcriptionService: {
+        getStatus: () => ({
+          available: true,
+          provider: "whisper.cpp",
+          label: "whisper.cpp",
+          maxDurationSeconds: 120,
+        }),
+        transcribe: vi.fn(),
+      },
+      sessionManager,
+      taskStore,
+      taskGroupStore: createTaskGroupStore(db, globalBus),
+    });
+    const sourceFilePath = join(runtimePaths.dataDir, "task-input.wav");
+    writeFileSync(sourceFilePath, "test-audio");
+
+    await manager.acceptVoiceJob({
+      composerKey: `draft:task:${task.id}`,
+      taskId: task.id,
+      sourceFilePath,
+      sessionOptions: { agent: "api-reviewer" },
+    });
+
+    expect(sessionManager.createTaskSession).toHaveBeenCalledWith(
+      task.id,
+      task.title,
+      task.workItems,
+      [],
+      task.notes,
+      task.cwd,
+      undefined,
+      null,
+      { agent: "api-reviewer" },
+    );
+  });
+
   describe("voice job artifact retention", () => {
     it("removes audio artifacts when transcription fails", async () => {
       const transcribe = vi.fn().mockRejectedValue(new Error("whisper failed"));

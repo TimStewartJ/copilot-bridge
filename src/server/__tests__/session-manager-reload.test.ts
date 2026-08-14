@@ -78,6 +78,32 @@ describe("SessionManager reloadSession", () => {
     expect(resumedSession.setModel).not.toHaveBeenCalled();
   });
 
+  it("invalidates only sessions linked to the task and defers busy sessions", async () => {
+    const manager = createManager();
+    manager.deps.taskStore.listSessionIdsForTask = vi.fn().mockReturnValue([
+      "busy-session",
+      "idle-session",
+    ]);
+    manager.sessionObjects.set("busy-session", makeAgentSessionStub({}));
+    manager.sessionObjects.set("idle-session", makeAgentSessionStub({}));
+    manager.sessionRuns.set("busy-session", {
+      state: "busy",
+      startedAt: Date.now(),
+      lastEventAt: Date.now(),
+    });
+    const mark = vi.spyOn(manager, "markCachedSessionForEviction");
+
+    const count = manager.invalidateTaskSessionConfig("task-1", "agent changed");
+    await manager._drainCacheQueue();
+
+    expect(count).toBe(2);
+    expect(mark).toHaveBeenCalledWith("busy-session", "agent changed");
+    expect(mark).toHaveBeenCalledWith("idle-session", "agent changed");
+    expect(manager.pendingSessionEvictions.has("busy-session")).toBe(true);
+    expect(manager.sessionObjects.has("idle-session")).toBe(false);
+    expect(manager.sessionObjects.has("busy-session")).toBe(true);
+  });
+
   it("releases the resume lifecycle exactly once when reload times out", async () => {
     vi.useFakeTimers();
     const manager = createManager();

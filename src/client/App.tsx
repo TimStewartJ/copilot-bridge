@@ -63,6 +63,7 @@ import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
 import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
+import { useTaskAgentDefinitionsQuery } from "./hooks/queries/useTaskAgentDefinitions";
 import { useStickyModelFamilyDefaults } from "./hooks/useStickyModelFamilyDefaults";
 import {
   buildNewSessionCreateOptions,
@@ -2301,6 +2302,7 @@ function SessionRoute({
   const composerKey = sessionId ?? draftRouteKey;
   const isDraft = sessionId === null;
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
+  const taskAgentDefinitionsQuery = useTaskAgentDefinitionsQuery(taskId);
   const sessionModelQuery = useSessionModelQuery(sessionId);
   const sessionReloadToken = sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
@@ -2353,11 +2355,16 @@ function SessionRoute({
   });
   const rememberModelFamilyDefaults = useStickyModelFamilyDefaults(familyDefaults);
   const launchCreateOptions = useMemo(
-    () => buildNewSessionCreateOptions(launchState),
+    () => ({
+      ...buildNewSessionCreateOptions(launchState),
+      ...(taskId && draftLaunch?.agent ? { agent: draftLaunch.agent } : {}),
+    }),
     [
       launchState.modelForCreate,
       launchState.selectedContextTier,
       launchState.selectedReasoningEffort,
+      draftLaunch?.agent,
+      taskId,
     ],
   );
   const launchConfigurationLoading = isDraft && (launchDefaultsLoading || modelsQuery.isLoading);
@@ -2391,11 +2398,12 @@ function SessionRoute({
       reasoningEffortSelection,
       contextTierSelection,
     });
-    setDraftLaunchOptions(composerKey, {
+    setDraftLaunchOptions(composerKey, (current) => ({
+      ...(current?.agent ? { agent: current.agent } : {}),
       model: selection.modelId,
       ...(reasoningEffortSelection ? { reasoningEffort: reasoningEffortSelection } : {}),
       ...(contextTierSelection ? { contextTier: contextTierSelection } : {}),
-    });
+    }));
     rememberModelFamilyDefaults({
       modelId: selection.modelId,
       reasoningEffort: nextLaunchState.selectedReasoningEffort,
@@ -2479,6 +2487,28 @@ function SessionRoute({
     launchState.selectedReasoningEffort,
     rememberModelFamilyDefaults,
     setDraftLaunchOptions,
+  ]);
+
+  const handleLaunchAgentChange = useCallback((agent?: string) => {
+    setDraftLaunchOptions(composerKey, (current) => {
+      const next = { ...(current ?? {}) };
+      if (agent) next.agent = agent;
+      else delete next.agent;
+      return Object.keys(next).length > 0 ? next : undefined;
+    });
+  }, [composerKey, setDraftLaunchOptions]);
+
+  useEffect(() => {
+    const selectedAgent = draftLaunch?.agent;
+    if (!selectedAgent || taskAgentDefinitionsQuery.isLoading) return;
+    const available = taskAgentDefinitionsQuery.data
+      ?.some((definition) => definition.name === selectedAgent && definition.userInvocable) === true;
+    if (!available) handleLaunchAgentChange(undefined);
+  }, [
+    draftLaunch?.agent,
+    handleLaunchAgentChange,
+    taskAgentDefinitionsQuery.data,
+    taskAgentDefinitionsQuery.isLoading,
   ]);
 
   useEffect(() => {
@@ -2588,11 +2618,15 @@ function SessionRoute({
       contextOptions={launchState.contextOptions}
       selectedContextTier={launchState.selectedContextTier}
       mode={launchMode}
+      agentDefinitions={taskId ? taskAgentDefinitionsQuery.data ?? [] : undefined}
+      agentDefinitionsLoading={taskId ? taskAgentDefinitionsQuery.isLoading : undefined}
+      selectedAgentName={draftLaunch?.agent}
       onModelFamilyChange={handleLaunchFamilyChange}
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={handleLaunchReasoningEffortChange}
       onContextTierChange={handleLaunchContextTierChange}
       onModeChange={setLaunchMode}
+      onAgentChange={handleLaunchAgentChange}
     />
   ) : undefined;
 

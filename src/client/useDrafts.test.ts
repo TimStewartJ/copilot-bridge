@@ -91,6 +91,7 @@ describe("useDrafts launch persistence", () => {
         ],
         launch: {
           model: "claude-sonnet-5",
+          agent: "api-reviewer",
           reasoningEffort: { modelId: "claude-sonnet-5", value: 42 },
           contextTier: { modelId: "claude-sonnet-5", value: "long_context" },
           legacy: true,
@@ -131,6 +132,7 @@ describe("useDrafts launch persistence", () => {
       ],
       launch: {
         model: "claude-sonnet-5",
+        agent: "api-reviewer",
         contextTier: { modelId: "claude-sonnet-5", value: "long_context" },
       },
     });

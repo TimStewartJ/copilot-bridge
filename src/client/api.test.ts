@@ -157,6 +157,22 @@ describe("serializeSettingsPatch", () => {
         }),
       ]);
     });
+
+    it("sends the selected agent definition for a new task chat", async () => {
+      stubSessionResponse("task-session");
+
+      await expect(createTaskSession("task-1", {
+        agent: "implementation-planner",
+      })).resolves.toBe("task-session");
+
+      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
+        "/api/tasks/task-1/session",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ agent: "implementation-planner" }),
+        }),
+      ]);
+    });
   });
 
   it("preserves explicit clears and leaves other updates unchanged", () => {

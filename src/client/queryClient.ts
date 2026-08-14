@@ -37,6 +37,7 @@ export const queryKeys = {
     ["sessions", opts ?? {}] as const,
   task: (id: string) => ["task", id] as const,
   taskChecklistItems: (id: string) => ["task", id, "checklist-items"] as const,
+  taskAgentDefinitions: (id: string) => ["task", id, "agent-definitions"] as const,
   openChecklistItems: ["checklist-items", "open"] as const,
   taskGitStatus: (id: string) => ["task", id, "git-status"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
