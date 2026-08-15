@@ -1,10 +1,16 @@
 import { useState, useEffect } from "react";
 import type { ModelInfo, Schedule, ScheduleCreateInput, ScheduleRun } from "../api";
 import { createSchedule, patchSchedule, fetchServerTimezone, getSessionRunState } from "../api";
+import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
+import {
+  getContextTierLabel,
+  modelSupportsLongContext,
+  type CopilotContextTier,
+} from "../../shared/copilot-context.js";
 import {
   X,
   Clock,
@@ -165,8 +171,18 @@ function ViewMode({
   const [showOverflow, setShowOverflow] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const selectedModel = schedule.model
+    ? models.find((model) => model.id === schedule.model)
+    : undefined;
   const modelLabel = schedule.model
-    ? models.find((model) => model.id === schedule.model)?.name ?? schedule.model
+    ? selectedModel?.name ?? schedule.model
+    : "Bridge default";
+  const reasoningEffortLabel = schedule.reasoningEffort
+    ? formatReasoningEffortLabel(schedule.reasoningEffort) ?? schedule.reasoningEffort
+    : "Bridge default";
+  const contextTierLabel = schedule.contextTier
+    ? getContextTierLabel(selectedModel, schedule.contextTier)
+      ?? (schedule.contextTier === "long_context" ? "Long context" : "Standard context")
     : "Bridge default";
 
   const seenRunIds = new Set<number>();
@@ -247,6 +263,18 @@ function ViewMode({
               <span className="text-text-faint block mb-0.5">AI model</span>
               <span className="text-text-secondary" title={schedule.model}>
                 {modelLabel}
+              </span>
+            </div>
+            <div>
+              <span className="text-text-faint block mb-0.5">Reasoning effort</span>
+              <span className="text-text-secondary" title={schedule.reasoningEffort}>
+                {reasoningEffortLabel}
+              </span>
+            </div>
+            <div>
+              <span className="text-text-faint block mb-0.5">Context size</span>
+              <span className="text-text-secondary" title={schedule.contextTier}>
+                {contextTierLabel}
               </span>
             </div>
             {taskTitle && (
@@ -467,6 +495,8 @@ function EditMode({
   const [runAt, setRunAt] = useState(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
   const [model, setModel] = useState(schedule?.model ?? "");
+  const [reasoningEffort, setReasoningEffort] = useState(schedule?.reasoningEffort ?? "");
+  const [contextTier, setContextTier] = useState<"" | CopilotContextTier>(schedule?.contextTier ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
   const [saving, setSaving] = useState(false);
@@ -491,9 +521,17 @@ function EditMode({
     setRunAt(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
     setTimezone(schedule?.timezone ?? "");
     setModel(schedule?.model ?? "");
+    setReasoningEffort(schedule?.reasoningEffort ?? "");
+    setContextTier(schedule?.contextTier ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
     setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");
   }, [schedule]);
+
+  const selectedModel = model ? models.find((candidate) => candidate.id === model) : undefined;
+  const reasoningEffortOptions = selectedModel?.supportedReasoningEfforts ?? [];
+  const contextTierOptions: CopilotContextTier[] = modelSupportsLongContext(selectedModel)
+    ? ["default", "long_context"]
+    : [];
 
   const handleSave = async () => {
     if (!name.trim() || !prompt.trim()) { setError("Name and prompt are required"); return; }
@@ -527,11 +565,16 @@ function EditMode({
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
           ...(model ? { model } : {}),
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+          ...(contextTier ? { contextTier } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
           ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
         await createSchedule(input);
       } else {
+        const modelChanged = model !== (schedule?.model ?? "");
+        const reasoningEffortChanged = reasoningEffort !== (schedule?.reasoningEffort ?? "");
+        const contextTierChanged = contextTier !== (schedule?.contextTier ?? "");
         await patchSchedule(schedule!.id, {
           name: name.trim(),
           prompt: prompt.trim(),
@@ -539,6 +582,16 @@ function EditMode({
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
           model: model || null,
+          ...(modelChanged
+            ? (reasoningEffort ? { reasoningEffort } : {})
+            : reasoningEffortChanged
+              ? { reasoningEffort: reasoningEffort || null }
+              : {}),
+          ...(modelChanged
+            ? (contextTier ? { contextTier } : {})
+            : contextTierChanged
+              ? { contextTier: contextTier || null }
+              : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
           autoArchiveKeep: parsedAutoArchiveKeep,
         });
@@ -657,7 +710,17 @@ function EditMode({
                 id="schedule-model-select"
                 className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={(e) => {
+                  const nextModel = e.target.value;
+                  setModel(nextModel);
+                  if (nextModel === (schedule?.model ?? "")) {
+                    setReasoningEffort(schedule?.reasoningEffort ?? "");
+                    setContextTier(schedule?.contextTier ?? "");
+                  } else {
+                    setReasoningEffort("");
+                    setContextTier("");
+                  }
+                }}
               >
                 <option value="">Bridge default</option>
                 {model && !models.some((candidate) => candidate.id === model) && (
@@ -674,6 +737,53 @@ function EditMode({
                     ? "Available models could not be loaded. The current selection can still be saved."
                     : "Overrides the global Bridge model for sessions created by this schedule."}
               </div>
+            </div>
+
+            <div>
+              <label className="text-text-faint block mb-1" htmlFor="schedule-reasoning-effort-select">
+                Reasoning effort
+              </label>
+              <select
+                id="schedule-reasoning-effort-select"
+                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent disabled:opacity-60"
+                value={reasoningEffort}
+                disabled={!model || (reasoningEffortOptions.length === 0 && !reasoningEffort)}
+                onChange={(e) => setReasoningEffort(e.target.value)}
+              >
+                <option value="">Bridge default</option>
+                {reasoningEffort && !reasoningEffortOptions.includes(reasoningEffort) && (
+                  <option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>
+                )}
+                {reasoningEffortOptions.map((effort) => (
+                  <option key={effort} value={effort}>
+                    {formatReasoningEffortLabel(effort) ?? effort}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-text-faint block mb-1" htmlFor="schedule-context-tier-select">
+                Context size
+              </label>
+              <select
+                id="schedule-context-tier-select"
+                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent disabled:opacity-60"
+                value={contextTier}
+                disabled={!model || (contextTierOptions.length === 0 && !contextTier)}
+                onChange={(e) => setContextTier(e.target.value as "" | CopilotContextTier)}
+              >
+                <option value="">Bridge default</option>
+                {contextTier && !contextTierOptions.includes(contextTier) && (
+                  <option value={contextTier}>{contextTier} (unavailable)</option>
+                )}
+                {contextTierOptions.map((tier) => (
+                  <option key={tier} value={tier}>
+                    {getContextTierLabel(selectedModel, tier)
+                      ?? (tier === "long_context" ? "Long context" : "Standard context")}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Max runs */}

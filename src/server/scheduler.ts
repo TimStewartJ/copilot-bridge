@@ -513,6 +513,8 @@ export async function triggerSchedule(
           runCount: schedule.runCount,
           lastRunAt: schedule.lastRunAt,
           model: schedule.model,
+          reasoningEffort: schedule.reasoningEffort,
+          contextTier: schedule.contextTier,
         },
       );
     } catch (err) {

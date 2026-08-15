@@ -37,7 +37,7 @@ import {
   findUnknownFields,
   formatUnknownFieldsError,
   normalizeScheduleAutoArchiveKeep,
-  normalizeScheduleModel,
+  validateScheduleLaunchOptionUpdates,
 } from "./schedule-validation.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import {
@@ -731,6 +731,8 @@ const SCHEDULE_CREATE_FIELDS = [
   "runAt",
   "timezone",
   "model",
+  "reasoningEffort",
+  "contextTier",
   "maxRuns",
   "expiresAt",
   "autoArchiveKeep",
@@ -742,6 +744,8 @@ const SCHEDULE_UPDATE_FIELDS = [
   "runAt",
   "timezone",
   "model",
+  "reasoningEffort",
+  "contextTier",
   "enabled",
   "maxRuns",
   "expiresAt",
@@ -4248,15 +4252,11 @@ export function createApiRouter(
       if (unknownFields.length > 0) {
         return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
       }
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, model, maxRuns, expiresAt, autoArchiveKeep } = req.body;
+      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt, autoArchiveKeep } = req.body;
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
       const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(autoArchiveKeep);
       if (!normalizedAutoArchiveKeep.ok) {
         return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
-      }
-      const normalizedModel = normalizeScheduleModel(model);
-      if (!normalizedModel.ok) {
-        return res.status(400).json({ error: normalizedModel.error });
       }
       if (!taskId || !name || !prompt || !type) {
         return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
@@ -4278,6 +4278,13 @@ export function createApiRouter(
       if (timezone && !schedulerModule().isValidTimezone(timezone)) {
         return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
       }
+      const launchOptions = await validateScheduleLaunchOptionUpdates({
+        input: req.body,
+        listModels: () => ctx.sessionManager.listModels(),
+      });
+      if (!launchOptions.ok) {
+        return res.status(launchOptions.status).json({ error: launchOptions.error });
+      }
 
       const schedule = ctx.scheduleStore.createSchedule({
         taskId,
@@ -4287,7 +4294,9 @@ export function createApiRouter(
         cron: cronExpr,
         runAt,
         timezone,
-        model: normalizedModel.value ?? undefined,
+        model: launchOptions.updates.model ?? undefined,
+        reasoningEffort: launchOptions.updates.reasoningEffort ?? undefined,
+        contextTier: launchOptions.updates.contextTier ?? undefined,
         maxRuns,
         expiresAt,
         autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
@@ -4329,15 +4338,15 @@ export function createApiRouter(
         if (cronError) return res.status(400).json({ error: cronError });
       }
 
-      const updates = { ...req.body };
-      const modelProvided = Object.prototype.hasOwnProperty.call(req.body, "model");
-      if (modelProvided) {
-        const normalizedModel = normalizeScheduleModel(req.body.model);
-        if (!normalizedModel.ok) {
-          return res.status(400).json({ error: normalizedModel.error });
-        }
-        updates.model = normalizedModel.value;
+      const launchOptions = await validateScheduleLaunchOptionUpdates({
+        input: req.body,
+        existing,
+        listModels: () => ctx.sessionManager.listModels(),
+      });
+      if (!launchOptions.ok) {
+        return res.status(launchOptions.status).json({ error: launchOptions.error });
       }
+      const updates = { ...req.body, ...launchOptions.updates };
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
       if (autoArchiveKeepProvided) {
         const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(req.body.autoArchiveKeep);

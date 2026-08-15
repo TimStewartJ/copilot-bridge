@@ -4,7 +4,7 @@ import {
   findUnknownFields,
   formatUnknownFieldsError,
   normalizeScheduleAutoArchiveKeep,
-  normalizeScheduleModel,
+  validateScheduleLaunchOptionUpdates,
 } from "../schedule-validation.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
@@ -61,6 +61,8 @@ const SCHEDULE_CREATE_FIELDS = [
   "runAt",
   "timezone",
   "model",
+  "reasoningEffort",
+  "contextTier",
   "maxRuns",
   "expiresAt",
   "autoArchiveKeep",
@@ -73,6 +75,8 @@ const SCHEDULE_UPDATE_FIELDS = [
   "runAt",
   "timezone",
   "model",
+  "reasoningEffort",
+  "contextTier",
   "enabled",
   "maxRuns",
   "expiresAt",
@@ -103,6 +107,8 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once. Always interpreted as UTC." },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
         model: { type: "string", description: "AI model ID for sessions created by this schedule. Omit to use the global Bridge default." },
+        reasoningEffort: { type: "string", description: "Reasoning effort for sessions created by this schedule. Requires model and must be supported by it." },
+        contextTier: { type: "string", enum: ["default", "long_context"], description: "Context size tier for sessions created by this schedule. Requires model; long_context must be supported by it." },
         maxRuns: { type: "integer", minimum: 1, description: "Auto-disable after N runs (optional)" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
         autoArchiveKeep: { type: "integer", minimum: 0, description: "Auto-archive older run sessions after keeping the latest N sessions active (optional)" },
@@ -119,10 +125,13 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(args, "autoArchiveKeep");
       const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(args.autoArchiveKeep);
       if (!normalizedAutoArchiveKeep.ok) return toolFailure(normalizedAutoArchiveKeep.error);
-      const normalizedModel = normalizeScheduleModel(args.model);
-      if (!normalizedModel.ok) return toolFailure(normalizedModel.error);
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
+      const launchOptions = await validateScheduleLaunchOptionUpdates({
+        input: args,
+        listModels: () => ctx.sessionManager.listModels(),
+      });
+      if (!launchOptions.ok) return toolFailure(launchOptions.error);
 
       const schedule = ctx.scheduleStore.createSchedule({
         taskId: args.taskId,
@@ -132,7 +141,9 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: args.cron,
         runAt: args.runAt,
         timezone: args.timezone,
-        model: normalizedModel.value ?? undefined,
+        model: launchOptions.updates.model ?? undefined,
+        reasoningEffort: launchOptions.updates.reasoningEffort ?? undefined,
+        contextTier: launchOptions.updates.contextTier ?? undefined,
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
         autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
@@ -163,6 +174,8 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         runAt: { type: "string", description: "New one-shot run time (ISO timestamp)" },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/Los_Angeles')" },
         model: { type: ["string", "null"], description: "AI model ID for future schedule runs. Null clears the override and restores the global Bridge default." },
+        reasoningEffort: { type: ["string", "null"], description: "Reasoning effort for future runs. Requires a schedule model and must be supported by it. Null clears the override." },
+        contextTier: { anyOf: [{ type: "string", enum: ["default", "long_context"] }, { type: "null" }], description: "Context size tier for future runs. Requires a schedule model; long_context must be supported by it. Null clears the override." },
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
         maxRuns: { type: "integer", minimum: 1, description: "Auto-disable after N runs" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables" },
@@ -177,12 +190,6 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       const scheduler = getScheduler(ctx);
       if (args.timezone && !scheduler.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
-      const modelProvided = Object.prototype.hasOwnProperty.call(updates, "model");
-      if (modelProvided) {
-        const normalizedModel = normalizeScheduleModel(updates.model);
-        if (!normalizedModel.ok) return toolFailure(normalizedModel.error);
-        updates.model = normalizedModel.value;
-      }
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(updates, "autoArchiveKeep");
       if (autoArchiveKeepProvided) {
         const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(updates.autoArchiveKeep);
@@ -191,6 +198,13 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       }
       const existing = ctx.scheduleStore.getSchedule(scheduleId);
       if (!existing) return toolFailure(`Schedule ${scheduleId} not found`);
+      const launchOptions = await validateScheduleLaunchOptionUpdates({
+        input: updates,
+        existing,
+        listModels: () => ctx.sessionManager.listModels(),
+      });
+      if (!launchOptions.ok) return toolFailure(launchOptions.error);
+      Object.assign(updates, launchOptions.updates);
 
       const schedule = ctx.scheduleStore.updateSchedule(scheduleId, updates);
       if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
@@ -255,6 +269,8 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
           runAt: s.runAt,
           timezone: s.timezone,
           model: s.model,
+          reasoningEffort: s.reasoningEffort,
+          contextTier: s.contextTier,
           enabled: s.enabled,
           lastRunAt: s.lastRunAt,
           nextRunAt: s.nextRunAt,

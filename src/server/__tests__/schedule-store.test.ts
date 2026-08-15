@@ -33,6 +33,8 @@ describe("schedule-store", () => {
       const s = store.createSchedule({
         ...baseCron,
         model: "claude-sonnet-5",
+        reasoningEffort: "high",
+        contextTier: "long_context",
         autoArchiveKeep: 8,
       });
       expect(s.id).toBeTruthy();
@@ -40,6 +42,8 @@ describe("schedule-store", () => {
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
       expect(s.model).toBe("claude-sonnet-5");
+      expect(s.reasoningEffort).toBe("high");
+      expect(s.contextTier).toBe("long_context");
       expect(s.autoArchiveKeep).toBe(8);
     });
 
@@ -85,10 +89,25 @@ describe("schedule-store", () => {
       expect(store.updateSchedule(s.id, { autoArchiveKeep: null }).autoArchiveKeep).toBeUndefined();
     });
 
-    it("updateSchedule changes and clears the model override", () => {
+    it("updateSchedule changes and clears launch overrides", () => {
       const s = store.createSchedule(baseCron);
-      expect(store.updateSchedule(s.id, { model: "gpt-5.6-sol" }).model).toBe("gpt-5.6-sol");
-      expect(store.updateSchedule(s.id, { model: null }).model).toBeUndefined();
+      expect(store.updateSchedule(s.id, {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      })).toMatchObject({
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+      expect(store.updateSchedule(s.id, {
+        model: null,
+        reasoningEffort: null,
+        contextTier: null,
+      })).toMatchObject({ id: s.id });
+      expect(store.getSchedule(s.id)?.model).toBeUndefined();
+      expect(store.getSchedule(s.id)?.reasoningEffort).toBeUndefined();
+      expect(store.getSchedule(s.id)?.contextTier).toBeUndefined();
     });
 
     it("removes legacy reuse schema while preserving run history during database migration", () => {
@@ -152,12 +171,14 @@ describe("schedule-store", () => {
         const migratedDb = openDatabase(dataDir);
         try {
           const rows = migratedDb.prepare(`
-            SELECT id, model, autoArchiveKeep, lastSessionId
+            SELECT id, model, reasoningEffort, contextTier, autoArchiveKeep, lastSessionId
             FROM schedules
             ORDER BY id
           `).all() as Array<{
             id: string;
             model: string | null;
+            reasoningEffort: string | null;
+            contextTier: string | null;
             autoArchiveKeep: number | null;
             lastSessionId: string | null;
           }>;
@@ -165,12 +186,16 @@ describe("schedule-store", () => {
             {
               id: "reuse-last-schedule",
               model: null,
+              reasoningEffort: null,
+              contextTier: null,
               autoArchiveKeep: null,
               lastSessionId: "last-session",
             },
             {
               id: "reuse-target-schedule",
               model: null,
+              reasoningEffort: null,
+              contextTier: null,
               autoArchiveKeep: null,
               lastSessionId: "target-session",
             },
@@ -183,6 +208,8 @@ describe("schedule-store", () => {
           expect(scheduleColumns).not.toContain("reuseLastRequiresExistingSession");
           expect(scheduleColumns).toContain("autoArchiveKeep");
           expect(scheduleColumns).toContain("model");
+          expect(scheduleColumns).toContain("reasoningEffort");
+          expect(scheduleColumns).toContain("contextTier");
           const claimsTable = migratedDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedule_session_claims'").get();
           expect(claimsTable).toBeUndefined();
           const runs = migratedDb.prepare(`

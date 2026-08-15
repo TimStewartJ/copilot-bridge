@@ -497,6 +497,16 @@ function ensureScheduleModelColumn(db: DatabaseSync): void {
   }
 }
 
+function ensureScheduleLaunchOptionColumns(db: DatabaseSync): void {
+  const scheduleCols = getTableInfo(db, "schedules");
+  if (!scheduleCols.some((c: any) => c.name === "reasoningEffort")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN reasoningEffort TEXT");
+  }
+  if (!scheduleCols.some((c: any) => c.name === "contextTier")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN contextTier TEXT");
+  }
+}
+
 function ensureFeedCardsVisualJsonColumn(db: DatabaseSync): void {
   if (!sqliteTableExists(db, "feed_cards")) return;
   const feedCols = getTableInfo(db, "feed_cards");
@@ -563,6 +573,8 @@ function dropScheduleReuseState(db: DatabaseSync): void {
         runAt TEXT,
         timezone TEXT,
         model TEXT,
+        reasoningEffort TEXT,
+        contextTier TEXT,
         enabled INTEGER NOT NULL DEFAULT 1,
         lastSessionId TEXT,
         createdAt TEXT NOT NULL,
@@ -576,7 +588,8 @@ function dropScheduleReuseState(db: DatabaseSync): void {
       );
 
       INSERT INTO schedules_new (
-        id, taskId, name, prompt, type, cron, runAt, timezone, model, enabled, lastSessionId,
+        id, taskId, name, prompt, type, cron, runAt, timezone, model, reasoningEffort, contextTier,
+        enabled, lastSessionId,
         createdAt, updatedAt, lastRunAt, nextRunAt, runCount, maxRuns, expiresAt, autoArchiveKeep
       )
       SELECT
@@ -589,6 +602,8 @@ function dropScheduleReuseState(db: DatabaseSync): void {
         ${scheduleColumnExpr(scheduleCols, "runAt", "NULL")},
         ${scheduleColumnExpr(scheduleCols, "timezone", "NULL")},
         ${scheduleColumnExpr(scheduleCols, "model", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "reasoningEffort", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "contextTier", "NULL")},
         ${scheduleColumnExpr(scheduleCols, "enabled", "1")},
         ${lastSessionExpr},
         ${scheduleColumnExpr(scheduleCols, "createdAt", "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")},
@@ -1293,6 +1308,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Add an optional model override to legacy schedules tables.",
     apply: ensureScheduleModelColumn,
+  },
+  {
+    id: "schedule-launch-option-columns",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Add optional reasoning effort and context tier overrides to legacy schedules tables.",
+    apply: ensureScheduleLaunchOptionColumns,
   },
   {
     id: "feed-cards-visual-json-column",

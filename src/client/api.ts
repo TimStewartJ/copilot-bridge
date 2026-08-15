@@ -2368,6 +2368,8 @@ export interface Schedule {
   runAt?: string;
   timezone?: string;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
   enabled: boolean;
   lastSessionId?: string;
   createdAt: string;
@@ -2381,12 +2383,17 @@ export interface Schedule {
 }
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "model" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
+  Partial<Pick<Schedule,
+    "cron" | "runAt" | "timezone" | "model" | "reasoningEffort" | "contextTier"
+    | "maxRuns" | "expiresAt" | "autoArchiveKeep"
+  >>;
 
 export type ScheduleUpdateInput = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
   model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+  contextTier?: CopilotContextTier | null;
   autoArchiveKeep?: number | null;
 };
 
