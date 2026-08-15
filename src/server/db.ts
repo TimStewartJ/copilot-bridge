@@ -560,6 +560,8 @@ function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
       runAt TEXT,
       timezone TEXT,
       model TEXT,
+      reasoningEffort TEXT,
+      contextTier TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       lastSessionId TEXT,
       createdAt TEXT NOT NULL,

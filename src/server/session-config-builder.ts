@@ -55,6 +55,8 @@ export interface ScheduleContext {
   runCount: number;
   lastRunAt?: string;
   model?: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
 }
 
 export interface SessionConfigOptions {
@@ -284,8 +286,17 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
     // An explicit model override must not inherit an unsupported effort from
     // the global model. Unknown override models use their SDK default.
+    const scheduleReasoningEffort = scheduleContext?.reasoningEffort;
     if (reasoningEffortOverride) {
       cfg.reasoningEffort = reasoningEffortOverride;
+    } else if (
+      scheduleReasoningEffort
+      && (
+        !selectedModelMetadata
+        || selectedModelMetadata.supportedReasoningEfforts?.includes(scheduleReasoningEffort)
+      )
+    ) {
+      cfg.reasoningEffort = scheduleReasoningEffort;
     } else {
       const reasoningEffort = settings?.reasoningEffort;
       const overrideModelSupportsGlobalEffort = !explicitModelOverride
@@ -297,7 +308,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
     const contextTier = resolveContextTierForModel(
       selectedModelMetadata,
-      contextTierOverride ?? normalizeCopilotContextTier(settings?.contextTier),
+      contextTierOverride
+        ?? scheduleContext?.contextTier
+        ?? normalizeCopilotContextTier(settings?.contextTier),
     );
     const modelCapabilities = getModelCapabilitiesOverrideForContextTier(selectedModelMetadata, contextTier);
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;

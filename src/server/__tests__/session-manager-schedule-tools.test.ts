@@ -104,6 +104,8 @@ describe("schedule tools", () => {
       type: "cron",
       cron: "0 0 * * *",
       model: "claude-sonnet-5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
     });
     const tool = getTool(ctx, "schedule_list");
 
@@ -123,12 +125,25 @@ describe("schedule tools", () => {
       taskId: task.id,
       name: "Current metadata",
       model: "claude-sonnet-5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
     });
     expect(result.schedules[0]).not.toHaveProperty("sessionMode");
   });
 
-  it("creates, updates, and clears schedule model overrides", async () => {
+  it("creates, updates, and clears schedule model launch overrides", async () => {
     const sessionManager = createMockSessionManager();
+    sessionManager.listModels = async () => [{
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      supportedReasoningEfforts: ["high"],
+      billing: {
+        tokenPrices: {
+          contextMax: 200_000,
+          longContext: { contextMax: 1_000_000 },
+        },
+      },
+    }] as any;
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
     scheduler.initialize(sessionManager as any, {
@@ -153,14 +168,22 @@ describe("schedule tools", () => {
       type: "cron",
       cron: "0 0 * * *",
       model: "  gpt-5.6-sol  ",
+      reasoningEffort: " high ",
+      contextTier: "long_context",
     }, meta) as { scheduleId: string };
-    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.model).toBe("gpt-5.6-sol");
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)).toMatchObject({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
 
     await updateTool.handler({
       scheduleId: created.scheduleId,
       model: null,
     }, { ...meta, toolName: "schedule_update" });
     expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.model).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.reasoningEffort).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.contextTier).toBeUndefined();
   });
 
   it("filters schedules by name (case-insensitive substring)", async () => {
