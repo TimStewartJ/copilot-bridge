@@ -1548,6 +1548,62 @@ describe("ChatView steering sends", () => {
     }
   });
 
+  it("does not let a stale live sub-agent launch result overwrite the committed response", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          {
+            id: "canonical-agent",
+            type: "tool",
+            toolCall: {
+              toolCallId: "agent-call-1",
+              name: "🤖 Explore Agent",
+              isSubAgent: true,
+              result: "Committed final response",
+              success: true,
+              completedAt: "2026-07-25T22:00:10.000Z",
+            },
+          },
+          {
+            id: "canonical-child",
+            type: "tool",
+            toolCall: {
+              toolCallId: "child-call-1",
+              name: "rg",
+              parentToolCallId: "agent-call-1",
+              result: "done",
+              success: true,
+              completedAt: "2026-07-25T22:00:09.000Z",
+            },
+          },
+        ],
+        busy: true,
+        total: 2,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        liveTools: [{
+          toolCallId: "agent-call-1",
+          name: "🤖 Explore Agent",
+          isSubAgent: true,
+          result: "Agent started in background",
+          success: true,
+          completedAt: "2026-07-25T22:00:01.000Z",
+        }],
+        isStreaming: true,
+        streamStatus: "streaming",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Committed final response") ?? false);
+      expect(dom.container.textContent).not.toContain("Agent started in background");
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("does not append older snapshot entries after the canonical tail", async () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {

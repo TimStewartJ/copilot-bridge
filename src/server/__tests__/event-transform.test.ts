@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { getLastVisibleActivityAt, transformEventsToMessages } from "../event-transform.js";
+import {
+  getLastVisibleActivityAt,
+  getUndoBoundaryEventId,
+  isVisibleMessageEvent,
+  transformEventsToMessages,
+} from "../event-transform.js";
 
 describe("event-transform visible activity", () => {
   it("ignores hidden lifecycle events after the last visible message", () => {
@@ -445,6 +450,28 @@ describe("event-transform fork boundaries", () => {
     expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
   });
 
+  it("does not let a sub-agent instruction interrupt the parent turn boundary", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", data: { content: "Answer one" } },
+      {
+        id: "agent-prompt",
+        type: "user.message",
+        agentId: "agent-1",
+        data: {
+          content: "Inspect the repository",
+          source: "agent-parent-session",
+          parentAgentTaskId: "task-1",
+        },
+      },
+      { id: "turn-end-1", type: "assistant.turn_end", data: {} },
+      { id: "user-2", type: "user.message", data: { content: "Second" } },
+    ]);
+
+    const firstAssistant = entries.find((entry) => entry.role === "assistant");
+    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
+  });
+
   it("omits fork boundaries when the completed turn has no following event", () => {
     const entries = transformEventsToMessages([
       { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
@@ -534,6 +561,31 @@ describe("event-transform undo boundaries", () => {
 
     expect(entries.filter((entry) => entry.type === "message").map((entry) => entry.undoEventId))
       .toEqual([undefined, undefined]);
+  });
+
+  it("keeps the human undo boundary across hidden sub-agent instructions", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", data: { content: "First" } },
+      {
+        id: "agent-prompt",
+        type: "user.message",
+        agentId: "agent-1",
+        data: {
+          content: "Inspect the repository",
+          source: "agent-parent-session",
+          parentAgentTaskId: "task-1",
+        },
+      },
+      { id: "assistant-1", type: "assistant.message", data: { content: "Answer" } },
+    ]);
+
+    expect(entries.filter((entry) => entry.type === "message").map((entry) => ({
+      content: entry.content,
+      undoEventId: entry.undoEventId,
+    }))).toEqual([
+      { content: "First", undoEventId: "user-1" },
+      { content: "Answer", undoEventId: "user-1" },
+    ]);
   });
 });
 
@@ -789,6 +841,105 @@ describe("event-transform tool results", () => {
     ]);
   });
 
+  it("nests sub-agent instructions instead of rendering them as human messages", () => {
+    const initialPrompt = "Inspect the scheduler recovery tests.";
+    const followUp = "Also verify the Windows path.";
+    const initialInstructionEvent = {
+      id: "agent-prompt-1",
+      type: "user.message",
+      agentId: "agent-instance-1",
+      timestamp: "2026-04-10T10:00:04.000Z",
+      data: {
+        content: "Inspect the scheduler\nrecovery tests.",
+        source: "agent-parent-session",
+        parentAgentTaskId: "task-1",
+      },
+    };
+    const entries = transformEventsToMessages([
+      {
+        id: "user-1",
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: "Please investigate the flaky test." },
+      },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: {
+          toolCallId: "agent-tool",
+          toolName: "task",
+          arguments: {
+            description: "Investigate scheduler race",
+            prompt: initialPrompt,
+            mode: "background",
+          },
+        },
+      },
+      {
+        type: "subagent.started",
+        agentId: "agent-instance-1",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: {
+          toolCallId: "agent-tool",
+          agentName: "explore",
+          agentDisplayName: "Explore agent",
+        },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:03.000Z",
+        data: {
+          toolCallId: "agent-tool",
+          success: true,
+          result: { content: "Agent started in background" },
+        },
+      },
+      initialInstructionEvent,
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:05.000Z",
+        data: {
+          toolCallId: "child-tool",
+          toolName: "rg",
+          parentToolCallId: "agent-tool",
+          arguments: { pattern: "scheduler" },
+        },
+      },
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:06.000Z",
+        data: {
+          content: followUp,
+          source: "agent-parent-session",
+          parentAgentTaskId: "task-1",
+        },
+      },
+      {
+        type: "assistant.message",
+        agentId: "agent-instance-1",
+        timestamp: "2026-04-10T10:00:07.000Z",
+        data: { parentToolCallId: "agent-tool", content: "The race is in the restart-state read." },
+      },
+    ]);
+
+    expect(entries.filter((entry) => entry.type === "message")).toMatchObject([
+      { role: "user", content: "Please investigate the flaky test." },
+    ]);
+    expect(entries.find((entry) => entry.type === "tool" && entry.toolCall?.toolCallId === "agent-tool"))
+      .toMatchObject({
+        toolCall: {
+          name: "🤖 Explore agent",
+          result: "The race is in the restart-state read.",
+          agentInstructions: [
+            { kind: "task", content: initialPrompt },
+            { kind: "follow_up", content: followUp },
+          ],
+        },
+      });
+    expect(isVisibleMessageEvent(initialInstructionEvent)).toBe(false);
+    expect(getUndoBoundaryEventId(initialInstructionEvent)).toBeUndefined();
+  });
+
   it("keeps the latest progress text for incomplete tools", () => {
     const entries = transformEventsToMessages([
       {
@@ -1026,6 +1177,51 @@ describe("event-transform turn grouping", () => {
       },
       { type: "message", role: "assistant", content: "Done.", turnId: "turn-1" },
     ]);
+  });
+
+  it("does not project sub-agent turn starts as primary assistant turns", () => {
+    const entries = transformEventsToMessages([
+      { type: "assistant.turn_start", data: { turnId: "parent-turn" } },
+      {
+        type: "tool.execution_start",
+        data: { toolCallId: "agent-tool", toolName: "task", arguments: { prompt: "Investigate" } },
+      },
+      {
+        type: "subagent.started",
+        agentId: "agent-1",
+        data: { toolCallId: "agent-tool", agentName: "explore" },
+      },
+      { type: "assistant.turn_end", data: { turnId: "parent-turn" } },
+      { type: "assistant.turn_start", data: { turnId: "child-turn" } },
+      {
+        type: "tool.execution_start",
+        data: {
+          toolCallId: "child-tool",
+          toolName: "rg",
+          parentToolCallId: "agent-tool",
+        },
+      },
+      {
+        type: "subagent.completed",
+        agentId: "agent-1",
+        data: { toolCallId: "agent-tool" },
+      },
+      { type: "user.message", data: { content: "What did you find?" } },
+      { type: "assistant.turn_start", data: { turnId: "next-parent-turn" } },
+      { type: "assistant.message", data: { content: "Here is the result." } },
+    ]);
+
+    const childTool = entries.find((entry) => entry.type === "tool" && entry.toolCall?.toolCallId === "child-tool");
+    const nextAssistant = entries.find((entry) => entry.role === "assistant");
+    expect(childTool).toMatchObject({
+      turnId: "subagent-turn-1",
+      turnInstanceId: "subagent-turn-instance-1",
+    });
+    expect(nextAssistant).toMatchObject({
+      content: "Here is the result.",
+      turnId: "next-parent-turn",
+      turnInstanceId: "turn-instance-2",
+    });
   });
 });
 

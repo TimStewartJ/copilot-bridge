@@ -589,6 +589,7 @@ describe("readMessagesFromDisk latest-page path", () => {
         { type: "user.message", timestamp: "2026-04-30T10:00:01.000Z", data: { content: "hello" } },
       ],
     });
+
     const { deps, spans } = createDeps(copilotHome);
 
     const result = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
@@ -599,6 +600,54 @@ describe("readMessagesFromDisk latest-page path", () => {
       .toMatchObject({ cacheResult: "derived", eventCount: 2, totalMessages: 1 });
     expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
       .toMatchObject({ readFullFile: true, eventCount: 2, totalMessages: 1 });
+  });
+
+  it("does not count sub-agent instructions as user transcript entries", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-agent-instructions");
+    const sessionId = "agent-instructions";
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        { type: "user.message", data: { content: "Investigate this" } },
+        {
+          type: "tool.execution_start",
+          data: {
+            toolCallId: "agent-tool",
+            toolName: "task",
+            arguments: { prompt: "Inspect the repository" },
+          },
+        },
+        {
+          type: "subagent.started",
+          agentId: "agent-1",
+          data: {
+            toolCallId: "agent-tool",
+            agentName: "explore",
+            agentDisplayName: "Explore Agent",
+          },
+        },
+        {
+          type: "user.message",
+          agentId: "agent-1",
+          data: {
+            content: "Inspect the repository",
+            source: "agent-parent-session",
+            parentAgentTaskId: "task-1",
+          },
+        },
+      ],
+    });
+    const { deps } = createDeps(copilotHome);
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(result.total).toBe(2);
+    expect(result.messages.filter((entry) => entry.type === "message")).toMatchObject([
+      { role: "user", content: "Investigate this" },
+    ]);
+    expect(result.messages.find((entry) => entry.type === "tool")?.toolCall)
+      .toMatchObject({
+        agentInstructions: [{ kind: "task", content: "Inspect the repository" }],
+      });
   });
 
   it("falls back to a full read when the tail is invalidated by mtime change or appended events", async () => {
@@ -1183,4 +1232,3 @@ describe("session storage reader", () => {
     );
   });
 });
-

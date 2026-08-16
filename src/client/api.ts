@@ -9,6 +9,7 @@ import type {
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { ModelFamily } from "../shared/model-families.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { AgentInstruction } from "../shared/subagent.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../shared/session-stream.js";
 import type {
@@ -30,6 +31,7 @@ import type {
   SubmittedElicitationResponse as SubmittedElicitationResponseType,
 } from "../server/elicitation-types.js";
 export type { McpServerConfig };
+export type { AgentInstruction } from "../shared/subagent.js";
 export type {
   AgentCountsSource,
   AgentExecutionMode,
@@ -213,6 +215,7 @@ export interface ToolCall {
   parentToolCallId?: string;
   /** Set on sub-agent pseudo-tool entries (the group header) */
   isSubAgent?: boolean;
+  agentInstructions?: AgentInstruction[];
   childToolCalls?: ToolCall[];
   /** ISO timestamp when the tool call started */
   startedAt?: string;

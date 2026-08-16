@@ -1,4 +1,5 @@
 import { getToolExecutionDisplayText } from "./tool-results.js";
+import type { AgentInstruction } from "../shared/subagent.js";
 
 // Sub-agent correlation shared by the two server-side folds of the SDK event stream:
 // the live fold (`session-runner.ts`, single-pass, emits SSE deltas) and the replay fold
@@ -24,6 +25,7 @@ export interface SubagentResolution {
   displayName?: string;
   response?: string;
   error?: string;
+  instructions?: string[];
 }
 
 export interface ToolCompletionRecord {
@@ -51,6 +53,7 @@ interface CorrelationEntry {
   displayName?: string;
   response?: string;
   error?: string;
+  instructions?: string[];
   /** A `subagent.started` was seen for this tool call. */
   started: boolean;
 }
@@ -78,6 +81,7 @@ export class SubagentCorrelator {
   private readonly entries = new Map<string, CorrelationEntry>();
   /** Envelope `agentId` (sub-agent instance) → `data.toolCallId` (spawning tool call). */
   private readonly agentToToolCall = new Map<string, string>();
+  private readonly pendingInstructions = new Map<string, string[]>();
   /** Tool calls whose real completion has been seen; they no longer accept failure updates. */
   private readonly sealed = new Set<string>();
 
@@ -113,6 +117,11 @@ export class SubagentCorrelator {
     if (agentId) {
       entry.agentId = agentId;
       this.agentToToolCall.set(agentId, toolCallId);
+      const pending = this.pendingInstructions.get(agentId);
+      if (pending?.length) {
+        entry.instructions = [...(entry.instructions ?? []), ...pending];
+        this.pendingInstructions.delete(agentId);
+      }
     }
   }
 
@@ -131,6 +140,30 @@ export class SubagentCorrelator {
       this.entries.set(parentToolCallId, entry);
     }
     entry.response = text;
+  }
+
+  recordInstruction(agentId: string, content: unknown): void {
+    const text = nonEmptyString(content);
+    if (!text) return;
+    const toolCallId = this.resolveAgentToolCallId(agentId);
+    if (!toolCallId) {
+      const pending = this.pendingInstructions.get(agentId) ?? [];
+      pending.push(text);
+      this.pendingInstructions.set(agentId, pending);
+      return;
+    }
+    this.recordInstructionForToolCall(toolCallId, text);
+  }
+
+  recordInstructionForToolCall(toolCallId: string, content: unknown): void {
+    const text = nonEmptyString(content);
+    if (!text) return;
+    let entry = this.entries.get(toolCallId);
+    if (!entry) {
+      entry = { started: false };
+      this.entries.set(toolCallId, entry);
+    }
+    entry.instructions = [...(entry.instructions ?? []), text];
   }
 
   /** `subagent.failed`: `data.toolCallId` is authoritative and may establish sub-agent identity. */
@@ -154,7 +187,7 @@ export class SubagentCorrelator {
     if (entry) entry.error = text;
   }
 
-  private resolveAgentToolCallId(agentId: string): string | undefined {
+  resolveAgentToolCallId(agentId: string): string | undefined {
     const mapped = this.agentToToolCall.get(agentId);
     if (mapped) return mapped;
     // Historically the runtime set `agentId` equal to the spawning `toolCallId`. Accept that only
@@ -179,6 +212,7 @@ export class SubagentCorrelator {
       displayName: entry.displayName,
       response: entry.response,
       error: entry.error,
+      instructions: entry.instructions ? [...entry.instructions] : undefined,
     };
   }
 
@@ -189,9 +223,50 @@ export class SubagentCorrelator {
    */
   forget(toolCallId: string): void {
     const entry = this.entries.get(toolCallId);
-    if (entry?.agentId) this.agentToToolCall.delete(entry.agentId);
+    if (entry?.agentId) {
+      this.agentToToolCall.delete(entry.agentId);
+      this.pendingInstructions.delete(entry.agentId);
+    }
     this.entries.delete(toolCallId);
   }
+}
+
+function getPromptArgument(args: unknown): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  return nonEmptyString((args as Record<string, unknown>).prompt);
+}
+
+function normalizeInstructionComparison(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+export function buildSubagentInstructions(
+  args: unknown,
+  observedInstructions: readonly string[] = [],
+): AgentInstruction[] | undefined {
+  const initialPrompt = getPromptArgument(args);
+  const instructions: AgentInstruction[] = [];
+  if (initialPrompt) instructions.push({ kind: "task", content: initialPrompt });
+
+  let skippedInitialEvent = false;
+  for (const observed of observedInstructions) {
+    const content = nonEmptyString(observed);
+    if (!content) continue;
+    if (
+      initialPrompt
+      && !skippedInitialEvent
+      && normalizeInstructionComparison(content) === normalizeInstructionComparison(initialPrompt)
+    ) {
+      skippedInitialEvent = true;
+      continue;
+    }
+    instructions.push({
+      kind: instructions.length === 0 ? "task" : "follow_up",
+      content,
+    });
+  }
+
+  return instructions.length > 0 ? instructions : undefined;
 }
 
 /**

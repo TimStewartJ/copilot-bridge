@@ -104,6 +104,31 @@ describe("session name autogenerator", () => {
     ]);
   });
 
+  it("excludes sub-agent instructions from title generation history", async () => {
+    const { generator, generateSessionName } = createHarness(undefined);
+    const session = {
+      getEvents: vi.fn(async () => [
+        { type: "user.message", data: { content: "Investigate the deployment restart" } },
+        {
+          type: "user.message",
+          agentId: "agent-1",
+          data: { content: "Inspect every launcher file" },
+        },
+        { type: "user.message", data: { content: "Show me the fix" } },
+      ]),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["Show me the fix"],
+    });
+
+    expect(generateSessionName).toHaveBeenCalledWith([
+      "Investigate the deployment restart",
+      "Show me the fix",
+    ]);
+  });
+
   it("still skips existing SDK names for warm or no-message checks", async () => {
     const { generator, setSessionName, generateSessionName } = createHarness(undefined);
     const session = {

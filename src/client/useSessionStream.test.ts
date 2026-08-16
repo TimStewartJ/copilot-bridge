@@ -433,6 +433,48 @@ describe("useSessionStream ephemeral state", () => {
         { toolCallId: "tc-1", success: true, result: "done output" },
       ]);
     });
+
+  });
+
+  it("merges live sub-agent instructions and late responses onto the agent tool", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "tool_update",
+        toolCallId: "agent-1",
+        name: "🤖 Explore Agent",
+        isSubAgent: true,
+        args: { description: "Inspect scheduler tests" },
+        agentInstructions: [
+          { kind: "task", content: "Inspect the scheduler tests." },
+          { kind: "follow_up", content: "Also check Windows." },
+        ],
+      }, () => getState().liveTools.length === 1);
+
+      await emitAndWait(act, source, {
+        type: "tool_update",
+        toolCallId: "agent-1",
+        name: "🤖 Explore Agent",
+        isSubAgent: true,
+        result: "The filesystem read races fake timers.",
+        completedAt: "2026-07-24T10:00:04.000Z",
+      }, () => getState().liveTools[0]?.result !== undefined);
+
+      expect(getState().liveTools).toMatchObject([
+        {
+          toolCallId: "agent-1",
+          args: { description: "Inspect scheduler tests" },
+          agentInstructions: [
+            { kind: "task", content: "Inspect the scheduler tests." },
+            { kind: "follow_up", content: "Also check Windows." },
+          ],
+          result: "The filesystem read races fake timers.",
+          completedAt: "2026-07-24T10:00:04.000Z",
+        },
+      ]);
+    });
   });
 
   it("ignores hidden tools so they never affect run status", async () => {
@@ -775,12 +817,25 @@ describe("stream helpers", () => {
 
   it("merges tool patches without losing earlier metadata", () => {
     const merged = upsertLiveTool(
-      [{ toolCallId: "tc-1", name: "bash", args: { command: "ls" }, startedAt: "t0" }],
+      [{
+        toolCallId: "tc-1",
+        name: "bash",
+        args: { command: "ls" },
+        agentInstructions: [{ kind: "task", content: "Inspect it" }],
+        startedAt: "t0",
+      }],
       { toolCallId: "tc-1", name: "unknown", progressText: "running" },
     );
 
     expect(merged).toMatchObject([
-      { toolCallId: "tc-1", name: "bash", args: { command: "ls" }, startedAt: "t0", progressText: "running" },
+      {
+        toolCallId: "tc-1",
+        name: "bash",
+        args: { command: "ls" },
+        agentInstructions: [{ kind: "task", content: "Inspect it" }],
+        startedAt: "t0",
+        progressText: "running",
+      },
     ]);
   });
 

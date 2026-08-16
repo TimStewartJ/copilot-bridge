@@ -99,6 +99,52 @@ describe("ToolCallNodeGroup", () => {
     expect(html).toContain('aria-label="Track 2, 1 tool"');
   });
 
+  it("renders delegated tasks and follow-ups inside the expanded agent card", () => {
+    const { roots } = buildToolCallForest([
+      toolCall("agent", {
+        name: "🤖 Explore agent",
+        isSubAgent: true,
+        args: {
+          description: "Investigate scheduler race",
+          prompt: "Inspect the scheduler tests.",
+        },
+        agentInstructions: [
+          { kind: "task", content: "Inspect the scheduler tests." },
+          { kind: "follow_up", content: "Also verify Windows behavior." },
+        ],
+      }),
+      completedToolCall("child", 0, 2, { parentToolCallId: "agent" }),
+    ]);
+
+    const html = renderToStaticMarkup(
+      createElement(ToolCallTree, { node: roots[0]!, defaultExpanded: true }),
+    );
+
+    expect(html).toContain("Investigate scheduler race");
+    expect(html).toContain("Task delegated by Copilot");
+    expect(html).toContain("Inspect the scheduler tests.");
+    expect(html).toContain("Follow-up from Copilot");
+    expect(html).toContain("Also verify Windows behavior.");
+  });
+
+  it("keeps full instructions collapsed while showing a concise task summary", () => {
+    const { roots } = buildToolCallForest([
+      toolCall("agent", {
+        name: "🤖 Explore agent",
+        isSubAgent: true,
+        args: { description: "Investigate scheduler race" },
+        agentInstructions: [
+          { kind: "task", content: "Long internal task instructions that should stay collapsed." },
+        ],
+      }),
+    ]);
+
+    const html = renderToStaticMarkup(createElement(ToolCallTree, { node: roots[0]! }));
+
+    expect(html).toContain("Investigate scheduler race");
+    expect(html).not.toContain("Long internal task instructions that should stay collapsed.");
+  });
+
   it("recurses into child subagents when their tools need nested lanes", () => {
     const { roots } = buildToolCallForest([
       toolCall("root-agent", { name: "🤖 Root agent", isSubAgent: true }),

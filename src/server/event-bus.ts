@@ -16,6 +16,7 @@ import type {
   PendingElicitationRequestView,
 } from "./elicitation-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
+import type { AgentInstruction } from "../shared/subagent.js";
 import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
@@ -81,6 +82,7 @@ export interface LiveTool {
   progressText?: string;
   parentToolCallId?: string;
   isSubAgent?: boolean;
+  agentInstructions?: AgentInstruction[];
   completedAt?: string;
   success?: boolean;
   result?: unknown;
@@ -330,6 +332,7 @@ function buildLiveTool(event: StreamEvent): LiveTool {
     startedAt: event.timestamp as string | undefined,
     parentToolCallId: event.parentToolCallId as string | undefined,
     isSubAgent: event.isSubAgent as boolean | undefined,
+    agentInstructions: event.agentInstructions as AgentInstruction[] | undefined,
   };
 }
 
@@ -348,6 +351,7 @@ function mergeLiveTool(existing: LiveTool, patch: Partial<LiveTool>): LiveTool {
   if (patch.progressText !== undefined) merged.progressText = patch.progressText;
   if (patch.parentToolCallId !== undefined) merged.parentToolCallId = patch.parentToolCallId;
   if (patch.isSubAgent !== undefined) merged.isSubAgent = patch.isSubAgent;
+  if (patch.agentInstructions !== undefined) merged.agentInstructions = patch.agentInstructions;
   if (patch.completedAt !== undefined) merged.completedAt = patch.completedAt;
   if (patch.success !== undefined) merged.success = patch.success;
   if (patch.result !== undefined) merged.result = patch.result;
@@ -694,7 +698,7 @@ export class SessionEventBus {
         // Update an existing active tool's metadata (e.g., when subagent.started upgrades a "task" tool)
         {
           const toolCallId = getToolCallId(event);
-          this.liveTools = patchLiveTools(this.liveTools, toolCallId, {
+          const patch: Partial<LiveTool> = {
             name: event.name,
             turnId: getStreamTurnId(event),
             turnInstanceId: getStreamTurnInstanceId(event),
@@ -702,7 +706,14 @@ export class SessionEventBus {
             args: event.args,
             parentToolCallId: event.parentToolCallId as string | undefined,
             isSubAgent: event.isSubAgent as boolean | undefined,
-          });
+            agentInstructions: event.agentInstructions as AgentInstruction[] | undefined,
+            completedAt: event.completedAt as string | undefined,
+            success: event.success as boolean | undefined,
+            result: event.result,
+          };
+          this.liveTools = this.liveTools.some((tool) => tool.toolCallId === toolCallId)
+            ? patchLiveTools(this.liveTools, toolCallId, patch)
+            : upsertLiveTool(this.liveTools, { ...buildLiveTool(event), ...patch });
         }
         break;
       case "tool_progress":
@@ -714,6 +725,7 @@ export class SessionEventBus {
           progressText: event.message as string | undefined,
           parentToolCallId: event.parentToolCallId as string | undefined,
           isSubAgent: event.isSubAgent as boolean | undefined,
+          agentInstructions: event.agentInstructions as AgentInstruction[] | undefined,
         });
         break;
       case "tool_output":
@@ -725,6 +737,7 @@ export class SessionEventBus {
           progressText: event.content as string | undefined,
           parentToolCallId: event.parentToolCallId as string | undefined,
           isSubAgent: event.isSubAgent as boolean | undefined,
+          agentInstructions: event.agentInstructions as AgentInstruction[] | undefined,
         });
         break;
       case "tool_done":
@@ -736,6 +749,7 @@ export class SessionEventBus {
             turnInstanceId: getStreamTurnInstanceId(event),
             parentToolCallId: event.parentToolCallId as string | undefined,
             isSubAgent: event.isSubAgent as boolean | undefined,
+            agentInstructions: event.agentInstructions as AgentInstruction[] | undefined,
             completedAt: (event.timestamp as string | undefined) ?? new Date().toISOString(),
             success: event.success as boolean | undefined,
             result: event.result,

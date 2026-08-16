@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  AgentInstruction,
   Attachment,
   ElicitationSchema,
   McpServerStatus,
@@ -14,6 +15,7 @@ import type { RunNotice } from "../shared/session-stream.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
 import { isRecord } from "../shared/is-record.js";
+import { normalizeAgentInstructions } from "../shared/subagent.js";
 
 /**
  * Live stream state.
@@ -39,6 +41,7 @@ export interface PendingTool {
   args?: ToolArgs;
   parentToolCallId?: string;
   isSubAgent?: boolean;
+  agentInstructions?: AgentInstruction[];
   startedAt?: string;
   progressText?: string;
   completedAt?: string;
@@ -379,6 +382,7 @@ export function normalizeActiveTool(
     progressText: optionalString(rawTool.progressText),
     parentToolCallId: optionalString(rawTool.parentToolCallId),
     isSubAgent: optionalBoolean(rawTool.isSubAgent),
+    agentInstructions: normalizeAgentInstructions(rawTool.agentInstructions),
     completedAt: optionalString(rawTool.completedAt),
     success: optionalBoolean(rawTool.success),
     result: optionalString(rawTool.result),
@@ -445,6 +449,7 @@ export function upsertLiveTool(tools: PendingTool[], patch: PendingTool): Pendin
         args: patch.args ?? tool.args,
         parentToolCallId: patch.parentToolCallId ?? tool.parentToolCallId,
         isSubAgent: patch.isSubAgent ?? tool.isSubAgent,
+        agentInstructions: patch.agentInstructions ?? tool.agentInstructions,
         startedAt: patch.startedAt ?? tool.startedAt,
         progressText: patch.progressText ?? tool.progressText,
         completedAt: patch.completedAt ?? tool.completedAt,
@@ -787,6 +792,10 @@ export function useSessionStream(
             args: event.args as ToolArgs | undefined,
             parentToolCallId: optionalString(event.parentToolCallId),
             isSubAgent: optionalBoolean(event.isSubAgent),
+            agentInstructions: normalizeAgentInstructions(event.agentInstructions),
+            completedAt: optionalString(event.completedAt),
+            success: optionalBoolean(event.success),
+            result: optionalString(event.result),
             ...(eventType === "tool_start" ? { startedAt: optionalString(event.timestamp) } : {}),
             ...(progressText ? { progressText } : {}),
           };
@@ -829,6 +838,7 @@ export function useSessionStream(
               sourceEventId: optionalString(event.sourceEventId),
               parentToolCallId: optionalString(event.parentToolCallId),
               isSubAgent: optionalBoolean(event.isSubAgent),
+              agentInstructions: normalizeAgentInstructions(event.agentInstructions),
               completedAt: optionalString(event.timestamp) ?? new Date().toISOString(),
               success: optionalBoolean(event.success),
               result: optionalString(event.result),

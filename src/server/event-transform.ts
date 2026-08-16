@@ -1,5 +1,6 @@
 import { win32 as winPath } from "node:path";
 import {
+  buildSubagentInstructions,
   SubagentCorrelator,
   resolveToolOutcome,
   type ToolCompletionRecord,
@@ -16,6 +17,7 @@ import {
   getSdkAgentId,
   getSdkEventId,
   getSdkTurnId,
+  isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 
@@ -63,6 +65,7 @@ export interface TransformedEntry {
     success?: boolean;
     parentToolCallId?: string;
     isSubAgent?: boolean;
+    agentInstructions?: import("../shared/subagent.js").AgentInstruction[];
     startedAt?: string;
     completedAt?: string;
   };
@@ -110,7 +113,7 @@ function getAssistantForkBoundaries(events: any[]): Map<string, string> {
       }
       if (
         nextEvent?.type === "assistant.turn_start"
-        || nextEvent?.type === "user.message"
+        || (nextEvent?.type === "user.message" && !isSdkAgentUserMessage(nextEvent))
         || (nextEvent?.type === "assistant.message" && !nextEvent?.data?.parentToolCallId)
         || isTurnTerminalEvent(nextEvent)
       ) {
@@ -161,7 +164,9 @@ function isAgentInjectedSystemMessage(event: any): boolean {
 }
 
 export function getUndoBoundaryEventId(event: any): string | undefined {
-  if (event?.type !== "user.message" || getSkillSource(event)) return undefined;
+  if (event?.type !== "user.message" || getSkillSource(event) || isSdkAgentUserMessage(event)) {
+    return undefined;
+  }
   if (!isVisibleMessageEvent(event)) return undefined;
   return getRawEventId(event);
 }
@@ -201,7 +206,7 @@ export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   const data = event?.data;
 
   if (event.type === "user.message") {
-    if (isAgentInjectedSystemMessage(event)) return false;
+    if (isAgentInjectedSystemMessage(event) || isSdkAgentUserMessage(event)) return false;
     return Boolean((data?.content ?? data?.prompt ?? "").trim() || data?.attachments?.length);
   }
 
@@ -343,6 +348,7 @@ export function createVisibleActivityTracker(
 
   function observe(event: any): string | undefined {
     if (event.type === "user.message") {
+      if (isSdkAgentUserMessage(event)) return lastVisibleActivityAt;
       quietTurn = isQuietIntervalDeferEvent(event);
       if (quietTurn) {
         openVisibleToolCallIds.clear();
@@ -432,10 +438,13 @@ export function transformEventsToMessages(
   const entries: TransformedEntry[] = [];
   let idx = 0;
   let turnIndex = options.initialTurnIndex ?? 0;
+  let subAgentTurnIndex = 0;
   let activeTurnId = options.initialActiveTurnId;
   let activeTurnInstanceId = options.initialActiveTurnInstanceId;
   let activeUndoEventId: string | undefined;
   let pendingTerminalCompletion: TerminalCompletion | undefined;
+  const activeSubAgentToolCallIds = new Set<string>();
+  const correlatingSubAgentToolCallIds = new Set<string>();
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, ToolCompletionRecord>();
@@ -474,12 +483,26 @@ export function transformEventsToMessages(
       }
     } else if (event.type === "subagent.started" && data?.toolCallId) {
       correlator.startSubagent(data.toolCallId, getSdkAgentId(event), data);
+      correlatingSubAgentToolCallIds.add(data.toolCallId);
     } else if (event.type === "subagent.failed" && data?.toolCallId) {
       correlator.recordSubagentFailure(data.toolCallId, data.error);
+      correlatingSubAgentToolCallIds.delete(data.toolCallId);
+    } else if (event.type === "subagent.completed" && data?.toolCallId) {
+      correlatingSubAgentToolCallIds.delete(data.toolCallId);
     } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
       correlator.recordResponse(data.parentToolCallId, data.content);
     } else if (event.type === "session.error" && getSdkAgentId(event)) {
       correlator.recordAgentError(getSdkAgentId(event)!, data?.message);
+    } else if (event.type === "user.message" && isSdkAgentUserMessage(event)) {
+      const agentId = getSdkAgentId(event);
+      if (agentId) {
+        correlator.recordInstruction(agentId, data?.content ?? data?.prompt);
+      } else if (correlatingSubAgentToolCallIds.size === 1) {
+        const toolCallId = [...correlatingSubAgentToolCallIds][0];
+        if (toolCallId) {
+          correlator.recordInstructionForToolCall(toolCallId, data?.content ?? data?.prompt);
+        }
+      }
     } else if (isTurnTerminalEvent(event)) {
       // Provisional: a real completion can still arrive after `assistant.turn_end` and must win.
       for (const toolCallId of openToolCallIds) {
@@ -497,7 +520,23 @@ export function transformEventsToMessages(
   for (const event of events) {
     const data = (event as any).data;
 
-    if (event.type === "assistant.turn_start") {
+    if (event.type === "subagent.started" && data?.toolCallId) {
+      activeSubAgentToolCallIds.add(data.toolCallId);
+    } else if (
+      (event.type === "subagent.completed" || event.type === "subagent.failed")
+      && data?.toolCallId
+    ) {
+      activeSubAgentToolCallIds.delete(data.toolCallId);
+    } else if (event.type === "assistant.turn_start") {
+      if (activeSubAgentToolCallIds.size > 0) {
+        subAgentTurnIndex += 1;
+        activeTurnId = `subagent-turn-${subAgentTurnIndex}`;
+        activeTurnInstanceId = getAssistantTurnInstanceId(
+          event,
+          `subagent-turn-instance-${subAgentTurnIndex}`,
+        );
+        continue;
+      }
       turnIndex += 1;
       activeTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
       activeTurnInstanceId = getAssistantTurnInstanceId(event, `turn-instance-${turnIndex}`);
@@ -534,6 +573,7 @@ export function transformEventsToMessages(
       activeTurnInstanceId = undefined;
     } else if (event.type === "user.message") {
       if (isAgentInjectedSystemMessage(event)) continue;
+      if (isSdkAgentUserMessage(event)) continue;
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
       const skillSource = getSkillSource(event);
@@ -597,7 +637,8 @@ export function transformEventsToMessages(
       }
       if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
       const complete = toolCompletes.get(data.toolCallId);
-      const outcome = resolveToolOutcome(correlator.resolve(data.toolCallId), complete, toolName);
+      const resolution = correlator.resolve(data.toolCallId);
+      const outcome = resolveToolOutcome(resolution, complete, toolName);
       entries.push({
         id: `entry-${idx++}`,
         type: "tool",
@@ -613,6 +654,9 @@ export function transformEventsToMessages(
           success: outcome.success,
           parentToolCallId: data.parentToolCallId,
           isSubAgent: outcome.isSubAgent || undefined,
+          agentInstructions: outcome.isSubAgent
+            ? buildSubagentInstructions(data.arguments, resolution.instructions)
+            : undefined,
           startedAt: (event as any).timestamp,
           completedAt: complete?.timestamp,
         },

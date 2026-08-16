@@ -21,6 +21,7 @@ import {
   submitUserInputResponse,
   undoSessionTurn,
   type Attachment,
+  type AgentInstruction,
   type BackgroundAgentsSummary,
   type ChatEntry,
   type ChatMessage,
@@ -181,6 +182,27 @@ function isFailedOptimisticChatMessage(message: ChatMessage): message is FailedO
 
 function createSendingDelivery(mode?: SendMode): ChatMessageDelivery {
   return mode === undefined ? { failed: false } : { failed: false, mode };
+}
+
+function haveSameAgentInstructions(
+  left: readonly AgentInstruction[] | undefined,
+  right: readonly AgentInstruction[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((instruction, index) => (
+    instruction.kind === right[index]?.kind
+    && instruction.content === right[index]?.content
+  ));
+}
+
+function isLaterTimestamp(candidate: string | undefined, baseline: string | undefined): boolean {
+  if (!candidate || !baseline) return false;
+  const candidateTime = Date.parse(candidate);
+  const baselineTime = Date.parse(baseline);
+  return Number.isFinite(candidateTime)
+    && Number.isFinite(baselineTime)
+    && candidateTime > baselineTime;
 }
 
 
@@ -1786,6 +1808,7 @@ export default function ChatView({
       args: tool.args,
       parentToolCallId: tool.parentToolCallId,
       isSubAgent: tool.isSubAgent,
+      agentInstructions: tool.agentInstructions,
       startedAt: tool.startedAt,
       progressText: tool.progressText,
     })),
@@ -1840,6 +1863,7 @@ export default function ChatView({
           args: tool.args,
           parentToolCallId: tool.parentToolCallId,
           isSubAgent: tool.isSubAgent,
+          agentInstructions: tool.agentInstructions,
           startedAt: tool.startedAt,
           progressText: tool.progressText,
           completedAt: tool.completedAt,
@@ -1912,19 +1936,52 @@ export default function ChatView({
       const live = liveToolsById.get(entry.toolCall.toolCallId);
       if (!live) return entry;
       // Disk owns where the tool sits; the stream can only be fresher about its state.
-      const gainsResult = live.completedAt !== undefined && entry.toolCall.completedAt === undefined;
+      const gainsResult = live.result !== undefined
+        && live.result !== entry.toolCall.result
+        && (
+          live.isSubAgent === true
+            ? (
+                entry.toolCall.completedAt === undefined
+                || isLaterTimestamp(live.completedAt, entry.toolCall.completedAt)
+              )
+            : live.completedAt !== undefined && entry.toolCall.completedAt === undefined
+        );
       const gainsProgress = !!live.progressText && live.progressText !== entry.toolCall.progressText;
-      if (!gainsResult && !gainsProgress) return entry;
+      const gainsCompletion = live.completedAt !== undefined
+        && live.completedAt !== entry.toolCall.completedAt;
+      const gainsIdentity = live.isSubAgent === true && live.name !== "unknown" && (
+        live.name !== entry.toolCall.name
+        || entry.toolCall.isSubAgent !== true
+      );
+      const gainsInstructions = live.agentInstructions !== undefined
+        && !haveSameAgentInstructions(live.agentInstructions, entry.toolCall.agentInstructions);
+      if (
+        !gainsResult
+        && !gainsProgress
+        && !gainsCompletion
+        && !gainsIdentity
+        && !gainsInstructions
+      ) return entry;
       return {
         ...entry,
         toolCall: {
           ...entry.toolCall,
           ...(gainsProgress ? { progressText: live.progressText } : {}),
-          ...(gainsResult
+          ...(gainsIdentity
+            ? { name: live.name, isSubAgent: live.isSubAgent ?? entry.toolCall.isSubAgent }
+            : {}),
+          ...(gainsInstructions ? { agentInstructions: live.agentInstructions } : {}),
+          ...(gainsCompletion
             ? {
                 completedAt: live.completedAt,
                 success: live.success ?? entry.toolCall.success,
-                result: live.result ?? entry.toolCall.result,
+              }
+            : {}),
+          ...(gainsResult
+            ? {
+                completedAt: live.completedAt ?? entry.toolCall.completedAt,
+                success: live.success ?? entry.toolCall.success,
+                result: live.result,
               }
             : {}),
         },
