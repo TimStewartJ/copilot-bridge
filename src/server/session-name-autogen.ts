@@ -22,6 +22,7 @@ import {
   type SetSessionNameOptions,
 } from "./session-name-rpc.js";
 import { readSdkSessionEvents } from "./sdk-session-events.js";
+import { isSdkAgentUserMessage } from "./sdk-event-identity.js";
 
 const SESSION_NAME_GENERATION_RETRY_MS = 60 * 60 * 1000;
 const TITLE_HELPER_TIMEOUT_MS = 30_000;
@@ -42,6 +43,7 @@ function collectRecentUserMessages(events: any[]): string[] {
   const messages: string[] = [];
   for (const event of events) {
     if (event?.type !== "user.message") continue;
+    if (isSdkAgentUserMessage(event)) continue;
     const data = event.data;
     if (data && typeof data === "object" && "source" in data) continue;
     const content = data?.content;

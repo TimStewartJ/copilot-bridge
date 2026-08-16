@@ -385,4 +385,125 @@ describe("SessionManager tool result rendering", () => {
       success: liveDone.success,
     });
   });
+
+  it("streams sub-agent instructions and late responses onto the agent tool", async () => {
+    const initialPrompt = "Inspect the scheduler tests.";
+    const followUp = "Also check Windows behavior.";
+    const sdkEvents: any[] = [
+      {
+        type: "assistant.turn_start",
+        timestamp: "2026-08-01T11:59:59.000Z",
+        data: { turnId: "parent-turn" },
+      },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-08-01T12:00:00.000Z",
+        data: {
+          toolCallId: "call_bg_agent_thread",
+          toolName: "task",
+          arguments: {
+            description: "Inspect scheduler tests",
+            prompt: initialPrompt,
+            mode: "background",
+          },
+        },
+      },
+      {
+        type: "subagent.started",
+        agentId: "subagent_thread_1",
+        timestamp: "2026-08-01T12:00:00.100Z",
+        data: {
+          toolCallId: "call_bg_agent_thread",
+          agentName: "explore",
+          agentDisplayName: "Explore Agent",
+        },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-08-01T12:00:00.200Z",
+        data: {
+          toolCallId: "call_bg_agent_thread",
+          success: true,
+          result: { content: "Agent started in background" },
+        },
+      },
+      {
+        type: "assistant.turn_end",
+        timestamp: "2026-08-01T12:00:00.300Z",
+        data: { turnId: "parent-turn" },
+      },
+      {
+        type: "assistant.turn_start",
+        timestamp: "2026-08-01T12:00:00.400Z",
+        data: { turnId: "child-turn" },
+      },
+      {
+        type: "user.message",
+        agentId: "subagent_thread_1",
+        timestamp: "2026-08-01T12:00:01.000Z",
+        data: {
+          content: initialPrompt,
+          source: "agent-parent-session",
+          parentAgentTaskId: "task-1",
+        },
+      },
+      {
+        type: "user.message",
+        agentId: "subagent_thread_1",
+        timestamp: "2026-08-01T12:00:02.000Z",
+        data: {
+          content: followUp,
+          source: "agent-parent-session",
+          parentAgentTaskId: "task-1",
+        },
+      },
+      {
+        type: "assistant.message",
+        agentId: "subagent_thread_1",
+        timestamp: "2026-08-01T12:00:03.000Z",
+        data: {
+          parentToolCallId: "call_bg_agent_thread",
+          content: "The filesystem read races fake timers.",
+        },
+      },
+      {
+        type: "subagent.completed",
+        agentId: "subagent_thread_1",
+        timestamp: "2026-08-01T12:00:04.000Z",
+        data: { toolCallId: "call_bg_agent_thread" },
+      },
+      {
+        type: "assistant.turn_end",
+        timestamp: "2026-08-01T12:00:04.500Z",
+        data: { turnId: "child-turn" },
+      },
+      { type: "session.idle", timestamp: "2026-08-01T12:00:05.000Z", data: {} },
+    ];
+
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-agent-thread");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-agent-thread", createSession(sdkEvents));
+    await manager._doWork("session-agent-thread", "run a background agent", bus);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_update",
+      toolCallId: "call_bg_agent_thread",
+      agentInstructions: [
+        { kind: "task", content: initialPrompt },
+        { kind: "follow_up", content: followUp },
+      ],
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_update",
+      toolCallId: "call_bg_agent_thread",
+      result: "The filesystem read races fake timers.",
+    }));
+    expect(events.filter((event) => event.type === "thinking")).toHaveLength(1);
+  });
 });

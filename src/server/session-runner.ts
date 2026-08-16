@@ -33,6 +33,7 @@ import {
 } from "./session-run-state-controller.js";
 import type { SessionAgentRegistry } from "./session-agent-registry.js";
 import {
+  buildSubagentInstructions,
   SubagentCorrelator,
   formatSubagentDisplayName,
   resolveToolOutcome,
@@ -65,6 +66,7 @@ import {
   getSdkAgentId,
   getSdkEventId,
   getSdkTurnId,
+  isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
@@ -740,10 +742,13 @@ export class SessionRunner {
     };
 
     const toolNameMap = new Map<string, string>();
+    const toolArgsMap = new Map<string, unknown>();
     const toolStartTimes = new Map<string, number>();
     const toolLoopGuard = createToolLoopGuard();
     const correlator = new SubagentCorrelator();
     const subAgentToolCallIds = new Set<string>();
+    const activeSubAgentToolCallIds = new Set<string>();
+    const subAgentTerminalToolCallIds = new Set<string>();
     const subAgentTurnIdMap = new Map<string, string>();
     const activeExternalTools = new Map<string, ActiveExternalToolCall>();
     const contextTelemetryProvider = this.client?.id ?? "copilot";
@@ -1206,7 +1211,43 @@ export class SessionRunner {
           );
           break;
         }
-        case "user.message":
+        case "user.message": {
+          if (isSdkAgentUserMessage(event)) {
+            const agentId = getSdkAgentId(event);
+            const content = typeof data?.content === "string"
+              ? data.content
+              : typeof data?.prompt === "string"
+                ? data.prompt
+                : undefined;
+            if (content) {
+              const toolCallId = agentId
+                ? correlator.resolveAgentToolCallId(agentId)
+                : activeSubAgentToolCallIds.size === 1
+                  ? [...activeSubAgentToolCallIds][0]
+                  : undefined;
+              if (agentId) {
+                correlator.recordInstruction(agentId, content);
+              } else if (toolCallId) {
+                correlator.recordInstructionForToolCall(toolCallId, content);
+              }
+              if (toolCallId) {
+                const resolution = correlator.resolve(toolCallId);
+                bus.emit({
+                  type: "tool_update",
+                  toolCallId,
+                  name: resolution.displayName ?? getTrackedToolDisplayName(toolCallId),
+                  args: toolArgsMap.get(toolCallId),
+                  isSubAgent: true,
+                  agentInstructions: buildSubagentInstructions(
+                    toolArgsMap.get(toolCallId),
+                    resolution.instructions,
+                  ),
+                  ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+                });
+              }
+            }
+            break;
+          }
           bus.commitPendingPrompt(
             typeof data?.content === "string"
               ? data.content
@@ -1221,7 +1262,12 @@ export class SessionRunner {
             this.deps.maybeAutoNameSession(sessionId, { session, userMessages: [data.content] });
           }
           break;
+        }
         case "assistant.turn_start":
+          if (activeSubAgentToolCallIds.size > 0) {
+            console.log(`[sdk] [${sid}] ⏳ Sub-agent turn started`);
+            break;
+          }
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           currentBridgeTurnId = getSdkTurnId(event) ?? `turn-${randomUUID()}`;
           const turnInstanceId = getAssistantTurnInstanceId(
@@ -1267,6 +1313,21 @@ export class SessionRunner {
         case "assistant.message":
           if (data?.parentToolCallId && data?.content) {
             correlator.recordResponse(data.parentToolCallId, data.content);
+            const resolution = correlator.resolve(data.parentToolCallId);
+            bus.emit({
+              type: "tool_update",
+              toolCallId: data.parentToolCallId,
+              name: resolution.displayName ?? getTrackedToolDisplayName(data.parentToolCallId),
+              args: toolArgsMap.get(data.parentToolCallId),
+              isSubAgent: true,
+              result: data.content,
+              completedAt: getEventTimestampIso(event),
+              agentInstructions: buildSubagentInstructions(
+                toolArgsMap.get(data.parentToolCallId),
+                resolution.instructions,
+              ),
+              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+            });
             break;
           }
           if (data?.content) {
@@ -1312,6 +1373,7 @@ export class SessionRunner {
           }
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);
+            toolArgsMap.set(data.toolCallId, data?.arguments);
             toolStartTimes.set(data.toolCallId, Date.now());
             pendingTerminalCompletion = extractTerminalCompletionFromToolCall(
               toolName,
@@ -1361,9 +1423,15 @@ export class SessionRunner {
           clearExternalToolsForToolCall(data?.toolCallId, eventAt);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const completedToolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
+          const completedSubAgent = completedToolCallId
+            ? subAgentToolCallIds.delete(completedToolCallId)
+            : false;
           if (completedToolCallId) correlator.completeTool(completedToolCallId);
+          const resolution = completedToolCallId
+            ? correlator.resolve(completedToolCallId)
+            : { isSubAgent: false };
           const outcome = resolveToolOutcome(
-            completedToolCallId ? correlator.resolve(completedToolCallId) : { isSubAgent: false },
+            resolution,
             { success: data?.success, data },
             completedToolName,
           );
@@ -1385,26 +1453,43 @@ export class SessionRunner {
             result: outcome.result,
             success: outcome.success,
             isSubAgent: outcome.isSubAgent || undefined,
+            agentInstructions: outcome.isSubAgent
+              ? buildSubagentInstructions(
+                  completedToolCallId ? toolArgsMap.get(completedToolCallId) : undefined,
+                  resolution.instructions,
+                )
+              : undefined,
             timestamp: event.timestamp,
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           if (
             typeof data?.toolCallId === "string"
-            && subAgentToolCallIds.delete(data.toolCallId)
+            && completedSubAgent
           ) {
             void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId, data.toolCallId);
           }
-          if (completedToolCallId) correlator.forget(completedToolCallId);
+          if (
+            completedToolCallId
+            && (!completedSubAgent || subAgentTerminalToolCallIds.delete(completedToolCallId))
+          ) {
+            correlator.forget(completedToolCallId);
+            if (completedToolName !== "task" || completedSubAgent) {
+              toolArgsMap.delete(completedToolCallId);
+            }
+          }
           break;
         }
         case "subagent.started": {
           const displayName = formatSubagentDisplayName(data);
           console.log(`[sdk] [${sid}] ${displayName}`);
           if (data?.toolCallId) {
-            correlator.startSubagent(data.toolCallId, getSdkAgentId(event), data);
+            const agentId = getSdkAgentId(event);
+            correlator.startSubagent(data.toolCallId, agentId, data);
             subAgentToolCallIds.add(data.toolCallId);
+            activeSubAgentToolCallIds.add(data.toolCallId);
             const subagentBridgeTurnId = `subagent-${randomUUID()}`;
             subAgentTurnIdMap.set(data.toolCallId, subagentBridgeTurnId);
+            if (agentId) subAgentTurnIdMap.set(agentId, subagentBridgeTurnId);
             this.deps.sessionContextStore?.recordTurnStart({
               sessionId,
               provider: contextTelemetryProvider,
@@ -1420,7 +1505,12 @@ export class SessionRunner {
             type: "tool_update",
             toolCallId: data?.toolCallId,
             name: displayName,
+            args: toolArgsMap.get(data?.toolCallId),
             isSubAgent: true,
+            agentInstructions: buildSubagentInstructions(
+              toolArgsMap.get(data?.toolCallId),
+              data?.toolCallId ? correlator.resolve(data.toolCallId).instructions : undefined,
+            ),
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
           this.refreshSessionAgents(sessionId, "subagent.started");
@@ -1446,9 +1536,30 @@ export class SessionRunner {
             });
           }
           if (subagentToolCallId) {
+            activeSubAgentToolCallIds.delete(subagentToolCallId);
+            const resolution = correlator.resolve(subagentToolCallId);
+            bus.emit({
+              type: "tool_update",
+              toolCallId: subagentToolCallId,
+              name: resolution.displayName ?? getTrackedToolDisplayName(subagentToolCallId),
+              args: toolArgsMap.get(subagentToolCallId),
+              isSubAgent: true,
+              result: resolution.response,
+              agentInstructions: buildSubagentInstructions(
+                toolArgsMap.get(subagentToolCallId),
+                resolution.instructions,
+              ),
+              completedAt: getEventTimestampIso(event),
+              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+            });
             subAgentTurnIdMap.delete(subagentToolCallId);
+            const agentId = getSdkAgentId(event);
+            if (agentId) subAgentTurnIdMap.delete(agentId);
             if (!toolStartTimes.has(subagentToolCallId)) {
               correlator.forget(subagentToolCallId);
+              toolArgsMap.delete(subagentToolCallId);
+            } else {
+              subAgentTerminalToolCallIds.add(subagentToolCallId);
             }
           }
           this.refreshSessionAgents(sessionId, event.type);

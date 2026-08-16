@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, memo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import type { ToolCall } from "../api";
+import type { ToolArgs, ToolCall } from "../api";
 import type { ToolCallTreeNode } from "../lib/tool-call-tree";
 import ToolStatusBadge from "./ToolStatusBadge";
 import ToolResultModal from "./ToolResultModal";
@@ -16,41 +16,60 @@ interface SubAgentGroupProps {
   contextOnly?: boolean;
 }
 
+function getStringArg(args: ToolArgs | undefined, key: string): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const value = args[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function summarizeInstruction(content: string): string {
+  return content.trim().split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "";
+}
+
 export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderChildNodes, defaultExpanded = false, contextOnly = false }: SubAgentGroupProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded && childNodes.length > 0);
-  const [showFullModal, setShowFullModal] = useState(false);
-  const autoExpandedRef = useRef(defaultExpanded && childNodes.length > 0);
   const agentLabel = agentTool.name.replace(/^🤖\s*/, "");
   const childCount = childNodes.length;
   const progressText = agentTool.progressText?.trim();
   const hasResult = agentTool.result && agentTool.result.trim().length > 0;
-  const hasContent = childCount > 0 || hasResult || !!progressText;
+  const instructions = agentTool.agentInstructions ?? [];
+  const taskDescription = getStringArg(agentTool.args, "description")
+    ?? (instructions[0] ? summarizeInstruction(instructions[0].content) : undefined);
+  const headerSummary = taskDescription && progressText
+    ? `${taskDescription} · ${progressText}`
+    : taskDescription ?? progressText;
+  const hasContent = childCount > 0 || hasResult || !!progressText || instructions.length > 0;
+  const [expanded, setExpanded] = useState(defaultExpanded && hasContent);
+  const [showFullModal, setShowFullModal] = useState(false);
+  const autoExpandedRef = useRef(defaultExpanded && hasContent);
 
   useEffect(() => {
-    if (!defaultExpanded || autoExpandedRef.current || childNodes.length === 0) return;
+    if (!defaultExpanded || autoExpandedRef.current || !hasContent) return;
     setExpanded(true);
     autoExpandedRef.current = true;
-  }, [defaultExpanded, childNodes.length]);
+  }, [defaultExpanded, hasContent]);
 
   return (
     <div className="border border-border rounded-md text-xs font-mono overflow-hidden">
       <button
         onClick={() => hasContent && setExpanded(!expanded)}
+        aria-expanded={hasContent ? expanded : undefined}
         className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left ${hasContent ? "hover:bg-bg-hover cursor-pointer" : "cursor-default"} transition-colors`}
       >
         <span className="shrink-0">
           <Bot size={12} className="text-agent" />
         </span>
         <span className="text-agent shrink-0">{agentLabel}</span>
+        {headerSummary && (
+          <span className="min-w-0 truncate text-text-muted" title={headerSummary}>
+            {headerSummary}
+          </span>
+        )}
         {childCount > 0 && (
-          <span className="text-text-faint">
+          <span className="ml-auto shrink-0 text-text-faint">
             {childCount} tool{childCount !== 1 ? "s" : ""}
           </span>
         )}
-        {progressText && (
-          <span className="text-text-muted truncate">{progressText}</span>
-        )}
-        <span className="ml-auto flex items-center gap-2 shrink-0">
+        <span className={`${childCount > 0 ? "" : "ml-auto"} flex shrink-0 items-center gap-2`}>
           {!contextOnly && <ToolStatusBadge toolCall={agentTool} />}
           {hasContent && (
             <span className="text-text-faint">
@@ -61,6 +80,25 @@ export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderC
       </button>
       {expanded && (
         <div className="border-t border-border">
+          {instructions.length > 0 && (
+            <div className="max-h-72 overflow-auto border-b border-border">
+              {instructions.map((instruction, index) => (
+                <div
+                  key={`${instruction.kind}-${index}`}
+                  className={index > 0 ? "border-t border-border/60 px-2.5 py-2" : "px-2.5 py-2"}
+                >
+                  <div className="mb-1 text-[11px] text-text-muted">
+                    {instruction.kind === "task" ? "Task delegated by Copilot" : "Follow-up from Copilot"}
+                  </div>
+                  <div className="prose prose-invert prose-xs max-w-none text-xs leading-relaxed text-text-secondary prose-headings:mb-1 prose-headings:mt-2 prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-pre:rounded prose-pre:bg-bg-primary prose-pre:p-2 prose-pre:text-[11px] prose-code:text-[11px] prose-code:text-accent">
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                      {instruction.content}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {progressText && (
             <div className="px-2.5 py-2 border-b border-border">
               <div className="text-text-muted mb-1 text-[11px]">Latest progress</div>

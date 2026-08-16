@@ -118,8 +118,10 @@ function buildContextToolCall(toolCall: ToolCall, isVisible: boolean): ToolCall 
   return {
     toolCallId: toolCall.toolCallId,
     name: toolCall.name,
+    args: toolCall.args,
     parentToolCallId: toolCall.parentToolCallId,
     isSubAgent: toolCall.isSubAgent,
+    agentInstructions: toolCall.agentInstructions,
   };
 }
 

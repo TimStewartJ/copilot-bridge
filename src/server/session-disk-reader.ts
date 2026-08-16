@@ -36,7 +36,7 @@ const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
  * only a handful of sessions are ever read concurrently, so this is deliberately small.
  */
 const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
-const EVENT_LOG_STATS_CACHE_VERSION = 2;
+const EVENT_LOG_STATS_CACHE_VERSION = 3;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
 /** Backstop bound on retained turn checkpoints when the log has very short turns. */
