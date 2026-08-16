@@ -123,6 +123,31 @@ describe("session manager task tools", () => {
     expect(JSON.stringify(info.agentDefinitions)).not.toContain("Review API changes");
   });
 
+  it("task_get_info includes direct task tag summaries and an empty list when untagged", async () => {
+    const { ctx } = createTestApp();
+    const taggedTask = ctx.taskStore.createTask("Tagged info");
+    const untaggedTask = ctx.taskStore.createTask("Untagged info");
+    const tag = ctx.tagStore!.createTag("release", "purple");
+    ctx.tagStore!.setEntityTags("task", taggedTask.id, [tag.id]);
+    const infoTool = getTool(ctx, "task_get_info");
+
+    const taggedInfo = await infoTool.handler(
+      { taskId: taggedTask.id },
+      createInvocation("task_get_info"),
+    ) as any;
+    const untaggedInfo = await infoTool.handler(
+      { taskId: untaggedTask.id },
+      createInvocation("task_get_info"),
+    ) as any;
+
+    expect(taggedInfo.tags).toEqual([{
+      id: tag.id,
+      name: "release",
+      color: "purple",
+    }]);
+    expect(untaggedInfo.tags).toEqual([]);
+  });
+
   it("task_update can change kind and rejects invalid kinds", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Kind update");

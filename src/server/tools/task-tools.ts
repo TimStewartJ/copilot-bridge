@@ -289,11 +289,13 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_get_info", {
-    description: "Get task details including title, kind, status, linked session counts/previews, work items, PRs, notes, and task agent definitions",
+    description: "Get task details including title, kind, status, tags, linked session counts/previews, work items, PRs, notes, and task agent definitions",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The exact task ID, copied verbatim from task_list or from injected task context. Never guess, infer, or reconstruct an ID from a task title." } }, required: ["taskId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
+      const tags = (ctx.tagStore?.getEntityTags("task", args.taskId) ?? [])
+        .map(({ id, name, color }) => ({ id, name, color }));
       const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
       const agentDefinitions = (ctx.taskAgentDefinitionStore
         ?.listTaskAgentDefinitions(args.taskId) ?? [])
@@ -309,6 +311,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       return {
         ...task.value,
         ...compactTaskInfoSessionIds(task.value.sessionIds),
+        tags,
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),
         agentDefinitions,
       };
