@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import type { AppContext } from "../app-context.js";
-import { openDatabase } from "../db.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
@@ -34,13 +31,6 @@ function createInvocation(toolName: string) {
     toolName,
     arguments: {},
   };
-}
-
-function insertLegacyTag(db: DatabaseSync, id: string, name: string, instructions: string, order: number): void {
-  db.prepare(`
-    INSERT INTO tags (id, name, color, instructions, "order", createdAt, updatedAt)
-    VALUES (?, ?, 'slate', ?, ?, '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z')
-  `).run(id, name, instructions, order);
 }
 
 describe("tag name normalization", () => {
@@ -139,80 +129,4 @@ description: Unicode-normalized cafe tag.
     expect(docsStore.readPage("notes/cafe")?.tags).toEqual(["Coffee"]);
   });
 
-  it("migrates existing Unicode-equivalent tag rows into one canonical tag", () => {
-    const dataDir = makeTestDir("tag-name-key-migration");
-    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
-    legacyDb.exec("PRAGMA foreign_keys = ON");
-    legacyDb.exec(`
-      CREATE TABLE tags (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        color TEXT NOT NULL DEFAULT 'slate',
-        instructions TEXT NOT NULL DEFAULT '',
-        "order" INTEGER NOT NULL DEFAULT 0,
-        createdAt TEXT NOT NULL,
-        updatedAt TEXT NOT NULL
-      );
-      CREATE TABLE entity_tags (
-        entityType TEXT NOT NULL,
-        entityId TEXT NOT NULL,
-        tagId TEXT NOT NULL,
-        PRIMARY KEY (entityType, entityId, tagId),
-        FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
-      );
-      CREATE TABLE mcp_servers (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        config TEXT NOT NULL,
-        enabledByDefault INTEGER NOT NULL DEFAULT 0,
-        createdAt TEXT NOT NULL,
-        updatedAt TEXT NOT NULL
-      );
-      CREATE TABLE tag_mcp_server_refs (
-        tagId TEXT NOT NULL,
-        serverId TEXT NOT NULL,
-        PRIMARY KEY (tagId, serverId),
-        FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE,
-        FOREIGN KEY (serverId) REFERENCES mcp_servers(id) ON DELETE CASCADE
-      );
-    `);
-    insertLegacyTag(legacyDb, "tag-survivor", NFC_CAFE, "Primary instructions", 0);
-    insertLegacyTag(legacyDb, "tag-duplicate", NFD_CAFE, "Secondary instructions", 1);
-    legacyDb.prepare("INSERT INTO entity_tags (entityType, entityId, tagId) VALUES (?, ?, ?)").run("task", "task-a", "tag-survivor");
-    legacyDb.prepare("INSERT INTO entity_tags (entityType, entityId, tagId) VALUES (?, ?, ?)").run("task", "task-b", "tag-duplicate");
-    legacyDb.prepare(`
-      INSERT INTO mcp_servers (id, name, config, enabledByDefault, createdAt, updatedAt)
-      VALUES (?, ?, ?, 0, '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z')
-    `).run("server-a", "Server A", JSON.stringify({ command: "a", args: [] }));
-    legacyDb.prepare(`
-      INSERT INTO mcp_servers (id, name, config, enabledByDefault, createdAt, updatedAt)
-      VALUES (?, ?, ?, 0, '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z')
-    `).run("server-b", "Server B", JSON.stringify({ command: "b", args: [] }));
-    legacyDb.prepare("INSERT INTO tag_mcp_server_refs (tagId, serverId) VALUES (?, ?)").run("tag-survivor", "server-a");
-    legacyDb.prepare("INSERT INTO tag_mcp_server_refs (tagId, serverId) VALUES (?, ?)").run("tag-duplicate", "server-b");
-    legacyDb.close();
-
-    const db = openDatabase(dataDir);
-    try {
-      expect(db.prepare('SELECT id, name, nameKey, instructions, "order" AS sortOrder FROM tags ORDER BY "order"').all()).toEqual([
-        {
-          id: "tag-survivor",
-          name: NFC_CAFE,
-          nameKey: CAFE_KEY,
-          instructions: "Primary instructions\n\nSecondary instructions",
-          sortOrder: 0,
-        },
-      ]);
-      expect(db.prepare("SELECT entityType, entityId, tagId FROM entity_tags ORDER BY entityId").all()).toEqual([
-        { entityType: "task", entityId: "task-a", tagId: "tag-survivor" },
-        { entityType: "task", entityId: "task-b", tagId: "tag-survivor" },
-      ]);
-      expect(db.prepare("SELECT tagId, serverId FROM tag_mcp_server_refs ORDER BY serverId").all()).toEqual([
-        { tagId: "tag-survivor", serverId: "server-a" },
-        { tagId: "tag-survivor", serverId: "server-b" },
-      ]);
-    } finally {
-      db.close();
-    }
-  });
 });

@@ -8,13 +8,6 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 export function createSessionTitlesStore(db: DatabaseSync) {
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
 
-  function tableExists(): boolean {
-    const row = db.prepare(
-      "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'session_titles'",
-    ).get() as { found?: number } | undefined;
-    return row?.found === 1;
-  }
-
   function getTitle(sessionId: string): string | undefined {
     return bridgeSessionStateStore.getState(sessionId)?.titleOverride;
   }
@@ -42,33 +35,8 @@ export function createSessionTitlesStore(db: DatabaseSync) {
     return result;
   }
 
-  function getAllLegacyTitles(): Record<string, string> {
-    if (!tableExists()) return {};
-    const rows = db.prepare("SELECT sessionId, title FROM session_titles").all() as any[];
-    const result: Record<string, string> = {};
-    for (const row of rows) {
-      result[row.sessionId] = row.title;
-    }
-    return result;
-  }
-
-  function deleteLegacyTitle(sessionId: string): void {
-    if (tableExists()) {
-      db.prepare("DELETE FROM session_titles WHERE sessionId = ?").run(sessionId);
-    }
-  }
-
   function clearAllTitles(): void {
-    if (tableExists()) {
-      db.prepare("DELETE FROM session_titles").run();
-    }
     bridgeSessionStateStore.clearAllTitleOverrides();
-  }
-
-  function dropLegacyTable(): void {
-    if (tableExists()) {
-      db.prepare("DROP TABLE session_titles").run();
-    }
   }
 
   return {
@@ -77,10 +45,7 @@ export function createSessionTitlesStore(db: DatabaseSync) {
     hasTitle,
     deleteTitle,
     getAllTitles,
-    getAllLegacyTitles,
-    deleteLegacyTitle,
     clearAllTitles,
-    dropLegacyTable,
   };
 }
 

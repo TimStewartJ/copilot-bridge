@@ -285,17 +285,6 @@ interface SessionWorkspaceDetailsPayload extends SessionWorkspaceSummaryPayload 
   gitStatus: TaskGitStatusResponse;
 }
 
-type LegacyCompatibleOkGitStatus = Extract<TaskGitStatusResponse, { status: "ok" }> & {
-  worktreePath?: string;
-  workspaceKind?: "main" | "linked";
-  head?: GitWorktreeHead;
-  siblingWorktrees?: Array<{
-    worktreePath?: string;
-    workspaceKind?: "main" | "linked";
-    head?: GitWorktreeHead;
-  }>;
-};
-
 function normalizePushSubscriptionBody(body: unknown): PushSubscriptionInput | undefined {
   if (isPushSubscriptionInput(body)) return body;
   if (!body || typeof body !== "object") return undefined;
@@ -468,15 +457,7 @@ function buildWorktreeChoices(
 ): SessionWorkspaceWorktreePayload[] {
   if (gitStatus.status !== "ok") return [];
 
-  const compatStatus = gitStatus as LegacyCompatibleOkGitStatus;
-  const primaryWorktreePath = normalizeWorkspacePath(
-    typeof compatStatus.worktreePath === "string" ? compatStatus.worktreePath : gitStatus.cwd,
-  );
-  const workspaceKind = compatStatus.workspaceKind === "linked" ? "linked" : "main";
-  const head = compatStatus.head
-    ?? (gitStatus.branch?.trim()
-      ? { kind: "branch", name: gitStatus.branch.trim() }
-      : { kind: "detached", shortSha: "unknown" });
+  const primaryWorktreePath = normalizeWorkspacePath(gitStatus.worktreePath);
 
   const selected = selectedCwd ? normalizeWorkspacePathForComparison(selectedCwd) : undefined;
   const byPath = new Map<string, SessionWorkspaceWorktreePayload>();
@@ -494,13 +475,12 @@ function buildWorktreeChoices(
   };
 
   if (primaryWorktreePath) {
-    addWorktree(primaryWorktreePath, workspaceKind, head);
+    addWorktree(primaryWorktreePath, gitStatus.workspaceKind, gitStatus.head);
   }
-  for (const sibling of compatStatus.siblingWorktrees ?? []) {
-    if (!sibling.head) continue;
+  for (const sibling of gitStatus.siblingWorktrees) {
     addWorktree(
-      sibling.worktreePath ?? "",
-      sibling.workspaceKind === "linked" ? "linked" : "main",
+      sibling.worktreePath,
+      sibling.workspaceKind,
       sibling.head,
     );
   }

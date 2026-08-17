@@ -122,7 +122,7 @@ describe("computer use tools", () => {
     });
 
     const mod = await import("../computer-use-tools.js");
-    const tools = Object.fromEntries(mod.createComputerUseTools({} as any).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createComputerUseSessionTools({} as any).map((tool: any) => [tool.name, tool]));
     const result = await tools.computer_open_browser.handler({
       url: "https://example.com",
     }, { sessionId: "copilot-a" } as any);

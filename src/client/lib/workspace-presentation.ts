@@ -1,17 +1,8 @@
 import type { SessionWorkspaceWorktree, TaskGitStatus } from "../api";
 
-type GitHead = Extract<TaskGitStatus, { status: "ok" }>["head"];
-type GitDirtyState = Extract<TaskGitStatus, { status: "ok" }>["dirty"];
-type LegacyCompatibleOkGitStatus = Extract<TaskGitStatus, { status: "ok" }> & {
-  worktreePath?: string;
-  workspaceKind?: "main" | "linked";
-  head?: GitHead;
-  siblingWorktrees?: Array<{
-    worktreePath?: string;
-    workspaceKind?: "main" | "linked";
-    head?: GitHead;
-  }>;
-};
+type GitStatusOk = Extract<TaskGitStatus, { status: "ok" }>;
+type GitHead = GitStatusOk["head"];
+type GitDirtyState = GitStatusOk["dirty"];
 
 export function normalizeWorkspacePathForComparison(cwd: string): string {
   const normalized = cwd.trim().replace(/\\/g, "/");
@@ -24,34 +15,20 @@ export function areWorkspacePathsEqual(a?: string, b?: string): boolean {
   return normalizeWorkspacePathForComparison(a) === normalizeWorkspacePathForComparison(b);
 }
 
-function buildLegacyGitHead(branch?: string | null): GitHead {
-  const name = branch?.trim();
-  return name
-    ? { kind: "branch", name }
-    : { kind: "detached", shortSha: "unknown" };
+function getGitHead(status: GitStatusOk): GitHead {
+  return status.head;
 }
 
-function getGitHead(status: LegacyCompatibleOkGitStatus): GitHead {
-  return status.head ?? buildLegacyGitHead(status.branch);
+function getWorkspaceKind(status: GitStatusOk): "main" | "linked" {
+  return status.workspaceKind;
 }
 
-function getWorkspaceKind(status: LegacyCompatibleOkGitStatus): "main" | "linked" {
-  return status.workspaceKind === "linked" ? "linked" : "main";
+function getWorktreePath(status: GitStatusOk): string {
+  return status.worktreePath;
 }
 
-function getWorktreePath(status: LegacyCompatibleOkGitStatus): string | undefined {
-  const worktreePath = typeof status.worktreePath === "string" ? status.worktreePath.trim() : "";
-  return worktreePath || status.cwd;
-}
-
-function getDirtyState(status: LegacyCompatibleOkGitStatus): GitDirtyState {
-  return status.dirty ?? {
-    clean: status.clean ?? false,
-    staged: status.staged ?? 0,
-    modified: status.modified ?? 0,
-    untracked: status.untracked ?? 0,
-    conflicts: status.conflicts ?? 0,
-  };
+function getDirtyState(status: GitStatusOk): GitDirtyState {
+  return status.dirty;
 }
 
 export function formatGitHead(head?: GitHead | null): string {
@@ -77,7 +54,6 @@ export function buildWorkspaceChoices(
 ): SessionWorkspaceWorktree[] {
   if (!gitStatus || gitStatus.status !== "ok") return [];
 
-  const compatStatus = gitStatus as LegacyCompatibleOkGitStatus;
   const selected = selectedCwd ? normalizeWorkspacePathForComparison(selectedCwd) : undefined;
   const byPath = new Map<string, SessionWorkspaceWorktree>();
   const addWorktree = (cwd: string, workspaceKind: "main" | "linked", head: GitHead) => {
@@ -91,15 +67,14 @@ export function buildWorkspaceChoices(
     });
   };
 
-  const worktreePath = getWorktreePath(compatStatus);
+  const worktreePath = getWorktreePath(gitStatus);
   if (worktreePath) {
-    addWorktree(worktreePath, getWorkspaceKind(compatStatus), getGitHead(compatStatus));
+    addWorktree(worktreePath, getWorkspaceKind(gitStatus), getGitHead(gitStatus));
   }
-  for (const sibling of compatStatus.siblingWorktrees ?? []) {
-    if (!sibling.worktreePath || !sibling.head) continue;
+  for (const sibling of gitStatus.siblingWorktrees) {
     addWorktree(
       sibling.worktreePath,
-      sibling.workspaceKind === "linked" ? "linked" : "main",
+      sibling.workspaceKind,
       sibling.head,
     );
   }

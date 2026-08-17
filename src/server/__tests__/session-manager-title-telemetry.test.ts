@@ -1,20 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { SessionManager } from "../session-manager.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { createTestApp } from "./test-app.js";
-
-class MigrationTestSessionManager extends SessionManager {
-  readonly setCalls: Array<{ sessionId: string; name: string; opts: any }> = [];
-
-  override async setSessionName(sessionId: string, name: string, opts: any = {}): Promise<void> {
-    this.setCalls.push({ sessionId, name, opts });
-  }
-}
 
 describe("session CLI renames", () => {
   function createRenameToolHarness() {
@@ -94,54 +82,5 @@ describe("session CLI renames", () => {
     expect(sessionTitles.getTitle("target-session")).toBeUndefined();
     expect(setSessionName).toHaveBeenCalledWith("target-session", "Renamed elsewhere");
     expect(targetEvents).toContainEqual({ type: "title_changed", title: "Renamed elsewhere" });
-  });
-
-  it("migrates legacy Bridge titles only for sessions without existing CLI names", async () => {
-    const { ctx, db } = createTestApp();
-    const writeWorkspace = (sessionId: string, content: string) => {
-      const sessionDir = join(ctx.copilotHome!, "session-state", sessionId);
-      mkdirSync(sessionDir, { recursive: true });
-      writeFileSync(join(sessionDir, "workspace.yaml"), content);
-    };
-    writeWorkspace("needs-migration", "created_at: 2026-05-01T10:00:00.000Z\n");
-    writeWorkspace("already-named", "created_at: 2026-05-01T10:00:00.000Z\nname: CLI name\n");
-    db.exec(`
-      CREATE TABLE session_titles (
-        sessionId TEXT PRIMARY KEY,
-        title TEXT NOT NULL
-      );
-    `);
-    db.prepare("INSERT INTO session_titles (sessionId, title) VALUES (?, ?)")
-      .run("needs-migration", "Legacy Bridge Name");
-    db.prepare("INSERT INTO session_titles (sessionId, title) VALUES (?, ?)")
-      .run("already-named", "Legacy Should Not Win");
-
-    const manager = new MigrationTestSessionManager({
-      globalBus: ctx.globalBus,
-      eventBusRegistry: ctx.eventBusRegistry,
-      sessionTitles: ctx.sessionTitles,
-      sessionWorkspaceStore: ctx.sessionWorkspaceStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      taskStore: ctx.taskStore,
-      taskGroupStore: ctx.taskGroupStore,
-      checklistStore: ctx.checklistStore,
-      settingsStore: ctx.settingsStore,
-      tagStore: ctx.tagStore,
-      mcpServerStore: ctx.mcpServerStore,
-      docsIndex: ctx.docsIndex,
-      docsStore: ctx.docsStore,
-      config: { sessionMcpServers: {} },
-      telemetryStore: ctx.telemetryStore,
-      copilotHome: ctx.copilotHome,
-      runtimePaths: ctx.runtimePaths,
-    } as any);
-
-    await manager.migrateLegacySessionTitles();
-
-    expect(manager.setCalls).toEqual([
-      { sessionId: "needs-migration", name: "Legacy Bridge Name", opts: { emit: false } },
-    ]);
-    expect(ctx.sessionTitles.getAllTitles()).toEqual({});
-    expect(() => db.prepare("SELECT * FROM session_titles").all()).toThrow();
   });
 });

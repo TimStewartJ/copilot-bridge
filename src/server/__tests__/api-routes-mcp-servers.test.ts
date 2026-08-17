@@ -143,7 +143,7 @@ describe("MCP server registry routes", () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
-    const { app, ctx, db } = createTestApp({ sessionManager });
+    const { app, ctx } = createTestApp({ sessionManager });
     const tag = ctx.tagStore!.createTag("Legacy Tools");
     const alpha = ctx.mcpServerStore!.createMcpServer({ name: "Alpha", config: localConfig });
 
@@ -175,7 +175,6 @@ describe("MCP server registry routes", () => {
     const legacyDelete = await request(app).delete(`/api/tags/${tag.id}/mcp/legacy-linear`);
     expect(legacyDelete.status).toBe(200);
     expect(ctx.tagStore!.getTagMcpServers(tag.id)).toEqual([]);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_servers").get() as any).count).toBe(0);
     expect(evictSpy).toHaveBeenCalledTimes(4);
   });
 

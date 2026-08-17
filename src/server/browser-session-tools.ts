@@ -284,9 +284,6 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
   ];
 }
 
-/** @deprecated Use createBrowserSessionToolDefinitions; kept for direct tests during migration. */
-export const createBrowserSessionTools = createBrowserSessionToolDefinitions;
-
 export function registerBrowserSessionTools(
   server: BridgeToolsMcpServer,
   ctx: AppContext,

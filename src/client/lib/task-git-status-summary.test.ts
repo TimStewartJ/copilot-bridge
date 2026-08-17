@@ -108,31 +108,6 @@ describe("describeTaskGitStatusSummary", () => {
     });
   });
 
-  it("supports the legacy flat git status shape", () => {
-    expect(describeTaskGitStatusSummary({
-      status: "ok",
-      cwd: "/repo",
-      repoRoot: "/repo",
-      repoName: "copilot-bridge",
-      branch: "main",
-      clean: false,
-      staged: 2,
-      modified: 1,
-      untracked: 3,
-    } as any)).toEqual({
-      repoName: "copilot-bridge",
-      branch: "main",
-      stateLabel: "dirty",
-      summaryText: "copilot-bridge · main · dirty",
-      counts: [
-        { key: "staged", label: "staged", shortLabel: "S", value: 2 },
-        { key: "modified", label: "modified", shortLabel: "M", value: 1 },
-        { key: "untracked", label: "untracked", shortLabel: "U", value: 3 },
-      ],
-      workspaceKind: "main",
-    });
-  });
-
   it("hides non-ok states and missing data", () => {
     expect(describeTaskGitStatusSummary(undefined)).toBeNull();
     expect(describeTaskGitStatusSummary(null)).toBeNull();
