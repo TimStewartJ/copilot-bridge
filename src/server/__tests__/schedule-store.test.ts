@@ -1,11 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { setupTestDb } from "./helpers.js";
 import { createScheduleStore } from "../schedule-store.js";
 import type { ScheduleStore } from "../schedule-store.js";
-import { openDatabase, type DatabaseSync as BridgeDatabaseSync } from "../db.js";
+import type { DatabaseSync as BridgeDatabaseSync } from "../db.js";
 
 let db: BridgeDatabaseSync;
 let store: ScheduleStore;
@@ -108,125 +105,6 @@ describe("schedule-store", () => {
       expect(store.getSchedule(s.id)?.model).toBeUndefined();
       expect(store.getSchedule(s.id)?.reasoningEffort).toBeUndefined();
       expect(store.getSchedule(s.id)?.contextTier).toBeUndefined();
-    });
-
-    it("removes legacy reuse schema while preserving run history during database migration", () => {
-      const dataDir = mkdtempSync(join(process.cwd(), ".schedule-migration-"));
-      try {
-        const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
-        legacyDb.exec(`
-          CREATE TABLE schedules (
-            id TEXT PRIMARY KEY,
-            taskId TEXT NOT NULL,
-            name TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            type TEXT NOT NULL,
-            cron TEXT,
-            runAt TEXT,
-            timezone TEXT,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            sessionMode TEXT NOT NULL DEFAULT 'new',
-            targetSessionId TEXT,
-            lastSessionId TEXT,
-            createdAt TEXT NOT NULL,
-            updatedAt TEXT NOT NULL,
-            lastRunAt TEXT,
-            nextRunAt TEXT,
-            runCount INTEGER NOT NULL DEFAULT 0,
-            maxRuns INTEGER,
-            expiresAt TEXT
-          );
-          CREATE TABLE schedule_session_claims (
-            sessionId TEXT PRIMARY KEY,
-            scheduleId TEXT NOT NULL,
-            claimedAt TEXT NOT NULL,
-            leaseExpiresAt TEXT NOT NULL
-          );
-        `);
-        const now = "2026-01-01T00:00:00.000Z";
-        legacyDb.prepare(`
-          INSERT INTO schedules (
-            id, taskId, name, prompt, type, cron, enabled, sessionMode, targetSessionId,
-            lastSessionId, createdAt, updatedAt, runCount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          "reuse-target-schedule", "task-1", "Legacy target", "Run target", "cron", "0 8 * * *", 1,
-          "reuse-target", "target-session", null, now, now, 0,
-        );
-        legacyDb.prepare(`
-          INSERT INTO schedules (
-            id, taskId, name, prompt, type, cron, enabled, sessionMode, targetSessionId,
-            lastSessionId, createdAt, updatedAt, runCount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          "reuse-last-schedule", "task-1", "Legacy last", "Run last", "cron", "0 9 * * *", 1,
-          "reuse-last", null, "last-session", now, now, 3,
-        );
-        legacyDb.prepare(`
-          INSERT INTO schedule_session_claims (sessionId, scheduleId, claimedAt, leaseExpiresAt)
-          VALUES (?, ?, ?, ?)
-        `).run("last-session", "reuse-last-schedule", now, "2026-01-01T00:02:00.000Z");
-        legacyDb.close();
-
-        const migratedDb = openDatabase(dataDir);
-        try {
-          const rows = migratedDb.prepare(`
-            SELECT id, model, reasoningEffort, contextTier, autoArchiveKeep, lastSessionId
-            FROM schedules
-            ORDER BY id
-          `).all() as Array<{
-            id: string;
-            model: string | null;
-            reasoningEffort: string | null;
-            contextTier: string | null;
-            autoArchiveKeep: number | null;
-            lastSessionId: string | null;
-          }>;
-          expect(rows).toEqual([
-            {
-              id: "reuse-last-schedule",
-              model: null,
-              reasoningEffort: null,
-              contextTier: null,
-              autoArchiveKeep: null,
-              lastSessionId: "last-session",
-            },
-            {
-              id: "reuse-target-schedule",
-              model: null,
-              reasoningEffort: null,
-              contextTier: null,
-              autoArchiveKeep: null,
-              lastSessionId: "target-session",
-            },
-          ]);
-
-          const scheduleColumns = (migratedDb.prepare("PRAGMA table_info(schedules)").all() as Array<{ name: string }>)
-            .map((column) => column.name);
-          expect(scheduleColumns).not.toContain("sessionMode");
-          expect(scheduleColumns).not.toContain("targetSessionId");
-          expect(scheduleColumns).not.toContain("reuseLastRequiresExistingSession");
-          expect(scheduleColumns).toContain("autoArchiveKeep");
-          expect(scheduleColumns).toContain("model");
-          expect(scheduleColumns).toContain("reasoningEffort");
-          expect(scheduleColumns).toContain("contextTier");
-          const claimsTable = migratedDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedule_session_claims'").get();
-          expect(claimsTable).toBeUndefined();
-          const runs = migratedDb.prepare(`
-            SELECT scheduleId, sessionId
-            FROM schedule_runs
-            ORDER BY scheduleId, sessionId
-          `).all();
-          expect(runs).toEqual([
-            { scheduleId: "reuse-last-schedule", sessionId: "last-session" },
-            { scheduleId: "reuse-target-schedule", sessionId: "target-session" },
-          ]);
-        } finally {
-          migratedDb.close();
-        }
-      } finally {
-        rmSync(dataDir, { recursive: true, force: true });
-      }
     });
 
     it("updateSchedule throws for missing id", () => {

@@ -83,7 +83,7 @@ describe("browser session tools", () => {
     });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
     const started = await tools.browser_session_start.handler({ mode: "persistent" }, invocation) as any;
@@ -119,7 +119,7 @@ describe("browser session tools", () => {
     });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
     const started = await tools.browser_session_start.handler({ mode: "isolated" }, invocation) as any;
@@ -156,7 +156,7 @@ describe("browser session tools", () => {
     });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
     const ownerInvocation = { sessionId: "copilot-a" } as any;
     const otherInvocation = { sessionId: "copilot-b" } as any;
 
@@ -185,7 +185,7 @@ describe("browser session tools", () => {
       });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
     const started = await tools.browser_session_start.handler({ mode: "persistent" }, invocation) as any;

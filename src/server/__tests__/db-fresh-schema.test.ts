@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase, openMemoryDatabase } from "../db.js";
-import { listDatabaseMigrations, runDatabaseMigrations } from "../db-migrations.js";
+import {
+  MINIMUM_SUPPORTED_DATABASE_MIGRATION,
+  listDatabaseMigrations,
+  runDatabaseMigrations,
+} from "../db-migrations.js";
 import { makeTestDir } from "./helpers.js";
 
 interface SchemaObjectRow {
@@ -52,7 +56,9 @@ function recordedMigrationIds(db: DatabaseSync): string[] {
  */
 function migrateFreshDatabase(): DatabaseSync {
   const db = openMemoryDatabase();
-  db.exec("DELETE FROM schema_migrations");
+  for (const migration of listDatabaseMigrations()) {
+    db.prepare("DELETE FROM schema_migrations WHERE id = ?").run(migration.id);
+  }
   runDatabaseMigrations(db);
   return db;
 }
@@ -85,10 +91,10 @@ describe("fresh database schema parity", () => {
     const fresh = openMemoryDatabase();
     const migrated = migrateFreshDatabase();
 
-    const expectedOneTimeIds = listDatabaseMigrations()
-      .filter((migration) => migration.runMode === "once")
-      .map((migration) => migration.id)
-      .sort();
+    const expectedOneTimeIds = [
+      MINIMUM_SUPPORTED_DATABASE_MIGRATION,
+      ...listDatabaseMigrations().map((migration) => migration.id),
+    ].sort();
 
     expect(recordedMigrationIds(fresh)).toEqual(expectedOneTimeIds);
     expect(recordedMigrationIds(fresh)).toEqual(recordedMigrationIds(migrated));
@@ -105,10 +111,7 @@ describe("fresh database schema parity", () => {
     fresh.close();
   });
 
-  it("matches the persistent database bootstrap, which still runs every migration", () => {
-    // openDatabase is the production path and deliberately does not take the
-    // fast path, so this compares the shortcut against the real thing rather
-    // than against another shortcut.
+  it("matches the persistent fresh-database bootstrap", () => {
     const fresh = openMemoryDatabase();
     const persistent = openDatabase(makeTestDir("db-fresh-parity"));
 

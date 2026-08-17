@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import type { Tag } from "../api";
 import { useTagsQuery, useCreateTagMutation } from "../hooks/queries/useTags";
 import TagPill from "./TagPill";
 import { TAG_COLOR_BG, TAG_COLOR_TEXT } from "../tag-colors";
@@ -14,9 +13,6 @@ interface TagPickerProps {
   onChange: (tagIds: string[]) => void;
   /** Compact mode — just a + button */
   compact?: boolean;
-  // Legacy props — accepted but ignored (tags come from query cache now)
-  allTags?: Tag[];
-  onTagCreated?: (tag: Tag) => void;
 }
 
 export default function TagPicker({

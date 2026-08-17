@@ -79,27 +79,6 @@ describe("workspace-presentation", () => {
     ]);
   });
 
-  it("builds a fallback main-worktree choice from the legacy flat git status shape", () => {
-    expect(buildWorkspaceChoices({
-      status: "ok",
-      cwd: "/repo",
-      repoRoot: "/repo",
-      repoName: "copilot-bridge",
-      branch: "main",
-      clean: true,
-      staged: 0,
-      modified: 0,
-      untracked: 0,
-    } as any, "/repo")).toEqual([
-      {
-        cwd: "/repo",
-        workspaceKind: "main",
-        head: { kind: "branch", name: "main" },
-        selected: true,
-      },
-    ]);
-  });
-
   it("normalizes workspace paths for comparison", () => {
     expect(areWorkspacePathsEqual("C:\\repo\\worktree\\", "c:/repo/worktree")).toBe(true);
     expect(areWorkspacePathsEqual("/repo/main/", "/repo/feature")).toBe(false);

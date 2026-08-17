@@ -179,7 +179,6 @@ import {
 } from "./session-name-autogen.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
-import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
@@ -2831,9 +2830,6 @@ export class SessionManager {
     this.backendCreatedAtMs = Date.now();
     console.log("[sdk] Agent backend ready");
     this.sweepLeakedDisposableTitleSessions();
-    void this.migrateLegacySessionTitles().catch((error) => {
-      console.warn(`[sdk] Legacy session title migration failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
   }
 
   private sweepLeakedDisposableTitleSessions(): void {
@@ -3058,17 +3054,6 @@ export class SessionManager {
     options: { session?: any; userMessages?: string[] } = {},
   ): void {
     this.sessionNameAutogenerator.maybeAutoNameSession(sessionId, options);
-  }
-
-  async migrateLegacySessionTitles(): Promise<void> {
-    await migrateLegacySessionTitlesWithDeps({
-      sessionTitles: this.deps.sessionTitles,
-      hasSessionOnDisk: (sessionId) => this.hasKnownPersistedSession(sessionId),
-      readSessionNameFromWorkspace: (sessionId) => this.sessionNameRpc.readSessionNameFromWorkspace(sessionId),
-      setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
-      invalidateSessionListCache: (reason) => this.invalidateSessionListCache(reason),
-      logger: console,
-    });
   }
 
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */

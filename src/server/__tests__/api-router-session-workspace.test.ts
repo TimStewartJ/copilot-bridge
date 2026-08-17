@@ -499,58 +499,6 @@ describe("session workspace routes", () => {
     }));
   });
 
-  it("builds workspace details from the legacy flat git status shape", async () => {
-    const copilotHome = createCopilotHome();
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk: async () => [{ sessionId: "session-1", summary: "Workspace session" }],
-    } as any;
-    const taskWorkspace = join(copilotHome, "task-workspace");
-    mkdirSync(taskWorkspace, { recursive: true });
-    readGitWorktreeStatusMock.mockResolvedValue({
-      status: "ok",
-      cwd: taskWorkspace,
-      repoRoot: taskWorkspace,
-      repoName: "copilot-bridge",
-      branch: "main",
-      clean: true,
-      staged: 0,
-      modified: 0,
-      untracked: 0,
-    });
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    const task = ctx.taskStore.createTask("Workspace task");
-    ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
-    ctx.taskStore.linkSession(task.id, "session-1");
-
-    const res = await request(app).get(`/api/sessions/session-1/workspace?taskId=${task.id}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual(expect.objectContaining({
-      sessionId: "session-1",
-      taskId: task.id,
-      effectiveCwd: taskWorkspace,
-      taskCwd: taskWorkspace,
-      source: "task",
-      gitStatus: expect.objectContaining({
-        status: "ok",
-        cwd: taskWorkspace,
-        repoName: "copilot-bridge",
-        branch: "main",
-      }),
-      availableWorktrees: [
-        expect.objectContaining({
-          cwd: taskWorkspace,
-          workspaceKind: "main",
-          head: { kind: "branch", name: "main" },
-          selected: true,
-        }),
-      ],
-    }));
-  });
-
   it("stores an explicit workspace path", async () => {
     const copilotHome = createCopilotHome();
     const sessionManager = {

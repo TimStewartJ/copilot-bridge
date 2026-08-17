@@ -14,24 +14,12 @@ beforeEach(() => {
   tagStore = createTagStore(db);
 });
 
-function legacyTagServerCount(tagId: string): number {
-  return (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_servers WHERE tagId = ?").get(tagId) as any).count;
-}
-
 function tagRefCount(tagId: string): number {
   return (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_server_refs WHERE tagId = ?").get(tagId) as any).count;
 }
 
 function serverRefCount(serverId: string): number {
   return (db.prepare("SELECT COUNT(*) AS count FROM tag_mcp_server_refs WHERE serverId = ?").get(serverId) as any).count;
-}
-
-function insertLegacyTagServer(tagId: string, serverName: string): void {
-  db.prepare("INSERT OR REPLACE INTO tag_mcp_servers (tagId, serverName, config) VALUES (?, ?, ?)").run(
-    tagId,
-    serverName,
-    JSON.stringify({ command: "legacy", args: [] }),
-  );
 }
 
 describe("tag-store MCP server references", () => {
@@ -55,10 +43,9 @@ describe("tag-store MCP server references", () => {
     tagStore.setEntityTags("task", "task-1", [tag.id]);
     expect(tagStore.resolveEffectiveTags("task-1").mcpServerIds).toEqual([local.id, remote.id]);
     expect(tagRefCount(tag.id)).toBe(2);
-    expect(legacyTagServerCount(tag.id)).toBe(0);
   });
 
-  it("adds, removes, and replaces refs without preserving legacy tag-owned rows", () => {
+  it("adds, removes, and replaces registry refs", () => {
     const tag = tagStore.createTag("Tools");
     const alpha = mcpStore.createMcpServer({ name: "Alpha", config: { command: "alpha", args: [] } });
     const beta = mcpStore.createMcpServer({ name: "Beta", config: { command: "beta", args: [] } });
@@ -66,17 +53,13 @@ describe("tag-store MCP server references", () => {
     expect(tagStore.addTagMcpServerRef(tag.id, alpha.id).serverId).toBe(alpha.id);
     expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([alpha.id]);
 
-    insertLegacyTagServer(tag.id, "stale");
     const replaced = tagStore.replaceTagMcpServerRefs(tag.id, [beta.id]);
     expect(replaced.map((server) => server.serverId)).toEqual([beta.id]);
     expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([beta.id]);
-    expect(legacyTagServerCount(tag.id)).toBe(0);
 
-    insertLegacyTagServer(tag.id, "stale-again");
     tagStore.removeTagMcpServerRef(tag.id, beta.id);
     expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([]);
     expect(tagRefCount(tag.id)).toBe(0);
-    expect(legacyTagServerCount(tag.id)).toBe(0);
   });
 
   it("removes a deleted registry server's refs across tags via SQLite cascade", () => {
@@ -118,9 +101,8 @@ describe("tag-store MCP server references", () => {
     expect(serverRefCount(kept.id)).toBe(1);
   });
 
-  it("routes legacy compatibility writes through registry refs and clears old rows", () => {
+  it("routes name-based compatibility writes through registry refs", () => {
     const tag = tagStore.createTag("Legacy");
-    insertLegacyTagServer(tag.id, "linear");
 
     tagStore.setTagMcpServer(tag.id, "linear", { type: "http", url: "https://linear.example/mcp" });
 
@@ -134,21 +116,16 @@ describe("tag-store MCP server references", () => {
     });
     expect(mcpStore.getMcpServer(first[0].serverId)).toBeDefined();
     expect(tagRefCount(tag.id)).toBe(1);
-    expect(legacyTagServerCount(tag.id)).toBe(0);
 
-    insertLegacyTagServer(tag.id, "linear");
     tagStore.setTagMcpServer(tag.id, "linear", { type: "http", url: "https://override.example/mcp" });
     const replaced = tagStore.getTagMcpServers(tag.id);
     expect(replaced).toHaveLength(1);
     expect(replaced[0].serverName).toMatch(/^linear \(tag override/);
     expect(replaced[0].config).toEqual({ type: "http", url: "https://override.example/mcp" });
     expect(tagRefCount(tag.id)).toBe(1);
-    expect(legacyTagServerCount(tag.id)).toBe(0);
 
-    insertLegacyTagServer(tag.id, "linear");
     tagStore.removeTagMcpServer(tag.id, "linear");
     expect(tagStore.getTagMcpServers(tag.id)).toEqual([]);
     expect(tagRefCount(tag.id)).toBe(0);
-    expect(legacyTagServerCount(tag.id)).toBe(0);
   });
 });

@@ -231,10 +231,6 @@ export function createTagStore(db: DatabaseSync) {
     };
   }
 
-  function clearLegacyTagMcpServers(tagId: string): void {
-    db.prepare("DELETE FROM tag_mcp_servers WHERE tagId = ?").run(tagId);
-  }
-
   function getTagMcpServerIds(tagId: string): string[] {
     const rows = db.prepare(`
       SELECT ms.id
@@ -260,7 +256,6 @@ export function createTagStore(db: DatabaseSync) {
     db.exec("BEGIN");
     try {
       db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ?").run(tagId);
-      clearLegacyTagMcpServers(tagId);
 
       const stmt = db.prepare("INSERT INTO tag_mcp_server_refs (tagId, serverId) VALUES (?, ?)");
       for (const serverId of uniqueServerIds) {
@@ -282,13 +277,11 @@ export function createTagStore(db: DatabaseSync) {
       INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
       VALUES (?, ?)
     `).run(tagId, serverId);
-    clearLegacyTagMcpServers(tagId);
     return hydrateTagMcpServer(serverId);
   }
 
   function removeTagMcpServerRef(tagId: string, serverId: string): void {
     db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ? AND serverId = ?").run(tagId, serverId);
-    clearLegacyTagMcpServers(tagId);
   }
 
   function matchingTagMcpServerRefIds(tagId: string, serverName: string): string[] {
@@ -320,7 +313,6 @@ export function createTagStore(db: DatabaseSync) {
         INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
         VALUES (?, ?)
       `).run(tagId, server.id);
-      clearLegacyTagMcpServers(tagId);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -332,7 +324,6 @@ export function createTagStore(db: DatabaseSync) {
     for (const serverId of matchingTagMcpServerRefIds(tagId, serverName)) {
       db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ? AND serverId = ?").run(tagId, serverId);
     }
-    clearLegacyTagMcpServers(tagId);
   }
 
   // ── Tag resolution ───────────────────────────────────────────────

@@ -524,9 +524,6 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
   ];
 }
 
-/** @deprecated Use createComputerUseSessionTools; kept for direct tests during migration. */
-export const createComputerUseTools = createComputerUseSessionTools;
-
 export function registerComputerUseSessionTools(server: BridgeToolsMcpServer, ctx: AppContext): void {
   if (!COMPUTER_USE_ENABLED) return;
   const tools = createComputerUseSessionTools(ctx);

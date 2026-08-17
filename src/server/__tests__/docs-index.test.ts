@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { DatabaseSync } from "node:sqlite";
 import { getDocsFtsHealth, initializeDocsFts, openDatabase, openMemoryDatabase } from "../db.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
@@ -35,7 +34,8 @@ describe("docs index recovery", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "docs-fts-db-test-"));
     const docsDir = mkdtempSync(join(tmpdir(), "docs-fts-docs-test-"));
     tempDirs.push(dataDir, docsDir);
-    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    const legacyDb = openDatabase(dataDir);
+    legacyDb.exec("DROP TABLE docs_fts");
     legacyDb.exec("CREATE TABLE docs_fts(dummy TEXT)");
     legacyDb.prepare("INSERT INTO docs_fts(dummy) VALUES (?)").run("operator data");
     legacyDb.close();
@@ -89,7 +89,8 @@ This page contains xylophone content.`);
   it("self-heals leftover docs FTS shadow tables that block virtual table creation", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "docs-fts-shadow-test-"));
     tempDirs.push(dataDir);
-    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    const legacyDb = openDatabase(dataDir);
+    legacyDb.exec("DROP TABLE docs_fts");
     legacyDb.exec("CREATE TABLE docs_fts_data(blocker TEXT)");
     legacyDb.exec("CREATE TABLE docs_fts_archive(note TEXT)");
     legacyDb.prepare("INSERT INTO docs_fts_archive(note) VALUES (?)").run("preserve me");

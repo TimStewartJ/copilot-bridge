@@ -5,7 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { recordFreshDatabaseMigrations, runDatabaseMigrations } from "./db-migrations.js";
+import {
+  assertDatabaseMeetsMinimumBaseline,
+  recordFreshDatabaseMigrations,
+  runDatabaseMigrations,
+} from "./db-migrations.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 const LEGACY_JSON_STATE_FILES = [
@@ -384,6 +388,15 @@ function hasPersistedSqliteState(db: DatabaseSync): boolean {
   return SQLITE_STATE_TABLES.some((table) => tableExists(db, table) && tableHasRows(db, table));
 }
 
+function hasUserTables(db: DatabaseSync): boolean {
+  return !!db.prepare(`
+    SELECT 1 AS found
+    FROM sqlite_master
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    LIMIT 1
+  `).get();
+}
+
 /** Open (or create) the bridge database and initialize schema */
 export function openDatabase(dataDir: string): DatabaseSync {
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
@@ -396,18 +409,24 @@ export function openDatabase(dataDir: string): DatabaseSync {
   }
 
   const db = new DatabaseSync(dbPath);
-  if (dbExists && legacyStateFiles.length > 0 && !hasPersistedSqliteState(db)) {
+  try {
+    if (dbExists && legacyStateFiles.length > 0 && !hasPersistedSqliteState(db)) {
+      throw formatLegacyJsonStateError(`use ${DB_FILENAME}`, legacyStateFiles);
+    }
+
+    // Enable WAL mode for better concurrency and performance
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.exec("PRAGMA foreign_keys = ON");
+
+    const hasExistingSchema = dbExists && hasUserTables(db);
+    if (hasExistingSchema) assertDatabaseMeetsMinimumBaseline(db);
+    initSchema(db, { freshDatabase: !hasExistingSchema });
+    return db;
+  } catch (error) {
     db.close();
-    throw formatLegacyJsonStateError(`use ${DB_FILENAME}`, legacyStateFiles);
+    throw error;
   }
-
-  // Enable WAL mode for better concurrency and performance
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA busy_timeout = 5000");
-  db.exec("PRAGMA foreign_keys = ON");
-
-  initSchema(db);
-  return db;
 }
 
 /**
@@ -427,9 +446,8 @@ export function openMemoryDatabase(): DatabaseSync {
 
 interface InitSchemaOptions {
   /**
-   * Set only for databases this call is creating from nothing. Persistent
-   * databases always run the full migration set, because "the file did not
-   * exist" is not a safe proxy for "no legacy state".
+   * Set only for databases this call is creating from nothing. Legacy JSON
+   * state is rejected before this path is selected.
    */
   freshDatabase?: boolean;
 }
@@ -803,15 +821,6 @@ function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
       FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tagId);
-
-    -- Tag ↔ MCP server configs
-    CREATE TABLE IF NOT EXISTS tag_mcp_servers (
-      tagId TEXT NOT NULL,
-      serverName TEXT NOT NULL,
-      config TEXT NOT NULL,
-      PRIMARY KEY (tagId, serverName),
-      FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
-    );
 
     -- Tag ↔ canonical MCP server references
     CREATE TABLE IF NOT EXISTS tag_mcp_server_refs (
