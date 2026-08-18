@@ -409,6 +409,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // Tighten the SDK's native task/write_agent contract without replacing its
   // broader per-tool guidance.
   sections.tool_instructions = { action: "append", content: AGENT_LIFECYCLE_GUIDANCE };
+  sections.git_commit_trailer = { action: "remove" };
 
   // Custom instructions — append user-defined instructions to context
   if (settings?.customInstructions?.trim()) {

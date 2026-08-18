@@ -207,6 +207,7 @@ describe("session-config-builder", () => {
       action: "append",
       content: expect.stringContaining('mode "sync" as one-shot agents'),
     });
+    expect(cfg.systemMessage.sections.git_commit_trailer).toEqual({ action: "remove" });
     expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
     expect(cfg.systemMessage.content).toContain("Prefer concise summaries.");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
