@@ -530,6 +530,8 @@ function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
       hiddenReason TEXT,
       hiddenAt TEXT,
       terminalOverlayJson TEXT,
+      pendingAutoName INTEGER NOT NULL DEFAULT 0,
+      pendingAutoNameReplaceTitle TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );

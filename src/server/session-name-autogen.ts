@@ -39,6 +39,13 @@ export interface SessionNameAutogeneratorDeps {
   logger?: Pick<typeof console, "warn">;
 }
 
+export interface SessionAutoNameOptions {
+  session?: any;
+  userMessages?: string[];
+  includeHistory?: boolean;
+  replaceExistingName?: string | true;
+}
+
 function collectRecentUserMessages(events: any[]): string[] {
   const messages: string[] = [];
   for (const event of events) {
@@ -69,8 +76,19 @@ function mergeRecentUserMessages(historyMessages: string[], providedMessages: st
   return messages.slice(-20);
 }
 
-function hasExplicitSessionName(metadata: WorkspaceSessionNameMetadata | undefined): boolean {
-  return !!metadata?.effectiveName && metadata.userNamed !== false;
+function normalizeComparableName(name: string | undefined): string | undefined {
+  const normalized = name?.trim().replace(/^["']+|["']+$/g, "").replace(/\s+/g, " ");
+  return normalized || undefined;
+}
+
+function hasExplicitSessionName(
+  metadata: WorkspaceSessionNameMetadata | undefined,
+  replaceExistingName?: string,
+): boolean {
+  const effectiveName = normalizeComparableName(metadata?.effectiveName);
+  return !!effectiveName
+    && metadata?.userNamed !== false
+    && effectiveName !== replaceExistingName;
 }
 
 export class SessionNameAutogenerator {
@@ -83,18 +101,8 @@ export class SessionNameAutogenerator {
     this.deps.recordSpan?.(name, Date.now() - start, sessionId, metadata);
   }
 
-  maybeAutoNameSession(
-    sessionId: string,
-    options: { session?: any; userMessages?: string[] } = {},
-  ): void {
-    if (isDisposableTitleSessionId(sessionId)) return;
-    const existing = this.generationPromises.get(sessionId);
-    if (existing) return;
-
-    const lastAttempt = this.generationLastAttempt.get(sessionId);
-    if (lastAttempt && Date.now() - lastAttempt < SESSION_NAME_GENERATION_RETRY_MS) return;
-
-    const promise = this.generateAndSetMissingSessionName(sessionId, options)
+  private trackGeneration(sessionId: string, work: () => Promise<void>): void {
+    const promise = work()
       .catch((error) => {
         this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Session auto-name skipped: ${error instanceof Error ? error.message : String(error)}`);
       })
@@ -106,15 +114,63 @@ export class SessionNameAutogenerator {
     this.generationPromises.set(sessionId, promise);
   }
 
+  maybeAutoNameSession(
+    sessionId: string,
+    options: SessionAutoNameOptions = {},
+  ): void {
+    if (isDisposableTitleSessionId(sessionId)) return;
+    const replacesExistingName = options.replaceExistingName !== undefined;
+    const existing = this.generationPromises.get(sessionId);
+    if (existing) {
+      if (!replacesExistingName) return;
+      this.trackGeneration(sessionId, async () => {
+        await existing;
+        await this.generateAndSetMissingSessionName(sessionId, options);
+      });
+      return;
+    }
+
+    const lastAttempt = this.generationLastAttempt.get(sessionId);
+    if (!replacesExistingName && lastAttempt && Date.now() - lastAttempt < SESSION_NAME_GENERATION_RETRY_MS) return;
+
+    this.trackGeneration(
+      sessionId,
+      () => this.generateAndSetMissingSessionName(sessionId, options),
+    );
+  }
+
   private async generateAndSetMissingSessionName(
     sessionId: string,
-    options: { session?: any; userMessages?: string[] },
+    options: SessionAutoNameOptions,
   ): Promise<void> {
     const start = Date.now();
     const existingMetadata = this.deps.getSessionNameMetadata(sessionId);
-    if (hasExplicitSessionName(existingMetadata)) {
+    let currentNameAtStart: string | undefined;
+    if (options.replaceExistingName === true) {
+      const currentName = options.session && typeof options.session.getName === "function"
+        ? (await options.session.getName())?.name
+        : await this.deps.getSessionName(sessionId);
+      currentNameAtStart = normalizeComparableName(currentName);
+    }
+    const replaceExistingName = typeof options.replaceExistingName === "string"
+      ? normalizeComparableName(options.replaceExistingName)
+      : options.replaceExistingName === true
+        ? currentNameAtStart ?? normalizeComparableName(existingMetadata?.effectiveName)
+        : undefined;
+    if (hasExplicitSessionName(existingMetadata, replaceExistingName)) {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });
       return;
+    }
+    if (replaceExistingName) {
+      const currentName = currentNameAtStart ?? (
+        options.session && typeof options.session.getName === "function"
+          ? (await options.session.getName())?.name
+          : await this.deps.getSessionName(sessionId)
+      );
+      if (normalizeComparableName(currentName) !== replaceExistingName) {
+        this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });
+        return;
+      }
     }
     const providedUserMessages = normalizeUserMessages(options.userMessages);
     if (!existingMetadata?.effectiveName && providedUserMessages.length === 0) {
@@ -130,7 +186,7 @@ export class SessionNameAutogenerator {
     let userMessages = providedUserMessages;
     let historyMessageCount: number | undefined;
     let historyReadFailed = false;
-    if (options.session) {
+    if (options.session && options.includeHistory !== false) {
       if (typeof options.session.getEvents === "function") {
         try {
           const events = await readSdkSessionEvents(options.session);
@@ -161,9 +217,18 @@ export class SessionNameAutogenerator {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_title" });
       return;
     }
-    if (hasExplicitSessionName(this.deps.getSessionNameMetadata(sessionId))) {
+    if (hasExplicitSessionName(this.deps.getSessionNameMetadata(sessionId), replaceExistingName)) {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation" });
       return;
+    }
+    if (replaceExistingName) {
+      const currentName = options.session && typeof options.session.getName === "function"
+        ? (await options.session.getName())?.name
+        : await this.deps.getSessionName(sessionId);
+      if (normalizeComparableName(currentName) !== replaceExistingName) {
+        this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation" });
+        return;
+      }
     }
     await this.deps.setSessionName(sessionId, generatedName, { session: options.session });
     this.recordSpan("session.name.autogen", start, sessionId, {

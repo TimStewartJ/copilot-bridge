@@ -80,4 +80,33 @@ describe("bridge session state store", () => {
 
     expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
   });
+
+  it("persists and clears pending fork auto-name state independently", () => {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setPendingAutoName("session-1", "Fork of Original session");
+    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
+
+    expect(store.getState("session-1")).toMatchObject({
+      pendingAutoName: true,
+      pendingAutoNameReplaceTitle: "Fork of Original session",
+    });
+
+    store.clearPendingAutoName("session-1");
+
+    expect(store.getState("session-1")).toMatchObject({
+      pendingAutoName: false,
+      pendingAutoNameReplaceTitle: undefined,
+      lastAttentionAt: "2026-05-07T10:00:00.000Z",
+    });
+  });
+
+  it("prunes a pending fork auto-name-only row when it is cleared", () => {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setPendingAutoName("session-1");
+    store.clearPendingAutoName("session-1");
+
+    expect(store.getState("session-1")).toBeUndefined();
+  });
 });

@@ -2606,11 +2606,13 @@ export function createApiRouter(
       );
     }
 
+    let replaceTitle: string | undefined;
     if (originalTitle) {
       const forkTitle = `${opts.bounded ? "Fork from" : "Fork of"} ${originalTitle}`.slice(0, 100).trim();
       if (warmed) {
         try {
           await ctx.sessionManager.setSessionName(forkedSessionId, forkTitle);
+          replaceTitle = forkTitle;
         } catch (error) {
           console.warn(
             `[sessions] Fork ${forkedSessionId.slice(0, 8)} created but could not be renamed:`,
@@ -2623,6 +2625,7 @@ export function createApiRouter(
         );
       }
     }
+    ctx.sessionMetaStore.setPendingAutoName(forkedSessionId, replaceTitle);
     ctx.globalBus.emit({ type: "sessions:changed", sessionId: forkedSessionId });
   }
 

@@ -180,6 +180,16 @@ function addScheduleLaunchOptionColumns(db: DatabaseSync): void {
   }
 }
 
+function addForkAutoNameColumns(db: DatabaseSync): void {
+  const columns = getTableInfo(db, "bridge_session_state");
+  if (!columns.some((column) => column.name === "pendingAutoName")) {
+    db.exec("ALTER TABLE bridge_session_state ADD COLUMN pendingAutoName INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.some((column) => column.name === "pendingAutoNameReplaceTitle")) {
+    db.exec("ALTER TABLE bridge_session_state ADD COLUMN pendingAutoNameReplaceTitle TEXT");
+  }
+}
+
 const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     id: "legacy-tag-mcp-servers-drop-v1",
@@ -190,6 +200,11 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "schedule-launch-option-columns-v1",
     description: "Add optional reasoning effort and context tier overrides to supported baseline databases.",
     apply: addScheduleLaunchOptionColumns,
+  },
+  {
+    id: "fork-auto-name-columns-v1",
+    description: "Track fork sessions that should be auto-named from their next user message.",
+    apply: addForkAutoNameColumns,
   },
 ];
 

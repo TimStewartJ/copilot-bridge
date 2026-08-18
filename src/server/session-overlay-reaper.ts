@@ -89,6 +89,8 @@ function summarizeFields(state: BridgeSessionState): string[] {
   if (state.lastAttentionAt) fields.push("lastAttentionAt");
   if (state.hiddenReason) fields.push("hiddenReason");
   if (state.hiddenAt) fields.push("hiddenAt");
+  if (state.pendingAutoName) fields.push("pendingAutoName");
+  if (state.pendingAutoNameReplaceTitle) fields.push("pendingAutoNameReplaceTitle");
   return fields;
 }
 

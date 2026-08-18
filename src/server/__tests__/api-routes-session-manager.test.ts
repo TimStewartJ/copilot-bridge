@@ -173,6 +173,10 @@ describe("Session manager routes", () => {
     expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
     expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
     expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+    expect(ctx.bridgeSessionStateStore.getState("fork-session")).toMatchObject({
+      pendingAutoName: true,
+      pendingAutoNameReplaceTitle: "Fork of Original session",
+    });
   });
 
   it("POST /api/sessions/:id/fork still succeeds when fork title seeding fails", async () => {
@@ -210,6 +214,10 @@ describe("Session manager routes", () => {
           "[sessions] Fork fork-ses created but could not be renamed:",
           "Session not found: fork-session",
         );
+        expect(ctx.bridgeSessionStateStore.getState("fork-session")).toMatchObject({
+          pendingAutoName: true,
+          pendingAutoNameReplaceTitle: undefined,
+        });
       } finally {
         unsubscribe();
       }
@@ -251,6 +259,10 @@ describe("Session manager routes", () => {
       expect(warn).toHaveBeenCalledWith(
         "[sessions] Fork fork-ses rename skipped because warm resume failed",
       );
+      expect(ctx.bridgeSessionStateStore.getState("fork-session")).toMatchObject({
+        pendingAutoName: true,
+        pendingAutoNameReplaceTitle: undefined,
+      });
     } finally {
       warn.mockRestore();
     }
