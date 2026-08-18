@@ -223,6 +223,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     defaultGlobalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
+    { telemetryStore },
   );
   ctx.deferLoopRunner = createDeferLoopRunner(
     deferLoopStore,
@@ -230,6 +231,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     defaultGlobalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
+    { telemetryStore },
   );
 
   return { ctx, db };

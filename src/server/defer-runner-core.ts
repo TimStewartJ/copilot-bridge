@@ -6,6 +6,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
 import type { DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summary.js";
+import type { TelemetryStore } from "./telemetry-store.js";
 
 // ── Shared timing/lease constants ─────────────────────────────────
 
@@ -15,6 +16,7 @@ export const MAX_BACKOFF_MS = 5 * 60_000;
 export const LEASE_MS = 2 * 60_000;
 export const LEASE_RENEW_INTERVAL_MS = Math.floor(LEASE_MS / 2);
 export const MAX_TIMER_DELAY_MS = 2_000_000_000;
+export const DEFER_WATCHDOG_INTERVAL_MS = 60_000;
 
 export type ProcessOneResult = "changed" | "blocked" | "unchanged" | "claimed";
 
@@ -22,6 +24,7 @@ export type ProcessOneResult = "changed" | "blocked" | "unchanged" | "claimed";
 export interface DeferRunnerDueItem {
   id: string;
   sessionId: string;
+  wakeAt: string;
 }
 
 /**
@@ -46,6 +49,8 @@ export interface DeferRunnerLabels {
   tag: string;
   /** Singular noun for reclaim/cancel logs, e.g. "deferral" or "loop". */
   noun: string;
+  /** Stable telemetry discriminator for the defer kind. */
+  kind: "once" | "interval";
 }
 
 /**
@@ -72,7 +77,11 @@ export interface DeferRunnerCoreContext {
   ): void;
 }
 
-export interface DeferRunnerCoreOptions {
+export interface DeferRunnerOptions {
+  telemetryStore?: Pick<TelemetryStore, "recordSpan">;
+}
+
+export interface DeferRunnerCoreOptions extends DeferRunnerOptions {
   store: DeferRunnerStoreAdapter;
   sessionManager: SessionManager;
   globalBus: GlobalBus;
@@ -94,6 +103,8 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   const { tag, noun } = labels;
 
   let nextTimer: ReturnType<typeof setTimeout> | undefined;
+  let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+  let watchdogSweepPromise: Promise<void> | undefined;
   let busUnsubscribe: (() => void) | undefined;
   let started = false;
   let generation = 0;
@@ -102,6 +113,39 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   const renewalTimers = new Set<ReturnType<typeof setInterval>>();
 
   // ── Internal helpers ──────────────────────────────────────────────
+
+  function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  function recordTelemetry(name: string, duration: number, metadata: Record<string, unknown>): void {
+    if (!options.telemetryStore) return;
+    try {
+      options.telemetryStore.recordSpan({
+        name,
+        duration,
+        metadata: { deferKind: labels.kind, ...metadata },
+        source: "server",
+      });
+    } catch (error) {
+      console.warn(`[${tag}] Failed to record ${name} telemetry:`, error);
+    }
+  }
+
+  function getOverdueTelemetry(due: ReadonlyArray<DeferRunnerDueItem>, now: number): {
+    overdueCount: number;
+    oldestOverdueAgeMs: number;
+  } {
+    let oldestWakeAt = now;
+    for (const item of due) {
+      const wakeAt = Date.parse(item.wakeAt);
+      if (Number.isFinite(wakeAt)) oldestWakeAt = Math.min(oldestWakeAt, wakeAt);
+    }
+    return {
+      overdueCount: due.length,
+      oldestOverdueAgeMs: Math.max(0, now - oldestWakeAt),
+    };
+  }
 
   function getNextWakeAt(): string | undefined {
     const pendingWake = store.getNextFutureWakeAt();
@@ -148,15 +192,23 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     const nextWakeAt = getNextWakeAt();
     if (!nextWakeAt) return;
 
-    const delay = Math.max(0, Date.parse(nextWakeAt) - Date.now());
+    const wakeAtMs = Date.parse(nextWakeAt);
+    const delay = Math.max(0, wakeAtMs - Date.now());
+    const timerDelay = Math.min(delay, MAX_TIMER_DELAY_MS);
     const scheduledGeneration = generation;
     nextTimer = setTimeout(() => {
       if (!started || scheduledGeneration !== generation) return;
       nextTimer = undefined;
+      if (timerDelay === delay) {
+        recordTelemetry("defer.runner.timer_wake", 0, {
+          scheduledFor: nextWakeAt,
+          wakeDriftMs: Math.max(0, Date.now() - wakeAtMs),
+        });
+      }
       processDue().catch((err) => {
         console.error(`[${tag}] Unexpected error in processDue:`, err);
       });
-    }, Math.min(delay, MAX_TIMER_DELAY_MS));
+    }, timerDelay);
   }
 
   /**
@@ -184,23 +236,72 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   async function processDueOnce(): Promise<void> {
     if (!started) return;
 
-    reclaimExpiredRunning();
-    const due = store.listDue();
-    if (due.length > 0) {
-      const sessionsSeen = new Set<string>();
-      const toProcess = due.filter((item) => {
-        if (sessionsSeen.has(item.sessionId)) return false;
-        sessionsSeen.add(item.sessionId);
-        return true;
-      });
+    try {
+      reclaimExpiredRunning();
+      const due = store.listDue();
+      if (due.length > 0) {
+        const sessionsSeen = new Set<string>();
+        const toProcess = due.filter((item) => {
+          if (sessionsSeen.has(item.sessionId)) return false;
+          sessionsSeen.add(item.sessionId);
+          return true;
+        });
 
-      const results = await Promise.all(toProcess.map((item) => processOne(item.id)));
-      if (results.includes("changed") && hasDueReadyForAnotherPass()) {
-        rerunRequested = true;
+        const settled = await Promise.allSettled(toProcess.map((item) => processOne(item.id)));
+        const results: ProcessOneResult[] = [];
+        for (let index = 0; index < settled.length; index++) {
+          const result = settled[index];
+          const item = toProcess[index];
+          if (result.status === "fulfilled") {
+            results.push(result.value);
+            continue;
+          }
+          console.error(`[${tag}] Failed to process ${noun} ${item.id}:`, result.reason);
+          recordTelemetry("defer.runner.item_failure", 0, {
+            itemId: item.id,
+            sessionId: item.sessionId,
+            error: errorMessage(result.reason),
+          });
+        }
+        if (results.includes("changed") && hasDueReadyForAnotherPass()) {
+          rerunRequested = true;
+        }
       }
+    } finally {
+      armNext();
     }
+  }
 
-    armNext();
+  async function runWatchdogSweep(): Promise<void> {
+    const sweepGeneration = generation;
+    const startedAt = Date.now();
+    try {
+      const due = store.listDue();
+      await processDue();
+      if (!started || sweepGeneration !== generation || due.length === 0) return;
+      recordTelemetry("defer.runner.watchdog_sweep", Date.now() - startedAt, {
+        ...getOverdueTelemetry(due, startedAt),
+      });
+    } catch (error) {
+      if (!started || sweepGeneration !== generation) return;
+      console.error(`[${tag}] Watchdog sweep failed:`, error);
+      recordTelemetry("defer.runner.watchdog_sweep_failure", Date.now() - startedAt, {
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  function startWatchdog(): void {
+    clearInterval(watchdogTimer);
+    watchdogTimer = setInterval(() => {
+      if (!started || watchdogSweepPromise) return;
+      const sweep = runWatchdogSweep();
+      watchdogSweepPromise = sweep;
+      void sweep.finally(() => {
+        if (watchdogSweepPromise === sweep) watchdogSweepPromise = undefined;
+      });
+    }, DEFER_WATCHDOG_INTERVAL_MS);
+    watchdogTimer.unref?.();
   }
 
   function startRenewal(renew: () => void): ReturnType<typeof setInterval> {
@@ -250,6 +351,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
 
     // Reclaim any running rows whose leases have expired
     reclaimExpiredRunning();
+    startWatchdog();
 
     // Subscribe to global bus events
     busUnsubscribe = globalBus.subscribe((event) => {
@@ -306,6 +408,9 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     generation++;
     clearTimeout(nextTimer);
     nextTimer = undefined;
+    clearInterval(watchdogTimer);
+    watchdogTimer = undefined;
+    watchdogSweepPromise = undefined;
     busUnsubscribe?.();
     busUnsubscribe = undefined;
     rerunRequested = false;

@@ -4,7 +4,11 @@ import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import { parseDeferId } from "../defer-ids.js";
 import { createDeferLoopRunner } from "../defer-loop-runner.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
-import { createDeferredPromptRunner, LEASE_MS } from "../deferred-prompt-runner.js";
+import {
+  createDeferredPromptRunner,
+  DEFER_WATCHDOG_INTERVAL_MS,
+  LEASE_MS,
+} from "../deferred-prompt-runner.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createGlobalBus } from "../global-bus.js";
 import { RESTART_PENDING_MESSAGE } from "../session-manager.js";
@@ -116,6 +120,63 @@ describe("defer-loop-runner", () => {
       runCount: 1,
       nextRunAt: new Date(Date.now() + 300_000).toISOString(),
     });
+    runner.shutdown();
+  });
+
+  it("catches up an overdue busy loop once when the idle event is missed", async () => {
+    const store = createDeferLoopStore(db);
+    const bus = createGlobalBus();
+    const busySessions = new Set(["session-1"]);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+    const runner = createDeferLoopRunner(store, sm as any, bus);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+    busySessions.clear();
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+    expect(sm._started).toHaveLength(1);
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      runCount: 1,
+      nextRunAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+    runner.shutdown();
+  });
+
+  it("rolls back a claimed loop when setup fails after the claim", async () => {
+    const store = createDeferLoopStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    vi.spyOn(bus, "emit").mockImplementationOnce(() => {
+      throw new Error("simulated summary failure");
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    const runner = createDeferLoopRunner(store, sm as any, bus);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sm._started).toHaveLength(0);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 0 });
+
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+    expect(sm._started).toHaveLength(1);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 1 });
+    errorSpy.mockRestore();
     runner.shutdown();
   });
 
