@@ -70,6 +70,7 @@ import {
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
+import type { SessionAutoNameOptions } from "./session-name-autogen.js";
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
@@ -334,7 +335,7 @@ export interface SessionRunnerDeps {
   invalidateSessionListCache(reason?: string): void;
   maybeAutoNameSession(
     sessionId: string,
-    options: { session?: any; userMessages?: string[] },
+    options: SessionAutoNameOptions,
   ): void;
 }
 

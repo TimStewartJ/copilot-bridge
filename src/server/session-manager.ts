@@ -175,6 +175,7 @@ import {
 } from "./session-name-rpc.js";
 import {
   createSessionNameAutogenerator,
+  type SessionAutoNameOptions,
   type SessionNameAutogenerator,
 } from "./session-name-autogen.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
@@ -3047,13 +3048,24 @@ export class SessionManager {
 
   async setSessionName(sessionId: string, name: string, opts: SetSessionNameOptions = {}): Promise<void> {
     await this.sessionNameRpc.setSessionName(sessionId, name, opts);
+    this.deps.sessionMetaStore?.clearPendingAutoName(sessionId);
   }
 
   maybeAutoNameSession(
     sessionId: string,
-    options: { session?: any; userMessages?: string[] } = {},
+    options: SessionAutoNameOptions = {},
   ): void {
-    this.sessionNameAutogenerator.maybeAutoNameSession(sessionId, options);
+    const pendingForkName = this.deps.sessionMetaStore?.consumePendingAutoName(sessionId);
+    this.sessionNameAutogenerator.maybeAutoNameSession(
+      sessionId,
+      pendingForkName
+        ? {
+            ...options,
+            includeHistory: false,
+            replaceExistingName: pendingForkName.replaceTitle ?? true,
+          }
+        : options,
+    );
   }
 
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */

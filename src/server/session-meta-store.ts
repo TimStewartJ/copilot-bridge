@@ -55,6 +55,10 @@ export interface ScheduleRunRecord {
   recordedAt: string;
 }
 
+export interface PendingSessionAutoName {
+  replaceTitle?: string;
+}
+
 type MetaMap = Record<string, SessionMeta>;
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -136,6 +140,23 @@ export function createSessionMetaStore(db: DatabaseSync) {
     bridgeSessionStateStore.clearTerminalOverlay(sessionId);
   }
 
+  function setPendingAutoName(sessionId: string, replaceTitle?: string): void {
+    bridgeSessionStateStore.setPendingAutoName(sessionId, replaceTitle);
+  }
+
+  function consumePendingAutoName(sessionId: string): PendingSessionAutoName | undefined {
+    const state = bridgeSessionStateStore.getState(sessionId);
+    if (!state?.pendingAutoName) return undefined;
+    bridgeSessionStateStore.clearPendingAutoName(sessionId);
+    return {
+      replaceTitle: state.pendingAutoNameReplaceTitle,
+    };
+  }
+
+  function clearPendingAutoName(sessionId: string): void {
+    bridgeSessionStateStore.clearPendingAutoName(sessionId);
+  }
+
   function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {
     db.prepare(`
       INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
@@ -211,6 +232,9 @@ export function createSessionMetaStore(db: DatabaseSync) {
     getTerminalOverlay,
     setTerminalOverlay,
     clearTerminalOverlay,
+    setPendingAutoName,
+    consumePendingAutoName,
+    clearPendingAutoName,
     recordScheduleRun,
     pruneScheduleRuns,
     listMeta,

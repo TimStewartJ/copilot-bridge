@@ -104,6 +104,147 @@ describe("session name autogenerator", () => {
     ]);
   });
 
+  it("replaces a provisional fork title using only the first new user message", async () => {
+    const { generator, generateSessionName, setSessionName } = createHarness({
+      name: "Fork of Original session",
+      effectiveName: "Fork of Original session",
+      userNamed: true,
+    });
+    const session = {
+      getName: vi.fn(async () => ({ name: "Fork of Original session" })),
+      getEvents: vi.fn(async () => [
+        { type: "user.message", data: { content: "Copied history should not title the fork" } },
+      ]),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["Investigate the new failure mode"],
+      includeHistory: false,
+      replaceExistingName: "Fork of Original session",
+    });
+
+    expect(session.getEvents).not.toHaveBeenCalled();
+    expect(generateSessionName).toHaveBeenCalledWith(["Investigate the new failure mode"]);
+    expect(setSessionName).toHaveBeenCalledWith("session-1", "Concise Session Title", { session });
+  });
+
+  it("does not overwrite a manual rename that wins while a fork title is generating", async () => {
+    const { generator, setSessionName } = createHarness({
+      name: "Fork of Original session",
+      effectiveName: "Fork of Original session",
+      userNamed: true,
+    });
+    const getName = vi.fn()
+      .mockResolvedValueOnce({ name: "Fork of Original session" })
+      .mockResolvedValueOnce({ name: "Manual fork title" });
+    const session = {
+      getName,
+      getEvents: vi.fn(),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["Investigate the new failure mode"],
+      includeHistory: false,
+      replaceExistingName: "Fork of Original session",
+    });
+
+    expect(getName).toHaveBeenCalledTimes(2);
+    expect(setSessionName).not.toHaveBeenCalled();
+  });
+
+  it("captures and replaces an inherited fork title when no seeded title is known", async () => {
+    const { generator, generateSessionName, setSessionName } = createHarness({
+      name: "Original session",
+      effectiveName: "Original session",
+      userNamed: true,
+    });
+    const session = {
+      getName: vi.fn(async () => ({ name: "Original session" })),
+      getEvents: vi.fn(),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["Investigate the new failure mode"],
+      includeHistory: false,
+      replaceExistingName: true,
+    });
+
+    expect(generateSessionName).toHaveBeenCalledWith(["Investigate the new failure mode"]);
+    expect(setSessionName).toHaveBeenCalledWith("session-1", "Concise Session Title", { session });
+  });
+
+  it("bypasses the retry throttle for a pending fork replacement", async () => {
+    const { generator, generateSessionName, setSessionName } = createHarness({
+      name: "Fork of Original session",
+      effectiveName: "Fork of Original session",
+      userNamed: true,
+    });
+    const session = {
+      getName: vi.fn(async () => ({ name: "Fork of Original session" })),
+    };
+    (generator as any).generationLastAttempt.set("session-1", Date.now());
+
+    generator.maybeAutoNameSession("session-1", {
+      session,
+      userMessages: ["Investigate the new failure mode"],
+      includeHistory: false,
+      replaceExistingName: "Fork of Original session",
+    });
+
+    await vi.waitFor(() => expect(setSessionName).toHaveBeenCalled());
+    expect(generateSessionName).toHaveBeenCalledWith(["Investigate the new failure mode"]);
+  });
+
+  it("queues a pending fork replacement behind an in-flight warm rename", async () => {
+    let metadata: WorkspaceSessionNameMetadata | undefined;
+    let resolveWarmGeneration!: (value: string) => void;
+    const warmGeneration = new Promise<string>((resolve) => {
+      resolveWarmGeneration = resolve;
+    });
+    const generateSessionName = vi.fn()
+      .mockImplementationOnce(() => warmGeneration)
+      .mockResolvedValueOnce("First New Fork Message");
+    const setSessionName = vi.fn(async () => {});
+    const generator = createSessionNameAutogenerator({
+      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
+      createSession: vi.fn(),
+      deleteSession: vi.fn(async () => {}),
+      getCopilotHome: () => "",
+      getSessionName: vi.fn(async () => metadata?.effectiveName),
+      getSessionNameMetadata: () => metadata,
+      setSessionName,
+    });
+    (generator as any).generateSessionName = generateSessionName;
+    const session = {
+      getName: vi.fn(async () => ({ name: metadata?.effectiveName ?? "" })),
+    };
+
+    generator.maybeAutoNameSession("session-1", {
+      userMessages: ["Copied fork history"],
+    });
+    await vi.waitFor(() => expect(generateSessionName).toHaveBeenCalledTimes(1));
+
+    metadata = {
+      name: "Fork of Original session",
+      effectiveName: "Fork of Original session",
+      userNamed: true,
+    };
+    generator.maybeAutoNameSession("session-1", {
+      session,
+      userMessages: ["Investigate the new failure mode"],
+      includeHistory: false,
+      replaceExistingName: "Fork of Original session",
+    });
+    resolveWarmGeneration("Copied History Title");
+
+    await vi.waitFor(() => expect(setSessionName).toHaveBeenCalledTimes(1));
+    expect(generateSessionName).toHaveBeenNthCalledWith(2, ["Investigate the new failure mode"]);
+    expect(setSessionName).toHaveBeenCalledWith("session-1", "First New Fork Message", { session });
+  });
+
   it("excludes sub-agent instructions from title generation history", async () => {
     const { generator, generateSessionName } = createHarness(undefined);
     const session = {

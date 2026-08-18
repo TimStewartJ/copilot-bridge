@@ -12,6 +12,7 @@ import { makeTestDir } from "./helpers.js";
 const ACTIVE_MIGRATION_IDS = [
   "legacy-tag-mcp-servers-drop-v1",
   "schedule-launch-option-columns-v1",
+  "fork-auto-name-columns-v1",
 ] as const;
 
 function databasePath(dataDir: string): string {
@@ -46,11 +47,13 @@ function createSupportedBaselineDatabase(
       id, taskId, name, prompt, type, enabled, createdAt, updatedAt, runCount
     ) VALUES ('schedule-1', 'task-1', 'Baseline schedule', 'Run', 'once', 1, ?, ?, 0)
   `).run("2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z");
-  db.prepare("DELETE FROM schema_migrations WHERE id IN (?, ?)")
-    .run(ACTIVE_MIGRATION_IDS[0], ACTIVE_MIGRATION_IDS[1]);
+  db.prepare("DELETE FROM schema_migrations WHERE id IN (?, ?, ?)")
+    .run(...ACTIVE_MIGRATION_IDS);
   db.exec(`
     ALTER TABLE schedules DROP COLUMN reasoningEffort;
     ALTER TABLE schedules DROP COLUMN contextTier;
+    ALTER TABLE bridge_session_state DROP COLUMN pendingAutoName;
+    ALTER TABLE bridge_session_state DROP COLUMN pendingAutoNameReplaceTitle;
     CREATE TABLE tag_mcp_servers (
       tagId TEXT NOT NULL,
       serverName TEXT NOT NULL,
@@ -87,6 +90,12 @@ describe("supported database baseline", () => {
         transaction: "auto",
         description: "Add optional reasoning effort and context tier overrides to supported baseline databases.",
       },
+      {
+        id: "fork-auto-name-columns-v1",
+        runMode: "once",
+        transaction: "auto",
+        description: "Track fork sessions that should be auto-named from their next user message.",
+      },
     ]);
   });
 
@@ -97,13 +106,14 @@ describe("supported database baseline", () => {
     expect(migrationIds(db)).toEqual([
       "legacy-tag-mcp-servers-drop-v1",
       "schedule-launch-option-columns-v1",
+      "fork-auto-name-columns-v1",
       MINIMUM_SUPPORTED_DATABASE_MIGRATION,
     ].sort());
     expect(tableExists(db, "tag_mcp_servers")).toBe(false);
     db.close();
 
     db = openDatabase(dataDir);
-    expect(migrationIds(db)).toHaveLength(3);
+    expect(migrationIds(db)).toHaveLength(4);
     db.close();
   });
 
@@ -116,6 +126,7 @@ describe("supported database baseline", () => {
     expect(migrationIds(db)).toEqual([
       "legacy-tag-mcp-servers-drop-v1",
       "schedule-launch-option-columns-v1",
+      "fork-auto-name-columns-v1",
       MINIMUM_SUPPORTED_DATABASE_MIGRATION,
     ].sort());
     db.close();
@@ -127,6 +138,10 @@ describe("supported database baseline", () => {
 
     const db = openDatabase(dataDir);
     expect(columnNames(db, "schedules")).toEqual(expect.arrayContaining(["reasoningEffort", "contextTier"]));
+    expect(columnNames(db, "bridge_session_state")).toEqual(expect.arrayContaining([
+      "pendingAutoName",
+      "pendingAutoNameReplaceTitle",
+    ]));
     expect(db.prepare("SELECT id, name FROM schedules").get()).toEqual({
       id: "schedule-1",
       name: "Baseline schedule",

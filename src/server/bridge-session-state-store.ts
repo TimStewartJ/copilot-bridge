@@ -23,6 +23,8 @@ export interface BridgeSessionState {
   hiddenReason?: string;
   hiddenAt?: string;
   terminalOverlay?: SyntheticTerminalOverlay;
+  pendingAutoName: boolean;
+  pendingAutoNameReplaceTitle?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +71,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       hiddenReason: row.hiddenReason ?? undefined,
       hiddenAt: row.hiddenAt ?? undefined,
       terminalOverlay: parseTerminalOverlay(row),
+      pendingAutoName: row.pendingAutoName === 1,
+      pendingAutoNameReplaceTitle: row.pendingAutoNameReplaceTitle ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -107,6 +111,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND hiddenReason IS NULL
         AND hiddenAt IS NULL
         AND terminalOverlayJson IS NULL
+        AND pendingAutoName = 0
+        AND pendingAutoNameReplaceTitle IS NULL
     `).run(sessionId);
   }
 
@@ -185,7 +191,43 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND hiddenReason IS NULL
         AND hiddenAt IS NULL
         AND terminalOverlayJson IS NULL
+        AND pendingAutoName = 0
+        AND pendingAutoNameReplaceTitle IS NULL
     `).run();
+  }
+
+  function setPendingAutoName(
+    sessionId: string,
+    replaceTitle?: string,
+  ): BridgeSessionState {
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO bridge_session_state (
+        sessionId,
+        pendingAutoName,
+        pendingAutoNameReplaceTitle,
+        createdAt,
+        updatedAt
+      )
+      VALUES (?, 1, ?, ?, ?)
+      ON CONFLICT(sessionId) DO UPDATE SET
+        pendingAutoName = 1,
+        pendingAutoNameReplaceTitle = excluded.pendingAutoNameReplaceTitle,
+        updatedAt = excluded.updatedAt
+    `).run(sessionId, replaceTitle ?? null, now, now);
+    return getState(sessionId)!;
+  }
+
+  function clearPendingAutoName(sessionId: string): void {
+    const now = nowIso();
+    db.prepare(`
+      UPDATE bridge_session_state
+      SET pendingAutoName = 0,
+          pendingAutoNameReplaceTitle = NULL,
+          updatedAt = ?
+      WHERE sessionId = ?
+    `).run(now, sessionId);
+    pruneIfDefault(sessionId);
   }
 
   function setPinnedCwd(sessionId: string, cwd: string): BridgeSessionState {
@@ -394,6 +436,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     clearHidden,
     setTerminalOverlay,
     clearTerminalOverlay,
+    setPendingAutoName,
+    clearPendingAutoName,
     deleteState,
     pruneIfDefault,
   };

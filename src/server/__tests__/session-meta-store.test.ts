@@ -102,6 +102,23 @@ describe("session-meta-store", () => {
     expect(store.listMeta()["session-1"]?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
   });
 
+  it("persists and consumes fork auto-name requests outside public session meta", () => {
+    const bridgeSessionState = createBridgeSessionStateStore(db);
+
+    store.setPendingAutoName("session-1", "Fork of Original session");
+
+    expect(store.getMeta("session-1")).toBeUndefined();
+    expect(bridgeSessionState.getState("session-1")).toMatchObject({
+      pendingAutoName: true,
+      pendingAutoNameReplaceTitle: "Fork of Original session",
+    });
+    expect(store.consumePendingAutoName("session-1")).toEqual({
+      replaceTitle: "Fork of Original session",
+    });
+    expect(store.consumePendingAutoName("session-1")).toBeUndefined();
+    expect(bridgeSessionState.getState("session-1")).toBeUndefined();
+  });
+
   it("persists and clears bridge-synthesized terminal overlays", () => {
     store.setTerminalOverlay("session-1", {
       type: "aborted",
