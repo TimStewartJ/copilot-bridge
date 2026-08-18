@@ -3,12 +3,14 @@ import { setupTestDb } from "./helpers.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import {
   createDeferredPromptRunner,
+  DEFER_WATCHDOG_INTERVAL_MS,
   LEASE_MS,
   LEASE_RENEW_INTERVAL_MS,
   MAX_ATTEMPTS,
   MAX_TIMER_DELAY_MS,
 } from "../deferred-prompt-runner.js";
 import { createGlobalBus } from "../global-bus.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
@@ -60,6 +62,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -80,7 +83,7 @@ describe("deferred-prompt-runner", () => {
 
       runner.start();
       // Let async work settle
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(sm._started).toHaveLength(1);
       expect(sm._started[0]).toEqual({ sessionId: "session-1", prompt: "Do something" });
@@ -111,7 +114,7 @@ describe("deferred-prompt-runner", () => {
       const sm = makeMockSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       // Should reclaim to pending and then process
       expect(sm._started).toHaveLength(1);
@@ -153,7 +156,7 @@ describe("deferred-prompt-runner", () => {
       const sm = makeMockSessionManager({ sessions: [] }); // ghost not in list
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(sm._started).toHaveLength(0);
       const dp = store.listForSession("ghost-session")[0];
@@ -171,7 +174,7 @@ describe("deferred-prompt-runner", () => {
       const sm = makeMockSessionManager({ sessions: [] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(sm._started).toHaveLength(0);
       expect(store.get(first.id)!.status).toBe("cancelled");
@@ -191,7 +194,7 @@ describe("deferred-prompt-runner", () => {
       });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(sm._started).toHaveLength(0);
       const dp = store.listForSession("archived-session")[0];
@@ -343,11 +346,11 @@ describe("deferred-prompt-runner", () => {
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       // Drain initial pass (session was busy on first pass)
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       // Simulate session going idle
       bus.emit({ type: "session:idle", sessionId: "session-1" });
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       // Should have been processed in one of the two passes
       const dp = store.listForSession("session-1")[0];
@@ -415,7 +418,7 @@ describe("deferred-prompt-runner", () => {
       runner.start();
 
       bus.emit({ type: "session:archived", sessionId: "session-1", archived: true });
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       const dp = store.listForSession("session-1")[0];
       expect(dp.status).toBe("cancelled");
@@ -553,7 +556,7 @@ describe("deferred-prompt-runner", () => {
       });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       const updated = store.get(dp.id)!;
       expect(updated.status).toBe("failed");
@@ -575,13 +578,11 @@ describe("deferred-prompt-runner", () => {
       runner.start();
 
       // Nothing due yet
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
       let dp = store.listForSession("session-1")[0];
 
       if (dp.status === "pending") {
-        // Advance time past the future runAt
-        vi.setSystemTime(new Date(Date.now() + 10_000));
-        await vi.runAllTimersAsync();
+        await vi.advanceTimersByTimeAsync(5_000);
         dp = store.listForSession("session-1")[0];
       }
 
@@ -647,11 +648,261 @@ describe("deferred-prompt-runner", () => {
       busySessions.delete("session-1");
       bus.emit({ type: "session:idle", sessionId: "session-1" });
       runner.shutdown();
-      await vi.runAllTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(sm._started).toHaveLength(0);
       expect(store.listForSession("session-1")[0].status).toBe("pending");
     });
+  });
+
+  describe("watchdog catch-up", () => {
+      it("retries an overdue busy session even when the idle event is missed", async () => {
+        const store = createDeferredPromptStore(db);
+        const bus = createGlobalBus();
+        const busySessions = new Set(["session-1"]);
+        const deferred = store.create("session-1", "Follow-up", new Date(Date.now() - 1_000).toISOString());
+        const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+        const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(0);
+        busySessions.clear();
+
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS - 1);
+        expect(sm._started).toHaveLength(0);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Follow-up" }]);
+        expect(store.get(deferred.id)?.status).toBe("completed");
+        runner.shutdown();
+      });
+
+      it("catches a lost exact timer and records overdue sweep telemetry", async () => {
+        const store = createDeferredPromptStore(db);
+        const telemetryStore = createTelemetryStore(db);
+        const bus = createGlobalBus();
+        const future = new Date(Date.now() + 5_000).toISOString();
+        const deferred = store.create("session-1", "Wake after sleep", future);
+        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+        const runner = createDeferredPromptRunner(
+          store,
+          sm as any,
+          bus,
+          undefined,
+          undefined,
+          { telemetryStore },
+        );
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(0);
+        let timerIndex = -1;
+        for (let index = 0; index < timeoutSpy.mock.calls.length; index++) {
+          if (timeoutSpy.mock.calls[index]?.[1] === 5_000) timerIndex = index;
+        }
+        const exactTimer = timeoutSpy.mock.results[timerIndex]?.value as ReturnType<typeof setTimeout> | undefined;
+        expect(exactTimer).toBeDefined();
+        clearTimeout(exactTimer);
+        timeoutSpy.mockRestore();
+
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+        expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Wake after sleep" }]);
+        expect(store.get(deferred.id)?.status).toBe("completed");
+        expect(telemetryStore.querySpans({ name: "defer.runner.watchdog_sweep" })[0]).toMatchObject({
+          metadata: {
+            deferKind: "once",
+            overdueCount: 1,
+            oldestOverdueAgeMs: expect.any(Number),
+          },
+        });
+        runner.shutdown();
+      });
+
+      it("isolates item failures and releases the same-session guard for the next sweep", async () => {
+        const store = createDeferredPromptStore(db);
+        const bus = createGlobalBus();
+        const dueAt = new Date(Date.now() - 1_000).toISOString();
+        const first = store.create("session-1", "First", dueAt);
+        const second = store.create("session-2", "Second", dueAt);
+        const originalClaimDue = store.claimDue.bind(store);
+        let failFirstClaim = true;
+        vi.spyOn(store, "claimDue").mockImplementation((id, leaseMs) => {
+          if (id === first.id && failFirstClaim) {
+            failFirstClaim = false;
+            throw new Error("simulated claim failure");
+          }
+          return originalClaimDue(id, leaseMs);
+        });
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        let resolveSecond: (() => void) | undefined;
+        const started: Array<{ sessionId: string; prompt: string }> = [];
+        const sm = {
+          listSessionsFromDisk: async () => [{ sessionId: "session-1" }, { sessionId: "session-2" }],
+          isSessionBusy: () => false,
+          startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
+            started.push({ sessionId, prompt });
+            if (sessionId === "session-2") {
+              return new Promise<void>((resolve) => {
+                resolveSecond = resolve;
+              });
+            }
+            return Promise.resolve();
+          },
+        };
+        const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(started).toEqual([{ sessionId: "session-2", prompt: "Second" }]);
+        expect(store.get(first.id)?.status).toBe("pending");
+        expect(store.get(second.id)?.status).toBe("running");
+
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+        expect(started).toEqual([
+          { sessionId: "session-2", prompt: "Second" },
+          { sessionId: "session-1", prompt: "First" },
+        ]);
+        expect(store.get(first.id)?.status).toBe("completed");
+        resolveSecond?.();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(store.get(second.id)?.status).toBe("completed");
+        errorSpy.mockRestore();
+        runner.shutdown();
+      });
+
+      it("rolls back a claimed row when setup fails after the claim", async () => {
+        const store = createDeferredPromptStore(db);
+        const bus = createGlobalBus();
+        const deferred = store.create("session-1", "Retry setup", new Date(Date.now() - 1_000).toISOString());
+        vi.spyOn(bus, "emit").mockImplementationOnce(() => {
+          throw new Error("simulated summary failure");
+        });
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sm._started).toHaveLength(0);
+        expect(store.get(deferred.id)).toMatchObject({ status: "pending", attempts: 0 });
+
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+        expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Retry setup" }]);
+        expect(store.get(deferred.id)).toMatchObject({ status: "completed", attempts: 1 });
+        errorSpy.mockRestore();
+        runner.shutdown();
+      });
+
+      it("does not duplicate delivery when the exact timer and watchdog wake together", async () => {
+        const store = createDeferredPromptStore(db);
+        const bus = createGlobalBus();
+        const deferred = store.create(
+          "session-1",
+          "Exactly once",
+          new Date(Date.now() + DEFER_WATCHDOG_INTERVAL_MS).toISOString(),
+        );
+        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+        expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Exactly once" }]);
+        expect(store.get(deferred.id)?.status).toBe("completed");
+        runner.shutdown();
+      });
+
+      it("records exact timer wake drift telemetry", async () => {
+        const store = createDeferredPromptStore(db);
+        const telemetryStore = createTelemetryStore(db);
+        const bus = createGlobalBus();
+        const deferred = store.create(
+          "session-1",
+          "Exact wake",
+          new Date(Date.now() + 5_000).toISOString(),
+        );
+        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const runner = createDeferredPromptRunner(
+          store,
+          sm as any,
+          bus,
+          undefined,
+          undefined,
+          { telemetryStore },
+        );
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Exact wake" }]);
+        expect(telemetryStore.querySpans({ name: "defer.runner.timer_wake" })[0]).toMatchObject({
+          metadata: {
+            deferKind: "once",
+            scheduledFor: deferred.runAt,
+            wakeDriftMs: expect.any(Number),
+          },
+        });
+        runner.shutdown();
+      });
+
+      it("records watchdog sweep failures and continues future sweeps", async () => {
+        const store = createDeferredPromptStore(db);
+        const telemetryStore = createTelemetryStore(db);
+        const bus = createGlobalBus();
+        const sm = makeMockSessionManager({ sessions: [] });
+        const runner = createDeferredPromptRunner(
+          store,
+          sm as any,
+          bus,
+          undefined,
+          undefined,
+          { telemetryStore },
+        );
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(0);
+        const listDueSpy = vi.spyOn(store, "listDue").mockImplementationOnce(() => {
+          throw new Error("simulated sweep failure");
+        });
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+        expect(telemetryStore.querySpans({ name: "defer.runner.watchdog_sweep_failure" })[0]).toMatchObject({
+          metadata: {
+            deferKind: "once",
+            error: "simulated sweep failure",
+          },
+        });
+
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+        expect(listDueSpy).toHaveBeenCalledTimes(3);
+        errorSpy.mockRestore();
+        runner.shutdown();
+      });
+
+      it("stops watchdog retries on shutdown", async () => {
+        const store = createDeferredPromptStore(db);
+        const bus = createGlobalBus();
+        const busySessions = new Set(["session-1"]);
+        const deferred = store.create("session-1", "Do not run", new Date(Date.now() - 1_000).toISOString());
+        const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+        const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+        runner.start();
+        await vi.advanceTimersByTimeAsync(0);
+        runner.shutdown();
+        busySessions.clear();
+        await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+        expect(sm._started).toHaveLength(0);
+        expect(store.get(deferred.id)?.status).toBe("pending");
+      });
   });
 
   describe("one per session per pass", () => {

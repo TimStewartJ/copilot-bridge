@@ -13,12 +13,14 @@ import {
   LEASE_MS,
   MAX_ATTEMPTS,
   MAX_BACKOFF_MS,
+  type DeferRunnerOptions,
   type DeferRunnerCoreContext,
   type ProcessOneResult,
 } from "./defer-runner-core.js";
 
 // Re-export the shared timing/lease constants so existing importers keep working.
 export {
+  DEFER_WATCHDOG_INTERVAL_MS,
   INITIAL_BACKOFF_MS,
   LEASE_MS,
   LEASE_RENEW_INTERVAL_MS,
@@ -35,6 +37,7 @@ export function createDeferredPromptRunner(
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
   summarySources: DeferSummarySources = { deferredPromptStore: store },
+  options: DeferRunnerOptions = {},
 ) {
   function createProcessOne(ctx: DeferRunnerCoreContext) {
     async function processOne(id: string): Promise<ProcessOneResult> {
@@ -69,33 +72,48 @@ export function createDeferredPromptRunner(
 
       // Check session is not busy
       if (sessionManager.isSessionBusy(item.sessionId)) {
-        // Will retry when session:idle fires
+        // session:idle is the fast path; the watchdog also retries overdue rows.
         return "blocked";
       }
       if (!ctx.deliveryGuard.tryClaim(item.sessionId)) return "blocked";
 
-      // Claim the prompt (CAS)
-      const claimed = store.claimDue(id, LEASE_MS);
-      if (!claimed) {
-        ctx.deliveryGuard.release(item.sessionId);
-        return "unchanged"; // someone else claimed it
-      }
-      ctx.emitDeferSummary(item.sessionId);
-
-      const { claimToken } = claimed;
-      const claimedPrompt = claimed.prompt;
-      const renewalTimer = ctx.startRenewal(() => {
-        const renewed = store.renewClaim(id, claimToken, LEASE_MS);
-        if (!renewed) {
-          console.warn(`[deferred-runner] Failed to renew lease for deferral ${id}`);
+      let claimToken: string | undefined;
+      try {
+        // Claim the prompt (CAS)
+        const claimed = store.claimDue(id, LEASE_MS);
+        if (!claimed) {
+          ctx.deliveryGuard.release(item.sessionId);
+          return "unchanged"; // someone else claimed it
         }
-      });
+        claimToken = claimed.claimToken;
+        ctx.emitDeferSummary(item.sessionId);
 
-      void finishDelivery(claimedPrompt, claimToken, renewalTimer)
-        .catch((err) => {
-          console.error(`[deferred-runner] Unexpected delivery error for deferral ${id}:`, err);
+        const claimedPrompt = claimed.prompt;
+        const renewalTimer = ctx.startRenewal(() => {
+          const renewed = store.renewClaim(id, claimed.claimToken, LEASE_MS);
+          if (!renewed) {
+            console.warn(`[deferred-runner] Failed to renew lease for deferral ${id}`);
+          }
         });
-      return "claimed";
+
+        void finishDelivery(claimedPrompt, claimed.claimToken, renewalTimer)
+          .catch((err) => {
+            console.error(`[deferred-runner] Unexpected delivery error for deferral ${id}:`, err);
+          });
+        return "claimed";
+      } catch (error) {
+        if (claimToken) {
+          try {
+            if (!store.releaseClaimWithoutAttempt(id, claimToken)) {
+              console.error(`[deferred-runner] Failed to roll back interrupted claim setup for deferral ${id}`);
+            }
+          } catch (releaseError) {
+            console.error(`[deferred-runner] Failed to roll back interrupted claim setup for deferral ${id}:`, releaseError);
+          }
+        }
+        ctx.deliveryGuard.release(item.sessionId);
+        throw error;
+      }
     }
 
     async function finishDelivery(
@@ -174,7 +192,11 @@ export function createDeferredPromptRunner(
     store: {
       getNextFutureWakeAt: () => store.getNextFuturePending()?.runAt,
       getNextRunningLeaseWakeAt: () => store.getNextRunningLeaseExpiry()?.leaseExpiresAt,
-      listDue: () => store.listDue(),
+      listDue: () => store.listDue().map((item) => ({
+        id: item.id,
+        sessionId: item.sessionId,
+        wakeAt: item.runAt,
+      })),
       reclaimExpiredRunning: (now) => store.reclaimExpiredRunning(now),
       listExpiredRunningSessionIds: (now) => store.listExpiredRunningSessionIds(now),
       cancelForSession: (sessionId) => store.cancelForSession(sessionId),
@@ -183,8 +205,9 @@ export function createDeferredPromptRunner(
     globalBus,
     deliveryGuard,
     summarySources,
-    labels: { tag: "deferred-runner", noun: "deferral" },
+    labels: { tag: "deferred-runner", noun: "deferral", kind: "once" },
     createProcessOne,
+    ...options,
   });
 }
 

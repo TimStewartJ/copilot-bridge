@@ -13,6 +13,7 @@ import {
   LEASE_MS,
   MAX_ATTEMPTS,
   MAX_BACKOFF_MS,
+  type DeferRunnerOptions,
   type DeferRunnerCoreContext,
   type ProcessOneResult,
 } from "./defer-runner-core.js";
@@ -49,6 +50,7 @@ export function createDeferLoopRunner(
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
   summarySources: DeferSummarySources = { deferLoopStore: store },
+  options: DeferRunnerOptions = {},
 ) {
   function createProcessOne(ctx: DeferRunnerCoreContext) {
     async function processOne(id: string): Promise<ProcessOneResult> {
@@ -99,26 +101,41 @@ export function createDeferLoopRunner(
       if (sessionManager.isSessionBusy(loop.sessionId)) return "blocked";
       if (!ctx.deliveryGuard.tryClaim(loop.sessionId)) return "blocked";
 
-      const claimed = store.claimDue(id, LEASE_MS);
-      if (!claimed) {
-        ctx.deliveryGuard.release(loop.sessionId);
-        return "unchanged";
-      }
-      ctx.emitDeferSummary(loop.sessionId);
-
-      const { claimToken } = claimed;
-      const claimedLoop = claimed.loop;
-      const renewalTimer = ctx.startRenewal(() => {
-        const renewed = store.renewClaim(id, claimToken, LEASE_MS);
-        if (!renewed) {
-          console.warn(`[defer-loop-runner] Failed to renew lease for loop ${id}`);
+      let claimToken: string | undefined;
+      try {
+        const claimed = store.claimDue(id, LEASE_MS);
+        if (!claimed) {
+          ctx.deliveryGuard.release(loop.sessionId);
+          return "unchanged";
         }
-      });
+        claimToken = claimed.claimToken;
+        ctx.emitDeferSummary(loop.sessionId);
 
-      void finishDelivery(claimedLoop, claimToken, renewalTimer).catch((err) => {
-        console.error(`[defer-loop-runner] Unexpected delivery error for loop ${id}:`, err);
-      });
-      return "claimed";
+        const claimedLoop = claimed.loop;
+        const renewalTimer = ctx.startRenewal(() => {
+          const renewed = store.renewClaim(id, claimed.claimToken, LEASE_MS);
+          if (!renewed) {
+            console.warn(`[defer-loop-runner] Failed to renew lease for loop ${id}`);
+          }
+        });
+
+        void finishDelivery(claimedLoop, claimed.claimToken, renewalTimer).catch((err) => {
+          console.error(`[defer-loop-runner] Unexpected delivery error for loop ${id}:`, err);
+        });
+        return "claimed";
+      } catch (error) {
+        if (claimToken) {
+          try {
+            if (!store.releaseClaimWithoutAttempt(id, claimToken)) {
+              console.error(`[defer-loop-runner] Failed to roll back interrupted claim setup for loop ${id}`);
+            }
+          } catch (releaseError) {
+            console.error(`[defer-loop-runner] Failed to roll back interrupted claim setup for loop ${id}:`, releaseError);
+          }
+        }
+        ctx.deliveryGuard.release(loop.sessionId);
+        throw error;
+      }
     }
 
     async function finishDelivery(
@@ -210,7 +227,11 @@ export function createDeferLoopRunner(
     store: {
       getNextFutureWakeAt: () => store.getNextFutureActive()?.nextRunAt,
       getNextRunningLeaseWakeAt: () => store.getNextRunningLeaseExpiry()?.leaseExpiresAt,
-      listDue: () => store.listDue(),
+      listDue: () => store.listDue().map((loop) => ({
+        id: loop.id,
+        sessionId: loop.sessionId,
+        wakeAt: loop.nextRunAt,
+      })),
       reclaimExpiredRunning: (now) => store.reclaimExpiredRunning(now),
       listExpiredRunningSessionIds: (now) => store.listExpiredRunningSessionIds(now),
       cancelForSession: (sessionId) => store.cancelForSession(sessionId),
@@ -219,8 +240,9 @@ export function createDeferLoopRunner(
     globalBus,
     deliveryGuard,
     summarySources,
-    labels: { tag: "defer-loop-runner", noun: "loop" },
+    labels: { tag: "defer-loop-runner", noun: "loop", kind: "interval" },
     createProcessOne,
+    ...options,
   });
 }
 
