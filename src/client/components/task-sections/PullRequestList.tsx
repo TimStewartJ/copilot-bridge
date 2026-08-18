@@ -2,10 +2,12 @@ import { useState } from "react";
 import type { EnrichedPR, PRRef, ProviderName } from "../../api";
 import { linkResource, unlinkResource } from "../../api";
 import { PR_STATUS_STYLES } from "../../work-item-styles";
-import { GitPullRequest, Loader2, Unlink } from "lucide-react";
+import { GitPullRequest } from "lucide-react";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 import { useToast } from "../../useToast";
+import LinkedResourceCopyButton from "./LinkedResourceCopyButton";
+import LinkedResourceUnlinkButton from "./LinkedResourceUnlinkButton";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -95,22 +97,13 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
   ) {
     const isUnlinking = unlinkingKeys.includes(rowKey);
     return (
-      <button
-        type="button"
-        onClick={() => { void handleUnlink(pr); }}
-        disabled={isUnlinking}
-        title="Unlink from task"
-        aria-label={`Unlink pull request #${pr.prId} from task`}
-        className={`${opts.className} shrink-0 self-start text-text-muted hover:text-warning transition-colors ${
-          isUnlinking
-            ? "opacity-100"
-            : "opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-        }`}
-      >
-        {isUnlinking
-          ? <Loader2 size={opts.iconSize} className="animate-spin" />
-          : <Unlink size={opts.iconSize} />}
-      </button>
+      <LinkedResourceUnlinkButton
+        resourceLabel={`pull request #${pr.prId}`}
+        iconSize={opts.iconSize}
+        isUnlinking={isUnlinking}
+        onConfirm={() => { void handleUnlink(pr); }}
+        className={opts.className}
+      />
     );
   }
 
@@ -165,6 +158,19 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
     // rows (and their unlink buttons) are unreachable — surface one in the row itself.
     const singleRowKey = `${primaryPr.repoId}-${primaryPr.prId}`;
     const showTrailingUnlink = canUnlink && items.length === 1 && !!singleUrl;
+    const trailing = singleUrl ? (
+      <>
+        <LinkedResourceCopyButton
+          url={singleUrl}
+          resourceLabel={`pull request #${primaryPr.prId}`}
+          iconSize={14}
+          className="p-0.5"
+        />
+        {showTrailingUnlink
+          ? renderUnlinkButton(primaryPr, singleRowKey, { iconSize: 14, className: "p-0.5" })
+          : null}
+      </>
+    ) : undefined;
 
     return (
       <TaskPanelSummaryDisclosure
@@ -178,9 +184,7 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
         disclosureId="pull-requests"
         onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
         expandWhenSingle={!singleUrl}
-        trailing={showTrailingUnlink
-          ? renderUnlinkButton(primaryPr, singleRowKey, { iconSize: 14, className: "p-0.5" })
-          : undefined}
+        trailing={trailing}
       >
         <PullRequestList
           enrichedPRs={enrichedPRs}
@@ -254,32 +258,44 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
           </>
         );
         const rowKey = `${pr.repoId}-${pr.prId}`;
+        const hasActions = !!realUrl || canUnlink;
         const row = realUrl ? (
           <a
             key={rowKey}
             href={realUrl}
             target="_blank"
             rel="noopener"
-            className={canUnlink ? `${rowClass} flex-1 min-w-0` : rowClass}
+            className={hasActions ? `${rowClass} flex-1 min-w-0` : rowClass}
           >
             {inner}
           </a>
         ) : (
           <div
             key={rowKey}
-            className={canUnlink ? `${rowClass} flex-1 min-w-0` : rowClass}
+            className={hasActions ? `${rowClass} flex-1 min-w-0` : rowClass}
           >
             {inner}
           </div>
         );
-        if (!canUnlink) return row;
+        if (!hasActions) return row;
+        const actionClass = isCompact ? "mt-1 p-0.5" : "mt-2 p-1";
         return (
-          <div key={rowKey} className="group flex items-start gap-1">
+          <div key={rowKey} className="hover-action-scope group flex items-start gap-1">
             {row}
-            {renderUnlinkButton(pr, rowKey, {
-              iconSize: isCompact ? 12 : 14,
-              className: isCompact ? "mt-1 p-0.5" : "mt-2 p-1",
-            })}
+            <div className="flex shrink-0 items-start gap-0.5">
+              {realUrl && (
+                <LinkedResourceCopyButton
+                  url={realUrl}
+                  resourceLabel={`pull request #${pr.prId}`}
+                  iconSize={isCompact ? 12 : 14}
+                  className={actionClass}
+                />
+              )}
+              {canUnlink && renderUnlinkButton(pr, rowKey, {
+                iconSize: isCompact ? 12 : 14,
+                className: actionClass,
+              })}
+            </div>
           </div>
         );
       })}

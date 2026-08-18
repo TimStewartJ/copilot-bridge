@@ -75,7 +75,7 @@ export default function TaskPanelSummaryRow({
   );
 
   return (
-    <div className={`group flex items-stretch rounded-lg bg-bg-surface transition-colors ${onClick || trailing ? "hover:bg-bg-hover" : ""}`}>
+    <div className={`hover-action-scope group flex items-stretch rounded-lg bg-bg-surface transition-colors ${onClick || trailing ? "hover:bg-bg-hover" : ""}`}>
       {onClick ? (
         <button
           onClick={onClick}

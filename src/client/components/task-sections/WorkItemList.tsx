@@ -2,10 +2,12 @@ import { useState } from "react";
 import type { EnrichedWorkItem, ProviderName, WorkItemRef } from "../../api";
 import { linkResource, unlinkResource } from "../../api";
 import { WI_TYPE_ICONS, WI_STATE_STYLES } from "../../work-item-styles";
-import { ClipboardList, Loader2, Unlink } from "lucide-react";
+import { ClipboardList } from "lucide-react";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 import { useToast } from "../../useToast";
+import LinkedResourceCopyButton from "./LinkedResourceCopyButton";
+import LinkedResourceUnlinkButton from "./LinkedResourceUnlinkButton";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -83,22 +85,13 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
   ) {
     const isUnlinking = unlinkingKeys.includes(rowKey);
     return (
-      <button
-        type="button"
-        onClick={() => { void handleUnlink(wi); }}
-        disabled={isUnlinking}
-        title="Unlink from task"
-        aria-label={`Unlink work item ${wi.id} from task`}
-        className={`${opts.className} shrink-0 self-start text-text-muted hover:text-warning transition-colors ${
-          isUnlinking
-            ? "opacity-100"
-            : "opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-        }`}
-      >
-        {isUnlinking
-          ? <Loader2 size={opts.iconSize} className="animate-spin" />
-          : <Unlink size={opts.iconSize} />}
-      </button>
+      <LinkedResourceUnlinkButton
+        resourceLabel={`work item ${wi.id}`}
+        iconSize={opts.iconSize}
+        isUnlinking={isUnlinking}
+        onConfirm={() => { void handleUnlink(wi); }}
+        className={opts.className}
+      />
     );
   }
 
@@ -148,11 +141,24 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
           .filter(Boolean)
           .join(" · ");
 
-    const singleUrl = primaryItem.url && primaryItem.url !== "#" ? primaryItem.url : null;
+    const singleUrl = items.length === 1 && primaryItem.url && primaryItem.url !== "#" ? primaryItem.url : null;
     // A single item with a URL opens that URL instead of expanding, so the inline
     // rows (and their unlink buttons) are unreachable — surface one in the row itself.
     const singleRowKey = `${primaryItem.provider}-${primaryItem.id}`;
     const showTrailingUnlink = canUnlink && items.length === 1 && !!singleUrl;
+    const trailing = singleUrl ? (
+      <>
+        <LinkedResourceCopyButton
+          url={singleUrl}
+          resourceLabel={`work item ${primaryItem.id}`}
+          iconSize={14}
+          className="p-0.5"
+        />
+        {showTrailingUnlink
+          ? renderUnlinkButton(primaryItem, singleRowKey, { iconSize: 14, className: "p-0.5" })
+          : null}
+      </>
+    ) : undefined;
 
     return (
       <TaskPanelSummaryDisclosure
@@ -166,9 +172,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
         disclosureId="work-items"
         onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
         expandWhenSingle={!singleUrl}
-        trailing={showTrailingUnlink
-          ? renderUnlinkButton(primaryItem, singleRowKey, { iconSize: 14, className: "p-0.5" })
-          : undefined}
+        trailing={trailing}
       >
         <WorkItemList
           enrichedWIs={enrichedWIs}
@@ -210,6 +214,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
           </div>
         );
         const rowKey = `${wi.provider}-${wi.id}`;
+        const hasActions = !!realUrl || canUnlink;
         const details = (
           <>
             {isCompact && wi.state && (
@@ -236,7 +241,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
             href={realUrl}
             target="_blank"
             rel="noopener"
-            className={canUnlink ? `${rowClass} flex-1 min-w-0` : rowClass}
+            className={hasActions ? `${rowClass} flex-1 min-w-0` : rowClass}
           >
             {inner}
             {details}
@@ -244,20 +249,31 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
         ) : (
           <div
             key={rowKey}
-            className={canUnlink ? `${rowClass} flex-1 min-w-0` : rowClass}
+            className={hasActions ? `${rowClass} flex-1 min-w-0` : rowClass}
           >
             {inner}
             {details}
           </div>
         );
-        if (!canUnlink) return row;
+        if (!hasActions) return row;
+        const actionClass = isCompact ? "mt-1 p-0.5" : "mt-2 p-1";
         return (
-          <div key={rowKey} className="group flex items-start gap-1">
+          <div key={rowKey} className="hover-action-scope group flex items-start gap-1">
             {row}
-            {renderUnlinkButton(wi, rowKey, {
-              iconSize: isCompact ? 12 : 14,
-              className: isCompact ? "mt-1 p-0.5" : "mt-2 p-1",
-            })}
+            <div className="flex shrink-0 items-start gap-0.5">
+              {realUrl && (
+                <LinkedResourceCopyButton
+                  url={realUrl}
+                  resourceLabel={`work item ${wi.id}`}
+                  iconSize={isCompact ? 12 : 14}
+                  className={actionClass}
+                />
+              )}
+              {canUnlink && renderUnlinkButton(wi, rowKey, {
+                iconSize: isCompact ? 12 : 14,
+                className: actionClass,
+              })}
+            </div>
           </div>
         );
       })}

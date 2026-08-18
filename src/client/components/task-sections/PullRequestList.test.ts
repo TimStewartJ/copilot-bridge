@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EnrichedPR, PRRef } from "../../api";
 import {
+  advanceTimersByTimeAct,
   createReactDomHarness,
   findAllByTag,
   flushAct,
@@ -12,6 +13,7 @@ import type { ToastInput } from "../../useToast";
 
 const apiMocks = vi.hoisted(() => ({ unlinkResource: vi.fn(), linkResource: vi.fn() }));
 const toastMocks = vi.hoisted(() => ({ showToast: vi.fn(() => "toast-1"), dismissToast: vi.fn() }));
+const clipboardMocks = vi.hoisted(() => ({ writeClipboardText: vi.fn() }));
 
 vi.mock("../../api", async () => {
   const actual = await vi.importActual<typeof import("../../api")>("../../api");
@@ -22,6 +24,10 @@ vi.mock("../../useToast", async () => {
   const actual = await vi.importActual<typeof import("../../useToast")>("../../useToast");
   return { ...actual, useToast: () => ({ ...toastMocks, updateToast: vi.fn() }) };
 });
+
+vi.mock("../../lib/clipboard", () => ({
+  writeClipboardText: clipboardMocks.writeClipboardText,
+}));
 
 type PullRequestHarness = Awaited<ReturnType<typeof createReactDomHarness>>;
 
@@ -60,7 +66,12 @@ async function clickFirstSummaryButton(harness: PullRequestHarness) {
 
 function findUnlinkButtons(harness: PullRequestHarness) {
   return findAllByTag(harness.dom.container, "BUTTON")
-    .filter((button) => (button.getAttribute("aria-label") ?? "").startsWith("Unlink pull request"));
+    .filter((button) => (button.getAttribute("class") ?? "").includes("linked-resource-unlink-button"));
+}
+
+function findCopyButtons(harness: PullRequestHarness) {
+  return findAllByTag(harness.dom.container, "BUTTON")
+    .filter((button) => (button.getAttribute("class") ?? "").includes("linked-resource-copy-button"));
 }
 
 /** Latest toast payload passed to showToast. */
@@ -69,13 +80,33 @@ function lastToast(): ToastInput | undefined {
   return calls.length > 0 ? calls[calls.length - 1][0] : undefined;
 }
 
-async function clickUnlink(harness: PullRequestHarness, index = 0) {
+async function clickUnlinkOnce(harness: PullRequestHarness, index = 0) {
   const button = findUnlinkButtons(harness)[index];
   if (!button) throw new Error("Unlink button was not rendered");
+  const preventDefault = vi.fn();
+  const stopPropagation = vi.fn();
   await harness.act(async () => {
-    getReactProps(button)?.onClick?.({ currentTarget: button });
+    getReactProps(button)?.onClick?.({ currentTarget: button, preventDefault, stopPropagation });
   });
   await flushAct(harness.act);
+  return { button, preventDefault, stopPropagation };
+}
+
+async function clickUnlink(harness: PullRequestHarness, index = 0) {
+  await clickUnlinkOnce(harness, index);
+  await clickUnlinkOnce(harness, index);
+}
+
+async function clickCopy(harness: PullRequestHarness, index = 0) {
+  const button = findCopyButtons(harness)[index];
+  if (!button) throw new Error("Copy button was not rendered");
+  const preventDefault = vi.fn();
+  const stopPropagation = vi.fn();
+  await harness.act(async () => {
+    getReactProps(button)?.onClick?.({ currentTarget: button, preventDefault, stopPropagation });
+  });
+  await flushAct(harness.act);
+  return { button, preventDefault, stopPropagation };
 }
 
 // -- Tests ------------------------------------------------------------
@@ -162,6 +193,53 @@ describe("PullRequestList - summary variant", () => {
   });
 });
 
+describe("PullRequestList - copy affordance", () => {
+  beforeEach(() => {
+    clipboardMocks.writeClipboardText.mockReset();
+    clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
+  });
+
+  it("renders a hover copy action for every PR with a real URL", async () => {
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "compact" }, (harness) => {
+      const buttons = findCopyButtons(harness);
+      expect(buttons).toHaveLength(2);
+      expect(buttons[0]?.getAttribute("class")).toContain("linked-resource-copy-button");
+    });
+  });
+
+  it("copies the exact PR URL without following the row link", async () => {
+    await withPullRequestList({ enrichedPRs: [prA], rawPRs: [], variant: "compact" }, async (harness) => {
+      const { button, preventDefault, stopPropagation } = await clickCopy(harness);
+
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prA.url);
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(stopPropagation).toHaveBeenCalledOnce();
+      expect(button.getAttribute("aria-label")).toBe("Copied pull request #1 URL");
+    });
+  });
+
+  it("shows the copy action on a single-PR summary without opening the PR", async () => {
+    await withPullRequestList({ enrichedPRs: [prReal], rawPRs: [], variant: "summary" }, async (harness) => {
+      const mockOpen = vi.fn();
+      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
+      try {
+        await clickCopy(harness);
+
+        expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prReal.url);
+        expect(mockOpen).not.toHaveBeenCalled();
+      } finally {
+        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
+      }
+    });
+  });
+
+  it("does not render a copy action when enrichment has no URL", async () => {
+    await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "compact" }, (harness) => {
+      expect(findCopyButtons(harness)).toHaveLength(0);
+    });
+  });
+});
+
 describe("PullRequestList - unlink affordance", () => {
   beforeEach(() => {
     apiMocks.unlinkResource.mockReset();
@@ -185,21 +263,50 @@ describe("PullRequestList - unlink affordance", () => {
     });
   });
 
-  it("unlinks immediately without a confirmation prompt", async () => {
+  it("requires an in-place second click without a browser confirmation prompt", async () => {
     const confirmMock = vi.fn(() => false);
     (globalThis.window as unknown as { confirm?: typeof confirmMock }).confirm = confirmMock;
     try {
       await withPullRequestList(
         { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1" },
         async (harness) => {
-          await clickUnlink(harness);
+          const { button, preventDefault, stopPropagation } = await clickUnlinkOnce(harness);
 
           expect(confirmMock).not.toHaveBeenCalled();
+          expect(apiMocks.unlinkResource).not.toHaveBeenCalled();
+          expect(button.getAttribute("aria-label")).toBe("Confirm unlink pull request #1 from task");
+          expect(button.getAttribute("data-unlink-state")).toBe("confirming");
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(stopPropagation).toHaveBeenCalledOnce();
+
+          await clickUnlinkOnce(harness);
+
           expect(apiMocks.unlinkResource).toHaveBeenCalledOnce();
         },
       );
     } finally {
       delete (globalThis.window as unknown as { confirm?: typeof confirmMock }).confirm;
+    }
+  });
+
+  it("disarms the in-place confirmation after a short timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      await withPullRequestList(
+        { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1" },
+        async (harness) => {
+          await clickUnlinkOnce(harness);
+          expect(findUnlinkButtons(harness)[0]?.getAttribute("data-unlink-state")).toBe("confirming");
+
+          await advanceTimersByTimeAct(harness.act, 3000);
+
+          expect(findUnlinkButtons(harness)[0]?.getAttribute("data-unlink-state")).toBe("idle");
+          await clickUnlinkOnce(harness);
+          expect(apiMocks.unlinkResource).not.toHaveBeenCalled();
+        },
+      );
+    } finally {
+      vi.useRealTimers();
     }
   });
 
