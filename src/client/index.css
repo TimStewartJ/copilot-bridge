@@ -227,6 +227,31 @@ body {
   }
 }
 
+/*
+ * Linked resource actions stay available on touch devices and appear when
+ * their PR or work-item row is hovered with a precise pointer.
+ */
+.linked-resource-copy-button,
+.linked-resource-unlink-button {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .linked-resource-copy-button,
+  .linked-resource-unlink-button {
+    opacity: 0;
+  }
+
+  .hover-action-scope:hover .linked-resource-copy-button,
+  .hover-action-scope:hover .linked-resource-unlink-button,
+  .linked-resource-copy-button:focus-visible,
+  .linked-resource-unlink-button:focus-visible,
+  .linked-resource-copy-button:not([data-copy-state="idle"]),
+  .linked-resource-unlink-button:not([data-unlink-state="idle"]) {
+    opacity: 1;
+  }
+}
+
 @keyframes session-exit {
   from {
     opacity: 1;
