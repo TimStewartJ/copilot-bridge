@@ -19,6 +19,17 @@ installApiRouteTestHooks((state) => {
   ({ app, ctx } = state);
 });
 
+async function waitForForkJob(jobId: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const response = await request(app).get(`/api/session-forks/${jobId}`);
+    if (response.body.status === "succeeded" || response.body.status === "failed") {
+      return response;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Session fork job ${jobId} did not finish`);
+}
+
 // ── Session manager routes (mock-based) ──────────────────────────
 
 describe("Session manager routes", () => {
@@ -30,6 +41,24 @@ describe("Session manager routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ runState: "stalled", busy: true });
+  });
+
+  it("GET /api/busy includes background lifecycle work without inventing a session", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.getSessionActivity = vi.fn().mockReturnValue([]);
+    sessionManager.getLifecycleBlockingSessionCount = vi.fn().mockReturnValue(1);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/busy");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      busy: true,
+      count: 1,
+      sessionIds: [],
+      sessions: [],
+      backgroundOperations: 1,
+    });
   });
 
   it("GET /api/sessions/:id/messages-fast includes visible activity metadata", async () => {
@@ -85,9 +114,12 @@ describe("Session manager routes", () => {
     expect(res.text).toContain("\"kind\":\"stopped\"");
   });
 
-  it("POST /api/sessions/:id/fork passes safe event boundaries to the session manager", async () => {
+  it("POST /api/sessions/:id/fork accepts immediately and passes safe event boundaries to the session manager", async () => {
+    let resolveFork: ((result: { sessionId: string }) => void) | undefined;
     const sessionManager = createMockSessionManager();
-    sessionManager.forkSession = vi.fn().mockResolvedValue({ sessionId: "bounded-fork" });
+    sessionManager.forkSession = vi.fn(() => new Promise<{ sessionId: string }>((resolve) => {
+      resolveFork = resolve;
+    }));
     sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
     sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
@@ -104,8 +136,23 @@ describe("Session manager routes", () => {
       .post("/api/sessions/test-id/fork")
       .send({ toEventId: "next-event" });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessionId: "bounded-fork" });
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({
+      reused: false,
+      job: {
+        sourceSessionId: "test-id",
+        status: "queued",
+        bounded: true,
+      },
+    });
+
+    resolveFork?.({ sessionId: "bounded-fork" });
+    const completed = await waitForForkJob(res.body.job.id);
+
+    expect(completed.body).toMatchObject({
+      status: "succeeded",
+      sessionId: "bounded-fork",
+    });
     expect(sessionManager.forkSession).toHaveBeenCalledWith("test-id", { toEventId: "next-event" });
     expect(sessionManager.warmSession).toHaveBeenCalledWith("bounded-fork");
     expect(sessionManager.setSessionName).toHaveBeenCalledWith("bounded-fork", "Fork from Original session");
@@ -133,9 +180,13 @@ describe("Session manager routes", () => {
     ({ app, ctx } = createTestApp({ sessionManager }));
 
     const res = await request(app).post("/api/sessions/test-id/fork");
+    const completed = await waitForForkJob(res.body.job.id);
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("persisted conversation history");
+    expect(res.status).toBe(202);
+    expect(completed.body).toMatchObject({
+      status: "failed",
+      error: "Cannot fork a session before it has persisted conversation history.",
+    });
   });
 
   it("POST /api/sessions/:id/fork seeds the forked title from the CLI source summary", async () => {
@@ -168,8 +219,10 @@ describe("Session manager routes", () => {
     ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
 
     const res = await request(app).post("/api/sessions/test-id/fork");
+    const completed = await waitForForkJob(res.body.job.id);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
+    expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
     expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
     expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
     expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
@@ -202,9 +255,10 @@ describe("Session manager routes", () => {
 
       try {
         const res = await request(app).post("/api/sessions/test-id/fork");
+        const completed = await waitForForkJob(res.body.job.id);
 
-        expect(res.status).toBe(200);
-        expect(res.body).toEqual({ sessionId: "fork-session" });
+        expect(res.status).toBe(202);
+        expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
         expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
         expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fork-session");
         expect(events).toEqual(expect.arrayContaining([
@@ -246,9 +300,10 @@ describe("Session manager routes", () => {
       ctx.taskStore.linkSession(task.id, "test-id");
 
       const res = await request(app).post("/api/sessions/test-id/fork");
+      const completed = await waitForForkJob(res.body.job.id);
 
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ sessionId: "fork-session" });
+      expect(res.status).toBe(202);
+      expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
       expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fork-session");
       expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
       expect(sessionManager.setSessionName).not.toHaveBeenCalled();
@@ -266,6 +321,13 @@ describe("Session manager routes", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("GET /api/session-forks/:id returns 404 for an unknown job", async () => {
+    const res = await request(app).get("/api/session-forks/missing-job");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Session fork job not found");
   });
 
   it("POST /api/sessions/:id/undo passes a validated turn boundary to the session manager", async () => {
@@ -337,8 +399,10 @@ describe("Session manager routes", () => {
     });
 
     const res = await request(app).post("/api/sessions/test-id/fork");
+    const completed = await waitForForkJob(res.body.job.id);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
+    expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
     expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain("fork-session");
     expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain("fork-session");
   });

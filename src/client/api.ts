@@ -30,6 +30,12 @@ import type {
   ElicitationResponseEndpointPayload as ElicitationResponseEndpointPayloadType,
   SubmittedElicitationResponse as SubmittedElicitationResponseType,
 } from "../server/elicitation-types.js";
+import {
+  isSessionForkJobTerminal,
+  type SessionForkJob,
+  type StartSessionForkResponse,
+} from "../shared/session-fork.js";
+export type { SessionForkJob, SessionForkJobStatus, StartSessionForkResponse } from "../shared/session-fork.js";
 export type { McpServerConfig };
 export type { AgentInstruction } from "../shared/subagent.js";
 export type {
@@ -591,7 +597,11 @@ export async function uploadFile(sessionId: string, file: File): Promise<Uploade
   };
 }
 
-async function apiFetch<T>(path: string, body?: unknown, options?: { signal?: AbortSignal }): Promise<T> {
+async function apiFetch<T>(
+  path: string,
+  body?: unknown,
+  options?: { signal?: AbortSignal; reportTelemetry?: boolean },
+): Promise<T> {
   const t0 = performance.now();
   const opts: RequestInit = body
     ? {
@@ -614,7 +624,7 @@ async function apiFetch<T>(path: string, body?: unknown, options?: { signal?: Ab
   }
   const result = await res.json();
   // Fire-and-forget client timing report (skip telemetry endpoint to avoid recursion)
-  if (!path.startsWith("/api/telemetry")) {
+  if (options?.reportTelemetry !== false && !path.startsWith("/api/telemetry")) {
     const duration = Math.round(performance.now() - t0);
     reportTiming(`api${path.replace(/\/api/, "")}`, duration).catch(() => {});
   }
@@ -753,12 +763,44 @@ export async function batchSessionAction(
   });
 }
 
-export async function forkSession(id: string, opts?: { toEventId?: string }): Promise<string> {
-  const data = await apiFetch<{ sessionId: string }>(
-    `/api/sessions/${id}/fork`,
+export async function startSessionFork(
+  id: string,
+  opts?: { toEventId?: string },
+): Promise<StartSessionForkResponse> {
+  return apiFetch<StartSessionForkResponse>(
+    `/api/sessions/${encodeURIComponent(id)}/fork`,
     opts?.toEventId ? { toEventId: opts.toEventId } : {},
   );
-  return data.sessionId;
+}
+
+export async function fetchSessionFork(jobId: string): Promise<SessionForkJob> {
+  return apiFetch<SessionForkJob>(
+    `/api/session-forks/${encodeURIComponent(jobId)}`,
+    undefined,
+    { reportTelemetry: false },
+  );
+}
+
+export async function waitForSessionFork(jobId: string, initialJob?: SessionForkJob): Promise<SessionForkJob> {
+  let job = initialJob ?? await fetchSessionFork(jobId);
+  while (!isSessionForkJobTerminal(job.status)) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    try {
+      job = await fetchSessionFork(jobId);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) throw error;
+    }
+  }
+  return job;
+}
+
+export async function forkSession(id: string, opts?: { toEventId?: string }): Promise<string> {
+  const accepted = await startSessionFork(id, opts);
+  const completed = await waitForSessionFork(accepted.job.id, accepted.job);
+  if (completed.status === "failed" || !completed.sessionId) {
+    throw new Error(completed.error ?? "Session fork failed");
+  }
+  return completed.sessionId;
 }
 
 export interface UndoSessionTurnResult {

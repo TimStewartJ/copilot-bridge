@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Info, Undo2, X } from "lucide-react";
+import { AlertCircle, ArrowRight, CheckCircle2, Info, Loader2, Undo2, X } from "lucide-react";
 
 export type ToastTone = "success" | "info" | "error";
 
@@ -6,6 +6,7 @@ export interface ToastAction {
   label: string;
   /** Label shown while `onAction` is in flight. */
   pendingLabel?: string;
+  icon?: "undo" | "open";
   onAction: () => void | Promise<void>;
 }
 
@@ -16,6 +17,7 @@ export interface ToastData {
   description?: string;
   footnote?: string;
   action?: ToastAction;
+  loading?: boolean;
   /** Auto-dismiss delay. Omit to use the provider default; 0 disables auto-dismiss. */
   durationMs?: number;
 }
@@ -26,8 +28,9 @@ const TONE_STYLES: Record<ToastTone, { border: string; icon: string }> = {
   error: { border: "border-error/20", icon: "text-error" },
 };
 
-function ToneIcon({ tone }: { tone: ToastTone }) {
+function ToneIcon({ tone, loading }: { tone: ToastTone; loading?: boolean }) {
   const className = `mt-0.5 shrink-0 ${TONE_STYLES[tone].icon}`;
+  if (loading) return <Loader2 size={18} className={`${className} animate-spin`} />;
   if (tone === "error") return <AlertCircle size={18} className={className} />;
   if (tone === "info") return <Info size={18} className={className} />;
   return <CheckCircle2 size={18} className={className} />;
@@ -49,7 +52,7 @@ export default function Toast({ toast, actionPending = false, onAction, onDismis
       className={`pointer-events-auto w-full max-w-md rounded-xl border bg-bg-elevated/95 shadow-lg backdrop-blur ${TONE_STYLES[toast.tone].border}`}
     >
       <div className="flex items-start gap-3 px-4 py-3">
-        <ToneIcon tone={toast.tone} />
+        <ToneIcon tone={toast.tone} loading={toast.loading} />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-primary">{toast.title}</div>
           {toast.description && (
@@ -66,7 +69,7 @@ export default function Toast({ toast, actionPending = false, onAction, onDismis
                 disabled={actionPending}
                 className="inline-flex items-center gap-1 text-xs font-medium text-accent transition-colors hover:text-accent-hover disabled:cursor-wait disabled:text-text-faint"
               >
-                <Undo2 size={12} />
+                {action.icon === "open" ? <ArrowRight size={12} /> : <Undo2 size={12} />}
                 {actionPending ? action.pendingLabel ?? action.label : action.label}
               </button>
             )}

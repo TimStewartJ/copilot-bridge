@@ -8,6 +8,7 @@ export interface BusyState {
   busy: boolean;
   count: number;
   sessions?: BusySessionActivity[];
+  backgroundOperations?: number;
 }
 
 interface RestartBusyFetchDeps {
@@ -59,7 +60,10 @@ export async function waitForIdleSessions(deps: WaitForIdleDeps): Promise<boolea
         continue;
       }
 
-      if (sessions.every((s) => s.staleMs >= deps.staleThreshold)) {
+      if (
+        sessions.length === data.count
+        && sessions.every((s) => s.staleMs >= deps.staleThreshold)
+      ) {
         deps.log(`All ${sessions.length} session(s) are stuck (no events for ${deps.staleThreshold / 1000}s+) — proceeding with restart`);
         return true;
       }
