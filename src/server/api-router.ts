@@ -153,6 +153,7 @@ import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
 import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
 import { isLocalStagingModule } from "./path-utils.js";
+import { createSessionForkJobManager } from "./session-fork-job-manager.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 /** Idle grace windows (minutes) accepted by the hibernate-on-idle watcher. */
@@ -1706,11 +1707,13 @@ export function createApiRouter(
 
   router.get("/busy", (_req, res) => {
     const sessions = ctx.sessionManager.getSessionActivity();
+    const lifecycleBlockingCount = ctx.sessionManager.getLifecycleBlockingSessionCount();
     res.json({
-      busy: sessions.length > 0,
-      count: sessions.length,
+      busy: lifecycleBlockingCount > 0,
+      count: lifecycleBlockingCount,
       sessionIds: sessions.map((s) => s.id),
       sessions,
+      backgroundOperations: Math.max(0, lifecycleBlockingCount - sessions.length),
     });
   });
 
@@ -2584,15 +2587,29 @@ export function createApiRouter(
   async function finishForkedSession(sourceId: string, forkedSessionId: string, opts: { bounded?: boolean } = {}) {
     let originalTitle = ctx.sessionTitles.getTitle(sourceId);
     if (!originalTitle) {
-      const sourceSession = ctx.cliSessionCatalog?.getSession(sourceId)
-        ?? (await ctx.sessionManager.listSessionsFromDisk())
-          .find((session: any) => session.sessionId === sourceId);
-      originalTitle = sourceSession ? resolveSessionSummary(sourceSession) : undefined;
+      try {
+        const sourceSession = ctx.cliSessionCatalog?.getSession(sourceId)
+          ?? (await ctx.sessionManager.listSessionsFromDisk())
+            .find((session: any) => session.sessionId === sourceId);
+        originalTitle = sourceSession ? resolveSessionSummary(sourceSession) : undefined;
+      } catch (error) {
+        console.warn(
+          `[sessions] Fork ${forkedSessionId.slice(0, 8)} created but source title lookup failed:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
     }
 
     invalidateEnrichedCache("route:session:fork");
     for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
-      ctx.taskStore.linkSession(linkedTask.id, forkedSessionId);
+      try {
+        ctx.taskStore.linkSession(linkedTask.id, forkedSessionId);
+      } catch (error) {
+        console.warn(
+          `[sessions] Fork ${forkedSessionId.slice(0, 8)} could not inherit task ${linkedTask.id}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
     }
 
     let warmed = false;
@@ -2629,12 +2646,18 @@ export function createApiRouter(
     ctx.globalBus.emit({ type: "sessions:changed", sessionId: forkedSessionId });
   }
 
-  function handleForkError(res: express.Response, err: unknown) {
-    if (sendSessionCapacityError(res, err)) return;
+  function getForkErrorMessage(err: unknown): string {
     const message = err instanceof Error ? err.message : String(err);
     if (/not found or has no persisted events/i.test(message) || /no persisted events/i.test(message)) {
-      return res.status(400).json({ error: "Cannot fork a session before it has persisted conversation history." });
+      return "Cannot fork a session before it has persisted conversation history.";
     }
+    return message;
+  }
+
+  function handleForkError(res: express.Response, err: unknown) {
+    if (sendSessionCapacityError(res, err)) return;
+    const message = getForkErrorMessage(err);
+    if (/persisted conversation history/i.test(message)) return res.status(400).json({ error: message });
     if (/event.*not found|toEventId.*not found/i.test(message)) {
       return res.status(400).json({ error: message });
     }
@@ -2647,7 +2670,27 @@ export function createApiRouter(
     return res.status(500).json({ error: message });
   }
 
-  // POST /sessions/:id/fork — create a native SDK fork, optionally before a raw event boundary
+  const sessionForkJobs = createSessionForkJobManager({
+    runFork: async ({ sourceSessionId, toEventId }) => {
+      try {
+        if (ctx.sessionManager.isSessionBusy(sourceSessionId)) {
+          throw new Error("Cannot fork a busy session");
+        }
+        const result = await ctx.sessionManager.forkSessionWithFinalizer(
+          sourceSessionId,
+          toEventId ? { toEventId } : {},
+          async (forked) => {
+            await finishForkedSession(sourceSessionId, forked.sessionId, { bounded: Boolean(toEventId) });
+          },
+        );
+        return result.sessionId;
+      } catch (error) {
+        throw new Error(getForkErrorMessage(error));
+      }
+    },
+  });
+
+  // POST /sessions/:id/fork — queue a native SDK fork, optionally before a raw event boundary
   router.post("/sessions/:id/fork", async (req, res) => {
     const sourceId = req.params.id;
     try {
@@ -2664,13 +2707,22 @@ export function createApiRouter(
       if (isRecord(req.body) && req.body.toEventId !== undefined && !toEventId) {
         return res.status(400).json({ error: "toEventId must be a non-empty string when provided" });
       }
-      const result = await ctx.sessionManager.forkSession(sourceId, toEventId ? { toEventId } : {});
-      await finishForkedSession(sourceId, result.sessionId, { bounded: Boolean(toEventId) });
-
-      res.json(result);
+      const result = sessionForkJobs.start({
+        sourceSessionId: sourceId,
+        ...(toEventId ? { toEventId } : {}),
+      });
+      res.status(202).json(result);
     } catch (err) {
       handleForkError(res, err);
     }
+  });
+
+  router.get("/session-forks/:id", (req, res) => {
+    const job = sessionForkJobs.get(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: "Session fork job not found" });
+    }
+    res.json(job);
   });
 
   // POST /sessions/:id/undo — remove a selected turn and all later persisted history

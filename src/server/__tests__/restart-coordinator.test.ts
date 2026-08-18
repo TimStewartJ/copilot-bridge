@@ -74,6 +74,26 @@ describe("waitForIdleSessions", () => {
     await expect(waitForIdleSessions(deps)).resolves.toBe(true);
     expect(log).toHaveBeenCalledWith("All 2 session(s) are stuck (no events for 5s+) — proceeding with restart");
   });
+
+  it("does not use the stale-session shortcut while background work is active", async () => {
+    const { deps, fetchBusy, log } = createDeps([
+      {
+        busy: true,
+        count: 2,
+        sessions: [
+          { id: "session-a", staleMs: 8_000, elapsedMs: 12 },
+        ],
+        backgroundOperations: 1,
+      },
+      { busy: false, count: 0, sessions: [], backgroundOperations: 0 },
+    ], { busyWaitTimeout: 1_000 });
+
+    await expect(waitForIdleSessions(deps)).resolves.toBe(true);
+    expect(fetchBusy).toHaveBeenCalledTimes(2);
+    expect(log).not.toHaveBeenCalledWith(
+      "All 1 session(s) are stuck (no events for 5s+) — proceeding with restart",
+    );
+  });
 });
 
 describe("fetchRestartBusyState", () => {

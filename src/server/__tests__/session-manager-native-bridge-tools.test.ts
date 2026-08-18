@@ -886,6 +886,27 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
+  it("holds the restart lifecycle block through fork finalization", async () => {
+    const { manager, db } = createManager();
+    const finalizerGate = createDeferred<void>();
+    try {
+      await manager.initialize();
+      const finalizer = vi.fn(() => finalizerGate.promise);
+
+      const forking = manager.forkSessionWithFinalizer("source-session", {}, finalizer);
+      await vi.waitFor(() => expect(finalizer).toHaveBeenCalledWith({ sessionId: "forked-session" }));
+
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+      finalizerGate.resolve();
+      await expect(forking).resolves.toEqual({ sessionId: "forked-session" });
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+    } finally {
+      finalizerGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
   it("preserves fork success without a timeout when the MCP probe rejects", async () => {
     const { manager, backend, db } = createManager();
     const resumeGate = createDeferred<ReturnType<typeof createFakeSession>>();
@@ -904,6 +925,7 @@ describe("SessionManager native Bridge tools", () => {
         () => { settled = true; },
         () => { settled = true; },
       );
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(settled).toBe(false);
 
@@ -911,6 +933,7 @@ describe("SessionManager native Bridge tools", () => {
       await expect(forking).resolves.toEqual({ sessionId: "forked-session" });
       await vi.advanceTimersByTimeAsync(0);
 
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
       expect(forkedSession.listMcpServers).toHaveBeenCalledTimes(1);
       expect(endSessionResume).toHaveBeenCalledTimes(1);
       expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);

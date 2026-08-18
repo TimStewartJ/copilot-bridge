@@ -3,11 +3,13 @@ import {
   deleteDbEntryPage,
   createSession,
   createTaskSession,
+  fetchSessionFork,
   getSessionActivityTime,
   getSessionReadThroughActivityTime,
   getSessionRunState,
   isSessionActive,
   serializeSettingsPatch,
+  startSessionFork,
   updateDbEntryPage,
   type Session,
 } from "./api";
@@ -182,6 +184,60 @@ describe("serializeSettingsPatch", () => {
     expect(serializeSettingsPatch({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" })).toBe(
       JSON.stringify({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" }),
     );
+  });
+});
+
+describe("session fork client API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("queues a fork and fetches its background status", async () => {
+    const accepted = {
+      reused: false,
+      job: {
+        id: "fork-job-1",
+        sourceSessionId: "session/one",
+        status: "queued",
+        bounded: true,
+        createdAt: "2026-08-18T16:00:00.000Z",
+        updatedAt: "2026-08-18T16:00:00.000Z",
+      },
+    } as const;
+    const completed = {
+      ...accepted.job,
+      status: "succeeded",
+      sessionId: "forked-session",
+      completedAt: "2026-08-18T16:00:05.000Z",
+      updatedAt: "2026-08-18T16:00:05.000Z",
+    } as const;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 202,
+        statusText: "Accepted",
+        json: async () => accepted,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => completed,
+      }));
+
+    await expect(startSessionFork("session/one", { toEventId: "event-2" })).resolves.toEqual(accepted);
+    await expect(fetchSessionFork("fork/job")).resolves.toEqual(completed);
+
+    expect(vi.mocked(fetch).mock.calls).toEqual([
+      [
+        "/api/sessions/session%2Fone/fork",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ toEventId: "event-2" }),
+        }),
+      ],
+      ["/api/session-forks/fork%2Fjob", expect.objectContaining({ signal: undefined })],
+    ]);
   });
 });
 

@@ -9,7 +9,8 @@ import {
   patchTask,
   deleteTask,
   deleteSession,
-  forkSession,
+  startSessionFork,
+  waitForSessionFork,
   reloadSession,
   createTaskSession,
   linkResource,
@@ -136,6 +137,7 @@ export default function App() {
   const { hasAttention: pageHasAttention, hasAttentionRef: pageHasAttentionRef } = usePageAttention();
   const queryClient = useQueryClient();
   const { showToast, dismissToast } = useToast();
+  const monitoredForkJobIdsRef = useRef(new Set<string>());
 
   // ── React Query data ────────────────────────────────────────
   const [archivedLoaded, setArchivedLoaded] = useState(false);
@@ -1418,24 +1420,79 @@ export default function App() {
   };
 
   const handleForkSession = async (sessionId: string, opts?: { toEventId?: string }) => {
+    const linkedTaskId = tasks.find((task) => task.sessionIds.includes(sessionId))?.id;
     try {
-      const newId = await forkSession(sessionId, opts);
-      addOptimisticSession(newId);
-      // Navigate to the new session in the same context
-      const linkedTaskId = tasks.find((t) => t.sessionIds.includes(sessionId))?.id;
-      if (linkedTaskId) {
-        // Update task to include the new session
-        updateTaskInQueryCaches(queryClient, linkedTaskId, (task) => ({
-          ...task,
-          sessionIds: [...task.sessionIds, newId],
-        }));
-        navigate(`/tasks/${linkedTaskId}/sessions/${newId}`);
-      } else {
-        navigate(`/sessions/${newId}`);
-      }
-      await Promise.all([invalidateAllSessionQueries(), invalidateTasks()]);
+      const accepted = await startSessionFork(sessionId, opts);
+      const toastId = `session-fork-${accepted.job.id}`;
+      showToast({
+        id: toastId,
+        tone: "info",
+        title: accepted.reused ? "Fork already in progress" : "Creating fork in background",
+        description: "Large sessions can take a while. You can keep using the app while the copy finishes.",
+        loading: true,
+        durationMs: 0,
+      });
+
+      if (monitoredForkJobIdsRef.current.has(accepted.job.id)) return;
+      monitoredForkJobIdsRef.current.add(accepted.job.id);
+      void waitForSessionFork(accepted.job.id, accepted.job)
+        .then((completed) => {
+          if (completed.status === "failed" || !completed.sessionId) {
+            throw new Error(completed.error ?? "Session fork failed");
+          }
+
+          const newId = completed.sessionId;
+          addOptimisticSession(newId, { summary: opts?.toEventId ? "Fork from session" : "Fork of session" });
+          if (linkedTaskId) linkOptimisticTaskSession(linkedTaskId, newId);
+          void Promise.all([invalidateAllSessionQueries(), invalidateTasks()]).catch((error) => {
+            console.error("Failed to refresh sessions after fork:", error);
+          });
+
+          const destination = linkedTaskId
+            ? `/tasks/${linkedTaskId}/sessions/${newId}`
+            : `/sessions/${newId}`;
+          showToast({
+            id: toastId,
+            tone: "success",
+            title: "Fork ready",
+            description: "The new session is ready when you are.",
+            durationMs: 15_000,
+            action: {
+              label: "Open fork",
+              icon: "open",
+              onAction: () => {
+                navigate(destination);
+                dismissToast(toastId);
+              },
+            },
+          });
+        })
+        .catch((error) => {
+          const statusUnavailable = error instanceof ApiError && error.status === 404;
+          console.error(statusUnavailable ? "Lost session fork status:" : "Failed to finish session fork:", error);
+          showToast({
+            id: toastId,
+            tone: statusUnavailable ? "info" : "error",
+            title: statusUnavailable ? "Fork status unavailable" : "Fork failed",
+            description: statusUnavailable
+              ? "The server stopped tracking this background fork. Check Sessions before trying again."
+              : error instanceof Error ? error.message : String(error),
+            footnote: statusUnavailable
+              ? "The fork may still have completed."
+              : "The original session was not changed.",
+            durationMs: statusUnavailable ? 0 : 12_000,
+          });
+        })
+        .finally(() => {
+          monitoredForkJobIdsRef.current.delete(accepted.job.id);
+        });
     } catch (err) {
-      console.error("Failed to fork session:", err);
+      console.error("Failed to start session fork:", err);
+      showToast({
+        tone: "error",
+        title: "Could not start fork",
+        description: err instanceof Error ? err.message : String(err),
+      });
       throw err;
     }
   };

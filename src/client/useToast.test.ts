@@ -75,6 +75,15 @@ describe("ToastProvider", () => {
     expect(toastTitles(harness)).toContain("Sticky");
   });
 
+  it("shows a spinner for background progress toasts", async () => {
+    const harness = await mountProvider();
+
+    await show(harness, { title: "Creating fork", loading: true, durationMs: 0 });
+
+    const icons = findAllByTag(harness.dom.container, "svg");
+    expect(icons.some((icon) => (icon.getAttribute("class") ?? "").includes("animate-spin"))).toBe(true);
+  });
+
   it("replaces a toast that reuses the same id instead of stacking", async () => {
     const harness = await mountProvider();
 

@@ -3433,7 +3433,10 @@ export class SessionManager {
     }
   }
 
-  async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
+  private async forkSessionCore(
+    sourceSessionId: string,
+    options: { toEventId?: string } = {},
+  ): Promise<{ sessionId: string }> {
     const backend = this.getBackend();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
@@ -3479,6 +3482,30 @@ export class SessionManager {
       bounded: Boolean(toEventId),
     });
     return result;
+  }
+
+  async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
+    const completeLifetime = this.beginSessionCreationLifetime();
+    try {
+      return await this.forkSessionCore(sourceSessionId, options);
+    } finally {
+      completeLifetime();
+    }
+  }
+
+  async forkSessionWithFinalizer(
+    sourceSessionId: string,
+    options: { toEventId?: string },
+    finalize: (result: { sessionId: string }) => Promise<void>,
+  ): Promise<{ sessionId: string }> {
+    const completeLifetime = this.beginSessionCreationLifetime();
+    try {
+      const result = await this.forkSessionCore(sourceSessionId, options);
+      await finalize(result);
+      return result;
+    } finally {
+      completeLifetime();
+    }
   }
 
   async undoSessionTurn(

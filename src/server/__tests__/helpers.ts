@@ -170,7 +170,7 @@ export function createTestBus() {
 
 /** Minimal mock SessionManager for API route tests */
 export function createMockSessionManager() {
-  return {
+  const manager = {
     listSessions: async () => [],
     listModels: async () => [],
     getBackendCreatedAt: () => "2026-01-01T00:00:00.000Z",
@@ -269,6 +269,16 @@ export function createMockSessionManager() {
       message: "Session workspace reset to linked task default",
     }),
   } as any;
+  manager.forkSessionWithFinalizer = async (
+    sourceSessionId: string,
+    options: { toEventId?: string },
+    finalize: (result: { sessionId: string }) => Promise<void>,
+  ) => {
+    const result = await manager.forkSession(sourceSessionId, options);
+    await finalize(result);
+    return result;
+  };
+  return manager;
 }
 export function createMockTranscriptionService(overrides?: Partial<TranscriptionService>): TranscriptionService {
   return {
