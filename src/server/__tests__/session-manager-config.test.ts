@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
@@ -96,8 +96,7 @@ describe("SessionManager session config", () => {
   it("injects compact task momentum for linked tasks", () => {
     const db = setupTestDb();
     const globalBus = createTestBus();
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
-    tempDirs.push(copilotHome);
+    const copilotHome = makeTestDir("session-config-adaptive-resume");
     const taskStore = createTaskStore(db, globalBus);
     const task = taskStore.createTask("Preview task");
     const updatedTask = taskStore.updateTask(task.id, {
@@ -232,6 +231,43 @@ describe("SessionManager session config", () => {
           max_prompt_tokens: 922_000,
         },
       },
+    });
+  });
+
+  it("reapplies adaptive-thinking compatibility when resuming persisted sessions", () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const sessionId = "persisted-adaptive-session";
+    const sessionDir = join(copilotHome, "session-state", sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "bridge-model-state.json"),
+      JSON.stringify({ model: "adaptive-model", reasoningEffort: "high" }),
+    );
+    const manager = new SessionManager({
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: createTaskStore(db, globalBus),
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+    manager.modelMetadataForContextTiers = [{
+      id: "adaptive-model",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      capabilities: {
+        supports: { adaptive_thinking: "optional" },
+      },
+    }];
+
+    const cfg = manager.buildSessionConfig({ sessionId, forResume: true });
+
+    expect(cfg.model).toBeUndefined();
+    expect(cfg.reasoningEffort).toBeUndefined();
+    expect(cfg.modelCapabilities).toEqual({
+      supports: { adaptive_thinking: "required" },
     });
   });
 

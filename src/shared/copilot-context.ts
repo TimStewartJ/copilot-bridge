@@ -20,6 +20,10 @@ export interface CopilotModelContextMetadata {
   readonly supportedReasoningEfforts?: readonly string[];
   readonly defaultReasoningEffort?: string;
   readonly capabilities?: {
+    readonly supports?: {
+      readonly adaptive_thinking?: "unsupported" | "optional" | "required";
+      readonly [key: string]: unknown;
+    };
     readonly limits?: {
       readonly max_context_window_tokens?: number;
       readonly max_prompt_tokens?: number;
@@ -33,10 +37,16 @@ export interface CopilotModelContextMetadata {
 }
 
 export interface CopilotModelCapabilitiesOverride {
+  supports?: {
+    adaptive_thinking?: "required";
+    [key: string]: unknown;
+  };
   limits?: {
     max_context_window_tokens?: number;
     max_prompt_tokens?: number;
+    [key: string]: unknown;
   };
+  [key: string]: unknown;
 }
 
 export function isCopilotContextTier(value: unknown): value is CopilotContextTier {
@@ -127,10 +137,54 @@ export function getModelCapabilitiesOverrideForContextTier(
   return { limits };
 }
 
+export function getModelCapabilitiesOverride(
+  model: CopilotModelContextMetadata | null | undefined,
+  tier: CopilotContextTier | undefined,
+  reasoningEffort?: string,
+  baseOverride?: Record<string, unknown>,
+): CopilotModelCapabilitiesOverride | undefined {
+  const contextOverride = getModelCapabilitiesOverrideForContextTier(model, tier);
+  const adaptiveThinking = model?.capabilities?.supports?.adaptive_thinking;
+  // An explicit effort is the adaptive-thinking control surface. Mark adaptive
+  // mode as required so the runtime does not serialize legacy budget thinking.
+  const compatibilityOverride = reasoningEffort?.trim()
+    && (adaptiveThinking === "optional" || adaptiveThinking === "required")
+    ? { supports: { adaptive_thinking: "required" as const } }
+    : undefined;
+  const layers: Array<Record<string, unknown> | undefined> = [
+    baseOverride,
+    contextOverride,
+    compatibilityOverride,
+  ];
+  const merged: CopilotModelCapabilitiesOverride = {};
+  let hasValues = false;
+
+  for (const layer of layers) {
+    if (!layer) continue;
+    for (const [key, value] of Object.entries(layer)) {
+      hasValues = true;
+      if ((key === "supports" || key === "limits") && isRecord(value)) {
+        merged[key] = {
+          ...(isRecord(merged[key]) ? merged[key] : {}),
+          ...value,
+        };
+      } else {
+        merged[key] = value;
+      }
+    }
+  }
+
+  return hasValues ? merged : undefined;
+}
+
 function finitePositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getContextWindowTokensForTier,
+  getModelCapabilitiesOverride,
   getModelCapabilitiesOverrideForContextTier,
 } from "./copilot-context.js";
 
@@ -45,5 +46,34 @@ describe("copilot context tiers", () => {
   it("uses the tier-specific context window for labels", () => {
     expect(getContextWindowTokensForTier(TIERED_MODEL, "default")).toBe(272_000);
     expect(getContextWindowTokensForTier(TIERED_MODEL, "long_context")).toBe(922_000);
+  });
+
+  it("uses adaptive thinking for explicit effort while preserving other overrides", () => {
+    expect(getModelCapabilitiesOverride(
+      {
+        id: "adaptive-model",
+        capabilities: {
+          supports: { adaptive_thinking: "optional" },
+        },
+      },
+      undefined,
+      "high",
+      { limits: { max_prompt_tokens: 900_000 } },
+    )).toEqual({
+      limits: { max_prompt_tokens: 900_000 },
+      supports: { adaptive_thinking: "required" },
+    });
+  });
+
+  it("does not force adaptive thinking when no effort is selected", () => {
+    expect(getModelCapabilitiesOverride(
+      {
+        id: "adaptive-model",
+        capabilities: {
+          supports: { adaptive_thinking: "optional" },
+        },
+      },
+      undefined,
+    )).toBeUndefined();
   });
 });

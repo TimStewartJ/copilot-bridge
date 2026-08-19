@@ -88,6 +88,15 @@ const LONG_CONTEXT_CAPABILITIES = {
   },
 };
 
+const ADAPTIVE_MODEL = {
+  id: "adaptive-model",
+  name: "Adaptive Model",
+  supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  capabilities: {
+    supports: { adaptive_thinking: "optional" as const },
+  },
+};
+
 describe("SessionManager.setSessionModel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -110,6 +119,24 @@ describe("SessionManager.setSessionModel", () => {
     const result2 = await manager.setSessionModel("session-1", "claude-opus-4.7", "high");
     expect(session.setModel).toHaveBeenCalledWith("claude-opus-4.7", { reasoningEffort: "high" });
     expect(result2).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
+  });
+
+  it("forces adaptive thinking when switching a live session with explicit effort", async () => {
+    const manager = createManager();
+    const session = createMockSession("gpt-5.6-sol");
+    manager.backend = {};
+    manager.modelMetadataForContextTiers = [ADAPTIVE_MODEL];
+    manager.sessionObjects.set("session-1", session);
+
+    const result = await manager.setSessionModel("session-1", "adaptive-model", "high");
+
+    expect(session.setModel).toHaveBeenCalledWith("adaptive-model", {
+      reasoningEffort: "high",
+      modelCapabilities: {
+        supports: { adaptive_thinking: "required" },
+      },
+    });
+    expect(result).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
   });
 
   it("caps tiered models when selecting the default context tier", async () => {

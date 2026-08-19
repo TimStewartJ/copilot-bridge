@@ -156,7 +156,7 @@ import {
 import { readSdkSessionEvents } from "./sdk-session-events.js";
 import { createSessionContextTruncationMarker } from "./session-context-normalizer.js";
 import {
-  getModelCapabilitiesOverrideForContextTier,
+  getModelCapabilitiesOverride,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
   type CopilotContextTier,
@@ -1373,7 +1373,12 @@ export class SessionManager {
       }
       const model = sessionConfig.model;
       if (typeof model === "string" && model.trim()) {
-        const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);
+        const { contextTier } = this.resolveModelRuntimeOptions(
+          model,
+          settings?.contextTier,
+          sessionConfig.reasoningEffort,
+          modelMetadata,
+        );
         const state = {
           model,
           ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
@@ -2578,18 +2583,18 @@ export class SessionManager {
     }
   }
 
-  private resolveModelContextTier(
+  private resolveModelRuntimeOptions(
     modelId: string,
     requestedContextTier?: string,
+    reasoningEffort?: string,
     modelMetadata = this.modelMetadataForContextTiers,
   ): { contextTier?: CopilotContextTier; modelCapabilities?: Record<string, unknown> } {
     const model = modelMetadata?.find((candidate) => candidate.id === modelId);
     const contextTier = resolveContextTierForModel(model, normalizeCopilotContextTier(requestedContextTier));
+    const modelCapabilities = getModelCapabilitiesOverride(model, contextTier, reasoningEffort);
     return {
       ...(contextTier ? { contextTier } : {}),
-      ...(contextTier
-        ? { modelCapabilities: getModelCapabilitiesOverrideForContextTier(model, contextTier) as Record<string, unknown> | undefined }
-        : {}),
+      ...(modelCapabilities ? { modelCapabilities } : {}),
     };
   }
 
@@ -2597,9 +2602,14 @@ export class SessionManager {
     state: PersistedSessionModelState,
     modelMetadata = this.modelMetadataForContextTiers,
   ): Record<string, unknown> | undefined {
-    if (state.modelCapabilities) return state.modelCapabilities;
-    if (!state.model || !state.contextTier) return undefined;
-    return this.resolveModelContextTier(state.model, state.contextTier, modelMetadata).modelCapabilities;
+    if (!state.model) return state.modelCapabilities;
+    const model = modelMetadata?.find((candidate) => candidate.id === state.model);
+    return getModelCapabilitiesOverride(
+      model,
+      normalizeCopilotContextTier(state.contextTier),
+      state.reasoningEffort,
+      state.modelCapabilities,
+    );
   }
 
   private persistSessionModelState(
@@ -4346,7 +4356,12 @@ export class SessionManager {
           ? normalizeCopilotContextTier(currentBeforeSwitch.contextTier)
           : undefined)
         ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
-      const resolvedContext = this.resolveModelContextTier(model, effectiveRequestedContextTier, modelMetadata);
+      const resolvedContext = this.resolveModelRuntimeOptions(
+        model,
+        effectiveRequestedContextTier,
+        effectiveReasoningEffort,
+        modelMetadata,
+      );
       const setModelOptions = {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
         ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
