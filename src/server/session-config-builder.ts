@@ -38,7 +38,7 @@ import {
   GITHUB_COPILOT_MCP_SERVER_NAME,
 } from "./github-copilot-mcp.js";
 import {
-  getModelCapabilitiesOverrideForContextTier,
+  getModelCapabilitiesOverride,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
   type CopilotContextTier,
@@ -312,7 +312,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         ?? scheduleContext?.contextTier
         ?? normalizeCopilotContextTier(settings?.contextTier),
     );
-    const modelCapabilities = getModelCapabilitiesOverrideForContextTier(selectedModelMetadata, contextTier);
+    const modelCapabilities = getModelCapabilitiesOverride(
+      selectedModelMetadata,
+      contextTier,
+      cfg.reasoningEffort,
+    );
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;
   }
 

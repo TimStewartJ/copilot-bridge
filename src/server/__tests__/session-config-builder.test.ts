@@ -298,6 +298,32 @@ describe("session-config-builder", () => {
     expect(cfg.reasoningEffort).toBe("xhigh");
   });
 
+  it("forces adaptive thinking for models with explicit effort", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps(),
+      options: {
+        modelOverride: "adaptive-model",
+        reasoningEffortOverride: "high",
+        modelMetadata: [{
+          id: "adaptive-model",
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+          capabilities: {
+            supports: { adaptive_thinking: "optional" },
+          },
+        }],
+      },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg).toMatchObject({
+      model: "adaptive-model",
+      reasoningEffort: "high",
+      modelCapabilities: {
+        supports: { adaptive_thinking: "required" },
+      },
+    });
+  });
+
   it("does not apply a global reasoning effort unsupported by the active model (scheduled or launch)", () => {
     for (const { label, options } of [
       {
