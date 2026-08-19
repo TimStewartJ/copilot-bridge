@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelInfo, Session, SessionModelState } from "../api";
+import type { AppSettings, ModelInfo, Session, SessionModelState } from "../api";
 import {
   advanceTimersByTimeAct,
   createReactDomHarness,
@@ -19,6 +19,8 @@ const apiMocks = vi.hoisted(() => ({
   refreshModels: vi.fn(),
   fetchSessionModelState: vi.fn(),
   patchSessionModel: vi.fn(),
+  fetchSettings: vi.fn(),
+  patchSettings: vi.fn(),
 }));
 
 vi.mock("../api", async () => {
@@ -62,6 +64,11 @@ beforeEach(() => {
   apiMocks.refreshModels.mockResolvedValue([]);
   apiMocks.fetchSessionModelState.mockResolvedValue({ source: "unknown" });
   apiMocks.patchSessionModel.mockResolvedValue({ model: "gpt-5.6" });
+  apiMocks.fetchSettings.mockResolvedValue({ mcpServers: {} });
+  apiMocks.patchSettings.mockImplementation(async (updates: Partial<AppSettings>) => ({
+    mcpServers: {},
+    ...updates,
+  }));
 });
 
 afterEach(() => {
@@ -578,5 +585,181 @@ describe("SessionList change model dialog", () => {
     } finally {
       await harness.cleanup();
     }
+  });
+
+  describe("shared model family memory", () => {
+    const CLAUDE_OPUS: ModelInfo = {
+      id: "claude-opus-5",
+      name: "Claude Opus 5",
+      supportedReasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      capabilities: { limits: { max_context_window_tokens: 1_000_000 } },
+      billing: { tokenPrices: { contextMax: 200_000, longContext: { contextMax: 1_000_000 } } },
+    };
+    const CLAUDE_SONNET: ModelInfo = {
+      id: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      supportedReasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+    };
+
+    function seedSettings(settings: Partial<AppSettings>) {
+      queryClient.setQueryData<AppSettings>(queryKeys.settings, { mcpServers: {}, ...settings });
+    }
+
+    function findTile(harness: { dom: { container: any } }, family: string): any {
+      const tile = findAllByTag(harness.dom.container, "BUTTON")
+        .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
+          .startsWith(`${family}:`));
+      if (!tile) throw new Error(`Family tile not found: ${family}`);
+      return tile;
+    }
+
+    it("shows the remembered model per family and restores its effort and context", async () => {
+      seedSettings({
+        model: "gpt-5.6",
+        familyDefaults: {
+          claude: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
+        },
+        lastModelFamily: "gpt",
+      });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL, CLAUDE_SONNET, CLAUDE_OPUS],
+      );
+      try {
+        await waitUntilAct(
+          harness.act,
+          () => (harness.dom.container.textContent ?? "").includes("Claude Opus 5"),
+          { label: "model metadata" },
+        );
+
+        // Sonnet is first in SDK order, but the tile shows the remembered Opus.
+        expect(findTile(harness, "Claude").textContent).toBe("Claude Opus 5");
+
+        await clickFamilyTile(harness, "Claude");
+        await clickButton(harness, "Save");
+        await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
+          label: "session model patch",
+        });
+
+        expect(apiMocks.patchSessionModel).toHaveBeenCalledWith(
+          "session-1",
+          "claude-opus-5",
+          "high",
+          "long_context",
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("drops remembered effort and context the target model cannot honor", async () => {
+      seedSettings({
+        familyDefaults: {
+          claude: { model: "claude-sonnet-5", reasoningEffort: "xhigh", contextTier: "long_context" },
+        },
+      });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL, CLAUDE_SONNET],
+      );
+      try {
+        await waitUntilAct(
+          harness.act,
+          () => (harness.dom.container.textContent ?? "").includes("Claude Sonnet 5"),
+          { label: "model metadata" },
+        );
+
+        await clickFamilyTile(harness, "Claude");
+        await clickButton(harness, "Save");
+        await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
+          label: "session model patch",
+        });
+
+        // The unsupported remembered effort is dropped, so the dialog keeps the
+        // session's current effort (omitted from the save); Sonnet has no long context.
+        expect(apiMocks.patchSessionModel).toHaveBeenCalledWith(
+          "session-1",
+          "claude-sonnet-5",
+          undefined,
+          undefined,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("remembers a saved switch for the new-chat picker", async () => {
+      seedSettings({
+        familyDefaults: { gpt: { model: "gpt-5.6", reasoningEffort: "low" } },
+        lastModelFamily: "gpt",
+      });
+      apiMocks.patchSessionModel.mockResolvedValue({
+        model: "claude-opus-5",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL, CLAUDE_OPUS],
+      );
+      try {
+        await waitUntilAct(
+          harness.act,
+          () => (harness.dom.container.textContent ?? "").includes("Claude Opus 5"),
+          { label: "model metadata" },
+        );
+
+        await clickFamilyTile(harness, "Claude");
+        await clickButton(harness, "High");
+        await clickButton(harness, "Long context (1M)");
+        await clickButton(harness, "Save");
+        await waitUntilAct(harness.act, () => apiMocks.patchSettings.mock.calls.length > 0, {
+          label: "settings patch",
+        });
+
+        const expected = {
+          familyDefaults: {
+            gpt: { model: "gpt-5.6", reasoningEffort: "low" },
+            claude: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
+          },
+          lastModelFamily: "claude",
+        };
+        expect(apiMocks.patchSettings).toHaveBeenCalledWith(expected);
+        expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject(expected);
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("leaves memory untouched when the dialog is cancelled", async () => {
+      seedSettings({
+        familyDefaults: { gpt: { model: "gpt-5.6" } },
+        lastModelFamily: "gpt",
+      });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL, CLAUDE_OPUS],
+      );
+      try {
+        await waitUntilAct(
+          harness.act,
+          () => (harness.dom.container.textContent ?? "").includes("Claude Opus 5"),
+          { label: "model metadata" },
+        );
+
+        await clickFamilyTile(harness, "Claude");
+        await clickButton(harness, "Cancel");
+
+        expect(apiMocks.patchSettings).not.toHaveBeenCalled();
+        expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject({
+          familyDefaults: { gpt: { model: "gpt-5.6" } },
+          lastModelFamily: "gpt",
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
   });
 });
