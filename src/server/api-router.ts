@@ -603,22 +603,6 @@ function createSessionListTaskLookup(ctx: AppContext, tasks = ctx.taskStore.list
   return { tasks, resolveTask, getLinkedTasks };
 }
 
-function isLinkedOnlyToArchivedTasks(linkedTasks: Task[]): boolean {
-  return linkedTasks.length > 0 && linkedTasks.every((task) => task.status === "archived");
-}
-
-function hasExplicitUnreadActivity(
-  readState: Record<string, string>,
-  sessionId: string,
-  activityTime?: string,
-): boolean {
-  const lastReadAt = readState[sessionId];
-  if (!lastReadAt || !activityTime) return false;
-  const activityMs = Date.parse(activityTime);
-  const readMs = Date.parse(lastReadAt);
-  return Number.isFinite(activityMs) && Number.isFinite(readMs) && activityMs > readMs;
-}
-
 function maxIsoTime(...values: Array<string | null | undefined>): string | undefined {
   let latest: { value: string; time: number } | undefined;
   for (const value of values) {
@@ -635,8 +619,6 @@ function shouldIncludeMaterializedSession(opts: {
   archived: boolean;
   linkedTasks: Task[];
   status: ReturnType<typeof getSessionStatus>;
-  readState: Record<string, string>;
-  sessionId: string;
   lastActivityAt?: string;
   hasSessionName: boolean;
   hasReadState: boolean;
@@ -644,15 +626,6 @@ function shouldIncludeMaterializedSession(opts: {
   hasDeferredWork: boolean;
 }): boolean {
   if (!opts.includeArchived && opts.archived) return false;
-  if (
-    !opts.includeArchived
-    && isLinkedOnlyToArchivedTasks(opts.linkedTasks)
-    && !opts.status.busy
-    && !opts.status.needsUserInput
-    && !hasExplicitUnreadActivity(opts.readState, opts.sessionId, opts.lastActivityAt)
-  ) {
-    return false;
-  }
   if (
     !opts.archived
     && opts.linkedTasks.length === 0
@@ -1424,8 +1397,6 @@ export function createApiRouter(
         archived,
         linkedTasks,
         status,
-        readState,
-        sessionId: id,
         lastActivityAt,
         hasSessionName: typeof s.summary === "string" && s.summary.trim().length > 0,
         hasReadState: !!readState[id],
@@ -1568,8 +1539,6 @@ export function createApiRouter(
               archived,
               linkedTasks,
               status,
-              readState,
-              sessionId: id,
               lastActivityAt,
               hasSessionName: typeof s.summary === "string" && s.summary.trim().length > 0,
               hasReadState: !!readState[id],

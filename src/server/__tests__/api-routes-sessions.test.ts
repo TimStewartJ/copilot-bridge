@@ -336,7 +336,7 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.cancelSessionAgent).toHaveBeenCalledWith("s1", "explore-docs");
   });
 
-  it("GET /api/sessions hides idle sessions linked only to archived tasks by default", async () => {
+  it("GET /api/sessions includes unarchived sessions linked only to archived tasks", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
@@ -361,7 +361,12 @@ describe("Session routes (mocked)", () => {
     const allRes = await request(app).get("/api/sessions?includeArchived=true");
 
     expect(activeRes.status).toBe(200);
-    expect(activeRes.body.sessions.map((session: any) => session.sessionId)).toEqual(["unlinked-session"]);
+    expect(activeRes.body.sessions.map((session: any) => session.sessionId)).toEqual([
+      "unlinked-session",
+      "archived-task-session",
+    ]);
+    expect(activeRes.body.sessions.find((session: any) => session.sessionId === "archived-task-session"))
+      .toMatchObject({ linkedTaskIds: [archivedTask.id], archived: false });
     expect(allRes.status).toBe(200);
     expect(allRes.body.sessions.map((session: any) => session.sessionId)).toEqual([
       "unlinked-session",
