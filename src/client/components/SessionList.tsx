@@ -29,12 +29,8 @@ import {
   buildReasoningEffortOptions,
   getSelectableModels,
 } from "../lib/new-session-launch";
-import {
-  resolveModelFamilyState,
-  selectFamily,
-  selectModelInFamily,
-  type ModelFamilySelection,
-} from "../lib/model-family-defaults";
+import type { ModelFamilySelection } from "../lib/model-family-defaults";
+import { useModelFamilyMemory } from "../hooks/useModelFamilyMemory";
 import type { ModelFamily } from "../../shared/model-families.js";
 import {
   modelSupportsLongContext,
@@ -366,29 +362,39 @@ export default function SessionList({
   const reasoningDraftCanBeSubmitted =
     !!reasoningDraft
     && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
-  /** Applies a family or model pick to the unsaved dialog drafts only. */
+  // Memory is shared with the new-chat picker; only fetch settings once the
+  // dialog is open so the list itself stays free of extra requests.
+  const modelFamilyMemory = useModelFamilyMemory({ enabled: !!modelDialogSessionId });
+  /**
+   * Applies a family or model pick to the unsaved dialog drafts only. Remembered
+   * effort/context are restored when the target model can still honor them.
+   */
   const applyDialogSelection = useCallback((selection: ModelFamilySelection) => {
     modelDialogTouchedRef.current = true;
     const modelInfo = modelOptions?.find((model) => model.id === selection.modelId);
     setModelDraft(selection.modelId);
-    setReasoningDraft("");
-    setContextTierDraft(modelSupportsLongContext(modelInfo) ? "default" : "");
+    setReasoningDraft(
+      selection.reasoningEffort
+        && modelInfo?.supportedReasoningEfforts?.includes(selection.reasoningEffort)
+        ? selection.reasoningEffort
+        : "",
+    );
+    setContextTierDraft(
+      modelSupportsLongContext(modelInfo) ? (selection.contextTier ?? "default") : "",
+    );
   }, [modelOptions]);
 
   const handleDialogFamilyChange = useCallback((family: ModelFamily) => {
-    const selection = selectFamily({
-      family,
-      state: resolveModelFamilyState({
-        models: availableModels,
-        selectedModelId: modelDraft,
-      }),
+    const selection = modelFamilyMemory.selectFamily(family, {
+      models: availableModels,
+      selectedModelId: modelDraft,
     });
     if (selection) applyDialogSelection(selection);
-  }, [applyDialogSelection, availableModels, modelDraft]);
+  }, [applyDialogSelection, availableModels, modelDraft, modelFamilyMemory]);
 
   const handleDialogModelChange = useCallback((modelId: string) => {
-    applyDialogSelection(selectModelInFamily({ modelId }));
-  }, [applyDialogSelection]);
+    applyDialogSelection(modelFamilyMemory.selectModel(modelId));
+  }, [applyDialogSelection, modelFamilyMemory]);
 
   const canSaveModelSwitch =
     !!modelDialogSessionId
@@ -530,13 +536,21 @@ export default function SessionList({
       const nextReasoningEffort = result.reasoningEffort
         ?? (submittedReasoningEffort || modelDialogQuery.data?.reasoningEffort);
       const nextContextTier = result.contextTier ?? submittedContextTier;
+      const savedModelId = result.modelId ?? result.model;
       const nextState: SessionModelState = {
-        model: result.modelId ?? result.model,
+        model: savedModelId,
         ...(nextReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
         ...(nextContextTier ? { contextTier: nextContextTier } : {}),
         source: "live",
       };
       queryClient.setQueryData(queryKeys.sessionModel(modelDialogSessionId), nextState);
+      // A saved switch is a committed choice, so it feeds the same memory the
+      // new-chat picker reads.
+      modelFamilyMemory.remember({
+        modelId: savedModelId,
+        reasoningEffort: nextReasoningEffort,
+        contextTier: nextContextTier,
+      });
       setModelDialogSessionId(null);
     } catch (error) {
       setModelSwitchError(getErrorMessage(error));
@@ -548,6 +562,7 @@ export default function SessionList({
     contextTierDraft,
     modelDialogSessionId,
     modelDraft,
+    modelFamilyMemory,
     reasoningDraft,
     reasoningDraftCanBeSubmitted,
     canKeepCurrentReasoningEffort,
@@ -1051,6 +1066,8 @@ export default function SessionList({
                     idPrefix="session-model"
                     models={availableModels}
                     selectedModelId={modelDraft}
+                    globalDefaultModelId={modelFamilyMemory.globalDefaultModelId}
+                    familyDefaults={modelFamilyMemory.familyDefaults}
                     disabled={modelSwitchSaving}
                     onSelectFamily={handleDialogFamilyChange}
                     onSelectModel={handleDialogModelChange}

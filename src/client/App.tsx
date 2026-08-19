@@ -39,7 +39,6 @@ import {
   type TaskDeletionPreview,
   type TaskGroup,
   type CreateSessionOptions,
-  type ModelFamilyDefaults,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
@@ -65,17 +64,12 @@ import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
 import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
 import { useTaskAgentDefinitionsQuery } from "./hooks/queries/useTaskAgentDefinitions";
-import { useStickyModelFamilyDefaults } from "./hooks/useStickyModelFamilyDefaults";
+import { useModelFamilyMemory } from "./hooks/useModelFamilyMemory";
 import {
   buildNewSessionCreateOptions,
   resolveNewSessionLaunchState,
 } from "./lib/new-session-launch";
-import {
-  resolveModelFamilyState,
-  selectFamily,
-  selectModelInFamily,
-  type ModelFamilySelection,
-} from "./lib/model-family-defaults";
+import type { ModelFamilySelection } from "./lib/model-family-defaults";
 import { getModelFamily, type ModelFamily } from "../shared/model-families.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
@@ -1976,8 +1970,6 @@ export default function App() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
-                  familyDefaults={settings?.familyDefaults}
-                  lastModelFamily={settings?.lastModelFamily}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2059,8 +2051,6 @@ export default function App() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
-                  familyDefaults={settings?.familyDefaults}
-                  lastModelFamily={settings?.lastModelFamily}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2303,8 +2293,6 @@ function SessionRoute({
   defaultModelId,
   defaultReasoningEffort,
   defaultContextTier,
-  familyDefaults,
-  lastModelFamily,
   launchDefaultsLoading,
 }: {
   sessions: Session[];
@@ -2340,8 +2328,6 @@ function SessionRoute({
   defaultModelId?: string;
   defaultReasoningEffort?: string;
   defaultContextTier?: CopilotContextTier;
-  familyDefaults?: ModelFamilyDefaults;
-  lastModelFamily?: ModelFamily;
   launchDefaultsLoading: boolean;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
@@ -2371,18 +2357,12 @@ function SessionRoute({
   const draftLaunch = draft?.launch;
   const voiceJob = getVoiceJob(composerKey);
   const previousDraftRouteKeyRef = useRef(draftRouteKey);
-  const rememberedLaunchSelection = !draftLaunch?.model && lastModelFamily
-    ? selectFamily({
-      family: lastModelFamily,
-      state: resolveModelFamilyState({
-        models: modelsQuery.data ?? [],
-        selectedModelId: "",
-        selectedFamily: lastModelFamily,
-        globalDefaultModelId: defaultModelId,
-        familyDefaults,
-      }),
-      familyDefaults,
-    })
+  // Shared with the change-model dialog; only the draft route needs settings,
+  // and cached settings are still read when fetching is disabled.
+  const modelFamilyMemory = useModelFamilyMemory({ enabled: isDraft });
+  const { familyDefaults, lastModelFamily } = modelFamilyMemory;
+  const rememberedLaunchSelection = !draftLaunch?.model
+    ? modelFamilyMemory.resolveRememberedSelection(modelsQuery.data ?? [])
     : null;
   const effectiveSelectedModelId = draftLaunch?.model
     || rememberedLaunchSelection?.modelId
@@ -2410,7 +2390,7 @@ function SessionRoute({
         : undefined
     ),
   });
-  const rememberModelFamilyDefaults = useStickyModelFamilyDefaults(familyDefaults);
+  const rememberModelFamilyDefaults = modelFamilyMemory.remember;
   const launchCreateOptions = useMemo(
     () => ({
       ...buildNewSessionCreateOptions(launchState),
@@ -2477,28 +2457,21 @@ function SessionRoute({
   ]);
 
   const handleLaunchFamilyChange = useCallback((family: ModelFamily) => {
-    const selection = selectFamily({
-      family,
-      state: resolveModelFamilyState({
-        models: launchState.availableModels,
-        selectedModelId: launchState.modelKey,
-        globalDefaultModelId: defaultModelId,
-        familyDefaults,
-      }),
-      familyDefaults,
+    const selection = modelFamilyMemory.selectFamily(family, {
+      models: launchState.availableModels,
+      selectedModelId: launchState.modelKey,
     });
     if (selection) applyLaunchSelection(selection);
   }, [
     applyLaunchSelection,
-    defaultModelId,
-    familyDefaults,
     launchState.availableModels,
     launchState.modelKey,
+    modelFamilyMemory,
   ]);
 
   const handleLaunchModelChange = useCallback((modelId: string) => {
-    applyLaunchSelection(selectModelInFamily({ modelId, familyDefaults }));
-  }, [applyLaunchSelection, familyDefaults]);
+    applyLaunchSelection(modelFamilyMemory.selectModel(modelId));
+  }, [applyLaunchSelection, modelFamilyMemory]);
 
   const handleLaunchReasoningEffortChange = useCallback((reasoningEffort?: string) => {
     if (!reasoningEffort) return;
