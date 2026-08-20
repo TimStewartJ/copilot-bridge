@@ -61,6 +61,7 @@ import {
 } from "./session-context-normalizer.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
+import { readSdkSessionEvents } from "./sdk-session-events.js";
 import {
   getAssistantTurnInstanceId,
   getSdkAgentId,
@@ -684,6 +685,30 @@ export class SessionRunner {
       }
 
       if (!requiresSignedThinkingSafeResume(currentModel?.modelId)) return cachedSession;
+
+      let events;
+      try {
+        events = await readSdkSessionEvents(cachedSession);
+      } catch (error) {
+        const message = getErrorMessage(error);
+        console.warn(`[sdk] [${sid}] Could not inspect cached session history before send: ${message}`);
+        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
+          outcome: "history-inspection-failed",
+          error: message,
+        });
+        return cachedSession;
+      }
+      const hasPriorConversation = events.some((event: any) =>
+        event?.type === "user.message"
+        || event?.type === "assistant.message"
+        || event?.type === "assistant.turn_end");
+      if (!hasPriorConversation) {
+        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
+          outcome: "skipped-fresh-session",
+          model: currentModel.modelId,
+        });
+        return cachedSession;
+      }
 
       const refreshStart = Date.now();
       const disposed = await this.deps.tryDisposeIdleCachedSessionForRefresh(
