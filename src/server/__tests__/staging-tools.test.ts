@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import express from "express";
 import request from "./test-http.js";
+import { advanceTimersAndSettle } from "./helpers.js";
 
 type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
@@ -2952,7 +2953,7 @@ describe("staging preview event-driven discovery", () => {
       controller!.watchJob(fake.job);
 
       // Nothing is registered while the runner is still building.
-      await vi.advanceTimersByTimeAsync(50);
+      await advanceTimersAndSettle(50, () => controller!.settle());
       expect(mod.getActivePreviews().has(prefix)).toBe(false);
 
       // The runner process writes the build, then marks the job terminal.
@@ -2960,7 +2961,7 @@ describe("staging preview event-driven discovery", () => {
       writeFileSync(join(distDir, "index.html"), "<!doctype html><p>runner built preview</p>");
       fake.complete("succeeded");
 
-      await vi.advanceTimersByTimeAsync(50);
+      await advanceTimersAndSettle(50, () => controller!.settle());
 
       expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
       expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
@@ -3006,7 +3007,7 @@ describe("staging preview event-driven discovery", () => {
       const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
       controller!.watchJob(fake.job);
       fake.complete("succeeded");
-      await vi.advanceTimersByTimeAsync(50);
+      await advanceTimersAndSettle(50, () => controller!.settle());
 
       expect(mod.__testing.hasActivePreview(prefix)).toBe(false);
       expect(vi.getTimerCount()).toBe(0);
@@ -3057,7 +3058,7 @@ describe("staging preview event-driven discovery", () => {
       const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
       controller!.watchJob(fake.job);
       fake.complete("succeeded");
-      await vi.advanceTimersByTimeAsync(50);
+      await advanceTimersAndSettle(50, () => controller!.settle());
 
       // The old child process is torn down (its seeded data is preserved) so the
       // next request lazily restores a backend running the rebuilt code.
@@ -3111,14 +3112,14 @@ describe("staging preview event-driven discovery", () => {
 
       // The runner claims and builds; the live server sees nothing yet.
       runnerStore.claimNext({ runnerPid: 4242 });
-      await vi.advanceTimersByTimeAsync(50);
+      await advanceTimersAndSettle(50, () => controller!.settle());
       expect(mod.getActivePreviews().has(prefix)).toBe(false);
 
       mkdirSync(distDir, { recursive: true });
       writeFileSync(join(distDir, "index.html"), "<!doctype html><p>cross process preview</p>");
       runnerStore.succeed(job.id, { previewPath: `/staging/${prefix}/` });
 
-      await vi.advanceTimersByTimeAsync(50);
+      await advanceTimersAndSettle(50, () => controller!.settle());
 
       expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
       expect(controller!.hasScheduledWork()).toBe(false);

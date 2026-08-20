@@ -350,3 +350,23 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
   };
   return Object.assign(defaults, overrides) as T & AgentSession;
 }
+
+/**
+ * Advance fake timers by `ms`, then settle whatever real async work the fired
+ * timer started before returning.
+ *
+ * `vi.advanceTimersByTimeAsync` fires timer callbacks and drains microtasks, but
+ * it cannot wait for work that leaves the microtask queue (libuv filesystem
+ * calls, SQLite reads on a second connection, child-process teardown). Any
+ * controller whose timer callback kicks off such work must expose `settle()`
+ * (or an equivalent promise) so tests can wait for a consistent view instead of
+ * assuming the timer advance finished it. Use this helper in every fake-timer
+ * test that asserts on the *results* of a timer-driven tick.
+ */
+export async function advanceTimersAndSettle(
+  ms: number,
+  settle: () => Promise<void>,
+): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+  await settle();
+}

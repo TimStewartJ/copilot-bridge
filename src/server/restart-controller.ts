@@ -72,6 +72,8 @@ function isCurrentRestartStateWriteTarget(target: RestartStateWriteTarget): bool
   return target.path === _restartStatePath && target.generation === _restartStateStoreGeneration;
 }
 
+const _detachedRestartStateWriteQueues = new Set<Promise<void>>();
+
 function queueRestartStateWrite(write: () => Promise<void>): void {
   _restartStateWriteQueue = _restartStateWriteQueue
     .catch(() => undefined)
@@ -79,6 +81,17 @@ function queueRestartStateWrite(write: () => Promise<void>): void {
     .catch((error) => {
       console.error("[restart] Failed to persist restart state:", error);
     });
+}
+
+/**
+ * Test seam: settle every restart-state write queued so far, including writes
+ * detached by {@link configureRestartStateStore} that still target a previous
+ * path. Production callers use {@link refreshRestartState}, which only awaits
+ * the queue for the active path.
+ */
+export async function waitForAllRestartStateWritesForTests(): Promise<void> {
+  const pending = [_restartStateWriteQueue, ..._detachedRestartStateWriteQueues];
+  await Promise.all(pending.map((queue) => queue.catch(() => undefined)));
 }
 
 function setCachedRestartState(state: RestartState): RestartState {
@@ -135,6 +148,13 @@ export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
   _restartState = createDefaultRestartState();
   // Detach from writes already queued for the previous path. Their captured
   // targets keep the file path stable, and the generation guard protects this cache.
+  const detached = _restartStateWriteQueue;
+  _detachedRestartStateWriteQueues.add(detached);
+  void detached
+    .catch(() => undefined)
+    .finally(() => {
+      _detachedRestartStateWriteQueues.delete(detached);
+    });
   _restartStateWriteQueue = Promise.resolve();
 }
 
