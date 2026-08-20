@@ -1917,7 +1917,7 @@ export class SessionManager {
         return false;
       }
       if (this.sessionObjects.get(sessionId) !== session) return false;
-      if (tasks === undefined || (tasks.tasks?.length ?? 0) > 0) return false;
+      if (tasks === undefined || (tasks.tasks ?? []).some((task) => !this.isTerminalBackgroundTask(task))) return false;
 
       const disconnected = await settleByDeadline<void>(
         () => Promise.resolve(session.disconnect?.()).then(() => undefined),

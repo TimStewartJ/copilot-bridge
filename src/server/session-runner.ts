@@ -273,6 +273,14 @@ export function requiresSignedThinkingSafeResume(modelId: unknown): boolean {
   return modelId.trim().toLowerCase().startsWith("claude-");
 }
 
+/** Claude rejected a round-tripped `thinking` block whose signature no longer matches the conversation. */
+export function isStaleSignedThinkingErrorMessage(message: unknown): boolean {
+  return typeof message === "string" && /Invalid `signature` in `thinking` block/i.test(message);
+}
+
+const STALE_SIGNED_THINKING_RECOVERY_PROMPT =
+  "The previous model call was rejected because of stale reasoning state; that has been cleared. Continue from where you left off.";
+
 export interface SessionResumeLease {
   sessionId: string;
   token: symbol;
@@ -906,6 +914,7 @@ export class SessionRunner {
     let persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
     let postTurnAgentRefreshPromise: Promise<void> | undefined;
     let staleCacheRetryCount = 0;
+    let staleSignedThinkingRecoveryCount = 0;
     let acceptingSessionEvents = false;
     const resetRunTelemetryState = () => {
       lastDiskMtime = undefined;
@@ -1051,6 +1060,7 @@ export class SessionRunner {
       pendingUserInputCount: this.deps.getPendingUserInputCount(sessionId),
       pendingInteractionCount: this.deps.getPendingInteractionCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
+      staleSignedThinkingRecoveryCount: staleSignedThinkingRecoveryCount || undefined,
       ...getActiveToolTelemetry(),
       ...getActiveExternalToolTelemetry(now),
     });
@@ -1686,6 +1696,16 @@ export class SessionRunner {
             }, eventAt);
             break;
           }
+          if (
+            context.origin === "live"
+            && staleSignedThinkingRecoveryCount === 0
+            && isStaleSignedThinkingErrorMessage(data?.message)
+          ) {
+            staleSignedThinkingRecoveryCount += 1;
+            acceptingSessionEvents = false;
+            void recoverFromStaleSignedThinking(event);
+            break;
+          }
           completeSessionError(event, context);
           break;
         }
@@ -1845,6 +1865,52 @@ export class SessionRunner {
       });
       clearEventLogStatsCache(sessionId);
       this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
+    };
+
+    // Mid-turn Claude signature rejections come from reasoning blocks minted in this run, so the
+    // pre-send refresh cannot prevent them. Resume from disk (which strips signed reasoning) and ask
+    // the model to continue instead of ending the run with an error.
+    const recoverFromStaleSignedThinking = async (errorEvent: any) => {
+      const startedAt = Date.now();
+      const failedSession = session;
+      console.warn(`[sdk] [${sid}] Stale signed thinking rejected mid-turn — resuming from disk and continuing...`);
+      try {
+        unsub?.();
+        unsub = undefined;
+        const disposed = await this.deps.tryDisposeIdleCachedSessionForRefresh(
+          sessionId,
+          failedSession,
+          "recovering from stale signed thinking",
+        );
+        if (!disposed) throw new Error("cached session could not be disposed");
+        session = await resumeSession();
+        if (!session || runController.isCompleted()) {
+          if (session) await abandonSession(session);
+          return;
+        }
+        const resumedSession = session;
+        const initialization = this.deps.waitForSessionToolInitialization(sessionId, resumedSession);
+        if (!(initialization === true || await initialization)) {
+          throw new Error(SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE);
+        }
+        if (runController.isCompleted()) return;
+        unsub = subscribeToSession(resumedSession);
+        beginSend();
+        if ((await runStepOrCompletion(
+          "send stale signed thinking recovery prompt",
+          () => resumedSession.send({ prompt: STALE_SIGNED_THINKING_RECOVERY_PROMPT }),
+        )).completed) return;
+        recordRunSpan("session.run.recovery", Date.now() - startedAt, {
+          outcome: "stale_signed_thinking_resumed",
+        });
+      } catch (error) {
+        console.error(`[sdk] [${sid}] Stale signed thinking recovery failed:`, error);
+        recordRunSpan("session.run.recovery", Date.now() - startedAt, {
+          outcome: "stale_signed_thinking_recovery_failed",
+          error: getErrorMessage(error),
+        });
+        completeSessionError(errorEvent, { origin: "live" });
+      }
     };
 
     const cachedMcp = this.deps.mcpStatus.get(sessionId);
