@@ -275,6 +275,112 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("refreshes cached Claude sessions when only finished background tasks remain", async () => {
+    const sessionId = "session-claude-finished-tasks";
+    const { manager } = createManager();
+    const cached = makeSession();
+    const resumed = makeSession();
+    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
+      modelId: "claude-sonnet-5",
+      reasoningEffort: "xhigh",
+    });
+    cached.session.getEvents = vi.fn().mockResolvedValue([
+      { type: "assistant.message", data: { content: "previous response" } },
+    ]);
+    cached.session.listTasks = vi.fn().mockResolvedValue({
+      tasks: [
+        { kind: "agent", id: "done-agent", toolCallId: "tool-1", status: "completed", executionMode: "background" },
+        { kind: "agent", id: "failed-agent", toolCallId: "tool-2", status: "failed", executionMode: "background" },
+      ],
+    });
+    cached.session.disconnect = vi.fn().mockResolvedValue(undefined);
+    manager.sessionObjects.set(sessionId, cached.session);
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(resumed.session),
+    };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    expect(cached.session.send).not.toHaveBeenCalled();
+    expect(cached.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(resumed.session.send).toHaveBeenCalledWith({ prompt: "hello" });
+
+    resumed.getReleaseSend()?.();
+    await flushMicrotasks();
+    resumed.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await flushMicrotasks();
+  });
+
+  it("resumes from disk and continues when Claude rejects a stale thinking signature mid-turn", async () => {
+    const sessionId = "session-claude-mid-turn-signature";
+    const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
+    const first = makeSession();
+    const resumed = makeSession();
+    first.session.listTasks = vi.fn().mockResolvedValue({ tasks: [] });
+    first.session.disconnect = vi.fn().mockResolvedValue(undefined);
+    manager.backend = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(first.session)
+        .mockResolvedValueOnce(resumed.session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "keep going");
+    await flushMicrotasks();
+    first.getReleaseSend()?.();
+    await flushMicrotasks();
+    expect(first.session.send).toHaveBeenCalledWith({ prompt: "keep going" });
+
+    first.getHandler()?.({
+      type: "assistant.turn_end",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    first.getHandler()?.({
+      id: "signature-error-1",
+      type: "session.error",
+      data: {
+        errorType: "query",
+        message: "Execution failed: CAPIError: 400 messages.3.content.9: Invalid `signature` in `thinking` block: it was not created in this conversation, or the messages before it have changed since.",
+      },
+      timestamp: new Date(Date.now() + 2).toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(first.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.backend.resumeSession).toHaveBeenCalledTimes(2);
+    expect(resumed.session.send).toHaveBeenCalledTimes(1);
+    expect(resumed.session.send).toHaveBeenCalledWith({
+      prompt: expect.stringMatching(/Continue from where you left off/),
+    });
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getTerminalState()).toMatchObject({ complete: false });
+
+    resumed.getReleaseSend()?.();
+    await flushMicrotasks();
+    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId))
+      .toMatchObject({ outcome: "stale_signed_thinking_resumed" });
+
+    resumed.getHandler()?.({
+      type: "session.error",
+      data: {
+        errorType: "query",
+        message: "Execution failed: CAPIError: 400 messages.5.content.4: Invalid `signature` in `thinking` block: it was not created in this conversation, or the messages before it have changed since.",
+      },
+      timestamp: new Date(Date.now() + 3).toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(manager.backend.resumeSession).toHaveBeenCalledTimes(2);
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getTerminalState()).toMatchObject({ complete: true, terminalType: "error" });
+  });
+
   it("continues reusing cached sessions for models outside the signed-thinking guard", async () => {
     const sessionId = "session-gpt-cache-reuse";
     const { manager } = createManager();
