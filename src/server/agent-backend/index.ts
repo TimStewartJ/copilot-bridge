@@ -38,7 +38,6 @@ export type {
   AgentSessionEvent,
   AgentSessionEventHandler,
   AgentSessionSummary,
-  AgentSelectedProfile,
   AgentSetModelOptions,
   AgentUserInputRequest,
   AgentUserInputResponse,

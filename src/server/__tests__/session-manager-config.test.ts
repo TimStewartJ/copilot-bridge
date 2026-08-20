@@ -328,10 +328,8 @@ describe("SessionManager session config", () => {
       description: "Reviews APIs",
       prompt: "Review APIs.",
     });
-    const selectAgent = vi.fn(async (name: string) => ({ name }));
     const session = makeAgentSessionStub({
       sessionId: "selected-session",
-      selectAgent,
     });
     const manager = new SessionManager({
       globalBus,
@@ -362,7 +360,6 @@ describe("SessionManager session config", () => {
     expect(manager.backend.createSession.mock.calls[0][0]).toMatchObject({
       agent: "api-reviewer",
     });
-    expect(selectAgent).toHaveBeenCalledWith("api-reviewer");
   });
 
   it("keeps stored non-active task status in newly created task sessions", async () => {

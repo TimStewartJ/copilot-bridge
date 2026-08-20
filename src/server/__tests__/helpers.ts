@@ -337,7 +337,6 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     invokeSlashCommand: async () => ({ kind: "text", text: "" }),
     listSlashCommands: async () => undefined,
     getCurrentModel: async () => undefined,
-    selectAgent: async (name) => ({ name }),
     truncateHistory: async () => undefined,
     listMcpServers: async () => undefined,
     initializeTools: async () => undefined,

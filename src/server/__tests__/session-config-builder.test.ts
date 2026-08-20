@@ -13,7 +13,10 @@ import {
   GITHUB_COPILOT_MCP_READONLY_URL,
   GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
 } from "../github-copilot-mcp.js";
-import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
+import {
+  createTaskAgentDefinitionStore,
+  type TaskAgentDefinitionStore,
+} from "../task-agent-definition-store.js";
 import { createTaskStore } from "../task-store.js";
 import { createTestBus } from "./helpers.js";
 
@@ -126,6 +129,7 @@ describe("session-config-builder", () => {
         tools: ["view", "grep"],
         infer: false,
       }]);
+      expect(cfg.customAgentsLocalOnly).toBe(true);
       expect(cfg.systemMessage.content).toContain(
         "Task agent definitions available through Copilot's native task/custom-agent surface",
       );
@@ -167,6 +171,31 @@ describe("session-config-builder", () => {
       options: { task, agentOverride: "missing-agent" },
       callbacks: createCallbacks(),
     })).toThrow('Agent definition "missing-agent" is not available');
+  });
+
+  it("rejects selecting a task agent that is not user-invocable", () => {
+    const taskAgentDefinitionStore = {
+      listTaskAgentDefinitions: () => [{
+        taskId: "task-1",
+        name: "internal-reviewer",
+        description: "Internal only",
+        prompt: "Review internally.",
+        tools: null,
+        infer: true,
+        userInvocable: false,
+        fileName: "internal-reviewer.agent.md",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        updatedAt: "2026-08-20T00:00:00.000Z",
+        frontmatter: {},
+        raw: "",
+      }],
+    } as unknown as TaskAgentDefinitionStore;
+
+    expect(() => buildSessionConfig({
+      deps: createDeps({ taskAgentDefinitionStore }),
+      options: { task: createTask(), agentOverride: "internal-reviewer" },
+      callbacks: createCallbacks(),
+    })).toThrow('Agent definition "internal-reviewer" cannot be selected');
   });
 
   it("renders identity, custom instructions, model settings, and common system guidance", () => {

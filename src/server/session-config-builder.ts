@@ -218,6 +218,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   const taskAgentDefinitions = task
     ? deps.taskAgentDefinitionStore?.listTaskAgentDefinitions(task.id) ?? []
     : [];
+  const hasTaskAgentDefinitions = taskAgentDefinitions.length > 0;
   const selectedTaskAgent = agentOverride?.trim();
   if (selectedTaskAgent) {
     const definition = taskAgentDefinitions.find((candidate) => candidate.name === selectedTaskAgent);
@@ -243,9 +244,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
     ],
-    ...(taskAgentDefinitions.length > 0
+    ...(hasTaskAgentDefinitions
       ? { customAgents: taskAgentDefinitions.map(toCopilotCustomAgentConfig) }
       : {}),
+    ...(hasTaskAgentDefinitions ? { customAgentsLocalOnly: true } : {}),
     ...(!forResume && selectedTaskAgent ? { agent: selectedTaskAgent } : {}),
   };
   // Explicitly disable Copilot's cloud-backed agentic memory. The feature stores
