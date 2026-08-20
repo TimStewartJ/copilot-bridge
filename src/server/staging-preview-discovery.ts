@@ -76,6 +76,14 @@ export interface StagingPreviewDiscoveryController {
   resumeActiveJobs(): void;
   /** Run discovery once. Coalesces with any in-flight or queued run. */
   requestDiscovery(reason?: StagingPreviewDiscoveryReason): Promise<void>;
+  /**
+   * Resolve once the in-flight tick and any discovery drain it started have
+   * fully completed. Timer-driven ticks start real async work (store reads,
+   * filesystem cleanup, child-process teardown) that outlives the timer
+   * callback itself, so callers that need a settled view must await this
+   * rather than assuming a timer advance finished the work.
+   */
+  settle(): Promise<void>;
   watchedJobIds(): string[];
   hasScheduledWork(): boolean;
   stop(): void;
@@ -112,6 +120,9 @@ export function createStagingPreviewDiscovery(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let ticking = false;
   let stopped = false;
+  // The promise for the tick currently executing (null when idle). Exposed via
+  // settle() so callers can await real async work a timer callback started.
+  let tickPromise: Promise<void> | null = null;
 
   // Every discovery run — timer-driven or requested — funnels through one drain so
   // async cleanup never interleaves with registration on the shared preview maps.
@@ -123,7 +134,9 @@ export function createStagingPreviewDiscovery(
     if (stopped || timer || ticking || watched.size === 0) return;
     timer = setTimeout(() => {
       timer = null;
-      void tick();
+      tickPromise = tick().finally(() => {
+        tickPromise = null;
+      });
     }, pollIntervalMs);
     timer.unref?.();
   }
@@ -294,6 +307,15 @@ export function createStagingPreviewDiscovery(
     requestDiscovery(reason: StagingPreviewDiscoveryReason = "requested"): Promise<void> {
       if (stopped) return Promise.resolve();
       return requestDiscovery(reason);
+    },
+
+    async settle(): Promise<void> {
+      // Loop: a tick may enqueue a drain, and a drain may be queued behind a tick.
+      // Keep awaiting until neither is in flight.
+      while (tickPromise || drainPromise) {
+        await (tickPromise ?? Promise.resolve());
+        await (drainPromise ?? Promise.resolve());
+      }
     },
 
     watchedJobIds(): string[] {

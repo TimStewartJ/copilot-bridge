@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { makeTestDir } from "./helpers.js";
+import { advanceTimersAndSettle, makeTestDir } from "./helpers.js";
 import { openDatabase, type DatabaseSync } from "../db.js";
 import {
   createManagementJobStore,
@@ -151,12 +151,12 @@ describe("staging preview discovery", () => {
     expect(vi.getTimerCount()).toBe(1);
 
     store.setJob({ ...job, status: "running", heartbeatAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
     expect(spy.discover).not.toHaveBeenCalled();
     expect(controller.watchedJobIds()).toEqual([job.id]);
 
     store.setJob({ ...job, status: "succeeded", completedAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(spy.triggers[0].reason).toBe("job-completed");
@@ -167,7 +167,7 @@ describe("staging preview discovery", () => {
     expect(controller.hasScheduledWork()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
 
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 20);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 20, () => controller.settle());
     expect(spy.discover).toHaveBeenCalledTimes(1);
     controller.stop();
   });
@@ -186,7 +186,7 @@ describe("staging preview discovery", () => {
     expect(controller.watchedJobIds()).toEqual(["resumed-job"]);
 
     store.setJob({ ...job, status: "failed" });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
@@ -222,7 +222,7 @@ describe("staging preview discovery", () => {
 
     controller.watchJob(job);
     store.setJob({ ...job, status: "succeeded" });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(spy.triggers[0].completedJobs[0].type).toBe("staging_deploy");
@@ -242,7 +242,7 @@ describe("staging preview discovery", () => {
     });
 
     controller.watchJob(job);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 6);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 6, () => controller.settle());
 
     // One defensive rescan for the stall, but the job is still being watched.
     expect(spy.discover).toHaveBeenCalledTimes(1);
@@ -252,11 +252,11 @@ describe("staging preview discovery", () => {
 
     // A reclaiming runner refreshes the heartbeat and later succeeds.
     store.setJob({ ...job, status: "running", heartbeatAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
     expect(spy.discover).toHaveBeenCalledTimes(1);
 
     store.setJob({ ...job, status: "succeeded" });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(2);
     expect(spy.triggers[1].reason).toBe("job-completed");
@@ -278,7 +278,7 @@ describe("staging preview discovery", () => {
     });
 
     controller.watchJob(job);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 4);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 4, () => controller.settle());
 
     expect(controller.watchedJobIds()).toEqual([]);
     expect(spy.discover).toHaveBeenCalledTimes(1);
@@ -301,12 +301,12 @@ describe("staging preview discovery", () => {
 
     controller.watchJob(job);
     // A queued row has no writer, so a long wait behind a deploy must not expire it.
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 10);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 10, () => controller.settle());
     expect(controller.watchedJobIds()).toEqual([job.id]);
     expect(spy.discover).not.toHaveBeenCalled();
 
     store.setJob({ ...job, status: "succeeded", updatedAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(spy.triggers[0].reason).toBe("job-completed");
@@ -327,7 +327,7 @@ describe("staging preview discovery", () => {
     });
 
     controller.watchJob(job);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 4);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 4, () => controller.settle());
 
     expect(controller.watchedJobIds()).toEqual([]);
     expect(spy.triggers[0].reason).toBe("watch-expired");
@@ -358,14 +358,14 @@ describe("staging preview discovery", () => {
     });
 
     controller.resumeActiveJobs();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 3, () => controller.settle());
 
     expect(controller.watchedJobIds()).toEqual([job.id]);
     expect(spy.triggers.map((trigger) => trigger.reason)).toEqual(["job-stalled"]);
 
     // The runner reclaims the stale job and finishes it.
     store.setJob({ ...job, status: "succeeded", updatedAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.triggers.at(-1)?.reason).toBe("job-completed");
     expect(vi.getTimerCount()).toBe(0);
@@ -385,7 +385,7 @@ describe("staging preview discovery", () => {
     });
 
     controller.watchJob(job);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 2, () => controller.settle());
     // Claimed right at the ceiling: the queue bound must not drop a running job.
     store.setJob({
       ...job,
@@ -393,12 +393,12 @@ describe("staging preview discovery", () => {
       heartbeatAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 3, () => controller.settle());
     expect(controller.watchedJobIds()).toEqual([job.id]);
     expect(spy.discover).not.toHaveBeenCalled();
 
     store.setJob({ ...job, status: "succeeded", updatedAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(spy.triggers[0].reason).toBe("job-completed");
@@ -422,21 +422,21 @@ describe("staging preview discovery", () => {
 
     // A long build heartbeats well past the idle window; it must stay watched.
     for (let beat = 0; beat < 6; beat++) {
-      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+      await advanceTimersAndSettle(POLL_INTERVAL_MS * 2, () => controller.settle());
       store.setJob({
         ...job,
         status: "running",
         heartbeatAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
-      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+      await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
     }
 
     expect(controller.watchedJobIds()).toEqual([job.id]);
     expect(spy.discover).not.toHaveBeenCalled();
 
     store.setJob({ ...job, status: "succeeded", updatedAt: new Date().toISOString() });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
     controller.stop();
@@ -456,12 +456,12 @@ describe("staging preview discovery", () => {
     });
 
     controller.watchJob(job);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 2, () => controller.settle());
     // A duplicate enqueue reuses the same job — the idle window must not restart.
     controller.watchJob(job);
     expect(controller.watchedJobIds()).toEqual([job.id]);
 
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 2, () => controller.settle());
     expect(controller.watchedJobIds()).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
     controller.stop();
@@ -479,7 +479,7 @@ describe("staging preview discovery", () => {
 
     controller.watchJob(job);
     store.setJob(null);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.triggers[0].reason).toBe("job-missing");
     expect(controller.watchedJobIds()).toEqual([]);
@@ -501,14 +501,14 @@ describe("staging preview discovery", () => {
 
     controller.watchJob(job);
     store.failNextGet(new Error("database is locked"));
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).not.toHaveBeenCalled();
     expect(controller.watchedJobIds()).toEqual([job.id]);
     expect(logged.some((message) => message.includes("database is locked"))).toBe(true);
 
     store.setJob({ ...job, status: "succeeded" });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
     expect(spy.discover).toHaveBeenCalledTimes(1);
     controller.stop();
   });
@@ -531,7 +531,7 @@ describe("staging preview discovery", () => {
 
     spy.release();
     await first;
-    await vi.advanceTimersByTimeAsync(0);
+    await advanceTimersAndSettle(0, () => controller.settle());
 
     // The three overlapping requests collapse into the in-flight run plus one rerun.
     expect(spy.discover).toHaveBeenCalledTimes(2);
@@ -558,7 +558,7 @@ describe("staging preview discovery", () => {
 
     controller.watchJob(job);
     await controller.requestDiscovery();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 5);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS * 5, () => controller.settle());
 
     expect(spy.discover).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
@@ -604,11 +604,11 @@ describe("staging preview discovery across processes", () => {
     controller.watchJob(queued);
 
     runnerStore.claimNext({ runnerPid: 4242 });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
     expect(spy.discover).not.toHaveBeenCalled();
 
     runnerStore.succeed(queued.id, { previewPath: "/staging/worktree/" });
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(spy.triggers[0].completedJobs[0]).toMatchObject({
@@ -639,10 +639,52 @@ describe("staging preview discovery across processes", () => {
     expect(controller.watchedJobIds()).toEqual([queued.id]);
 
     runnerStore.succeed(queued.id, {});
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
 
     expect(spy.discover).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+    controller.stop();
+  });
+
+  it("settle() waits for real async discovery work a timer tick started", async () => {
+    // Model the production shape: discover() starts work that outlives the
+    // microtask queue the timer advance drains. An external gate stands in for
+    // real I/O (fs, SQLite on another connection, child-process teardown).
+    let releaseDiscover!: () => void;
+    let discoverFinished = false;
+    const discover = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        releaseDiscover = resolve;
+      });
+      discoverFinished = true;
+    });
+    const controller = createStagingPreviewDiscovery({
+      store: serverStore,
+      discover,
+      pollIntervalMs: POLL_INTERVAL_MS,
+    });
+    const queued = serverStore.enqueue("staging_preview", {
+      stagingDir: join(dataDir, "worktree"),
+      validate: true,
+    });
+    controller.watchJob(queued);
+    runnerStore.succeed(queued.id, {});
+
+    // Deliberately a bare timer advance: this test proves the advance alone is
+    // insufficient and that settle() is what waits for the gated work.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    // The tick fired and entered discover(), but the work is still in flight:
+    // a timer advance alone must not be mistaken for completion.
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(discoverFinished).toBe(false);
+    expect(controller.hasScheduledWork()).toBe(true);
+
+    const settled = controller.settle();
+    releaseDiscover();
+    await settled;
+
+    expect(discoverFinished).toBe(true);
+    expect(controller.hasScheduledWork()).toBe(false);
     controller.stop();
   });
 });

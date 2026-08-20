@@ -17,6 +17,7 @@ import {
 import {
   requiresSignedThinkingSafeResume,
 } from "../session-runner.js";
+import { waitForAllRestartStateWritesForTests } from "../restart-controller.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
@@ -139,13 +140,6 @@ describe("SessionManager run state", () => {
     return span.metadata ?? {};
   }
 
-  async function waitForRestartPhase(filePath: string, phase: "idle" | "queued" | "waiting-for-sessions" | "restarting") {
-    for (let i = 0; i < 50; i++) {
-      if ((await readRestartState(filePath)).phase === phase) return;
-      await flushMicrotasks();
-    }
-    throw new Error(`Timed out waiting for restart state ${phase} at ${filePath}`);
-  }
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -3820,7 +3814,10 @@ describe("SessionManager run state", () => {
         triggerRestartPending();
         configureRestartStateStore(secondRuntimePaths);
 
-        await waitForRestartPhase(firstRestartStatePath, "queued");
+        // The first path's write was detached by the reconfigure above and runs
+        // real filesystem I/O, so await it directly instead of polling microtasks.
+        await waitForAllRestartStateWritesForTests();
+        expect((await readRestartState(firstRestartStatePath)).phase).toBe("queued");
         expect(isRestartPending()).toBe(false);
         await expect(refreshRestartState()).resolves.toMatchObject({ phase: "idle" });
         expect((await readRestartState(secondRestartStatePath)).phase).toBe("idle");
@@ -3845,12 +3842,16 @@ describe("SessionManager run state", () => {
         forceClearRestartPending();
         configureRestartStateStore(secondRuntimePaths);
 
-        await waitForRestartPhase(firstRestartStatePath, "idle");
+        await waitForAllRestartStateWritesForTests();
+        expect((await readRestartState(firstRestartStatePath)).phase).toBe("idle");
         const secondDiskState = await readRestartState(secondRestartStatePath);
         expect(secondDiskState.phase).toBe("waiting-for-sessions");
         expect(secondDiskState.requestId).toBe("req-second");
       } finally {
         configureRestartStateStore(undefined);
+        // Settle any still-detached write before removing its target directory so
+        // cleanup never races a late rename into a deleted folder.
+        await waitForAllRestartStateWritesForTests();
         rmSync(firstDataDir, { recursive: true, force: true });
         rmSync(secondDataDir, { recursive: true, force: true });
       }
