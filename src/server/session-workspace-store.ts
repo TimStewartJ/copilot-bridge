@@ -36,7 +36,7 @@ export function createSessionWorkspaceStore(db: DatabaseSync) {
   }
 
   function listWorkspaces(): SessionWorkspaceMap {
-    const states = bridgeSessionStateStore.listStates();
+    const states = bridgeSessionStateStore.listPinnedCwdStates();
     const result: SessionWorkspaceMap = {};
     for (const state of Object.values(states)) {
       if (state.pinnedCwd) {

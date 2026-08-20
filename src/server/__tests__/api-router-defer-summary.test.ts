@@ -76,4 +76,41 @@ describe("session list defer summaries", () => {
     expect(JSON.stringify(secondRes.body)).not.toContain("prompt added after session cache warmup");
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
+
+  it("resolves defer summaries with one bulk query per store instead of a query per session", async () => {
+    const sessions = Array.from({ length: 25 }, (_, index) => ({
+      sessionId: `session-${index}`,
+      summary: `Session ${index}`,
+    }));
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk: vi.fn(async () => sessions),
+    } as any;
+    const { app, ctx } = createTestApp({ sessionManager });
+    ctx.deferredPromptStore!.create("session-3", "one-shot", "2030-01-01T00:10:00.000Z");
+    ctx.deferLoopStore!.create({
+      sessionId: "session-7",
+      prompt: "loop",
+      intervalSeconds: 60,
+      nextRunAt: "2030-01-01T00:05:00.000Z",
+    });
+    const perSessionPromptSpy = vi.spyOn(ctx.deferredPromptStore!, "getSummaryForSession");
+    const perSessionLoopSpy = vi.spyOn(ctx.deferLoopStore!, "getSummaryForSession");
+    const bulkPromptSpy = vi.spyOn(ctx.deferredPromptStore!, "listSummariesBySession");
+    const bulkLoopSpy = vi.spyOn(ctx.deferLoopStore!, "listSummariesBySession");
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    const bySessionId = new Map(res.body.sessions.map((s: any) => [s.sessionId, s]));
+    expect(bySessionId.get("session-3")).toMatchObject({ deferSummary: { count: 1, nextRunAt: "2030-01-01T00:10:00.000Z" } });
+    expect(bySessionId.get("session-7")).toMatchObject({ deferSummary: { count: 1, nextRunAt: "2030-01-01T00:05:00.000Z" } });
+    expect(bySessionId.get("session-0")).toMatchObject({ deferSummary: { count: 0, nextRunAt: null } });
+    expect(perSessionPromptSpy).not.toHaveBeenCalled();
+    expect(perSessionLoopSpy).not.toHaveBeenCalled();
+    // One snapshot for the enriched build plus one for materialization; never per session.
+    expect(bulkPromptSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(bulkPromptSpy.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(bulkLoopSpy.mock.calls.length).toBeLessThanOrEqual(2);
+  });
 });

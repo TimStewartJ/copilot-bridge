@@ -85,6 +85,16 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
 
   function listStates(): BridgeSessionStateMap {
     const rows = db.prepare("SELECT * FROM bridge_session_state").all() as any[];
+    return hydrateStateRows(rows);
+  }
+
+  /** Only rows with a pinned cwd; the session list reads this once per build. */
+  function listPinnedCwdStates(): BridgeSessionStateMap {
+    const rows = db.prepare("SELECT * FROM bridge_session_state WHERE pinnedCwd IS NOT NULL").all() as any[];
+    return hydrateStateRows(rows);
+  }
+
+  function hydrateStateRows(rows: any[]): BridgeSessionStateMap {
     const states: BridgeSessionStateMap = {};
     for (const row of rows) {
       const state = hydrateRowSafely(row, hydrate, BRIDGE_SESSION_STATE_HYDRATION);
@@ -421,6 +431,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
   return {
     getState,
     listStates,
+    listPinnedCwdStates,
     setArchived,
     setTitleOverride,
     clearTitleOverride,

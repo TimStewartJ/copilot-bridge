@@ -245,6 +245,155 @@ describe("session workspace routes", () => {
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
+  it("serves a TTL-expired session list immediately and refreshes it in the background", async () => {
+    const copilotHome = createCopilotHome();
+    let summary = "Original title";
+    let releaseBuild: () => void = () => {};
+    const listSessionsFromDisk = vi.fn(async () => {
+      if (listSessionsFromDisk.mock.calls.length > 1) {
+        await new Promise<void>((resolve) => { releaseBuild = resolve; });
+      }
+      return [{ sessionId: "session-1", summary }];
+    });
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk,
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    ctx.sessionTitles.setTitle("session-1", summary);
+    const realNow = Date.now;
+    let offsetMs = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs);
+
+    try {
+      const firstRes = await request(app).get("/api/sessions");
+      expect(firstRes.status).toBe(200);
+      expect(firstRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
+      expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
+
+      summary = "Refreshed title";
+      offsetMs = 31_000;
+      const staleStart = realNow();
+      const staleRes = await request(app).get("/api/sessions");
+      const staleElapsed = realNow() - staleStart;
+      // The stale payload is served without waiting on the blocked rebuild, which
+      // starts only after the response has been written.
+      expect(staleRes.status).toBe(200);
+      expect(staleRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
+      expect(staleElapsed).toBeLessThan(5_000);
+      await vi.waitFor(() => expect(listSessionsFromDisk).toHaveBeenCalledTimes(2));
+
+      // A second stale poll coalesces onto the running refresh instead of starting another.
+      const staleAgainRes = await request(app).get("/api/sessions");
+      expect(staleAgainRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
+
+      releaseBuild();
+      await vi.waitFor(async () => {
+        const res = await request(app).get("/api/sessions");
+        expect(res.body.sessions[0]).toMatchObject({ summary: "Refreshed title" });
+      });
+      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("collapses concurrent stale polls onto one background refresh", async () => {
+    const copilotHome = createCopilotHome();
+    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk,
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    ctx.sessionTitles.setTitle("session-1", "Cached session");
+    const realNow = Date.now;
+    let offsetMs = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs);
+
+    try {
+      await request(app).get("/api/sessions");
+      offsetMs = 31_000;
+      const responses = await Promise.all([
+        request(app).get("/api/sessions"),
+        request(app).get("/api/sessions"),
+        request(app).get("/api/sessions"),
+      ]);
+      for (const res of responses) {
+        expect(res.status).toBe(200);
+        expect(res.body.sessions.map((s: any) => s.sessionId)).toEqual(["session-1"]);
+      }
+      await vi.waitFor(() => expect(listSessionsFromDisk).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("rebuilds synchronously after a structural invalidation even when a TTL-expired cache exists", async () => {
+    const copilotHome = createCopilotHome();
+    let summary = "Original title";
+    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary }]);
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk,
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    ctx.sessionTitles.setTitle("session-1", summary);
+    const realNow = Date.now;
+    let offsetMs = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs);
+
+    try {
+      await request(app).get("/api/sessions");
+      summary = "Renamed title";
+      offsetMs = 31_000;
+      ctx.globalBus.emit({ type: "session:title", sessionId: "session-1", title: summary });
+      const res = await request(app).get("/api/sessions");
+
+      expect(res.status).toBe(200);
+      expect(res.body.sessions[0]).toMatchObject({ summary: "Renamed title" });
+      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("resolves linked tasks for the session list from one task listing instead of per-session queries", async () => {
+    const copilotHome = createCopilotHome();
+    const sessions = Array.from({ length: 40 }, (_, index) => ({
+      sessionId: `session-${index}`,
+      summary: `Session ${index}`,
+    }));
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk: vi.fn(async () => sessions),
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    const task = ctx.taskStore.createTask("Linked task");
+    ctx.taskStore.linkSession(task.id, "session-5");
+    const findTaskBySessionIdSpy = vi.spyOn(ctx.taskStore, "findTaskBySessionId");
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    const bySessionId = new Map(res.body.sessions.map((s: any) => [s.sessionId, s]));
+    expect(bySessionId.get("session-5")).toMatchObject({ linkedTaskIds: [task.id] });
+    expect(bySessionId.get("session-6")).toMatchObject({ linkedTaskIds: [] });
+    expect(findTaskBySessionIdSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps in-flight session list builds cacheable when run-state events arrive", async () => {
     const copilotHome = createCopilotHome();
     let resolveSessions: (sessions: any[]) => void = () => {};

@@ -85,6 +85,28 @@ describe("deferred-prompt-store", () => {
     });
   });
 
+  describe("listSummariesBySession", () => {
+    it("matches the per-session summary for every session with pending work in one query", () => {
+      const earliest = "2030-01-01T00:01:00.000Z";
+      const later = "2030-01-01T00:02:00.000Z";
+      store.create("session-1", "Later", later);
+      store.create("session-1", "Earliest", earliest);
+      const running = store.create("session-1", "Running", "2030-01-01T00:00:30.000Z");
+      store.claimDue(running.id, 60_000);
+      store.create("session-2", "Other", "2030-01-01T00:00:00.000Z");
+      const completed = store.create("session-3", "Done", "2030-01-01T00:00:00.000Z");
+      const claimed = store.claimDue(completed.id, 60_000);
+      store.markCompleted(completed.id, claimed!.claimToken);
+
+      const summaries = store.listSummariesBySession();
+      expect(summaries.get("session-1")).toEqual(store.getSummaryForSession("session-1"));
+      expect(summaries.get("session-1")).toEqual({ count: 2, nextRunAt: earliest });
+      expect(summaries.get("session-2")).toEqual({ count: 1, nextRunAt: "2030-01-01T00:00:00.000Z" });
+      expect(summaries.has("session-3")).toBe(false);
+      expect(summaries.has("missing-session")).toBe(false);
+    });
+  });
+
   describe("claimDue / CAS semantics", () => {
     it("claims a pending row and returns claimToken", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());

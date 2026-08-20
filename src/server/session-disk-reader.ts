@@ -17,6 +17,7 @@ import {
   TERMINAL_TURN_EVENT_TYPES,
 } from "../shared/terminal-completion.js";
 import type { EventBusRegistry } from "./event-bus.js";
+import { mapWithConcurrency } from "./map-with-concurrency.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import type { SessionHistoryCoverage } from "../shared/session-stream.js";
@@ -217,44 +218,6 @@ function isFileNotFoundError(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
     && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-async function yieldToEventLoop(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  let processedCount = 0;
-  let aborted = false;
-  const workerCount = Math.min(Math.max(1, concurrency), items.length);
-
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (true) {
-      if (aborted) break;
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) break;
-
-      try {
-        results[index] = await mapper(items[index]!, index);
-      } catch (error) {
-        aborted = true;
-        throw error;
-      }
-      processedCount += 1;
-      if (processedCount % 128 === 0) {
-        await yieldToEventLoop();
-      }
-    }
-  }));
-
-  return results;
 }
 
 function getToolCallId(event: any): string | undefined {

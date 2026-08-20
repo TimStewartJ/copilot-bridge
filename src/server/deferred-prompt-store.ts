@@ -88,6 +88,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     WHERE sessionId = ? AND status = 'pending'
   `);
 
+  const selectSummariesBySession = db.prepare(`
+    SELECT sessionId, COUNT(*) as count, MIN(runAt) as nextRunAt
+    FROM deferred_prompts
+    WHERE status = 'pending'
+    GROUP BY sessionId
+  `);
+
   // CAS claim: only succeeds when status is still 'pending'
   const claimPending = db.prepare(`
     UPDATE deferred_prompts
@@ -230,6 +237,12 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return normalizeDeferSummary(selectSummaryForSession.get(sessionId) as DeferSummaryRow | undefined);
   }
 
+  /** One query for every session with pending work; sessions absent from the map have no pending prompts. */
+  function listSummariesBySession(): Map<string, DeferSummary> {
+    const rows = selectSummariesBySession.all() as unknown as Array<DeferSummaryRow & { sessionId: string }>;
+    return new Map(rows.map((row) => [row.sessionId, normalizeDeferSummary(row)]));
+  }
+
   function hasActiveForSession(sessionId: string): boolean {
     const row = db.prepare(`
       SELECT 1 AS found
@@ -341,6 +354,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     getNextFuturePending,
     getNextRunningLeaseExpiry,
     getSummaryForSession,
+    listSummariesBySession,
     hasActiveForSession,
     listExpiredRunningSessionIds,
     claimDue,
