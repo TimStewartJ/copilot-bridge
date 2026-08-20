@@ -70,8 +70,6 @@ export interface AgentCapabilities {
   eagerNativeTools?: boolean;
   /** Backend exposes RPCs to initialize tools and inspect current tool metadata. */
   toolMetadataWarmup?: boolean;
-  /** Backend can select a custom agent as the active persona for subsequent turns. */
-  customAgentSelection?: boolean;
 }
 
 /**
@@ -253,11 +251,6 @@ export interface AgentCurrentModel {
   contextTier?: string;
 }
 
-export interface AgentSelectedProfile {
-  name: string;
-  displayName?: string;
-}
-
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
  * through typed methods.
@@ -315,9 +308,6 @@ export interface AgentSession {
 
   /** Fetch the session's current model settings snapshot. Resolves `undefined` when unsupported. */
   getCurrentModel(): Promise<AgentCurrentModel | undefined>;
-
-  /** Select a custom agent as the active persona. Resolves `undefined` when unsupported. */
-  selectAgent(name: string): Promise<AgentSelectedProfile | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;

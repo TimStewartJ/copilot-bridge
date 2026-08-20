@@ -1305,7 +1305,6 @@ export class SessionManager {
     spanMetadata?: Record<string, unknown>;
     logMessage: (sessionId: string, duration: number) => string;
     cleanupLabel: string;
-    selectedAgent?: string;
   }): Promise<AgentSession> {
     const {
       client,
@@ -1319,7 +1318,6 @@ export class SessionManager {
       spanMetadata,
       logMessage,
       cleanupLabel,
-      selectedAgent,
     } = options;
     let session: AgentSession | undefined;
     let reservationReleased = false;
@@ -1334,25 +1332,6 @@ export class SessionManager {
       if (expectedSessionId && session.sessionId !== expectedSessionId) {
         await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
       }
-      if (selectedAgent) {
-        try {
-          const selected = await session.selectAgent(selectedAgent);
-          if (!selected || selected.name !== selectedAgent) {
-            throw new Error(`Agent backend did not select "${selectedAgent}"`);
-          }
-        } catch (error) {
-          try {
-            await client.deleteSession(session.sessionId);
-          } catch (cleanupError) {
-            console.warn(
-              `[sdk] Failed to delete ${cleanupLabel} ${session.sessionId} after agent selection failed:`,
-              cleanupError,
-            );
-          }
-          throw error;
-        }
-      }
-
       try {
         await this.cacheSession(session.sessionId, session, sessionConfig);
       } catch (error) {
@@ -3817,7 +3796,6 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
-        ...(options.agent ? { selectedAgent: options.agent } : {}),
       });
       if (bridgeSessionId && options.background) {
         this.trackPendingSessionCreation(bridgeSessionId, creation);
