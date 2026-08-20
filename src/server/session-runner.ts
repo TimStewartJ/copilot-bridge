@@ -267,6 +267,11 @@ export function isStaleAgentSessionError(error: unknown): boolean {
   return /\bSession not found\b/i.test(message);
 }
 
+export function requiresSignedThinkingSafeResume(modelId: unknown): boolean {
+  if (typeof modelId !== "string") return false;
+  return modelId.trim().toLowerCase().startsWith("claude-");
+}
+
 export interface SessionResumeLease {
   sessionId: string;
   token: symbol;
@@ -310,6 +315,11 @@ export interface SessionRunnerDeps {
   ): RoutedSdkAttachment[] | undefined;
   cacheResumedSession(sessionId: string, session: any, sessionConfig?: any): Promise<any>;
   waitForSessionToolInitialization(sessionId: string, session: any): boolean | Promise<boolean>;
+  tryDisposeIdleCachedSessionForRefresh(
+    sessionId: string,
+    expectedSession: any,
+    reason: string,
+  ): Promise<boolean>;
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
   abortSession(sessionId: string): Promise<boolean>;
   probeMcpStatus(sessionId: string, session: any): void;
@@ -655,19 +665,68 @@ export class SessionRunner {
     }
 
     let usedCache = false;
+    let checkedSignedThinkingRefresh = false;
+    const refreshSignedThinkingSessionIfNeeded = async (cachedSession: any): Promise<any | undefined> => {
+      if (checkedSignedThinkingRefresh) return cachedSession;
+      checkedSignedThinkingRefresh = true;
+
+      let currentModel;
+      try {
+        currentModel = await cachedSession.getCurrentModel();
+      } catch (error) {
+        const message = getErrorMessage(error);
+        console.warn(`[sdk] [${sid}] Could not inspect cached session model before send: ${message}`);
+        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
+          outcome: "model-inspection-failed",
+          error: message,
+        });
+        return cachedSession;
+      }
+
+      if (!requiresSignedThinkingSafeResume(currentModel?.modelId)) return cachedSession;
+
+      const refreshStart = Date.now();
+      const disposed = await this.deps.tryDisposeIdleCachedSessionForRefresh(
+        sessionId,
+        cachedSession,
+        "refreshing session-bound signed thinking before send",
+      );
+      if (!disposed) {
+        console.warn(
+          `[sdk] [${sid}] Retaining cached ${currentModel.modelId} session because the runtime still reports background tasks`,
+        );
+        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
+          outcome: "skipped-background-tasks",
+          model: currentModel.modelId,
+        });
+        return cachedSession;
+      }
+
+      console.warn(
+        `[sdk] [${sid}] Refreshing cached ${currentModel.modelId} session before send to discard session-bound signed thinking`,
+      );
+      this.recordSpan("session.signed_thinking_refresh", Date.now() - refreshStart, sessionId, {
+        outcome: "refreshed",
+        model: currentModel.modelId,
+      });
+      return undefined;
+    };
     const resumeSession = async (): Promise<any> => {
       const resumeStart = Date.now();
       let s = this.deps.sessionObjects.get(sessionId);
-      if (s) {
-        usedCache = true;
-        console.log(`[sdk] [${sid}] Reusing cached session object`);
-      } else {
+      if (!s) {
         s = await this.deps.awaitPendingSessionCreation(sessionId)
           ?? this.deps.sessionObjects.get(sessionId);
         if (s) {
-          usedCache = true;
           console.log(`[sdk] [${sid}] Session creation completed`);
         }
+      }
+      if (s) {
+        s = await refreshSignedThinkingSessionIfNeeded(s);
+      }
+      if (s) {
+        usedCache = true;
+        console.log(`[sdk] [${sid}] Reusing cached session object`);
       }
       if (!s) {
         usedCache = false;

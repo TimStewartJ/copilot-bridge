@@ -790,6 +790,8 @@ export class SessionManager {
         this.supportsSessionToolInitialization()
           ? this.waitForSessionToolInitialization(sessionId, session)
           : true,
+      tryDisposeIdleCachedSessionForRefresh: (sessionId, session, reason) =>
+        this.tryDisposeIdleCachedSessionForRefresh(sessionId, session, reason),
       abandonCachedSession: (sessionId, expectedSession) => this.abandonCachedSession(sessionId, expectedSession),
       abortSession: (sessionId) => this.abortSession(
         sessionId,
@@ -1915,6 +1917,41 @@ export class SessionManager {
       return { cleanup: this.queueSessionCleanupUnsafe(sessionId, session, reason) };
     });
     if (!await cleanup) throw new Error(`Session ${sessionId} could not be reaped while ${reason}`);
+  }
+
+  private async tryDisposeIdleCachedSessionForRefresh(
+    sessionId: string,
+    session: AgentSession,
+    reason: string,
+  ): Promise<boolean> {
+    return this.enqueueCache("dispose", sessionId, async () => {
+      if (this.sessionObjects.get(sessionId) !== session) return false;
+
+      let tasks;
+      try {
+        tasks = await session.listTasks();
+      } catch (error) {
+        console.warn(
+          `[sdk] [${sessionId.slice(0, 8)}] Retaining cached session because background task inspection failed while ${reason}:`,
+          error,
+        );
+        return false;
+      }
+      if (this.sessionObjects.get(sessionId) !== session) return false;
+      if (tasks === undefined || (tasks.tasks?.length ?? 0) > 0) return false;
+
+      const disconnected = await settleByDeadline<void>(
+        () => Promise.resolve(session.disconnect?.()).then(() => undefined),
+        createDeadline(DISCONNECT_TIMEOUT_MS),
+      );
+      if (disconnected.status !== "fulfilled") {
+        if (disconnected.status === "rejected") throw disconnected.error;
+        throw new Error(`Session ${sessionId} disconnect timed out while ${reason}`);
+      }
+      if (!this.removeReadySessionUnsafe(sessionId, session)) return false;
+      this.sessionCapacityProfiles.delete(session);
+      return true;
+    });
   }
 
   private persistLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void {
