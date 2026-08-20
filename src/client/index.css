@@ -201,6 +201,84 @@ body {
   }
 }
 
+/* Indeterminate progress bar for the chat history sync strip. */
+.history-sync-bar {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: var(--color-accent-border);
+}
+
+.history-sync-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: var(--color-accent);
+  animation: history-sync-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes history-sync-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-sync-bar::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
+
+/*
+ * Cached transcript while the disk read is in flight: dimmed + desaturated so it reads as
+ * stale, with a soft shimmer sweeping down. Content stays readable and scrollable; the sweep
+ * sits on an overlay so it never affects layout or hit-testing.
+ */
+.history-syncing {
+  position: relative;
+  opacity: 0.55;
+  filter: saturate(0.6);
+  transition: opacity 0.25s ease, filter 0.25s ease;
+}
+
+.history-syncing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    175deg,
+    transparent 28%,
+    color-mix(in srgb, var(--color-accent) 26%, transparent) 50%,
+    transparent 72%
+  );
+  background-size: 100% 220%;
+  background-repeat: no-repeat;
+  animation: history-sync-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes history-sync-shimmer {
+  from {
+    background-position: 0 -120%;
+  }
+  to {
+    background-position: 0 120%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-syncing::after {
+    animation: none;
+    background: none;
+  }
+}
+
 /*
  * Code block copy button: always visible on touch devices (no hover to reveal it),
  * hover-revealed on pointer devices. Matches the pattern used by ChatGPT/Claude.

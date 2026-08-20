@@ -568,48 +568,69 @@ describe("ChatView cached resume loading state", () => {
     }
   }, 30_000);
 
-  it("suppresses the newer-content skeleton when freshness matches or metadata is absent", async () => {
-    const cases: [string, string, FetchMessagesFastResult][] = [
-      // freshness matches: lastVisibleActivityAt equals activeSessionActivityAt
-      ["freshness matches", "2026-04-29T12:00:00.000Z", {
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
-      }],
-      // freshness metadata missing or unknown: no lastVisibleActivityAt in result
-      ["freshness metadata missing", "2026-04-29T12:05:00.000Z", {
-        messages: [createMessage("entry-1")],
-        busy: false,
-        total: 1,
-        warm: true,
-        hasMore: false,
-      }],
-    ];
-    for (const [label, activityAt, resolveResult] of cases) {
-      vi.useFakeTimers();
-      const deferred = createDeferred<FetchMessagesFastResult>();
-      const { dom, act, cleanup } = await renderChatView({
-        activeSessionActivityAt: activityAt,
-        fetchMessagesFastResult: deferred.promise,
-        seedQueryClient: (queryClient) => setCachedChatSnapshot(
-          queryClient,
-          createSnapshot("session-1", [createMessage("entry-1")]),
-        ),
+  it("shows the history sync strip with the cache age once a cached resume outlasts the flash window", async () => {
+    vi.useFakeTimers();
+    const deferred = createDeferred<FetchMessagesFastResult>();
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: deferred.promise,
+      seedQueryClient: (queryClient) => setCachedChatSnapshot(queryClient, {
+        ...createSnapshot("session-1", [createMessage("entry-1")]),
+        fetchedAt: Date.now() - 5 * 60_000,
+      }),
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-1") ?? false);
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
+
+      await advanceTimersByTimeAct(act, 150);
+      expect(dom.container.textContent).toContain("Syncing chat history");
+      expect(dom.container.textContent).toContain("Showing messages from 5m ago while checking for new ones");
+      const findDimmedTranscript = () => findAllByTag(dom.container, "DIV").find((candidate) => (
+        getReactProps(candidate)?.className === "history-syncing"
+      ));
+      expect(findDimmedTranscript()?.textContent).toContain("entry-1");
+
+      await act(async () => {
+        deferred.resolve({
+          messages: [createMessage("entry-1"), createMessage("entry-2")],
+          busy: false,
+          total: 2,
+          warm: true,
+          hasMore: false,
+        });
+        await waitTick();
       });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-2") ?? false);
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
+      expect(findDimmedTranscript()).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
 
-      try {
-        await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-        await advanceTimersByTimeAct(act, 250);
+  it("never flashes the sync strip when a cached resume refresh lands quickly", async () => {
+    vi.useFakeTimers();
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      seedQueryClient: (queryClient) => setCachedChatSnapshot(
+        queryClient,
+        createSnapshot("session-1", [createMessage("entry-1")]),
+      ),
+    });
 
-        expect(dom.container.textContent, `case: ${label}`).toContain("Refreshing history...");
-        expect(dom.container.textContent, `case: ${label}`).not.toContain("Loading newer chat content");
-      } finally {
-        deferred.resolve(resolveResult);
-        await cleanup();
-      }
+    try {
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
+      await advanceTimersByTimeAct(act, 300);
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
+    } finally {
+      await cleanup();
     }
   });
 
@@ -624,8 +645,7 @@ describe("ChatView cached resume loading state", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Loading chat history") ?? false);
 
       expect(dom.container.textContent).toContain("Loading chat history");
-      expect(dom.container.textContent).not.toContain("Loading newer chat content");
-      expect(dom.container.textContent).not.toContain("Refreshing history...");
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
     } finally {
       deferred.resolve({
         messages: [],
@@ -638,7 +658,7 @@ describe("ChatView cached resume loading state", () => {
     }
   });
 
-  it("does not show the newer-content skeleton for a non-resume background refresh", async () => {
+  it("shows the sync strip for an external busy refresh and clears it when the read lands", async () => {
     vi.useFakeTimers();
     fetchMessagesFastMock.mockResolvedValueOnce({
       messages: [createMessage("entry-1")],
@@ -661,42 +681,33 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
-      await waitUntilAct(act, () => !(dom.container.textContent?.includes("Refreshing history...") ?? false));
+      await advanceTimersByTimeAct(act, 300);
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
 
       await render({
         activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
         busySignal: 1,
       });
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await advanceTimersByTimeAct(act, 250);
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 2);
+      await advanceTimersByTimeAct(act, 150);
 
-      expect(dom.container.textContent).toContain("Refreshing history...");
-      expect(dom.container.textContent).not.toContain("Loading newer chat content");
+      expect(dom.container.textContent).toContain("Syncing chat history");
+      expect(dom.container.textContent).toContain("Showing cached messages while checking for new ones");
 
       await act(async () => {
         deferred.resolve({
-          messages: [createMessage("entry-1")],
+          messages: [createMessage("entry-1"), createMessage("entry-2")],
           busy: false,
-          total: 1,
+          total: 2,
           warm: true,
           hasMore: false,
-          lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
+          lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
         });
         await waitTick();
       });
-      await act(async () => {
-        await waitTick();
-      });
-      expect(dom.container.textContent).not.toContain("Loading newer chat content");
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-2") ?? false);
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
     } finally {
-      deferred.resolve({
-        messages: [createMessage("entry-1"), createMessage("entry-2")],
-        busy: false,
-        total: 2,
-        warm: true,
-        hasMore: false,
-        lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-      });
       await cleanup();
     }
   });
@@ -2701,7 +2712,7 @@ describe("ChatView disk-authoritative synchronization", () => {
     }
   });
 
-  it("does not show the refreshing-history pill during routine disk-tail syncs", async () => {
+  it("does not show the history sync strip during routine disk-tail syncs", async () => {
     vi.useFakeTimers();
     try {
       const { dom, act, cleanup, render } = await renderChatView({
@@ -2722,7 +2733,7 @@ describe("ChatView disk-authoritative synchronization", () => {
         for (let epoch = 1; epoch <= 6; epoch += 1) {
           await render({ streamOverrides: { historyEpoch: epoch, isStreaming: true, streamStatus: "streaming" } });
           await advanceTimersByTimeAct(act, 260);
-          expect(dom.container.textContent).not.toContain("Refreshing history");
+          expect(dom.container.textContent).not.toContain("Syncing chat history");
         }
       } finally {
         await cleanup();
