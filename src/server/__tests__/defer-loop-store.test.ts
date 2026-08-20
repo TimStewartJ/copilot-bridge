@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
-import { mergeDeferSummaries } from "../defer-summary.js";
+import { createDeferSummaryLookup, getDeferSummaryForSession, mergeDeferSummaries } from "../defer-summary.js";
 import { parseDeferId, toIntervalDeferId, toOnceDeferId } from "../defer-ids.js";
 import type { DeferLoopStore } from "../defer-loop-store.js";
 import type { DatabaseSync } from "../db.js";
@@ -180,5 +180,25 @@ describe("defer summary (merged)", () => {
       count: 3,
       nextRunAt: "2030-01-01T00:05:00.000Z",
     });
+  });
+
+  it("bulk lookup resolves every session identically to per-session queries", () => {
+    const deferredPromptStore = createDeferredPromptStore(db);
+    const baseLoop = { prompt: "Check the thing", intervalSeconds: 300 };
+    deferredPromptStore.create("session-1", "One shot later", "2030-01-01T00:10:00.000Z");
+    deferredPromptStore.create("session-3", "Only one-shot", "2030-01-01T00:00:00.000Z");
+    store.create({ ...baseLoop, sessionId: "session-1", nextRunAt: "2030-01-01T00:05:00.000Z" });
+    store.create({ ...baseLoop, sessionId: "session-2", nextRunAt: "2030-01-01T00:01:00.000Z" });
+    const cancelled = store.create({ ...baseLoop, sessionId: "session-4", nextRunAt: "2030-01-01T00:01:00.000Z" });
+    store.cancelForSession(cancelled.sessionId);
+
+    const lookup = createDeferSummaryLookup({ deferredPromptStore, deferLoopStore: store });
+    for (const sessionId of ["session-1", "session-2", "session-3", "session-4", "missing"]) {
+      expect(lookup(sessionId)).toEqual(getDeferSummaryForSession(sessionId, { deferredPromptStore, deferLoopStore: store }));
+    }
+    expect(lookup("session-1")).toEqual({ count: 2, nextRunAt: "2030-01-01T00:05:00.000Z" });
+    expect(lookup("session-4")).toEqual({ count: 0, nextRunAt: null });
+    expect(store.listSummariesBySession().has("session-4")).toBe(false);
+    expect(createDeferSummaryLookup({})("session-1")).toEqual({ count: 0, nextRunAt: null });
   });
 });

@@ -25,6 +25,22 @@ describe("bridge session state store", () => {
     expect(store.getState("session-1")).toBeUndefined();
   });
 
+  it("lists only rows with a pinned cwd for the session-list workspace preload", () => {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setPinnedCwd("pinned-1", "D:\\repo-a");
+    store.setPinnedCwd("pinned-2", "D:\\repo-b");
+    store.setArchived("archived-only", true);
+    store.setTitleOverride("titled-only", "Manual title");
+    store.setPinnedCwd("cleared", "D:\\repo-c");
+    store.clearPinnedCwd("cleared");
+
+    const pinned = store.listPinnedCwdStates();
+    expect(Object.keys(pinned).sort()).toEqual(["pinned-1", "pinned-2"]);
+    expect(pinned["pinned-1"]).toEqual(store.getState("pinned-1"));
+    expect(Object.keys(store.listStates()).sort()).toEqual(["archived-only", "pinned-1", "pinned-2", "titled-only"]);
+  });
+
   it("preserves the latest visible and attention timestamps", () => {
     // visible activity
     {
