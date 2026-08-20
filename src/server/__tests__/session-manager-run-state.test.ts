@@ -172,6 +172,9 @@ describe("SessionManager run state", () => {
       modelId: "claude-sonnet-5",
       reasoningEffort: "xhigh",
     });
+    cached.session.getEvents = vi.fn().mockResolvedValue([
+      { type: "assistant.message", data: { content: "previous response" } },
+    ]);
     cached.session.listTasks = vi.fn().mockResolvedValue({ tasks: [] });
     cached.session.disconnect = vi.fn().mockResolvedValue(undefined);
     manager.sessionObjects.set(sessionId, cached.session);
@@ -200,6 +203,42 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("reuses freshly created Claude sessions that do not have conversation history yet", async () => {
+    const sessionId = "session-claude-fresh";
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const cached = makeSession();
+    cached.session.getEvents = vi.fn().mockResolvedValue([
+      { type: "session.start", data: { selectedModel: "claude-sonnet-5" } },
+    ]);
+    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
+      modelId: "claude-sonnet-5",
+      reasoningEffort: "xhigh",
+    });
+    manager.sessionObjects.set(sessionId, cached.session);
+    manager.backend = {
+      resumeSession: vi.fn(),
+    };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(cached.session.getCurrentModel).toHaveBeenCalledOnce();
+    expect(cached.session.disconnect).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+    expect(latestSpanMetadata(telemetryStore, "session.signed_thinking_refresh", sessionId))
+      .toMatchObject({ outcome: "skipped-fresh-session" });
+
+    cached.getReleaseSend()?.();
+    await flushMicrotasks();
+    cached.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await flushMicrotasks();
+  });
+
   it("retains cached Claude sessions while a background agent context is tracked", async () => {
     const sessionId = "session-claude-background-agent";
     const { manager } = createManager();
@@ -208,6 +247,9 @@ describe("SessionManager run state", () => {
       modelId: "claude-sonnet-5",
       reasoningEffort: "xhigh",
     });
+    cached.session.getEvents = vi.fn().mockResolvedValue([
+      { type: "assistant.message", data: { content: "previous response" } },
+    ]);
     cached.session.listTasks = vi.fn().mockResolvedValue({
       tasks: [{
         kind: "agent",
