@@ -36,6 +36,7 @@ import {
   type UserInputAnswerEndpointPayload,
 } from "../api";
 import { getCachedChatSnapshot, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
+import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
@@ -83,6 +84,11 @@ const STREAM_RENDER_INTERVAL_MS = 60;
 const HISTORY_REFRESH_THROTTLE_MS = 250;
 /** Upper bound on entries re-read when refreshing a paginated window. */
 const HISTORY_REFRESH_MAX_LIMIT = 200;
+/**
+ * Cached history paints instantly, so a sync that lands inside this window never shows an
+ * indicator; anything slower gets a clear, full-width strip instead of a flash.
+ */
+const HISTORY_SYNC_INDICATOR_DELAY_MS = 150;
 const LIVE_STREAMING_MESSAGE_ID = "live-assistant-stream";
 const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
 const FOLLOW_SCROLL_EASE = 0.35;
@@ -640,6 +646,8 @@ export default function ChatView({
   const firstItemIndex = useRef(0);
   const totalEntriesRef = useRef(0);
   const historyLastVisibleActivityAtRef = useRef<string | undefined>(undefined);
+  /** When the displayed window was last read from disk; drives the "showing messages from…" hint. */
+  const historyFetchedAtRef = useRef<number | null>(null);
   const entriesRef = useRef<ChatEntry[]>([]);
   const pendingSendsRef = useRef<PendingSend[]>([]);
   const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -695,6 +703,8 @@ export default function ChatView({
       total?: number;
       hasMore?: boolean;
       lastVisibleActivityAt?: string | null;
+      /** Disk read time of `nextEntries`; defaults to now. Cached resumes pass the snapshot's. */
+      fetchedAt?: number;
     } = {},
   ) => {
     const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
@@ -720,14 +730,19 @@ export default function ChatView({
       ? { sessionId: ownerSessionId, readThroughActivityAt: nextReadThrough }
       : null;
 
-    if (!ownerSessionId) return;
+    if (!ownerSessionId) {
+      historyFetchedAtRef.current = null;
+      return;
+    }
+    const fetchedAt = opts.fetchedAt ?? Date.now();
+    historyFetchedAtRef.current = fetchedAt;
     setCachedChatSnapshot(queryClient, {
       sessionId: ownerSessionId,
       entries: nextEntries,
       firstItemIndex: nextFirstItemIndex,
       total: nextTotal,
       hasMore: nextHasMore,
-      fetchedAt: Date.now(),
+      fetchedAt,
     });
   }, [queryClient]);
 
@@ -1296,6 +1311,7 @@ export default function ChatView({
         firstItemIndex: cachedSnapshot.firstItemIndex,
         total: cachedSnapshot.total,
         hasMore: cachedSnapshot.hasMore,
+        fetchedAt: cachedSnapshot.fetchedAt,
       });
       setLoading(false);
       setRefreshingHistory(false);
@@ -1450,6 +1466,16 @@ export default function ChatView({
 
   useEffect(() => {
     refreshingHistoryRef.current = refreshingHistory;
+  }, [refreshingHistory]);
+
+  const [showHistorySync, setShowHistorySync] = useState(false);
+  useEffect(() => {
+    if (!refreshingHistory) {
+      setShowHistorySync(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowHistorySync(true), HISTORY_SYNC_INDICATOR_DELAY_MS);
+    return () => clearTimeout(timer);
   }, [refreshingHistory]);
 
   useLayoutEffect(() => {
@@ -2189,6 +2215,10 @@ export default function ChatView({
   ]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
+  const cachedHistoryAt = historyFetchedAtRef.current;
+  const historySyncDetail = showHistorySync && cachedHistoryAt && Date.now() - cachedHistoryAt >= 60_000
+    ? `Showing messages from ${timeAgo(new Date(cachedHistoryAt).toISOString())} while checking for new ones`
+    : "Showing cached messages while checking for new ones";
   const composerDisabled = newWorkDisabled || warming || loading || Boolean(undoingEventId);
   const composerDisabledHint = newWorkDisabled
     ? newWorkDisabledHint
@@ -2547,11 +2577,19 @@ export default function ChatView({
           onWheel={handleUserScrollIntent}
           onTouchMove={handleUserScrollIntent}
         >
-          {refreshingHistory && (
-            <div className="sticky top-0 z-10 flex justify-center px-3 pt-3">
-              <div className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-secondary/95 px-3 py-1 text-xs text-text-muted shadow-sm backdrop-blur-sm">
-                <Loader2 size={12} className="animate-spin text-accent/70" />
-                Refreshing history...
+          {showHistorySync && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="sticky top-0 z-10 bg-bg-secondary/95 shadow-sm backdrop-blur-sm"
+            >
+              <div className="border-b border-accent-border bg-accent-surface">
+                <div className="history-sync-bar" aria-hidden="true" />
+                <div className="flex items-center justify-center gap-2 px-3 py-1.5 text-xs">
+                  <Loader2 size={13} className="shrink-0 animate-spin text-accent" />
+                  <span className="font-medium text-text-primary">Syncing chat history…</span>
+                  <span className="hidden text-text-muted sm:inline">{historySyncDetail}</span>
+                </div>
               </div>
             </div>
           )}
@@ -2581,7 +2619,10 @@ export default function ChatView({
               </button>
             </div>
           ) : null}
-          {renderedEntries}
+          {/* Cached transcript dims and shimmers while the disk read is in flight; live content below stays crisp. */}
+          <div className={showHistorySync ? "history-syncing" : undefined}>
+            {renderedEntries}
+          </div>
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           {showJumpToLatest && (
             <div className="sticky bottom-3 z-20 flex justify-center px-3 pointer-events-none">
