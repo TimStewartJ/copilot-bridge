@@ -14,6 +14,9 @@ import {
   refreshRestartState,
   triggerRestartPending,
 } from "../session-manager.js";
+import {
+  requiresSignedThinkingSafeResume,
+} from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
@@ -152,6 +155,118 @@ describe("SessionManager run state", () => {
   afterEach(() => {
     configureRestartStateStore(undefined);
     vi.useRealTimers();
+  });
+
+  it("identifies Claude signed-thinking sessions", () => {
+    expect(requiresSignedThinkingSafeResume("claude-sonnet-5")).toBe(true);
+    expect(requiresSignedThinkingSafeResume(" CLAUDE-OPUS-5 ")).toBe(true);
+    expect(requiresSignedThinkingSafeResume("gpt-5.6-sol")).toBe(false);
+  });
+
+  it("cold-resumes a cached Claude session before sending another prompt", async () => {
+    const sessionId = "session-claude-safe-resume";
+    const { manager } = createManager();
+    const cached = makeSession();
+    const resumed = makeSession();
+    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
+      modelId: "claude-sonnet-5",
+      reasoningEffort: "xhigh",
+    });
+    cached.session.listTasks = vi.fn().mockResolvedValue({ tasks: [] });
+    cached.session.disconnect = vi.fn().mockResolvedValue(undefined);
+    manager.sessionObjects.set(sessionId, cached.session);
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(resumed.session),
+    };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    expect(cached.session.send).not.toHaveBeenCalled();
+    expect(cached.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.backend.resumeSession).toHaveBeenCalledWith(
+      sessionId,
+      expect.any(Object),
+    );
+    expect(resumed.session.send).toHaveBeenCalledWith({ prompt: "hello" });
+
+    resumed.getReleaseSend()?.();
+    await flushMicrotasks();
+    resumed.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await flushMicrotasks();
+  });
+
+  it("retains cached Claude sessions while a background agent context is tracked", async () => {
+    const sessionId = "session-claude-background-agent";
+    const { manager } = createManager();
+    const cached = makeSession();
+    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
+      modelId: "claude-sonnet-5",
+      reasoningEffort: "xhigh",
+    });
+    cached.session.listTasks = vi.fn().mockResolvedValue({
+      tasks: [{
+        kind: "agent",
+        id: "background-agent-1",
+        toolCallId: "tool-1",
+        status: "idle",
+        executionMode: "background",
+      }],
+    });
+    manager.sessionObjects.set(sessionId, cached.session);
+    manager.backend = {
+      resumeSession: vi.fn(),
+    };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(cached.session.disconnect).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+
+    cached.getReleaseSend()?.();
+    await flushMicrotasks();
+    cached.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await flushMicrotasks();
+  });
+
+  it("continues reusing cached sessions for models outside the signed-thinking guard", async () => {
+    const sessionId = "session-gpt-cache-reuse";
+    const { manager } = createManager();
+    const cached = makeSession();
+    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+    });
+    manager.sessionObjects.set(sessionId, cached.session);
+    manager.backend = {
+      resumeSession: vi.fn(),
+    };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(cached.session.disconnect).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+
+    cached.getReleaseSend()?.();
+    await flushMicrotasks();
+    cached.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await flushMicrotasks();
   });
 
   it("allows startWork while persisted restart state is active or launcher is waiting for active sessions", async () => {
