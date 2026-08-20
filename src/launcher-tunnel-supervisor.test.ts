@@ -53,6 +53,8 @@ function createHarness(options: {
   state?: TunnelRuntimeState | null;
   env?: NodeJS.ProcessEnv;
   onReady?: (url: string) => void | Promise<void>;
+  healthTimeoutMs?: number;
+  healthSlowMs?: number;
 } = {}) {
   const children = options.children ?? [new FakeChild(101)];
   const fetchResponses = [...(options.fetchResponses ?? [])];
@@ -87,8 +89,9 @@ function createHarness(options: {
     retryCapMs: 40,
     startupTimeoutMs: 100,
     healthIntervalMs: 50,
-    healthTimeoutMs: 25,
+    healthTimeoutMs: options.healthTimeoutMs ?? 25,
     healthFailureThreshold: 2,
+    ...(options.healthSlowMs !== undefined ? { healthSlowMs: options.healthSlowMs } : {}),
   }, deps);
   return {
     supervisor,
@@ -203,6 +206,131 @@ describe("TunnelSupervisor", () => {
     second.stdout.write("Connect via browser: https://bridge.example.devtunnels.ms\n");
     await flushAsync();
     expect(harness.spawnTunnel).toHaveBeenCalledTimes(2);
+  });
+
+  it("recycles when failures alternate with passing probes inside the sliding window", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    // Each probe cycle is local then public. Public: fail, pass, fail. A strictly
+    // consecutive counter would reset on the pass and never recycle.
+    const harness = createHarness({
+      children: [first, second],
+      fetchResponses: [
+        new Response(null, { status: 200 }),
+        new Response(null, { status: 503 }),
+        new Response(null, { status: 200 }),
+        new Response(null, { status: 200 }),
+        new Response(null, { status: 200 }),
+        new Response(null, { status: 503 }),
+      ],
+    });
+    await startAndPublish(harness, first);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs).toContain(
+      "[tunnel] Public health check failed (1/2 in last 1): HTTP 503",
+    );
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    expect(harness.logs).toContain(
+      "[tunnel] Public health check failed (2/2 in last 3): HTTP 503",
+    );
+  });
+
+  it("does not recycle when old failures have aged out of the window", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    // Window is max(threshold=2, 5) = 5 observations. fail, pass x5, fail => the
+    // first failure has aged out, so only 1/2 failures are in the window.
+    const responses: Response[] = [
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 503 }),
+    ];
+    for (let index = 0; index < 5; index++) {
+      responses.push(new Response(null, { status: 200 }), new Response(null, { status: 200 }));
+    }
+    responses.push(new Response(null, { status: 200 }), new Response(null, { status: 503 }));
+    const harness = createHarness({ children: [first], fetchResponses: responses });
+    await startAndPublish(harness, first);
+
+    for (let index = 0; index < 7; index++) {
+      await vi.advanceTimersByTimeAsync(50);
+    }
+
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs).toContain(
+      "[tunnel] Public health check failed (1/2 in last 5): HTTP 503",
+    );
+  });
+
+  it("treats a slow public probe as a failure while the local server answers promptly", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({ children: [first, second], healthTimeoutMs: 10_000, healthSlowMs: 3_000 });
+    // Public probes succeed but take longer than healthSlowMs; local is instant.
+    harness.deps.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:")) return new Response(null, { status: 200 });
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    await startAndPublish(harness, first);
+
+    await vi.advanceTimersByTimeAsync(50 + 4_000);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs.some((line) => /failed \(1\/2 in last 1\): slow: 4000ms \(local 0ms\)/.test(line))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(50 + 4_000);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+  });
+
+  it("recycles after repeated relay transport drops reported on stderr", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({ children: [first, second] });
+    await startAndPublish(harness, first);
+
+    first.stderr.write('ClientSSH: Session closed unexpectedly due to ConnectionLost, "Session is disconnected.\nReason: ConnectionLost"\n');
+    await flushAsync();
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs.some((line) => line.startsWith("[tunnel] Public health check failed (1/2 in last 1): relay transport dropped: ClientSSH"))).toBe(true);
+
+    first.stderr.write("Error running client SSH session: Session closed while encrypting.\n");
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushAsync();
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    // The replacement is spawned immediately after the stop, not after the next probe interval.
+    expect(harness.spawnTunnel).toHaveBeenCalledTimes(2);
+
+    second.stdout.write("Connect via browser: https://bridge.example.devtunnels.ms\n");
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushAsync();
+    expect(harness.supervisor.getUrl()).toBe("https://bridge.example.devtunnels.ms");
+  });
+
+  it("ignores transport drops from a child that is no longer current", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({ children: [first, second] });
+    await startAndPublish(harness, first);
+    first.exit(1);
+    await flushAsync();
+
+    first.stderr.write("ClientSSH: Session closed unexpectedly due to ProtocolError\n");
+    first.stderr.write("ClientSSH: Session closed unexpectedly due to ProtocolError\n");
+    await flushAsync();
+
+    expect(harness.logs.filter((line) => line.includes("relay transport dropped"))).toHaveLength(0);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
   });
 
   it("retries after unexpected exits without exhausting a fixed attempt budget", async () => {

@@ -28,10 +28,30 @@ const STARTUP_TIMEOUT_MS = 60_000;
 const HEALTH_INTERVAL_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 10_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
+/**
+ * Failures are counted over the most recent probes, not only consecutively. A
+ * degraded relay session tends to alternate slow/failed and passing probes, so a
+ * strictly consecutive count can sit at 1/3 or 2/3 for hours without recycling.
+ */
+const HEALTH_FAILURE_WINDOW = 5;
+/**
+ * A public probe that succeeds but takes this long while the local server answers
+ * promptly is the leading indicator of a bad relay session and counts as a failure.
+ */
+const HEALTH_SLOW_MS = 3_000;
 const IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
+
+const TRANSPORT_DROP_RE = /ClientSSH: Session closed unexpectedly|Error running client SSH session/;
 
 type ProbeResult = {
   healthy: boolean;
+  durationMs: number;
+  detail?: string;
+};
+
+type HealthObservation = {
+  failed: boolean;
+  durationMs: number;
   detail?: string;
 };
 
@@ -47,6 +67,8 @@ export type TunnelSupervisorOptions = {
   healthIntervalMs?: number;
   healthTimeoutMs?: number;
   healthFailureThreshold?: number;
+  healthFailureWindow?: number;
+  healthSlowMs?: number;
 };
 
 export type TunnelSupervisorDependencies = {
@@ -105,14 +127,17 @@ async function probe(
 ): Promise<ProbeResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
   try {
     const response = await fetchFn(url, { signal: controller.signal });
+    const durationMs = Date.now() - startedAt;
     return response.ok
-      ? { healthy: true }
-      : { healthy: false, detail: `HTTP ${response.status}` };
+      ? { healthy: true, durationMs }
+      : { healthy: false, durationMs, detail: `HTTP ${response.status}` };
   } catch (error) {
     return {
       healthy: false,
+      durationMs: Date.now() - startedAt,
       detail: error instanceof Error && error.name === "AbortError"
         ? `timed out after ${timeoutMs}ms`
         : error instanceof Error ? error.message : String(error),
@@ -133,6 +158,8 @@ export class TunnelSupervisor {
   private readonly healthIntervalMs: number;
   private readonly healthTimeoutMs: number;
   private readonly healthFailureThreshold: number;
+  private readonly healthFailureWindow: number;
+  private readonly healthSlowMs: number;
   private readonly deps: TunnelSupervisorDependencies;
   private readonly tunnelEnabled: boolean;
   private readonly name: string;
@@ -147,11 +174,12 @@ export class TunnelSupervisor {
   private published = false;
   private generation = 0;
   private retryDelayMs: number;
-  private healthFailures = 0;
+  /** Most recent health observations for the current child, oldest first. */
+  private healthWindow: HealthObservation[] = [];
   private timer: NodeJS.Timeout | null = null;
   private reconciling = false;
   private pendingDelayMs: number | null = null;
-  private restartRequested = false;
+  private restartRequested: string | null = null;
   private stopping = false;
 
   constructor(
@@ -169,6 +197,11 @@ export class TunnelSupervisor {
     this.healthIntervalMs = options.healthIntervalMs ?? HEALTH_INTERVAL_MS;
     this.healthTimeoutMs = options.healthTimeoutMs ?? HEALTH_TIMEOUT_MS;
     this.healthFailureThreshold = options.healthFailureThreshold ?? HEALTH_FAILURE_THRESHOLD;
+    this.healthFailureWindow = Math.max(
+      this.healthFailureThreshold,
+      options.healthFailureWindow ?? HEALTH_FAILURE_WINDOW,
+    );
+    this.healthSlowMs = options.healthSlowMs ?? HEALTH_SLOW_MS;
     this.retryDelayMs = this.retryBaseMs;
     this.deps = dependencies;
     this.tunnelEnabled = enabled(this.env);
@@ -191,7 +224,7 @@ export class TunnelSupervisor {
     if (this.port === port) return;
     this.port = port;
     if (this.desired && this.tunnelEnabled) {
-      this.restartRequested = true;
+      this.restartRequested = "port change";
       this.requestReconcile(0);
     }
   }
@@ -263,11 +296,12 @@ export class TunnelSupervisor {
     if (!this.desired || !this.tunnelEnabled) return;
 
     if (this.restartRequested && this.child) {
-      this.restartRequested = false;
-      const stopped = await this.stopChild(this.child, "port change");
-      if (!stopped) throw new Error("Unable to stop tunnel after port change");
+      const reason = this.restartRequested;
+      this.restartRequested = null;
+      const stopped = await this.stopChild(this.child, reason);
+      if (!stopped) throw new Error(`Unable to stop tunnel after ${reason}`);
     } else {
-      this.restartRequested = false;
+      this.restartRequested = null;
     }
 
     if (!this.child) {
@@ -285,30 +319,84 @@ export class TunnelSupervisor {
       return;
     }
 
+    const child = this.child;
     const localUrl = `http://127.0.0.1:${this.port}/api/health`;
     const local = await probe(this.deps.fetch, localUrl, this.healthTimeoutMs);
     if (!local.healthy) {
-      this.healthFailures = 0;
+      // A public failure while the server itself is down says nothing about the tunnel.
+      this.healthWindow = [];
       return;
     }
 
     const publicUrl = new URL("/api/health", this.url).toString();
     const publicResult = await probe(this.deps.fetch, publicUrl, this.healthTimeoutMs);
-    if (publicResult.healthy) {
-      this.healthFailures = 0;
+    if (this.child !== child || !this.published) return;
+    const slow = publicResult.healthy && publicResult.durationMs >= this.healthSlowMs;
+    if (publicResult.healthy && !slow) {
+      this.recordHealthObservation({ failed: false, durationMs: publicResult.durationMs });
       return;
     }
 
-    this.healthFailures++;
-    this.log(
-      `[tunnel] Public health check failed (${this.healthFailures}/${this.healthFailureThreshold})`
-      + `${publicResult.detail ? `: ${publicResult.detail}` : ""}`,
-    );
-    if (this.healthFailures < this.healthFailureThreshold) return;
+    await this.recordHealthFailure(child, {
+      failed: true,
+      durationMs: publicResult.durationMs,
+      detail: slow
+        ? `slow: ${publicResult.durationMs}ms (local ${local.durationMs}ms)`
+        : publicResult.detail,
+    });
+  }
 
-    this.healthFailures = 0;
-    const stopped = await this.stopChild(this.child, "failed public health checks");
+  private recordHealthObservation(observation: HealthObservation): void {
+    this.healthWindow.push(observation);
+    if (this.healthWindow.length > this.healthFailureWindow) {
+      this.healthWindow.splice(0, this.healthWindow.length - this.healthFailureWindow);
+    }
+  }
+
+  private countHealthFailures(): number {
+    return this.healthWindow.filter((observation) => observation.failed).length;
+  }
+
+  private logHealthFailure(observation: HealthObservation): number {
+    const failures = this.countHealthFailures();
+    this.log(
+      `[tunnel] Public health check failed (${failures}/${this.healthFailureThreshold}`
+      + ` in last ${this.healthWindow.length})`
+      + `${observation.detail ? `: ${observation.detail}` : ""}`,
+    );
+    return failures;
+  }
+
+  /**
+   * Count a failure toward the sliding window and recycle the tunnel once the window
+   * holds `healthFailureThreshold` failures.
+   */
+  private async recordHealthFailure(child: ChildProcess, observation: HealthObservation): Promise<void> {
+    this.recordHealthObservation(observation);
+    if (this.logHealthFailure(observation) < this.healthFailureThreshold) return;
+
+    this.healthWindow = [];
+    const stopped = await this.stopChild(child, "failed public health checks");
     if (!stopped) throw new Error("Unable to recycle unhealthy tunnel");
+    this.requestReconcile(0);
+  }
+
+  /**
+   * The devtunnel CLI reports relay transport drops on stderr long before a scheduled
+   * probe notices. Each drop counts as a failed observation; when that crosses the
+   * threshold the next reconcile recycles the child instead of waiting for more probes.
+   */
+  private onTransportDrop(child: ChildProcess, line: string): void {
+    if (this.child !== child || !this.published || !this.desired) return;
+    this.recordHealthObservation({ failed: true, durationMs: 0, detail: "relay transport dropped" });
+    const failures = this.logHealthFailure({
+      failed: true,
+      durationMs: 0,
+      detail: `relay transport dropped: ${line.split(/\r?\n/, 1)[0].slice(0, 160)}`,
+    });
+    if (failures < this.healthFailureThreshold) return;
+    this.healthWindow = [];
+    this.restartRequested = "repeated relay transport drops";
     this.requestReconcile(0);
   }
 
@@ -411,7 +499,7 @@ export class TunnelSupervisor {
     });
     this.published = true;
     this.retryDelayMs = this.retryBaseMs;
-    this.healthFailures = 0;
+    this.healthWindow = [];
     this.log(`[tunnel] Ready at ${url}`);
     try {
       const notification = this.onReady?.(url);
@@ -477,7 +565,9 @@ export class TunnelSupervisor {
       child.stdout?.on("data", onData);
       child.stderr?.on("data", (data: Buffer) => {
         const line = data.toString().trim();
-        if (line) this.log(`[tunnel] ${line}`);
+        if (!line) return;
+        this.log(`[tunnel] ${line}`);
+        if (TRANSPORT_DROP_RE.test(line)) this.onTransportDrop(child, line);
       });
       child.once("error", onError);
       child.once("exit", onStartupExit);
