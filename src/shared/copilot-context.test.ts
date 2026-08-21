@@ -48,24 +48,18 @@ describe("copilot context tiers", () => {
     expect(getContextWindowTokensForTier(TIERED_MODEL, "long_context")).toBe(922_000);
   });
 
-  it("uses adaptive thinking for explicit effort while preserving other overrides", () => {
+  it("merges persisted overrides with context-tier limits, letting the tier win on conflicts", () => {
     expect(getModelCapabilitiesOverride(
-      {
-        id: "adaptive-model",
-        capabilities: {
-          supports: { adaptive_thinking: "optional" },
-        },
-      },
-      undefined,
-      "high",
-      { limits: { max_prompt_tokens: 900_000 } },
+      TIERED_MODEL,
+      "default",
+      { limits: { max_prompt_tokens: 900_000 }, supports: { vision: true } },
     )).toEqual({
-      limits: { max_prompt_tokens: 900_000 },
-      supports: { adaptive_thinking: "required" },
+      limits: { max_context_window_tokens: 272_000, max_prompt_tokens: 144_000 },
+      supports: { vision: true },
     });
   });
 
-  it("does not force adaptive thinking when no effort is selected", () => {
+  it("returns undefined when neither the tier nor a persisted override adds anything", () => {
     expect(getModelCapabilitiesOverride(
       {
         id: "adaptive-model",
@@ -75,5 +69,21 @@ describe("copilot context tiers", () => {
       },
       undefined,
     )).toBeUndefined();
+  });
+
+  it("drops the legacy adaptive_thinking key persisted by CLI <= 1.0.80 builds", () => {
+    expect(getModelCapabilitiesOverride(
+      { id: "adaptive-model" },
+      undefined,
+      { supports: { adaptive_thinking: "required" } },
+    )).toBeUndefined();
+    expect(getModelCapabilitiesOverride(
+      { id: "adaptive-model" },
+      undefined,
+      { limits: { max_prompt_tokens: 900_000 }, supports: { adaptive_thinking: "required", vision: true } },
+    )).toEqual({
+      limits: { max_prompt_tokens: 900_000 },
+      supports: { vision: true },
+    });
   });
 });

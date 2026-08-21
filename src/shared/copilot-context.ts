@@ -21,7 +21,6 @@ export interface CopilotModelContextMetadata {
   readonly defaultReasoningEffort?: string;
   readonly capabilities?: {
     readonly supports?: {
-      readonly adaptive_thinking?: "unsupported" | "optional" | "required";
       readonly [key: string]: unknown;
     };
     readonly limits?: {
@@ -38,7 +37,6 @@ export interface CopilotModelContextMetadata {
 
 export interface CopilotModelCapabilitiesOverride {
   supports?: {
-    adaptive_thinking?: "required";
     [key: string]: unknown;
   };
   limits?: {
@@ -137,24 +135,30 @@ export function getModelCapabilitiesOverrideForContextTier(
   return { limits };
 }
 
+/**
+ * Bridge builds on CLI <= 1.0.80 persisted `supports.adaptive_thinking: "required"`
+ * to work around legacy budget-thinking serialization for Claude models. The CLI
+ * drives adaptive thinking natively since 1.0.81, so drop that stale key from any
+ * persisted override instead of replaying it on every resume.
+ */
+function stripLegacyAdaptiveThinkingOverride(
+  override: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!override || !isRecord(override.supports) || !("adaptive_thinking" in override.supports)) return override;
+  const { adaptive_thinking: _legacy, ...supports } = override.supports;
+  const { supports: _dropped, ...rest } = override;
+  return Object.keys(supports).length > 0 ? { ...rest, supports } : rest;
+}
+
 export function getModelCapabilitiesOverride(
   model: CopilotModelContextMetadata | null | undefined,
   tier: CopilotContextTier | undefined,
-  reasoningEffort?: string,
   baseOverride?: Record<string, unknown>,
 ): CopilotModelCapabilitiesOverride | undefined {
   const contextOverride = getModelCapabilitiesOverrideForContextTier(model, tier);
-  const adaptiveThinking = model?.capabilities?.supports?.adaptive_thinking;
-  // An explicit effort is the adaptive-thinking control surface. Mark adaptive
-  // mode as required so the runtime does not serialize legacy budget thinking.
-  const compatibilityOverride = reasoningEffort?.trim()
-    && (adaptiveThinking === "optional" || adaptiveThinking === "required")
-    ? { supports: { adaptive_thinking: "required" as const } }
-    : undefined;
   const layers: Array<Record<string, unknown> | undefined> = [
-    baseOverride,
+    stripLegacyAdaptiveThinkingOverride(baseOverride),
     contextOverride,
-    compatibilityOverride,
   ];
   const merged: CopilotModelCapabilitiesOverride = {};
   let hasValues = false;

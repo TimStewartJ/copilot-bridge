@@ -1354,12 +1354,7 @@ export class SessionManager {
       }
       const model = sessionConfig.model;
       if (typeof model === "string" && model.trim()) {
-        const { contextTier } = this.resolveModelRuntimeOptions(
-          model,
-          settings?.contextTier,
-          sessionConfig.reasoningEffort,
-          modelMetadata,
-        );
+        const { contextTier } = this.resolveModelRuntimeOptions(model, settings?.contextTier, modelMetadata);
         const state = {
           model,
           ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
@@ -2602,12 +2597,11 @@ export class SessionManager {
   private resolveModelRuntimeOptions(
     modelId: string,
     requestedContextTier?: string,
-    reasoningEffort?: string,
     modelMetadata = this.modelMetadataForContextTiers,
   ): { contextTier?: CopilotContextTier; modelCapabilities?: Record<string, unknown> } {
     const model = modelMetadata?.find((candidate) => candidate.id === modelId);
     const contextTier = resolveContextTierForModel(model, normalizeCopilotContextTier(requestedContextTier));
-    const modelCapabilities = getModelCapabilitiesOverride(model, contextTier, reasoningEffort);
+    const modelCapabilities = getModelCapabilitiesOverride(model, contextTier);
     return {
       ...(contextTier ? { contextTier } : {}),
       ...(modelCapabilities ? { modelCapabilities } : {}),
@@ -2623,7 +2617,6 @@ export class SessionManager {
     return getModelCapabilitiesOverride(
       model,
       normalizeCopilotContextTier(state.contextTier),
-      state.reasoningEffort,
       state.modelCapabilities,
     );
   }
@@ -4371,12 +4364,7 @@ export class SessionManager {
           ? normalizeCopilotContextTier(currentBeforeSwitch.contextTier)
           : undefined)
         ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
-      const resolvedContext = this.resolveModelRuntimeOptions(
-        model,
-        effectiveRequestedContextTier,
-        effectiveReasoningEffort,
-        modelMetadata,
-      );
+      const resolvedContext = this.resolveModelRuntimeOptions(model, effectiveRequestedContextTier, modelMetadata);
       const setModelOptions = {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
         ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),

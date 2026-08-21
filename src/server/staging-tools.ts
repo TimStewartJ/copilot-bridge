@@ -6,7 +6,12 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdir
 import { join, dirname, basename } from "node:path";
 import type express from "express";
 import { randomBytes } from "node:crypto";
-import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
+import {
+  dependencySyncHash,
+  DEPENDENCY_SYNC_GIT_PATHSPEC,
+  preparePatchedPackagesForInstall,
+  readInstalledDependencyHash,
+} from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
 import { lifecycleBusyToolFailure, writeRestartSignalOrRollback } from "./restart-inflight.js";
@@ -165,6 +170,10 @@ export async function cleanupPreviewTarget(
  * Compare dependency inputs between staging and production.
  * If package files or patch-package files differ, replace the node_modules
  * symlink with a real npm install so builds use the correct dependency state.
+ * The link is also unsafe when the production root itself has not been
+ * re-installed for its current inputs (the launcher activates prepared release
+ * slots without rebuilding the root), so the launcher's recorded install hash
+ * wins over the production source hash when it is available.
  */
 /** Exported for focused tests of the fresh-install guard. */
 export async function ensureStagingDeps(
@@ -173,11 +182,17 @@ export async function ensureStagingDeps(
 ): Promise<{ ok: boolean; command?: string; output?: string }> {
   const writeLog = options.log ?? log;
   const runCommand = options.runCommand ?? run;
-  if (dependencySyncHash(stagingDir) === dependencySyncHash(PRODUCTION_ROOT)) {
-    return { ok: true };
+  const stagingHash = dependencySyncHash(stagingDir);
+  const productionHash = dependencySyncHash(PRODUCTION_ROOT);
+  const installedHash = readInstalledDependencyHash(PRODUCTION_DATA_DIR);
+  if (stagingHash === productionHash) {
+    if (installedHash === undefined || installedHash === productionHash) {
+      return { ok: true };
+    }
+    writeLog("Production node_modules lag the production dependency inputs — installing dependencies in staging...");
+  } else {
+    writeLog("Staging dependency inputs differ from production — installing dependencies in staging...");
   }
-
-  writeLog("Staging dependency inputs differ from production — installing dependencies in staging...");
 
   // If node_modules is a symlink/junction, remove it so npm can create a real directory.
   // If it's already a real directory, leave it — npm install is incremental.
