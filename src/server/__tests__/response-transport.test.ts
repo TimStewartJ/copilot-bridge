@@ -4,6 +4,7 @@ import request from "./test-http.js";
 import {
   API_GET_CACHE_CONTROL,
   API_MUTATION_CACHE_CONTROL,
+  allowScriptConditionalRevalidation,
   createApiCacheControlMiddleware,
   createResponseCompressionMiddleware,
   resolveApiCacheControl,
@@ -97,6 +98,47 @@ describe("response transport", () => {
   it("keeps mutations uncacheable", async () => {
     const res = await request(createApp()).post("/api/chat").send({ prompt: "hi" });
     expect(res.headers["cache-control"]).toBe(API_MUTATION_CACHE_CONTROL);
+  });
+
+  it("still answers 304 when a browser adds Cache-Control: no-cache to a script-set conditional request", async () => {
+    const app = createApp();
+    const first = await request(app).get("/api/sessions").set("Accept-Encoding", "br, gzip");
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    // What fetch() sends when page script supplies If-None-Match (Fetch spec forces
+    // cache mode "no-store", which appends these two request headers).
+    const revalidated = await request(app)
+      .get("/api/sessions")
+      .set("Accept-Encoding", "br, gzip")
+      .set("If-None-Match", etag)
+      .set("Cache-Control", "no-cache")
+      .set("Pragma", "no-cache");
+    expect(revalidated.status).toBe(304);
+
+    // A changed body still wins over the validator.
+    const stale = await request(app)
+      .get("/api/sessions")
+      .set("If-None-Match", 'W/"something-else"')
+      .set("Cache-Control", "no-cache");
+    expect(stale.status).toBe(200);
+    expect(stale.body.sessions).toHaveLength(200);
+  });
+
+  it("only relaxes request cache directives for conditional GET/HEAD requests", () => {
+    const conditional = { method: "GET", headers: { "if-none-match": 'W/"a"', "cache-control": "no-cache", pragma: "no-cache" } };
+    expect(allowScriptConditionalRevalidation(conditional)).toBe(true);
+    expect(conditional.headers).toEqual({ "if-none-match": 'W/"a"' });
+
+    const unconditional = { method: "GET", headers: { "cache-control": "no-cache" } };
+    expect(allowScriptConditionalRevalidation(unconditional)).toBe(false);
+    expect(unconditional.headers).toEqual({ "cache-control": "no-cache" });
+
+    const mutation = { method: "POST", headers: { "if-none-match": 'W/"a"', "cache-control": "no-cache" } };
+    expect(allowScriptConditionalRevalidation(mutation)).toBe(false);
+    expect(mutation.headers["cache-control"]).toBe("no-cache");
+
+    expect(allowScriptConditionalRevalidation({ method: "GET", headers: { "if-none-match": 'W/"a"' } })).toBe(false);
   });
 
   it("resolves cache control by method", () => {
