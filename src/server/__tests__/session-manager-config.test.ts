@@ -244,7 +244,7 @@ describe("SessionManager session config", () => {
     });
   });
 
-  it("reapplies adaptive-thinking compatibility when resuming persisted sessions", () => {
+  it("drops the legacy adaptive-thinking override when resuming persisted sessions", () => {
     const db = setupTestDb();
     const globalBus = createTestBus();
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
@@ -252,9 +252,14 @@ describe("SessionManager session config", () => {
     const sessionId = "persisted-adaptive-session";
     const sessionDir = join(copilotHome, "session-state", sessionId);
     mkdirSync(sessionDir, { recursive: true });
+    // Written by Bridge builds that worked around CLI <= 1.0.80 thinking serialization.
     writeFileSync(
       join(sessionDir, "bridge-model-state.json"),
-      JSON.stringify({ model: "adaptive-model", reasoningEffort: "high" }),
+      JSON.stringify({
+        model: "adaptive-model",
+        reasoningEffort: "high",
+        modelCapabilities: { supports: { adaptive_thinking: "required" } },
+      }),
     );
     const manager = new SessionManager({
       globalBus,
@@ -276,9 +281,7 @@ describe("SessionManager session config", () => {
 
     expect(cfg.model).toBeUndefined();
     expect(cfg.reasoningEffort).toBeUndefined();
-    expect(cfg.modelCapabilities).toEqual({
-      supports: { adaptive_thinking: "required" },
-    });
+    expect(cfg.modelCapabilities).toBeUndefined();
   });
 
   it("includes stored task momentum in newly created task sessions", async () => {

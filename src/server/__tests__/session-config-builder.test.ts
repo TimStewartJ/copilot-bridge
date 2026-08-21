@@ -327,7 +327,7 @@ describe("session-config-builder", () => {
     expect(cfg.reasoningEffort).toBe("xhigh");
   });
 
-  it("forces adaptive thinking for models with explicit effort", () => {
+  it("leaves adaptive thinking to the CLI for models with explicit effort", () => {
     const cfg = buildSessionConfig({
       deps: createDeps(),
       options: {
@@ -344,13 +344,8 @@ describe("session-config-builder", () => {
       callbacks: createCallbacks(),
     });
 
-    expect(cfg).toMatchObject({
-      model: "adaptive-model",
-      reasoningEffort: "high",
-      modelCapabilities: {
-        supports: { adaptive_thinking: "required" },
-      },
-    });
+    expect(cfg).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
+    expect(cfg.modelCapabilities).toBeUndefined();
   });
 
   it("does not apply a global reasoning effort unsupported by the active model (scheduled or launch)", () => {

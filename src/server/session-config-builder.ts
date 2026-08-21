@@ -314,11 +314,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         ?? scheduleContext?.contextTier
         ?? normalizeCopilotContextTier(settings?.contextTier),
     );
-    const modelCapabilities = getModelCapabilitiesOverride(
-      selectedModelMetadata,
-      contextTier,
-      cfg.reasoningEffort,
-    );
+    const modelCapabilities = getModelCapabilitiesOverride(selectedModelMetadata, contextTier);
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;
   }
 

@@ -5,7 +5,12 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dependencySyncHash, preparePatchedPackagesForInstall, sweepStalePatchPackageBackups } from "./server/dependency-sync.js";
+import {
+  dependencySyncHash,
+  installedDependencyHashPath,
+  preparePatchedPackagesForInstall,
+  sweepStalePatchPackageBackups,
+} from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnvManagedKeys } from "./server/env-loader.js";
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
 import { BRIDGE_CONTROL_ROOT_ENV } from "./server/control-root.js";
@@ -329,7 +334,7 @@ function run(cmd: string, options: LauncherRunOptions = {}): { ok: boolean; outp
   }
 }
 
-const DEPS_HASH_FILE = join(DATA_DIR, "deps-hash");
+const DEPS_HASH_FILE = installedDependencyHashPath(DATA_DIR);
 
 /** Hash package files and patch-package inputs to detect dependency changes. */
 function depsHash(): string {
@@ -379,6 +384,20 @@ function ensureDeps(): boolean {
   writeFileSync(DEPS_HASH_FILE, current);
   log("npm install succeeded — deps hash updated");
   return true;
+}
+
+/**
+ * A prepared release slot ships its own node_modules, so activating it skips the
+ * production-root build. Staging worktrees still link their node_modules into the
+ * production root, so bring it up to date with the now-active dependency inputs;
+ * staging falls back to its own install if this fails.
+ */
+function syncProductionRootDepsAfterReleaseActivation(): void {
+  if (DISTRIBUTION.mode === "release" || !dependencyInputsChangedSinceLastSync()) return;
+  log("Production-root dependencies lag the activated release — syncing...");
+  if (!ensureDeps()) {
+    log("Production-root dependency sync failed — staging worktrees will install their own dependencies");
+  }
 }
 
 function hasOperationalRestartSourceChanges(): boolean {
@@ -1373,6 +1392,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
         log(`Pruned ${pruned} stale release slot artifact(s)`);
       }
       await cycleManagementJobRunner("successful release activation");
+      syncProductionRootDepsAfterReleaseActivation();
     } else {
       startManagementJobRunner();
     }
