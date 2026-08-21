@@ -68,11 +68,13 @@ async function main(): Promise<void> {
     },
     { shutdownAppContextServices },
     { resolveRuntimePaths },
+    { createApiCacheControlMiddleware, createResponseCompressionMiddleware },
   ] = await Promise.all([
     import("./api-router.js"),
     import("./app-context-factory.js"),
     import("./app-context-shutdown.js"),
     import("./runtime-paths.js"),
+    import("./response-transport.js"),
   ]);
 
   const runtimePaths = resolveRuntimePaths(process.env);
@@ -136,13 +138,11 @@ async function main(): Promise<void> {
   ctx.voiceJobManager.resumePendingJobs();
   initializeSchedulerAndDeferredRunners(ctx);
 
+  app.use(createResponseCompressionMiddleware());
   app.get("/__health", (_req, res) => {
     res.json({ ok: true, apiBasePath });
   });
-  app.use("/api", (_req, res, next) => {
-    res.setHeader("Cache-Control", "no-store");
-    next();
-  }, createApiRouter(ctx));
+  app.use("/api", createApiCacheControlMiddleware(), createApiRouter(ctx));
 
   server = createServer(app);
   await new Promise<void>((resolve, reject) => {

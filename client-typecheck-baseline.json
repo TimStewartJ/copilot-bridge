@@ -8,11 +8,11 @@
       "count": 2,
       "locations": [
         {
-          "line": 28,
+          "line": 30,
           "character": 33
         },
         {
-          "line": 29,
+          "line": 31,
           "character": 33
         }
       ]
@@ -24,11 +24,11 @@
       "count": 2,
       "locations": [
         {
-          "line": 69,
+          "line": 71,
           "character": 9
         },
         {
-          "line": 90,
+          "line": 92,
           "character": 9
         }
       ]
@@ -40,15 +40,15 @@
       "count": 3,
       "locations": [
         {
-          "line": 36,
+          "line": 38,
           "character": 7
         },
         {
-          "line": 47,
+          "line": 49,
           "character": 7
         },
         {
-          "line": 57,
+          "line": 59,
           "character": 7
         }
       ]
@@ -60,7 +60,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 579,
+          "line": 555,
           "character": 55
         }
       ]
@@ -160,7 +160,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 540,
+          "line": 545,
           "character": 17
         }
       ]
@@ -172,7 +172,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 387,
+          "line": 392,
           "character": 39
         }
       ]
@@ -184,47 +184,47 @@
       "count": 11,
       "locations": [
         {
-          "line": 392,
+          "line": 397,
           "character": 16
         },
         {
-          "line": 392,
+          "line": 397,
           "character": 49
         },
         {
-          "line": 396,
+          "line": 401,
           "character": 7
         },
         {
-          "line": 397,
+          "line": 402,
           "character": 33
         },
         {
-          "line": 398,
+          "line": 403,
           "character": 30
         },
         {
-          "line": 408,
+          "line": 413,
           "character": 9
         },
         {
-          "line": 409,
+          "line": 414,
           "character": 33
         },
         {
-          "line": 410,
+          "line": 415,
           "character": 23
         },
         {
-          "line": 529,
+          "line": 534,
           "character": 18
         },
         {
-          "line": 530,
+          "line": 535,
           "character": 18
         },
         {
-          "line": 595,
+          "line": 600,
           "character": 68
         }
       ]
@@ -236,19 +236,19 @@
       "count": 4,
       "locations": [
         {
-          "line": 391,
+          "line": 396,
           "character": 32
         },
         {
-          "line": 394,
+          "line": 399,
           "character": 33
         },
         {
-          "line": 442,
+          "line": 447,
           "character": 37
         },
         {
-          "line": 595,
+          "line": 600,
           "character": 34
         }
       ]
@@ -260,11 +260,11 @@
       "count": 2,
       "locations": [
         {
-          "line": 612,
+          "line": 619,
           "character": 35
         },
         {
-          "line": 635,
+          "line": 642,
           "character": 23
         }
       ]
@@ -276,7 +276,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 642,
+          "line": 649,
           "character": 32
         }
       ]
@@ -288,28 +288,16 @@
       "count": 3,
       "locations": [
         {
-          "line": 297,
+          "line": 299,
           "character": 164
         },
         {
-          "line": 327,
+          "line": 332,
           "character": 158
         },
         {
-          "line": 360,
+          "line": 367,
           "character": 160
-        }
-      ]
-    },
-    {
-      "code": 2345,
-      "file": "src/client/hooks/queries/useSessions.ts",
-      "message": "Argument of type 'unknown' is not assignable to parameter of type 'Session[]'.",
-      "count": 1,
-      "locations": [
-        {
-          "line": 65,
-          "character": 31
         }
       ]
     },
@@ -320,7 +308,7 @@
       "count": 1,
       "locations": [
         {
-          "line": 100,
+          "line": 105,
           "character": 30
         }
       ]
