@@ -52,6 +52,28 @@ export function resolveApiCacheControl(method: string): string {
 export function createApiCacheControlMiddleware(): RequestHandler {
   return (req, res, next) => {
     res.setHeader("Cache-Control", resolveApiCacheControl(req.method));
+    allowScriptConditionalRevalidation(req);
     next();
   };
+}
+
+/**
+ * When page script sets If-None-Match itself, the Fetch spec forces the request into
+ * cache mode "no-store" and browsers append `Cache-Control: no-cache` + `Pragma:
+ * no-cache` to it. Express's freshness check (`fresh`) treats a request-side
+ * `no-cache` as "never 304", so every client revalidation came back 200 with a full
+ * body. A conditional request *is* origin validation, which is exactly what the
+ * request directive asks for, so drop the request-side veto and let the ETag compare
+ * decide.
+ */
+export function allowScriptConditionalRevalidation(
+  req: Pick<Request, "method" | "headers">,
+): boolean {
+  const method = req.method.toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+  if (!req.headers["if-none-match"]) return false;
+  if (req.headers["cache-control"] === undefined && req.headers.pragma === undefined) return false;
+  delete req.headers["cache-control"];
+  delete req.headers.pragma;
+  return true;
 }
