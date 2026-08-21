@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { Session } from "../../api";
 import { queryKeys } from "../../queryClient";
-import { mergeActiveAndArchivedSessions, mergeOptimisticSessions, patchSessionQueryData } from "./useSessions";
+import {
+  mergeActiveAndArchivedSessions,
+  mergeOptimisticSessions,
+  patchSessionQueryData,
+  shareSessionsStructurally,
+} from "./useSessions";
 
 function createSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -13,6 +18,38 @@ function createSession(overrides: Partial<Session> = {}): Session {
     ...overrides,
   };
 }
+
+describe("shareSessionsStructurally", () => {
+  it("returns the cached array when a poll brings back identical data", () => {
+    const cached = [createSession({ sessionId: "a" }), createSession({ sessionId: "b" })];
+    const fresh = [createSession({ sessionId: "a" }), createSession({ sessionId: "b" })];
+
+    expect(shareSessionsStructurally(cached, fresh)).toBe(cached);
+  });
+
+  it("keeps references for unchanged sessions and replaces only changed ones", () => {
+    const cached = [createSession({ sessionId: "a" }), createSession({ sessionId: "b" })];
+    const fresh = [
+      createSession({ sessionId: "a" }),
+      createSession({ sessionId: "b", summary: "Renamed" }),
+    ];
+
+    const shared = shareSessionsStructurally(cached, fresh);
+    expect(shared).not.toBe(cached);
+    expect(shared[0]).toBe(cached[0]);
+    expect(shared[1]).not.toBe(cached[1]);
+    expect(shared[1].summary).toBe("Renamed");
+  });
+
+  it("still carries optimistic sessions the server has not returned yet", () => {
+    const optimistic = createSession({ sessionId: "optimistic", isOptimistic: true, optimisticUntil: 1_000 });
+    const cached = [optimistic, createSession({ sessionId: "a" })];
+    const fresh = [createSession({ sessionId: "a" })];
+
+    const shared = shareSessionsStructurally(cached, fresh, 500);
+    expect(shared).toBe(cached);
+  });
+});
 
 describe("mergeOptimisticSessions", () => {
   it("keeps optimistic sessions omitted by a stale refetch", () => {

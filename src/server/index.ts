@@ -31,6 +31,7 @@ import {
   initializeSchedulerAndDeferredRunners,
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
+import { createApiCacheControlMiddleware, createResponseCompressionMiddleware } from "./response-transport.js";
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import { createStorageMaintenance } from "./storage-maintenance.js";
 import { PRODUCTION_ROOT } from "./staging-preview-shared.js";
@@ -53,6 +54,11 @@ if (shouldTrustProxyHeaders()) {
 // Register Express app with staging tools so they can mount/unmount staged routers
 registerExpressApp(app);
 
+// Remote clients reach the bridge through a relay (dev tunnel) where bytes on the wire
+// dominate latency: compress JSON/static responses and let GET API polls revalidate
+// with If-None-Match so unchanged payloads cost a 304 instead of a full body.
+app.use(createResponseCompressionMiddleware());
+
 const runtimePaths = resolveRuntimePaths(process.env);
 const { ctx: defaultContext } = createAppContext({
   runtimePaths,
@@ -64,10 +70,7 @@ const sessionManager = defaultContext.sessionManager;
 const shutdownCoordinator = createServerShutdownCoordinator(defaultContext);
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
-app.use("/api", (_req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
-  next();
-}, createApiRouter(defaultContext, { shutdownCoordinator }));
+app.use("/api", createApiCacheControlMiddleware(), createApiRouter(defaultContext, { shutdownCoordinator }));
 
 // ── Static files (Vite build output) ──────────────────────────────
 

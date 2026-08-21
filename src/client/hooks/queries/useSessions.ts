@@ -1,4 +1,4 @@
-import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { replaceEqualDeep, useQuery, type QueryClient } from "@tanstack/react-query";
 import { fetchSessions, type Session } from "../../api";
 import { queryKeys } from "../../queryClient";
 
@@ -25,6 +25,19 @@ export function mergeOptimisticSessions(
   return optimisticSessions.length > 0
     ? [...optimisticSessions, ...serverSessions]
     : serverSessions;
+}
+
+/**
+ * Session polls return a fresh array every time even when nothing changed. Keep the
+ * cached references for unchanged sessions so the list (and every consumer keyed on
+ * it) only re-renders for real changes.
+ */
+export function shareSessionsStructurally(
+  oldData: Session[] | undefined,
+  newData: Session[],
+  now = Date.now(),
+): Session[] {
+  return replaceEqualDeep(oldData, mergeOptimisticSessions(newData, oldData, now));
 }
 
 export function mergeActiveAndArchivedSessions(
@@ -62,7 +75,7 @@ export function useSessionsQuery(includeArchived: boolean, options: UseSessionsQ
     enabled: options.enabled ?? true,
     queryFn: () => fetchSessions(includeArchived),
     structuralSharing: (oldData, newData) =>
-      mergeOptimisticSessions(newData, oldData),
+      shareSessionsStructurally(oldData as Session[] | undefined, newData as Session[]),
     refetchInterval: options.refetchInterval ?? 30_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: options.refetchOnWindowFocus ?? true,

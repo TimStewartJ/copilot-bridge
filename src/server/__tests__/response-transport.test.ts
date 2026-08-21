@@ -1,0 +1,108 @@
+import express from "express";
+import { describe, expect, it } from "vitest";
+import request from "./test-http.js";
+import {
+  API_GET_CACHE_CONTROL,
+  API_MUTATION_CACHE_CONTROL,
+  createApiCacheControlMiddleware,
+  createResponseCompressionMiddleware,
+  resolveApiCacheControl,
+} from "../response-transport.js";
+
+function createApp() {
+  const app = express();
+  app.use(createResponseCompressionMiddleware());
+  app.use("/api", createApiCacheControlMiddleware(), express.json());
+
+  const largePayload = { sessions: Array.from({ length: 200 }, (_, index) => ({
+    sessionId: `session-${index}`,
+    summary: `Session ${index} with a long enough title to matter`,
+    workspace: { cwd: "D:\\repo", repository: "TimStewartJ/copilot-bridge", branch: "master" },
+  })) };
+  app.get("/api/sessions", (_req, res) => {
+    res.json(largePayload);
+  });
+  app.get("/api/health", (_req, res) => {
+    res.json({ ok: true });
+  });
+  app.post("/api/chat", (_req, res) => {
+    res.json({ ok: true, ...largePayload });
+  });
+  app.get("/api/status-stream", (_req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`data: ${JSON.stringify(largePayload)}\n\n`);
+    res.end();
+  });
+  return app;
+}
+
+describe("response transport", () => {
+  it("compresses large JSON responses when the client accepts it", async () => {
+    const res = await request(createApp())
+      .get("/api/sessions")
+      .set("Accept-Encoding", "br, gzip");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-encoding"]).toMatch(/^(br|gzip)$/);
+    expect(res.headers.vary).toContain("Accept-Encoding");
+    expect(res.body.sessions).toHaveLength(200);
+  });
+
+  it("leaves small responses and clients without Accept-Encoding alone", async () => {
+    const app = createApp();
+    const small = await request(app).get("/api/health").set("Accept-Encoding", "gzip");
+    expect(small.headers["content-encoding"]).toBeUndefined();
+    expect(small.body).toEqual({ ok: true });
+
+    const identity = await request(app).get("/api/sessions").set("Accept-Encoding", "identity");
+    expect(identity.headers["content-encoding"]).toBeUndefined();
+    expect(identity.body.sessions).toHaveLength(200);
+  });
+
+  it("never compresses server-sent event streams", async () => {
+    const res = await request(createApp())
+      .get("/api/status-stream")
+      .set("Accept-Encoding", "br, gzip")
+      .buffer(true)
+      .parse((response, callback) => {
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => { text += chunk; });
+        response.on("end", () => callback(null, text));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    expect(String(res.body)).toMatch(/^data: \{"sessions"/);
+  });
+
+  it("lets GET API reads revalidate and answers matching If-None-Match with 304", async () => {
+    const app = createApp();
+    const first = await request(app).get("/api/sessions").set("Accept-Encoding", "gzip");
+    expect(first.headers["cache-control"]).toBe(API_GET_CACHE_CONTROL);
+    expect(first.headers.etag).toBeTruthy();
+
+    const revalidated = await request(app)
+      .get("/api/sessions")
+      .set("Accept-Encoding", "gzip")
+      .set("If-None-Match", first.headers.etag);
+    expect(revalidated.status).toBe(304);
+    expect(revalidated.text ?? "").toBe("");
+  });
+
+  it("keeps mutations uncacheable", async () => {
+    const res = await request(createApp()).post("/api/chat").send({ prompt: "hi" });
+    expect(res.headers["cache-control"]).toBe(API_MUTATION_CACHE_CONTROL);
+  });
+
+  it("resolves cache control by method", () => {
+    expect(resolveApiCacheControl("get")).toBe(API_GET_CACHE_CONTROL);
+    expect(resolveApiCacheControl("HEAD")).toBe(API_GET_CACHE_CONTROL);
+    expect(resolveApiCacheControl("POST")).toBe(API_MUTATION_CACHE_CONTROL);
+    expect(resolveApiCacheControl("DELETE")).toBe(API_MUTATION_CACHE_CONTROL);
+  });
+});
