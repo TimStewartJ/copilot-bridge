@@ -53,6 +53,19 @@ async function copilotPackageDirCandidates() {
 }
 
 async function resolveCopilotPackageDir() {
+  // A Bridge-pinned CLI build (see copilot-cli-pin.ts) takes precedence. The
+  // server only sets this when the pinned directory passed its readiness check,
+  // so a broken value here is a real fault and must not silently fall through
+  // to a different CLI version.
+  const pinnedDir = process.env.BRIDGE_COPILOT_APP_DIR;
+  if (pinnedDir && pinnedDir.trim()) {
+    if (existsSync(join(pinnedDir, "app.js")) && existsSync(join(pinnedDir, "index.js"))) {
+      return pinnedDir;
+    }
+    throw new Error(
+      `BRIDGE_COPILOT_APP_DIR=${pinnedDir} does not contain the Copilot application entry points (app.js/index.js).`,
+    );
+  }
   for (const dir of await copilotPackageDirCandidates()) {
     if (existsSync(join(dir, "app.js")) && existsSync(join(dir, "index.js"))) {
       return dir;

@@ -88,6 +88,15 @@ For Copilot SDK authentication, set `BRIDGE_COPILOT_GITHUB_TOKEN` if you want Br
 
 GitHub work item and pull request enrichment reuses the same ambient auth: `BRIDGE_COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. With no token available it still enriches public repositories anonymously. Fully qualified references (`owner/repo#123`, an issue/PR URL, or an `owner/repo` PR repository) work without any GitHub provider settings; the optional owner/default-repo settings only resolve short references like `123` or `repo#123`.
 
+### Copilot CLI Version (npm vs pinned prerelease)
+
+Bridge launches the Copilot CLI that ships in the npm `@github/copilot` platform package (exact-pinned through `overrides` in `package.json`). Prereleases reach [GitHub Releases](https://github.com/github/copilot-cli/releases) before npm, so `copilot-cli.lock.json` can pin one of those instead:
+
+- `{ "source": "npm" }` uses the installed npm package.
+- `{ "source": "github-release", "version": "1.0.81-6", "assets": { "<platform>": { "name", "sha256" } } }` downloads that release tarball, verifies its SHA-256 against the lock, extracts it under `BRIDGE_COPILOT_CLI_CACHE_DIR` (default `<data dir>/copilot-cli/<version>`), and launches it. The cache is outside `node_modules` and the release slots, so `npm install`, slot pruning, and the CLI self-updater cannot disturb it.
+
+`npm run copilot-cli:pin -- 1.0.81-6` writes the lock from the release's `SHA256SUMS.txt`; `npm run copilot-cli:pin -- npm` switches back. `npm run copilot-cli:ensure` downloads the pinned build now, `npm run copilot-cli:status` shows what the next launch uses, and `npm run copilot-cli:prune` drops cached builds the lock no longer references. The server and staging previews run the ensure step at startup; if the download fails they fall back to the npm package and report `copilotCli.source: "npm-fallback"` on `/api/health` and in the logs. The loader contract test (`copilot-cli-loader.test.ts`) also gates the pinned bundle whenever it is cached, so a prerelease that changes the patched runtime shapes fails validation instead of launch.
+
 ### Packaged Release Mode
 
 For teammate installs that should not require git history, build a release bundle:

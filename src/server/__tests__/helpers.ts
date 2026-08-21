@@ -18,7 +18,13 @@ import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
 import type { AgentSession } from "../agent-backend/index.js";
 
-const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
+const TEST_RUNTIME_ENV_KEYS = [
+  "BRIDGE_DATA_DIR",
+  "BRIDGE_DOCS_DIR",
+  "BRIDGE_DOCS_SNAPSHOTS_DIR",
+  "BRIDGE_COPILOT_CLI_CACHE_DIR",
+  "COPILOT_HOME",
+] as const;
 const TEST_CLEANUP_MAX_RETRIES = 20;
 const TEST_CLEANUP_RETRY_DELAY_MS = 50;
 const testCleanupPaths = new Set<string>();
