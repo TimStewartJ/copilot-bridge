@@ -1,4 +1,5 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
 import type { CopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
@@ -597,12 +598,20 @@ export async function uploadFile(sessionId: string, file: File): Promise<Uploade
   };
 }
 
+const conditionalGetCache = new ConditionalGetCache();
+
+/** Test hook: drop remembered ETags so a fresh fetch never sends If-None-Match. */
+export function resetConditionalGetCacheForTests(): void {
+  conditionalGetCache.clear();
+}
+
 async function apiFetch<T>(
   path: string,
   body?: unknown,
   options?: { signal?: AbortSignal; reportTelemetry?: boolean },
 ): Promise<T> {
   const t0 = performance.now();
+  const conditionalKey = body ? null : path;
   const opts: RequestInit = body
     ? {
         method: "POST",
@@ -611,10 +620,12 @@ async function apiFetch<T>(
         signal: options?.signal,
       }
     : {
+        headers: conditionalGetCache.requestHeaders(path),
         signal: options?.signal,
       };
   const res = await fetch(`${API_BASE}${path}`, opts);
-  if (!res.ok) {
+  const notModified = conditionalKey ? conditionalGetCache.reuseIfNotModified(conditionalKey, res.status) : undefined;
+  if (!notModified && !res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     const errorMessage = err && typeof err === "object" && "error" in err && typeof err.error === "string"
       ? err.error
@@ -622,13 +633,18 @@ async function apiFetch<T>(
     const details = err && typeof err === "object" && "details" in err ? err.details : undefined;
     throw new ApiError(errorMessage || res.statusText, res.status, details);
   }
-  const result = await res.json();
+  const result = notModified ? notModified.result : await res.json();
+  if (conditionalKey && !notModified) {
+    conditionalGetCache.remember(conditionalKey, readEtagHeader(res), result);
+  }
   // Fire-and-forget client timing report (skip telemetry endpoint to avoid recursion)
   if (options?.reportTelemetry !== false && !path.startsWith("/api/telemetry")) {
     const duration = Math.round(performance.now() - t0);
-    reportTiming(`api${path.replace(/\/api/, "")}`, duration).catch(() => {});
+    reportTiming(`api${path.replace(/\/api/, "")}`, duration, {
+      ...(conditionalKey ? { metadata: { notModified: Boolean(notModified) } } : {}),
+    }).catch(() => {});
   }
-  return result;
+  return result as T;
 }
 
 // ── Client telemetry ──────────────────────────────────────────────
