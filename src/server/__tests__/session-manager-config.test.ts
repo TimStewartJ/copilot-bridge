@@ -16,10 +16,18 @@ import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { FEED_GUIDANCE } from "../session-instructions.js";
+import { COPILOT_CLI_LOCK_FILENAME } from "../copilot-cli-pin.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
   const tempDirs: string[] = [];
+  // Keep these assertions independent of whatever copilot-cli.lock.json the
+  // running code tree pins (and of whether that build is cached on this host).
+  function npmCliOverrides() {
+    const root = makeTestDir("client-options-lock");
+    writeFileSync(join(root, COPILOT_CLI_LOCK_FILENAME), JSON.stringify({ source: "npm" }));
+    return { copilotCliRootDir: root };
+  }
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
@@ -37,7 +45,7 @@ describe("SessionManager session config", () => {
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
         env: expect.objectContaining({ COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() }),
       }));
-      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual(expect.objectContaining({
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, npmCliOverrides())).toEqual(expect.objectContaining({
         cliPath: resolveBridgeCopilotCliPath(),
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
         env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
@@ -50,8 +58,9 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
-      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, npmCliOverrides())).toEqual({
         cliPath: resolveBridgeCopilotCliPath(),
+        copilotCli: expect.objectContaining({ source: "npm" }),
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
         env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
         gitHubToken: "github_pat_bridge",
@@ -68,8 +77,9 @@ describe("SessionManager session config", () => {
       expect(buildCopilotClientOptions({
         COPILOT_HOME: copilotHome,
         [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
-      })).toEqual({
+      }, npmCliOverrides())).toEqual({
         cliPath: resolveBridgeCopilotCliPath(),
+        copilotCli: expect.objectContaining({ source: "npm" }),
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
         env: {
           COPILOT_HOME: copilotHome,

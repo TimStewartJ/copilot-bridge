@@ -131,6 +131,10 @@ if (Test-Path $packageLockPath) {
 }
 Copy-Item -Path (Join-Path $repoRoot ".env.example") -Destination $appDir
 Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination $appDir
+$copilotCliLockPath = Join-Path $repoRoot "copilot-cli.lock.json"
+if (Test-Path $copilotCliLockPath) {
+  Copy-Item -Path $copilotCliLockPath -Destination $appDir
+}
 Copy-Item -Path (Join-Path $repoRoot "scripts\start-release.ps1") -Destination (Join-Path $releaseRoot "start.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\stop-release.ps1") -Destination (Join-Path $releaseRoot "stop.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\update-release.ps1") -Destination (Join-Path $releaseRoot "update.ps1")
