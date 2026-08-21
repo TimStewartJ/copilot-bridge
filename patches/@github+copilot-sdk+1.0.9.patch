@@ -2,19 +2,21 @@ diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/
 index 7378159..74b473f 100644
 --- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-@@ -1127,6 +1127,7 @@ class CopilotClient {
+@@ -1127,6 +1127,8 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
++        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1348,6 +1349,7 @@ class CopilotClient {
+@@ -1348,6 +1350,8 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
++        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
@@ -22,19 +24,21 @@ diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@git
 index 88a2390..24642b5 100644
 --- a/node_modules/@github/copilot-sdk/dist/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/client.js
-@@ -1104,6 +1104,7 @@ class CopilotClient {
+@@ -1104,6 +1104,8 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
++        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1325,6 +1326,7 @@ class CopilotClient {
+@@ -1325,6 +1327,8 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
++        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),

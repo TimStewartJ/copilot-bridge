@@ -98,8 +98,20 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.createSession).toHaveBeenCalledWith({
       streaming: true,
       onElicitationRequest: expect.any(Function),
+      // Names the structured ask_user variant so runtimes that resolve it
+      // natively (Copilot CLI >= 1.0.81) keep ask_user in the toolset.
+      askUserVariant: "elicitation",
     });
     expect(session.registerElicitationHandler).toHaveBeenCalledWith(undefined);
+  });
+
+  it("does not request the elicitation ask_user variant when pending interaction events are off", async () => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+
+    await backend.createSession({ streaming: true });
+
+    expect(client.createSession).toHaveBeenCalledWith({ streaming: true });
   });
 
   it("delegates deleteSession and getSessionMetadata", async () => {

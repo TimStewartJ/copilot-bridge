@@ -314,6 +314,10 @@ function resolveStagingPreviewRuntimePaths(stagingDir: string): RuntimePaths {
     dataDir,
     docsDir: join(dataDir, "docs"),
     copilotHome: join(dataDir, ".copilot"),
+    // Share the production cache of pinned Copilot CLI builds so a preview that
+    // bumps copilot-cli.lock.json downloads the build once, where the deploy
+    // that follows will find it already validated.
+    copilotCliCacheDir: resolveRuntimePaths(process.env).copilotCliCacheDir,
   });
 }
 

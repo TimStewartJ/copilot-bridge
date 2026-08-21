@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { BRIDGE_COPILOT_CLI_CACHE_DIR_ENV, resolveCopilotCliCacheDir } from "./copilot-cli-pin.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 export interface ValidationCommandEnv {
@@ -53,6 +54,13 @@ export function createValidationCommandEnv(
   const env = withNonInteractiveCommandEnv(options.nodeDir
     ? prependNodePath(baseEnv, options.nodeDir)
     : { ...baseEnv });
+  // The data dir is isolated, but the cache of pinned Copilot CLI builds stays
+  // shared with the host so validation exercises the same CLI build production
+  // launches (and the loader contract test can gate it).
+  const baseDataDir = baseEnv.BRIDGE_DATA_DIR?.trim();
+  if (baseDataDir) {
+    env[BRIDGE_COPILOT_CLI_CACHE_DIR_ENV] = resolveCopilotCliCacheDir(baseEnv, baseDataDir);
+  }
   env.BRIDGE_DATA_DIR = dataDir;
   env.BRIDGE_DOCS_DIR = docsDir;
   env.BRIDGE_DOCS_SNAPSHOTS_DIR = docsSnapshotsDir;

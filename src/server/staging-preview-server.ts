@@ -2,6 +2,7 @@ import "./log-timestamps.js";
 import "./load-bridge-env.js";
 import express from "express";
 import { createServer, type Server } from "node:http";
+import { join } from "node:path";
 
 const STAGING_EXCLUDED_TOOLS = new Set([
   "self_restart",
@@ -69,15 +70,25 @@ async function main(): Promise<void> {
     { shutdownAppContextServices },
     { resolveRuntimePaths },
     { createApiCacheControlMiddleware, createResponseCompressionMiddleware },
+    { describeCopilotCliResolution, ensurePinnedCopilotCli },
   ] = await Promise.all([
     import("./api-router.js"),
     import("./app-context-factory.js"),
     import("./app-context-shutdown.js"),
     import("./runtime-paths.js"),
     import("./response-transport.js"),
+    import("./copilot-cli-pin.js"),
   ]);
 
   const runtimePaths = resolveRuntimePaths(process.env);
+  // Previews exercise the staged lock (and share the production cache through
+  // BRIDGE_COPILOT_CLI_CACHE_DIR), so a pin bump is downloaded and validated here
+  // before it ever reaches a deploy.
+  const copilotCli = await ensurePinnedCopilotCli({
+    cacheDir: runtimePaths.copilotCliCacheDir ?? join(runtimePaths.dataDir, "copilot-cli"),
+    log: (message) => console.log(`[staging-preview] [copilot-cli] ${message}`),
+  });
+  console.log(`[staging-preview] [copilot-cli] Using ${describeCopilotCliResolution(copilotCli)}`);
   const { ctx, db } = createAppContext({
     runtimePaths,
     apiBasePath,
