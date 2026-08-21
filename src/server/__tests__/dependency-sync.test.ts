@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { dependencySyncHash, preparePatchedPackagesForInstall } from "../dependency-sync.js";
+import {
+  dependencySyncHash,
+  installedDependencyHashPath,
+  preparePatchedPackagesForInstall,
+  readInstalledDependencyHash,
+} from "../dependency-sync.js";
 
 function createProjectDir(prefix: string, patchRelativePath?: string, patchContent = "patch") {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -41,6 +46,18 @@ describe("dependencySyncHash", () => {
     tempDirs.push(a, b);
 
     expect(dependencySyncHash(a)).not.toBe(dependencySyncHash(b));
+  });
+
+  it("reads the launcher's recorded install hash and tolerates a missing or blank record", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-deps-installed-"));
+    tempDirs.push(dataDir);
+
+    expect(readInstalledDependencyHash(dataDir)).toBeUndefined();
+    writeFileSync(installedDependencyHashPath(dataDir), "   \n");
+    expect(readInstalledDependencyHash(dataDir)).toBeUndefined();
+    writeFileSync(installedDependencyHashPath(dataDir), "abc123\n");
+    expect(readInstalledDependencyHash(dataDir)).toBe("abc123");
+    expect(readInstalledDependencyHash(join(dataDir, "missing-dir"))).toBeUndefined();
   });
 
   it("backs up and restores installed packages targeted by patch-package files", () => {

@@ -277,3 +277,26 @@ export function dependencySyncHash(root: string): string {
 
   return createHash("sha256").update(entries.join("\0\0")).digest("hex");
 }
+
+/** The launcher records the dependency hash of the last successful production-root install here. */
+export const INSTALLED_DEPENDENCY_HASH_FILENAME = "deps-hash";
+
+export function installedDependencyHashPath(dataDir: string): string {
+  return join(dataDir, INSTALLED_DEPENDENCY_HASH_FILENAME);
+}
+
+/**
+ * Dependency hash the launcher last installed into the production root, or
+ * undefined when no install has been recorded (fresh checkout, release mode,
+ * unreadable file).
+ */
+export function readInstalledDependencyHash(dataDir: string): string | undefined {
+  try {
+    const filePath = installedDependencyHashPath(dataDir);
+    if (!existsSync(filePath)) return undefined;
+    const value = readFileSync(filePath, "utf-8").trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}

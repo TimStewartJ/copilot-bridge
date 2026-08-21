@@ -121,7 +121,7 @@ describe("SessionManager.setSessionModel", () => {
     expect(result2).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
   });
 
-  it("forces adaptive thinking when switching a live session with explicit effort", async () => {
+  it("does not add thinking overrides when switching a live session with explicit effort", async () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.6-sol");
     manager.backend = {};
@@ -130,12 +130,7 @@ describe("SessionManager.setSessionModel", () => {
 
     const result = await manager.setSessionModel("session-1", "adaptive-model", "high");
 
-    expect(session.setModel).toHaveBeenCalledWith("adaptive-model", {
-      reasoningEffort: "high",
-      modelCapabilities: {
-        supports: { adaptive_thinking: "required" },
-      },
-    });
+    expect(session.setModel).toHaveBeenCalledWith("adaptive-model", { reasoningEffort: "high" });
     expect(result).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
   });
 
