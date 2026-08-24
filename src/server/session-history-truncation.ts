@@ -1,5 +1,5 @@
 import { isQuietIntervalDeferEvent } from "./event-transform.js";
-import { readSdkSessionEvents } from "./sdk-session-events.js";
+import { readSessionEventsTail, type SessionEventsTail } from "./session-disk-reader.js";
 
 export const QUIET_INTERVAL_DEFER_TAIL_TRUNCATION_MODE = "replace-quiet-interval-defer-tail" as const;
 
@@ -15,16 +15,19 @@ export interface QuietIntervalDeferTailTruncationCandidate {
 
 export type QuietIntervalDeferTailTruncationResult =
   | { status: "truncated"; eventId: string; eventsRemoved: number; candidateEventsToRemove: number }
-  | { status: "skipped"; reason: "no-candidate" | "missing-api" }
+  | { status: "skipped"; reason: "no-candidate" | "missing-api" | "tail-window-exhausted" | "no-event-log" }
   | { status: "failed"; reason: "read-events-failed" | "truncate-failed"; error: unknown };
 
 interface TruncateQuietIntervalDeferTailOptions {
   session: {
-    getEvents?: () => Promise<unknown>;
     truncateHistory?: (params: { eventId: string }) => Promise<{ eventsRemoved?: number } | undefined>;
   };
   sessionId: string;
   deferId: string;
+  /** Path to the session's persisted events.jsonl; the tail is read from disk, never over RPC. */
+  eventsPath: string;
+  /** Optional cap on bytes read from the end of the log while looking for the previous quiet turn. */
+  maxTailBytes?: number;
   logger?: Pick<Console, "log" | "warn">;
   recordSpan?: (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) => void;
 }
@@ -154,10 +157,20 @@ export function findQuietIntervalDeferTailTruncationCandidate(
   };
 }
 
+function hasUserMessage(events: unknown[]): boolean {
+  return events.some((event) => (event as any)?.type === "user.message");
+}
+
+function isFileNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 export async function truncateQuietIntervalDeferTail({
   session,
   sessionId,
   deferId,
+  eventsPath,
+  maxTailBytes,
   logger = console,
   recordSpan,
 }: TruncateQuietIntervalDeferTailOptions): Promise<QuietIntervalDeferTailTruncationResult> {
@@ -165,7 +178,7 @@ export async function truncateQuietIntervalDeferTail({
   const truncateHistory = session.truncateHistory;
   const truncate =
     typeof truncateHistory === "function" ? truncateHistory.bind(session) : undefined;
-  if (typeof session.getEvents !== "function" || typeof truncate !== "function") {
+  if (typeof truncate !== "function") {
     logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Quiet defer history truncation unavailable`);
     recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
       outcome: "skipped",
@@ -175,10 +188,24 @@ export async function truncateQuietIntervalDeferTail({
     return { status: "skipped", reason: "missing-api" };
   }
 
-  let rawEvents: unknown;
+  // The previous quiet turn is always at the end of the persisted log, so a
+  // bounded tail read from disk is enough to find it. Growing the window stops
+  // at the first user.message, which is exactly the candidate boundary.
+  let tail: SessionEventsTail;
   try {
-    rawEvents = await readSdkSessionEvents(session);
+    tail = await readSessionEventsTail(eventsPath, {
+      maxBytes: maxTailBytes,
+      hasEnough: hasUserMessage,
+    });
   } catch (error) {
+    if (isFileNotFound(error)) {
+      recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
+        outcome: "skipped",
+        reason: "no-event-log",
+        deferId,
+      });
+      return { status: "skipped", reason: "no-event-log" };
+    }
     logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to inspect quiet defer history: ${getErrorMessage(error)}`);
     recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
       outcome: "failed",
@@ -188,7 +215,22 @@ export async function truncateQuietIntervalDeferTail({
     return { status: "failed", reason: "read-events-failed", error };
   }
 
-  const events = Array.isArray(rawEvents) ? rawEvents : [];
+  const events = tail.events;
+  if (!tail.complete && !hasUserMessage(events)) {
+    logger.warn(
+      `[sdk] [${sessionId.slice(0, 8)}] Quiet defer truncation skipped: no user turn within the last ${tail.bytesRead} bytes of events.jsonl (${tail.fileSize} bytes total)`,
+    );
+    recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
+      outcome: "skipped",
+      reason: "tail-window-exhausted",
+      deferId,
+      eventCount: events.length,
+      bytesRead: tail.bytesRead,
+      fileSize: tail.fileSize,
+    });
+    return { status: "skipped", reason: "tail-window-exhausted" };
+  }
+
   const candidate = findQuietIntervalDeferTailTruncationCandidate(events, deferId);
   if (!candidate) {
     recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
@@ -196,6 +238,8 @@ export async function truncateQuietIntervalDeferTail({
       reason: "no-candidate",
       deferId,
       eventCount: events.length,
+      bytesRead: tail.bytesRead,
+      fileSize: tail.fileSize,
     });
     return { status: "skipped", reason: "no-candidate" };
   }

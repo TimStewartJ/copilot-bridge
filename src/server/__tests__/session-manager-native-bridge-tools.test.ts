@@ -41,7 +41,6 @@ function createFakeSession(sessionId: string, tools: any[] = []) {
     setModel: vi.fn(async () => undefined),
     disconnect: vi.fn(),
     on: vi.fn((_handler: (event: any) => void) => () => undefined),
-    getEvents: vi.fn(async () => []),
     initializeTools: vi.fn(async () => undefined),
     getCurrentToolMetadata: vi.fn(async () => ({
       tools: tools.map((tool) => ({

@@ -204,10 +204,6 @@ class CopilotAgentSession implements AgentSession {
     return this.session.on(handler);
   }
 
-  getEvents(): Promise<unknown> {
-    return this.session.getEvents();
-  }
-
   async respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean> {
     const handle = this.session?.rpc?.ui?.handlePendingUserInput;
     if (typeof handle !== "function") {

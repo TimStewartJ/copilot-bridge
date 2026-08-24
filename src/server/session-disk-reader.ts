@@ -25,6 +25,7 @@ import {
   getAssistantTurnInstanceId,
   getSdkEventId,
   getSdkTurnId,
+  isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
 
@@ -1055,4 +1056,272 @@ export async function readMessagesFromDisk(
     lastVisibleActivityAt: stats.lastVisibleActivityAt,
     coverage: stats.coverage,
   };
+}
+
+// ── Disk-only event log reads ──────────────────────────────────────────────
+//
+// The Bridge never asks the agent backend for a session's full event history
+// over RPC: a single `session.getMessages` response for a large transcript
+// (tens of MB) tears down the one stdio JSON-RPC connection shared by every
+// live session. events.jsonl is the persisted source of truth, so every
+// history read below streams from disk with bounded memory instead.
+
+/** Hard cap on bytes a bounded tail read may hold in memory at once. */
+export const SESSION_EVENT_LOG_TAIL_MAX_BYTES = resolvePositiveIntegerEnv(
+  "BRIDGE_SESSION_EVENT_LOG_TAIL_MAX_BYTES",
+  16 * 1024 * 1024,
+);
+const SESSION_EVENT_LOG_TAIL_INITIAL_BYTES = 256 * 1024;
+/** Largest single event line the streaming index scan will buffer before treating the log as malformed. */
+const SESSION_EVENT_LOG_MAX_LINE_BYTES = 64 * 1024 * 1024;
+
+function resolvePositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
+
+export function resolveSessionEventsPath(copilotHome: string | undefined, sessionId: string): string {
+  return join(copilotHome ?? join(homedir(), ".copilot"), "session-state", sessionId, "events.jsonl");
+}
+
+export interface SessionEventsTailOptions {
+  /** Stop growing the window once at least this many parsed events are available. */
+  maxEvents?: number;
+  /** Upper bound on bytes materialized; defaults to {@link SESSION_EVENT_LOG_TAIL_MAX_BYTES}. */
+  maxBytes?: number;
+  /** Stop growing the window as soon as the parsed events satisfy the predicate. */
+  hasEnough?: (events: unknown[]) => boolean;
+}
+
+export interface SessionEventsTail {
+  /** Parsed events in file order (oldest first). Malformed lines are dropped. */
+  events: unknown[];
+  fileSize: number;
+  /** Byte offset of the first complete line included in `events`. */
+  startOffset: number;
+  bytesRead: number;
+  /** True when the window reached the start of the file, so `events` is the full log. */
+  complete: boolean;
+  malformedLineCount: number;
+}
+
+function parseEventLines(content: string): { events: unknown[]; malformedLineCount: number } {
+  const events: unknown[] = [];
+  let malformedLineCount = 0;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      malformedLineCount += 1;
+    }
+  }
+  return { events, malformedLineCount };
+}
+
+/**
+ * Read the newest events from a session's events.jsonl, growing the window
+ * from the end of the file until `maxEvents`/`hasEnough` is satisfied, the
+ * whole file is covered, or the byte cap is hit. Never loads more than
+ * `maxBytes` into memory.
+ */
+export async function readSessionEventsTail(
+  eventsPath: string,
+  options: SessionEventsTailOptions = {},
+): Promise<SessionEventsTail> {
+  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? SESSION_EVENT_LOG_TAIL_MAX_BYTES, SESSION_EVENT_LOG_TAIL_MAX_BYTES));
+  const fileStat = await stat(eventsPath);
+  const fileSize = fileStat.size;
+  if (fileSize === 0) {
+    return { events: [], fileSize, startOffset: 0, bytesRead: 0, complete: true, malformedLineCount: 0 };
+  }
+
+  const satisfied = (events: unknown[]): boolean => {
+    if (options.maxEvents !== undefined && events.length >= options.maxEvents) return true;
+    return options.hasEnough?.(events) === true;
+  };
+
+  let bytesToRead = Math.min(fileSize, maxBytes, SESSION_EVENT_LOG_TAIL_INITIAL_BYTES);
+  const file = await open(eventsPath, "r");
+  try {
+    while (true) {
+      const position = Math.max(0, fileSize - bytesToRead);
+      const buffer = Buffer.alloc(bytesToRead);
+      const { bytesRead } = await file.read(buffer, 0, bytesToRead, position);
+      let contentBuffer = buffer.subarray(0, bytesRead);
+      let startOffset = position;
+      if (position > 0) {
+        const firstNewline = contentBuffer.indexOf(0x0a);
+        if (firstNewline >= 0) {
+          contentBuffer = contentBuffer.subarray(firstNewline + 1);
+          startOffset = position + firstNewline + 1;
+        } else {
+          contentBuffer = Buffer.alloc(0);
+          startOffset = position + bytesRead;
+        }
+      }
+      const parsed = parseEventLines(contentBuffer.toString("utf-8"));
+      const complete = position === 0;
+      if (complete || satisfied(parsed.events) || bytesToRead >= Math.min(fileSize, maxBytes)) {
+        return {
+          events: parsed.events,
+          fileSize,
+          startOffset,
+          bytesRead,
+          complete,
+          malformedLineCount: parsed.malformedLineCount,
+        };
+      }
+      bytesToRead = Math.min(fileSize, maxBytes, bytesToRead * 2);
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+export interface SessionEventIndexMatch {
+  /** Zero-based position of the event in the log. */
+  index: number;
+  /** Number of events persisted after the match (the count a truncation at this event removes, plus one for itself). */
+  eventsAfter: number;
+  totalEvents: number;
+  event: unknown;
+}
+
+export interface FindSessionEventIndexOptions {
+  /** Observe every parsed event that precedes the match (not invoked for the match itself or anything after). */
+  onEventBefore?: (event: unknown, index: number) => void;
+  /** Custom matcher; defaults to comparing the persisted event `id`. */
+  matches?: (event: unknown) => boolean;
+}
+
+/**
+ * Locate one event in events.jsonl by streaming the file line by line with
+ * bounded memory. Returns `undefined` when no event matches.
+ */
+export async function findSessionEventIndex(
+  eventsPath: string,
+  eventId: string,
+  options: FindSessionEventIndexOptions = {},
+): Promise<SessionEventIndexMatch | undefined> {
+  const target = eventId.trim();
+  const matches = options.matches ?? ((event: unknown) => getSdkEventId(event) === target);
+  if (!target && !options.matches) return undefined;
+
+  let match: { index: number; event: unknown } | undefined;
+  let totalEvents = 0;
+  const file = await open(eventsPath, "r");
+  try {
+    const chunk = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
+    let pending: Buffer[] = [];
+    let pendingBytes = 0;
+    let position = 0;
+
+    const processLine = (lineBuffer: Buffer): void => {
+      const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
+        ? lineBuffer.length - 1
+        : lineBuffer.length;
+      const line = lineBuffer.subarray(0, contentEnd).toString("utf-8").trim();
+      if (!line) return;
+      const index = totalEvents;
+      totalEvents += 1;
+      if (match) return;
+      let event: unknown;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (matches(event)) {
+        match = { index, event };
+        return;
+      }
+      options.onEventBefore?.(event, index);
+    };
+
+    while (true) {
+      const { bytesRead } = await file.read(chunk, 0, chunk.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      let start = 0;
+      for (let i = 0; i < bytesRead; i += 1) {
+        if (chunk[i] !== 0x0a) continue;
+        const segment = chunk.subarray(start, i);
+        if (pendingBytes > 0) {
+          processLine(Buffer.concat([...pending, segment], pendingBytes + segment.length));
+          pending = [];
+          pendingBytes = 0;
+        } else {
+          processLine(segment);
+        }
+        start = i + 1;
+      }
+      if (start < bytesRead) {
+        const rest = Buffer.from(chunk.subarray(start, bytesRead));
+        pending.push(rest);
+        pendingBytes += rest.length;
+        if (pendingBytes > SESSION_EVENT_LOG_MAX_LINE_BYTES) {
+          throw new Error(`events.jsonl line exceeds ${SESSION_EVENT_LOG_MAX_LINE_BYTES} bytes at offset ${position - pendingBytes}`);
+        }
+      }
+    }
+    if (pendingBytes > 0) {
+      processLine(Buffer.concat(pending, pendingBytes));
+    }
+  } finally {
+    await file.close();
+  }
+
+  if (!match) return undefined;
+  return {
+    index: match.index,
+    eventsAfter: totalEvents - match.index - 1,
+    totalEvents,
+    event: match.event,
+  };
+}
+
+function isPlainUserMessageEvent(event: any): boolean {
+  if (event?.type !== "user.message") return false;
+  if (isSdkAgentUserMessage(event)) return false;
+  const data = event.data;
+  if (data && typeof data === "object" && "source" in data) return false;
+  const content = data?.content;
+  return typeof content === "string" && content.trim().length > 0;
+}
+
+/**
+ * Newest `limit` user-authored prompts from events.jsonl (oldest first),
+ * read from a bounded tail window. Agent-injected and skill/system-sourced
+ * user messages are excluded.
+ */
+export async function readRecentUserMessages(
+  eventsPath: string,
+  limit: number,
+  options: { maxBytes?: number } = {},
+): Promise<string[]> {
+  const boundedLimit = Math.max(1, Math.floor(limit));
+  let tail: SessionEventsTail;
+  try {
+    tail = await readSessionEventsTail(eventsPath, {
+      maxBytes: options.maxBytes,
+      hasEnough: (events) => {
+        let count = 0;
+        for (const event of events) {
+          if (isPlainUserMessageEvent(event)) count += 1;
+          if (count >= boundedLimit) return true;
+        }
+        return false;
+      },
+    });
+  } catch (error) {
+    if (isFileNotFoundError(error)) return [];
+    throw error;
+  }
+  const messages: string[] = [];
+  for (const event of tail.events) {
+    if (isPlainUserMessageEvent(event)) messages.push(String((event as any).data.content).trim());
+  }
+  return messages.slice(-boundedLimit);
 }
