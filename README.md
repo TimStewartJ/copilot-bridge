@@ -154,7 +154,7 @@ The release boundary is intentional: app files can be replaced during updates, b
 
 Changing launcher-owned release settings after the release launcher is already running requires a full `stop.ps1` then `start.ps1`. This includes `BRIDGE_DATA_DIR`, tunnel/webhook settings such as `BRIDGE_ENABLE_TUNNEL`, `BRIDGE_TUNNEL_NAME`, and `BRIDGE_WEBHOOK_URL`, and launcher log paths. Server-child config values can be reloaded with `self_restart`.
 
-The launcher owns one persistent dev tunnel named `copilot-bridge` by default. It keeps that tunnel running across server restarts, publishes its URL for staging links, and restarts it with bounded backoff after process or public-health failures. Set `BRIDGE_TUNNEL_NAME` for a different persistent tunnel, or `BRIDGE_ENABLE_TUNNEL=false` when using your own ingress.
+The launcher owns one persistent dev tunnel named `copilot-bridge` by default. It keeps that tunnel running across server restarts, publishes its URL for staging links, and restarts it with bounded backoff after process or public-health failures. Set `BRIDGE_TUNNEL_NAME` for a different persistent tunnel, or `BRIDGE_ENABLE_TUNNEL=false` when using your own ingress. Access-controlled tunnels (for example after `devtunnel access reset <tunnel>` to require sign-in) are supported: the public health probe treats the relay's sign-in redirect as "reachable" rather than as an outage, so the tunnel is not recycled for being private.
 
 To start the packaged release automatically when you sign in, run this from the extracted release root:
 

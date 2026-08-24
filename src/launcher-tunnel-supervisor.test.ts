@@ -4,6 +4,7 @@ import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildTunnelHostArgs,
+  isTunnelAuthRedirect,
   resolveTunnelName,
   TunnelSupervisor,
   type TunnelSupervisorDependencies,
@@ -136,6 +137,19 @@ describe("TunnelSupervisor", () => {
     expect(() => resolveTunnelName({ BRIDGE_TUNNEL_NAME: "bad.name" })).toThrow(
       "Invalid BRIDGE_TUNNEL_NAME",
     );
+  });
+
+  it("recognizes only the Dev Tunnels relay sign-in redirect", () => {
+    const signIn = "https://global.rel.tunnels.api.visualstudio.com/auth/aad?pb=https%3A%2F%2Fx-3333.usw3.devtunnels.ms%2Fauth%2Fpostback%2Faad%3Frd%3D%252Fapi%252Fhealth";
+    expect(isTunnelAuthRedirect(302, signIn)).toBe(true);
+    expect(isTunnelAuthRedirect(307, "https://usw3.rel.tunnels.api.visualstudio.com/auth/github")).toBe(true);
+    expect(isTunnelAuthRedirect(200, signIn)).toBe(false);
+    expect(isTunnelAuthRedirect(302, null)).toBe(false);
+    expect(isTunnelAuthRedirect(302, "not a url")).toBe(false);
+    expect(isTunnelAuthRedirect(302, "http://global.rel.tunnels.api.visualstudio.com/auth/aad")).toBe(false);
+    expect(isTunnelAuthRedirect(302, "https://evil.example.com/auth/aad")).toBe(false);
+    expect(isTunnelAuthRedirect(302, "https://rel.tunnels.api.visualstudio.com.evil.example/auth/aad")).toBe(false);
+    expect(isTunnelAuthRedirect(302, "https://global.rel.tunnels.api.visualstudio.com/somewhere")).toBe(false);
   });
 
   it("publishes one runtime state after the direct child reports its URL", async () => {
@@ -286,6 +300,62 @@ describe("TunnelSupervisor", () => {
     expect(harness.logs.some((line) => /failed \(1\/2 in last 1\): slow: 4000ms \(local 0ms\)/.test(line))).toBe(true);
 
     await vi.advanceTimersByTimeAsync(50 + 4_000);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+  });
+
+  it("treats the relay sign-in redirect of an access-controlled tunnel as healthy", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const harness = createHarness({ children: [first] });
+    const authRedirect = () => new Response(null, {
+      status: 302,
+      headers: {
+        location: "https://global.rel.tunnels.api.visualstudio.com/auth/aad?pb=https%3A%2F%2Fbridge.example.devtunnels.ms%2Fauth%2Fpostback%2Faad",
+      },
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:")) return new Response(null, { status: 200 });
+      expect(init?.redirect).toBe("manual");
+      return authRedirect();
+    });
+    harness.deps.fetch = fetchMock as typeof fetch;
+    await startAndPublish(harness, first);
+
+    for (let index = 0; index < 4; index++) {
+      await vi.advanceTimersByTimeAsync(50);
+    }
+
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("https://")).length).toBeGreaterThanOrEqual(3);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs.some((line) => line.includes("Public health check failed"))).toBe(false);
+    expect(harness.logs.filter((line) => line.includes("access-controlled"))).toHaveLength(1);
+  });
+
+  it("still counts a slow sign-in redirect and other redirects as failures", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({ children: [first, second], healthTimeoutMs: 10_000, healthSlowMs: 3_000 });
+    let publicCalls = 0;
+    harness.deps.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:")) return new Response(null, { status: 200 });
+      publicCalls += 1;
+      if (publicCalls === 1) {
+        // Redirect somewhere that is not the relay sign-in page: not a health signal.
+        return new Response(null, { status: 302, headers: { location: "https://example.com/elsewhere" } });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      return new Response(null, { status: 302, headers: { location: "https://global.rel.tunnels.api.visualstudio.com/auth/aad" } });
+    }) as typeof fetch;
+    await startAndPublish(harness, first);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.logs).toContain("[tunnel] Public health check failed (1/2 in last 1): HTTP 302");
+
+    await vi.advanceTimersByTimeAsync(50 + 4_000);
+    expect(harness.logs.some((line) => /failed \(2\/2 in last 2\): slow: 4000ms \(local 0ms\)/.test(line))).toBe(true);
     expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
   });
 
