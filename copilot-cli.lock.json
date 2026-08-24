@@ -1,15 +1,15 @@
 {
   "source": "github-release",
-  "version": "1.0.81-7",
-  "reason": "Track the latest github/copilot-cli release. 1.0.81 fixes task sub-agents failing with CAPI 400 thinking.type.enabled for some Claude models on CLI <= 1.0.80 and drives adaptive thinking natively, so the Bridge no longer needs its adaptive_thinking override. Known gap on the SDK path: the built-in GitHub MCP server (web_search) does not start on 1.0.81-x; use browser_web_search / web_fetch. Bump with: npm run copilot-cli:pin -- <version> --reason \"...\" then preview-smoke and deploy.",
+  "version": "1.0.81-8",
+  "reason": "Track the latest github/copilot-cli release. 1.0.81 fixes task sub-agents failing with CAPI 400 thinking.type.enabled for some Claude models on CLI <= 1.0.80 and drives adaptive thinking natively. Known gap on the SDK path: the built-in GitHub MCP server (web_search) does not start on 1.0.81-x; use browser_web_search / web_fetch. Bump with: npm run copilot-cli:pin -- <version> --reason '...' then preview-smoke and deploy.",
   "assets": {
-    "darwin-arm64": { "name": "github-copilot-1.0.81-7-darwin-arm64.tgz", "sha256": "3e052ebf5dc9700055f34735b641b91fa9869d66f9bcdab9d2cf76d8a21bae4e" },
-    "darwin-x64": { "name": "github-copilot-1.0.81-7-darwin-x64.tgz", "sha256": "c45320980613ba8ca41f610817890a22107d3cf704ab21ccf8a46dc3b9f7a7c9" },
-    "linux-arm64": { "name": "github-copilot-1.0.81-7-linux-arm64.tgz", "sha256": "5c662658ddfd232c7edbd2e377906c64107c553a8c5623277bb658c12c63aba1" },
-    "linux-x64": { "name": "github-copilot-1.0.81-7-linux-x64.tgz", "sha256": "91e15868153e50ef856379ecbec0a6853b6025d7ec22cbc9b10135d112c65d25" },
-    "linuxmusl-arm64": { "name": "github-copilot-1.0.81-7-linuxmusl-arm64.tgz", "sha256": "25e7820737e80900e01da52334a212531d5fef78bf5c731c28d0a3c6514aed4b" },
-    "linuxmusl-x64": { "name": "github-copilot-1.0.81-7-linuxmusl-x64.tgz", "sha256": "679ece0c7f5dd6e85bf803ac1d489214710663953bdf17f32ed966f4bd4ff0a0" },
-    "win32-arm64": { "name": "github-copilot-1.0.81-7-win32-arm64.tgz", "sha256": "f45d56fa17013d6d2d3b073fff311402b1a709272ce81a5c31ca3ac2ac56c050" },
-    "win32-x64": { "name": "github-copilot-1.0.81-7-win32-x64.tgz", "sha256": "e89c02d83f74abaf0165cdbfc5d3cc32e6859e264d0721d04ef7ffdf740dd741" }
+    "darwin-arm64": { "name": "github-copilot-1.0.81-8-darwin-arm64.tgz", "sha256": "7b11bd2ff85e7e5ebc9c2af048655c7c8003861fd5a89297af7c5104145e6416" },
+    "darwin-x64": { "name": "github-copilot-1.0.81-8-darwin-x64.tgz", "sha256": "720574651c58d9a4c70b97ceda3c9d2db6e1d7b3c4af73bb5c46fcd2405857d5" },
+    "linux-arm64": { "name": "github-copilot-1.0.81-8-linux-arm64.tgz", "sha256": "411855f947627698a04e13e6cb1f7e030aed1f208d5a5fe2586979e766294f40" },
+    "linux-x64": { "name": "github-copilot-1.0.81-8-linux-x64.tgz", "sha256": "a4c2759f4584acced9ad9c27af1ed1e89481a43fa6c7abb0e762f0275d976a21" },
+    "linuxmusl-arm64": { "name": "github-copilot-1.0.81-8-linuxmusl-arm64.tgz", "sha256": "7616ca3e79ab9b7d52fbfb21e5e7671ef8811175f5e9135bf10f9ab7645c959e" },
+    "linuxmusl-x64": { "name": "github-copilot-1.0.81-8-linuxmusl-x64.tgz", "sha256": "0c11708629f00fb7389b8671977458a0fad949fb970d7441a00a54a19b4da249" },
+    "win32-arm64": { "name": "github-copilot-1.0.81-8-win32-arm64.tgz", "sha256": "82f8c30c06f40ecfaab9117f6f9b92e67b54b7d57c46a0e592ff035554631c62" },
+    "win32-x64": { "name": "github-copilot-1.0.81-8-win32-x64.tgz", "sha256": "9d4d2565a032ddd4cf28a262aec94f09cf83e4522a9ee56a46048cae1e29a66b" }
   }
 }
