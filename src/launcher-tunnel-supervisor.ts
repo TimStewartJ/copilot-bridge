@@ -42,6 +42,14 @@ const HEALTH_SLOW_MS = 3_000;
 const IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
 
 const TRANSPORT_DROP_RE = /ClientSSH: Session closed unexpectedly|Error running client SSH session/;
+/**
+ * An access-controlled tunnel answers unauthenticated requests with a redirect to the
+ * Dev Tunnels sign-in page on the relay service. The relay answered and routed the
+ * request, which is all the public probe needs to know; it has no credentials to go
+ * further and must not count the auth gate as an outage.
+ */
+const TUNNEL_AUTH_REDIRECT_HOST_RE = /(?:^|\.)rel\.tunnels\.api\.visualstudio\.com$/i;
+const TUNNEL_AUTH_REDIRECT_PATH_RE = /^\/auth(?:\/|$)/i;
 
 type ProbeResult = {
   healthy: boolean;
@@ -54,6 +62,19 @@ type HealthObservation = {
   durationMs: number;
   detail?: string;
 };
+
+export function isTunnelAuthRedirect(status: number, location: string | null | undefined): boolean {
+  if (status !== 301 && status !== 302 && status !== 303 && status !== 307 && status !== 308) return false;
+  if (!location) return false;
+  try {
+    const target = new URL(location);
+    return target.protocol === "https:"
+      && TUNNEL_AUTH_REDIRECT_HOST_RE.test(target.hostname)
+      && TUNNEL_AUTH_REDIRECT_PATH_RE.test(target.pathname);
+  } catch {
+    return false;
+  }
+}
 
 export type TunnelSupervisorOptions = {
   dataDir: string;
@@ -124,16 +145,21 @@ async function probe(
   fetchFn: typeof fetch,
   url: string,
   timeoutMs: number,
+  options: { acceptAuthRedirect?: boolean } = {},
 ): Promise<ProbeResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
   try {
-    const response = await fetchFn(url, { signal: controller.signal });
+    // Never follow redirects: a relay sign-in bounce must be judged here, not turned
+    // into a slow round trip through the identity provider.
+    const response = await fetchFn(url, { signal: controller.signal, redirect: "manual" });
     const durationMs = Date.now() - startedAt;
-    return response.ok
-      ? { healthy: true, durationMs }
-      : { healthy: false, durationMs, detail: `HTTP ${response.status}` };
+    if (response.ok) return { healthy: true, durationMs };
+    if (options.acceptAuthRedirect && isTunnelAuthRedirect(response.status, response.headers.get("location"))) {
+      return { healthy: true, durationMs, detail: "auth-gated" };
+    }
+    return { healthy: false, durationMs, detail: `HTTP ${response.status}` };
   } catch (error) {
     return {
       healthy: false,
@@ -176,6 +202,7 @@ export class TunnelSupervisor {
   private retryDelayMs: number;
   /** Most recent health observations for the current child, oldest first. */
   private healthWindow: HealthObservation[] = [];
+  private authGateLogged = false;
   private timer: NodeJS.Timeout | null = null;
   private reconciling = false;
   private pendingDelayMs: number | null = null;
@@ -329,8 +356,12 @@ export class TunnelSupervisor {
     }
 
     const publicUrl = new URL("/api/health", this.url).toString();
-    const publicResult = await probe(this.deps.fetch, publicUrl, this.healthTimeoutMs);
+    const publicResult = await probe(this.deps.fetch, publicUrl, this.healthTimeoutMs, { acceptAuthRedirect: true });
     if (this.child !== child || !this.published) return;
+    if (publicResult.detail === "auth-gated" && !this.authGateLogged) {
+      this.authGateLogged = true;
+      this.log("[tunnel] Public endpoint is access-controlled (sign-in redirect); treating relay reachability as healthy");
+    }
     const slow = publicResult.healthy && publicResult.durationMs >= this.healthSlowMs;
     if (publicResult.healthy && !slow) {
       this.recordHealthObservation({ failed: false, durationMs: publicResult.durationMs });
