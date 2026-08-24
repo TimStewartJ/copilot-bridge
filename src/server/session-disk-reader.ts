@@ -152,7 +152,7 @@ interface EventLogStatsScannerState {
   activity: VisibleActivityTrackerState;
 }
 
-interface EventLogStatsCacheEntry {
+export interface EventLogStatsCacheEntry {
   eventsPath: string;
   sessionId: string;
   /** Byte offset up to (and including) the last complete line folded into `state`. */
@@ -167,6 +167,63 @@ interface EventLogStatsCacheEntry {
 const eventLogStatsCache = new Map<string, EventLogStatsCacheEntry>();
 /** Bumped by {@link clearEventLogStatsCache} so in-flight scans cannot republish stale folds. */
 let eventLogStatsCacheGeneration = 0;
+
+/**
+ * Optional durable backing for the fold cache. The in-memory map is the hot path; the
+ * persistence layer only has to survive restarts so the first open of a large log after
+ * a cutover resumes from the last folded offset instead of rescanning everything.
+ */
+export interface EventLogStatsPersistence {
+  load(eventsPath: string, sessionId: string): EventLogStatsCacheEntry | undefined;
+  save(entry: EventLogStatsCacheEntry): void;
+  delete(sessionId: string): void;
+  clear(): void;
+}
+
+let eventLogStatsPersistence: EventLogStatsPersistence | undefined;
+
+export function setEventLogStatsPersistence(persistence: EventLogStatsPersistence | undefined): void {
+  eventLogStatsPersistence = persistence;
+}
+
+/** Yield to the event loop after this much synchronous folding so other work interleaves. */
+const EVENT_LOG_STATS_SCAN_SLICE_MS = 12;
+/**
+ * Cold scans of large logs are CPU-bound even when sliced; several at once (every session
+ * opened right after a restart) would still starve the loop, so they queue behind this cap.
+ */
+const EVENT_LOG_STATS_SCAN_MAX_CONCURRENT = 2;
+/** Scans shorter than this never wait for a slot: they are cheaper than the queueing. */
+const EVENT_LOG_STATS_SCAN_GATE_MIN_BYTES = 4 * 1024 * 1024;
+
+let activeEventLogStatsScans = 0;
+const eventLogStatsScanWaiters: Array<() => void> = [];
+
+async function acquireEventLogStatsScanSlot(): Promise<() => void> {
+  if (activeEventLogStatsScans < EVENT_LOG_STATS_SCAN_MAX_CONCURRENT) {
+    activeEventLogStatsScans += 1;
+  } else {
+    await new Promise<void>((resolve) => eventLogStatsScanWaiters.push(resolve));
+    activeEventLogStatsScans += 1;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeEventLogStatsScans -= 1;
+    const next = eventLogStatsScanWaiters.shift();
+    if (next) next();
+  };
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Test hook: report scan concurrency so the gate can be asserted without timing games. */
+export function getEventLogStatsScanConcurrencyForTests(): { active: number; waiting: number } {
+  return { active: activeEventLogStatsScans, waiting: eventLogStatsScanWaiters.length };
+}
 
 function getEventLogStatsCacheKey(eventsPath: string, sessionId: string): string {
   return `${EVENT_LOG_STATS_CACHE_VERSION}\0${eventsPath}\0${sessionId}`;
@@ -186,10 +243,21 @@ function getCachedEventLogStatsEntry(
 ): EventLogStatsCacheEntry | undefined {
   const key = getEventLogStatsCacheKey(eventsPath, sessionId);
   const entry = eventLogStatsCache.get(key);
-  if (!entry) return undefined;
-  eventLogStatsCache.delete(key);
-  eventLogStatsCache.set(key, entry);
-  return entry;
+  if (entry) {
+    eventLogStatsCache.delete(key);
+    eventLogStatsCache.set(key, entry);
+    return entry;
+  }
+  if (!eventLogStatsPersistence) return undefined;
+  try {
+    const persisted = eventLogStatsPersistence.load(eventsPath, sessionId);
+    if (!persisted) return undefined;
+    eventLogStatsCache.set(key, persisted);
+    pruneEventLogStatsCache();
+    return persisted;
+  } catch {
+    return undefined;
+  }
 }
 
 function setCachedEventLogStatsEntry(entry: EventLogStatsCacheEntry): void {
@@ -197,18 +265,26 @@ function setCachedEventLogStatsEntry(entry: EventLogStatsCacheEntry): void {
   eventLogStatsCache.delete(key);
   eventLogStatsCache.set(key, entry);
   pruneEventLogStatsCache();
+  if (!eventLogStatsPersistence) return;
+  try {
+    eventLogStatsPersistence.save(entry);
+  } catch {
+    // Durable folds are an optimization; a failed write must never fail a read.
+  }
 }
 
 export function clearEventLogStatsCache(sessionId?: string): void {
   eventLogStatsCacheGeneration += 1;
   if (!sessionId) {
     eventLogStatsCache.clear();
+    try { eventLogStatsPersistence?.clear(); } catch { /* best-effort */ }
     return;
   }
 
   for (const [key, entry] of eventLogStatsCache) {
     if (entry.sessionId === sessionId) eventLogStatsCache.delete(key);
   }
+  try { eventLogStatsPersistence?.delete(sessionId); } catch { /* best-effort */ }
 }
 
 function lineMayAffectMessageTransform(line: string): boolean {
@@ -606,10 +682,12 @@ async function scanEventLogStats(
   eventsPath: string,
   sessionId: string,
   upToBytes: number,
-): Promise<{ state: EventLogStatsScannerState; resumedFrom: number; scannedBytes: number }> {
+): Promise<{ state: EventLogStatsScannerState; resumedFrom: number; scannedBytes: number; waitedMs: number }> {
   const cached = getCachedEventLogStatsEntry(eventsPath, sessionId);
   const generation = eventLogStatsCacheGeneration;
   const file = await open(eventsPath, "r");
+  let releaseSlot: (() => void) | undefined;
+  let waitedMs = 0;
   try {
     const fileStat = await file.stat();
     const fileId = `${fileStat.dev}:${fileStat.ino}`;
@@ -628,12 +706,20 @@ async function scanEventLogStats(
       }
     }
 
+    // Large cold scans queue behind a small concurrency cap; small or resumed ones run freely.
+    if (upToBytes - startOffset >= EVENT_LOG_STATS_SCAN_GATE_MIN_BYTES) {
+      const tWait = Date.now();
+      releaseSlot = await acquireEventLogStatsScanSlot();
+      waitedMs = Date.now() - tWait;
+    }
+
     const scanner = createEventLogStatsScanner(sessionId, state);
     const chunkBuffer = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
     let fileOffset = startOffset;
     let leftover = Buffer.alloc(0);
     let leftoverStartOffset = startOffset;
     let scannedBytes = startOffset;
+    let sliceStartedAt = performance.now();
 
     while (fileOffset < upToBytes) {
       const maxRead = Math.min(chunkBuffer.length, upToBytes - fileOffset);
@@ -663,6 +749,13 @@ async function scanEventLogStats(
         leftoverStartOffset = fileOffset + bytesRead;
       }
       fileOffset += bytesRead;
+
+      // Folding is synchronous CPU work; hand the loop back regularly so HTTP requests,
+      // SSE heartbeats, and other sessions keep moving while a large log is scanned.
+      if (performance.now() - sliceStartedAt >= EVENT_LOG_STATS_SCAN_SLICE_MS) {
+        await yieldToEventLoop();
+        sliceStartedAt = performance.now();
+      }
     }
 
     // Cache only complete lines: a trailing partial line is completed by a later append.
@@ -691,8 +784,9 @@ async function scanEventLogStats(
       scanner.processLine(leftover, leftoverStartOffset);
     }
 
-    return { state: scanner.syncState(), resumedFrom: startOffset, scannedBytes };
+    return { state: scanner.syncState(), resumedFrom: startOffset, scannedBytes, waitedMs };
   } finally {
+    releaseSlot?.();
     await file.close();
   }
 }
@@ -977,6 +1071,7 @@ export async function readMessagesFromDisk(
           : "miss",
         resumedFromOffset: scan.resumedFrom,
         scannedBytes: scan.scannedBytes - scan.resumedFrom,
+        scanQueueWaitMs: scan.waitedMs,
         eventCount: stats.eventCount,
         candidateEventCount: stats.candidateEventCount,
         malformedCandidateCount: stats.malformedCandidateCount,

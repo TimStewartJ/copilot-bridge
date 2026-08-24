@@ -1100,6 +1100,28 @@ describe("SessionManager run state", () => {
     expect(manager.backend.resumeSession).not.toHaveBeenCalled();
   });
 
+  it("gives up on a hanging slash-command rpc without caching the miss", async () => {
+    const { manager } = createManager();
+    const { session } = makeSession();
+    session.listSlashCommands.mockImplementation(() => new Promise(() => {}));
+    manager.sessionObjects.set("session-1", session);
+
+    vi.useFakeTimers();
+    try {
+      const pending = manager.listSlashCommands("session-1");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(pending).resolves.toEqual({ supported: false, commands: [] });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(manager.slashCommandListCache.has("session-1")).toBe(false);
+
+    // Once the session answers, the next call is served and cached.
+    session.listSlashCommands.mockResolvedValue({ commands: [{ name: "goal", description: "d", kind: "builtin", allowDuringAgentExecution: true }] });
+    await expect(manager.listSlashCommands("session-1")).resolves.toMatchObject({ supported: true });
+    expect(manager.slashCommandListCache.has("session-1")).toBe(true);
+  });
+
   it("fails delivery before sending when SDK session mode cannot be set", async () => {
     const { manager } = createManager();
     const { session } = makeSession();

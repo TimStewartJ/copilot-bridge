@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   deriveModelStateFromEventsContent,
   deriveModelStateFromEventsFile,
+  deriveModelStateFromEventsFileAsync,
 } from "../session-events-model.js";
 import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
@@ -255,6 +256,36 @@ describe("SessionManager.getSessionModelState", () => {
     expect(result.model).toBe("fallback-model");
   });
 
+  it("answers from events when the live rpc hangs instead of parking the request", async () => {
+    const dir = makeTestDir("model-state-rpc-hang");
+    const sessionDir = join(dir, "session-state", "session-hang");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      JSON.stringify({ type: "session.start", data: { selectedModel: "persisted-model", reasoningEffort: "medium" } }),
+    );
+    const manager = createManager(dir);
+    // A session mid-resume: the RPC never settles.
+    manager.sessionObjects.set("session-hang", { getCurrentModel: vi.fn(() => new Promise(() => {})) });
+    const spans: Array<{ name: string; metadata?: Record<string, unknown> }> = [];
+    const originalRecordSpan = manager.recordSpan.bind(manager);
+    manager.recordSpan = (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) => {
+      spans.push({ name, metadata });
+      return originalRecordSpan(name, duration, sessionId, metadata);
+    };
+
+    vi.useFakeTimers();
+    try {
+      const pending = manager.getSessionModelState("session-hang");
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+      expect(result).toEqual({ model: "persisted-model", reasoningEffort: "medium", source: "events" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(spans.some((span) => span.name === "session.detail.rpcTimeout" && span.metadata?.rpc === "getCurrentModel")).toBe(true);
+  });
+
   it("falls back to events when live rpc returns no modelId", async () => {
     const dir = makeTestDir("model-state-no-modelid");
     const sessionDir = join(dir, "session-state", "session-y");
@@ -374,5 +405,75 @@ describe("GET /api/sessions/:id/model route", () => {
     const res = await supertest(app).get(`/api/sessions/${errorSessionId}/model`);
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/getSessionModelState failed/i);
+  });
+});
+
+// ── Bounded async derivation ─────────────────────────────────────────────────
+
+describe("deriveModelStateFromEventsFileAsync", () => {
+  const line = (type: string, data: Record<string, unknown>) => `${JSON.stringify({ type, data })}\n`;
+  const filler = (count: number) =>
+    Array.from({ length: count }, (_, i) => JSON.stringify({ type: "internal.trace", data: { i, pad: "x".repeat(240) } })).join("\n") + "\n";
+
+  it("matches the synchronous derivation on small files and missing files", async () => {
+    const dir = makeTestDir("events-model-async-small");
+    const path = join(dir, "events.jsonl");
+    writeFileSync(path,
+      line("session.start", { selectedModel: "gpt-5.5", reasoningEffort: "medium" })
+      + filler(10)
+      + line("session.model_change", { newModel: "claude-opus-4.7" })
+      + line("user.message", { content: "hi" }));
+    expect(await deriveModelStateFromEventsFileAsync(path)).toEqual(deriveModelStateFromEventsFile(path));
+    expect(await deriveModelStateFromEventsFileAsync(path)).toEqual({ model: "claude-opus-4.7", reasoningEffort: "medium" });
+    expect(await deriveModelStateFromEventsFileAsync(join(dir, "missing.jsonl"))).toEqual({});
+  });
+
+  it("answers from the tail alone when the newest model event is self-contained", async () => {
+    const dir = makeTestDir("events-model-async-tail");
+    const path = join(dir, "events.jsonl");
+    // ~5 MB of filler so the file exceeds the head+tail window.
+    writeFileSync(path,
+      line("session.start", { selectedModel: "gpt-5.5", reasoningEffort: "low" })
+      + filler(20_000)
+      + line("session.resume", { selectedModel: "claude-opus-4.7", reasoningEffort: "high", contextTier: "long_context" })
+      + filler(50));
+    const expected = deriveModelStateFromEventsFile(path);
+    expect(expected).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", contextTier: "long_context" });
+    expect(await deriveModelStateFromEventsFileAsync(path)).toEqual(expected);
+  });
+
+  it("streams the head when the newest model_change inherits reasoning effort from an earlier event", async () => {
+    const dir = makeTestDir("events-model-async-preserve");
+    const path = join(dir, "events.jsonl");
+    writeFileSync(path,
+      line("session.start", { selectedModel: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context" })
+      + filler(20_000)
+      + line("session.model_change", { newModel: "claude-opus-4.7" })
+      + filler(50));
+    const expected = deriveModelStateFromEventsFile(path);
+    expect(expected).toEqual({ model: "claude-opus-4.7", reasoningEffort: "xhigh", contextTier: "long_context" });
+    expect(await deriveModelStateFromEventsFileAsync(path)).toEqual(expected);
+  });
+
+  it("finds a model event buried in the middle of a large log and keeps the loop responsive", async () => {
+    const dir = makeTestDir("events-model-async-middle");
+    const path = join(dir, "events.jsonl");
+    writeFileSync(path,
+      filler(10_000)
+      + line("session.start", { selectedModel: "gpt-5.5", reasoningEffort: "medium" })
+      + filler(20_000));
+    let ticks = 0;
+    let worstGapMs = 0;
+    let last = performance.now();
+    const ticker = setInterval(() => { const now = performance.now(); worstGapMs = Math.max(worstGapMs, now - last); last = now; ticks += 1; }, 1);
+    let result;
+    try {
+      result = await deriveModelStateFromEventsFileAsync(path);
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(result).toEqual({ model: "gpt-5.5", reasoningEffort: "medium" });
+    expect(ticks).toBeGreaterThan(2);
+    expect(worstGapMs).toBeLessThan(250);
   });
 });

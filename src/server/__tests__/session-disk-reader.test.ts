@@ -3,10 +3,14 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearEventLogStatsCache,
+  getEventLogStatsScanConcurrencyForTests,
   listSessionsFromDisk,
   readMessagesFromDisk,
+  setEventLogStatsPersistence,
+  type EventLogStatsCacheEntry,
   type SessionDiskReaderDeps,
 } from "../session-disk-reader.js";
+import { createEventLogStatsFoldStore } from "../event-log-stats-fold-store.js";
 import { createTestBus, makeTestDir, setupTestDb } from "./helpers.js";
 
 function createDeps(copilotHome: string) {
@@ -1230,5 +1234,167 @@ describe("session storage reader", () => {
     expect(measurements.map((measurement) => measurement.diskSizeBytes)).toEqual(
       sessionIds.map((sessionId) => sessionId.length),
     );
+  });
+});
+
+describe("event-log stats fold persistence and scan scheduling", () => {
+  beforeEach(() => {
+    clearEventLogStatsCache();
+    setEventLogStatsPersistence(undefined);
+  });
+
+  function writeLargeLog(copilotHome: string, sessionId: string, lineCount: number): string {
+    // Each padding line is ~260 bytes; 20k lines is ~5 MB, above the scan gate threshold.
+    const padding = Array.from({ length: lineCount }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    const recent = Array.from({ length: 60 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `recent-${index}` },
+    }));
+    writeSessionFiles(copilotHome, sessionId, { events: [...padding, ...recent] });
+    return join(copilotHome, "session-state", sessionId, "events.jsonl");
+  }
+
+  it("resumes from the durable fold after the in-memory cache is lost", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-fold-persist");
+    const sessionId = "fold-persist";
+    const eventsPath = writeLargeLog(copilotHome, sessionId, 6_000);
+    const db = setupTestDb();
+    const store = createEventLogStatsFoldStore(db);
+    setEventLogStatsPersistence(store);
+    const { deps, spans } = createDeps(copilotHome);
+
+    const first = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    expect(spans.filter((s) => s.name === "session.readFromDisk.stats").map((s) => s.metadata?.cacheResult))
+      .toEqual(["miss"]);
+    const persisted = store.load(eventsPath, sessionId);
+    expect(persisted?.scannedBytes).toBeGreaterThan(0);
+    expect(persisted?.state.totalEntries).toBe(first.total);
+
+    // Simulate a server restart: the in-memory map is gone, the table is not. We must NOT
+    // go through clearEventLogStatsCache() here because that also clears persistence.
+    setEventLogStatsPersistence(undefined);
+    clearEventLogStatsCache();
+    setEventLogStatsPersistence(store);
+    appendFileSync(eventsPath, `${JSON.stringify({
+      type: "user.message",
+      timestamp: "2026-04-30T11:00:00.000Z",
+      data: { content: "after-restart" },
+    })}\n`);
+    spans.length = 0;
+    const afterRestart = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    const stats = spans.find((s) => s.name === "session.readFromDisk.stats");
+    expect(stats?.metadata?.cacheResult).toBe("resumed");
+    expect(stats?.metadata?.resumedFromOffset).toBe(persisted?.scannedBytes);
+    expect(afterRestart.total).toBe(first.total + 1);
+    expect(afterRestart.messages.at(-1)?.content).toContain("after-restart");
+
+    // A rewritten log (different content at the same offsets) must not resume from the stale fold.
+    const rewritten = Array.from({ length: 6_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "y".repeat(220) },
+    }));
+    const rewrittenRecent = Array.from({ length: 70 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `rewritten-${index}` },
+    }));
+    writeFileSync(eventsPath, `${[...rewritten, ...rewrittenRecent].map((e) => JSON.stringify(e)).join("\n")}\n`);
+    setEventLogStatsPersistence(undefined);
+    clearEventLogStatsCache();
+    setEventLogStatsPersistence(store);
+    spans.length = 0;
+    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    const rescanStats = spans.find((s) => s.name === "session.readFromDisk.stats");
+    expect(rescanStats?.metadata?.cacheResult).toBe("miss");
+    expect(rescanStats?.metadata?.resumedFromOffset).toBe(0);
+    expect(rescanned.total).toBe(70);
+    expect(rescanned.messages.at(-1)?.content).toContain("rewritten-69");
+
+    clearEventLogStatsCache(sessionId);
+    expect(store.load(eventsPath, sessionId)).toBeUndefined();
+    db.close();
+  });
+
+  it("ignores persisted folds written under a different schema version or malformed state", () => {
+    const db = setupTestDb();
+    const store = createEventLogStatsFoldStore(db);
+    const entry: EventLogStatsCacheEntry = {
+      eventsPath: "C:\\x\\events.jsonl",
+      sessionId: "s",
+      scannedBytes: 10,
+      fingerprint: "f",
+      fileId: "1:2",
+      state: { eventCount: 1 } as any,
+    };
+    store.save(entry);
+    expect(store.load(entry.eventsPath, "s")?.scannedBytes).toBe(10);
+    db.prepare("UPDATE event_log_stats_folds SET schemaVersion = schemaVersion + 100").run();
+    expect(store.load(entry.eventsPath, "s")).toBeUndefined();
+    db.prepare("UPDATE event_log_stats_folds SET schemaVersion = schemaVersion - 100, stateJson = 'not json'").run();
+    expect(store.load(entry.eventsPath, "s")).toBeUndefined();
+    store.clear();
+    expect(db.prepare("SELECT count(*) AS c FROM event_log_stats_folds").get()).toEqual({ c: 0 });
+    db.close();
+  });
+
+  it("limits concurrent large cold scans and lets small reads through", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-scan-gate");
+    const ids = ["gate-a", "gate-b", "gate-c", "gate-d"];
+    for (const id of ids) writeLargeLog(copilotHome, id, 20_000);
+    const { deps, spans } = createDeps(copilotHome);
+
+    let maxActive = 0;
+    let sawWaiter = false;
+    const sampler = setInterval(() => {
+      const { active, waiting } = getEventLogStatsScanConcurrencyForTests();
+      maxActive = Math.max(maxActive, active);
+      if (waiting > 0) sawWaiter = true;
+    }, 1);
+    try {
+      const results = await Promise.all(ids.map((id) => readMessagesFromDisk(deps, id, { limit: 50 })));
+      expect(results.every((r) => r.total === 60)).toBe(true);
+    } finally {
+      clearInterval(sampler);
+    }
+    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(sawWaiter).toBe(true);
+    const waits = spans
+      .filter((s) => s.name === "session.readFromDisk.stats")
+      .map((s) => Number(s.metadata?.scanQueueWaitMs ?? 0));
+    expect(waits.length).toBe(4);
+    expect(Math.max(...waits)).toBeGreaterThan(0);
+    expect(getEventLogStatsScanConcurrencyForTests()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  it("keeps the event loop responsive while scanning a large log", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-scan-yield");
+    const sessionId = "yield";
+    writeLargeLog(copilotHome, sessionId, 40_000);
+    const { deps } = createDeps(copilotHome);
+
+    let ticks = 0;
+    let worstGapMs = 0;
+    let last = performance.now();
+    const ticker = setInterval(() => {
+      const now = performance.now();
+      worstGapMs = Math.max(worstGapMs, now - last);
+      last = now;
+      ticks += 1;
+    }, 1);
+    try {
+      await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    } finally {
+      clearInterval(ticker);
+    }
+    // The scan takes hundreds of ms; with per-slice yielding the loop must keep ticking and
+    // no single stall may approach the whole scan duration.
+    expect(ticks).toBeGreaterThan(5);
+    expect(worstGapMs).toBeLessThan(250);
   });
 });
