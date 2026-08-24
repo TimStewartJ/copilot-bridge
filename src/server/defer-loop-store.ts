@@ -130,6 +130,12 @@ export function createDeferLoopStore(db: DatabaseSync) {
     SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
+  const reactivateStmt = db.prepare(`
+    UPDATE defer_loops
+    SET status = 'active', claimToken = NULL, leaseExpiresAt = NULL, attempts = 0, lastError = NULL,
+        nextRunAt = ?, updatedAt = ?
+    WHERE id = ? AND status IN ('failed', 'cancelled', 'expired')
+  `);
   const markFailedByIdStmt = db.prepare(`
     UPDATE defer_loops
     SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
@@ -334,6 +340,16 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
+  /**
+   * Return a failed (or cancelled/expired) loop to the active queue with a
+   * fresh attempt budget, next due at `nextRunAt` (now by default). Used to
+   * recover loops that were marked failed by transient backend errors.
+   */
+  function reactivate(id: string, nextRunAt = new Date().toISOString()): boolean {
+    const result = reactivateStmt.run(nextRunAt, new Date().toISOString(), id);
+    return (result as any).changes > 0;
+  }
+
   function markFailedById(id: string, lastError: string): boolean {
     const result = markFailedByIdStmt.run(lastError, new Date().toISOString(), id);
     return (result as any).changes > 0;
@@ -399,6 +415,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
     markCompleted,
     markFailed,
     markFailedById,
+    reactivate,
     markExpired,
     cancelById,
     cancelForSession,
