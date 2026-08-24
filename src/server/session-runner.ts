@@ -275,6 +275,16 @@ export function isStaleSignedThinkingErrorMessage(message: unknown): boolean {
 const STALE_SIGNED_THINKING_RECOVERY_PROMPT =
   "The previous model call was rejected because of stale reasoning state; that has been cleared. Continue from where you left off.";
 
+/** Shown instead of the raw CAPI error when the model rejected its own replayed reasoning and Bridge could not recover in place. */
+export const STALE_SIGNED_THINKING_USER_MESSAGE =
+  "This model rejected its own earlier reasoning after the conversation changed mid-run "
+  + "(tools, skills, or history were updated), and the session could not be refreshed in place. "
+  + "Switch this session to another model or start a new chat to continue.";
+
+export function formatStaleSignedThinkingUserMessage(detail: string | undefined): string {
+  return detail ? `${STALE_SIGNED_THINKING_USER_MESSAGE} (${detail})` : STALE_SIGNED_THINKING_USER_MESSAGE;
+}
+
 export interface SessionResumeLease {
   sessionId: string;
   token: symbol;
@@ -1825,12 +1835,17 @@ export class SessionRunner {
           outcome: "stale_signed_thinking_resumed",
         });
       } catch (error) {
+        const detail = getErrorMessage(error);
         console.error(`[sdk] [${sid}] Stale signed thinking recovery failed:`, error);
         recordRunSpan("session.run.recovery", Date.now() - startedAt, {
           outcome: "stale_signed_thinking_recovery_failed",
-          error: getErrorMessage(error),
+          error: detail,
         });
-        completeSessionError(errorEvent, { origin: "live" });
+        // The raw CAPI message is about replayed reasoning signatures; tell the user what to do instead.
+        completeSessionError({
+          ...errorEvent,
+          data: { ...(errorEvent?.data ?? {}), message: formatStaleSignedThinkingUserMessage(detail) },
+        }, { origin: "live" });
       }
     };
 
