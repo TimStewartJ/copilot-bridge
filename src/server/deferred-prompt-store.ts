@@ -130,6 +130,12 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL, runAt = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
+  const reactivateStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL, attempts = 0, lastError = NULL,
+        runAt = ?, updatedAt = ?
+    WHERE id = ? AND status IN ('failed', 'cancelled')
+  `);
 
   const releaseClaimWithoutAttemptStmt = db.prepare(`
     UPDATE deferred_prompts
@@ -291,6 +297,16 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   /**
    * Reschedule a running prompt for retry (requires matching claimToken).
    */
+  /**
+   * Return a failed (or cancelled) deferral to the pending queue with a fresh
+   * attempt budget, due at `runAt` (now by default). Used to recover loops
+   * that were marked failed by transient backend errors.
+   */
+  function reactivate(id: string, runAt = new Date().toISOString()): boolean {
+    const result = reactivateStmt.run(runAt, new Date().toISOString(), id);
+    return (result as any).changes > 0;
+  }
+
   function retry(id: string, claimToken: string, runAt: string): boolean {
     const result = retryStmt.run(runAt, new Date().toISOString(), id, claimToken);
     return (result as any).changes > 0;
@@ -361,6 +377,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     markCompleted,
     markCompletedById,
     markFailed,
+    reactivate,
     retry,
     releaseClaimWithoutAttempt,
     renewClaim,
