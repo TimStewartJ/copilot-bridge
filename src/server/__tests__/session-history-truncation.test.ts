@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 import {
   findQuietIntervalDeferTailTruncationCandidate,
   truncateQuietIntervalDeferTail,
 } from "../session-history-truncation.js";
+import { makeTestDir } from "./helpers.js";
 
 function quietIntervalUserMessage(id: string, deferId = "interval_loop-1") {
   return {
@@ -202,7 +203,7 @@ class ReceiverSensitiveFakeSession {
 const silentLogger = { log() {}, warn() {} };
 
 function writeEventsFixture(events: unknown[]): string {
-  const dir = mkdtempSync(join(tmpdir(), "history-truncation-"));
+  const dir = makeTestDir("history-truncation");
   const eventsPath = join(dir, "events.jsonl");
   writeFileSync(eventsPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
   return eventsPath;
@@ -213,15 +214,7 @@ function bulkyEvent(id: string, bytes: number) {
 }
 
 describe("truncateQuietIntervalDeferTail", () => {
-  const fixtures: string[] = [];
-  afterEach(() => {
-    for (const eventsPath of fixtures.splice(0)) rmSync(dirname(eventsPath), { recursive: true, force: true });
-  });
-  function fixture(events: unknown[]): string {
-    const eventsPath = writeEventsFixture(events);
-    fixtures.push(eventsPath);
-    return eventsPath;
-  }
+  const fixture = (events: unknown[]): string => writeEventsFixture(events);
 
   it("invokes truncateHistory with its receiver so prototype methods that depend on `this` work", async () => {
     const events = [
