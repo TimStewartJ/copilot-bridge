@@ -135,6 +135,8 @@ describe("fresh database schema parity", () => {
       "copilot_model_prices",
       "copilot_usage_sessions",
       "copilot_usage_scan_state",
+      "event_log_stats_folds",
+      "idx_event_log_stats_folds_updated",
       "idx_tags_name_key",
       "idx_tasks_nextTouchAt",
       "idx_bridge_session_state_lastAttentionAt",
