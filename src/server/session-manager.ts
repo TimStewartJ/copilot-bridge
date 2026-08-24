@@ -242,6 +242,9 @@ const BROWSER_SHUTDOWN_TIMEOUT_MS = 1_500;
 const BACKEND_STOP_TIMEOUT_MS = 4_000;
 const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
 const DISCONNECT_TIMEOUT_MS = 5_000;
+/** Refresh disposals run on the user's send path; p99 disconnect is ~6 s, so give them more room than cache cleanup. */
+const REFRESH_DISCONNECT_TIMEOUT_MS = 15_000;
+const REFRESH_TASK_INSPECTION_TIMEOUT_MS = 5_000;
 const DISCONNECT_MAX_ATTEMPTS = 2;
 const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = 30_000;
 const SESSION_TASK_CLEANUP_TIMEOUT_MS = 10_000;
@@ -1893,6 +1896,13 @@ export class SessionManager {
     if (!await cleanup) throw new Error(`Session ${sessionId} could not be reaped while ${reason}`);
   }
 
+  /**
+   * Dispose a cached session so the caller can resume it from disk. Never throws on a slow
+   * or failed disconnect: once `disconnect()` has been invoked the handle is no longer safe
+   * to send on, so it is evicted and handed to the cleanup queue (which tolerates slow and
+   * stale destroys) and the caller resumes from disk. Returns false only when the session
+   * must be retained (live background tasks, handle changed, task inspection failed).
+   */
   private async tryDisposeIdleCachedSessionForRefresh(
     sessionId: string,
     session: AgentSession,
@@ -1900,30 +1910,48 @@ export class SessionManager {
   ): Promise<boolean> {
     return this.enqueueCache("dispose", sessionId, async () => {
       if (this.sessionObjects.get(sessionId) !== session) return false;
+      const sid = sessionId.slice(0, 8);
 
-      let tasks;
-      try {
-        tasks = await session.listTasks();
-      } catch (error) {
+      const taskInspection = await settleByDeadline(
+        () => Promise.resolve(session.listTasks()),
+        createDeadline(REFRESH_TASK_INSPECTION_TIMEOUT_MS),
+      );
+      if (taskInspection.status !== "fulfilled") {
         console.warn(
-          `[sdk] [${sessionId.slice(0, 8)}] Retaining cached session because background task inspection failed while ${reason}:`,
-          error,
+          `[sdk] [${sid}] Retaining cached session because background task inspection ${taskInspection.status} while ${reason}:`,
+          taskInspection.status === "rejected" ? taskInspection.error : `no answer within ${REFRESH_TASK_INSPECTION_TIMEOUT_MS}ms`,
         );
         return false;
       }
       if (this.sessionObjects.get(sessionId) !== session) return false;
+      const tasks = taskInspection.value;
       if (tasks === undefined || (tasks.tasks ?? []).some((task) => !this.isTerminalBackgroundTask(task))) return false;
 
+      const startedAt = Date.now();
       const disconnected = await settleByDeadline<void>(
         () => Promise.resolve(session.disconnect?.()).then(() => undefined),
-        createDeadline(DISCONNECT_TIMEOUT_MS),
+        createDeadline(REFRESH_DISCONNECT_TIMEOUT_MS),
       );
-      if (disconnected.status !== "fulfilled") {
-        if (disconnected.status === "rejected") throw disconnected.error;
-        throw new Error(`Session ${sessionId} disconnect timed out while ${reason}`);
-      }
+      const staleSession = disconnected.status === "rejected" && isStaleAgentSessionError(disconnected.error);
+      this.recordSpan("session.cache.disconnect", Date.now() - startedAt, sessionId, {
+        reason,
+        refresh: true,
+        outcome: staleSession ? "stale-session" : disconnected.status,
+        ...(disconnected.status === "rejected"
+          ? { error: disconnected.error instanceof Error ? disconnected.error.message : String(disconnected.error) }
+          : {}),
+        ...this.getSessionCacheState(),
+      });
       if (!this.removeReadySessionUnsafe(sessionId, session)) return false;
-      this.sessionCapacityProfiles.delete(session);
+      if (disconnected.status === "fulfilled" || staleSession) {
+        this.sessionCapacityProfiles.delete(session);
+        return true;
+      }
+      console.warn(
+        `[sdk] [${sid}] Disconnect ${disconnected.status === "timed-out" ? `timed out after ${REFRESH_DISCONNECT_TIMEOUT_MS}ms` : "failed"} while ${reason}; evicting the handle to background cleanup and resuming from disk`,
+      );
+      // The cleanup queue reads the capacity profile, so leave it for runSessionCleanup.
+      void this.queueSessionCleanupUnsafe(sessionId, session, `${reason} (slow disconnect)`);
       return true;
     });
   }

@@ -1,6 +1,6 @@
 // CLI for the Bridge-pinned Copilot CLI channel (see copilot-cli-pin.ts).
 //
-//   npm run copilot-cli:pin -- 1.0.81-7 --reason "why"   write copilot-cli.lock.json for a GitHub release
+//   npm run copilot-cli:pin -- 1.0.81-8 --reason "why"   write copilot-cli.lock.json for a GitHub release
 //   npm run copilot-cli:pin -- npm          point the lock back at the npm package
 //   npm run copilot-cli:ensure              download/verify/extract the pinned build now
 //   npm run copilot-cli:status              show what the next launch would use
