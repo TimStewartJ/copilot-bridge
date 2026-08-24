@@ -180,14 +180,17 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(unsub).toHaveBeenCalledOnce();
   });
 
-  it("delegates getEvents", async () => {
-    const session = createFakeSession();
-    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+  it("exposes no full-history read even though the SDK session implements getEvents", async () => {
+    const getEvents = vi.fn().mockResolvedValue([{ type: "test" }]);
+    const session = { ...createFakeSession(), getEvents };
+    const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
 
-    // `getEvents` is declared required by the SDK's own published `CopilotSession`
-    // types and implemented in `dist/session.js`, so the wrapper delegates
-    // unconditionally rather than probing for it.
-    await expect(wrapped.getEvents()).resolves.toEqual([{ type: "test" }]);
+    // A single `session.getMessages` response for a large transcript tears
+    // down the shared JSON-RPC connection, so the Bridge reads history from
+    // events.jsonl on disk and the facade deliberately does not forward it.
+    expect("getEvents" in wrapped).toBe(false);
+    expect((wrapped as unknown as Record<string, unknown>).getEvents).toBeUndefined();
+    expect(getEvents).not.toHaveBeenCalled();
   });
 
   it("has no pending-interaction listing surface: the SDK exposes no wire method", async () => {

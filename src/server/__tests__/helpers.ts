@@ -336,7 +336,6 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     setModel: async () => undefined,
     disconnect: () => undefined,
     on: () => () => {},
-    getEvents: async () => [],
     respondToUserInput: async () => true,
     tryRespondToElicitation: async () => true,
     setSendMode: async () => undefined,
