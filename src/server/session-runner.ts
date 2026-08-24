@@ -76,6 +76,8 @@ import type { SessionAutoNameOptions } from "./session-name-autogen.js";
 const WATCHDOG_INTERVAL_MS = 60_000;
 const NO_PROGRESS_WARNING_MS = 10 * 60_000;
 const NO_PROGRESS_ABORT_MS = 60 * 60_000;
+/** Silence this long (no live event, no disk progress) makes the watchdog ping the backend channel. */
+const NO_PROGRESS_BACKEND_PROBE_MS = 3 * 60_000;
 const SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE =
   "Session tool initialization did not complete before prompt delivery";
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
@@ -264,7 +266,10 @@ export function isStaleAgentSessionError(error: unknown): boolean {
     return error.code === ConnectionErrors.Closed || error.code === ConnectionErrors.Disposed;
   }
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return /\bSession not found\b/i.test(message);
+  // `Pending response rejected since connection got disposed` is what every RPC
+  // still in flight gets when a lost backend is force-stopped: the session is
+  // no longer addressable, not merely slow.
+  return /\bSession not found\b/i.test(message) || /Pending response rejected since connection got disposed/i.test(message);
 }
 
 /** Claude rejected a round-tripped `thinking` block whose signature no longer matches the conversation. */
@@ -293,6 +298,10 @@ export interface SessionResumeLease {
 export interface SessionRunnerDeps {
   /** Lazy accessor for the agent backend; the manager owns lifecycle. */
   getBackend(): AgentBackend | null;
+  /** Human-readable reason the backend cannot take work right now (rotating, disconnected, not started). */
+  getBackendUnavailableReason?(): string | undefined;
+  /** Ask the backend whether its RPC channel still answers; false means disconnect recovery has been triggered. */
+  probeBackendHealth?(reason: string): Promise<boolean>;
   /** Shared cache of CopilotSession objects (owned by SessionManager). */
   sessionObjects: Map<string, any>;
   /** Shared per-session MCP status cache (owned by SessionManager). */
@@ -430,13 +439,19 @@ export class SessionRunner {
     return this.deps.runStateController.createRunController(sessionId, bus);
   }
 
+  private assertBackendAvailable(): void {
+    const reason = this.deps.getBackendUnavailableReason?.();
+    if (reason) throw new Error(reason);
+    if (!this.client) throw new Error("SessionManager not initialized");
+  }
+
   startWorkRun(
     sessionId: string,
     prompt: string,
     attachments?: StartWorkAttachment[],
     options: StartWorkOptions = {},
   ): SessionRunController {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    this.assertBackendAvailable();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
@@ -456,6 +471,7 @@ export class SessionRunner {
       {
         pendingPrompt: prompt,
         promptAccepted: false,
+        attentionMode: options.attentionMode === "quiet" ? "quiet" : "normal",
       },
     );
   }
@@ -477,7 +493,7 @@ export class SessionRunner {
   }
 
   async steerSession(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    this.assertBackendAvailable();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
@@ -564,6 +580,7 @@ export class SessionRunner {
     metadata?: {
       pendingPrompt?: string;
       promptAccepted?: boolean;
+      attentionMode?: "normal" | "quiet";
     },
   ): SessionRunController {
     const now = Date.now();
@@ -1864,6 +1881,7 @@ export class SessionRunner {
 
     let noProgressWarningActive = false;
     let noProgressAbortAttempted = false;
+    let backendProbeInFlight = false;
 
     const inspectPersistedRun = async (now: number, reason: string) => {
       const inspection = await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
@@ -1915,6 +1933,29 @@ export class SessionRunner {
 
         let now = Date.now();
         let noProgressMs = Math.max(0, now - getLastProgressAt());
+        if (noProgressMs >= NO_PROGRESS_BACKEND_PROBE_MS && this.deps.probeBackendHealth && !backendProbeInFlight) {
+          // Zero live events and no disk growth is exactly what a dead RPC
+          // channel looks like; a cheap ping distinguishes "slow turn" from
+          // "nothing will ever answer" and escalates to disconnect recovery.
+          backendProbeInFlight = true;
+          const probeStartedAt = Date.now();
+          try {
+            const healthy = await this.deps.probeBackendHealth("watchdog no-progress");
+            recordRunSpan("session.run.backend_probe", Date.now() - probeStartedAt, {
+              outcome: healthy ? "healthy" : "unhealthy",
+              noProgressMs,
+            });
+            if (!healthy) {
+              console.error(`[sdk] [${sid}] ⚠️ Backend liveness probe failed after ${Math.floor(noProgressMs / 1000)}s without progress; disconnect recovery has been triggered`);
+              return;
+            }
+          } finally {
+            backendProbeInFlight = false;
+          }
+          if (runController.isCompleted()) return;
+          now = Date.now();
+          noProgressMs = Math.max(0, now - getLastProgressAt());
+        }
         if (noProgressMs < NO_PROGRESS_WARNING_MS) {
           noProgressWarningActive = false;
           return;

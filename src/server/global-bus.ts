@@ -5,9 +5,10 @@ import type { DeferSummary } from "./defer-summary.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-store.js";
 import type { RestartPhase } from "./restart-state.js";
 import type { BackgroundAgentsSummary } from "../shared/session-agents.js";
+import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "feed:changed" | "management-job:changed";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "feed:changed" | "management-job:changed" | "backend:status";
   sessionId?: string;
   cardId?: string;
   dedupeKey?: string;
@@ -30,6 +31,7 @@ export interface StatusEvent {
   taskId?: string;
   readState?: Record<string, string>;
   serverInstanceId?: string;
+  agentBackend?: AgentBackendStatus;
 }
 
 type Listener = (event: StatusEvent) => void;
