@@ -67,7 +67,14 @@ describe("SessionManager run state", () => {
       runtimePaths,
     }) as any;
 
-    return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore, sessionMetaStore };
+    return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore, sessionMetaStore, copilotHome };
+  }
+
+  function writeSessionEvents(copilotHome: string | undefined, sessionId: string, events: unknown[]): void {
+    if (!copilotHome) throw new Error("test manager has no copilotHome");
+    const dir = join(copilotHome, "session-state", sessionId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + "\n");
   }
 
   function makeSession() {
@@ -314,7 +321,6 @@ describe("SessionManager run state", () => {
     const { manager } = createManager();
     const cached = makeSession();
     cached.session.getCurrentModel = vi.fn();
-    cached.session.getEvents = vi.fn();
     manager.sessionObjects.set(sessionId, cached.session);
     manager.backend = {
       resumeSession: vi.fn(),
@@ -325,7 +331,6 @@ describe("SessionManager run state", () => {
 
     expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
     expect(cached.session.getCurrentModel).not.toHaveBeenCalled();
-    expect(cached.session.getEvents).not.toHaveBeenCalled();
     expect(cached.session.disconnect).not.toHaveBeenCalled();
     expect(manager.backend.resumeSession).not.toHaveBeenCalled();
 
@@ -1242,7 +1247,7 @@ describe("SessionManager run state", () => {
 
   it("keeps passive session warmup out of the user-visible run state", async () => {
     const { manager } = createManager();
-    const resumedSession = { getEvents: vi.fn().mockResolvedValue([]) };
+    const resumedSession = makeAgentSessionStub({ sessionId: "session-1" });
     let resolveResume!: (session: typeof resumedSession) => void;
     manager.backend = {
       resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
@@ -1321,7 +1326,7 @@ describe("SessionManager run state", () => {
         },
       });
 
-      const messageSession = { getEvents: vi.fn().mockResolvedValue([]) };
+      const messageSession = makeAgentSessionStub({ sessionId: "message-session" });
       let resolveMessageResume!: (session: typeof messageSession) => void;
       const { session: runSession, getHandler, getReleaseSend } = makeSession();
       manager.backend = {
@@ -1458,7 +1463,7 @@ describe("SessionManager run state", () => {
       });
       await refreshRestartState();
 
-      const resumedSession = { getEvents: vi.fn().mockResolvedValue([]) };
+      const resumedSession = makeAgentSessionStub({ sessionId: "session-1" });
       let resolveResume!: (session: typeof resumedSession) => void;
       manager.backend = {
         resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
@@ -1836,31 +1841,31 @@ describe("SessionManager run state", () => {
   });
 
   it("truncates a previous quiet interval defer tail before sending the next interval prompt", async () => {
-    const { manager, globalBus } = createManager();
+    const { manager, globalBus, copilotHome } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     const statusEvents: any[] = [];
     const truncate = vi.fn(async () => ({ eventsRemoved: 3 }));
-    const sessionWithHistory = Object.assign(session, {
-      getEvents: vi.fn(async () => [
-        {
-          id: "previous-quiet-user",
-          type: "user.message",
-          data: {
-            content: [
-              "<defer>",
-              "deferId: interval_loop-1",
-              "kind: interval",
-              "attentionMode: quiet",
-              "</defer>",
-              "",
-              "User prompt:",
-              "Poll deployment",
-            ].join("\n"),
-          },
+    writeSessionEvents(copilotHome, "session-1", [
+      {
+        id: "previous-quiet-user",
+        type: "user.message",
+        data: {
+          content: [
+            "<defer>",
+            "deferId: interval_loop-1",
+            "kind: interval",
+            "attentionMode: quiet",
+            "</defer>",
+            "",
+            "User prompt:",
+            "Poll deployment",
+          ].join("\n"),
         },
-        { id: "previous-assistant", type: "assistant.message", data: { content: "No change" } },
-        { id: "previous-idle", type: "session.idle", data: {} },
-      ]),
+      },
+      { id: "previous-assistant", type: "assistant.message", data: { content: "No change" } },
+      { id: "previous-idle", type: "session.idle", data: {} },
+    ]);
+    Object.assign(session, {
       truncateHistory: truncate,
     });
     manager.backend = {
@@ -1875,12 +1880,9 @@ describe("SessionManager run state", () => {
         deferId: "interval_loop-1",
       },
     });
-    await flushMicrotasks();
-    for (let attempt = 0; attempt < 5 && session.send.mock.calls.length === 0; attempt += 1) {
-      await flushMicrotasks();
-    }
+    // The truncation boundary is read from events.jsonl on disk, so real I/O must settle first.
+    await vi.waitFor(() => expect(session.send).toHaveBeenCalled());
 
-    expect(sessionWithHistory.getEvents).toHaveBeenCalled();
     expect(truncate).toHaveBeenCalledWith({ eventId: "previous-quiet-user" });
     expect(truncate.mock.invocationCallOrder[0]).toBeLessThan(session.send.mock.invocationCallOrder[0]);
     expect(statusEvents).toContainEqual({ type: "session:history-truncated", sessionId: "session-1" });
@@ -1908,6 +1910,7 @@ describe("SessionManager run state", () => {
       globalBus,
       sessionContextStore,
       sessionMetaStore,
+      copilotHome,
     } = createManager({ telemetry: true });
     const statusEvents: any[] = [];
     const events = [
@@ -1925,9 +1928,9 @@ describe("SessionManager run state", () => {
       abort: vi.fn(),
       setModel: vi.fn(),
       disconnect: vi.fn(),
-      getEvents: vi.fn().mockResolvedValue(events),
       truncateHistory,
     });
+    writeSessionEvents(copilotHome, "session-1", events);
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
@@ -1997,8 +2000,15 @@ describe("SessionManager run state", () => {
     }
   });
   it("rejects stale or non-user undo boundaries before truncating history", async () => {
-    const { manager } = createManager();
+    const { manager, copilotHome } = createManager();
     const truncateHistory = vi.fn();
+    writeSessionEvents(copilotHome, "session-1", [
+      {
+        id: "skill-browser",
+        type: "user.message",
+        data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
+      },
+    ]);
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue({
         sessionId: "session-1",
@@ -2007,13 +2017,6 @@ describe("SessionManager run state", () => {
         abort: vi.fn(),
         setModel: vi.fn(),
         disconnect: vi.fn(),
-        getEvents: vi.fn().mockResolvedValue([
-          {
-            id: "skill-browser",
-            type: "user.message",
-            data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
-          },
-        ]),
         truncateHistory,
       }),
     };
@@ -2025,9 +2028,13 @@ describe("SessionManager run state", () => {
   });
 
   it("can undo the first turn and clear all derived session activity", async () => {
-    const { manager, sessionMetaStore } = createManager();
+    const { manager, sessionMetaStore, copilotHome } = createManager();
     sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-05-09T10:00:01.000Z");
     sessionMetaStore.setLastAttentionAt("session-1", "2026-05-09T10:00:02.000Z");
+    writeSessionEvents(copilotHome, "session-1", [
+      { id: "user-1", type: "user.message", timestamp: "2026-05-09T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-05-09T10:00:01.000Z", data: { content: "Answer" } },
+    ]);
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue({
         sessionId: "session-1",
@@ -2036,10 +2043,6 @@ describe("SessionManager run state", () => {
         abort: vi.fn(),
         setModel: vi.fn(),
         disconnect: vi.fn(),
-        getEvents: vi.fn().mockResolvedValue([
-          { id: "user-1", type: "user.message", timestamp: "2026-05-09T10:00:00.000Z", data: { content: "First" } },
-          { id: "assistant-1", type: "assistant.message", timestamp: "2026-05-09T10:00:01.000Z", data: { content: "Answer" } },
-        ]),
         truncateHistory: vi.fn().mockResolvedValue({ eventsRemoved: 2 }),
       }),
     };
@@ -2050,7 +2053,10 @@ describe("SessionManager run state", () => {
   });
 
   it("marks undo as busy so concurrent mutations cannot race it", async () => {
-    const { manager } = createManager();
+    const { manager, copilotHome } = createManager();
+    writeSessionEvents(copilotHome, "session-1", [
+      { id: "user-1", type: "user.message", data: { content: "First" } },
+    ]);
     let releaseTruncate!: () => void;
     const truncateHistory = vi.fn(async () => {
       await new Promise<void>((resolve) => {
@@ -2066,9 +2072,6 @@ describe("SessionManager run state", () => {
         abort: vi.fn(),
         setModel: vi.fn(),
         disconnect: vi.fn(),
-        getEvents: vi.fn().mockResolvedValue([
-          { id: "user-1", type: "user.message", data: { content: "First" } },
-        ]),
         truncateHistory,
       }),
     };
@@ -2080,6 +2083,8 @@ describe("SessionManager run state", () => {
       code: "busy",
     });
 
+    // The boundary lookup streams events.jsonl, so wait for the real disk read before releasing the RPC.
+    await vi.waitFor(() => expect(truncateHistory).toHaveBeenCalled());
     releaseTruncate();
     await expect(firstUndo).resolves.toEqual({ eventsRemoved: 1 });
     expect(manager.getSessionRunState("session-1")).toBe("idle");

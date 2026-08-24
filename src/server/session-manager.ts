@@ -100,6 +100,7 @@ import {
 } from "./session-attachment-routing.js";
 import {
   clearEventLogStatsCache,
+  findSessionEventIndex,
   listSessionsFromDisk as listSessionsFromDiskWithDeps,
   readMessagesFromDisk as readMessagesFromDiskWithDeps,
   type ReadMessagesFromDiskResult,
@@ -150,10 +151,9 @@ import {
   type DerivedModelState,
 } from "./session-events-model.js";
 import {
-  getLastVisibleActivityAt,
+  createVisibleActivityTracker,
   getUndoBoundaryEventId,
 } from "./event-transform.js";
-import { readSdkSessionEvents } from "./sdk-session-events.js";
 import { createSessionContextTruncationMarker } from "./session-context-normalizer.js";
 import {
   getModelCapabilitiesOverride,
@@ -3596,31 +3596,35 @@ export class SessionManager {
         });
       }
 
-      let events: unknown[];
+      // Locate the boundary on disk: events.jsonl is the persisted source of
+      // truth and streaming it keeps memory bounded regardless of transcript
+      // size. The CLI's `eventsRemoved` stays authoritative; the disk count is
+      // only the cross-check below.
+      const eventsPath = this.getSessionEventsPath(sessionId);
+      const remainingActivity = createVisibleActivityTracker(sessionId);
+      let boundary: Awaited<ReturnType<typeof findSessionEventIndex>>;
       try {
-        events = await readSdkSessionEvents(session);
+        boundary = await findSessionEventIndex(eventsPath, boundaryEventId, {
+          matches: (event) => getUndoBoundaryEventId(event) === boundaryEventId,
+          onEventBefore: (event) => remainingActivity.observe(event),
+        });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/event API is not available/i.test(message)) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
           throw new SessionHistoryUndoError(
-            "unsupported",
-            "Session history undo is not available in this agent backend",
+            "stale-boundary",
+            "This turn is no longer available to undo. Refresh the chat and try again.",
           );
         }
         throw error;
       }
-
-      const boundaryIndex = events.findIndex(
-        (event) => getUndoBoundaryEventId(event) === boundaryEventId,
-      );
-      if (boundaryIndex < 0) {
+      if (!boundary) {
         throw new SessionHistoryUndoError(
           "stale-boundary",
           "This turn is no longer available to undo. Refresh the chat and try again.",
         );
       }
 
-      const expectedEventsRemoved = events.length - boundaryIndex;
+      const expectedEventsRemoved = boundary.eventsAfter + 1;
       let truncateResult: { eventsRemoved?: number } | undefined;
       try {
         truncateResult = await session.truncateHistory({ eventId: boundaryEventId });
@@ -3655,9 +3659,8 @@ export class SessionManager {
         );
       }
 
-      const remainingEvents = events.slice(0, boundaryIndex);
-      const lastVisibleActivityAt = getLastVisibleActivityAt(remainingEvents, sessionId);
-      const boundaryEvent = events[boundaryIndex] as any;
+      const lastVisibleActivityAt = remainingActivity.getLastVisibleActivityAt();
+      const boundaryEvent = boundary.event as any;
       const boundaryOccurredAt = boundaryEvent?.data?.timestamp ?? boundaryEvent?.timestamp;
       try {
         clearEventLogStatsCache(sessionId);

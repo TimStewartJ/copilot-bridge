@@ -21,7 +21,7 @@
 //
 //   CopilotSession methods/properties:
 //     sessionId, send, abort, setModel, disconnect (optional),
-//     on (returns unsubscribe), getEvents (read via readSdkSessionEvents),
+//     on (returns unsubscribe); never getEvents (history is read from disk),
 //     rpc (raw escape hatch: mcp.list, mcp.oauth.login, model.getCurrent,
 //          history.truncate, name.get/set)
 //
@@ -288,8 +288,10 @@ export interface AgentSession {
   /** Subscribe to live session events. Returns an unsubscribe function. */
   on(handler: AgentSessionEventHandler): () => void;
 
-  /** Read the full on-disk event log. Used by readSdkSessionEvents. */
-  getEvents(): Promise<unknown>;
+  // Intentionally no full-history read (`getEvents` / `session.getMessages`):
+  // the Bridge reads persisted history from events.jsonl on disk. A single
+  // full-history RPC response for a large transcript tears down the shared
+  // backend connection. See session-disk-reader.ts.
 
   /** Resolve an ask_user request. False means another responder already won or the ID is stale. */
   respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean>;

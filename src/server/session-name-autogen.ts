@@ -21,11 +21,11 @@ import {
   buildSessionNameHelperBaseConfig,
   type SetSessionNameOptions,
 } from "./session-name-rpc.js";
-import { readSdkSessionEvents } from "./sdk-session-events.js";
-import { isSdkAgentUserMessage } from "./sdk-event-identity.js";
+import { readRecentUserMessages, resolveSessionEventsPath } from "./session-disk-reader.js";
 
 const SESSION_NAME_GENERATION_RETRY_MS = 60 * 60 * 1000;
 const TITLE_HELPER_TIMEOUT_MS = 30_000;
+const RECENT_USER_MESSAGE_LIMIT = 20;
 
 export interface SessionNameAutogeneratorDeps {
   listModels(): Promise<AgentModelInfo[]>;
@@ -46,24 +46,11 @@ export interface SessionAutoNameOptions {
   replaceExistingName?: string | true;
 }
 
-function collectRecentUserMessages(events: any[]): string[] {
-  const messages: string[] = [];
-  for (const event of events) {
-    if (event?.type !== "user.message") continue;
-    if (isSdkAgentUserMessage(event)) continue;
-    const data = event.data;
-    if (data && typeof data === "object" && "source" in data) continue;
-    const content = data?.content;
-    if (typeof content === "string" && content.trim()) messages.push(content.trim());
-  }
-  return messages.slice(-20);
-}
-
 function normalizeUserMessages(messages: string[] | undefined): string[] {
   return (messages ?? [])
     .map((message) => message.trim())
     .filter(Boolean)
-    .slice(-20);
+    .slice(-RECENT_USER_MESSAGE_LIMIT);
 }
 
 function mergeRecentUserMessages(historyMessages: string[], providedMessages: string[]): string[] {
@@ -73,7 +60,7 @@ function mergeRecentUserMessages(historyMessages: string[], providedMessages: st
       messages.push(message);
     }
   }
-  return messages.slice(-20);
+  return messages.slice(-RECENT_USER_MESSAGE_LIMIT);
 }
 
 function normalizeComparableName(name: string | undefined): string | undefined {
@@ -187,23 +174,20 @@ export class SessionNameAutogenerator {
     let historyMessageCount: number | undefined;
     let historyReadFailed = false;
     if (options.session && options.includeHistory !== false) {
-      if (typeof options.session.getEvents === "function") {
-        try {
-          const events = await readSdkSessionEvents(options.session);
-          const historyMessages = collectRecentUserMessages(events);
-          historyMessageCount = historyMessages.length;
-          userMessages = mergeRecentUserMessages(historyMessages, providedUserMessages);
-        } catch (error) {
-          if (providedUserMessages.length === 0) throw error;
-          historyReadFailed = true;
-          this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Session auto-name history unavailable; using live prompt only: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      } else if (userMessages.length === 0) {
-        this.recordSpan("session.name.autogen", start, sessionId, {
-          result: "skipped_no_messages",
-          reason: "session_events_unavailable",
-        });
-        return;
+      // History comes from the persisted events.jsonl tail, never from a
+      // full-history RPC: large transcripts must not be pulled over the
+      // backend connection just to pick a title.
+      try {
+        const historyMessages = await readRecentUserMessages(
+          resolveSessionEventsPath(this.deps.getCopilotHome(), sessionId),
+          RECENT_USER_MESSAGE_LIMIT,
+        );
+        historyMessageCount = historyMessages.length;
+        userMessages = mergeRecentUserMessages(historyMessages, providedUserMessages);
+      } catch (error) {
+        if (providedUserMessages.length === 0) throw error;
+        historyReadFailed = true;
+        this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Session auto-name history unavailable; using live prompt only: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     if (userMessages.length === 0) {

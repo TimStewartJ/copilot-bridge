@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -35,7 +35,25 @@ describe("session name autogenerator", () => {
       setSessionName,
     });
     (generator as any).generateSessionName = generateSessionName;
-    return { generator, createSession, setSessionName, generateSessionName };
+    const writeHistory = (sessionId: string, events: unknown[]) => {
+      const dir = join(copilotHome, "session-state", sessionId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    };
+    return { generator, createSession, setSessionName, generateSessionName, copilotHome, writeHistory };
+  }
+
+  /** Session double that records every method touched; autoname may only ever call getName. */
+  function recordingSession(methods: Record<string, unknown>) {
+    const calls: string[] = [];
+    const session = new Proxy({ ...methods }, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value === "function" && typeof property === "string") calls.push(property);
+        return value;
+      },
+    });
+    return { session, calls };
   }
 
   it("replaces prompt-derived workspace names that are not user named", async () => {
@@ -64,14 +82,12 @@ describe("session name autogenerator", () => {
   });
 
   it("does not treat live first-turn provisional SDK names as explicit titles", async () => {
-    const { generator, setSessionName, generateSessionName } = createHarness(undefined);
+    const { generator, setSessionName, generateSessionName, writeHistory } = createHarness(undefined);
     const rpcNameGet = vi.fn(async () => ({ name: "Please investigate a tricky production bug" }));
-    const session = {
-      getName: rpcNameGet,
-      getEvents: vi.fn(async () => [
-        { type: "user.message", data: { content: "Please investigate a tricky production bug" } },
-      ]),
-    };
+    const session = { getName: rpcNameGet };
+    writeHistory("session-1", [
+      { type: "user.message", data: { content: "Please investigate a tricky production bug" } },
+    ]);
 
     await (generator as any).generateAndSetMissingSessionName("session-1", {
       session,
@@ -83,15 +99,14 @@ describe("session name autogenerator", () => {
     expect(setSessionName).toHaveBeenCalledWith("session-1", "Concise Session Title", { session });
   });
 
-  it("uses session history when a delayed live trigger includes only a follow-up", async () => {
-    const { generator, generateSessionName } = createHarness(undefined);
-    const session = {
-      getEvents: vi.fn(async () => [
-        { type: "user.message", data: { content: "Investigate why deployment restarts wedge the bridge" } },
-        { type: "assistant.message", data: { content: "I found the restart issue." } },
-        { type: "user.message", data: { content: "Can you show the exact diff?" } },
-      ]),
-    };
+  it("uses session history from disk when a delayed live trigger includes only a follow-up", async () => {
+    const { generator, generateSessionName, writeHistory } = createHarness(undefined);
+    const { session, calls } = recordingSession({});
+    writeHistory("session-1", [
+      { type: "user.message", data: { content: "Investigate why deployment restarts wedge the bridge" } },
+      { type: "assistant.message", data: { content: "I found the restart issue." } },
+      { type: "user.message", data: { content: "Can you show the exact diff?" } },
+    ]);
 
     await (generator as any).generateAndSetMissingSessionName("session-1", {
       session,
@@ -102,20 +117,45 @@ describe("session name autogenerator", () => {
       "Investigate why deployment restarts wedge the bridge",
       "Can you show the exact diff?",
     ]);
+    expect(calls).toEqual([]);
+  });
+
+  it("reads only the tail of a multi-MB history and never asks the session for events", async () => {
+    const { generator, generateSessionName, writeHistory } = createHarness(undefined);
+    const { session, calls } = recordingSession({});
+    const events: unknown[] = [];
+    for (let turn = 0; turn < 30; turn += 1) {
+      events.push({ type: "user.message", data: { content: `older question ${turn}` } });
+      events.push({ type: "assistant.message", data: { content: "y".repeat(200 * 1024) } });
+      events.push({ type: "assistant.turn_end", data: {} });
+    }
+    events.push({ type: "user.message", data: { content: "latest question" } });
+    writeHistory("session-1", events);
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["latest question"],
+    });
+
+    const [messages] = generateSessionName.mock.calls[0] as unknown as [string[]];
+    expect(messages).toHaveLength(20);
+    expect(messages[messages.length - 1]).toBe("latest question");
+    expect(messages[0]).toBe("older question 11");
+    expect(calls).toEqual([]);
   });
 
   it("replaces a provisional fork title using only the first new user message", async () => {
-    const { generator, generateSessionName, setSessionName } = createHarness({
+    const { generator, generateSessionName, setSessionName, writeHistory } = createHarness({
       name: "Fork of Original session",
       effectiveName: "Fork of Original session",
       userNamed: true,
     });
     const session = {
       getName: vi.fn(async () => ({ name: "Fork of Original session" })),
-      getEvents: vi.fn(async () => [
-        { type: "user.message", data: { content: "Copied history should not title the fork" } },
-      ]),
     };
+    writeHistory("session-1", [
+      { type: "user.message", data: { content: "Copied history should not title the fork" } },
+    ]);
 
     await (generator as any).generateAndSetMissingSessionName("session-1", {
       session,
@@ -124,7 +164,6 @@ describe("session name autogenerator", () => {
       replaceExistingName: "Fork of Original session",
     });
 
-    expect(session.getEvents).not.toHaveBeenCalled();
     expect(generateSessionName).toHaveBeenCalledWith(["Investigate the new failure mode"]);
     expect(setSessionName).toHaveBeenCalledWith("session-1", "Concise Session Title", { session });
   });
@@ -140,7 +179,6 @@ describe("session name autogenerator", () => {
       .mockResolvedValueOnce({ name: "Manual fork title" });
     const session = {
       getName,
-      getEvents: vi.fn(),
     };
 
     await (generator as any).generateAndSetMissingSessionName("session-1", {
@@ -162,7 +200,6 @@ describe("session name autogenerator", () => {
     });
     const session = {
       getName: vi.fn(async () => ({ name: "Original session" })),
-      getEvents: vi.fn(),
     };
 
     await (generator as any).generateAndSetMissingSessionName("session-1", {
@@ -246,18 +283,17 @@ describe("session name autogenerator", () => {
   });
 
   it("excludes sub-agent instructions from title generation history", async () => {
-    const { generator, generateSessionName } = createHarness(undefined);
-    const session = {
-      getEvents: vi.fn(async () => [
-        { type: "user.message", data: { content: "Investigate the deployment restart" } },
-        {
-          type: "user.message",
-          agentId: "agent-1",
-          data: { content: "Inspect every launcher file" },
-        },
-        { type: "user.message", data: { content: "Show me the fix" } },
-      ]),
-    };
+    const { generator, generateSessionName, writeHistory } = createHarness(undefined);
+    const session = {};
+    writeHistory("session-1", [
+      { type: "user.message", data: { content: "Investigate the deployment restart" } },
+      {
+        type: "user.message",
+        agentId: "agent-1",
+        data: { content: "Inspect every launcher file" },
+      },
+      { type: "user.message", data: { content: "Show me the fix" } },
+    ]);
 
     await (generator as any).generateAndSetMissingSessionName("session-1", {
       session,
@@ -271,18 +307,17 @@ describe("session name autogenerator", () => {
   });
 
   it("still skips existing SDK names for warm or no-message checks", async () => {
-    const { generator, setSessionName, generateSessionName } = createHarness(undefined);
+    const { generator, setSessionName, generateSessionName, writeHistory } = createHarness(undefined);
     const session = {
       getName: vi.fn(async () => ({ name: "Manual live title" })),
-      getEvents: vi.fn(async () => [
-        { type: "user.message", data: { content: "Please fix this complicated issue" } },
-      ]),
     };
+    writeHistory("session-1", [
+      { type: "user.message", data: { content: "Please fix this complicated issue" } },
+    ]);
 
     await (generator as any).generateAndSetMissingSessionName("session-1", { session });
 
     expect(session.getName).toHaveBeenCalled();
-    expect(session.getEvents).not.toHaveBeenCalled();
     expect(generateSessionName).not.toHaveBeenCalled();
     expect(setSessionName).not.toHaveBeenCalled();
   });
@@ -322,7 +357,7 @@ describe("session name autogenerator", () => {
     expect(setSessionName).not.toHaveBeenCalled();
   });
 
-  it("records a no-message skip when a resumed session cannot provide history", async () => {
+  it("records a no-message skip when a resumed session has no persisted history on disk", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
     const recordSpan = vi.fn();
@@ -353,7 +388,7 @@ describe("session name autogenerator", () => {
       "session.name.autogen",
       expect.any(Number),
       "session-1",
-      { result: "skipped_no_messages", reason: "session_events_unavailable" },
+      { result: "skipped_no_messages" },
     );
   });
 

@@ -1766,6 +1766,7 @@ export class SessionRunner {
     };
 
     let unsub: (() => void) | undefined;
+    const eventsJsonlPath = join(this.deps.getSessionStateDir(sessionId), "events.jsonl");
 
     const prepareSessionForSend = async (activeSession: typeof session) => {
       const initialization = this.deps.waitForSessionToolInitialization(sessionId, activeSession);
@@ -1777,6 +1778,7 @@ export class SessionRunner {
         session: activeSession,
         sessionId,
         deferId: opts.historyTruncation.deferId,
+        eventsPath: eventsJsonlPath,
         recordSpan: (name, duration, spanSessionId, metadata) => this.recordSpan(name, duration, spanSessionId, metadata),
       });
       if (result.status !== "truncated") return;
@@ -1859,8 +1861,6 @@ export class SessionRunner {
       const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
       console.log(`[sdk] [${sid}] ⏳ Still working... (${elapsed}s)`);
     }, 30_000);
-
-    const eventsJsonlPath = join(this.deps.getSessionStateDir(sessionId), "events.jsonl");
 
     let noProgressWarningActive = false;
     let noProgressAbortAttempted = false;
