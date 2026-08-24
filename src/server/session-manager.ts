@@ -156,6 +156,16 @@ import {
 } from "./event-transform.js";
 import { createSessionContextTruncationMarker } from "./session-context-normalizer.js";
 import {
+  BACKEND_DISCONNECTED_MESSAGE,
+  BACKEND_NOT_INITIALIZED_MESSAGE,
+  BACKEND_RECONNECTING_MESSAGE,
+  BACKEND_RECOVERY_CONTINUE_PROMPT,
+  BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
+  isTransientBackendError,
+} from "./backend-availability.js";
+import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
+import type { AgentBackendDisconnect } from "./agent-backend/types.js";
+import {
   getModelCapabilitiesOverride,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
@@ -237,6 +247,17 @@ const CANCELED_ELICITATION_RESPONSE = { action: "cancel" } as const;
 // so a hung backend can never push the server past the launcher deadline.
 const GRACEFUL_SHUTDOWN_BUDGET_MS = 13_000;
 const SESSION_ABORT_TIMEOUT_MS = 4_000;
+/** Upper bound an HTTP abort request may wait on the backend before resolving locally. */
+const ABORT_REQUEST_TIMEOUT_MS = 10_000;
+/** Hard bound on force-stopping an orphaned runtime before a replacement is started. */
+const BACKEND_RECOVERY_FORCE_STOP_TIMEOUT_MS = 5_000;
+const BACKEND_RECOVERY_RETRY_INITIAL_MS = 5_000;
+const BACKEND_RECOVERY_RETRY_MAX_MS = 60_000;
+/** A session is re-sent a continue prompt at most once per window after a backend recovery. */
+const BACKEND_AUTO_RESUME_COOLDOWN_MS = 10 * 60_000;
+const BACKEND_AUTO_RESUME_IDLE_WAIT_MS = 30_000;
+/** Defer deliveries are held this long after a backend (re)start so overdue loops do not hit a cold runtime. */
+const DEFAULT_DEFER_STARTUP_HOLD_MS = 45_000;
 const SESSION_DRAIN_TIMEOUT_MS = 3_000;
 const BROWSER_SHUTDOWN_TIMEOUT_MS = 1_500;
 const BACKEND_STOP_TIMEOUT_MS = 4_000;
@@ -582,6 +603,21 @@ export class SessionManager {
   private backend: AgentBackend | null = null;
   private backendCreatedAtMs: number | null = null;
   private backendRotation: Promise<AgentBackend> | null = null;
+  private backendLifecycleState: AgentBackendStatus["state"] = "starting";
+  private backendDisconnectUnsubscribe: (() => void) | null = null;
+  private lastBackendDisconnect: AgentBackendDisconnect | null = null;
+  private backendDisconnectCount = 0;
+  private backendRecoveryCount = 0;
+  private lastBackendRecoveryAtMs: number | null = null;
+  private lastBackendRecoveryError: string | null = null;
+  private lastInterruptedSessionCount = 0;
+  private lastAutoResumedSessionCount = 0;
+  private backendRecoveryRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly backendAutoResumeAt = new Map<string, number>();
+  private deferStartupHoldMs = SessionManager.resolveNonNegativeIntegerEnv(
+    "BRIDGE_DEFER_STARTUP_HOLD_MS",
+    DEFAULT_DEFER_STARTUP_HOLD_MS,
+  );
   private deps: SessionManagerDeps;
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
@@ -762,6 +798,8 @@ export class SessionManager {
     });
     this.sessionRunner = new SessionRunner({
       getBackend: () => this.backend,
+      getBackendUnavailableReason: () => this.getBackendUnavailableReason(),
+      probeBackendHealth: (reason) => this.probeBackendHealth(reason),
       sessionObjects: this.sessionObjects,
       mcpStatus: this.mcpStatus,
       activeRunControllers: this.activeRunControllers,
@@ -1793,6 +1831,13 @@ export class SessionManager {
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
   }
 
+  private static resolveNonNegativeIntegerEnv(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+  }
+
   private static resolvePositiveNumberEnv(name: string, fallback: number): number {
     const value = Number(process.env[name]);
     return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -2773,20 +2818,350 @@ export class SessionManager {
     }
   }
 
-  private getBackend(): AgentBackend {
+  /** Why new work cannot reach the backend right now, or undefined when it can. */
+  getBackendUnavailableReason(): string | undefined {
     if (this.backendRotation) {
-      throw new Error("Copilot SDK client refresh is in progress; try again shortly");
+      return this.backendLifecycleState === "reconnecting"
+        ? BACKEND_RECONNECTING_MESSAGE
+        : BACKEND_REFRESH_IN_PROGRESS_MESSAGE;
     }
-    if (!this.backend) throw new Error("SessionManager not initialized");
-    return this.backend;
+    if (!this.backend) {
+      if (this.backendLifecycleState === "disconnected") return BACKEND_DISCONNECTED_MESSAGE;
+      if (this.backendLifecycleState === "starting") return BACKEND_NOT_INITIALIZED_MESSAGE;
+      return BACKEND_NOT_INITIALIZED_MESSAGE;
+    }
+    return undefined;
+  }
+
+  private getBackend(): AgentBackend {
+    const unavailable = this.getBackendUnavailableReason();
+    if (unavailable) throw new Error(unavailable);
+    return this.backend!;
   }
 
   private async getBackendAfterRotation(): Promise<AgentBackend> {
     if (this.backendRotation) {
       await this.backendRotation;
     }
-    if (!this.backend) throw new Error("SessionManager not initialized");
+    if (!this.backend) throw new Error(this.getBackendUnavailableReason() ?? BACKEND_NOT_INITIALIZED_MESSAGE);
     return this.backend;
+  }
+
+  // ── Backend connection lifecycle ──────────────────────────────────
+  //
+  // The SDK only flips `client.state` when its JSON-RPC connection drops; it
+  // never tells anyone, never kills the runtime child, and every pending or
+  // future RPC then hangs forever. The backend wrapper surfaces the loss via
+  // onDisconnect; the manager turns it into: fail in-flight runs fast, drop
+  // every cached handle (they belong to a dead process), kill the orphan,
+  // start a replacement, and re-send a continue prompt to interrupted
+  // interactive turns.
+
+  private attachBackendLifecycle(backend: AgentBackend): void {
+    this.backendDisconnectUnsubscribe?.();
+    this.backendDisconnectUnsubscribe = null;
+    if (typeof backend.onDisconnect === "function") {
+      this.backendDisconnectUnsubscribe = backend.onDisconnect((info) => {
+        this.handleBackendDisconnect(backend, info);
+      });
+    }
+    this.backendLifecycleState = "ready";
+    this.emitBackendStatus();
+  }
+
+  private emitBackendStatus(): void {
+    try {
+      this.deps.globalBus.emit({ type: "backend:status", agentBackend: this.getBackendStatus() });
+    } catch { /* status is advisory */ }
+  }
+
+  getBackendStatus(): AgentBackendStatus {
+    const connection = this.backend?.getConnectionStatus?.();
+    return {
+      state: this.backendLifecycleState,
+      connection: connection?.state ?? null,
+      pid: connection?.pid ?? null,
+      createdAt: this.getBackendCreatedAt(),
+      lastDisconnect: this.lastBackendDisconnect
+        ? {
+            at: this.lastBackendDisconnect.at,
+            reason: this.lastBackendDisconnect.reason,
+            ...(this.lastBackendDisconnect.detail ? { detail: this.lastBackendDisconnect.detail } : {}),
+          }
+        : null,
+      disconnectCount: this.backendDisconnectCount,
+      recoveryCount: this.backendRecoveryCount,
+      lastRecoveryAt: this.lastBackendRecoveryAtMs == null ? null : new Date(this.lastBackendRecoveryAtMs).toISOString(),
+      lastRecoveryError: this.lastBackendRecoveryError,
+      lastInterruptedSessionCount: this.lastInterruptedSessionCount,
+      lastAutoResumedSessionCount: this.lastAutoResumedSessionCount,
+    };
+  }
+
+  /**
+   * Whether same-session defer deliveries may be attempted right now. Holds
+   * for a grace period after every backend (re)start so overdue loops do not
+   * fire into a cold runtime whose MCP servers are still coming up.
+   */
+  getDeferDeliveryReadiness(): { ready: boolean; reason?: string; retryAfterMs?: number } {
+    if (this.shuttingDown) return { ready: false, reason: "shutting down" };
+    const unavailable = this.getBackendUnavailableReason();
+    if (unavailable) return { ready: false, reason: unavailable, retryAfterMs: 5_000 };
+    if (this.backendLifecycleState !== "ready") {
+      return { ready: false, reason: `agent backend is ${this.backendLifecycleState}`, retryAfterMs: 5_000 };
+    }
+    if (this.backendCreatedAtMs != null && this.deferStartupHoldMs > 0) {
+      const sinceStartMs = Date.now() - this.backendCreatedAtMs;
+      if (sinceStartMs < this.deferStartupHoldMs) {
+        const retryAfterMs = this.deferStartupHoldMs - sinceStartMs;
+        return { ready: false, reason: "agent backend startup hold", retryAfterMs };
+      }
+    }
+    return { ready: true };
+  }
+
+  /** Ask the backend whether its RPC channel still answers; a failed probe triggers disconnect recovery. */
+  async probeBackendHealth(reason: string): Promise<boolean> {
+    const backend = this.backend;
+    if (!backend) return false;
+    if (typeof backend.probeHealth !== "function") return true;
+    try {
+      return await backend.probeHealth(undefined, reason);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Fail every in-flight run locally with `message`. Used when the backend
+   * is known to be dead (nothing will ever answer) and for forced restarts.
+   * Returns the interrupted runs so callers can decide what to resume.
+   */
+  failAllActiveRuns(message: string): Array<{
+    sessionId: string;
+    promptAccepted: boolean;
+    attentionMode: "normal" | "quiet";
+  }> {
+    const interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }> = [];
+    const records = this.runStateController.getRunRecords();
+    for (const [sessionId, controller] of [...this.activeRunControllers]) {
+      if (controller.isCompleted()) continue;
+      const record = records.get(sessionId);
+      interrupted.push({
+        sessionId,
+        promptAccepted: record?.promptAccepted === true,
+        attentionMode: record?.attentionMode === "quiet" ? "quiet" : "normal",
+      });
+      try {
+        controller.completeError(message);
+      } catch (error) {
+        console.error(`[sdk] [${sessionId.slice(0, 8)}] Failed to fail the active run locally:`, error);
+      }
+    }
+    return interrupted;
+  }
+
+  private handleBackendDisconnect(backend: AgentBackend, info: AgentBackendDisconnect): void {
+    if (this.shuttingDown) return;
+    if (this.backend !== backend) {
+      console.warn(`[sdk] Ignoring disconnect from a superseded agent backend (${info.reason})`);
+      return;
+    }
+    this.backendDisconnectCount += 1;
+    this.lastBackendDisconnect = info;
+    this.backendLifecycleState = "disconnected";
+    const cachedSessions = this.sessionObjects.size;
+    console.error(
+      `[sdk] ❌ Agent backend RPC channel lost (${info.reason}${info.detail ? `: ${info.detail}` : ""}); `
+      + `failing ${this.activeRunControllers.size} in-flight run(s), dropping ${cachedSessions} cached session(s), and restarting the backend`,
+    );
+
+    const interrupted = this.failAllActiveRuns(BACKEND_DISCONNECTED_MESSAGE);
+    this.lastInterruptedSessionCount = interrupted.length;
+    this.recordSpan("backend.disconnect", 0, undefined, {
+      reason: info.reason,
+      detail: info.detail,
+      interruptedRuns: interrupted.length,
+      cachedSessions,
+      disconnectCount: this.backendDisconnectCount,
+    });
+    this.emitBackendStatus();
+
+    this.scheduleCacheOperation(
+      this.dropCachedSessionsForLostBackend(),
+      "dropping cached sessions after a backend disconnect",
+    );
+    void this.recoverBackendAfterDisconnect(backend, interrupted, 0);
+  }
+
+  /**
+   * Forget every cached session handle without talking to the backend: the
+   * runtime that owned them is gone (or about to be killed), so disconnect
+   * RPCs would only hang. Cleanup ownership records are released the same
+   * way so they do not count against capacity forever.
+   */
+  private dropCachedSessionsForLostBackend(): Promise<void> {
+    return this.enqueueCache("backend-lost", undefined, () => {
+      let dropped = 0;
+      for (const [id] of [...this.sessionObjects]) {
+        if (this.removeReadySessionUnsafe(id)) dropped += 1;
+      }
+      let releasedCleanups = 0;
+      for (const [session, record] of [...this.cleanupOwnership]) {
+        this.cleanupOwnership.delete(session);
+        this.agentRegistry.forgetIfOwnedBy(record.sessionId, session);
+        releasedCleanups += 1;
+      }
+      this.pendingSessionEvictions.clear();
+      this.slashCommandListCache.clear();
+      this.notifySessionCapacityChanged();
+      this.invalidateSessionListCache("backend:disconnected");
+      console.warn(`[sdk] Dropped ${dropped} cached session handle(s) and ${releasedCleanups} pending cleanup(s) owned by the lost backend`);
+    });
+  }
+
+  private async recoverBackendAfterDisconnect(
+    deadBackend: AgentBackend,
+    interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }>,
+    attempt: number,
+  ): Promise<void> {
+    if (this.shuttingDown) return;
+    if (this.backendRotation) {
+      try {
+        await this.backendRotation;
+      } catch { /* the rotation owner reports its own failure */ }
+      if (this.backend && this.backend !== deadBackend) return;
+    }
+
+    this.backendLifecycleState = "reconnecting";
+    this.emitBackendStatus();
+    const startedAt = Date.now();
+    const rotation = (async (): Promise<AgentBackend> => {
+      if (this.backend === deadBackend) this.backend = null;
+      this.backendCreatedAtMs = null;
+      console.warn(`[sdk] Recovering agent backend after disconnect (attempt ${attempt + 1})...`);
+      const stopOutcome = await settleByDeadline(
+        () => Promise.resolve(typeof deadBackend.forceStop === "function" ? deadBackend.forceStop() : deadBackend.stop()),
+        createDeadline(BACKEND_RECOVERY_FORCE_STOP_TIMEOUT_MS),
+      );
+      if (stopOutcome.status !== "fulfilled") {
+        console.error(
+          `[sdk] Force-stopping the lost agent backend ${stopOutcome.status === "timed-out" ? "timed out" : "failed"}`
+          + `${stopOutcome.status === "rejected" ? `: ${stopOutcome.error instanceof Error ? stopOutcome.error.message : String(stopOutcome.error)}` : ""}`,
+        );
+      }
+      if (this.shuttingDown) throw new Error("shutting down");
+
+      const nextBackend = this.createBackend();
+      try {
+        await withModelRefreshClientRotationTimeout(
+          MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.startNext,
+          nextBackend.start(),
+        );
+      } catch (error) {
+        this.forceStopTimedOutBackend(nextBackend, "starting the replacement client");
+        throw error;
+      }
+      this.backend = nextBackend;
+      this.backendCreatedAtMs = Date.now();
+      this.backendRecoveryCount += 1;
+      this.lastBackendRecoveryAtMs = this.backendCreatedAtMs;
+      this.lastBackendRecoveryError = null;
+      this.attachBackendLifecycle(nextBackend);
+      console.warn(`[sdk] ✅ Agent backend recovered after disconnect (${Date.now() - startedAt}ms, attempt ${attempt + 1})`);
+      this.recordSpan("backend.recover", Date.now() - startedAt, undefined, {
+        outcome: "recovered",
+        attempt: attempt + 1,
+        reason: this.lastBackendDisconnect?.reason,
+      });
+      return nextBackend;
+    })();
+
+    this.backendRotation = rotation;
+    let recovered: AgentBackend | undefined;
+    try {
+      recovered = await rotation;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastBackendRecoveryError = message;
+      this.backendLifecycleState = "disconnected";
+      console.error(`[sdk] Agent backend recovery attempt ${attempt + 1} failed: ${message}`);
+      this.recordSpan("backend.recover", Date.now() - startedAt, undefined, {
+        outcome: "failed",
+        attempt: attempt + 1,
+        error: message,
+      });
+    } finally {
+      if (this.backendRotation === rotation) this.backendRotation = null;
+    }
+    this.emitBackendStatus();
+
+    if (!recovered) {
+      if (this.shuttingDown) return;
+      const delayMs = Math.min(
+        BACKEND_RECOVERY_RETRY_INITIAL_MS * Math.pow(2, attempt),
+        BACKEND_RECOVERY_RETRY_MAX_MS,
+      );
+      console.error(`[sdk] Retrying agent backend recovery in ${Math.round(delayMs / 1000)}s`);
+      this.backendRecoveryRetryTimer = setTimeout(() => {
+        this.backendRecoveryRetryTimer = null;
+        void this.recoverBackendAfterDisconnect(deadBackend, interrupted, attempt + 1);
+      }, delayMs);
+      this.backendRecoveryRetryTimer.unref?.();
+      return;
+    }
+
+    this.lastAutoResumedSessionCount = await this.autoResumeInterruptedRuns(interrupted);
+    this.emitBackendStatus();
+  }
+
+  /**
+   * Re-send a continue prompt to interactive sessions whose accepted turn was
+   * cut off by the disconnect. Quiet defer turns are skipped (the loop fires
+   * again on its own) and each session is resumed at most once per cooldown
+   * window so a backend that dies on the same prompt cannot loop.
+   */
+  private async autoResumeInterruptedRuns(
+    interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }>,
+  ): Promise<number> {
+    let resumed = 0;
+    for (const run of interrupted) {
+      if (this.shuttingDown) break;
+      const sid = run.sessionId.slice(0, 8);
+      const skipReason = !run.promptAccepted
+        ? "prompt_not_accepted"
+        : run.attentionMode === "quiet"
+          ? "quiet_turn"
+          : (() => {
+              const lastAt = this.backendAutoResumeAt.get(run.sessionId);
+              return lastAt !== undefined && Date.now() - lastAt < BACKEND_AUTO_RESUME_COOLDOWN_MS ? "cooldown" : undefined;
+            })();
+      if (skipReason) {
+        this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "skipped", reason: skipReason });
+        continue;
+      }
+      const idleDeadline = createDeadline(BACKEND_AUTO_RESUME_IDLE_WAIT_MS);
+      while (this.isSessionBusy(run.sessionId) && remainingMs(idleDeadline) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(250, remainingMs(idleDeadline))));
+      }
+      if (this.isSessionBusy(run.sessionId)) {
+        console.warn(`[sdk] [${sid}] Skipping backend-recovery resume: session is still busy`);
+        this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "skipped", reason: "still_busy" });
+        continue;
+      }
+      try {
+        this.backendAutoResumeAt.set(run.sessionId, Date.now());
+        this.startWork(run.sessionId, BACKEND_RECOVERY_CONTINUE_PROMPT, undefined, { completionAttention: true });
+        resumed += 1;
+        console.warn(`[sdk] [${sid}] Re-sent continue prompt after backend recovery`);
+        this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "resumed" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[sdk] [${sid}] Backend-recovery resume failed: ${message}`);
+        this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "failed", error: message });
+      }
+    }
+    return resumed;
   }
 
   private async rotateBackendForModelRefresh(): Promise<AgentBackend> {
@@ -2809,6 +3184,8 @@ export class SessionManager {
     const rotation = Promise.resolve().then(async () => {
       await this.evictAllCachedSessions();
       console.log("[sdk] Rotating agent backend for model refresh...");
+      this.backendDisconnectUnsubscribe?.();
+      this.backendDisconnectUnsubscribe = null;
       this.backend = null;
       try {
         await withModelRefreshClientRotationTimeout(
@@ -2842,6 +3219,7 @@ export class SessionManager {
             previousBackend.start(),
           );
           this.backend = previousBackend;
+          this.attachBackendLifecycle(previousBackend);
           console.warn("[sdk] Model refresh backend rotation failed; restored previous agent backend");
         } catch (restoreError) {
           this.backend = null;
@@ -2856,6 +3234,7 @@ export class SessionManager {
       }
       this.backend = nextClient;
       this.backendCreatedAtMs = Date.now();
+      this.attachBackendLifecycle(nextClient);
       console.log("[sdk] Agent backend rotated for model refresh");
       return nextClient;
     });
@@ -2873,9 +3252,16 @@ export class SessionManager {
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing agent backend...");
     configureRestartActiveSessionCountProvider(() => this.getLifecycleBlockingSessionCount());
-    this.backend = this.createBackend();
-    await this.backend.start();
+    const backend = this.createBackend();
+    this.backend = backend;
+    try {
+      await backend.start();
+    } catch (error) {
+      this.backend = null;
+      throw error;
+    }
     this.backendCreatedAtMs = Date.now();
+    this.attachBackendLifecycle(backend);
     console.log("[sdk] Agent backend ready");
     this.sweepLeakedDisposableTitleSessions();
   }
@@ -3856,8 +4242,9 @@ export class SessionManager {
 
   // Abort an in-progress session turn. Shutdown callers pass their shared
   // absolute deadline so a hung SDK abort is finalized locally and cannot
-  // block the remainder of process teardown.
-  async abortSession(sessionId: string, deadline?: Deadline): Promise<boolean> {
+  // block the remainder of process teardown. Every other caller gets a
+  // bounded default so an HTTP abort never waits on a dead backend channel.
+  async abortSession(sessionId: string, deadline: Deadline = createDeadline(ABORT_REQUEST_TIMEOUT_MS)): Promise<boolean> {
     if (!this.runStateController.hasSessionRun(sessionId)) return false;
 
     const runController = this.activeRunControllers.get(sessionId);
@@ -3889,44 +4276,34 @@ export class SessionManager {
     const sid = sessionId.slice(0, 8);
     console.log(`[sdk] [${sid}] 🛑 Aborting session...`);
     try {
-      if (deadline) {
-        const abortResult = await settleByDeadline(() => session.abort(), deadline);
-        if (abortResult.status === "timed-out") {
-          console.error(`[sdk] [${sid}] 🛑 Abort timed out; resolving locally`);
-          this.completeSessionAbortLocally(sessionId, getAbortContent());
-          return true;
-        }
-        if (abortResult.status === "rejected") throw abortResult.error;
-      } else {
-        await session.abort();
+      const abortResult = await settleByDeadline(() => session.abort(), deadline);
+      if (abortResult.status === "timed-out") {
+        console.error(`[sdk] [${sid}] 🛑 Abort timed out; resolving locally and probing the backend channel`);
+        this.completeSessionAbortLocally(sessionId, getAbortContent());
+        if (!this.shuttingDown) void this.probeBackendHealth("abort-timeout");
+        return true;
       }
+      if (abortResult.status === "rejected") throw abortResult.error;
       console.log(`[sdk] [${sid}] 🛑 Abort sent`);
-      if (deadline) {
-        const confirmationDeadline = capDeadline(
-          deadline,
-          Math.min(ABORT_CONFIRMATION_TIMEOUT_MS, remainingMs(deadline)),
-        );
-        const confirmation = await settleByDeadline(
-          () => runController.awaitAbortConfirmation(
-            Math.max(1, remainingMs(confirmationDeadline)),
-            getAbortContent,
-            getAbortAssistantSourceEventId,
-          ),
-          confirmationDeadline,
-        );
-        if (confirmation.status !== "fulfilled") {
-          this.completeSessionAbortLocally(sessionId, getAbortContent());
-        }
-      } else {
-        await runController.awaitAbortConfirmation(
-          ABORT_CONFIRMATION_TIMEOUT_MS,
+      const confirmationDeadline = capDeadline(
+        deadline,
+        Math.min(ABORT_CONFIRMATION_TIMEOUT_MS, remainingMs(deadline)),
+      );
+      const confirmation = await settleByDeadline(
+        () => runController.awaitAbortConfirmation(
+          Math.max(1, remainingMs(confirmationDeadline)),
           getAbortContent,
           getAbortAssistantSourceEventId,
-        );
+        ),
+        confirmationDeadline,
+      );
+      if (confirmation.status !== "fulfilled") {
+        this.completeSessionAbortLocally(sessionId, getAbortContent());
       }
     } catch (err) {
       console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);
       this.completeSessionAbortLocally(sessionId, getAbortContent());
+      if (!this.shuttingDown && isTransientBackendError(err)) void this.probeBackendHealth("abort-failed");
     }
     return true;
   }
@@ -4503,6 +4880,12 @@ export class SessionManager {
   ): Promise<void> {
     this.shuttingDown = true;
     this.stopSessionCacheSweep();
+    this.backendDisconnectUnsubscribe?.();
+    this.backendDisconnectUnsubscribe = null;
+    if (this.backendRecoveryRetryTimer) {
+      clearTimeout(this.backendRecoveryRetryTimer);
+      this.backendRecoveryRetryTimer = null;
+    }
     const active = this.getActiveSessions();
     if (active.length > 0) {
       console.log(`[sdk] Graceful shutdown: aborting ${active.length} active session(s)...`);
@@ -4603,6 +4986,7 @@ export class SessionManager {
       this.backend = null;
       this.backendCreatedAtMs = null;
     }
+    this.backendLifecycleState = "stopped";
     this.agentRegistry.dispose();
     console.log("[sdk] Graceful shutdown complete");
   }

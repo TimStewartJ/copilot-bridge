@@ -413,6 +413,30 @@ export type AgentSessionSummary = {
   sessionId: string;
 } & Record<string, unknown>;
 
+/** Why the backend considers its RPC channel lost. */
+export type AgentBackendDisconnectReason =
+  | "connection-closed"
+  | "connection-error"
+  | "process-exit"
+  | "stdin-error"
+  | "rpc-timeout"
+  | "health-probe-failed";
+
+export interface AgentBackendDisconnect {
+  /** ISO timestamp of detection. */
+  at: string;
+  reason: AgentBackendDisconnectReason;
+  detail?: string;
+}
+
+export interface AgentBackendConnectionStatus {
+  /** Transport state as reported by the underlying SDK client. */
+  state: "connected" | "connecting" | "disconnected" | "error" | "unknown";
+  /** Child runtime process id when the backend spawned one. */
+  pid?: number;
+  lastDisconnect?: AgentBackendDisconnect;
+}
+
 /**
  * Backend handle that owns a coding-agent SDK client process and exposes
  * the operations Bridge uses to manage sessions.
@@ -439,6 +463,24 @@ export interface AgentBackend {
 
   /** Force-stop. Optional because not every SDK exposes one. */
   forceStop?(): Promise<unknown>;
+
+  /**
+   * Subscribe to the loss of the backend RPC channel (connection closed,
+   * runtime process exited, or an RPC timed out and a liveness probe failed).
+   * Fires at most once per backend instance and never for an intentional
+   * stop. Returns an unsubscribe function.
+   */
+  onDisconnect?(handler: (info: AgentBackendDisconnect) => void): () => void;
+
+  /** Current transport state for health reporting. */
+  getConnectionStatus?(): AgentBackendConnectionStatus;
+
+  /**
+   * Cheap liveness probe of the RPC channel. Resolves false when the channel
+   * is not connected or does not answer within `timeoutMs`; a failed probe
+   * also fires `onDisconnect`.
+   */
+  probeHealth?(timeoutMs?: number, reason?: string): Promise<boolean>;
 
   /** List models available to the active backend account/subscription. */
   listModels(): Promise<AgentModelInfo[]>;

@@ -16,6 +16,8 @@ export interface SessionRunRecord {
   stalledAt?: number;
   pendingPrompt?: string;
   promptAccepted?: boolean;
+  /** "quiet" for automated defer turns; drives whether a backend recovery re-sends a continue prompt. */
+  attentionMode?: "normal" | "quiet";
 }
 
 export interface SessionRunController {
@@ -306,7 +308,7 @@ export class SessionRunStateController {
   setSessionRunMetadata(
     sessionId: string,
     metadata: Partial<Pick<SessionRunRecord,
-      "pendingPrompt" | "promptAccepted"
+      "pendingPrompt" | "promptAccepted" | "attentionMode"
     >>,
   ): void {
     const current = this.sessionRuns.get(sessionId);

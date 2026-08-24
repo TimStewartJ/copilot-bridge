@@ -17,8 +17,12 @@ import {
   CopilotClient,
 } from "@github/copilot-sdk";
 
+import { boundRpc, type AgentRpcName } from "./rpc-timeouts.js";
 import type {
   AgentBackend,
+  AgentBackendConnectionStatus,
+  AgentBackendDisconnect,
+  AgentBackendDisconnectReason,
   AgentBackgroundTask,
   AgentCapabilities,
   AgentCurrentModel,
@@ -167,37 +171,46 @@ function normalizeCopilotSlashCommandResult(result: any): AgentSlashCommandResul
   }
 }
 
+/** Shared RPC guard so session- and backend-scoped calls report into one disconnect detector. */
+interface CopilotRpcGuard {
+  <T>(rpc: AgentRpcName, operation: () => Promise<T>): Promise<T>;
+}
+
 /**
  * Wraps a CopilotSession so the rest of the Bridge talks to AgentSession.
  * Method signatures intentionally mirror the SDK 1:1 — every typed method
  * delegates to the underlying rpc namespace, returning `undefined` when
- * the namespace is missing on older SDK builds.
+ * the namespace is missing on older SDK builds. Every RPC the Bridge waits
+ * on is bounded by {@link boundRpc}; a timeout feeds the backend's liveness
+ * probe so a dead channel is detected instead of hanging callers forever.
  */
 class CopilotAgentSession implements AgentSession {
-  constructor(private readonly session: any) {}
+  constructor(private readonly session: any, private readonly rpc: CopilotRpcGuard) {}
 
   get sessionId(): string {
     return this.session.sessionId;
   }
 
   send(args: AgentSendArgs): Promise<unknown> {
-    return this.session.send(args);
+    return this.rpc("session.send", () => this.session.send(args));
   }
 
   sendAndWait(args: AgentSendArgs, timeoutMs?: number): Promise<unknown> {
+    // Waits for the whole turn; callers own the timeout.
     return this.session.sendAndWait(args, timeoutMs);
   }
 
   abort(): Promise<unknown> {
-    return this.session.abort();
+    return this.rpc("session.abort", () => this.session.abort());
   }
 
   setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown> {
-    return this.session.setModel(model, opts);
+    return this.rpc("session.setModel", () => this.session.setModel(model, opts));
   }
 
   disconnect(): Promise<unknown> | void {
-    return this.session.disconnect?.();
+    if (typeof this.session.disconnect !== "function") return undefined;
+    return this.rpc("session.destroy", () => Promise.resolve(this.session.disconnect()));
   }
 
   on(handler: AgentSessionEventHandler): () => void {
@@ -209,7 +222,7 @@ class CopilotAgentSession implements AgentSession {
     if (typeof handle !== "function") {
       throw new Error("Pending user input responses are not available in this Copilot SDK build");
     }
-    const result = await handle.call(this.session.rpc.ui, { requestId, response });
+    const result = await this.rpc("session.respondToUserInput", () => handle.call(this.session.rpc.ui, { requestId, response }));
     return (result as any)?.success === true;
   }
 
@@ -221,7 +234,10 @@ class CopilotAgentSession implements AgentSession {
     if (typeof handle !== "function") {
       throw new Error("Pending elicitation responses are not available in this Copilot SDK build");
     }
-    const result = await handle.call(this.session.rpc.ui, { requestId, result: response });
+    const result = await this.rpc(
+      "session.respondToElicitation",
+      () => handle.call(this.session.rpc.ui, { requestId, result: response }),
+    );
     return (result as any)?.success === true;
   }
 
@@ -230,7 +246,7 @@ class CopilotAgentSession implements AgentSession {
     if (typeof setMode !== "function") {
       throw new Error("Session mode switching is not available in this Copilot SDK build");
     }
-    return setMode.call(this.session.rpc.mode, opts);
+    return this.rpc("session.setSendMode", () => setMode.call(this.session.rpc.mode, opts));
   }
 
   async invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult> {
@@ -238,52 +254,52 @@ class CopilotAgentSession implements AgentSession {
     if (typeof invoke !== "function") {
       throw new Error("Slash command invocation is not available in this agent backend");
     }
-    const result = await invoke.call(this.session.rpc.commands, {
+    const result = await this.rpc("session.invokeSlashCommand", () => invoke.call(this.session.rpc.commands, {
       name: command.name,
       ...(command.input ? { input: command.input } : {}),
-    });
+    }));
     return normalizeCopilotSlashCommandResult(result);
   }
 
   async listSlashCommands(): Promise<AgentSlashCommandList | undefined> {
     const list = this.session?.rpc?.commands?.list;
     if (typeof list !== "function") return undefined;
-    const result = await list.call(this.session.rpc.commands, {
+    const result = await this.rpc("session.listSlashCommands", () => list.call(this.session.rpc.commands, {
       includeBuiltins: true,
       includeSkills: true,
       includeClientCommands: true,
-    });
+    }));
     return normalizeCopilotSlashCommandList(result);
   }
 
   async getCurrentModel(): Promise<AgentCurrentModel | undefined> {
     const get = this.session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
-    return get.call(this.session.rpc.model);
+    return this.rpc("session.getCurrentModel", () => get.call(this.session.rpc.model));
   }
 
   async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {
     const truncate = this.session?.rpc?.history?.truncate;
     if (typeof truncate !== "function") return undefined;
-    return truncate.call(this.session.rpc.history, opts);
+    return this.rpc("session.truncateHistory", () => truncate.call(this.session.rpc.history, opts));
   }
 
   async listMcpServers(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined> {
     const list = this.session?.rpc?.mcp?.list;
     if (typeof list !== "function") return undefined;
-    return list.call(this.session.rpc.mcp);
+    return this.rpc("session.listMcpServers", () => list.call(this.session.rpc.mcp));
   }
 
   async initializeTools(): Promise<unknown> {
     const initialize = this.session?.rpc?.tools?.initializeAndValidate;
     if (typeof initialize !== "function") return undefined;
-    return initialize.call(this.session.rpc.tools);
+    return this.rpc("session.initializeTools", () => initialize.call(this.session.rpc.tools));
   }
 
   async getCurrentToolMetadata(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined> {
     const getCurrent = this.session?.rpc?.tools?.getCurrentMetadata;
     if (typeof getCurrent !== "function") return undefined;
-    return getCurrent.call(this.session.rpc.tools);
+    return this.rpc("session.getCurrentToolMetadata", () => getCurrent.call(this.session.rpc.tools));
   }
 
   async startMcpOauthLogin(opts: AgentMcpOauthLoginOptions): Promise<unknown> {
@@ -291,13 +307,13 @@ class CopilotAgentSession implements AgentSession {
     if (typeof login !== "function") {
       throw new Error("MCP OAuth login is not available in this Copilot SDK build");
     }
-    return login.call(this.session.rpc.mcp.oauth, opts);
+    return this.rpc("session.startMcpOauthLogin", () => login.call(this.session.rpc.mcp.oauth, opts));
   }
 
   async getName(): Promise<{ name?: string } | undefined> {
     const get = this.session?.rpc?.name?.get;
     if (typeof get !== "function") return undefined;
-    return get.call(this.session.rpc.name);
+    return this.rpc("session.getName", () => get.call(this.session.rpc.name));
   }
 
   async setName(opts: { name: string }): Promise<unknown> {
@@ -305,13 +321,13 @@ class CopilotAgentSession implements AgentSession {
     if (typeof set !== "function") {
       throw new Error("Session name RPC is not available in this Copilot SDK build");
     }
-    return set.call(this.session.rpc.name, opts);
+    return this.rpc("session.setName", () => set.call(this.session.rpc.name, opts));
   }
 
   async listTasks(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined> {
     const list = this.session?.rpc?.tasks?.list;
     if (typeof list !== "function") return undefined;
-    const result = await list.call(this.session.rpc.tasks);
+    const result = await this.rpc("session.listTasks", () => list.call(this.session.rpc.tasks));
     const rawTasks = Array.isArray((result as any)?.tasks) ? (result as any).tasks : [];
     return { tasks: rawTasks.map(mapCopilotTaskInfo) };
   }
@@ -319,14 +335,14 @@ class CopilotAgentSession implements AgentSession {
   async cancelTask(id: string): Promise<{ cancelled: boolean } | undefined> {
     const cancel = this.session?.rpc?.tasks?.cancel;
     if (typeof cancel !== "function") return undefined;
-    const result = await cancel.call(this.session.rpc.tasks, { id });
+    const result = await this.rpc("session.cancelTask", () => cancel.call(this.session.rpc.tasks, { id }));
     return { cancelled: Boolean((result as any)?.cancelled) };
   }
 
   async removeTask(id: string): Promise<{ removed: boolean } | undefined> {
     const remove = this.session?.rpc?.tasks?.remove;
     if (typeof remove !== "function") return undefined;
-    const result = await remove.call(this.session.rpc.tasks, { id });
+    const result = await this.rpc("session.removeTask", () => remove.call(this.session.rpc.tasks, { id }));
     return { removed: Boolean((result as any)?.removed) };
   }
 
@@ -358,70 +374,228 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   return { sdkConfig, pendingInteractionEvents };
 }
 
-function wrapCopilotSession(session: any, pendingInteractionEvents: boolean): AgentSession {
+function wrapCopilotSession(session: any, pendingInteractionEvents: boolean, rpc: CopilotRpcGuard): AgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
     // event interest during create/resume. Remove it before exposing the
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session);
+  return new CopilotAgentSession(session, rpc);
+}
+
+function formatDisconnectDetail(error: unknown): string | undefined {
+  if (error === undefined || error === null) return undefined;
+  if (error instanceof Error) return error.message;
+  if (Array.isArray(error)) {
+    const [first] = error;
+    return first instanceof Error ? first.message : first === undefined ? undefined : String(first);
+  }
+  return String(error);
 }
 
 /**
  * Wraps a CopilotClient as an AgentBackend. Constructor takes a
  * pre-built client so the factory can apply env / options resolution
  * in one place.
+ *
+ * Besides delegating, the backend watches the transport the SDK leaves
+ * unobserved: the JSON-RPC connection close/error events, the runtime child
+ * exiting, and stdin pipe errors. The SDK itself only flips `client.state`
+ * on those, so without this every pending and future RPC would hang forever.
  */
 export class CopilotBackend implements AgentBackend {
   readonly id = "copilot" as const;
   readonly capabilities: AgentCapabilities = COPILOT_CAPABILITIES;
   readonly permissionPolicy: AgentPermissionPolicy = approveAll;
 
-  constructor(private readonly client: CopilotClient) {}
+  private readonly disconnectHandlers = new Set<(info: AgentBackendDisconnect) => void>();
+  private lastDisconnect: AgentBackendDisconnect | undefined;
+  private stopping = false;
+  private detachTransportWatchers: (() => void) | undefined;
+  private healthProbe: Promise<boolean> | undefined;
+  private readonly logger: Pick<Console, "warn" | "error">;
 
-  start(): Promise<unknown> {
-    return this.client.start();
+  constructor(private readonly client: CopilotClient, options: { logger?: Pick<Console, "warn" | "error"> } = {}) {
+    this.logger = options.logger ?? console;
+  }
+
+  private readonly rpc: CopilotRpcGuard = (name, operation) => boundRpc(name, operation, {
+    onTimeout: (rpc, timeoutMs) => {
+      this.logger.warn(`[copilot-backend] RPC ${rpc} timed out after ${timeoutMs}ms; probing backend liveness`);
+      void this.probeHealth(undefined, `rpc-timeout:${rpc}`);
+    },
+  });
+
+  async start(): Promise<unknown> {
+    const result = await this.client.start();
+    this.attachTransportWatchers();
+    return result;
   }
 
   stop(): Promise<unknown> {
+    this.stopping = true;
+    this.detachTransportWatchers?.();
     return this.client.stop();
   }
 
   forceStop(): Promise<unknown> {
+    this.stopping = true;
+    this.detachTransportWatchers?.();
     const fn = (this.client as any).forceStop;
     if (typeof fn !== "function") return Promise.resolve();
     return fn.call(this.client);
   }
 
+  onDisconnect(handler: (info: AgentBackendDisconnect) => void): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => {
+      this.disconnectHandlers.delete(handler);
+    };
+  }
+
+  getConnectionStatus(): AgentBackendConnectionStatus {
+    const client = this.client as any;
+    const rawState = typeof client.state === "string" ? client.state : "unknown";
+    const state: AgentBackendConnectionStatus["state"] = this.lastDisconnect
+      ? "disconnected"
+      : rawState === "connected" || rawState === "connecting" || rawState === "disconnected" || rawState === "error"
+        ? rawState
+        : "unknown";
+    const pid = client.cliProcess?.pid;
+    return {
+      state,
+      ...(typeof pid === "number" ? { pid } : {}),
+      ...(this.lastDisconnect ? { lastDisconnect: this.lastDisconnect } : {}),
+    };
+  }
+
+  /**
+   * Ping the runtime over the RPC channel. Coalesces concurrent probes. A
+   * failed probe marks the backend disconnected (once) so every caller sees
+   * the same outcome.
+   */
+  probeHealth(timeoutMs?: number, reason = "health-probe"): Promise<boolean> {
+    if (this.healthProbe) return this.healthProbe;
+    const probe = (async (): Promise<boolean> => {
+      if (this.stopping) return false;
+      if (this.lastDisconnect) return false;
+      const client = this.client as any;
+      if (client.state !== "connected" || !client.connection) {
+        this.emitDisconnect("health-probe-failed", `${reason}: client state is ${String(client.state)}`);
+        return false;
+      }
+      try {
+        await boundRpc("backend.ping", () => client.ping("bridge-health"), {}, timeoutMs);
+        return true;
+      } catch (error) {
+        if (this.stopping) return false;
+        const detail = error instanceof Error ? error.message : String(error);
+        this.emitDisconnect(
+          reason.startsWith("rpc-timeout") ? "rpc-timeout" : "health-probe-failed",
+          `${reason}: ${detail}`,
+        );
+        return false;
+      }
+    })();
+    this.healthProbe = probe;
+    void probe.finally(() => {
+      if (this.healthProbe === probe) this.healthProbe = undefined;
+    });
+    return probe;
+  }
+
+  private attachTransportWatchers(): void {
+    this.detachTransportWatchers?.();
+    const client = this.client as any;
+    const disposers: Array<() => void> = [];
+    const connection = client.connection;
+    if (connection && typeof connection.onClose === "function") {
+      const closeDisposable = connection.onClose(() => {
+        this.emitDisconnect("connection-closed", "JSON-RPC connection closed");
+      });
+      disposers.push(() => closeDisposable?.dispose?.());
+    }
+    if (connection && typeof connection.onError === "function") {
+      const errorDisposable = connection.onError((error: unknown) => {
+        // Reader errors do not always end the stream; confirm with a probe
+        // instead of declaring the backend dead on a single bad frame.
+        this.logger.warn(`[copilot-backend] JSON-RPC connection error: ${formatDisconnectDetail(error) ?? "unknown"}`);
+        void this.probeHealth(undefined, "connection-error");
+      });
+      disposers.push(() => errorDisposable?.dispose?.());
+    }
+    const child = client.cliProcess;
+    if (child && typeof child.once === "function") {
+      const onExit = (code: number | null, signal: string | null) => {
+        this.emitDisconnect("process-exit", `runtime process exited (code=${code ?? "null"}, signal=${signal ?? "null"})`);
+      };
+      child.once("exit", onExit);
+      disposers.push(() => child.off?.("exit", onExit));
+      const stdin = child.stdin;
+      if (stdin && typeof stdin.on === "function") {
+        const onStdinError = (error: unknown) => {
+          this.emitDisconnect("stdin-error", `stdin pipe error: ${formatDisconnectDetail(error) ?? "unknown"}`);
+        };
+        stdin.on("error", onStdinError);
+        disposers.push(() => stdin.off?.("error", onStdinError));
+      }
+    }
+    this.detachTransportWatchers = () => {
+      for (const dispose of disposers) {
+        try { dispose(); } catch { /* best-effort */ }
+      }
+      this.detachTransportWatchers = undefined;
+    };
+  }
+
+  private emitDisconnect(reason: AgentBackendDisconnectReason, detail?: string): void {
+    if (this.stopping || this.lastDisconnect) return;
+    const info: AgentBackendDisconnect = {
+      at: new Date().toISOString(),
+      reason,
+      ...(detail ? { detail } : {}),
+    };
+    this.lastDisconnect = info;
+    this.detachTransportWatchers?.();
+    this.logger.error(`[copilot-backend] Backend RPC channel lost (${reason}${detail ? `: ${detail}` : ""})`);
+    for (const handler of [...this.disconnectHandlers]) {
+      try {
+        handler(info);
+      } catch (error) {
+        this.logger.error("[copilot-backend] Disconnect handler failed:", error);
+      }
+    }
+  }
+
   async listModels(): Promise<AgentModelInfo[]> {
-    const models = await this.client.listModels();
+    const models = await this.rpc("backend.listModels", () => this.client.listModels());
     return models as AgentModelInfo[];
   }
 
   async listSessions(): Promise<AgentSessionSummary[]> {
-    const sessions = await this.client.listSessions();
+    const sessions = await this.rpc("backend.listSessions", () => this.client.listSessions());
     return sessions as unknown as AgentSessionSummary[];
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);
-    return wrapCopilotSession(session, prepared.pendingInteractionEvents);
+    return wrapCopilotSession(session, prepared.pendingInteractionEvents, this.rpc);
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
-    return wrapCopilotSession(session, prepared.pendingInteractionEvents);
+    return wrapCopilotSession(session, prepared.pendingInteractionEvents, this.rpc);
   }
 
   deleteSession(sessionId: string): Promise<unknown> {
-    return this.client.deleteSession(sessionId) as Promise<unknown>;
+    return this.rpc("backend.deleteSession", () => this.client.deleteSession(sessionId) as Promise<unknown>);
   }
 
   getSessionMetadata(sessionId: string): Promise<unknown> {
-    return this.client.getSessionMetadata(sessionId) as Promise<unknown>;
+    return this.rpc("backend.getSessionMetadata", () => this.client.getSessionMetadata(sessionId) as Promise<unknown>);
   }
 
   async forkSession(
@@ -435,7 +609,7 @@ export class CopilotBackend implements AgentBackend {
     const params = opts?.toEventId
       ? { sessionId: sourceSessionId, toEventId: opts.toEventId }
       : { sessionId: sourceSessionId };
-    return fork.call((this.client as any).rpc.sessions, params);
+    return this.rpc("backend.forkSession", () => fork.call((this.client as any).rpc.sessions, params));
   }
 
   async getAccountQuota(): Promise<unknown> {
@@ -444,7 +618,7 @@ export class CopilotBackend implements AgentBackend {
     if (typeof getQuota !== "function") {
       throw new Error("Account quota lookup is not available in this Copilot SDK build");
     }
-    return getQuota.call(account, {});
+    return this.rpc("backend.getAccountQuota", () => getQuota.call(account, {}));
   }
 
   async getAccountAuth(): Promise<unknown> {
@@ -453,6 +627,6 @@ export class CopilotBackend implements AgentBackend {
     if (typeof getCurrentAuth !== "function") {
       throw new Error("Account auth lookup is not available in this Copilot SDK build");
     }
-    return getCurrentAuth.call(account);
+    return this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account));
   }
 }
