@@ -14,9 +14,6 @@ import {
   refreshRestartState,
   triggerRestartPending,
 } from "../session-manager.js";
-import {
-  requiresSignedThinkingSafeResume,
-} from "../session-runner.js";
 import { waitForAllRestartStateWritesForTests } from "../restart-controller.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -151,171 +148,6 @@ describe("SessionManager run state", () => {
     vi.useRealTimers();
   });
 
-  it("identifies Claude signed-thinking sessions", () => {
-    expect(requiresSignedThinkingSafeResume("claude-sonnet-5")).toBe(true);
-    expect(requiresSignedThinkingSafeResume(" CLAUDE-OPUS-5 ")).toBe(true);
-    expect(requiresSignedThinkingSafeResume("gpt-5.6-sol")).toBe(false);
-  });
-
-  it("cold-resumes a cached Claude session before sending another prompt", async () => {
-    const sessionId = "session-claude-safe-resume";
-    const { manager } = createManager();
-    const cached = makeSession();
-    const resumed = makeSession();
-    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
-      modelId: "claude-sonnet-5",
-      reasoningEffort: "xhigh",
-    });
-    cached.session.getEvents = vi.fn().mockResolvedValue([
-      { type: "assistant.message", data: { content: "previous response" } },
-    ]);
-    cached.session.listTasks = vi.fn().mockResolvedValue({ tasks: [] });
-    cached.session.disconnect = vi.fn().mockResolvedValue(undefined);
-    manager.sessionObjects.set(sessionId, cached.session);
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(resumed.session),
-    };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-
-    expect(cached.session.send).not.toHaveBeenCalled();
-    expect(cached.session.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.backend.resumeSession).toHaveBeenCalledWith(
-      sessionId,
-      expect.any(Object),
-    );
-    expect(resumed.session.send).toHaveBeenCalledWith({ prompt: "hello" });
-
-    resumed.getReleaseSend()?.();
-    await flushMicrotasks();
-    resumed.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 1).toISOString(),
-    });
-    await flushMicrotasks();
-  });
-
-  it("reuses freshly created Claude sessions that do not have conversation history yet", async () => {
-    const sessionId = "session-claude-fresh";
-    const { manager, telemetryStore } = createManager({ telemetry: true });
-    const cached = makeSession();
-    cached.session.getEvents = vi.fn().mockResolvedValue([
-      { type: "session.start", data: { selectedModel: "claude-sonnet-5" } },
-    ]);
-    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
-      modelId: "claude-sonnet-5",
-      reasoningEffort: "xhigh",
-    });
-    manager.sessionObjects.set(sessionId, cached.session);
-    manager.backend = {
-      resumeSession: vi.fn(),
-    };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-
-    expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
-    expect(cached.session.getCurrentModel).toHaveBeenCalledOnce();
-    expect(cached.session.disconnect).not.toHaveBeenCalled();
-    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
-    expect(latestSpanMetadata(telemetryStore, "session.signed_thinking_refresh", sessionId))
-      .toMatchObject({ outcome: "skipped-fresh-session" });
-
-    cached.getReleaseSend()?.();
-    await flushMicrotasks();
-    cached.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 1).toISOString(),
-    });
-    await flushMicrotasks();
-  });
-
-  it("retains cached Claude sessions while a background agent context is tracked", async () => {
-    const sessionId = "session-claude-background-agent";
-    const { manager } = createManager();
-    const cached = makeSession();
-    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
-      modelId: "claude-sonnet-5",
-      reasoningEffort: "xhigh",
-    });
-    cached.session.getEvents = vi.fn().mockResolvedValue([
-      { type: "assistant.message", data: { content: "previous response" } },
-    ]);
-    cached.session.listTasks = vi.fn().mockResolvedValue({
-      tasks: [{
-        kind: "agent",
-        id: "background-agent-1",
-        toolCallId: "tool-1",
-        status: "idle",
-        executionMode: "background",
-      }],
-    });
-    manager.sessionObjects.set(sessionId, cached.session);
-    manager.backend = {
-      resumeSession: vi.fn(),
-    };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-
-    expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
-    expect(cached.session.disconnect).not.toHaveBeenCalled();
-    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
-
-    cached.getReleaseSend()?.();
-    await flushMicrotasks();
-    cached.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 1).toISOString(),
-    });
-    await flushMicrotasks();
-  });
-
-  it("refreshes cached Claude sessions when only finished background tasks remain", async () => {
-    const sessionId = "session-claude-finished-tasks";
-    const { manager } = createManager();
-    const cached = makeSession();
-    const resumed = makeSession();
-    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
-      modelId: "claude-sonnet-5",
-      reasoningEffort: "xhigh",
-    });
-    cached.session.getEvents = vi.fn().mockResolvedValue([
-      { type: "assistant.message", data: { content: "previous response" } },
-    ]);
-    cached.session.listTasks = vi.fn().mockResolvedValue({
-      tasks: [
-        { kind: "agent", id: "done-agent", toolCallId: "tool-1", status: "completed", executionMode: "background" },
-        { kind: "agent", id: "failed-agent", toolCallId: "tool-2", status: "failed", executionMode: "background" },
-      ],
-    });
-    cached.session.disconnect = vi.fn().mockResolvedValue(undefined);
-    manager.sessionObjects.set(sessionId, cached.session);
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(resumed.session),
-    };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-
-    expect(cached.session.send).not.toHaveBeenCalled();
-    expect(cached.session.disconnect).toHaveBeenCalledTimes(1);
-    expect(resumed.session.send).toHaveBeenCalledWith({ prompt: "hello" });
-
-    resumed.getReleaseSend()?.();
-    await flushMicrotasks();
-    resumed.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 1).toISOString(),
-    });
-    await flushMicrotasks();
-  });
-
   it("resumes from disk and continues when Claude rejects a stale thinking signature mid-turn", async () => {
     const sessionId = "session-claude-mid-turn-signature";
     const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
@@ -381,14 +213,12 @@ describe("SessionManager run state", () => {
     expect(bus.getTerminalState()).toMatchObject({ complete: true, terminalType: "error" });
   });
 
-  it("continues reusing cached sessions for models outside the signed-thinking guard", async () => {
-    const sessionId = "session-gpt-cache-reuse";
+  it("reuses cached Claude sessions without pre-send model or history inspection", async () => {
+    const sessionId = "session-claude-cache-reuse";
     const { manager } = createManager();
     const cached = makeSession();
-    cached.session.getCurrentModel = vi.fn().mockResolvedValue({
-      modelId: "gpt-5.6-sol",
-      reasoningEffort: "xhigh",
-    });
+    cached.session.getCurrentModel = vi.fn();
+    cached.session.getEvents = vi.fn();
     manager.sessionObjects.set(sessionId, cached.session);
     manager.backend = {
       resumeSession: vi.fn(),
@@ -398,6 +228,8 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(cached.session.getCurrentModel).not.toHaveBeenCalled();
+    expect(cached.session.getEvents).not.toHaveBeenCalled();
     expect(cached.session.disconnect).not.toHaveBeenCalled();
     expect(manager.backend.resumeSession).not.toHaveBeenCalled();
 

@@ -61,7 +61,6 @@ import {
 } from "./session-context-normalizer.js";
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
-import { readSdkSessionEvents } from "./sdk-session-events.js";
 import {
   getAssistantTurnInstanceId,
   getSdkAgentId,
@@ -266,11 +265,6 @@ export function isStaleAgentSessionError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return /\bSession not found\b/i.test(message);
-}
-
-export function requiresSignedThinkingSafeResume(modelId: unknown): boolean {
-  if (typeof modelId !== "string") return false;
-  return modelId.trim().toLowerCase().startsWith("claude-");
 }
 
 /** Claude rejected a round-tripped `thinking` block whose signature no longer matches the conversation. */
@@ -674,76 +668,6 @@ export class SessionRunner {
     }
 
     let usedCache = false;
-    let checkedSignedThinkingRefresh = false;
-    const refreshSignedThinkingSessionIfNeeded = async (cachedSession: any): Promise<any | undefined> => {
-      if (checkedSignedThinkingRefresh) return cachedSession;
-      checkedSignedThinkingRefresh = true;
-
-      let currentModel;
-      try {
-        currentModel = await cachedSession.getCurrentModel();
-      } catch (error) {
-        const message = getErrorMessage(error);
-        console.warn(`[sdk] [${sid}] Could not inspect cached session model before send: ${message}`);
-        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
-          outcome: "model-inspection-failed",
-          error: message,
-        });
-        return cachedSession;
-      }
-
-      if (!requiresSignedThinkingSafeResume(currentModel?.modelId)) return cachedSession;
-
-      let events;
-      try {
-        events = await readSdkSessionEvents(cachedSession);
-      } catch (error) {
-        const message = getErrorMessage(error);
-        console.warn(`[sdk] [${sid}] Could not inspect cached session history before send: ${message}`);
-        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
-          outcome: "history-inspection-failed",
-          error: message,
-        });
-        return cachedSession;
-      }
-      const hasPriorConversation = events.some((event: any) =>
-        event?.type === "user.message"
-        || event?.type === "assistant.message"
-        || event?.type === "assistant.turn_end");
-      if (!hasPriorConversation) {
-        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
-          outcome: "skipped-fresh-session",
-          model: currentModel.modelId,
-        });
-        return cachedSession;
-      }
-
-      const refreshStart = Date.now();
-      const disposed = await this.deps.tryDisposeIdleCachedSessionForRefresh(
-        sessionId,
-        cachedSession,
-        "refreshing session-bound signed thinking before send",
-      );
-      if (!disposed) {
-        console.warn(
-          `[sdk] [${sid}] Retaining cached ${currentModel.modelId} session because the runtime still reports background tasks`,
-        );
-        this.recordSpan("session.signed_thinking_refresh", 0, sessionId, {
-          outcome: "skipped-background-tasks",
-          model: currentModel.modelId,
-        });
-        return cachedSession;
-      }
-
-      console.warn(
-        `[sdk] [${sid}] Refreshing cached ${currentModel.modelId} session before send to discard session-bound signed thinking`,
-      );
-      this.recordSpan("session.signed_thinking_refresh", Date.now() - refreshStart, sessionId, {
-        outcome: "refreshed",
-        model: currentModel.modelId,
-      });
-      return undefined;
-    };
     const resumeSession = async (): Promise<any> => {
       const resumeStart = Date.now();
       let s = this.deps.sessionObjects.get(sessionId);
@@ -753,9 +677,6 @@ export class SessionRunner {
         if (s) {
           console.log(`[sdk] [${sid}] Session creation completed`);
         }
-      }
-      if (s) {
-        s = await refreshSignedThinkingSessionIfNeeded(s);
       }
       if (s) {
         usedCache = true;
