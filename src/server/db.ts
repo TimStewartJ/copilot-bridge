@@ -935,6 +935,20 @@ function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       completedAt TEXT
     );
+
+    -- Durable event-log stats folds so large session logs resume scanning after restarts
+    CREATE TABLE IF NOT EXISTS event_log_stats_folds (
+      sessionId TEXT NOT NULL,
+      eventsPath TEXT NOT NULL,
+      schemaVersion INTEGER NOT NULL,
+      scannedBytes INTEGER NOT NULL,
+      fingerprint TEXT NOT NULL,
+      fileId TEXT NOT NULL,
+      stateJson TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      PRIMARY KEY (sessionId, eventsPath)
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_log_stats_folds_updated ON event_log_stats_folds(updatedAt);
   `);
 
   // Ordered, idempotent compatibility migrations live in db-migrations.ts so

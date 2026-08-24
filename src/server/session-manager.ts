@@ -147,7 +147,7 @@ import type {
 import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
-  deriveModelStateFromEventsFile,
+  deriveModelStateFromEventsFileAsync,
   type DerivedModelState,
 } from "./session-events-model.js";
 import {
@@ -263,6 +263,12 @@ const BROWSER_SHUTDOWN_TIMEOUT_MS = 1_500;
 const BACKEND_STOP_TIMEOUT_MS = 4_000;
 const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
 const DISCONNECT_TIMEOUT_MS = 5_000;
+/**
+ * Read-only session detail RPCs (current model, slash commands, MCP servers) race the
+ * session's own work for the CLI process. Past this they answer from persisted state so
+ * an HTTP request is never parked behind a resume or a long turn.
+ */
+const SESSION_DETAIL_RPC_TIMEOUT_MS = 5_000;
 /** Refresh disposals run on the user's send path; p99 disconnect is ~6 s, so give them more room than cache cleanup. */
 const REFRESH_DISCONNECT_TIMEOUT_MS = 15_000;
 const REFRESH_TASK_INSPECTION_TIMEOUT_MS = 5_000;
@@ -3557,7 +3563,17 @@ export class SessionManager {
       return { supported: false, commands: [] };
     }
 
-    const result = await session.listSlashCommands();
+    const outcome = await settleByDeadline(
+      () => session.listSlashCommands(),
+      createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
+    );
+    if (outcome.status === "rejected") throw outcome.error;
+    if (outcome.status === "timed-out") {
+      this.recordSpan("session.detail.rpcTimeout", SESSION_DETAIL_RPC_TIMEOUT_MS, sessionId, { rpc: "listSlashCommands" });
+      // Unknown rather than unsupported: the client keeps its cached list and retries later.
+      return { supported: false, commands: [] };
+    }
+    const result = outcome.value;
     if (!result) return { supported: false, commands: [] };
     const commands = result.commands;
     this.slashCommandListCache.set(sessionId, commands);
@@ -3572,11 +3588,30 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (session) {
       const startingSnapshot = cached;
-      const initialized = await this.waitForSessionToolInitialization(sessionId, session);
+      // Bounded for the detail endpoint: a session still initializing tools returns the
+      // partial snapshot now and the client polls again, instead of waiting out the full
+      // tool-initialization budget on the request.
+      const initOutcome = await settleByDeadline(
+        () => this.waitForSessionToolInitialization(sessionId, session),
+        createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
+      );
+      const initialized = initOutcome.status === "fulfilled" && initOutcome.value;
       if (!initialized || this.sessionObjects.get(sessionId) !== session) {
+        if (initOutcome.status === "timed-out") {
+          this.recordSpan("session.detail.rpcTimeout", SESSION_DETAIL_RPC_TIMEOUT_MS, sessionId, { rpc: "toolInitialization" });
+        }
         return this.mcpStatus.get(sessionId)?.servers ?? [];
       }
-      const result = await session.listMcpServers();
+      const listOutcome = await settleByDeadline(
+        () => session.listMcpServers(),
+        createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
+      );
+      if (listOutcome.status === "rejected") throw listOutcome.error;
+      if (listOutcome.status === "timed-out") {
+        this.recordSpan("session.detail.rpcTimeout", SESSION_DETAIL_RPC_TIMEOUT_MS, sessionId, { rpc: "listMcpServers" });
+        return this.mcpStatus.get(sessionId)?.servers ?? [];
+      }
+      const result = listOutcome.value;
       if (result?.servers && this.sessionObjects.get(sessionId) === session) {
         const current = this.mcpStatus.get(sessionId);
         if (current?.complete) return current.servers;
@@ -4762,7 +4797,7 @@ export class SessionManager {
         ? undefined
         : {
             ...persistedState,
-            ...deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId)),
+            ...(await deriveModelStateFromEventsFileAsync(this.getSessionEventsPath(sessionId))),
           };
       const effectiveReasoningEffort = reasoningEffort
         ?? currentBeforeSwitch?.reasoningEffort
@@ -4836,22 +4871,29 @@ export class SessionManager {
   ): Promise<{ model?: string; reasoningEffort?: string; contextTier?: CopilotContextTier; source: "live" | "events" | "unknown" }> {
     const cached = this.sessionObjects.get(sessionId);
     if (cached) {
-      try {
-        const current = await cached.getCurrentModel();
-        if (current?.modelId) {
-          const liveModelId = current.modelId;
-          const contextTier = normalizeCopilotContextTier(current.contextTier);
-          return {
-            model: liveModelId,
-            ...(current.reasoningEffort !== undefined ? { reasoningEffort: current.reasoningEffort } : {}),
-            ...(contextTier !== undefined ? { contextTier } : {}),
-            source: "live",
-          };
-        }
-      } catch { /* best-effort */ }
+      // A session mid-resume or mid-turn can hold this RPC for a long time; the detail
+      // endpoint must answer promptly from persisted state instead of hanging the UI.
+      const outcome = await settleByDeadline(
+        () => cached.getCurrentModel(),
+        createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
+      );
+      if (outcome.status === "fulfilled" && outcome.value?.modelId) {
+        const current = outcome.value;
+        const liveModelId = current.modelId;
+        const contextTier = normalizeCopilotContextTier(current.contextTier);
+        return {
+          model: liveModelId,
+          ...(current.reasoningEffort !== undefined ? { reasoningEffort: current.reasoningEffort } : {}),
+          ...(contextTier !== undefined ? { contextTier } : {}),
+          source: "live",
+        };
+      }
+      if (outcome.status === "timed-out") {
+        this.recordSpan("session.detail.rpcTimeout", SESSION_DETAIL_RPC_TIMEOUT_MS, sessionId, { rpc: "getCurrentModel" });
+      }
     }
 
-    const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
+    const eventsState = await deriveModelStateFromEventsFileAsync(this.getSessionEventsPath(sessionId));
     const persistedState = this.readPersistedSessionModelState(sessionId);
     const mergedEventsState = {
       ...persistedState,

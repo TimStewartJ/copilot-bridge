@@ -43,6 +43,8 @@ import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createSessionManager } from "./session-manager.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
 import { createManagementJobStore } from "./management-job-store.js";
+import { createEventLogStatsFoldStore } from "./event-log-stats-fold-store.js";
+import { setEventLogStatsPersistence } from "./session-disk-reader.js";
 import {
   BridgeToolsMcpServer,
   registerAllBridgeTools,
@@ -103,6 +105,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const copilotUsageStore = createCopilotUsageStore(db);
   const telemetryStore = createTelemetryStore(db);
   const sessionContextStore = createSessionContextStore(db);
+  // Durable fold cache: large session logs resume their stats scan after a restart.
+  setEventLogStatsPersistence(createEventLogStatsFoldStore(db));
   const cliSessionCatalog = createCopilotCliSessionCatalog({
     copilotHome: runtimePaths.copilotHome,
     recordSpan: (name, duration, sessionId, metadata) =>
