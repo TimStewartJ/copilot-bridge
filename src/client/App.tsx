@@ -58,6 +58,7 @@ import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
+import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
@@ -95,6 +96,7 @@ import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
+import BackendStatusBanner from "./components/BackendStatusBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
@@ -176,6 +178,7 @@ export default function App() {
     pendingSnapshotSeen: false,
     pendingServerInstanceId: null,
   });
+  const [backendStatusBanner, setBackendStatusBanner] = useState(createBackendStatusBannerState);
   const [sessionReloadSignals, setSessionReloadSignals] = useState<Record<string, number>>({});
   const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
   // Incremented per-session when an external source (e.g. schedule) starts work
@@ -495,6 +498,13 @@ export default function App() {
           serverInstanceId: event.serverInstanceId,
         }));
         break;
+      case "backend:status":
+        void queryClient.invalidateQueries({ queryKey: queryKeys.bridgeRuntimeStatus });
+        setBackendStatusBanner((prev) => reduceBackendStatusBannerState(prev, {
+          type: "backend:status",
+          agentBackend: event.agentBackend,
+        }));
+        break;
       case "schedule:triggered":
         // Schedule started work — refresh session list, task data, and schedule run history
         invalidateSessions();
@@ -540,6 +550,15 @@ export default function App() {
     const timer = window.setTimeout(() => window.location.reload(), 1000);
     return () => clearTimeout(timer);
   }, [restartBanner.shouldReload]);
+
+  useEffect(() => {
+    if (backendStatusBanner.recoveryExpiresAt === null) return;
+    const delayMs = Math.max(0, backendStatusBanner.recoveryExpiresAt - Date.now());
+    const timer = window.setTimeout(() => {
+      setBackendStatusBanner((prev) => reduceBackendStatusBannerState(prev, { type: "tick" }));
+    }, delayMs);
+    return () => clearTimeout(timer);
+  }, [backendStatusBanner.recoveryExpiresAt]);
 
   const previousTasksRef = useRef<Map<string, Task>>(new Map());
 
@@ -1654,6 +1673,12 @@ export default function App() {
           restartPhase={restartBanner.restartPhase}
           waitingSessions={restartBanner.waitingSessions}
           canAcceptNewWork={restartBanner.canAcceptNewWork}
+        />
+      )}
+      {backendStatusBanner.banner && (
+        <BackendStatusBanner
+          banner={backendStatusBanner.banner}
+          onDismiss={() => setBackendStatusBanner((prev) => reduceBackendStatusBannerState(prev, { type: "dismiss" }))}
         />
       )}
 

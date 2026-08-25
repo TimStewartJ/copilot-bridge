@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
 import type { BackgroundAgentsSummary, DeferSummary, RestartStatusPhase } from "./api";
+import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
 
 export type StatusEvent =
@@ -26,6 +27,7 @@ export type StatusEvent =
       serverInstanceId?: string;
     }
   | { type: "server:restart-cleared"; serverInstanceId?: string }
+  | { type: "backend:status"; agentBackend: AgentBackendStatus }
   | { type: "status:connected" }
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
   | { type: "schedule:changed"; scheduleId?: string }
