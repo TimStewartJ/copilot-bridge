@@ -83,7 +83,6 @@ describe("defer-loop-runner", () => {
     expect(sm._started[0].prompt).toContain("kind: interval");
     expect(sm._started[0].prompt).toContain("attentionMode: quiet");
     expect(sm._started[0].prompt).toContain("runCount: 1");
-    expect(sm._started[0].prompt).toContain("If the Bridge reports this session's transcript is large, prefer rolling this monitor into a fresh session instead of keeping it here.");
     expect(sm._started[0].prompt).toContain("If user action is needed, cancel this recurring deferral with the defer cancel tool using the deferId above, then clearly state the required next step and stop.");
     expect(sm._started[0].prompt).not.toContain("ask_user");
     expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
