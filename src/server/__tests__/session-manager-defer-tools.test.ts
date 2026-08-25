@@ -3,6 +3,7 @@ import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 import { parseDeferId } from "../defer-ids.js";
+import { TRANSCRIPT_SIZE_WARNING_BYTES } from "../tools/defer-tools.js";
 
 function findTool(tools: ReturnType<typeof getBridgeToolDefinitions>, name: string) {
   const tool = tools.find((t) => t.name === name);
@@ -143,6 +144,78 @@ describe("unified defer tools", () => {
     }
   });
 
+  it("lists inactive defers when requested and reports transcript size warnings", async () => {
+    const { ctx } = createTestApp();
+    const tools = getBridgeToolDefinitions(ctx);
+    const createTool = findTool(tools, "defer_create");
+    const listTool = findTool(tools, "defer_list");
+
+    await createTool.handler({ prompt: "active once", delaySeconds: 120 }, makeInvocation("session-A"));
+    await createTool.handler({ prompt: "active loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A"));
+    const cancelled = await createTool.handler({ prompt: "cancelled once", delaySeconds: 120 }, makeInvocation("session-A")) as any;
+    const failed = await createTool.handler({ prompt: "failed loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A")) as any;
+    ctx.deferredPromptStore!.cancelById(parseDeferId(cancelled.deferId)!.id);
+    ctx.deferLoopStore!.markFailedById(parseDeferId(failed.deferId)!.id, "resumeSession timed out after 60s");
+
+    const defaultResult = await listTool.handler({}, makeInvocation("session-A")) as any;
+    expect(defaultResult.deferrals.map((item: any) => item.status).sort()).toEqual(["active", "pending"]);
+
+    const transcriptSizeBytes = Math.round(96.1 * 1024 * 1024);
+    vi.spyOn(ctx.sessionManager, "listSessionsFromDisk").mockResolvedValue([
+      { sessionId: "session-A", eventLogSizeBytes: transcriptSizeBytes },
+    ] as any);
+    const result = await listTool.handler({ includeInactive: true }, makeInvocation("session-A")) as any;
+
+    expect(result.deferrals.map((item: any) => item.status).sort()).toEqual([
+      "active",
+      "cancelled",
+      "failed",
+      "pending",
+    ]);
+    expect(result.deferrals.find((item: any) => item.deferId === failed.deferId)).toMatchObject({
+      status: "failed",
+      lastError: "resumeSession timed out after 60s",
+    });
+    expect(result.transcriptSizeBytes).toBe(transcriptSizeBytes);
+    expect(result.warning).toContain("This session's transcript is 96.1 MB");
+    expect(result.warning).toContain(`above ${TRANSCRIPT_SIZE_WARNING_BYTES / (1024 * 1024)} MB`);
+  });
+
+  it("includes transcript size without warning below the threshold", async () => {
+    const { ctx } = createTestApp();
+    const listTool = findTool(getBridgeToolDefinitions(ctx), "defer_list");
+    vi.spyOn(ctx.sessionManager, "listSessionsFromDisk").mockResolvedValue([
+      { sessionId: "session-A", eventLogSizeBytes: 1024 },
+    ] as any);
+
+    const result = await listTool.handler({}, makeInvocation("session-A")) as any;
+
+    expect(result.transcriptSizeBytes).toBe(1024);
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("warns when creating an interval defer from a large transcript session", async () => {
+    const { ctx } = createTestApp();
+    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
+    const transcriptSizeBytes = Math.round(96.1 * 1024 * 1024);
+    vi.spyOn(ctx.sessionManager, "listSessionsFromDisk").mockResolvedValue([
+      { sessionId: "session-A", eventLogSizeBytes: transcriptSizeBytes },
+    ] as any);
+
+    const result = await createTool.handler(
+      { prompt: "poll deployment", intervalSeconds: 300, maxRuns: 2 },
+      makeInvocation("session-A"),
+    ) as any;
+
+    expect(result).toMatchObject({
+      success: true,
+      kind: "interval",
+      transcriptSizeBytes,
+    });
+    expect(result.warning).toContain("This session's transcript is 96.1 MB");
+    expect(result.warning).toContain("Prefer monitoring from a fresh session");
+  });
+
   it("cancels one-shot and recurring defers by public deferId", async () => {
     const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
@@ -182,6 +255,84 @@ describe("unified defer tools", () => {
       expect(event.content).toBeUndefined();
     }
     unsubscribe();
+  });
+
+  it("reactivates cancelled one-shot and expired recurring defers for the owning session", async () => {
+    const { ctx } = createTestApp();
+    const oncePoke = vi.fn();
+    const loopPoke = vi.fn();
+    ctx.deferredPromptRunner = { start: vi.fn(), poke: oncePoke, shutdown: vi.fn() } as any;
+    ctx.deferLoopRunner = { start: vi.fn(), poke: loopPoke, shutdown: vi.fn() } as any;
+    const tools = getBridgeToolDefinitions(ctx);
+    const createTool = findTool(tools, "defer_create");
+    const reactivateTool = findTool(tools, "defer_reactivate");
+    const summaryEvents: any[] = [];
+    const unsubscribe = ctx.globalBus.subscribe((event) => {
+      if (event.type === "session:defer-summary") summaryEvents.push(event);
+    });
+
+    const once = await createTool.handler({ prompt: "once", delaySeconds: 60 }, makeInvocation("session-A")) as any;
+    const interval = await createTool.handler({ prompt: "loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A")) as any;
+    ctx.deferredPromptStore!.cancelById(parseDeferId(once.deferId)!.id);
+    ctx.deferLoopStore!.markExpired(parseDeferId(interval.deferId)!.id);
+    oncePoke.mockClear();
+    loopPoke.mockClear();
+
+    const onceResult = await reactivateTool.handler({ deferId: once.deferId }, makeInvocation("session-A")) as any;
+    const loopResult = await reactivateTool.handler({ deferId: interval.deferId }, makeInvocation("session-A")) as any;
+
+    expect(onceResult).toMatchObject({
+      success: true,
+      deferId: once.deferId,
+      kind: "once",
+      status: "pending",
+      nextRunAt: expect.any(String),
+    });
+    expect(loopResult).toMatchObject({
+      success: true,
+      deferId: interval.deferId,
+      kind: "interval",
+      status: "active",
+      nextRunAt: expect.any(String),
+    });
+    expect(ctx.deferredPromptStore!.get(parseDeferId(once.deferId)!.id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      lastError: undefined,
+    });
+    expect(ctx.deferLoopStore!.get(parseDeferId(interval.deferId)!.id)).toMatchObject({
+      status: "active",
+      attempts: 0,
+      lastError: undefined,
+    });
+    expect(oncePoke).toHaveBeenCalledTimes(1);
+    expect(loopPoke).toHaveBeenCalledTimes(1);
+    expect(summaryEvents.at(-1)).toMatchObject({
+      type: "session:defer-summary",
+      sessionId: "session-A",
+      deferSummary: { count: 2 },
+    });
+    unsubscribe();
+  });
+
+  it("rejects defer reactivation for the wrong session or active status", async () => {
+    const { ctx } = createTestApp();
+    const tools = getBridgeToolDefinitions(ctx);
+    const createTool = findTool(tools, "defer_create");
+    const reactivateTool = findTool(tools, "defer_reactivate");
+
+    const ownedOnce = await createTool.handler({ prompt: "not yours", delaySeconds: 60 }, makeInvocation("owner")) as any;
+    ctx.deferredPromptStore!.cancelById(parseDeferId(ownedOnce.deferId)!.id);
+    expect(expectFailure(await reactivateTool.handler({ deferId: ownedOnce.deferId }, makeInvocation("attacker"))))
+      .toContain("does not belong to this session");
+
+    const activeOnce = await createTool.handler({ prompt: "active once", delaySeconds: 60 }, makeInvocation("owner")) as any;
+    expect(expectFailure(await reactivateTool.handler({ deferId: activeOnce.deferId }, makeInvocation("owner"))))
+      .toContain("cannot be reactivated");
+
+    const activeLoop = await createTool.handler({ prompt: "active loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("owner")) as any;
+    expect(expectFailure(await reactivateTool.handler({ deferId: activeLoop.deferId }, makeInvocation("owner"))))
+      .toContain("cannot be reactivated");
   });
 
   it("rejects legacy deferredPromptId and loopId surfaces", async () => {

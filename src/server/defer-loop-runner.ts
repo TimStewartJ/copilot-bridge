@@ -6,13 +6,12 @@ import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-deliv
 import type { DeferSummarySources } from "./defer-summary.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
-import { isPromptDeliveryInterruptedError, isRestartPendingError } from "./session-manager.js";
 import {
+  classifyDeferDeliveryError,
+  computeDeferRetryBackoffMs,
   createDeferRunnerCore,
-  INITIAL_BACKOFF_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
-  MAX_BACKOFF_MS,
   type DeferRunnerOptions,
   type DeferRunnerCoreContext,
   type ProcessOneResult,
@@ -36,6 +35,7 @@ function formatLoopPrompt(loop: DeferLoop): string {
     "Quiet recurring deferral instructions:",
     "- This is an automated polling check. If there is nothing actionable for the user, give a concise status and stop.",
     "- Do not ask a question just to report no change.",
+    "- If the Bridge reports this session's transcript is large, prefer rolling this monitor into a fresh session instead of keeping it here.",
     "- If user action is needed, cancel this recurring deferral with the defer cancel tool using the deferId above, then clearly state the required next step and stop.",
     "",
     "User prompt:",
@@ -178,9 +178,8 @@ export function createDeferLoopRunner(
         const isBusy =
           msg.includes("Session is busy processing another message") ||
           msg.includes("Session is busy processing another request");
-        const isRestartPending = isRestartPendingError(err);
-        const isPromptDeliveryInterrupted = isPromptDeliveryInterruptedError(err);
-        if (isRestartPending || isPromptDeliveryInterrupted) {
+        const classification = classifyDeferDeliveryError(err);
+        if (classification === "pause") {
           const released = store.releaseClaimWithoutAttempt(loop.id, claimToken);
           if (!released) {
             console.error(`[defer-loop-runner] Failed to pause loop ${loop.id} without consuming an attempt`);
@@ -191,12 +190,12 @@ export function createDeferLoopRunner(
         }
 
         const nextAttempts = loop.attempts; // attempts already incremented by claimDue
-        if (isBusy && nextAttempts < MAX_ATTEMPTS) {
-          const backoffMs = Math.min(
-            INITIAL_BACKOFF_MS * Math.pow(2, nextAttempts - 1),
-            MAX_BACKOFF_MS,
-          );
+        if (nextAttempts < MAX_ATTEMPTS) {
+          const backoffMs = computeDeferRetryBackoffMs(nextAttempts);
           const retryAt = new Date(Date.now() + backoffMs).toISOString();
+          console.warn(
+            `[defer-loop-runner] Retrying loop ${loop.id} after attempt ${nextAttempts}/${MAX_ATTEMPTS}${isBusy ? " (session busy)" : ""}: ${msg}`,
+          );
           if (!store.retry(loop.id, claimToken, retryAt, msg)) {
             console.error(`[defer-loop-runner] Failed to re-queue loop ${loop.id}`);
           } else {

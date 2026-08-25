@@ -7,11 +7,18 @@ import { createDeferLoopStore } from "../defer-loop-store.js";
 import {
   createDeferredPromptRunner,
   DEFER_WATCHDOG_INTERVAL_MS,
+  INITIAL_BACKOFF_MS,
   LEASE_MS,
+  MAX_ATTEMPTS,
 } from "../deferred-prompt-runner.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createGlobalBus } from "../global-bus.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 import { RESTART_PENDING_MESSAGE } from "../session-manager.js";
+import {
+  BACKEND_DISCONNECTED_MESSAGE,
+  BACKEND_RECONNECTING_MESSAGE,
+} from "../backend-availability.js";
 import type { DatabaseSync } from "../db.js";
 
 function makeMockSessionManager(overrides: Partial<{
@@ -76,6 +83,7 @@ describe("defer-loop-runner", () => {
     expect(sm._started[0].prompt).toContain("kind: interval");
     expect(sm._started[0].prompt).toContain("attentionMode: quiet");
     expect(sm._started[0].prompt).toContain("runCount: 1");
+    expect(sm._started[0].prompt).toContain("If the Bridge reports this session's transcript is large, prefer rolling this monitor into a fresh session instead of keeping it here.");
     expect(sm._started[0].prompt).toContain("If user action is needed, cancel this recurring deferral with the defer cancel tool using the deferId above, then clearly state the required next step and stop.");
     expect(sm._started[0].prompt).not.toContain("ask_user");
     expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
@@ -95,6 +103,68 @@ describe("defer-loop-runner", () => {
       { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, nextRunAt: updated.nextRunAt } },
     ]);
     expect(sm._attention).toEqual([]);
+    runner.shutdown();
+  });
+
+  it("holds due loops while defer delivery readiness is not ready and resumes later", async () => {
+    const store = createDeferLoopStore(db);
+    const bus = createGlobalBus();
+    const telemetryStore = createTelemetryStore(db);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    let readinessCalls = 0;
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.getDeferDeliveryReadiness = vi.fn(() => {
+      readinessCalls += 1;
+      return readinessCalls >= 3
+        ? { ready: true }
+        : { ready: false, reason: "agent backend startup hold", retryAfterMs: 1000 };
+    });
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const runner = createDeferLoopRunner(
+      store,
+      sm,
+      bus,
+      undefined,
+      { deferLoopStore: store },
+      { telemetryStore },
+    );
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sm._started).toHaveLength(0);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 0 });
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sm._started).toHaveLength(0);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 0 });
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sm._started).toHaveLength(1);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 1 });
+    expect(telemetryStore.querySpans({ name: "defer.runner.hold" })).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          deferKind: "interval",
+          dueCount: 1,
+          reason: "agent backend startup hold",
+        }),
+      }),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          deferKind: "interval",
+          dueCount: 1,
+          reason: "agent backend startup hold",
+        }),
+      }),
+    ]);
+    infoSpy.mockRestore();
     runner.shutdown();
   });
 
@@ -273,6 +343,51 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
+  it.each([
+    "Session tool initialization did not complete before prompt delivery",
+    "resumeSession timed out after 60s",
+  ])("retries transient loop delivery error with backoff until MAX_ATTEMPTS: %s", async (message) => {
+    const store = createDeferLoopStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sm = makeMockSessionManager({
+      sessions: ["session-1"],
+      startWorkError: new Error(message),
+    });
+    const runner = createDeferLoopRunner(store, sm as any, bus);
+    runner.start();
+
+    for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
+      await vi.advanceTimersByTimeAsync(attempt === 1 ? 0 : INITIAL_BACKOFF_MS * Math.pow(2, attempt - 2));
+      const row = store.get(loop.id)!;
+      expect(row.status).toBe("active");
+      expect(row.attempts).toBe(attempt);
+      expect(row.lastError).toBe(message);
+      expect(Date.parse(row.nextRunAt) - Date.now()).toBe(INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1));
+    }
+
+    await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS * Math.pow(2, MAX_ATTEMPTS - 2));
+    expect(store.get(loop.id)).toMatchObject({
+      status: "failed",
+      attempts: MAX_ATTEMPTS,
+      lastError: message,
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(MAX_ATTEMPTS - 1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`Loop ${loop.id} failed after ${MAX_ATTEMPTS} attempt(s)`),
+    );
+    runner.shutdown();
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
   it("releases restart-interrupted claims without consuming a run", async () => {
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
@@ -292,6 +407,33 @@ describe("defer-loop-runner", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 0, attempts: 0 });
+    runner.shutdown();
+  });
+
+  it.each([
+    BACKEND_DISCONNECTED_MESSAGE,
+    BACKEND_RECONNECTING_MESSAGE,
+  ])("pauses backend-unavailable loop delivery without burning attempts: %s", async (message) => {
+    const store = createDeferLoopStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const sm = makeMockSessionManager({
+      sessions: ["session-1"],
+      startWorkError: new Error(message),
+    });
+    const runner = createDeferLoopRunner(store, sm as any, bus);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 0, attempts: 0 });
+    expect(store.get(loop.id)!.claimToken).toBeUndefined();
+    expect(store.get(loop.id)!.leaseExpiresAt).toBeUndefined();
     runner.shutdown();
   });
 
