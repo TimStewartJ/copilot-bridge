@@ -37,7 +37,7 @@ export default function useCrossGroupDnd({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [localSections, setLocalSections] = useState<Section[] | null>(null);
   const localSectionsRef = useRef<Section[] | null>(null);
-  const activeDragTask = activeId ? tasks.find((t) => t.id === activeId) : null;
+  const activeDragTask = activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
   const displaySections = localSections ?? groupedSections;
 
   const handleDragStart = useCallback((event: DragStartEvent) => {

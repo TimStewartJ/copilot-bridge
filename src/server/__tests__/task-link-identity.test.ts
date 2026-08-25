@@ -118,11 +118,10 @@ describe("resolvePullRequestLink", () => {
       .toMatchObject({ ok: true, value: { repoId: "octo/widget", repoName: "widget" } });
   });
 
-  it("keeps an explicit repoId that cannot be canonicalized (legacy bare repo name)", () => {
-    // Rows written before canonicalization hold a bare name as their durable id.
-    // The UI's undo/relink path sends that id back, so it must survive.
-    expect(resolvePullRequestLink({ repoId: "space43", repoName: "space43", prId: 200, provider: "github" }))
-      .toEqual({ ok: true, value: { repoId: "space43", repoName: "space43", prId: 200, provider: "github" } });
+  it("rejects an explicit github repoId that cannot be canonicalized", () => {
+    const result = resolvePullRequestLink({ repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { error: string }).error).toContain("Could not resolve");
   });
 
   it("still upgrades an explicit repoId when it can be canonicalized", () => {
@@ -144,7 +143,7 @@ describe("resolvePullRequestLink", () => {
 });
 
 describe("pullRequestRepoIdCandidates", () => {
-  it("includes the legacy raw id alongside the canonical one", () => {
+  it("offers the raw reference alongside its canonical github id", () => {
     expect(pullRequestRepoIdCandidates({ repoName: "https://github.com/octo/widget" })).toEqual([
       "https://github.com/octo/widget",
       "octo/widget",
@@ -155,11 +154,8 @@ describe("pullRequestRepoIdCandidates", () => {
     expect(pullRequestRepoIdCandidates({ repoName: "octo/widget" })).toEqual(["octo/widget"]);
   });
 
-  it("keeps a durable id and its display name as separate candidates", () => {
-    expect(pullRequestRepoIdCandidates({ repoId: "guid-1", repoName: "Widget.Service" })).toEqual([
-      "guid-1",
-      "Widget.Service",
-    ]);
+  it("prefers the durable id over the display name", () => {
+    expect(pullRequestRepoIdCandidates({ repoId: "guid-1", repoName: "Widget.Service" })).toEqual(["guid-1"]);
   });
 
   it("returns nothing when no repository reference is given", () => {

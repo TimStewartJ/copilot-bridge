@@ -3,7 +3,7 @@
 // jiggles the mouse ±1px every 60s to reset the Windows idle timer.
 
 import { execFile } from "node:child_process";
-import * as globalBus from "./global-bus.js";
+import type { GlobalBus } from "./global-bus.js";
 
 let jiggleInterval: ReturnType<typeof setInterval> | null = null;
 const activeSessions = new Set<string>();
@@ -53,7 +53,7 @@ function stopJiggle(): void {
   console.log("[keep-alive] ⚪ Mouse jiggle stopped (all sessions idle)");
 }
 
-export function initKeepAlive(): void {
+export function initKeepAlive(globalBus: GlobalBus): void {
   if (process.platform !== "win32") {
     console.log("[keep-alive] Skipped (not Windows)");
     return;

@@ -36,7 +36,6 @@ function createSession(overrides: Partial<Session> = {}): Session {
     sessionId: "session-1",
     modifiedTime: NOW,
     lastVisibleActivityAt: NOW,
-    busy: false,
     archived: false,
     diskSizeBytes: 0,
     deferSummary: { count: 0, nextRunAt: null },
@@ -90,7 +89,6 @@ describe("summarizeTaskTabAttention", () => {
       ["unread-session", createSession({ sessionId: "unread-session" })],
       ["needs-answer-session", createSession({
         sessionId: "needs-answer-session",
-        busy: true,
         runState: "busy",
         needsUserInput: true,
       })],
@@ -117,7 +115,6 @@ describe("summarizeChatTabAttention", () => {
       createSession({ sessionId: "chat-unread" }),
       createSession({
         sessionId: "chat-needs-answer",
-        busy: true,
         runState: "busy",
         needsUserInput: true,
       }),
@@ -125,7 +122,7 @@ describe("summarizeChatTabAttention", () => {
         sessionId: "chat-both",
         needsUserInput: true,
       }),
-      createSession({ sessionId: "chat-busy", busy: true, runState: "busy" }),
+      createSession({ sessionId: "chat-busy", runState: "busy" }),
       createSession({ sessionId: "chat-current" }),
       createSession({
         sessionId: "chat-archived",
@@ -187,7 +184,7 @@ describe("countTaskUnread", () => {
     const task = createTask({ sessionIds: ["idle-1", "stalled-1"] });
     const sessionMap = new Map<string, Session>([
       ["idle-1", createSession({ sessionId: "idle-1" })],
-      ["stalled-1", createSession({ sessionId: "stalled-1", runState: "stalled", busy: true })],
+      ["stalled-1", createSession({ sessionId: "stalled-1", runState: "stalled" })],
     ]);
 
     const unread = countTaskUnread(task, sessionMap, (sessionId) => sessionId !== "stalled-1");
@@ -201,7 +198,6 @@ describe("countTaskUnread", () => {
       ["needs-answer", createSession({
         sessionId: "needs-answer",
         runState: "busy",
-        busy: true,
         needsUserInput: true,
         pendingUserInputCount: 1,
       })],
@@ -220,7 +216,6 @@ describe("getTaskIndicator", () => {
       ["needs-answer", createSession({
         sessionId: "needs-answer",
         runState: "busy",
-        busy: true,
         needsUserInput: true,
         pendingUserInputCount: 1,
       })],

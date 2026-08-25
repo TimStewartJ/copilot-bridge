@@ -46,7 +46,8 @@ export class SessionWorkspaceController {
     return join(this.getCopilotHome(), "session-state", sessionId);
   }
 
-  getLegacyWorkspaceCwd(sessionId: string): string | undefined {
+  /** The cwd the Copilot CLI recorded for the session in its own workspace.yaml. */
+  getRecordedWorkspaceCwd(sessionId: string): string | undefined {
     const yamlPath = join(this.getSessionStateDir(sessionId), "workspace.yaml");
     try {
       return parseWorkspaceCwd(readFileSync(yamlPath, "utf-8"));
@@ -96,9 +97,9 @@ export class SessionWorkspaceController {
     const persistedCwd = this.resolvePersistedSessionCwd(sessionId);
     if (persistedCwd) return persistedCwd;
 
-    const legacyCwd = sessionId ? this.getLegacyWorkspaceCwd(sessionId) : undefined;
-    const availableLegacyCwd = resolveAvailableWorkspaceCwd(legacyCwd);
-    if (availableLegacyCwd) return availableLegacyCwd;
+    const recordedCwd = sessionId ? this.getRecordedWorkspaceCwd(sessionId) : undefined;
+    const availableRecordedCwd = resolveAvailableWorkspaceCwd(recordedCwd);
+    if (availableRecordedCwd) return availableRecordedCwd;
 
     const taskCwd = resolveAvailableWorkspaceCwd(task?.cwd);
     if (taskCwd) return taskCwd;

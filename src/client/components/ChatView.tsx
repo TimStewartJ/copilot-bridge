@@ -1207,7 +1207,8 @@ export default function ChatView({
           )
         : INITIAL_PAGE_SIZE;
       return fetchMessagesFast(sessionId, { limit: requestLimit })
-        .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt }) => {
+        .then(({ messages: msgs, runState, total, warm, lastVisibleActivityAt }) => {
+          const busy = runState !== "idle";
           if (controller.signal.aborted) return;
           if (requestId !== loadRequestIdRef.current) {
             return;

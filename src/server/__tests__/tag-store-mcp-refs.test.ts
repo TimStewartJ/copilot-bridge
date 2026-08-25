@@ -100,32 +100,4 @@ describe("tag-store MCP server references", () => {
     expect(tagRefCount(tag.id)).toBe(1);
     expect(serverRefCount(kept.id)).toBe(1);
   });
-
-  it("routes name-based compatibility writes through registry refs", () => {
-    const tag = tagStore.createTag("Legacy");
-
-    tagStore.setTagMcpServer(tag.id, "linear", { type: "http", url: "https://linear.example/mcp" });
-
-    const first = tagStore.getTagMcpServers(tag.id);
-    expect(first).toHaveLength(1);
-    expect(first[0]).toMatchObject({
-      id: expect.any(String),
-      serverId: expect.any(String),
-      serverName: "linear",
-      config: { type: "http", url: "https://linear.example/mcp" },
-    });
-    expect(mcpStore.getMcpServer(first[0].serverId)).toBeDefined();
-    expect(tagRefCount(tag.id)).toBe(1);
-
-    tagStore.setTagMcpServer(tag.id, "linear", { type: "http", url: "https://override.example/mcp" });
-    const replaced = tagStore.getTagMcpServers(tag.id);
-    expect(replaced).toHaveLength(1);
-    expect(replaced[0].serverName).toMatch(/^linear \(tag override/);
-    expect(replaced[0].config).toEqual({ type: "http", url: "https://override.example/mcp" });
-    expect(tagRefCount(tag.id)).toBe(1);
-
-    tagStore.removeTagMcpServer(tag.id, "linear");
-    expect(tagStore.getTagMcpServers(tag.id)).toEqual([]);
-    expect(tagRefCount(tag.id)).toBe(0);
-  });
 });

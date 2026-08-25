@@ -6,7 +6,7 @@ interface MenuState<T> {
   id: T;
 }
 
-interface LongPressBindings {
+export interface LongPressBindings {
   onContextMenu: (e: React.MouseEvent) => void;
   onTouchStart: (e: React.TouchEvent) => void;
   onTouchMove: (e: React.TouchEvent) => void;

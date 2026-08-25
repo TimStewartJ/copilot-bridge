@@ -8,17 +8,17 @@ export function getTaskKindLabel(kind: Task["kind"]): string {
   return kind === "ongoing" ? "Ongoing" : "Task";
 }
 
+/** Field updates to send when a task's kind changes; ongoing tasks cannot keep a definition of done. */
 export function getTaskKindUpdate(
-  task: Pick<Task, "kind" | "status" | "doneWhen">,
+  task: Pick<Task, "kind">,
   nextKind: Task["kind"],
-): Partial<Pick<Task, "kind" | "status" | "doneWhen">> | null {
+): { kind: Task["kind"]; doneWhen?: null } | null {
   if (task.kind === nextKind) return null;
 
   if (nextKind === "ongoing") {
     return {
       kind: nextKind,
       doneWhen: null,
-      ...(task.status === "done" ? { status: "active" as const } : {}),
     };
   }
 

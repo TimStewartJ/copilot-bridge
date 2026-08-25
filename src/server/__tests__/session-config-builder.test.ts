@@ -886,35 +886,6 @@ describe("session-config-builder", () => {
     expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
-  it("merges legacy tag-owned MCP configs when the registry store is unavailable", () => {
-    const settingsStore = {
-      getSettings: () => ({}),
-      getMcpServers: () => ({ Default: { command: "default-mcp", args: [] } }),
-    } as unknown as SettingsStore;
-    const tagStore = {
-      resolveEffectiveTags: () => ({
-        tags: [],
-        mergedInstructions: "",
-        mcpServerIds: [],
-        mergedMcpServers: {
-          "Legacy Tag": { type: "sse" as const, url: "https://legacy.example/sse" },
-        },
-      }),
-    } as unknown as ReturnType<typeof createTagStore>;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ settingsStore, tagStore }),
-      options: { task: createTask() },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.mcpServers).toEqual({
-      Default: { command: "default-mcp", args: [] },
-      "Legacy Tag": { type: "sse", url: "https://legacy.example/sse" },
-    });
-    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
-  });
-
   it("refreshes registry MCP servers while preserving forResume model behavior", () => {
     const { mcpServerStore } = createMcpRegistryDeps();
     mcpServerStore.createMcpServer({

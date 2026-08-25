@@ -347,7 +347,8 @@ export default function TaskPanel({
     [currentTask, completionCounts, checklistLoaded],
   );
 
-  if (!task) {
+  // currentTask and completionState are null exactly when task is null, so one guard narrows all three.
+  if (!task || !currentTask || !completionState) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center border-r border-border bg-bg-secondary md:w-64">
         <span className="text-xs text-text-faint">Select a task</span>

@@ -120,7 +120,7 @@ describe("SessionManager workspace resolution", () => {
     return { ctx, manager, taskStore, sessionWorkspaceStore };
   }
 
-  it("prefers persisted session workspace over legacy yaml and task cwd", () => {
+  it("prefers persisted session workspace over the recorded workspace.yaml cwd and task cwd", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
     const persistedWorkspace = createWorkspace(copilotHome, "persisted-workspace");
@@ -162,7 +162,7 @@ describe("SessionManager workspace resolution", () => {
     }
   });
 
-  it("falls back from legacy yaml to task cwd and omits an unconfigured workspace", () => {
+  it("falls back from the recorded workspace.yaml cwd to task cwd and omits an unconfigured workspace", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
     const legacyWorkspace = createWorkspace(copilotHome, "legacy-workspace");
@@ -296,7 +296,7 @@ describe("SessionManager workspace resolution", () => {
     expect(config.systemMessage.content).not.toContain("Task notes:\nNotes B");
   });
 
-  it("copies legacy workspace state when forking a session", async () => {
+  it("copies the recorded workspace.yaml cwd when forking a session", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
     const legacyWorkspace = createWorkspace(copilotHome, "legacy-source-workspace");

@@ -277,20 +277,6 @@ describe("Task routes", () => {
     }
   });
 
-  it("DELETE /api/tasks/:id/link removes a pull request stored under a legacy raw repo id", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Legacy PR Link" });
-    const id = create.body.task.id;
-    // Legacy row: repoId was written as the raw display name before canonicalization.
-    ctx.taskStore.linkPR(id, { repoId: "https://github.com/octo/widget", repoName: "https://github.com/octo/widget", prId: 5, provider: "github" });
-
-    const res = await request(app)
-      .delete(`/api/tasks/${id}/link`)
-      .send({ type: "pr", repoName: "https://github.com/octo/widget", prId: 5, provider: "github" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.task.pullRequests).toEqual([]);
-  });
-
   it("DELETE /api/tasks/:id/link without a provider unlinks a PR across providers", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "Cross provider unlink" });
     const id = create.body.task.id;
@@ -303,28 +289,6 @@ describe("Task routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.task.pullRequests).toEqual([]);
-  });
-
-  it("round-trips a legacy bare repoId through unlink and relink (undo path)", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Legacy bare repoId" });
-    const id = create.body.task.id;
-    // Row written before repo ids were canonicalized: durable id is a bare name.
-    ctx.taskStore.linkPR(id, { repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
-
-    const unlinked = await request(app)
-      .delete(`/api/tasks/${id}/link`)
-      .send({ type: "pr", repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
-    expect(unlinked.status).toBe(200);
-    expect(unlinked.body.task.pullRequests).toEqual([]);
-
-    // Exactly what the PullRequestList undo toast re-sends.
-    const relinked = await request(app)
-      .post(`/api/tasks/${id}/link`)
-      .send({ type: "pr", repoId: "space43", repoName: "space43", prId: 200, provider: "github" });
-    expect(relinked.status).toBe(200);
-    expect(relinked.body.task.pullRequests).toEqual([
-      expect.objectContaining({ repoId: "space43", repoName: "space43", prId: 200, provider: "github" }),
-    ]);
   });
 
   it("POST /api/tasks/:id/link preserves a durable ADO repository id", async () => {
@@ -372,7 +336,7 @@ describe("Task routes", () => {
     expect(get.body.task.nextTouchAt).toBeUndefined();
   });
 
-  it("PATCH /api/tasks/:id clears parked momentum when a task is marked done", async () => {
+  it("PATCH /api/tasks/:id clears parked momentum when a task is completed", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "Close me out" });
     const id = create.body.task.id;
 
@@ -383,7 +347,7 @@ describe("Task routes", () => {
       nextTouchAt: "2030-01-01T00:00:00.000Z",
     });
 
-    const done = await request(app).patch(`/api/tasks/${id}`).send({ status: "done" });
+    const done = await request(app).patch(`/api/tasks/${id}`).send({ completionAction: "complete-and-archive" });
     expect(done.status).toBe(200);
     expect(done.body.task.status).toBe("archived");
     expect(done.body.task.doneWhen).toBe("Rolled out to all tenants");
@@ -427,7 +391,7 @@ describe("Task routes", () => {
       .send({ status: "bogus" });
 
     expect(invalid.status).toBe(400);
-    expect(invalid.body.error).toContain("status must be one of: active, done, archived");
+    expect(invalid.body.error).toContain("status must be one of: active, archived");
 
     const get = await request(app).get(`/api/tasks/${id}`);
     expect(get.status).toBe(200);

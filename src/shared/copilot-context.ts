@@ -105,7 +105,7 @@ export function formatContextWindowTokens(tokens: number): string {
   return `${Math.round(tokens / 1_000).toLocaleString()}K`;
 }
 
-export function getModelCapabilitiesOverrideForContextTier(
+export function getModelCapabilitiesOverride(
   model: CopilotModelContextMetadata | null | undefined,
   tier: CopilotContextTier | undefined,
 ): CopilotModelCapabilitiesOverride | undefined {
@@ -135,60 +135,10 @@ export function getModelCapabilitiesOverrideForContextTier(
   return { limits };
 }
 
-/**
- * Bridge builds on CLI <= 1.0.80 persisted `supports.adaptive_thinking: "required"`
- * to work around legacy budget-thinking serialization for Claude models. The CLI
- * drives adaptive thinking natively since 1.0.81, so drop that stale key from any
- * persisted override instead of replaying it on every resume.
- */
-function stripLegacyAdaptiveThinkingOverride(
-  override: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!override || !isRecord(override.supports) || !("adaptive_thinking" in override.supports)) return override;
-  const { adaptive_thinking: _legacy, ...supports } = override.supports;
-  const { supports: _dropped, ...rest } = override;
-  return Object.keys(supports).length > 0 ? { ...rest, supports } : rest;
-}
-
-export function getModelCapabilitiesOverride(
-  model: CopilotModelContextMetadata | null | undefined,
-  tier: CopilotContextTier | undefined,
-  baseOverride?: Record<string, unknown>,
-): CopilotModelCapabilitiesOverride | undefined {
-  const contextOverride = getModelCapabilitiesOverrideForContextTier(model, tier);
-  const layers: Array<Record<string, unknown> | undefined> = [
-    stripLegacyAdaptiveThinkingOverride(baseOverride),
-    contextOverride,
-  ];
-  const merged: CopilotModelCapabilitiesOverride = {};
-  let hasValues = false;
-
-  for (const layer of layers) {
-    if (!layer) continue;
-    for (const [key, value] of Object.entries(layer)) {
-      hasValues = true;
-      if ((key === "supports" || key === "limits") && isRecord(value)) {
-        merged[key] = {
-          ...(isRecord(merged[key]) ? merged[key] : {}),
-          ...value,
-        };
-      } else {
-        merged[key] = value;
-      }
-    }
-  }
-
-  return hasValues ? merged : undefined;
-}
-
 function finitePositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

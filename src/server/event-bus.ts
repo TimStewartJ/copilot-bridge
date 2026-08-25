@@ -1092,13 +1092,3 @@ export function createEventBusRegistry() {
 }
 
 export type EventBusRegistry = ReturnType<typeof createEventBusRegistry>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _default = createEventBusRegistry();
-export const getOrCreateBus = _default.getOrCreateBus;
-export const getBus = _default.getBus;
-export const hasBus = _default.hasBus;
-
-/** Access the default instance for passing to factories during migration */
-export const defaultEventBusRegistry = _default;

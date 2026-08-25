@@ -15,8 +15,7 @@ export interface BridgeDistribution {
 function normalizeDistributionMode(value: string | undefined): BridgeDistributionMode | undefined {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return undefined;
-  if (normalized === "release" || normalized === "packaged") return "release";
-  if (normalized === "development" || normalized === "dev" || normalized === "source") return "development";
+  if (normalized === "release" || normalized === "development") return normalized;
   throw new Error(
     `Invalid BRIDGE_DISTRIBUTION_MODE "${value}". Expected "development" or "release".`,
   );
@@ -47,26 +46,23 @@ export function isBridgeReleaseMode(
   return resolveBridgeDistribution(env, rootDir).mode === "release";
 }
 
+/**
+ * The control distribution decides whether source management (staging, self
+ * update) is available. The launcher sets BRIDGE_CONTROL_DISTRIBUTION_MODE for
+ * every child it starts; a process started directly falls back to its own
+ * runtime mode.
+ */
 export function resolveBridgeControlDistribution(
   env: NodeJS.ProcessEnv = process.env,
   rootDir = process.cwd(),
 ): BridgeDistribution {
   const gitAvailable = hasGitCheckout(rootDir);
-  const explicitMode = normalizeDistributionMode(env[BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV]);
-  if (explicitMode) {
-    return { mode: explicitMode, gitAvailable, explicitMode, rootDir };
-  }
-
-  const runtimeMode = normalizeDistributionMode(env.BRIDGE_DISTRIBUTION_MODE);
-  const activeReleaseRoot = env[BRIDGE_ACTIVE_RELEASE_ROOT_ENV]?.trim();
-  if (runtimeMode === "release" && activeReleaseRoot && gitAvailable) {
-    return { mode: "development", gitAvailable, rootDir };
-  }
-
+  const explicitMode = normalizeDistributionMode(env[BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV])
+    ?? normalizeDistributionMode(env.BRIDGE_DISTRIBUTION_MODE);
   return {
-    mode: runtimeMode ?? (gitAvailable ? "development" : "release"),
+    mode: explicitMode ?? (gitAvailable ? "development" : "release"),
     gitAvailable,
-    ...(runtimeMode ? { explicitMode: runtimeMode } : {}),
+    ...(explicitMode ? { explicitMode } : {}),
     rootDir,
   };
 }

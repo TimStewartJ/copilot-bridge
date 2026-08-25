@@ -19,23 +19,22 @@ afterEach(() => {
 });
 
 describe("session run-state helpers", () => {
-  it("prefers explicit runState over legacy busy flags", () => {
-    const session = { sessionId: "session-1", runState: "stalled", busy: false } satisfies Partial<Session>;
-
-    expect(getSessionRunState(session)).toBe("stalled");
-    expect(isSessionActive(session)).toBe(true);
+  it("reports the server runState and treats only idle as inactive", () => {
+    expect(getSessionRunState({ runState: "stalled" })).toBe("stalled");
+    expect(isSessionActive({ runState: "stalled" })).toBe(true);
+    expect(isSessionActive({ runState: "busy" })).toBe(true);
+    expect(isSessionActive({ runState: "idle" })).toBe(false);
   });
 
-  it("falls back to busy/idle when runState is absent", () => {
-    expect(getSessionRunState({ sessionId: "busy-session", busy: true })).toBe("busy");
-    expect(getSessionRunState({ sessionId: "idle-session", busy: false })).toBe("idle");
+  it("treats optimistic sessions without a runState as idle", () => {
+    expect(getSessionRunState({})).toBe("idle");
+    expect(isSessionActive({})).toBe(false);
   });
 });
 
 describe("getSessionActivityTime", () => {
   it("prefers explicit merged activity over modified and start times", () => {
     expect(getSessionActivityTime({
-      sessionId: "session-1",
       startTime: "2026-04-17T13:00:00.000Z",
       modifiedTime: "2026-04-17T14:00:00.000Z",
       lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
@@ -46,7 +45,6 @@ describe("getSessionActivityTime", () => {
 
   it("falls back to the latest visible or attention activity timestamp", () => {
     expect(getSessionActivityTime({
-      sessionId: "session-1",
       startTime: "2026-04-17T13:00:00.000Z",
       modifiedTime: "2026-04-17T14:00:00.000Z",
       lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
@@ -56,7 +54,6 @@ describe("getSessionActivityTime", () => {
 
   it("uses visible activity when it is newer than attention activity", () => {
     expect(getSessionActivityTime({
-      sessionId: "session-1",
       modifiedTime: "2026-04-17T14:00:00.000Z",
       lastVisibleActivityAt: "2026-04-17T16:00:00.000Z",
       lastAttentionAt: "2026-04-17T15:00:00.000Z",
@@ -68,7 +65,6 @@ describe("getSessionReadThroughActivityTime", () => {
   it("includes non-visible attention activity when a session is rendered", () => {
     expect(getSessionReadThroughActivityTime(
       {
-        sessionId: "session-1",
         lastAttentionAt: "2026-05-07T21:05:00.000Z",
       },
       "2026-05-07T21:00:00.000Z",
@@ -89,7 +85,6 @@ describe("getSessionReadThroughActivityTime", () => {
   it("falls back to the rendered visible cursor when attention is older", () => {
     expect(getSessionReadThroughActivityTime(
       {
-        sessionId: "session-1",
         lastAttentionAt: "2026-05-07T20:55:00.000Z",
       },
       "2026-05-07T21:00:00.000Z",

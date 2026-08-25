@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { BridgeToolsMcpServer, registerAllBridgeTools } from "../agent-tools-mcp/index.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
-import { makeTestDir, makeTestRuntimePaths } from "./helpers.js";
+import { makeTestRuntimePaths } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { initializeDocsFts } from "../db.js";
 
@@ -72,22 +72,6 @@ describe("registerAllBridgeTools (MCP)", () => {
     const toolNames = new Set(server.getToolNames());
 
     expect(toolNames.has("self_restart")).toBe(true);
-    expect(toolNames.has("self_update")).toBe(true);
-    expect(toolNames.has("staging_init")).toBe(true);
-    expect(toolNames.has("staging_deploy")).toBe(true);
-  });
-
-  it("keeps git-backed tools available for release-slot servers launched before the control-mode env existed", () => {
-    const runtimePaths = makeTestRuntimePaths(
-      "legacy-source-release-slot-tools-mcp",
-      { distributionMode: "release" },
-      { BRIDGE_ACTIVE_RELEASE_ROOT: makeTestDir("bridge-release-slot") },
-    );
-    const { ctx } = createTestApp({ runtimePaths });
-    const server = new BridgeToolsMcpServer(ctx);
-    registerAllBridgeTools(server, ctx);
-    const toolNames = new Set(server.getToolNames());
-
     expect(toolNames.has("self_update")).toBe(true);
     expect(toolNames.has("staging_init")).toBe(true);
     expect(toolNames.has("staging_deploy")).toBe(true);

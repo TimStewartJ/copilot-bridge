@@ -584,12 +584,6 @@ describe("staging tools", () => {
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
     const mod3 = await loadStagingToolsModule();
     expect(mod3.shouldManageStagingArtifacts(), "source-managed release-slot").toBe(true);
-
-    // Legacy source-managed release-slot (BRIDGE_ACTIVE_RELEASE_ROOT set): manages
-    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
-    vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", join(tmpdir(), "bridge-release-slot"));
-    const mod4 = await loadStagingToolsModule();
-    expect(mod4.shouldManageStagingArtifacts(), "legacy source-managed release-slot").toBe(true);
   });
 
   it("builds and parses staging preview prefixes", async () => {

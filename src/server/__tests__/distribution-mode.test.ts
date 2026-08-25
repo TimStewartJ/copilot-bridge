@@ -23,18 +23,10 @@ describe("distribution mode", () => {
     });
   });
 
-  it("honors explicit development mode aliases", () => {
-    const rootDir = join(tmpdir(), `bridge-dev-${Date.now()}`);
-    mkdirSync(rootDir, { recursive: true });
-
-    expect(resolveBridgeDistribution({ BRIDGE_DISTRIBUTION_MODE: "dev" }, rootDir)).toMatchObject({
-      mode: "development",
-      explicitMode: "development",
-    });
-  });
-
-  it("rejects invalid explicit modes", () => {
+  it("rejects invalid explicit modes and legacy aliases", () => {
     expect(() => resolveBridgeDistribution({ BRIDGE_DISTRIBUTION_MODE: "banana" }, tmpdir()))
+      .toThrow(/Invalid BRIDGE_DISTRIBUTION_MODE/);
+    expect(() => resolveBridgeDistribution({ BRIDGE_DISTRIBUTION_MODE: "dev" }, tmpdir()))
       .toThrow(/Invalid BRIDGE_DISTRIBUTION_MODE/);
   });
 
@@ -55,7 +47,7 @@ describe("distribution mode", () => {
     expect(isBridgeSourceManagementAvailable(env, rootDir)).toBe(true);
   });
 
-  it("infers source-managed release slots from an active release root and git control root", () => {
+  it("does not treat a release-slot runtime as source-managed without the control mode", () => {
     const rootDir = join(tmpdir(), `bridge-active-release-${Date.now()}`);
     mkdirSync(join(rootDir, ".git"), { recursive: true });
 
@@ -65,10 +57,10 @@ describe("distribution mode", () => {
     };
 
     expect(resolveBridgeControlDistribution(env, rootDir)).toMatchObject({
-      mode: "development",
+      mode: "release",
       gitAvailable: true,
     });
-    expect(isBridgeSourceManagementAvailable(env, rootDir)).toBe(true);
+    expect(isBridgeSourceManagementAvailable(env, rootDir)).toBe(false);
   });
 
   it("does not allow source management without a control git checkout", () => {

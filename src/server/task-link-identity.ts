@@ -148,11 +148,6 @@ export interface ResolvedPullRequestLink {
  *
  * `repoId` is the identity the row is keyed by (an ADO repository GUID, or a
  * canonical `owner/repo` for GitHub); `repoName` is only ever display text.
- *
- * An explicit `repoId` is authoritative: canonicalization upgrades a GitHub
- * reference to `owner/repo` when it can, but never rejects an id the caller
- * supplied — rows written before canonicalization hold un-upgradable ids (a
- * bare repo name with no configured owner) and must stay relinkable.
  */
 export function resolvePullRequestRef(input: {
   repoId?: unknown;
@@ -167,23 +162,21 @@ export function resolvePullRequestRef(input: {
   const explicitRepoId = typeof input.repoId === "string" ? input.repoId.trim() : "";
   const repoName = typeof input.repoName === "string" ? input.repoName.trim() : "";
 
-  if (!explicitRepoId && !repoName) {
+  let repoId = explicitRepoId || repoName;
+  if (!repoId) {
     return err("repoName or repoId is required");
   }
 
-  let repoId = explicitRepoId;
   if (input.provider === "github") {
-    const canonical = canonicalizeGitHubRepoId(explicitRepoId || repoName, input.providers?.github?.owner);
-    if (!canonical && !explicitRepoId) {
-      // Only a display name to go on, and it does not name a repository —
-      // refuse rather than key a row on something that can never resolve.
+    const canonical = canonicalizeGitHubRepoId(repoId, input.providers?.github?.owner);
+    if (!canonical) {
+      // Refuse rather than key a row on something that can never resolve.
       return err(
-        `Could not resolve "${repoName}" to a GitHub repository. Use "owner/repo" or a github.com URL.`,
+        `Could not resolve "${repoId}" to a GitHub repository. Use "owner/repo" or a github.com URL.`,
       );
     }
-    repoId = canonical ?? explicitRepoId;
+    repoId = canonical;
   }
-  if (!repoId) repoId = repoName;
 
   return ok({
     repoId,
@@ -194,12 +187,9 @@ export function resolvePullRequestRef(input: {
 }
 
 /**
- * Repo ids an unlink should try.
- *
- * Rows written before repo ids were canonicalized hold the raw display name, so
- * every plausible spelling is offered as a candidate. A delete is still keyed by
- * task, PR number and (when known) provider, so extra candidates cannot remove
- * an unrelated row.
+ * Repo ids an unlink should try: the reference as given plus its canonical
+ * GitHub form. A delete is still keyed by task, PR number and (when known)
+ * provider, so the extra candidate cannot remove an unrelated row.
  */
 export function pullRequestRepoIdCandidates(input: {
   repoId?: unknown;
@@ -208,8 +198,10 @@ export function pullRequestRepoIdCandidates(input: {
 }): string[] {
   const explicit = typeof input.repoId === "string" ? input.repoId.trim() : "";
   const name = typeof input.repoName === "string" ? input.repoName.trim() : "";
-  const canonical = canonicalizeGitHubRepoId(explicit || name, input.providers?.github?.owner) ?? "";
-  return [...new Set([explicit, name, canonical].filter(Boolean))];
+  const ref = explicit || name;
+  if (!ref) return [];
+  const canonical = canonicalizeGitHubRepoId(ref, input.providers?.github?.owner) ?? "";
+  return [...new Set([ref, canonical].filter(Boolean))];
 }
 
 /** Normalize a work item reference. Accepts a string or a number. */

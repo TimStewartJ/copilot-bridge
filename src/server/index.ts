@@ -191,7 +191,7 @@ async function main(): Promise<void> {
 
   // Must finish before the first agent backend spawns the CLI: the launch
   // decision in buildCopilotClientOptions is synchronous and only sees what is
-  // already in the cache. Fail-open: a download failure logs and uses npm.
+  // already in the cache. Fail-closed: a download failure aborts startup.
   const copilotCli = await ensurePinnedCopilotCli({
     cacheDir: runtimePaths.copilotCliCacheDir ?? join(runtimePaths.dataDir, "copilot-cli"),
     log: (message) => console.log(`[copilot-cli] ${message}`),
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
   }
 
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
-  initKeepAlive();
+  initKeepAlive(defaultContext.globalBus);
 
   // Watch active management jobs before scanning disk: a preview finishing between
   // the scan and the resume would otherwise never be observed.

@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { createEventBusRegistry, getOrCreateBus, getBus, hasBus } from "../event-bus.js";
+import { createEventBusRegistry } from "../event-bus.js";
 import type { StreamEvent } from "../event-bus.js";
+
+const { getOrCreateBus, hasBus } = createEventBusRegistry();
 
 describe("event-bus", () => {
   describe("getOrCreateBus / getBus / hasBus", () => {

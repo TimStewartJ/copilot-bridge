@@ -154,7 +154,7 @@ export default function WorkspaceDetailsSheet({
   ), [effectiveCwd, sessionWorkspace?.availableWorktrees, taskGitStatus]);
   const gitStatus = sessionWorkspace?.gitStatus ?? taskGitStatus;
   const selectedWorktree = availableWorktrees.find((worktree) => areWorkspacePathsEqual(worktree.cwd, draftPath));
-  const busy = sessionWorkspace?.busy ?? false;
+  const busy = sessionWorkspace ? sessionWorkspace.runState !== "idle" : false;
   const loading = !!sessionId && workspaceQuery.isLoading;
   const actionPending = selectSessionWorkspace.isPending
     || setSessionWorkspacePath.isPending
@@ -330,7 +330,7 @@ export default function WorkspaceDetailsSheet({
                         : sessionWorkspace?.source === "task"
                           ? "Using task default"
                           : sessionWorkspace?.source === "workspace_yaml"
-                            ? "Using legacy workspace.yaml value"
+                            ? "Using the directory the session was started in"
                             : "Not configured"}
                     </div>
                   </>

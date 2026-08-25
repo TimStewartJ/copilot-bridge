@@ -854,11 +854,12 @@ function EditMode({
 // ── Sub-components ────────────────────────────────────────────────
 
 function SessionRunRow({ session, onSelect }: { session: ScheduleRun; onSelect?: () => void }) {
+  const runState = getSessionRunState(session);
   const statusDot = session.missing
     ? "bg-text-faint"
-    : getSessionRunState(session) === "stalled"
+    : runState === "stalled"
       ? "bg-warning animate-pulse"
-      : session.busy
+      : runState === "busy"
         ? "bg-info animate-pulse"
         : session.archived
           ? "bg-text-faint"

@@ -145,13 +145,9 @@ function collectDocsDatabaseSummaries(docsStore: DocsStore, nodes: DocTreeNode[]
 function resolveSessionMcpServers(
   deps: SessionConfigBuilderDeps,
   tagSelectedServerIds: string[] = [],
-  fallbackTagServers?: Record<string, McpServerConfig>,
 ): Record<string, McpServerConfig> {
   if (!deps.mcpServerStore) {
-    const base = deps.settingsStore?.getMcpServers() ?? deps.config.sessionMcpServers;
-    return fallbackTagServers && Object.keys(fallbackTagServers).length > 0
-      ? { ...base, ...fallbackTagServers }
-      : base;
+    return deps.settingsStore?.getMcpServers() ?? deps.config.sessionMcpServers;
   }
 
   const byId = new Map<string, { name: string; config: McpServerConfig }>();
@@ -429,10 +425,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       contextParts.push(`\n<tag_instructions>\n${resolved.mergedInstructions}\n</tag_instructions>`);
     }
     // Merge tag-selected MCP registry servers into session config.
-    if (resolved.mcpServerIds.length > 0 || Object.keys(resolved.mergedMcpServers).length > 0) {
+    if (resolved.mcpServerIds.length > 0) {
       cfg.mcpServers = addBuiltInMcpServers(
         deps,
-        resolveSessionMcpServers(deps, resolved.mcpServerIds, resolved.mergedMcpServers),
+        resolveSessionMcpServers(deps, resolved.mcpServerIds),
         sessionId,
       );
     }

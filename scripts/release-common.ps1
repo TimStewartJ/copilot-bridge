@@ -1,33 +1,14 @@
 # Shared release wrapper helpers. Keep this file side-effect-free; wrappers dot-source it.
 
-$script:BridgeEmbeddedSupervisorHelperBase64 = "__BRIDGE_SUPERVISOR_HELPER_BASE64__"
-
 function Get-BridgeSupervisorHelperScriptBlock($ScriptRoot) {
   $helperPath = Join-Path $ScriptRoot "bridge-supervisor-common.ps1"
-  if (Test-Path -LiteralPath $helperPath -PathType Leaf) {
-    try {
-      return [scriptblock]::Create((Get-Content -LiteralPath $helperPath -Raw))
-    } catch {
-      throw "Could not load supervisor helper at ${helperPath}: $($_.Exception.Message)"
-    }
+  if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+    throw "Supervisor helper not found at $helperPath. Reinstall Copilot Bridge."
   }
-
-  $embedded = [string]$script:BridgeEmbeddedSupervisorHelperBase64
-  $unsubstitutedMarker = "__BRIDGE_SUPERVISOR_" + "HELPER_BASE64__"
-  if (
-    [string]::IsNullOrWhiteSpace($embedded) -or
-    $embedded -eq $unsubstitutedMarker
-  ) {
-    throw "Supervisor helper not found at $helperPath and no packaged bootstrap fallback is available. Reinstall Copilot Bridge."
-  }
-
   try {
-    $helperSource = [System.Text.Encoding]::UTF8.GetString(
-      [System.Convert]::FromBase64String($embedded)
-    )
-    return [scriptblock]::Create($helperSource)
+    return [scriptblock]::Create((Get-Content -LiteralPath $helperPath -Raw))
   } catch {
-    throw "Could not load the packaged supervisor helper fallback: $($_.Exception.Message)"
+    throw "Could not load supervisor helper at ${helperPath}: $($_.Exception.Message)"
   }
 }
 
