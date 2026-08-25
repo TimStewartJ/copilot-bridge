@@ -78,18 +78,18 @@ afterEach(() => {
 });
 
 describe("copilot-cli lock parsing", () => {
-  it("accepts the npm and github-release shapes", () => {
-    expect(parseCopilotCliLock('{"source":"npm"}')).toEqual({ source: "npm" });
+  it("accepts the github-release shape", () => {
     expect(parseCopilotCliLock(JSON.stringify(releaseLock("a".repeat(64))))).toEqual(releaseLock("a".repeat(64)));
   });
 
-  it("treats a missing lock as npm", () => {
+  it("requires the lock to be present", () => {
     const root = makeTestDir("cli-lock-missing");
-    expect(readCopilotCliLock(root)).toEqual({ source: "npm" });
+    expect(() => readCopilotCliLock(root)).toThrow(/is missing/);
   });
 
   it("rejects malformed locks loudly", () => {
     expect(() => parseCopilotCliLock("nope")).toThrow(/not valid JSON/);
+    expect(() => parseCopilotCliLock('{"source":"npm"}')).toThrow(/source must be "github-release"/);
     expect(() => parseCopilotCliLock('{"source":"tarball"}')).toThrow(/source must be/);
     expect(() => parseCopilotCliLock('{"source":"github-release","version":"latest","assets":{}}')).toThrow(/version must be/);
     expect(() => parseCopilotCliLock('{"source":"github-release","version":"1.0.81-6","assets":{}}')).toThrow(/assets must map/);
@@ -135,31 +135,21 @@ describe("copilot-cli lock parsing", () => {
 });
 
 describe("copilot-cli launch resolution", () => {
-  it("uses npm when the lock says so", () => {
-    const root = makeTestDir("cli-launch-npm");
-    writeLock(root, { source: "npm" });
-    const resolution = resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: PLATFORM });
-    expect(resolution.source).toBe("npm");
-    expect(resolution.appDir).toBeUndefined();
-  });
-
-  it("falls back to npm with a reason when the pinned build is not cached", () => {
+  it("refuses to launch when the pinned build is not cached", () => {
     const root = makeTestDir("cli-launch-missing");
     writeLock(root, releaseLock("a".repeat(64)));
-    const resolution = resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: PLATFORM });
-    expect(resolution).toMatchObject({ source: "npm-fallback", lockVersion: VERSION });
-    expect(resolution.error).toMatch(/not ready/);
-    expect(describeCopilotCliResolution(resolution)).toContain("fallback");
+    expect(() => resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: PLATFORM }))
+      .toThrow(/not ready/);
   });
 
-  it("falls back when the lock has no asset for this platform or is invalid", () => {
+  it("refuses to launch when the lock has no asset for this platform or is invalid", () => {
     const root = makeTestDir("cli-launch-platform");
     writeLock(root, releaseLock("a".repeat(64)));
-    expect(resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: "linux-x64" }))
-      .toMatchObject({ source: "npm-fallback", error: expect.stringContaining("no asset for linux-x64") });
+    expect(() => resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: "linux-x64" }))
+      .toThrow(/no asset for linux-x64/);
     writeFileSync(join(root, COPILOT_CLI_LOCK_FILENAME), "{broken");
-    expect(resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: PLATFORM }))
-      .toMatchObject({ source: "npm-fallback", error: expect.stringContaining("not valid JSON") });
+    expect(() => resolveCopilotCliForLaunch({ rootDir: root, cacheDir: join(root, "cache"), platformKey: PLATFORM }))
+      .toThrow(/not valid JSON/);
   });
 
   it("requires the marker, entry points, and a matching package version before launching pinned", () => {
@@ -182,12 +172,9 @@ describe("copilot-cli launch resolution", () => {
 
     writeFileSync(join(appDir, "package.json"), JSON.stringify({ version: VERSION }));
     expect(checkPinnedCopilotCliDir(appDir, VERSION)).toEqual({ ready: true });
-    expect(resolveCopilotCliForLaunch({ rootDir: root, cacheDir, platformKey: PLATFORM })).toEqual({
-      source: "pinned",
-      version: VERSION,
-      appDir,
-      lockVersion: VERSION,
-    });
+    const resolution = resolveCopilotCliForLaunch({ rootDir: root, cacheDir, platformKey: PLATFORM });
+    expect(resolution).toEqual({ version: VERSION, appDir });
+    expect(describeCopilotCliResolution(resolution)).toBe(`pinned ${VERSION} (${appDir})`);
   });
 });
 
@@ -212,7 +199,7 @@ describe("ensurePinnedCopilotCli", () => {
     });
 
     const appDir = getPinnedCopilotCliDir(cacheDir, VERSION);
-    expect(first).toEqual({ source: "pinned", version: VERSION, appDir, lockVersion: VERSION });
+    expect(first).toEqual({ version: VERSION, appDir });
     expect(calls).toHaveLength(1);
     expect(existsSync(join(appDir, "app.js"))).toBe(true);
     expect(existsSync(join(appDir, "prebuilds", PLATFORM, "runtime.node"))).toBe(true);
@@ -236,22 +223,19 @@ describe("ensurePinnedCopilotCli", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("rejects a tarball whose sha256 does not match and falls back to npm", async () => {
+  it("rejects a tarball whose sha256 does not match", async () => {
     const root = makeTestDir("cli-ensure-sha");
     const fixture = makeTestDir("cli-ensure-sha-fixture");
     const tarball = buildReleaseTarball(fixture);
     const cacheDir = join(root, "cache");
     writeLock(root, releaseLock("b".repeat(64)));
 
-    const result = await ensurePinnedCopilotCli({
+    await expect(ensurePinnedCopilotCli({
       rootDir: root,
       cacheDir,
       platformKey: PLATFORM,
       downloader: downloaderFor(getCopilotCliReleaseAssetUrl(VERSION, ASSET_NAME), tarball),
-    });
-
-    expect(result).toMatchObject({ source: "npm-fallback", lockVersion: VERSION });
-    expect(result.error).toMatch(/sha256 mismatch/);
+    })).rejects.toThrow(/sha256 mismatch/);
     expect(existsSync(getPinnedCopilotCliDir(cacheDir, VERSION))).toBe(false);
   });
 
@@ -260,42 +244,47 @@ describe("ensurePinnedCopilotCli", () => {
     const cacheDir = join(root, "cache");
     const wrongVersion = buildReleaseTarball(makeTestDir("cli-ensure-shape-v"), { version: "1.0.80" });
     writeLock(root, releaseLock(sha256(wrongVersion)));
-    const versionResult = await ensurePinnedCopilotCli({
+    await expect(ensurePinnedCopilotCli({
       rootDir: root, cacheDir, platformKey: PLATFORM,
       downloader: downloaderFor(getCopilotCliReleaseAssetUrl(VERSION, ASSET_NAME), wrongVersion),
-    });
-    expect(versionResult).toMatchObject({ source: "npm-fallback", error: expect.stringContaining("package.json version 1.0.80") });
+    })).rejects.toThrow(/package\.json version 1\.0\.80/);
 
     const noIndex = buildReleaseTarball(makeTestDir("cli-ensure-shape-i"), { omit: ["index.js"] });
     writeLock(root, releaseLock(sha256(noIndex)));
-    const entryResult = await ensurePinnedCopilotCli({
+    await expect(ensurePinnedCopilotCli({
       rootDir: root, cacheDir, platformKey: PLATFORM,
       downloader: downloaderFor(getCopilotCliReleaseAssetUrl(VERSION, ASSET_NAME), noIndex),
-    });
-    expect(entryResult).toMatchObject({ source: "npm-fallback", error: expect.stringContaining("missing index.js") });
+    })).rejects.toThrow(/missing index\.js/);
     expect(existsSync(getPinnedCopilotCliDir(cacheDir, VERSION))).toBe(false);
   });
 
-  it("reports download failures as npm-fallback without leaving partial installs", async () => {
+  it("surfaces download failures without leaving partial installs", async () => {
     const root = makeTestDir("cli-ensure-download");
     const cacheDir = join(root, "cache");
     writeLock(root, releaseLock("c".repeat(64)));
-    const result = await ensurePinnedCopilotCli({
+    await expect(ensurePinnedCopilotCli({
       rootDir: root, cacheDir, platformKey: PLATFORM,
       downloader: async () => { throw new Error("download failed: HTTP 404 Not Found"); },
-    });
-    expect(result).toMatchObject({ source: "npm-fallback", error: expect.stringContaining("HTTP 404") });
+    })).rejects.toThrow(/HTTP 404/);
     expect(existsSync(getPinnedCopilotCliDir(cacheDir, VERSION))).toBe(false);
   });
 
-  it("is a no-op for npm locks and for an already-ready cache", async () => {
+  it("is a no-op for an already-ready cache", async () => {
     const root = makeTestDir("cli-ensure-noop");
-    writeLock(root, { source: "npm" });
+    const cacheDir = join(root, "cache");
+    const appDir = getPinnedCopilotCliDir(cacheDir, VERSION);
+    writeLock(root, releaseLock("a".repeat(64)));
+    mkdirSync(appDir, { recursive: true });
+    for (const file of ["app.js", "index.js"]) writeFileSync(join(appDir, file), "");
+    writeFileSync(join(appDir, "package.json"), JSON.stringify({ version: VERSION }));
+    writeFileSync(join(appDir, PINNED_COPILOT_CLI_MARKER), JSON.stringify({
+      version: VERSION, asset: ASSET_NAME, sha256: "a".repeat(64), installedAt: new Date().toISOString(),
+    }));
     const result = await ensurePinnedCopilotCli({
-      rootDir: root, cacheDir: join(root, "cache"), platformKey: PLATFORM,
+      rootDir: root, cacheDir, platformKey: PLATFORM,
       downloader: async () => { throw new Error("must not download"); },
     });
-    expect(result.source).toBe("npm");
+    expect(result).toEqual({ version: VERSION, appDir });
   });
 
   it("coalesces concurrent ensures in one process", async () => {
@@ -310,7 +299,7 @@ describe("ensurePinnedCopilotCli", () => {
     };
     const [a, b] = await Promise.all([ensurePinnedCopilotCli(options), ensurePinnedCopilotCli(options)]);
     expect(a).toEqual(b);
-    expect(a.source).toBe("pinned");
+    expect(a.version).toBe(VERSION);
     expect(calls).toHaveLength(1);
   });
 
@@ -334,7 +323,7 @@ describe("ensurePinnedCopilotCli", () => {
         }));
       },
     });
-    expect(result).toMatchObject({ source: "pinned", appDir });
+    expect(result).toEqual({ version: VERSION, appDir });
   });
 });
 

@@ -52,7 +52,7 @@ describe("buildCopilotClientOptions Copilot CLI pinning", () => {
       { copilotCliRootDir: root },
     );
 
-    expect(options.copilotCli).toEqual({ source: "pinned", version: VERSION, appDir, lockVersion: VERSION });
+    expect(options.copilotCli).toEqual({ version: VERSION, appDir });
     expect(options.env?.[BRIDGE_COPILOT_APP_DIR_ENV]).toBe(appDir);
     expect(options.env?.COPILOT_CLI_PATH).toBe(resolveBridgeCopilotCliPath());
   });
@@ -65,28 +65,20 @@ describe("buildCopilotClientOptions Copilot CLI pinning", () => {
 
     const options = buildCopilotClientOptions({ BRIDGE_DATA_DIR: dataDir }, { copilotCliRootDir: root });
 
-    expect(options.copilotCli.source).toBe("pinned");
+    expect(options.copilotCli.version).toBe(VERSION);
     expect(options.env?.[BRIDGE_COPILOT_APP_DIR_ENV]).toBe(appDir);
   });
 
-  it("falls back to the npm package, without the app-dir env, when the pinned build is missing", () => {
+  it("refuses to build client options when the pinned build is missing", () => {
     const root = makeTestDir("client-options-missing");
     writePinnedLock(root);
 
-    const options = buildCopilotClientOptions(
+    expect(() => buildCopilotClientOptions(
       { BRIDGE_DATA_DIR: join(root, "data"), [BRIDGE_COPILOT_APP_DIR_ENV]: join(root, "stale") },
       { copilotCliRootDir: root },
-    );
-
-    expect(options.copilotCli).toMatchObject({ source: "npm-fallback", lockVersion: VERSION });
-    expect(options.env?.[BRIDGE_COPILOT_APP_DIR_ENV]).toBeUndefined();
-  });
-
-  it("uses the npm package for npm locks", () => {
-    const root = makeTestDir("client-options-npm");
-    writeFileSync(join(root, COPILOT_CLI_LOCK_FILENAME), JSON.stringify({ source: "npm" }));
-
-    expect(resolveCopilotCliLaunch({ BRIDGE_DATA_DIR: join(root, "data") }, { copilotCliRootDir: root }).source).toBe("npm");
+    )).toThrow(/not ready/);
+    expect(() => resolveCopilotCliLaunch({ BRIDGE_DATA_DIR: join(root, "data") }, { copilotCliRootDir: root }))
+      .toThrow(/not ready/);
   });
 });
 
@@ -108,7 +100,7 @@ describe("copilot-cli-wrapper pinned app dir", () => {
     expect(output).toBe("pinned-index-loaded");
   });
 
-  it("fails loudly instead of falling back when BRIDGE_COPILOT_APP_DIR is broken", () => {
+  it("fails loudly instead of falling back when BRIDGE_COPILOT_APP_DIR is broken or unset", () => {
     const broken = makeTestDir("wrapper-broken");
 
     expect(() => execFileSync(process.execPath, [wrapperPath], {
@@ -116,5 +108,13 @@ describe("copilot-cli-wrapper pinned app dir", () => {
       encoding: "utf-8",
       stdio: "pipe",
     })).toThrow(/does not contain the Copilot application entry points/);
+
+    const env = { ...process.env };
+    delete env[BRIDGE_COPILOT_APP_DIR_ENV];
+    expect(() => execFileSync(process.execPath, [wrapperPath], {
+      env,
+      encoding: "utf-8",
+      stdio: "pipe",
+    })).toThrow(/BRIDGE_COPILOT_APP_DIR is not set/);
   });
 });

@@ -3,8 +3,7 @@
  *
  * `task_work_items.itemId` is keyed on the exact stored string, so link, unlink,
  * and the persisted rows must all agree on one normalization. This module is the
- * single owner of that rule, shared by the store and by the migration that
- * backfills rows written before canonicalization existed.
+ * single owner of that rule.
  */
 
 import { canonicalizeGitHubWorkItemId } from "./providers/github.js";

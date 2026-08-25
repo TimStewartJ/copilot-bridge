@@ -293,21 +293,14 @@ describe("unified defer tools", () => {
       .toContain("cannot be reactivated");
   });
 
-  it("rejects legacy deferredPromptId and loopId surfaces", async () => {
+  it("fails legacy-only defer arguments on the declared schema", async () => {
     const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
-    const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
-    const listTool = findTool(tools, "defer_list");
 
-    await expect(createTool.handler({ prompt: "hi", delaySeconds: 10, deferredPromptId: "old" }, makeInvocation("s1")))
-      .resolves.toEqual(toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId."));
-    // Legacy-only calls now fail the declared schema first: the required
-    // replacement argument is named in the failure.
+    // The required replacement argument is named in the failure.
     const legacyCancel: any = await cancelTool.handler({ deferredPromptId: "old" }, makeInvocation("s1"));
     expect(String(legacyCancel.textResultForLlm)).toContain("missing required property: deferId");
-    await expect(listTool.handler({ loopId: "old" }, makeInvocation("s1")))
-      .resolves.toEqual(toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId."));
   });
 
   it("does not cancel another session's defer", async () => {

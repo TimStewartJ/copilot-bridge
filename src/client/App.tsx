@@ -116,8 +116,8 @@ interface StartPromptSessionOptions {
   navigateOnError?: boolean;
 }
 
-function isTaskCompleted(task: Pick<Task, "status" | "completedAt">): boolean {
-  return task.status === "done" || Boolean(task.completedAt);
+function isTaskCompleted(task: Pick<Task, "completedAt">): boolean {
+  return Boolean(task.completedAt);
 }
 
 function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<string, string>): string[] {
@@ -378,7 +378,7 @@ export default function App() {
   }, [patchSessionsInCache]);
   const buildTaskCompletionFeedback = useCallback((
     task: Task,
-    previousStatus: Exclude<Task["status"], "done">,
+    previousStatus: Task["status"],
   ) => {
     const checklistItems = queryClient.getQueryData<ChecklistItem[]>(queryKeys.taskChecklistItems(task.id)) ?? [];
     const enriched = queryClient.getQueryData<EnrichedTaskData>(queryKeys.taskEnriched(task.id));
@@ -415,21 +415,21 @@ export default function App() {
     switch (event.type) {
       case "session:busy":
         if (event.sessionId) {
-          patchSessionInCache(event.sessionId, { runState: "busy", busy: true });
+          patchSessionInCache(event.sessionId, { runState: "busy" });
           bumpSessionBusySignal(event.sessionId);
         }
         invalidateDashboard();
         break;
       case "session:stalled":
         if (event.sessionId) {
-          patchSessionInCache(event.sessionId, { runState: "stalled", busy: true });
+          patchSessionInCache(event.sessionId, { runState: "stalled" });
         }
         invalidateDashboard();
         break;
       case "session:idle":
         if (event.sessionId) {
           clearSessionBusyHint(event.sessionId);
-          patchSessionInCache(event.sessionId, { runState: "idle", busy: false, intentText: null });
+          patchSessionInCache(event.sessionId, { runState: "idle", intentText: null });
         }
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
         invalidateSessions();
@@ -698,7 +698,6 @@ export default function App() {
         modifiedTime: timestamp,
         lastVisibleActivityAt: timestamp,
         runState: "idle",
-        busy: false,
         eventLogSizeBytes: 0,
         deferSummary: { count: 0, nextRunAt: null },
         isOptimistic: true,
@@ -742,7 +741,6 @@ export default function App() {
         return {
           ...session,
           runState: session.runState === "stalled" ? "stalled" as const : "busy" as const,
-          busy: true,
           intentText: preserveExistingIntent ? session.intentText : intent,
         };
       });
@@ -754,7 +752,6 @@ export default function App() {
     const intent = getVoiceSessionIntent(activity.status);
     addOptimisticSession(activity.sessionId, {
       runState: "busy",
-      busy: true,
       intentText: intent,
     });
     patchVoiceSessionActivityInCache(activity);
@@ -951,13 +948,13 @@ export default function App() {
   }, [navigate]);
 
   const addPendingPromptSession = useCallback((sessionId: string) => {
-    addOptimisticSession(sessionId, { runState: "busy", busy: true });
+    addOptimisticSession(sessionId, { runState: "busy" });
     bumpSessionBusySignal(sessionId);
     markRead(sessionId);
   }, [addOptimisticSession, bumpSessionBusySignal, markRead]);
   const clearPendingPromptSession = useCallback((sessionId: string) => {
     clearSessionBusyHint(sessionId);
-    patchSessionInCache(sessionId, { runState: "idle", busy: false, intentText: null });
+    patchSessionInCache(sessionId, { runState: "idle", intentText: null });
   }, [clearSessionBusyHint, patchSessionInCache]);
 
   const cleanupRejectedFirstSendSession = useCallback((sessionId: string, taskId?: string) =>

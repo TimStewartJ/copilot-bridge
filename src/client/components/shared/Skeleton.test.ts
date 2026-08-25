@@ -19,7 +19,7 @@ describe("shared skeleton primitives", () => {
     const html = renderToStaticMarkup(
       createElement(
         LoadingSkeletonRegion,
-        { isLoading: true, label: "Loading dashboard" },
+        { isLoading: true, label: "Loading dashboard", children: null },
         createElement(
           SkeletonCard,
           null,

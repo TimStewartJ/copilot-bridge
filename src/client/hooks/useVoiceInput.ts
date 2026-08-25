@@ -24,6 +24,7 @@ interface VoiceInputState {
 }
 
 type WindowWithWebkitAudioContext = Window & {
+  AudioContext?: typeof AudioContext;
   webkitAudioContext?: typeof AudioContext;
 };
 

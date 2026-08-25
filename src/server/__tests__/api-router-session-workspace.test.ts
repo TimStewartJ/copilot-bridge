@@ -239,9 +239,9 @@ describe("session workspace routes", () => {
     expect(firstRes.status).toBe(200);
     expect(secondRes.status).toBe(200);
     expect(thirdRes.status).toBe(200);
-    expect(firstRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle", busy: false });
-    expect(secondRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "busy", busy: true });
-    expect(thirdRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle", busy: false });
+    expect(firstRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle" });
+    expect(secondRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "busy" });
+    expect(thirdRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle" });
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
@@ -771,7 +771,7 @@ describe("session workspace routes", () => {
     });
   });
 
-  it("resets a session workspace back to the linked task cwd without falling back to legacy yaml", async () => {
+  it("resets a session workspace back to the linked task cwd without falling back to the recorded workspace.yaml cwd", async () => {
     const copilotHome = createCopilotHome();
     const legacyWorkspace = createWorkspace(copilotHome, "legacy-workspace");
     const taskWorkspace = createWorkspace(copilotHome, "task-workspace");

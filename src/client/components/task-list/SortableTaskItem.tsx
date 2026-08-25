@@ -4,6 +4,7 @@ import { GripVertical } from "lucide-react";
 import { timeAgo } from "../../time";
 import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
+import type { LongPressBindings } from "../../hooks/useLongPressMenu";
 import TaskKindBadge from "../TaskKindBadge";
 import { UI } from "../shared/design-system";
 import {
@@ -21,7 +22,7 @@ interface SortableTaskItemProps {
   indicator: TaskIndicator | undefined;
   isCtxTarget: boolean;
   isLongPressTarget: boolean;
-  bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
+  bindLongPress: (id: string, onClick: () => void) => LongPressBindings;
   onSelectTask: (id: string) => void;
   /** "rail" shows status text and uses tighter padding; "list" is the mobile/simple variant */
   variant?: "rail" | "list";

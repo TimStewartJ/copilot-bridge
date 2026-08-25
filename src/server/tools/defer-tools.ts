@@ -95,9 +95,6 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
       handler: async (args: any, invocation: any) => {
         const sessionId = invocation.sessionId;
-        if (args.deferredPromptId !== undefined || args.loopId !== undefined) {
-          return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
-        }
 
         const promptError = validatePrompt(args.prompt);
         if (promptError) return toolFailure(promptError);
@@ -227,9 +224,6 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
       handler: async (args: any, invocation: any) => {
         const sessionId = invocation.sessionId;
-        if (args.deferredPromptId !== undefined || args.loopId !== undefined) {
-          return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
-        }
         const deferId = typeof args.deferId === "string" ? args.deferId : "";
         const parsed = parseDeferId(deferId);
         if (!parsed) return toolFailure("deferId must start with once_ or interval_.");
@@ -275,9 +269,6 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
       handler: async (args: any, invocation: any) => {
         const sessionId = invocation.sessionId;
-        if (args.deferredPromptId !== undefined || args.loopId !== undefined) {
-          return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
-        }
         const deferId = typeof args.deferId === "string" ? args.deferId : "";
         const parsed = parseDeferId(deferId);
         if (!parsed) return toolFailure("deferId must start with once_ or interval_.");
@@ -338,9 +329,6 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
       handler: async (args: any, invocation: any) => {
         const sessionId = invocation.sessionId;
-        if (args?.deferredPromptId !== undefined || args?.loopId !== undefined) {
-          return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
-        }
         const includeInactive = args?.includeInactive === true;
         const oneShots = ctx.deferredPromptStore
           ? ctx.deferredPromptStore

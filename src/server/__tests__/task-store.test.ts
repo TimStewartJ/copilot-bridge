@@ -231,15 +231,16 @@ describe("task-store", () => {
         .toThrow("kind must be either 'task' or 'ongoing'");
     });
 
-    it("updateTask rejects done status for ongoing tasks unless explicitly changed", () => {
+    it("updateTask rejects completion for ongoing tasks unless the kind is changed", () => {
       const task = store.createTask("Original");
       store.updateTask(task.id, { kind: "ongoing" });
 
-      expect(() => store.updateTask(task.id, { status: "done" }))
-        .toThrow("Ongoing tasks cannot be marked done");
+      expect(() => store.updateTask(task.id, { completionAction: "complete-and-archive" }))
+        .toThrow("Ongoing tasks cannot be completed");
 
-      const converted = store.updateTask(task.id, { kind: "task", status: "done" });
+      const converted = store.updateTask(task.id, { kind: "task", completionAction: "complete-and-archive" });
       expect(converted).toMatchObject({ kind: "task", status: "archived" });
+      expect(converted.completedAt).toBeDefined();
     });
 
     it("updateTask clears doneWhen when switching to ongoing unless explicitly preserved", () => {
@@ -268,7 +269,7 @@ describe("task-store", () => {
       `).run(
         "task-hydrate",
         "Hydrate me",
-        "paused",
+        "active",
         null,
         null,
         "",
@@ -356,10 +357,10 @@ describe("task-store", () => {
       expect(() => store.updateTask("nope", { title: "x" })).toThrow("not found");
     });
 
-    it("updateTask legacy done status archives the task at the top of the archived group", () => {
+    it("updateTask complete-and-archive places the task at the top of the archived group", () => {
       const t1 = store.createTask("Task 1");
-      const t2 = store.createTask("Task 2");
-      const archived = store.updateTask(t1.id, { status: "done" });
+      store.createTask("Task 2");
+      const archived = store.updateTask(t1.id, { completionAction: "complete-and-archive" });
       expect(archived.status).toBe("archived");
       expect(store.listTasks().filter((t) => t.status === "archived")).toEqual([
         expect.objectContaining({ id: t1.id, order: 0 }),
@@ -382,13 +383,11 @@ describe("task-store", () => {
       expect(active.completedAt).toBeUndefined();
     });
 
-    it("updateTask rejects completion for archived tasks, including legacy done requests", () => {
+    it("updateTask rejects completion for archived tasks", () => {
       const task = store.createTask("Archived already");
       store.updateTask(task.id, { status: "archived" });
 
       expect(() => store.updateTask(task.id, { completionAction: "complete-and-archive" }))
-        .toThrow("Archived tasks cannot be completed again; reopen the task first");
-      expect(() => store.updateTask(task.id, { status: "done" }))
         .toThrow("Archived tasks cannot be completed again; reopen the task first");
     });
 
@@ -427,18 +426,17 @@ describe("task-store", () => {
       expect(raw.completedAt).toBe("2026-04-01T10:00:00.000Z");
     });
 
-    it("updateTask normalizes paused status updates to active", () => {
+    it("updateTask rejects unknown status values", () => {
       const task = store.createTask("Normalize me");
 
-      const updated = store.updateTask(task.id, { status: "paused" as any });
-
-      expect(updated.status).toBe("active");
-      const raw = db.prepare("SELECT status FROM tasks WHERE id = ?").get(task.id) as { status: string };
-      expect(raw.status).toBe("active");
+      expect(() => store.updateTask(task.id, { status: "paused" as any }))
+        .toThrow("status must be one of: active, archived");
+      expect(() => store.updateTask(task.id, { status: "done" as any }))
+        .toThrow("status must be one of: active, archived");
     });
 
-    it("updateTask clears parked momentum when a task is marked done or archived", () => {
-      // done case
+    it("updateTask clears parked momentum when a task is completed or archived", () => {
+      // completed case
       const doneTask = store.createTask("Ship it");
       store.updateTask(doneTask.id, {
         doneWhen: "Feature flag is enabled everywhere",
@@ -447,8 +445,8 @@ describe("task-store", () => {
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });
 
-      const donedResult = store.updateTask(doneTask.id, { status: "done" });
-      expect(donedResult, "done clears momentum").toMatchObject({
+      const donedResult = store.updateTask(doneTask.id, { completionAction: "complete-and-archive" });
+      expect(donedResult, "completion clears momentum").toMatchObject({
         status: "archived",
         doneWhen: "Feature flag is enabled everywhere",
         nextAction: undefined,
@@ -488,9 +486,9 @@ describe("task-store", () => {
       });
     });
 
-    it("updateTask rejects parked momentum updates for done tasks", () => {
+    it("updateTask rejects parked momentum updates for completed tasks", () => {
       const task = store.createTask("Already done");
-      store.updateTask(task.id, { status: "done" });
+      store.updateTask(task.id, { completionAction: "complete-and-archive" });
 
       expect(() => store.updateTask(task.id, { nextAction: "Re-open the task" as any }))
         .toThrow("nextAction, waitingOn, and nextTouchAt can only be set on active tasks");
@@ -503,10 +501,11 @@ describe("task-store", () => {
       });
     });
 
-    it("updateTask switches done tasks back to active when kind changes to ongoing", () => {
+    it("updateTask switches completed tasks back to active when kind changes to ongoing", () => {
       const existingActive = store.createTask("Already active");
       const task = store.createTask("Task 1");
-      store.updateTask(task.id, { status: "done", doneWhen: "Ship it" });
+      store.updateTask(task.id, { doneWhen: "Ship it" });
+      store.updateTask(task.id, { completionAction: "complete-and-archive" });
 
       const updated = store.updateTask(task.id, { kind: "ongoing" });
       expect(updated).toMatchObject({ kind: "ongoing", status: "active", doneWhen: undefined, order: 0 });
@@ -520,7 +519,7 @@ describe("task-store", () => {
 
     it("updateTask preserves explicit status updates when switching to ongoing", () => {
       const task = store.createTask("Task 1");
-      store.updateTask(task.id, { status: "done" });
+      store.updateTask(task.id, { completionAction: "complete-and-archive" });
 
       const updated = store.updateTask(task.id, { kind: "ongoing", status: "archived" });
       expect(updated).toMatchObject({ kind: "ongoing", status: "archived", completedAt: undefined });
@@ -528,8 +527,8 @@ describe("task-store", () => {
       const raw = db.prepare("SELECT completedAt FROM tasks WHERE id = ?").get(task.id) as any;
       expect(raw.completedAt).toBeNull();
 
-      expect(() => store.updateTask(task.id, { kind: "ongoing", status: "done" }))
-        .toThrow("Ongoing tasks cannot be marked done");
+      expect(() => store.updateTask(task.id, { kind: "ongoing", completionAction: "complete-and-archive" }))
+        .toThrow("Ongoing tasks cannot be completed");
     });
 
     it("updateTask persists optional momentum fields and clears empty strings", () => {

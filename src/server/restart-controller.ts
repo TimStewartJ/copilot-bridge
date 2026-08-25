@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import * as globalBus from "./global-bus.js";
 import {
   clearRestartState,
   createDefaultRestartState,
@@ -40,7 +39,7 @@ let _restartStatePath = DEFAULT_RESTART_STATE_PATH;
 let _restartStateStoreGeneration = 0;
 let _restartState = createDefaultRestartState();
 let _restartStateWriteQueue: Promise<void> = Promise.resolve();
-let _restartEventBus: GlobalBus = globalBus.defaultGlobalBus;
+let _restartEventBus: GlobalBus | undefined;
 let _activeSessionCountProvider: () => number = () => 0;
 
 export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect.";
@@ -158,15 +157,13 @@ export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
   _restartStateWriteQueue = Promise.resolve();
 }
 
-export function configureRestartEventBus(bus?: GlobalBus): void {
-  _restartEventBus = bus ?? globalBus.defaultGlobalBus;
+/** The SessionManager installs the app's global bus here at construction time. */
+export function configureRestartEventBus(bus: GlobalBus | undefined): void {
+  _restartEventBus = bus;
 }
 
 function emitRestartEvent(event: Parameters<GlobalBus["emit"]>[0]): void {
-  _restartEventBus.emit(event);
-  if (_restartEventBus !== globalBus.defaultGlobalBus) {
-    globalBus.defaultGlobalBus.emit(event);
-  }
+  _restartEventBus?.emit(event);
 }
 
 function emitRestartPendingEvent(state: RestartState): void {

@@ -40,7 +40,7 @@ describe("Session manager routes", () => {
     const res = await request(app).get("/api/sessions/test-id/messages-fast");
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ runState: "stalled", busy: true });
+    expect(res.body).toMatchObject({ runState: "stalled" });
   });
 
   it("GET /api/busy includes background lifecycle work without inventing a session", async () => {

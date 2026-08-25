@@ -139,12 +139,12 @@ describe("MCP server registry routes", () => {
     ).toBe(1);
   });
 
-  it("supports incremental tag refs and legacy tag MCP routes with cache eviction", async () => {
+  it("supports incremental tag refs with cache eviction", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
     const { app, ctx } = createTestApp({ sessionManager });
-    const tag = ctx.tagStore!.createTag("Legacy Tools");
+    const tag = ctx.tagStore!.createTag("Tag Tools");
     const alpha = ctx.mcpServerStore!.createMcpServer({ name: "Alpha", config: localConfig });
 
     const added = await request(app).post(`/api/tags/${tag.id}/mcp-refs/${alpha.id}`);
@@ -159,23 +159,8 @@ describe("MCP server registry routes", () => {
     const legacyPut = await request(app)
       .put(`/api/tags/${tag.id}/mcp/legacy-linear`)
       .send(remoteConfig);
-    expect(legacyPut.status).toBe(200);
-    expect(ctx.tagStore!.getTagMcpServers(tag.id)).toEqual([
-      expect.objectContaining({
-        serverId: expect.any(String),
-        serverName: "legacy-linear",
-        config: remoteConfig,
-      }),
-    ]);
-    expect(ctx.mcpServerStore!.getMcpServerByName("legacy-linear")).toMatchObject({
-      config: remoteConfig,
-      enabledByDefault: false,
-    });
-
-    const legacyDelete = await request(app).delete(`/api/tags/${tag.id}/mcp/legacy-linear`);
-    expect(legacyDelete.status).toBe(200);
-    expect(ctx.tagStore!.getTagMcpServers(tag.id)).toEqual([]);
-    expect(evictSpy).toHaveBeenCalledTimes(4);
+    expect(legacyPut.status).toBe(404);
+    expect(evictSpy).toHaveBeenCalledTimes(2);
   });
 
   it("validates registry mutations and does not evict on rejected changes", async () => {

@@ -1,8 +1,8 @@
-import type { ChecklistItem, EnrichedPR, Session, Task, TaskCompletionAction } from "./api";
+import { isSessionActive, type ChecklistItem, type EnrichedPR, type Session, type Task, type TaskCompletionAction } from "./api";
 
 type CompletionTask = Pick<Task, "status" | "doneWhen" | "completedAt">;
 type ChecklistLike = Pick<ChecklistItem, "done">;
-type SessionLike = Pick<Session, "busy" | "runState">;
+type SessionLike = Pick<Session, "runState">;
 type PullRequestLike = Pick<EnrichedPR, "status">;
 
 export interface TaskCompletionCounts {
@@ -46,7 +46,7 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 }
 
 function isBusySession(session: SessionLike): boolean {
-  return session.busy || session.runState === "busy" || session.runState === "stalled";
+  return isSessionActive(session);
 }
 
 export function getTaskCompletionCounts({
@@ -84,8 +84,8 @@ export function getTaskCompletionBlockers(counts: TaskCompletionCounts): string[
   return blockers;
 }
 
-export function isTaskCompleted(task: Pick<Task, "status" | "completedAt">): boolean {
-  return task.status === "done" || Boolean(task.completedAt);
+export function isTaskCompleted(task: Pick<Task, "completedAt">): boolean {
+  return Boolean(task.completedAt);
 }
 
 // ── Lifecycle display helpers ─────────────────────────────────────────────────
@@ -95,7 +95,7 @@ export type TaskLifecycleDisplayState = "completed" | "archived" | "active";
 
 /**
  * Derives the user-facing lifecycle state:
- * - "completed" when completedAt exists OR status is the legacy "done"
+ * - "completed" when completedAt exists
  * - "archived"  when status is "archived" without completedAt
  * - "active"    otherwise
  */

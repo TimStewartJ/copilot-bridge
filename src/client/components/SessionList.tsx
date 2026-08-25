@@ -3,6 +3,7 @@ import {
   fetchModels,
   getSessionActivityTime,
   getSessionRunState,
+  isSessionActive,
   patchSessionModel,
   refreshModels,
   type BatchAction,
@@ -401,7 +402,7 @@ export default function SessionList({
     && !!modelDraft.trim()
     && !modelSwitchSaving
     && !modelOptionsLoading
-    && !modelDialogSession?.busy
+    && !(modelDialogSession && isSessionActive(modelDialogSession))
     && (canKeepCurrentReasoningEffort || reasoningDraftCanBeSubmitted || !supportedReasoningEfforts);
   const unreadCount = activeSessions.filter(
     (session) => !session.archived && isUnread?.(session.sessionId, getSessionActivityTime(session)),
@@ -602,7 +603,7 @@ export default function SessionList({
         ? "bg-warning animate-pulse"
         : getSessionRunState(session) === "stalled"
         ? "bg-warning animate-pulse"
-        : session.busy
+        : getSessionRunState(session) === "busy"
           ? "bg-info animate-pulse"
           : unread
             ? "bg-success"
@@ -884,7 +885,7 @@ export default function SessionList({
             <CtxItem
               icon={<RotateCw size={14} />}
               label="Reload MCPs"
-              disabled={ctxSession.busy}
+              disabled={isSessionActive(ctxSession)}
               onClick={() => {
                 onReloadSession(ctxSession.sessionId);
                 closeMenu();
@@ -916,8 +917,8 @@ export default function SessionList({
               <CtxItem
                 icon={<Bot size={14} />}
                 label="Change Model..."
-                disabled={ctxSession.busy}
-                title={ctxSession.busy ? "This session is busy" : "Change only this session's model"}
+                disabled={isSessionActive(ctxSession)}
+                title={isSessionActive(ctxSession) ? "This session is busy" : "Change only this session's model"}
                 onClick={() => {
                   openModelDialog(ctxSession.sessionId);
                 }}
@@ -929,8 +930,8 @@ export default function SessionList({
             <CtxItem
               icon={<GitFork size={14} />}
               label="Fork"
-              disabled={ctxSession.busy}
-              title={ctxSession.busy ? "This session is busy" : "Create a new branch from this session"}
+              disabled={isSessionActive(ctxSession)}
+              title={isSessionActive(ctxSession) ? "This session is busy" : "Create a new branch from this session"}
               onClick={() => {
                 setMenuError(null);
                 void Promise.resolve(onForkSession(ctxSession.sessionId))
@@ -1004,7 +1005,7 @@ export default function SessionList({
                 icon={<Trash2 size={14} />}
                 label="Delete"
                 className="text-error"
-                disabled={ctxSession.busy}
+                disabled={isSessionActive(ctxSession)}
                 onClick={() => {
                   onDeleteSession(ctxSession.sessionId);
                   closeMenu();
@@ -1139,7 +1140,7 @@ export default function SessionList({
                   void handleSaveModelSwitch();
                 }}
                 disabled={!canSaveModelSwitch}
-                title={modelDialogSession?.busy ? "This session is busy" : undefined}
+                title={modelDialogSession && isSessionActive(modelDialogSession) ? "This session is busy" : undefined}
               >
                 {modelSwitchSaving && <Loader2 size={14} className="animate-spin" />}
                 Save

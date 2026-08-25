@@ -253,19 +253,11 @@ function parseDefinition(root: string, taskId: string, filePath: string): TaskAg
   if (disableModelInvocation !== undefined && typeof disableModelInvocation !== "boolean") {
     throw new TaskAgentDefinitionValidationError("disable-model-invocation must be a boolean");
   }
-  const legacyInfer = frontmatter.infer;
-  if (legacyInfer !== undefined && typeof legacyInfer !== "boolean") {
-    throw new TaskAgentDefinitionValidationError("infer must be a boolean");
-  }
   const userInvocable = frontmatter["user-invocable"];
   if (userInvocable !== undefined && typeof userInvocable !== "boolean") {
     throw new TaskAgentDefinitionValidationError("user-invocable must be a boolean");
   }
-  const infer = typeof disableModelInvocation === "boolean"
-    ? !disableModelInvocation
-    : typeof legacyInfer === "boolean"
-      ? legacyInfer
-      : true;
+  const infer = disableModelInvocation !== true;
   return {
     taskId,
     name,

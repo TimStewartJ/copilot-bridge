@@ -57,9 +57,7 @@ describe("management job store", () => {
       expect(() => store.enqueue("staging_deploy", { stagingDir: "x" })).toThrow(ActiveManagementJobError);
       const preview = store.enqueue("staging_preview", { stagingDir: "preview" });
       expect(preview.status).toBe("queued");
-      // A legacy row carrying the retired `profile` field must still dedupe against
-      // a profile-less request for the same staging dir.
-      expect(() => store.enqueue("staging_preview", { stagingDir: "preview", profile: "clone" })).toThrow(ActiveManagementJobError);
+      expect(() => store.enqueue("staging_preview", { stagingDir: "preview" })).toThrow(ActiveManagementJobError);
       expect(store.enqueue("staging_preview", { stagingDir: "other-preview" }).status).toBe("queued");
 
       const claimed = store.claimNext({ runnerPid: 101 });

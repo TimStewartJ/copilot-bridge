@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView } from "../api";
+import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView, SessionRunState } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
 import {
@@ -132,7 +132,7 @@ vi.mock("./ContextMenu", () => ({
 
 type FetchMessagesFastResult = {
   messages: ChatEntry[];
-  busy: boolean;
+  runState: SessionRunState;
   total: number;
   warm: boolean;
   hasMore?: boolean;
@@ -343,7 +343,7 @@ async function renderChatView(
   options.seedQueryClient?.(queryClient);
 
   const fetchMessagesFastResult = options.fetchMessagesFastResult
-    ?? { messages: [], busy: false, total: 0, warm: true, hasMore: false };
+    ?? { messages: [], runState: "idle", total: 0, warm: true, hasMore: false };
   const initialMessagesFastResult = fetchMessagesFastResult instanceof Promise
     ? fetchMessagesFastResult
     : Promise.resolve(fetchMessagesFastResult);
@@ -501,7 +501,7 @@ describe("ChatView cached resume loading state", () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1", "visible history")],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -527,7 +527,7 @@ describe("ChatView cached resume loading state", () => {
       onRenderedReadThrough,
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -594,7 +594,7 @@ describe("ChatView cached resume loading state", () => {
       await act(async () => {
         deferred.resolve({
           messages: [createMessage("entry-1"), createMessage("entry-2")],
-          busy: false,
+          runState: "idle",
           total: 2,
           warm: true,
           hasMore: false,
@@ -614,7 +614,7 @@ describe("ChatView cached resume loading state", () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -649,7 +649,7 @@ describe("ChatView cached resume loading state", () => {
     } finally {
       deferred.resolve({
         messages: [],
-        busy: false,
+        runState: "idle",
         total: 0,
         warm: true,
         hasMore: false,
@@ -662,7 +662,7 @@ describe("ChatView cached resume loading state", () => {
     vi.useFakeTimers();
     fetchMessagesFastMock.mockResolvedValueOnce({
       messages: [createMessage("entry-1")],
-      busy: false,
+      runState: "idle",
       total: 1,
       warm: true,
       hasMore: false,
@@ -697,7 +697,7 @@ describe("ChatView cached resume loading state", () => {
       await act(async () => {
         deferred.resolve({
           messages: [createMessage("entry-1"), createMessage("entry-2")],
-          busy: false,
+          runState: "idle",
           total: 2,
           warm: true,
           hasMore: false,
@@ -760,7 +760,7 @@ describe("ChatView navigation landing position", () => {
   }) {
     const history = createDeferred<{
       messages: ChatEntry[];
-      busy: boolean;
+      runState: SessionRunState;
       total: number;
       warm: boolean;
       hasMore: boolean;
@@ -774,7 +774,7 @@ describe("ChatView navigation landing position", () => {
     const restoreGeometry = stubChatGeometry(options.messageTops);    await view.act(async () => {
       history.resolve({
         messages: options.messages,
-        busy: false,
+        runState: "idle",
         total: options.messages.length,
         warm: true,
         hasMore: false,
@@ -907,7 +907,7 @@ describe("ChatView history pagination", () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: tailEntries,
-        busy: false,
+        runState: "idle",
         total: 5,
         warm: true,
         hasMore: true,
@@ -968,7 +968,7 @@ describe("ChatView history pagination", () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
-        busy: false,
+        runState: "idle",
         total: 2,
         warm: true,
         hasMore: true,
@@ -1023,7 +1023,7 @@ describe("ChatView draft materialization", () => {
       });
       fetchMessagesFastMock.mockResolvedValueOnce({
         messages: [createMessage("created-response", "created response")],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
       });
@@ -1065,13 +1065,13 @@ describe("ChatView draft materialization", () => {
       fetchMessagesFastMock
         .mockResolvedValueOnce({
           messages: [],
-          busy: false,
+          runState: "idle",
           total: 0,
           warm: true,
         })
         .mockResolvedValueOnce({
           messages: [createMessage("delivered-response", "delivered response")],
-          busy: false,
+          runState: "idle",
           total: 1,
           warm: true,
         });
@@ -1111,13 +1111,13 @@ describe("ChatView draft materialization", () => {
       fetchMessagesFastMock
         .mockResolvedValueOnce({
           messages: [],
-          busy: false,
+          runState: "idle",
           total: 0,
           warm: true,
         })
         .mockResolvedValueOnce({
           messages: [createMessage("resynced-response", "resynced response")],
-          busy: false,
+          runState: "idle",
           total: 1,
           warm: true,
         });
@@ -1343,7 +1343,7 @@ describe("ChatView steering sends", () => {
     const { dom, act, cleanup, sendMessageMock } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
-        busy: true,
+        runState: "busy",
         total: 1,
         warm: true,
         hasMore: false,
@@ -1428,7 +1428,7 @@ describe("ChatView steering sends", () => {
     const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
-        busy: true,
+        runState: "busy",
         total: 1,
         warm: true,
         hasMore: false,
@@ -1478,7 +1478,7 @@ describe("ChatView steering sends", () => {
             sourceEventId: "canonical-user-event-1",
           },
         ],
-        busy: false,
+        runState: "idle",
         total: 2,
         warm: true,
         hasMore: false,
@@ -1532,7 +1532,7 @@ describe("ChatView steering sends", () => {
             },
           },
         ],
-        busy: true,
+        runState: "busy",
         total: 2,
         warm: true,
         hasMore: false,
@@ -1588,7 +1588,7 @@ describe("ChatView steering sends", () => {
             },
           },
         ],
-        busy: true,
+        runState: "busy",
         total: 2,
         warm: true,
         hasMore: false,
@@ -1634,7 +1634,7 @@ describe("ChatView steering sends", () => {
             timestamp: "2026-07-25T22:01:00.000Z",
           },
         ],
-        busy: true,
+        runState: "busy",
         total: 50,
         warm: true,
         hasMore: true,
@@ -1696,7 +1696,7 @@ describe("ChatView steering sends", () => {
           content: "Question",
           sourceEventId: "user-message-event",
         }],
-        busy: true,
+        runState: "busy",
         total: 1,
         warm: true,
         hasMore: false,
@@ -1741,7 +1741,7 @@ describe("ChatView steering sends", () => {
             timestamp: "2026-07-23T15:59:59.000Z",
           },
         ],
-        busy: false,
+        runState: "idle",
         total: 2,
         warm: true,
         hasMore: false,
@@ -1794,7 +1794,7 @@ describe("ChatView steering sends", () => {
             },
           },
         ],
-        busy: true,
+        runState: "busy",
         total: 2,
         warm: true,
         hasMore: false,
@@ -1908,7 +1908,7 @@ describe("ChatView steering sends", () => {
             turnInstanceId: "turn-start-c",
           },
         ],
-        busy: false,
+        runState: "idle",
         total: 7,
         warm: true,
         hasMore: false,
@@ -2062,7 +2062,7 @@ describe("ChatView message actions", () => {
     const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [],
-        busy: true,
+        runState: "busy",
         total: 0,
         warm: true,
         hasMore: false,
@@ -2077,7 +2077,7 @@ describe("ChatView message actions", () => {
           { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
           { id: "assistant-1", role: "assistant", content: "reply one", undoEventId: "user-event-1" },
         ],
-        busy: false,
+        runState: "idle",
         total: 2,
         warm: true,
         hasMore: false,
@@ -2112,7 +2112,7 @@ describe("ChatView message actions", () => {
           timestamp: "2026-04-29T12:00:00.000Z",
           forkBoundaryEventId: "event-after-assistant-1",
         }],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2168,7 +2168,7 @@ describe("ChatView message actions", () => {
           content: "Select any part of this reply",
           timestamp: "2026-04-29T12:00:00.000Z",
         }],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2220,7 +2220,7 @@ describe("ChatView message actions", () => {
           role: "assistant",
           content: "Open my message actions",
         }],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2273,7 +2273,7 @@ describe("ChatView message actions", () => {
           role: "assistant",
           content: "Keep this selection native",
         }],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2325,7 +2325,7 @@ describe("ChatView message actions", () => {
           role: "assistant",
           content: "Interactive message content",
         }],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2376,7 +2376,7 @@ describe("ChatView message actions", () => {
           timestamp: "2026-04-29T12:00:00.000Z",
           forkBoundaryEventId: "event-after-assistant-1",
         }],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2420,7 +2420,7 @@ describe("ChatView message actions", () => {
           { id: "user-2", role: "user", content: "second", undoEventId: "user-event-2" },
           { id: "assistant-2", role: "assistant", content: "reply two", undoEventId: "user-event-2" },
         ],
-        busy: false,
+        runState: "idle",
         total: 4,
         warm: true,
         hasMore: false,
@@ -2457,7 +2457,7 @@ describe("ChatView message actions", () => {
     } finally {
       refresh.resolve({
         messages: [],
-        busy: false,
+        runState: "idle",
         total: 0,
         warm: true,
         hasMore: false,
@@ -2472,7 +2472,7 @@ describe("ChatView message actions", () => {
         messages: [
           { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
         ],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2511,7 +2511,7 @@ describe("ChatView message actions", () => {
         messages: [
           { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
         ],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2651,7 +2651,7 @@ describe("ChatView disk-authoritative synchronization", () => {
       const { act, cleanup, render } = await renderChatView({
         fetchMessagesFastResult: {
           messages: [createMessage("entry-1", "first reply")],
-          busy: true,
+          runState: "busy",
           total: 1,
           warm: true,
           hasMore: false,
@@ -2681,7 +2681,7 @@ describe("ChatView disk-authoritative synchronization", () => {
       const { act, cleanup, render } = await renderChatView({
         fetchMessagesFastResult: {
           messages: [createMessage("entry-1", "first reply")],
-          busy: true,
+          runState: "busy",
           total: 1,
           warm: true,
           hasMore: false,
@@ -2718,7 +2718,7 @@ describe("ChatView disk-authoritative synchronization", () => {
       const { dom, act, cleanup, render } = await renderChatView({
         fetchMessagesFastResult: {
           messages: [createMessage("entry-1", "assistant reply")],
-          busy: true,
+          runState: "busy",
           total: 1,
           warm: true,
           hasMore: false,
@@ -2753,7 +2753,7 @@ describe("ChatView disk-authoritative synchronization", () => {
           // Disk still shows it running: the completion has not been read back yet.
           toolCall: { toolCallId: "tc-shared", name: "shared_tool" },
         }],
-        busy: true,
+        runState: "busy",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2795,7 +2795,7 @@ describe("ChatView disk-authoritative synchronization", () => {
     const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1", "assistant reply")],
-        busy: true,
+        runState: "busy",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2812,7 +2812,7 @@ describe("ChatView disk-authoritative synchronization", () => {
           createMessage("entry-1", "assistant reply"),
           { id: "committed-visual", type: "visual", sourceEventId: "visual-event-1", visual },
         ],
-        busy: true,
+        runState: "busy",
         total: 2,
         warm: true,
         hasMore: false,
@@ -2837,7 +2837,7 @@ describe("ChatView disk-authoritative synchronization", () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1", "assistant reply")],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2863,7 +2863,7 @@ describe("ChatView disk-authoritative synchronization", () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1", "assistant reply")],
-        busy: false,
+        runState: "idle",
         total: 1,
         warm: true,
         hasMore: false,
@@ -2897,7 +2897,7 @@ describe("ChatView disk-authoritative synchronization", () => {
       const { dom, act, cleanup, render } = await renderChatView({
         fetchMessagesFastResult: {
           messages: [createMessage("entry-2", "newest"), createMessage("entry-3", "newer")],
-          busy: false,
+          runState: "idle",
           total: 4,
           warm: true,
           hasMore: true,

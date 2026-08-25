@@ -212,7 +212,6 @@ describe("Session routes (mocked)", () => {
         sessionId: "untitled-session",
         summary: "New session",
         runState: "busy",
-        busy: true,
       }),
     ]);
     expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(1);
@@ -457,12 +456,11 @@ describe("Session routes (mocked)", () => {
       expect.objectContaining({
         sessionId: "busy-archived-task-session",
         runState: "busy",
-        busy: true,
       }),
     ]);
   });
 
-  it("GET /api/sessions includes runState while keeping busy derived for stalled sessions", async () => {
+  it("GET /api/sessions reports stalled sessions through runState", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
     ];
@@ -472,7 +470,7 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
-    expect(res.body.sessions[0]).toMatchObject({ sessionId: "s1", runState: "stalled", busy: true });
+    expect(res.body.sessions[0]).toMatchObject({ sessionId: "s1", runState: "stalled" });
   });
 
   it("GET /api/sessions includes input-required status for sessions waiting on answers", async () => {
@@ -488,7 +486,6 @@ describe("Session routes (mocked)", () => {
     expect(res.body.sessions[0]).toMatchObject({
       sessionId: "s1",
       runState: "busy",
-      busy: true,
       pendingUserInputCount: 1,
       needsUserInput: true,
     });

@@ -459,17 +459,10 @@ export function upsertLiveTool(tools: PendingTool[], patch: PendingTool): Pendin
     : tool);
 }
 
-function normalizeStreamContextSummary(value: unknown): SessionContextSummary | null {
-  if (!isRecord(value)) return null;
-  const summary = isRecord(value.summary) ? value.summary : value;
-  return summary as unknown as SessionContextSummary;
-}
-
+/** Snapshots carry `contextSummary`; `context_update` events carry `summary`. */
 function getStreamContextSummary(event: Record<string, unknown>): SessionContextSummary | null {
-  return normalizeStreamContextSummary(event.summary)
-    ?? normalizeStreamContextSummary(event.contextSummary)
-    ?? normalizeStreamContextSummary(isRecord(event.context) ? event.context.summary : undefined)
-    ?? normalizeStreamContextSummary(event.context);
+  const summary = event.contextSummary ?? event.summary;
+  return isRecord(summary) ? (summary as unknown as SessionContextSummary) : null;
 }
 
 /**

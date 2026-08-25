@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTestDir } from "./server/__tests__/helpers.js";
@@ -415,64 +415,4 @@ describeWindows("Windows launcher supervisor decisions", () => {
       createHalt: true,
     });
   });
-
-  it("keeps v4 start and stop wrappers usable after the prior v3 updater omits the new helper", () => {
-    const installRoot = makeTestDir("windows-v3-v4-upgrade");
-    const scriptsRoot = join(process.cwd(), "scripts");
-
-    // This is the exact relevant v3 updater allowlist: wrappers/common are replaced,
-    // but bridge-supervisor-common.ps1 is unknown to that updater and is not copied.
-    writeFileSync(join(installRoot, "start.ps1"), readFileSync(join(scriptsRoot, "start-release.ps1")));
-    writeFileSync(join(installRoot, "stop.ps1"), readFileSync(join(scriptsRoot, "stop-release.ps1")));
-    writeFileSync(join(installRoot, "update.ps1"), readFileSync(join(scriptsRoot, "update-release.ps1")));
-
-    const command = [
-      "$ErrorActionPreference = 'Stop'",
-      `$root = ${quotePowerShell(installRoot)}`,
-      `$releaseCommonSource = Get-Content -LiteralPath ${quotePowerShell(join(scriptsRoot, "release-common.ps1"))} -Raw`,
-      `$supervisorHelperSource = Get-Content -LiteralPath ${quotePowerShell(join(scriptsRoot, "bridge-supervisor-common.ps1"))} -Raw`,
-      "$placeholder = '__BRIDGE_SUPERVISOR_HELPER_BASE64__'",
-      "$placeholderCount = [regex]::Matches($releaseCommonSource, [regex]::Escape($placeholder)).Count",
-      "$payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($supervisorHelperSource))",
-      "$packagedReleaseCommon = $releaseCommonSource.Replace($placeholder, $payload)",
-      "[IO.File]::WriteAllText((Join-Path $root 'release-common.ps1'), $packagedReleaseCommon, (New-Object Text.UTF8Encoding($false)))",
-      "$parseErrors = @()",
-      "$tokens = $null; $errors = $null",
-      "[void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'start.ps1'), [ref]$tokens, [ref]$errors)",
-      "$parseErrors += @($errors)",
-      "$tokens = $null; $errors = $null",
-      "[void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'stop.ps1'), [ref]$tokens, [ref]$errors)",
-      "$parseErrors += @($errors)",
-      ". (Join-Path $root 'release-common.ps1')",
-      ". (Get-BridgeSupervisorHelperScriptBlock $root)",
-      "[pscustomobject]@{ "
-        + "placeholderCount = $placeholderCount; "
-        + "payloadSubstituted = $packagedReleaseCommon.Contains($payload); "
-        + "standaloneHelperAbsent = -not (Test-Path (Join-Path $root 'bridge-supervisor-common.ps1')); "
-        + "wrappersParse = $parseErrors.Count -eq 0; "
-        + "startCommandAvailable = $null -ne (Get-Command Start-BridgeSupervisorChild -ErrorAction SilentlyContinue); "
-        + "supervisorCommandAvailable = $null -ne (Get-Command Invoke-BridgeLauncherSupervisor -ErrorAction SilentlyContinue); "
-        + "stopCommandAvailable = $null -ne (Get-Command Stop-BridgeLauncherSupervisor -ErrorAction SilentlyContinue) "
-        + "} | ConvertTo-Json -Compress",
-    ].join("; ");
-    const output = execFileSync(powerShell, [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      command,
-    ], { encoding: "utf8" });
-
-    expect(JSON.parse(output.trim())).toEqual({
-      placeholderCount: 1,
-      payloadSubstituted: true,
-      standaloneHelperAbsent: true,
-      wrappersParse: true,
-      startCommandAvailable: true,
-      supervisorCommandAvailable: true,
-      stopCommandAvailable: true,
-    });
-  });
-
 });

@@ -187,7 +187,6 @@ function makeScheduleRun(runId: number, summary: string, runState: ScheduleRun["
     recordedAt: new Date(NOW.getTime() - runId * 60_000).toISOString(),
     recordedAtKnown: true,
     runState,
-    busy: false,
     deferSummary: { count: 0, nextRunAt: null },
   };
 }

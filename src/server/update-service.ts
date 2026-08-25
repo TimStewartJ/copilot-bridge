@@ -128,7 +128,7 @@ const ACTIVE_INSTALL_STALE_MS = 30 * 60 * 1000;
 const UPDATE_LOG_TAIL_BYTES = 64 * 1024;
 const UPDATE_LOG_TAIL_LINES = 40;
 const UPDATE_LOG_TAIL_LINE_LENGTH = 500;
-const TERMINAL_INSTALL_PHASES = new Set<string>(["succeeded", "failed", "rollback_failed"]);
+const TERMINAL_INSTALL_PHASES = new Set<string>(["succeeded", "failed"]);
 
 function getInstalledAppRoot(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));

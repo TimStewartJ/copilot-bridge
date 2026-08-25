@@ -1,4 +1,4 @@
-import type { getOrCreateBus } from "./event-bus.js";
+import type { SessionEventBus } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
@@ -55,8 +55,6 @@ export interface SessionActivity {
 
 export const ABORT_CONFIRMATION_TIMEOUT_MS = 2_000;
 const ASSISTANT_PREVIEW_MAX_LENGTH = 160;
-
-type SessionEventBus = ReturnType<typeof getOrCreateBus>;
 
 export interface SessionRunStateControllerDeps {
   globalBus: GlobalBus;

@@ -95,11 +95,8 @@ export default function TaskList({
 
   const groupedSections = useMemo(() => {
     if (!hasGroups) return null;
-    const nonArchived = [...grouped.active, ...grouped.done];
-    return buildGroupSections(nonArchived, taskGroups);
+    return buildGroupSections(grouped.active, taskGroups);
   }, [hasGroups, grouped, taskGroups]);
-
-  const allNonArchived = [...grouped.active, ...grouped.done];
 
   const {
     sensors,
@@ -109,7 +106,7 @@ export default function TaskList({
     handleDragOver,
     handleDragEnd,
   } = useCrossGroupDnd({
-    tasks: allNonArchived,
+    tasks: grouped.active,
     groupedSections,
     hasGroups,
     onReorderTasks,
@@ -128,7 +125,6 @@ export default function TaskList({
       }
     } else {
       for (const task of grouped.active) addTask(task);
-      for (const task of grouped.done) addTask(task);
     }
     if (showArchived) {
       for (const task of grouped.archived) addTask(task);
@@ -273,10 +269,7 @@ export default function TaskList({
             );
           })
         ) : (
-          <>
-            {renderGroup("Active", grouped.active)}
-            {renderGroup("Done", grouped.done)}
-          </>
+          renderGroup("Active", grouped.active)
         )}
         <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
       </DndContext>

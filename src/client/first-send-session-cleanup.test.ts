@@ -22,7 +22,6 @@ function createSession(sessionId: string, overrides: Partial<Session> = {}): Ses
     summary: sessionId,
     modifiedTime: "2026-05-21T12:00:00.000Z",
     runState: "idle",
-    busy: false,
     deferSummary: { count: 0, nextRunAt: null },
     ...overrides,
   };

@@ -133,7 +133,7 @@ describe("checklist-store", () => {
     it("returns unchecked checklist items from active tasks only", () => {
       const active = taskStore.createTask("Active");
       const done = taskStore.createTask("Done");
-      taskStore.updateTask(done.id, { status: "done" });
+      taskStore.updateTask(done.id, { completionAction: "complete-and-archive" });
 
       checklistStore.createChecklistItem(active.id, "Open item");
       checklistStore.createChecklistItem(done.id, "Done task item");

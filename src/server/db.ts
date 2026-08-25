@@ -2,58 +2,11 @@
 // Uses Node.js built-in node:sqlite (DatabaseSync)
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  assertDatabaseMeetsMinimumBaseline,
-  recordFreshDatabaseMigrations,
-  runDatabaseMigrations,
-} from "./db-migrations.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
-const LEGACY_JSON_STATE_FILES = [
-  "tasks.json",
-  "task-groups.json",
-  "sessions-meta.json",
-  "settings.json",
-  "session-titles.json",
-  "schedules.json",
-  "read-state.json",
-] as const;
-const SQLITE_STATE_TABLES = [
-  "tasks",
-  "task_sessions",
-  "task_work_items",
-  "task_pull_requests",
-  "task_groups",
-  "session_meta",
-  "bridge_session_state",
-  "session_workspace",
-  "settings",
-  "session_titles",
-  "schedules",
-  "schedule_runs",
-  "schedule_run_claims",
-  "read_state",
-  "checklist_items",
-  "feed_cards",
-  "voice_jobs",
-  "tags",
-  "entity_tags",
-  "tag_mcp_servers",
-  "mcp_servers",
-  "tag_mcp_server_refs",
-  "deferred_prompts",
-  "defer_loops",
-  "push_subscriptions",
-  "management_jobs",
-  "session_context_summary",
-  "session_context_turns",
-  "session_context_events",
-  "session_context_backfills",
-] as const;
-type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
 
 export type DocsFtsFailureDetectedBy =
   | "create_virtual_table"
@@ -345,83 +298,17 @@ export function getDocsFtsHealth(db: DatabaseSync): DocsFtsHealth {
     ?? unavailableDocsFtsHealth("schema_probe", "docs FTS health was not recorded for this database connection");
 }
 
-function legacyJsonFileHasState(dataDir: string, file: typeof LEGACY_JSON_STATE_FILES[number]): boolean {
-  const content = readFileSync(join(dataDir, file), "utf-8").trim();
-  if (content === "") return false;
-
-  let value: unknown;
-  try {
-    value = JSON.parse(content) as unknown;
-  } catch {
-    return true;
-  }
-  if (Array.isArray(value)) return value.length > 0;
-  if (value && typeof value === "object") return Object.keys(value).length > 0;
-  return true;
-}
-
-function getLegacyJsonFilesWithState(dataDir: string): string[] {
-  return LEGACY_JSON_STATE_FILES.filter((file) =>
-    existsSync(join(dataDir, file)) && legacyJsonFileHasState(dataDir, file)
-  );
-}
-
-function formatLegacyJsonStateError(action: string, legacyStateFiles: string[]): Error {
-  return new Error(
-    `Refusing to ${action} because legacy JSON state files contain data without migrated SQLite state: ${legacyStateFiles.join(", ")}. Restore a current ${DB_FILENAME} or remove the legacy JSON files before starting.`,
-  );
-}
-
-function tableExists(db: DatabaseSync, table: SqliteStateTable): boolean {
-  const row = db.prepare(
-    "SELECT 1 as found FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(table) as { found?: number } | undefined;
-  return row?.found === 1;
-}
-
-function tableHasRows(db: DatabaseSync, table: SqliteStateTable): boolean {
-  const row = db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get() as { count: number };
-  return row.count > 0;
-}
-
-function hasPersistedSqliteState(db: DatabaseSync): boolean {
-  return SQLITE_STATE_TABLES.some((table) => tableExists(db, table) && tableHasRows(db, table));
-}
-
-function hasUserTables(db: DatabaseSync): boolean {
-  return !!db.prepare(`
-    SELECT 1 AS found
-    FROM sqlite_master
-    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-    LIMIT 1
-  `).get();
-}
-
 /** Open (or create) the bridge database and initialize schema */
 export function openDatabase(dataDir: string): DatabaseSync {
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
-  const dbPath = join(dataDir, DB_FILENAME);
-  const dbExists = existsSync(dbPath);
-  const legacyStateFiles = getLegacyJsonFilesWithState(dataDir);
-  if (!dbExists && legacyStateFiles.length > 0) {
-    throw formatLegacyJsonStateError(`create an empty ${DB_FILENAME}`, legacyStateFiles);
-  }
-
-  const db = new DatabaseSync(dbPath);
+  const db = new DatabaseSync(join(dataDir, DB_FILENAME));
   try {
-    if (dbExists && legacyStateFiles.length > 0 && !hasPersistedSqliteState(db)) {
-      throw formatLegacyJsonStateError(`use ${DB_FILENAME}`, legacyStateFiles);
-    }
-
     // Enable WAL mode for better concurrency and performance
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA foreign_keys = ON");
-
-    const hasExistingSchema = dbExists && hasUserTables(db);
-    if (hasExistingSchema) assertDatabaseMeetsMinimumBaseline(db);
-    initSchema(db, { freshDatabase: !hasExistingSchema });
+    initSchema(db);
     return db;
   } catch (error) {
     db.close();
@@ -429,30 +316,21 @@ export function openDatabase(dataDir: string): DatabaseSync {
   }
 }
 
-/**
- * Open an in-memory database (for tests).
- *
- * A `:memory:` database is always brand new, so the compatibility migrations
- * have nothing to migrate. They are skipped and recorded instead of executed,
- * which is enforced by the fresh-vs-migrated parity test in db-fresh-schema.test.ts.
- */
+/** Open an in-memory database (for tests). */
 export function openMemoryDatabase(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
-  initSchema(db, { freshDatabase: true });
+  initSchema(db);
   return db;
 }
 
-interface InitSchemaOptions {
-  /**
-   * Set only for databases this call is creating from nothing. Legacy JSON
-   * state is rejected before this path is selected.
-   */
-  freshDatabase?: boolean;
-}
-
-function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
+/**
+ * The schema is idempotent DDL only: every table and column is declared here
+ * and applied with IF NOT EXISTS. Adding a column to an existing table needs an
+ * explicit, column-existence-guarded ALTER TABLE next to the DDL.
+ */
+function initSchema(db: DatabaseSync): void {
   db.exec(`
     -- Tasks
     CREATE TABLE IF NOT EXISTS tasks (
@@ -562,11 +440,6 @@ function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      id TEXT PRIMARY KEY,
-      appliedAt TEXT NOT NULL
     );
 
     -- Schedules
@@ -949,20 +822,7 @@ function initSchema(db: DatabaseSync, options: InitSchemaOptions = {}): void {
       PRIMARY KEY (sessionId, eventsPath)
     );
     CREATE INDEX IF NOT EXISTS idx_event_log_stats_folds_updated ON event_log_stats_folds(updatedAt);
-  `);
 
-  // Ordered, idempotent compatibility migrations live in db-migrations.ts so
-  // legacy state handling is tracked in one place instead of being scattered here.
-  if (options.freshDatabase) {
-    recordFreshDatabaseMigrations(db);
-  } else {
-    runDatabaseMigrations(db);
-  }
-
-  // Indexes that migrations may have to add a column for first, so they cannot
-  // live in the schema DDL above: on a legacy database the indexed column can
-  // still be missing when that DDL runs.
-  db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name_key ON tags(nameKey);
     CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt);
     CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt

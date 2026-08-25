@@ -99,33 +99,4 @@ describe("mcp-server-store", () => {
       enabledByDefault: true,
     });
   });
-
-  it("can ensure distinct generated names for same-name tag overrides", () => {
-    const global = store.createMcpServer({
-      name: "linear",
-      config: { type: "http", url: "https://global.example/mcp" },
-      enabledByDefault: true,
-    });
-
-    const sameConfig = store.ensureMcpServerForNameAndConfig(
-      "LINEAR",
-      { type: "http", url: "https://global.example/mcp" },
-      false,
-    );
-    const override = store.ensureMcpServerForNameAndConfig(
-      "linear",
-      { type: "http", url: "https://override.example/mcp" },
-      false,
-    );
-    const overrideAgain = store.ensureMcpServerForNameAndConfig(
-      "linear",
-      { type: "http", url: "https://override.example/mcp" },
-      false,
-    );
-
-    expect(sameConfig.id).toBe(global.id);
-    expect(override.name).toMatch(/^linear \(tag override/);
-    expect(overrideAgain.id).toBe(override.id);
-    expect(store.listMcpServers()).toHaveLength(2);
-  });
 });

@@ -21,7 +21,6 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
 import type { Task } from "./task-store.js";
@@ -29,8 +28,8 @@ import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createScheduleStore } from "./schedule-store.js";
 import {
-  getOrCreateBus,
   type PendingInteractionSnapshot,
+  type SessionEventBus,
 } from "./event-bus.js";
 import {
   buildSessionConfig as buildSessionConfigWithDeps,
@@ -2032,7 +2031,7 @@ export class SessionManager {
 
   private createRunController(
     sessionId: string,
-    bus: ReturnType<typeof getOrCreateBus>,
+    bus: SessionEventBus,
   ): SessionRunController {
     return this.runStateController.createRunController(sessionId, bus);
   }
@@ -2687,17 +2686,19 @@ export class SessionManager {
     };
   }
 
+  /**
+   * Bridge only ever persists the override it derived from (model, contextTier),
+   * so recompute it from current metadata on resume and fall back to the stored
+   * value only when the model is no longer in the catalog.
+   */
   private resolvePersistedModelCapabilities(
     state: PersistedSessionModelState,
     modelMetadata = this.modelMetadataForContextTiers,
   ): Record<string, unknown> | undefined {
     if (!state.model) return state.modelCapabilities;
     const model = modelMetadata?.find((candidate) => candidate.id === state.model);
-    return getModelCapabilitiesOverride(
-      model,
-      normalizeCopilotContextTier(state.contextTier),
-      state.modelCapabilities,
-    );
+    if (!model) return state.modelCapabilities;
+    return getModelCapabilitiesOverride(model, normalizeCopilotContextTier(state.contextTier));
   }
 
   private persistSessionModelState(
@@ -4391,7 +4392,7 @@ export class SessionManager {
   _doWork(
     sessionId: string,
     prompt: string,
-    bus: ReturnType<typeof getOrCreateBus>,
+    bus: SessionEventBus,
     runController?: SessionRunController,
     attachments?: StartWorkAttachment[],
     options?: StartWorkOptions,
