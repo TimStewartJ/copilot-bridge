@@ -29,6 +29,19 @@ describe("bridge management client API", () => {
       uptimeSeconds: 90,
       isStaging: false,
       sourceManagementAvailable: true,
+      agentBackend: {
+        state: "ready",
+        connection: "connected",
+        pid: 12345,
+        createdAt: "2026-07-15T12:00:00.000Z",
+        lastDisconnect: null,
+        disconnectCount: 0,
+        recoveryCount: 0,
+        lastRecoveryAt: null,
+        lastRecoveryError: null,
+        lastInterruptedSessionCount: 0,
+        lastAutoResumedSessionCount: 0,
+      },
       sessions: { active: 2, stalled: 1, waitingForUserInput: 1 },
       agents: {
         running: 3,
@@ -70,7 +83,19 @@ describe("bridge management client API", () => {
     await expect(restartBridge()).resolves.toEqual({ ok: true, waitingSessions: 2 });
     expect(fetch).toHaveBeenLastCalledWith(
       "/api/server/restart",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{\"force\":false}" },
+    );
+
+    stubJsonResponse({ ok: true, waitingSessions: 0, forced: true, failedRuns: 2 }, { status: 202 });
+    await expect(restartBridge({ force: true })).resolves.toEqual({
+      ok: true,
+      waitingSessions: 0,
+      forced: true,
+      failedRuns: 2,
+    });
+    expect(fetch).toHaveBeenLastCalledWith(
+      "/api/server/restart",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{\"force\":true}" },
     );
   });
 

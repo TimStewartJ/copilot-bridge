@@ -3,6 +3,7 @@ import {
   evictIdleCache,
   fetchBridgeRuntimeStatus,
   restartBridge,
+  type RestartBridgeOptions,
 } from "../../bridge-management-api";
 import { queryKeys } from "../../queryClient";
 
@@ -22,7 +23,7 @@ export function useBridgeRuntimeStatusQuery() {
 export function useRestartBridgeMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: restartBridge,
+    mutationFn: (options: RestartBridgeOptions | void) => restartBridge(options ?? {}),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.bridgeRuntimeStatus });
       void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
