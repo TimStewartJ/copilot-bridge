@@ -104,7 +104,8 @@ import { TaskGroupValidationError } from "./task-group-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { PendingInteractionError } from "./pending-interaction-validation.js";
-import { createDeferSummaryLookup, type DeferSummary } from "./defer-summary.js";
+import { emitSessionDeferSummary, createDeferSummaryLookup, type DeferSummary } from "./defer-summary.js";
+import { parseDeferId } from "./defer-ids.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
@@ -1862,6 +1863,7 @@ export function createApiRouter(
       sessionIds: sessions.map((s) => s.id),
       sessions,
       backgroundOperations: Math.max(0, lifecycleBlockingCount - sessions.length),
+      agentBackend: ctx.sessionManager.getBackendStatus(),
     });
   });
 
@@ -1869,6 +1871,7 @@ export function createApiRouter(
     res.json({
       ok: true,
       copilotCli: getCopilotCliRuntimeStatus() ?? undefined,
+      agentBackend: ctx.sessionManager.getBackendStatus(),
       ...(ctx.docsIndex ? { docsFts: ctx.docsIndex.getFtsHealth() } : {}),
     });
   });
@@ -2162,6 +2165,7 @@ export function createApiRouter(
         ctx.runtimePaths?.env ?? process.env,
         BRIDGE_TOOLS_REPO_ROOT,
       ),
+      agentBackend: ctx.sessionManager.getBackendStatus(),
       ...ctx.sessionManager.getRuntimeActivity(),
     });
   });
@@ -2198,6 +2202,15 @@ export function createApiRouter(
       return res.status(409).json({ error: "A restart is already pending." });
     }
 
+    const body = req.body as { force?: unknown } | undefined;
+    const forced = body?.force === true;
+    const failedRuns = forced
+      ? ctx.sessionManager.failAllActiveRuns("Bridge restart forced by operator").length
+      : 0;
+    if (forced) {
+      console.warn(`[management] Forced bridge restart failed ${failedRuns} active run(s) locally.`);
+    }
+
     mkdirSync(dataDir, { recursive: true });
     const signalFile = join(dataDir, "restart.signal");
     const restartRequest = beginRestartPendingForExternalRequest(
@@ -2221,7 +2234,11 @@ export function createApiRouter(
       });
     }
 
-    res.status(202).json({ ok: true, waitingSessions: restartRequest.waitingSessions });
+    res.status(202).json({
+      ok: true,
+      waitingSessions: restartRequest.waitingSessions,
+      ...(forced ? { forced: true, failedRuns } : {}),
+    });
   });
 
   // GET /status-stream — global SSE for session lifecycle events
@@ -2459,6 +2476,73 @@ export function createApiRouter(
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  router.post("/sessions/:id/defers/:deferId/reactivate", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Defer reactivation")) return;
+
+    const sessionId = req.params.id;
+    const deferId = req.params.deferId;
+    const parsed = parseDeferId(deferId);
+    if (!parsed) return res.status(404).json({ error: `Defer ${deferId} not found.` });
+
+    if (parsed.kind === "once") {
+      const store = ctx.deferredPromptStore;
+      if (!store) return res.status(503).json({ error: "Deferred prompt store is unavailable." });
+
+      const existing = store.get(parsed.id);
+      if (!existing || existing.sessionId !== sessionId) {
+        return res.status(404).json({ error: `Defer ${deferId} not found.` });
+      }
+      if (existing.status !== "failed" && existing.status !== "cancelled") {
+        return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be reactivated.` });
+      }
+
+      if (!store.reactivate(parsed.id)) {
+        const current = store.get(parsed.id);
+        return res.status(409).json({
+          error: `Defer ${deferId} is ${current?.status ?? existing.status} and cannot be reactivated.`,
+        });
+      }
+      const reactivated = store.get(parsed.id);
+      emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
+      ctx.deferredPromptRunner?.poke();
+      return res.json({
+        ok: true,
+        deferId,
+        kind: "once",
+        status: "pending",
+        nextRunAt: reactivated?.runAt ?? existing.runAt,
+      });
+    }
+
+    const store = ctx.deferLoopStore;
+    if (!store) return res.status(503).json({ error: "Recurring defer store is unavailable." });
+
+    const existing = store.get(parsed.id);
+    if (!existing || existing.sessionId !== sessionId) {
+      return res.status(404).json({ error: `Defer ${deferId} not found.` });
+    }
+    if (existing.status !== "failed" && existing.status !== "cancelled" && existing.status !== "expired") {
+      return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be reactivated.` });
+    }
+
+    if (!store.reactivate(parsed.id)) {
+      const current = store.get(parsed.id);
+      return res.status(409).json({
+        error: `Defer ${deferId} is ${current?.status ?? existing.status} and cannot be reactivated.`,
+      });
+    }
+    const reactivated = store.get(parsed.id);
+    emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
+    ctx.deferLoopRunner?.poke();
+    return res.json({
+      ok: true,
+      deferId,
+      kind: "interval",
+      status: "active",
+      nextRunAt: reactivated?.nextRunAt ?? existing.nextRunAt,
+    });
   });
 
   // Warm a session — triggers background SDK resume, returns when ready

@@ -1,4 +1,5 @@
 import { API_BASE, ApiError } from "./api";
+import type { AgentBackendStatus } from "../shared/agent-backend-status";
 
 export interface BridgeRuntimeStatus {
   fetchedAt: string;
@@ -7,6 +8,7 @@ export interface BridgeRuntimeStatus {
   uptimeSeconds: number;
   isStaging: boolean;
   sourceManagementAvailable: boolean;
+  agentBackend: AgentBackendStatus;
   sessions: {
     active: number;
     stalled: number;
@@ -55,6 +57,12 @@ export interface BridgeRuntimeStatus {
 export interface RestartBridgeResponse {
   ok: true;
   waitingSessions: number;
+  forced?: boolean;
+  failedRuns?: number;
+}
+
+export interface RestartBridgeOptions {
+  force?: boolean;
 }
 
 export interface EvictIdleCacheResponse {
@@ -87,10 +95,14 @@ export async function fetchBridgeRuntimeStatus(
   );
 }
 
-export async function restartBridge(): Promise<RestartBridgeResponse> {
+export async function restartBridge(options: RestartBridgeOptions = {}): Promise<RestartBridgeResponse> {
   return bridgeManagementFetch<RestartBridgeResponse>(
     "/api/server/restart",
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: options.force === true }),
+    },
   );
 }
 
