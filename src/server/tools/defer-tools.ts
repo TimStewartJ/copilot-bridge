@@ -17,6 +17,16 @@ const DEFER_MAX_INTERVAL_SECONDS = DEFER_MAX_HORIZON_SECONDS;
 const DEFER_DEFAULT_EXPIRY_DAYS = 7;
 const DEFER_DEFAULT_EXPIRY_SECONDS = DEFER_DEFAULT_EXPIRY_DAYS * 24 * 60 * 60;
 const DEFER_MAX_RUNS = 10_000;
+const DEFAULT_TRANSCRIPT_SIZE_WARNING_BYTES = 32 * 1024 * 1024;
+
+function resolveTranscriptSizeWarningBytes(): number {
+  const raw = process.env.BRIDGE_TRANSCRIPT_SIZE_WARNING_BYTES;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_TRANSCRIPT_SIZE_WARNING_BYTES;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_TRANSCRIPT_SIZE_WARNING_BYTES;
+}
+
+export const TRANSCRIPT_SIZE_WARNING_BYTES = resolveTranscriptSizeWarningBytes();
 
 function validatePrompt(value: unknown) {
   if (typeof value !== "string" || !value.trim()) return "prompt must be a non-empty string.";
@@ -70,6 +80,46 @@ function formatLoop(loop: any) {
     updatedAt: loop.updatedAt,
     ...(loop.lastError ? { lastError: loop.lastError } : {}),
   };
+}
+
+function formatBytes(bytes: number): string {
+  const units = [
+    { suffix: "GB", size: 1024 * 1024 * 1024 },
+    { suffix: "MB", size: 1024 * 1024 },
+    { suffix: "KB", size: 1024 },
+  ];
+  for (const unit of units) {
+    if (bytes >= unit.size) {
+      const value = bytes / unit.size;
+      const formatted = Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
+      return `${formatted} ${unit.suffix}`;
+    }
+  }
+  return `${bytes} bytes`;
+}
+
+async function getTranscriptSizeInfo(
+  ctx: AppContext,
+  sessionId: string | undefined,
+): Promise<{ transcriptSizeBytes?: number; warning?: string }> {
+  if (!sessionId) return {};
+  try {
+    const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: true });
+    const session = sessions.find((candidate: any) => candidate?.sessionId === sessionId);
+    const size = session?.eventLogSizeBytes;
+    if (typeof size !== "number" || !Number.isFinite(size) || size < 0) return {};
+    const transcriptSizeBytes = Math.floor(size);
+    if (transcriptSizeBytes <= TRANSCRIPT_SIZE_WARNING_BYTES) {
+      return { transcriptSizeBytes };
+    }
+    return {
+      transcriptSizeBytes,
+      warning: `This session's transcript is ${formatBytes(transcriptSizeBytes)} (above ${formatBytes(TRANSCRIPT_SIZE_WARNING_BYTES)}). Prefer monitoring from a fresh session (start a new chat or use schedule_create) and keep recurring defers short-lived (maxRuns/expiresAt).`,
+    };
+  } catch (error) {
+    console.warn("[defer-tools] Failed to read session transcript size:", error);
+    return {};
+  }
 }
 
 export interface RegisterDeferToolsOptions {
@@ -202,6 +252,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         });
         emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
         ctx.deferLoopRunner?.poke();
+        const transcriptInfo = await getTranscriptSizeInfo(ctx, sessionId);
         return {
           success: true,
           deferId: loop.deferId,
@@ -211,6 +262,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           intervalSeconds: loop.intervalSeconds,
           ...(loop.maxRuns !== undefined ? { maxRuns: loop.maxRuns } : {}),
           ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
+          ...transcriptInfo,
           message: `Recurring defer scheduled every ${loop.intervalSeconds} seconds.`,
         };
       },
@@ -264,30 +316,102 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
       },
     }),
 
+    defineSessionBridgeTool("defer_reactivate", {
+      description: "Reactivate a failed, cancelled, or expired same-session defer by public deferId.",
+      parameters: {
+        type: "object",
+        properties: {
+          deferId: { type: "string", description: "Public defer ID, e.g. once_<uuid> or interval_<uuid>." },
+        },
+        required: ["deferId"],
+      },
+      handler: async (args: any, invocation: any) => {
+        const sessionId = invocation.sessionId;
+        if (args.deferredPromptId !== undefined || args.loopId !== undefined) {
+          return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
+        }
+        const deferId = typeof args.deferId === "string" ? args.deferId : "";
+        const parsed = parseDeferId(deferId);
+        if (!parsed) return toolFailure("deferId must start with once_ or interval_.");
+
+        if (parsed.kind === "once") {
+          if (!ctx.deferredPromptStore) return toolFailure("Deferred prompt store is unavailable.");
+          const existing = ctx.deferredPromptStore.get(parsed.id);
+          if (!existing) return toolFailure(`Defer ${deferId} not found.`);
+          if (existing.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
+          if (existing.status !== "failed" && existing.status !== "cancelled") {
+            return toolFailure(`Defer ${deferId} is ${existing.status} and cannot be reactivated.`);
+          }
+          const reactivated = ctx.deferredPromptStore.reactivate(parsed.id);
+          if (!reactivated) return toolFailure(`Failed to reactivate defer ${deferId}.`);
+          const updated = ctx.deferredPromptStore.get(parsed.id);
+          emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
+          ctx.deferredPromptRunner?.poke();
+          return {
+            success: true,
+            deferId,
+            kind: "once",
+            status: updated?.status ?? "pending",
+            nextRunAt: updated?.runAt,
+            message: `Defer ${deferId} reactivated.`,
+          };
+        }
+
+        if (!ctx.deferLoopStore) return toolFailure("Recurring defer store is unavailable.");
+        const loop = ctx.deferLoopStore.get(parsed.id);
+        if (!loop) return toolFailure(`Defer ${deferId} not found.`);
+        if (loop.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
+        if (loop.status !== "failed" && loop.status !== "cancelled" && loop.status !== "expired") {
+          return toolFailure(`Defer ${deferId} is ${loop.status} and cannot be reactivated.`);
+        }
+        const reactivated = ctx.deferLoopStore.reactivate(parsed.id);
+        if (!reactivated) return toolFailure(`Failed to reactivate defer ${deferId}.`);
+        const updated = ctx.deferLoopStore.get(parsed.id);
+        emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
+        ctx.deferLoopRunner?.poke();
+        return {
+          success: true,
+          deferId,
+          kind: "interval",
+          status: updated?.status ?? "active",
+          nextRunAt: updated?.nextRunAt,
+          message: `Defer ${deferId} reactivated.`,
+        };
+      },
+    }),
+
     defineSessionBridgeTool("defer_list", {
-      description: "List active same-session defers for this session. Includes one-shot and recurring interval defers using public deferId values.",
-      parameters: { type: "object", properties: {} },
+      description: "List same-session defers for this session. By default returns active defers only; set includeInactive to also return terminal entries.",
+      parameters: {
+        type: "object",
+        properties: {
+          includeInactive: { type: "boolean", description: "When true, include failed, cancelled, completed, and expired entries." },
+        },
+      },
       handler: async (args: any, invocation: any) => {
         const sessionId = invocation.sessionId;
         if (args?.deferredPromptId !== undefined || args?.loopId !== undefined) {
           return toolFailure("Legacy deferredPromptId/loopId arguments are not supported. Use deferId.");
         }
+        const includeInactive = args?.includeInactive === true;
         const oneShots = ctx.deferredPromptStore
           ? ctx.deferredPromptStore
             .listForSession(sessionId)
-            .filter((d) => d.status === "pending" || d.status === "running")
+            .filter((d) => includeInactive || d.status === "pending" || d.status === "running")
             .map(formatOneShot)
           : [];
         const loops = ctx.deferLoopStore
           ? ctx.deferLoopStore
             .listForSession(sessionId)
-            .filter((d) => d.status === "active" || d.status === "running")
+            .filter((d) => includeInactive || d.status === "active" || d.status === "running")
             .map(formatLoop)
           : [];
+        const transcriptInfo = await getTranscriptSizeInfo(ctx, sessionId);
         return {
           deferrals: [...oneShots, ...loops].sort((a, b) =>
             Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt)
           ),
+          ...transcriptInfo,
         };
       },
     }),

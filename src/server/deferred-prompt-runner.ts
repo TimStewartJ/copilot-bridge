@@ -3,16 +3,15 @@
 
 import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { SessionManager } from "./session-manager.js";
-import { isPromptDeliveryInterruptedError, isRestartPendingError } from "./session-manager.js";
 import type { GlobalBus } from "./global-bus.js";
 import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import type { DeferSummarySources } from "./defer-summary.js";
 import {
+  classifyDeferDeliveryError,
+  computeDeferRetryBackoffMs,
   createDeferRunnerCore,
-  INITIAL_BACKOFF_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
-  MAX_BACKOFF_MS,
   type DeferRunnerOptions,
   type DeferRunnerCoreContext,
   type ProcessOneResult,
@@ -144,9 +143,8 @@ export function createDeferredPromptRunner(
         const isBusy =
           msg.includes("Session is busy processing another message") ||
           msg.includes("Session is busy processing another request");
-        const isRestartPending = isRestartPendingError(err);
-        const isPromptDeliveryInterrupted = isPromptDeliveryInterruptedError(err);
-        if (isRestartPending || isPromptDeliveryInterrupted) {
+        const classification = classifyDeferDeliveryError(err);
+        if (classification === "pause") {
           const released = store.releaseClaimWithoutAttempt(id, claimToken);
           if (!released) {
             console.error(`[deferred-runner] Failed to pause deferral ${id} without consuming an attempt`);
@@ -157,12 +155,12 @@ export function createDeferredPromptRunner(
         }
 
         const nextAttempts = attempts; // attempts already incremented by claimDue
-        if (isBusy && nextAttempts < MAX_ATTEMPTS) {
-          const backoffMs = Math.min(
-            INITIAL_BACKOFF_MS * Math.pow(2, nextAttempts - 1),
-            MAX_BACKOFF_MS,
-          );
+        if (nextAttempts < MAX_ATTEMPTS) {
+          const backoffMs = computeDeferRetryBackoffMs(nextAttempts);
           const retryAt = new Date(Date.now() + backoffMs).toISOString();
+          console.warn(
+            `[deferred-runner] Retrying deferral ${id} after attempt ${nextAttempts}/${MAX_ATTEMPTS}${isBusy ? " (session busy)" : ""}: ${msg}`,
+          );
           const retried = store.retry(id, claimToken, retryAt);
           if (!retried) {
             console.error(`[deferred-runner] Failed to re-queue deferral ${id}`);
