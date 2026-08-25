@@ -4,6 +4,7 @@ import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import {
   createDeferredPromptRunner,
   DEFER_WATCHDOG_INTERVAL_MS,
+  INITIAL_BACKOFF_MS,
   LEASE_MS,
   LEASE_RENEW_INTERVAL_MS,
   MAX_ATTEMPTS,
@@ -11,6 +12,10 @@ import {
 } from "../deferred-prompt-runner.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
+import {
+  BACKEND_DISCONNECTED_MESSAGE,
+  BACKEND_RECONNECTING_MESSAGE,
+} from "../backend-availability.js";
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
@@ -95,6 +100,64 @@ describe("deferred-prompt-runner", () => {
         { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
       ]);
 
+      runner.shutdown();
+    });
+
+    it("holds due prompts while defer delivery readiness is not ready and resumes later", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const telemetryStore = createTelemetryStore(db);
+      const past = new Date(Date.now() - 1000).toISOString();
+      const dp = store.create("session-1", "Do something", past);
+      let readinessCalls = 0;
+
+      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      sm.getDeferDeliveryReadiness = vi.fn(() => {
+        readinessCalls += 1;
+        return readinessCalls >= 3
+          ? { ready: true }
+          : { ready: false, reason: "agent backend startup hold", retryAfterMs: 1000 };
+      });
+      const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+      const runner = createDeferredPromptRunner(
+        store,
+        sm,
+        bus,
+        undefined,
+        { deferredPromptStore: store },
+        { telemetryStore },
+      );
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sm._started).toHaveLength(0);
+      expect(store.get(dp.id)).toMatchObject({ status: "pending", attempts: 0 });
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sm._started).toHaveLength(0);
+      expect(store.get(dp.id)).toMatchObject({ status: "pending", attempts: 0 });
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Do something" }]);
+      expect(store.get(dp.id)!.status).toBe("completed");
+      expect(telemetryStore.querySpans({ name: "defer.runner.hold" })).toEqual([
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            deferKind: "once",
+            dueCount: 1,
+            reason: "agent backend startup hold",
+          }),
+        }),
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            deferKind: "once",
+            dueCount: 1,
+            reason: "agent backend startup hold",
+          }),
+        }),
+      ]);
       runner.shutdown();
     });
 
@@ -541,6 +604,72 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
+    it.each([
+      BACKEND_DISCONNECTED_MESSAGE,
+      BACKEND_RECONNECTING_MESSAGE,
+    ])("pauses backend-unavailable delivery without burning attempts: %s", async (message) => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const past = new Date(Date.now() - 1000).toISOString();
+      store.create("session-1", "Prompt", past);
+
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        startWorkError: new Error(message),
+      });
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const dp = store.listForSession("session-1")[0];
+      expect(dp.status).toBe("pending");
+      expect(dp.attempts).toBe(0);
+      expect(dp.claimToken).toBeUndefined();
+      expect(dp.leaseExpiresAt).toBeUndefined();
+      runner.shutdown();
+    });
+
+    it.each([
+      "Session tool initialization did not complete before prompt delivery",
+      "resumeSession timed out after 60s",
+    ])("retries transient delivery error with backoff until MAX_ATTEMPTS: %s", async (message) => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const past = new Date(Date.now() - 1000).toISOString();
+      const dp = store.create("session-1", "Prompt", past);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        startWorkError: new Error(message),
+      });
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+      runner.start();
+
+      for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
+        await vi.advanceTimersByTimeAsync(attempt === 1 ? 0 : INITIAL_BACKOFF_MS * Math.pow(2, attempt - 2));
+        const row = store.get(dp.id)!;
+        expect(row.status).toBe("pending");
+        expect(row.attempts).toBe(attempt);
+        expect(Date.parse(row.runAt) - Date.now()).toBe(INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1));
+      }
+
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS * Math.pow(2, MAX_ATTEMPTS - 2));
+      expect(store.get(dp.id)).toMatchObject({
+        status: "failed",
+        attempts: MAX_ATTEMPTS,
+        lastError: message,
+      });
+      expect(warnSpy).toHaveBeenCalledTimes(MAX_ATTEMPTS - 1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`Deferral ${dp.id} failed after ${MAX_ATTEMPTS} attempt(s)`),
+      );
+      runner.shutdown();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
     it("marks failed after MAX_ATTEMPTS non-retryable errors", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
@@ -953,6 +1082,7 @@ describe("deferred-prompt-runner", () => {
       const t2 = new Date(Date.now() - 1000).toISOString();
       const first = store.create("session-1", "First", t1);
       const second = store.create("session-1", "Second", t2);
+      db.exec(`UPDATE deferred_prompts SET attempts = ${MAX_ATTEMPTS - 1} WHERE id = '${first.id}'`);
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
         listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
@@ -963,6 +1093,7 @@ describe("deferred-prompt-runner", () => {
         },
       };
 
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -973,6 +1104,7 @@ describe("deferred-prompt-runner", () => {
       ]);
       expect(store.get(first.id)?.status).toBe("failed");
       expect(store.get(second.id)?.status).toBe("completed");
+      errorSpy.mockRestore();
       runner.shutdown();
     });
   });

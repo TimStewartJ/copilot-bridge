@@ -3,10 +3,11 @@
 // Recomputes all timers from SQLite on startup; no in-memory state is authoritative.
 
 import type { GlobalBus } from "./global-bus.js";
-import type { SessionManager } from "./session-manager.js";
+import { isPromptDeliveryInterruptedError, isRestartPendingError, type SessionManager } from "./session-manager.js";
 import type { DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summary.js";
 import type { TelemetryStore } from "./telemetry-store.js";
+import { isBackendUnavailableError } from "./backend-availability.js";
 
 // ── Shared timing/lease constants ─────────────────────────────────
 
@@ -17,6 +18,27 @@ export const LEASE_MS = 2 * 60_000;
 export const LEASE_RENEW_INTERVAL_MS = Math.floor(LEASE_MS / 2);
 export const MAX_TIMER_DELAY_MS = 2_000_000_000;
 export const DEFER_WATCHDOG_INTERVAL_MS = 60_000;
+
+export type DeferDeliveryErrorClassification = "pause" | "retry";
+
+export function classifyDeferDeliveryError(error: unknown): DeferDeliveryErrorClassification {
+  if (
+    isRestartPendingError(error)
+    || isPromptDeliveryInterruptedError(error)
+    || isBackendUnavailableError(error)
+  ) {
+    return "pause";
+  }
+  return "retry";
+}
+
+export function computeDeferRetryBackoffMs(attempts: number): number {
+  const boundedAttempts = Number.isFinite(attempts) ? Math.max(1, Math.floor(attempts)) : 1;
+  return Math.min(
+    INITIAL_BACKOFF_MS * Math.pow(2, boundedAttempts - 1),
+    MAX_BACKOFF_MS,
+  );
+}
 
 export type ProcessOneResult = "changed" | "blocked" | "unchanged" | "claimed";
 
@@ -110,6 +132,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   let generation = 0;
   let processDuePromise: Promise<void> | undefined;
   let rerunRequested = false;
+  let holdLogged = false;
   const renewalTimers = new Set<ReturnType<typeof setInterval>>();
 
   // ── Internal helpers ──────────────────────────────────────────────
@@ -165,10 +188,60 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     }
   }
 
-  function hasDueReadyForAnotherPass(): boolean {
-    return store.listDue().some((item) =>
-      !deliveryGuard.isActive(item.sessionId) && !sessionManager.isSessionBusy(item.sessionId)
-    );
+  function getDeferDeliveryReadiness(): { ready: boolean; reason?: string; retryAfterMs?: number } {
+    return sessionManager.getDeferDeliveryReadiness?.() ?? { ready: true };
+  }
+
+  function clearHoldLogState(): void {
+    holdLogged = false;
+  }
+
+  function armHoldRetry(retryAfterMs: number | undefined): void {
+    if (!started) return;
+    clearTimeout(nextTimer);
+    const delay = Math.min(Math.max(0, retryAfterMs ?? 5_000), MAX_TIMER_DELAY_MS);
+    const scheduledGeneration = generation;
+    nextTimer = setTimeout(() => {
+      if (!started || scheduledGeneration !== generation) return;
+      nextTimer = undefined;
+      processDue().catch((err) => {
+        console.error(`[${tag}] processDue error after delivery hold:`, err);
+      });
+    }, delay);
+  }
+
+  function holdIfNotReady(dueCount: number): boolean {
+    if (dueCount === 0) {
+      clearHoldLogState();
+      return false;
+    }
+    const readiness = getDeferDeliveryReadiness();
+    if (readiness.ready) {
+      clearHoldLogState();
+      return false;
+    }
+    const reason = readiness.reason ?? "defer delivery is not ready";
+    if (!holdLogged) {
+      console.info(`[${tag}] Holding ${dueCount} due item(s): ${reason}`);
+      holdLogged = true;
+    }
+    recordTelemetry("defer.runner.hold", 0, {
+      reason,
+      dueCount,
+    });
+    armHoldRetry(readiness.retryAfterMs);
+    return true;
+  }
+
+  function getDueReadyForAnotherPass(): { ready: boolean; held: boolean } {
+    const due = store.listDue();
+    if (holdIfNotReady(due.length)) return { ready: false, held: true };
+    return {
+      held: false,
+      ready: due.some((item) =>
+        !deliveryGuard.isActive(item.sessionId) && !sessionManager.isSessionBusy(item.sessionId)
+      ),
+    };
   }
 
   function emitDeferSummary(sessionId: string): void {
@@ -235,11 +308,16 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
 
   async function processDueOnce(): Promise<void> {
     if (!started) return;
+    let held = false;
 
     try {
       reclaimExpiredRunning();
       const due = store.listDue();
       if (due.length > 0) {
+        if (holdIfNotReady(due.length)) {
+          held = true;
+          return;
+        }
         const sessionsSeen = new Set<string>();
         const toProcess = due.filter((item) => {
           if (sessionsSeen.has(item.sessionId)) return false;
@@ -263,12 +341,17 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
             error: errorMessage(result.reason),
           });
         }
-        if (results.includes("changed") && hasDueReadyForAnotherPass()) {
-          rerunRequested = true;
+        if (results.includes("changed")) {
+          const nextPass = getDueReadyForAnotherPass();
+          if (nextPass.ready) {
+            rerunRequested = true;
+          } else if (nextPass.held) {
+            held = true;
+          }
         }
       }
     } finally {
-      armNext();
+      if (!held) armNext();
     }
   }
 
@@ -321,10 +404,15 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     clearInterval(renewalTimer);
     renewalTimers.delete(renewalTimer);
     deliveryGuard.release(sessionId);
-    if (started && shouldProcessNext && hasDueReadyForAnotherPass()) {
-      processDue().catch((err) => {
-        console.error(`[${tag}] processDue error after delivery settled:`, err);
-      });
+    if (started && shouldProcessNext) {
+      const nextPass = getDueReadyForAnotherPass();
+      if (nextPass.ready) {
+        processDue().catch((err) => {
+          console.error(`[${tag}] processDue error after delivery settled:`, err);
+        });
+      } else if (!nextPass.held) {
+        armNext();
+      }
     } else {
       armNext();
     }
