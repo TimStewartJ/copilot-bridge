@@ -293,7 +293,6 @@ interface SessionWorkspaceDetailsPayload extends SessionWorkspaceSummaryPayload 
   availableWorktrees: SessionWorkspaceWorktreePayload[];
   canResetToTask: boolean;
   runState: SessionRunState;
-  busy: boolean;
   gitStatus: TaskGitStatusResponse;
 }
 
@@ -315,7 +314,6 @@ function getSessionStatus(
   sessionId: string,
 ): {
   runState: SessionRunState;
-  busy: boolean;
   pendingUserInputCount: number;
   needsUserInput: boolean;
   backgroundAgents: BackgroundAgentsSummary;
@@ -324,7 +322,6 @@ function getSessionStatus(
   const pendingUserInputCount = ctx.sessionManager.getPendingUserInputCount(sessionId);
   return {
     runState,
-    busy: runState !== "idle",
     pendingUserInputCount,
     needsUserInput: pendingUserInputCount > 0,
     backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(sessionId),
@@ -399,7 +396,7 @@ function parseWorkspaceCwd(content: string): string | undefined {
   return undefined;
 }
 
-function getLegacySessionWorkspaceCwd(ctx: AppContext, sessionId: string): string | undefined {
+function getSessionRecordedCwd(ctx: AppContext, sessionId: string): string | undefined {
   const yamlPath = join(getCopilotHome(ctx), "session-state", sessionId, "workspace.yaml");
   try {
     if (!existsSync(yamlPath)) return undefined;
@@ -419,11 +416,11 @@ function composeSessionWorkspaceSummary(
   resolved: {
     sessionOverride: SessionWorkspace | undefined;
     overrideAvailability: WorkspaceAvailability | undefined;
-    legacyCwd: string | undefined;
+    recordedCwd: string | undefined;
     taskCwd: string | undefined;
   },
 ): SessionWorkspaceSummaryWithSource {
-  const { sessionOverride, overrideAvailability, legacyCwd, taskCwd } = resolved;
+  const { sessionOverride, overrideAvailability, recordedCwd, taskCwd } = resolved;
   const warnings: SessionWorkspaceWarningPayload[] = [];
   if (sessionOverride && overrideAvailability && !overrideAvailability.available && overrideAvailability.clearStalePin) {
     // A missing pinned cwd is stale user state; clear it before the SDK can resume with an invalid directory.
@@ -434,10 +431,10 @@ function composeSessionWorkspaceSummary(
     });
   }
   const overrideCwd = overrideAvailability?.available ? overrideAvailability.cwd : undefined;
-  const effectiveCwd = overrideCwd ?? legacyCwd ?? taskCwd;
+  const effectiveCwd = overrideCwd ?? recordedCwd ?? taskCwd;
   const source: SessionWorkspaceSource = overrideCwd
     ? "session_workspace"
-    : legacyCwd
+    : recordedCwd
       ? "workspace_yaml"
       : taskCwd
         ? "task"
@@ -467,7 +464,7 @@ function buildSessionWorkspaceSummary(
   return composeSessionWorkspaceSummary(ctx, sessionId, {
     sessionOverride,
     overrideAvailability: getWorkspaceAvailability(sessionOverride?.cwd),
-    legacyCwd: resolveAvailableWorkspaceCwd(getLegacySessionWorkspaceCwd(ctx, sessionId)),
+    recordedCwd: resolveAvailableWorkspaceCwd(getSessionRecordedCwd(ctx, sessionId)),
     taskCwd: resolveAvailableWorkspaceCwd(task?.cwd),
   });
 }
@@ -482,20 +479,20 @@ async function buildSessionWorkspaceSummaryForList(
   sessionId: string,
   inputs: {
     sessionOverride: SessionWorkspace | undefined;
-    legacyCwd: string | undefined;
+    recordedCwd: string | undefined;
     task: Pick<Task, "cwd"> | null | undefined;
     getAvailability: WorkspaceAvailabilityLookup;
   },
 ): Promise<SessionWorkspaceSummaryWithSource> {
-  const [overrideAvailability, legacyCwd, taskCwd] = await Promise.all([
+  const [overrideAvailability, recordedCwd, taskCwd] = await Promise.all([
     inputs.getAvailability(inputs.sessionOverride?.cwd),
-    resolveAvailableWorkspaceCwdAsync(inputs.legacyCwd, inputs.getAvailability),
+    resolveAvailableWorkspaceCwdAsync(inputs.recordedCwd, inputs.getAvailability),
     resolveAvailableWorkspaceCwdAsync(inputs.task?.cwd ?? undefined, inputs.getAvailability),
   ]);
   return composeSessionWorkspaceSummary(ctx, sessionId, {
     sessionOverride: inputs.sessionOverride,
     overrideAvailability,
-    legacyCwd,
+    recordedCwd,
     taskCwd,
   });
 }
@@ -699,7 +696,6 @@ function shouldIncludeMaterializedSession(opts: {
     && !(opts.hasReadState && opts.lastActivityAt)
     && !opts.hasDeferredWork
     && opts.status.runState === "idle"
-    && !opts.status.busy
     && !opts.status.needsUserInput
   ) {
     return false;
@@ -720,7 +716,7 @@ interface WorkspaceYamlListRead {
   cwd: string | undefined;
 }
 
-/** One read of workspace.yaml serves both the session-name overlay and the legacy cwd. */
+/** One read of workspace.yaml serves both the session-name overlay and the cwd the CLI recorded for the session. */
 async function readWorkspaceYamlForList(sessionStateDir: string, sessionId: string): Promise<WorkspaceYamlListRead> {
   const content = await readFile(join(sessionStateDir, sessionId, "workspace.yaml"), "utf-8");
   return {
@@ -1744,7 +1740,7 @@ export function createApiRouter(
           const archivedAt = meta[id]?.archivedAt ?? null;
           const { source: _workspaceSource, ...workspace } = await buildSessionWorkspaceSummaryForList(ctx, id, {
             sessionOverride: pinnedWorkspaces[id],
-            legacyCwd: workspaceYaml.cwd,
+            recordedCwd: workspaceYaml.cwd,
             task: linkedTask,
             getAvailability,
           });
@@ -3690,7 +3686,7 @@ export function createApiRouter(
     res.json({ servers: ctx.tagStore.getTagMcpServers(req.params.id) });
   });
 
-  const replaceTagMcpServerSelection = (req: express.Request<{ id: string }>, res: express.Response) => {
+  router.put("/tags/:id/mcp-servers", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     const serverIds = isRecord(req.body) ? req.body.serverIds : undefined;
     if (!Array.isArray(serverIds) || !serverIds.every((serverId) => typeof serverId === "string")) {
@@ -3704,10 +3700,7 @@ export function createApiRouter(
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
-  };
-
-  router.put("/tags/:id/mcp", replaceTagMcpServerSelection);
-  router.put("/tags/:id/mcp-servers", replaceTagMcpServerSelection);
+  });
 
   router.post("/tags/:id/mcp-refs/:serverId", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
@@ -3725,26 +3718,6 @@ export function createApiRouter(
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     ctx.tagStore.removeTagMcpServerRef(req.params.id, req.params.serverId);
     console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-    void ctx.sessionManager.evictAllCachedSessions();
-    res.json({ success: true });
-  });
-
-  router.put("/tags/:id/mcp/:serverName", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    try {
-      ctx.tagStore.setTagMcpServer(req.params.id, req.params.serverName, req.body);
-      console.log("[tags] Tag MCP server changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ success: true });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.delete("/tags/:id/mcp/:serverName", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    ctx.tagStore.removeTagMcpServer(req.params.id, req.params.serverName);
-    console.log("[tags] Tag MCP server removed — evicting cached sessions");
     void ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
   });
@@ -4705,7 +4678,7 @@ export function createApiRouter(
           const linkedTaskIds = taskLookup.getLinkedTasks(run.sessionId).map((task) => task.id);
           const status = s
             ? getSessionStatus(ctx, run.sessionId)
-            : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false, backgroundAgents: emptyBackgroundAgentsSummary("unknown") };
+            : { runState: "idle" as const, pendingUserInputCount: 0, needsUserInput: false, backgroundAgents: emptyBackgroundAgentsSummary("unknown") };
           const [hasPlan, storageMeasurement] = await Promise.all([
             statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false),
             measureSessionStorage(run.sessionId),

@@ -120,7 +120,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         title: { type: "string", description: "New title" },
         kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
         muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
-        status: { type: "string", enum: ["active", "done", "archived"], description: "Task status" },
+        status: { type: "string", enum: ["active", "archived"], description: "Task status" },
         completionAction: { type: "string", enum: ["complete-and-archive"], description: "Complete and archive the task. Cannot be combined with status." },
         priority: { type: "integer", description: "Task priority" },
         notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },

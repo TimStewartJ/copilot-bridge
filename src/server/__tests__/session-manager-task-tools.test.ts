@@ -43,7 +43,7 @@ describe("session manager task tools", () => {
       enum: ["task", "ongoing"],
       description: "Task kind",
     });
-    expect(updateTool.inputSchema.properties.status.enum).toEqual(["active", "done", "archived"]);
+    expect(updateTool.inputSchema.properties.status.enum).toEqual(["active", "archived"]);
     expect(updateTool.inputSchema.properties.completionAction.enum).toEqual(["complete-and-archive"]);
     expect(updateTool.inputSchema.properties.priority.type).toBe("integer");
     expect(updateTool.inputSchema.properties.groupId.anyOf).toEqual([{ type: "string" }, { type: "null" }]);
@@ -174,7 +174,8 @@ describe("session manager task tools", () => {
   it("task_update normalizes kind-only switches to ongoing", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Kind update normalize");
-    ctx.taskStore.updateTask(task.id, { status: "done", doneWhen: "Merged and deployed" });
+    ctx.taskStore.updateTask(task.id, { doneWhen: "Merged and deployed" });
+    ctx.taskStore.updateTask(task.id, { completionAction: "complete-and-archive" });
     const tool = getTool(ctx, "task_update");
     const infoTool = getTool(ctx, "task_get_info");
 
@@ -224,11 +225,11 @@ describe("session manager task tools", () => {
 
     await expect(tool.handler({
       taskId: statusTask.id,
-      status: "done",
+      status: "archived",
     }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
     expect(ctx.taskStore.getTask(statusTask.id)).toEqual(expect.objectContaining({
       status: "archived",
-      completedAt: expect.any(String),
+      completedAt: undefined,
     }));
 
     await expect(tool.handler({
@@ -514,7 +515,7 @@ describe("session manager task tools", () => {
   it("task_update_momentum rejects momentum updates for completed tasks", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum closed");
-    ctx.taskStore.updateTask(task.id, { status: "done" });
+    ctx.taskStore.updateTask(task.id, { completionAction: "complete-and-archive" });
     const tool = getTool(ctx, "task_update_momentum");
 
     await expect(tool.handler({
@@ -629,25 +630,6 @@ describe("session manager task tools", () => {
     ]));
   });
 
-  it("task_unlink_pr also clears a legacy row keyed by the raw repo reference", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Legacy unlink");
-    ctx.taskStore.linkPR(task.id, {
-      repoId: "https://github.com/octo/widget",
-      repoName: "https://github.com/octo/widget",
-      prId: 5,
-      provider: "github",
-    });
-
-    await getTool(ctx, "task_unlink_pr").handler({
-      taskId: task.id,
-      repoName: "https://github.com/octo/widget",
-      prId: 5,
-      provider: "github",
-    }, createInvocation("task_unlink_pr"));
-
-    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([]);
-  });
   it("task_unlink_pr without a provider unlinks across providers", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Cross provider unlink");

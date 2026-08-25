@@ -1654,7 +1654,7 @@ export default function DocsView({ onDocTitleChange }: DocsViewProps = {}) {
               {index > 0 && <ChevronRight size={12} />}
               {crumb.path !== null && isBreadcrumbNavigable(crumb.path) ? (
                 <button
-                  onClick={() => handleBreadcrumbSelect(crumb.path)}
+                  onClick={() => handleBreadcrumbSelect(crumb.path!)}
                   className="max-w-[180px] truncate rounded-md px-1.5 py-0.5 transition-colors hover:bg-bg-hover hover:text-text-primary"
                 >
                   {crumb.label}
@@ -1716,7 +1716,7 @@ export default function DocsView({ onDocTitleChange }: DocsViewProps = {}) {
     const isWrappingField = (field: { type: string }) => field.type === "text";
     const handleSort = (field: string) => {
       setDbSort((prev) => {
-        const next = prev.field === field
+        const next: DbSortState = prev.field === field
           ? { field, order: prev.order === "asc" ? "desc" : "asc" }
           : { field, order: "desc" };
         saveDbSort(dbFolder, next);

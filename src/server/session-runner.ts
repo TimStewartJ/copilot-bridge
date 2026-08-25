@@ -11,9 +11,9 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
 import { getVisibleEventTimestamp } from "./event-transform.js";
 import { clearEventLogStatsCache } from "./session-disk-reader.js";
-import type { getOrCreateBus } from "./event-bus.js";
-import type { EventBusRegistry } from "./event-bus.js";
-import type { GlobalBus } from "./global-bus.js";import type { SessionMetaStore } from "./session-meta-store.js";
+import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";
+import type { GlobalBus } from "./global-bus.js";
+import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
 import type { Task } from "./task-store.js";
@@ -434,7 +434,7 @@ export class SessionRunner {
 
   private createRunController(
     sessionId: string,
-    bus: ReturnType<typeof getOrCreateBus>,
+    bus: SessionEventBus,
   ): SessionRunController {
     return this.deps.runStateController.createRunController(sessionId, bus);
   }
@@ -575,7 +575,7 @@ export class SessionRunner {
 
   private startBackgroundRun(
     sessionId: string,
-    bus: ReturnType<typeof getOrCreateBus>,
+    bus: SessionEventBus,
     runner: (runController: SessionRunController) => Promise<void>,
     metadata?: {
       pendingPrompt?: string;
@@ -611,7 +611,7 @@ export class SessionRunner {
   async doWork(
     sessionId: string,
     prompt: string,
-    bus: ReturnType<typeof getOrCreateBus>,
+    bus: SessionEventBus,
     runController?: SessionRunController,
     attachments?: StartWorkAttachment[],
     options: StartWorkOptions = {},
@@ -662,7 +662,7 @@ export class SessionRunner {
 
   private async runSessionOperation(
     sessionId: string,
-    bus: ReturnType<typeof getOrCreateBus>,
+    bus: SessionEventBus,
     runController: SessionRunController,
     opts: {
       resumeContext: string;

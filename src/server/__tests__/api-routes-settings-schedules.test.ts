@@ -693,7 +693,6 @@ describe("Schedule routes", () => {
     expect(res.body.sessions[0]).toMatchObject({
       sessionId: "shared-session",
       runState: "stalled",
-      busy: true,
     });
   });
 });

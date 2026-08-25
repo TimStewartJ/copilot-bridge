@@ -30,7 +30,7 @@ export function hasToolArgs(args: ToolArgs | undefined): boolean {
 
 export function summarizeToolArgs(args: ToolArgs | undefined, options: ToolArgSummaryOptions = {}): string {
   const { maxLength = 80, separator = "  " } = options;
-  if (!hasToolArgs(args)) return "";
+  if (args === undefined || !hasToolArgs(args)) return "";
   if (!isToolArgObject(args)) return stringifyArg(args, maxLength);
 
   const path = args.path;
@@ -44,7 +44,7 @@ export function summarizeToolArgs(args: ToolArgs | undefined, options: ToolArgSu
 
   return Object.entries(args)
     .filter(([key]) => key !== "intent")
-    .map(([, value]) => stringifyArg(value, maxLength))
+    .map(([, value]) => stringifyArg(value ?? null, maxLength))
     .join(separator);
 }
 

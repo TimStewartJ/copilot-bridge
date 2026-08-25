@@ -18,7 +18,7 @@ const BRIDGE_COPILOT_CLI_ARGS = ["--experimental"] as const;
 
 export interface BridgeCopilotClientOptions extends CopilotClientOptions {
   cliPath: string;
-  /** Which Copilot CLI build the wrapper will launch (pinned release vs npm package). */
+  /** The pinned Copilot CLI build the wrapper launches. */
   copilotCli: CopilotCliResolution;
 }
 
@@ -50,10 +50,9 @@ export function resolveBridgeCopilotCliPath(): string {
 }
 
 /**
- * Decide which CLI build the wrapper launches for this client. The cache
- * location comes from the same env the CLI child inherits, so a caller that
- * passes an isolated `clientEnv` (tests, disposable sessions) without a data
- * dir gets the npm package rather than a pinned build from another tree.
+ * Resolve the pinned CLI build the wrapper launches for this client. The cache
+ * location comes from the same env the CLI child inherits. Throws when the
+ * pinned build is not ready in that cache.
  */
 export function resolveCopilotCliLaunch(
   env: Record<string, string | undefined>,
@@ -78,17 +77,12 @@ export function buildCopilotClientOptions(
   const env: Record<string, string | undefined> = {
     ...baseEnv,
     COPILOT_CLI_PATH: cliPath,
+    [BRIDGE_COPILOT_APP_DIR_ENV]: copilotCli.appDir,
   };
-  if (copilotCli.source === "pinned" && copilotCli.appDir) {
-    env[BRIDGE_COPILOT_APP_DIR_ENV] = copilotCli.appDir;
-  } else {
-    delete env[BRIDGE_COPILOT_APP_DIR_ENV];
-  }
   const description = describeCopilotCliResolution(copilotCli);
   if (description !== lastLoggedCopilotCliLaunch) {
     lastLoggedCopilotCliLaunch = description;
-    const logger = copilotCli.source === "npm-fallback" ? console.warn : console.log;
-    logger(`[sdk] Copilot CLI launch target: ${description}`);
+    console.log(`[sdk] Copilot CLI launch target: ${description}`);
   }
 
   return {

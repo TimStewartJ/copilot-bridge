@@ -97,7 +97,7 @@ export function useTaskWorkspace(
 
   // ── Refresh ─────────────────────────────────────────────────
   const refresh = useCallback(async () => {
-    const work = [
+    const work: Array<Promise<unknown> | void> = [
       reloadEnriched(),
       refetchChecklistItems(),
       sched.reload(),

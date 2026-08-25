@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
-import { setMcpServersGetter } from "./config.js";
 import { openDatabase } from "./db.js";
 import { createTaskStore } from "./task-store.js";
 import { createTaskAgentDefinitionStore } from "./task-agent-definition-store.js";
@@ -29,8 +28,8 @@ import { createVoiceJobStore } from "./voice-job-store.js";
 import { createPushNotificationService, initPushEventNotifications } from "./push-notification-service.js";
 import { createPushSubscriptionStore } from "./push-subscription-store.js";
 import * as scheduler from "./scheduler.js";
-import { defaultEventBusRegistry } from "./event-bus.js";
-import { defaultGlobalBus } from "./global-bus.js";
+import { createEventBusRegistry } from "./event-bus.js";
+import { createGlobalBus } from "./global-bus.js";
 import type { AppContext } from "./app-context.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
@@ -71,14 +70,16 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 
   const dataDir = runtimePaths.dataDir;
   const db = openDatabase(dataDir);
+  const globalBus = createGlobalBus();
+  const eventBusRegistry = createEventBusRegistry();
   const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir });
-  const taskStore = createTaskStore(db, defaultGlobalBus, {
+  const taskStore = createTaskStore(db, globalBus, {
     runtimePaths,
     onTaskDeleted: (taskId) => {
       taskAgentDefinitionStore.removeTaskAgentDefinitions(taskId);
     },
   });
-  const taskGroupStore = createTaskGroupStore(db, defaultGlobalBus);
+  const taskGroupStore = createTaskGroupStore(db, globalBus);
   const scheduleStore = createScheduleStore(db);
   const settingsStore = createSettingsStore(db);
   const sessionMetaStore = createSessionMetaStore(db);
@@ -86,8 +87,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const sessionTitles = createSessionTitlesStore(db);
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
-  const checklistStore = createChecklistStore(db, defaultGlobalBus);
-  const feedStore = createFeedStore(db, defaultGlobalBus, {
+  const checklistStore = createChecklistStore(db, globalBus);
+  const feedStore = createFeedStore(db, globalBus, {
     onVisualUnreferenced: (visual, card) => {
       const result = deleteVisualArtifactForOwner(
         runtimePaths.copilotHome ?? join(homedir(), ".copilot"),
@@ -150,7 +151,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     );
   }
 
-  setMcpServersGetter(() => settingsStore.getMcpServers());
 
   const ctx: AppContext = {
     taskStore,
@@ -175,8 +175,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     copilotUsageStore,
     telemetryStore,
     sessionContextStore,
-    globalBus: defaultGlobalBus,
-    eventBusRegistry: defaultEventBusRegistry,
+    globalBus,
+    eventBusRegistry,
     sessionManager: null as any,
     transcriptionService: createTranscriptionService(),
     voiceJobManager: null as any,
@@ -224,7 +224,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   ctx.deferredPromptRunner = createDeferredPromptRunner(
     deferredPromptStore,
     sessionManager,
-    defaultGlobalBus,
+    globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
     { telemetryStore },
@@ -232,7 +232,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   ctx.deferLoopRunner = createDeferLoopRunner(
     deferLoopStore,
     sessionManager,
-    defaultGlobalBus,
+    globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
     { telemetryStore },

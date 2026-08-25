@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import {
   assertMcpServerConfig,
-  mcpServerConfigsEqual,
   type McpServerConfig,
 } from "./mcp-config.js";
 import { hydrateRowSafely, hydrateRowsSafely, type RowHydrationContext } from "./store-row-hydration.js";
@@ -153,56 +152,6 @@ export function createMcpServerStore(db: DatabaseSync) {
     return updateMcpServer(id, { enabledByDefault });
   }
 
-  function makeUniqueName(preferredName: string): string {
-    const base = normalizeServerName(preferredName);
-    const existing = new Set(
-      (db.prepare("SELECT name FROM mcp_servers").all() as Array<{ name: string }>)
-        .map((row) => row.name.toLocaleLowerCase()),
-    );
-    if (!existing.has(base.toLocaleLowerCase())) return base;
-
-    const first = `${base} (tag override)`;
-    if (!existing.has(first.toLocaleLowerCase())) return first;
-    for (let i = 2; i <= 10_000; i++) {
-      const candidate = `${base} (tag override ${i})`;
-      if (!existing.has(candidate.toLocaleLowerCase())) return candidate;
-    }
-    throw new Error(`Unable to generate unique MCP server name for "${base}"`);
-  }
-
-  function findReusableServerForNameAndConfig(name: string, config: McpServerConfig): McpServer | undefined {
-    const normalized = normalizeServerName(name);
-    const lowerName = normalized.toLocaleLowerCase();
-    return listMcpServers().find((server) => {
-      const lowerServerName = server.name.toLocaleLowerCase();
-      return (lowerServerName === lowerName || lowerServerName.startsWith(`${lowerName} (`))
-        && mcpServerConfigsEqual(server.config, config);
-    });
-  }
-
-  function ensureMcpServerForNameAndConfig(
-    name: string,
-    config: McpServerConfig,
-    enabledByDefault = false,
-  ): McpServer {
-    const normalized = normalizeServerName(name);
-    const configJson = serializeConfig(config);
-    const typedConfig = JSON.parse(configJson) as McpServerConfig;
-    const reusable = findReusableServerForNameAndConfig(normalized, typedConfig);
-    if (reusable) {
-      if (enabledByDefault && !reusable.enabledByDefault) {
-        return updateMcpServer(reusable.id, { enabledByDefault: true });
-      }
-      return reusable;
-    }
-
-    return createMcpServer({
-      name: makeUniqueName(normalized),
-      config: typedConfig,
-      enabledByDefault,
-    });
-  }
-
   function resolveMcpServers(serverIds?: Iterable<string>): Record<string, McpServerConfig> {
     const servers = serverIds === undefined
       // Default resolution must survive one unreadable row: it runs on every
@@ -235,7 +184,6 @@ export function createMcpServerStore(db: DatabaseSync) {
     updateMcpServer,
     deleteMcpServer,
     setMcpServerEnabledByDefault,
-    ensureMcpServerForNameAndConfig,
     resolveMcpServers,
   };
 }

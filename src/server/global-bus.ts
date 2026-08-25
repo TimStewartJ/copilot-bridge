@@ -58,12 +58,3 @@ export function createGlobalBus() {
 }
 
 export type GlobalBus = ReturnType<typeof createGlobalBus>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _default = createGlobalBus();
-export const emit = _default.emit;
-export const subscribe = _default.subscribe;
-
-/** Access the default instance for passing to factories during migration */
-export const defaultGlobalBus = _default;

@@ -1,12 +1,8 @@
 // Bridge-owned Copilot CLI channel.
 //
-// The Copilot SDK normally launches the CLI from the npm platform package under
-// node_modules (`@github/copilot-<platform>-<arch>`). Prereleases are published to
-// GitHub Releases before (or without) reaching npm, so this module lets the repo
-// pin one of those builds instead:
+// Bridge always launches the exact Copilot CLI build pinned by the repo:
 //
-//   copilot-cli.lock.json   -> { source: "npm" } or
-//                              { source: "github-release", version, assets: { <platform>: { name, sha256 } } }
+//   copilot-cli.lock.json   -> { source: "github-release", version, assets: { <platform>: { name, sha256 } } }
 //   <cacheDir>/<version>/    -> the extracted release tarball (package/ contents),
 //                              valid only once `.bridge-copilot-cli.json` exists
 //
@@ -16,9 +12,8 @@
 // the code root it runs from (checkout, release slot, or staging worktree), so
 // a pin travels with the commit that introduced it and rolls back with it.
 //
-// Resolution is fail-open: when the pinned build is missing or broken the
-// launch falls back to the npm package and reports `npm-fallback` so the health
-// endpoint and logs make the degradation visible instead of refusing to start.
+// Resolution is fail-closed: a missing or broken pinned build is a startup
+// error. Bridge never launches a CLI version other than the one the lock names.
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -33,8 +28,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -73,13 +67,11 @@ export interface CopilotCliLockAsset {
   sha256: string;
 }
 
-export type CopilotCliLock =
-  | { source: "npm" }
-  | {
-    source: "github-release";
-    version: string;
-    assets: Partial<Record<CopilotCliPlatformKey, CopilotCliLockAsset>>;
-  };
+export interface CopilotCliLock {
+  source: "github-release";
+  version: string;
+  assets: Partial<Record<CopilotCliPlatformKey, CopilotCliLockAsset>>;
+}
 
 export class CopilotCliLockError extends Error {
   constructor(message: string) {
@@ -95,18 +87,11 @@ export interface PinnedCopilotCliMarker {
   installedAt: string;
 }
 
-export type CopilotCliSource = "npm" | "pinned" | "npm-fallback";
-
+/** The pinned CLI build a launch uses. */
 export interface CopilotCliResolution {
-  source: CopilotCliSource;
-  /** Version actually launched (npm package version or pinned version) when known. */
-  version?: string;
-  /** Directory holding app.js/index.js when launching a pinned build. */
-  appDir?: string;
-  /** Version the lock asks for, when it pins one. */
-  lockVersion?: string;
-  /** Why a pinned lock fell back to npm. */
-  error?: string;
+  version: string;
+  /** Directory holding app.js/index.js. */
+  appDir: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -146,9 +131,8 @@ export function parseCopilotCliLock(text: string): CopilotCliLock {
     throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!isRecord(raw)) throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} must be a JSON object`);
-  if (raw.source === "npm") return { source: "npm" };
   if (raw.source !== "github-release") {
-    throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} source must be "npm" or "github-release"`);
+    throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} source must be "github-release"`);
   }
   if (typeof raw.version !== "string" || !VERSION_PATTERN.test(raw.version)) {
     throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} version must be a semver string like 1.0.81-6`);
@@ -172,10 +156,10 @@ export function parseCopilotCliLock(text: string): CopilotCliLock {
   return { source: "github-release", version: raw.version, assets };
 }
 
-/** Missing lock means "use the npm package". A present-but-invalid lock throws. */
+/** The lock is committed with the code; a missing or invalid lock throws. */
 export function readCopilotCliLock(rootDir: string = COPILOT_CLI_CODE_ROOT): CopilotCliLock {
   const path = join(rootDir, COPILOT_CLI_LOCK_FILENAME);
-  if (!existsSync(path)) return { source: "npm" };
+  if (!existsSync(path)) throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} is missing from ${rootDir}`);
   return parseCopilotCliLock(readFileSync(path, "utf-8"));
 }
 
@@ -234,59 +218,27 @@ export function checkPinnedCopilotCliDir(
   return { ready: true };
 }
 
-function readInstalledNpmCopilotVersion(): string | undefined {
-  try {
-    const require = createRequire(import.meta.url);
-    const parsed = JSON.parse(readFileSync(require.resolve("@github/copilot/package.json"), "utf-8")) as unknown;
-    return isRecord(parsed) && typeof parsed.version === "string" ? parsed.version : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Synchronous launch-time decision used by `buildCopilotClientOptions`. Never
- * touches the network: a pinned lock whose build is not cached yet resolves to
- * `npm-fallback` with the reason.
+ * touches the network: the build must already be in the cache, otherwise this
+ * throws with the reason.
  */
 export function resolveCopilotCliForLaunch(options: {
   rootDir?: string;
   cacheDir: string;
   platformKey?: CopilotCliPlatformKey;
 }): CopilotCliResolution {
-  let lock: CopilotCliLock;
-  try {
-    lock = readCopilotCliLock(options.rootDir ?? COPILOT_CLI_CODE_ROOT);
-  } catch (error) {
-    return {
-      source: "npm-fallback",
-      version: readInstalledNpmCopilotVersion(),
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-  if (lock.source === "npm") {
-    return { source: "npm", version: readInstalledNpmCopilotVersion() };
-  }
+  const lock = readCopilotCliLock(options.rootDir ?? COPILOT_CLI_CODE_ROOT);
   const platformKey = options.platformKey ?? getCopilotCliPlatformKey();
   if (!lock.assets[platformKey]) {
-    return {
-      source: "npm-fallback",
-      version: readInstalledNpmCopilotVersion(),
-      lockVersion: lock.version,
-      error: `${COPILOT_CLI_LOCK_FILENAME} has no asset for ${platformKey}`,
-    };
+    throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} has no asset for ${platformKey}`);
   }
   const appDir = getPinnedCopilotCliDir(options.cacheDir, lock.version);
   const check = checkPinnedCopilotCliDir(appDir, lock.version);
   if (!check.ready) {
-    return {
-      source: "npm-fallback",
-      version: readInstalledNpmCopilotVersion(),
-      lockVersion: lock.version,
-      error: `pinned Copilot CLI ${lock.version} is not ready at ${appDir}: ${check.reason}`,
-    };
+    throw new Error(`pinned Copilot CLI ${lock.version} is not ready at ${appDir}: ${check.reason}`);
   }
-  return { source: "pinned", version: lock.version, appDir, lockVersion: lock.version };
+  return { version: lock.version, appDir };
 }
 
 export function getCopilotCliReleaseAssetUrl(version: string, assetName: string): string {
@@ -374,8 +326,7 @@ export function resetCopilotCliRuntimeStatusForTests(): void {
  * Make the lock's pinned build available in the cache (download + verify +
  * extract) and return the launch resolution. Idempotent and safe to run from
  * several processes at once: each process extracts into its own temp dir and
- * the first rename into place wins. Never throws; failures resolve to
- * `npm-fallback` with the reason so callers can keep starting.
+ * the first rename into place wins. Throws when the build cannot be made ready.
  */
 export async function ensurePinnedCopilotCli(options: EnsurePinnedCopilotCliOptions): Promise<CopilotCliResolution> {
   const rootDir = options.rootDir ?? COPILOT_CLI_CODE_ROOT;
@@ -398,27 +349,16 @@ async function ensurePinnedCopilotCliOnce(
   options: EnsurePinnedCopilotCliOptions & { rootDir: string },
 ): Promise<CopilotCliResolution> {
   const log = options.log ?? (() => {});
-  const resolved = resolveCopilotCliForLaunch({
-    rootDir: options.rootDir,
-    cacheDir: options.cacheDir,
-    platformKey: options.platformKey,
-  });
-  if (resolved.source !== "npm-fallback" || !resolved.lockVersion) {
-    return resolved;
-  }
-
-  let lock: CopilotCliLock;
-  try {
-    lock = readCopilotCliLock(options.rootDir);
-  } catch (error) {
-    return { ...resolved, error: error instanceof Error ? error.message : String(error) };
-  }
-  if (lock.source !== "github-release") return resolved;
+  const lock = readCopilotCliLock(options.rootDir);
   const platformKey = options.platformKey ?? getCopilotCliPlatformKey();
   const asset = lock.assets[platformKey];
-  if (!asset) return resolved;
+  if (!asset) throw new CopilotCliLockError(`${COPILOT_CLI_LOCK_FILENAME} has no asset for ${platformKey}`);
 
   const appDir = getPinnedCopilotCliDir(options.cacheDir, lock.version);
+  if (checkPinnedCopilotCliDir(appDir, lock.version).ready) {
+    return { version: lock.version, appDir };
+  }
+
   const controller = new AbortController();
   const timeoutMs = options.timeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -459,11 +399,10 @@ async function ensurePinnedCopilotCliOnce(
       if (!check.ready) throw error;
     }
     log(`Pinned Copilot CLI ${lock.version} ready at ${appDir}`);
-    return { source: "pinned", version: lock.version, appDir, lockVersion: lock.version };
+    return { version: lock.version, appDir };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    log(`Pinned Copilot CLI ${lock.version} unavailable (${reason}); falling back to the npm package`);
-    return { ...resolved, error: `pinned Copilot CLI ${lock.version} unavailable: ${reason}` };
+    throw new Error(`pinned Copilot CLI ${lock.version} unavailable: ${reason}`, { cause: error });
   } finally {
     clearTimeout(timer);
     removeQuietly(workRoot);
@@ -510,16 +449,5 @@ export function prunePinnedCopilotCliCache(
 }
 
 export function describeCopilotCliResolution(resolution: CopilotCliResolution): string {
-  switch (resolution.source) {
-    case "pinned":
-      return `pinned ${resolution.version} (${resolution.appDir})`;
-    case "npm":
-      return `npm package${resolution.version ? ` ${resolution.version}` : ""}`;
-    case "npm-fallback":
-      return `npm package${resolution.version ? ` ${resolution.version}` : ""} (fallback; ${resolution.error ?? "unknown reason"})`;
-  }
-}
-
-export function isAbsoluteAppDir(value: string | undefined): value is string {
-  return typeof value === "string" && value.trim().length > 0 && isAbsolute(value);
+  return `pinned ${resolution.version} (${resolution.appDir})`;
 }

@@ -9,7 +9,7 @@ import { runTransaction } from "./db-transaction.js";
 import { normalizeWorkItemIdValue } from "./work-item-id.js";
 
 export class InvalidTaskUpdateError extends Error {}
-type TaskStatus = "active" | "done" | "archived";
+type TaskStatus = "active" | "archived";
 const ACTIVE_TASK_MOMENTUM_ERROR = "nextAction, waitingOn, and nextTouchAt can only be set on active tasks";
 const ARCHIVED_TASK_RECOMPLETE_ERROR = "Archived tasks cannot be completed again; reopen the task first";
 
@@ -102,8 +102,7 @@ type TaskUpdate = {
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
-  done: 1,
-  archived: 2,
+  archived: 1,
 };
 
 function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): number {
@@ -116,15 +115,13 @@ export function normalizeOptionalText(value: unknown): string | undefined {
 }
 
 function normalizeStoredTaskStatus(value: unknown): TaskStatus {
-  if (value === "active" || value === "paused") return "active";
-  if (value === "done" || value === "archived") return value;
+  if (value === "active" || value === "archived") return value;
   throw new Error(`Unsupported task status: ${String(value)}`);
 }
 
 function normalizeUpdatedTaskStatus(value: unknown): TaskStatus {
-  if (value === "active" || value === "paused") return "active";
-  if (value === "done" || value === "archived") return value;
-  throw new InvalidTaskUpdateError("status must be one of: active, done, archived");
+  if (value === "active" || value === "archived") return value;
+  throw new InvalidTaskUpdateError("status must be one of: active, archived");
 }
 
 function normalizeTaskKind(value: unknown, opts: { strict?: boolean } = {}): TaskKind {
@@ -133,9 +130,8 @@ function normalizeTaskKind(value: unknown, opts: { strict?: boolean } = {}): Tas
   return "task";
 }
 
-function assertTaskInvariants(task: Pick<Task, "kind" | "status" | "doneWhen">): void {
+function assertTaskInvariants(task: Pick<Task, "kind" | "doneWhen">): void {
   if (task.kind !== "ongoing") return;
-  if (task.status === "done") throw new InvalidTaskUpdateError("Ongoing tasks cannot be marked done");
   if (task.doneWhen !== undefined) throw new InvalidTaskUpdateError("Ongoing tasks cannot keep doneWhen");
 }
 
@@ -351,7 +347,6 @@ export function createTaskStore(
     const completionAction = normalizeCompletionAction(updates.completionAction);
     const priority = updates.priority !== undefined ? normalizeTaskPriority(updates.priority) : undefined;
     const groupId = normalizeTaskGroupId(updates.groupId);
-    const legacyDoneRequested = updates.status === "done";
     if (completionAction && updates.status !== undefined) {
       throw new InvalidTaskUpdateError("completionAction cannot be combined with status");
     }
@@ -364,16 +359,13 @@ export function createTaskStore(
     const nextKind = updates.kind !== undefined
       ? normalizeTaskKind(updates.kind, { strict: true })
       : currentKind;
-    if (nextKind === "ongoing" && legacyDoneRequested) {
-      throw new InvalidTaskUpdateError("Ongoing tasks cannot be marked done");
-    }
-    if (nextKind === "ongoing" && completionAction === "complete-and-archive") {
+    const completeAndArchiveRequested = completionAction === "complete-and-archive";
+    if (nextKind === "ongoing" && completeAndArchiveRequested) {
       throw new InvalidTaskUpdateError("Ongoing tasks cannot be completed");
     }
-    if ((completionAction === "complete-and-archive" || legacyDoneRequested) && oldStatus === "archived") {
+    if (completeAndArchiveRequested && oldStatus === "archived") {
       throw new InvalidTaskUpdateError(ARCHIVED_TASK_RECOMPLETE_ERROR);
     }
-    const completeAndArchiveRequested = completionAction === "complete-and-archive" || legacyDoneRequested;
     const switchingToOngoing = nextKind === "ongoing" && currentKind !== "ongoing";
     const requestedStatus = updates.status !== undefined
       ? normalizeUpdatedTaskStatus(updates.status)
@@ -381,12 +373,12 @@ export function createTaskStore(
     const targetStatus = completeAndArchiveRequested
       ? "archived"
       : (requestedStatus
-      ?? (switchingToOngoing && (oldStatus === "done" || oldCompletedAt !== undefined)
+      ?? (switchingToOngoing && oldCompletedAt !== undefined
         ? "active"
         : oldStatus));
     const shouldPersistStatus = completeAndArchiveRequested
       || requestedStatus !== undefined
-      || (switchingToOngoing && (oldStatus === "done" || oldCompletedAt !== undefined));
+      || (switchingToOngoing && oldCompletedAt !== undefined);
     const shouldPersistDoneWhen = hasDoneWhenUpdate
       || (switchingToOngoing && row.doneWhen !== null && row.doneWhen !== undefined);
     const doneWhen = hasDoneWhenUpdate ? normalizeOptionalText(updates.doneWhen) ?? null : undefined;
@@ -398,7 +390,6 @@ export function createTaskStore(
 
     assertTaskInvariants({
       kind: nextKind,
-      status: targetStatus,
       doneWhen: nextDoneWhen,
     });
     const fields: string[] = ["updatedAt = ?"];

@@ -124,7 +124,6 @@ export interface SessionWorkspaceDetails extends SessionWorkspaceSummary {
   availableWorktrees: SessionWorkspaceWorktree[];
   canResetToTask: boolean;
   runState: SessionRunState;
-  busy: boolean;
   gitStatus: TaskGitStatus;
 }
 
@@ -147,7 +146,6 @@ export interface Session {
   storageWarning?: SessionStorageWarning;
   eventLogSizeBytes?: number;
   runState?: SessionRunState;
-  busy?: boolean;
   backgroundAgents?: BackgroundAgentsSummary;
   pendingUserInputCount?: number;
   needsUserInput?: boolean;
@@ -172,12 +170,12 @@ export interface Session {
 
 export type SessionRunState = "busy" | "stalled" | "idle";
 
-export function getSessionRunState(session: Pick<Session, "runState" | "busy">): SessionRunState {
-  if (session.runState) return session.runState;
-  return session.busy ? "busy" : "idle";
+/** Client-constructed optimistic sessions may omit runState; the server always sends it. */
+export function getSessionRunState(session: Pick<Session, "runState">): SessionRunState {
+  return session.runState ?? "idle";
 }
 
-export function isSessionActive(session: Pick<Session, "runState" | "busy">): boolean {
+export function isSessionActive(session: Pick<Session, "runState">): boolean {
   return getSessionRunState(session) !== "idle";
 }
 
@@ -372,7 +370,7 @@ export interface Task {
   title: string;
   kind: "task" | "ongoing";
   muted: boolean;
-  status: "active" | "done" | "archived";
+  status: "active" | "archived";
   groupId?: string;
   cwd?: string;
   notes: string;
@@ -882,15 +880,25 @@ export async function fetchSlashCommands(sessionId: string): Promise<SlashComman
 }
 
 /** Fast message loading — reads from disk, no SDK resume needed */
+export interface MessagesFastResponse {
+  messages: ChatEntry[];
+  runState: SessionRunState;
+  total: number;
+  hasMore: boolean;
+  warm: boolean;
+  lastVisibleActivityAt?: string;
+  coverage: SessionHistoryCoverage;
+}
+
 export async function fetchMessagesFast(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string; coverage: SessionHistoryCoverage }> {
+): Promise<MessagesFastResponse> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string; coverage: SessionHistoryCoverage }>(
+  return apiFetch<MessagesFastResponse>(
     `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
   );
 }
@@ -1366,19 +1374,7 @@ export async function fetchTagMcpServers(tagId: string): Promise<TagMcpServer[]>
   return data.servers;
 }
 
-export async function setTagMcpServer(tagId: string, serverName: string, config: McpServerConfig): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(config),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-}
-
-export async function setTagMcpServers(tagId: string, serverIds: string[]): Promise<TagMcpServer[]> {
+export async function setTagMcpServerRefs(tagId: string, serverIds: string[]): Promise<TagMcpServer[]> {
   const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp-servers`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1390,10 +1386,6 @@ export async function setTagMcpServers(tagId: string, serverIds: string[]): Prom
   }
   const data = await res.json();
   return data.servers;
-}
-
-export async function setTagMcpServerRefs(tagId: string, serverIds: string[]): Promise<TagMcpServer[]> {
-  return setTagMcpServers(tagId, serverIds);
 }
 
 export async function reorderTags(tagIds: string[]): Promise<Tag[]> {

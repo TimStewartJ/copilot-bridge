@@ -16,7 +16,7 @@ export const SORT_LABELS: Record<ChecklistSort, string> = {
   task: "By task",
 };
 
-const TASK_STATUS_ORDER: Record<string, number> = { active: 0, done: 1, archived: 2 };
+const TASK_STATUS_ORDER: Record<string, number> = { active: 0, archived: 1 };
 
 export function dashboardChecklistCountClass(state: HomeChecklistIndicatorState): string {
   switch (state) {

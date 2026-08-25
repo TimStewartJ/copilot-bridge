@@ -11,7 +11,7 @@ import type {
   TaskGroup,
   TaskPatch,
 } from "../api";
-import { getSessionActivityTime } from "../api";
+import { getSessionActivityTime, isSessionActive } from "../api";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../shared/copilot-usage";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
@@ -1052,7 +1052,7 @@ export function buildSessionUsageAnalytics({
     } satisfies SessionUsageCostRollup,
     includedSessions,
     sessionsWithoutUsage,
-    busySessions: linkedSessions.filter((session) => session.busy || session.runState === "busy" || session.runState === "stalled").length,
+    busySessions: linkedSessions.filter((session) => isSessionActive(session)).length,
     totalDiskSizeBytes,
     dayBuckets: sortedDayBuckets,
     maxDayTokens,

@@ -14,7 +14,7 @@ export const AGENT_LIFECYCLE_GUIDANCE = `
 
 export const TOOL_NAMING_GUIDANCE = `
 <tool_naming>
-Bridge-owned tools are canonical labels such as staging_preview, docs_read, and task_update. Prefer those exact first-class tool names when they are available. Some fallback runtimes may expose compatibility MCP tools with a server-qualified prefix (for example, bridge-tools-staging_preview); when a literal canonical name is not available, use the exposed tool whose final name segment and description match the requested Bridge tool.
+Bridge-owned tools are first-class tools with canonical names such as staging_preview, docs_read, and task_update. Always call them by those exact names.
 </tool_naming>
 `.trim();
 

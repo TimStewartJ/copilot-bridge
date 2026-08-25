@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
-import * as globalBus from "../global-bus.js";
+import { createGlobalBus, type StatusEvent } from "../global-bus.js";
 
 describe("global-bus", () => {
   it("listener errors do not break other listeners", () => {
-    const events: globalBus.StatusEvent[] = [];
+    const globalBus = createGlobalBus();
+    const events: StatusEvent[] = [];
 
     const unsub1 = globalBus.subscribe(() => { throw new Error("boom"); });
     const unsub2 = globalBus.subscribe((e) => events.push(e));
@@ -17,7 +18,8 @@ describe("global-bus", () => {
   });
 
   it("supports stalled session transitions", () => {
-    const events: globalBus.StatusEvent[] = [];
+    const globalBus = createGlobalBus();
+    const events: StatusEvent[] = [];
     const unsub = globalBus.subscribe((e) => events.push(e));
 
     globalBus.emit({ type: "session:stalled", sessionId: "s1" });

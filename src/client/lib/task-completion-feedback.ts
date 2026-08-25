@@ -11,14 +11,14 @@ export interface TaskCompletionToastData {
 
 export interface CreateTaskCompletionFeedbackArgs {
   task: Pick<Task, "id" | "title" | "doneWhen" | "pullRequests">;
-  previousStatus: Exclude<Task["status"], "done">;
+  previousStatus: Task["status"];
   checklistItems?: readonly Pick<ChecklistItem, "done">[];
-  linkedSessions?: readonly Pick<Session, "busy" | "runState">[];
+  linkedSessions?: readonly Pick<Session, "runState">[];
   pullRequests?: readonly Pick<EnrichedPR, "status">[];
 }
 
 export interface TaskCompletionFeedback extends TaskCompletionToastData {
-  previousStatus: Exclude<Task["status"], "done">;
+  previousStatus: Task["status"];
 }
 
 export function createTaskCompletionFeedback({

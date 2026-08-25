@@ -9,7 +9,6 @@ export interface TaskAlertChip {
     | "follow-up-overdue"
     | "follow-up-due"
     | "waiting"
-    | "paused"
     | "session-stalled"
     | "session-busy"
     | "session-unread"
@@ -70,15 +69,6 @@ export function getTaskAlertChips({
       title: task.waitingOn.trim(),
       tone: "info",
       priority: 20,
-      recency: toTimestamp(task.updatedAt),
-    });
-  } else if (task.status === "paused") {
-    chips.push({
-      kind: "paused",
-      label: "Paused",
-      title: "Task is paused",
-      tone: "warning",
-      priority: 21,
       recency: toTimestamp(task.updatedAt),
     });
   }

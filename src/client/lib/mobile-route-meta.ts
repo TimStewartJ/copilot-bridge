@@ -51,8 +51,6 @@ function normalizePathname(pathname: string): string {
 
 function buildMeta(overrides: Partial<MobileRouteMeta> & Pick<MobileRouteMeta, "route" | "activeTab">): MobileRouteMeta {
   return {
-    route: overrides.route,
-    activeTab: overrides.activeTab,
     showBottomNav: false,
     showSharedHeader: false,
     isRoot: false,

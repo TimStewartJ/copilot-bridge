@@ -16,7 +16,6 @@ function createSession(overrides: Partial<Session> = {}): Session {
     sessionId: "session-1",
     modifiedTime: NOW,
     lastVisibleActivityAt: NOW,
-    busy: false,
     archived: false,
     diskSizeBytes: 0,
     deferSummary: { count: 0, nextRunAt: null },
@@ -74,7 +73,6 @@ describe("TaskRail navigation attention", () => {
     const onRailTabChange = vi.fn();
     await renderRail({
       orphanSessions: [createSession({
-        busy: true,
         runState: "busy",
         needsUserInput: true,
       })],
@@ -120,7 +118,6 @@ describe("TaskRail navigation attention", () => {
     await renderRail({
       expanded: true,
       orphanSessions: [createSession({
-        busy: true,
         runState: "busy",
         needsUserInput: true,
       })],

@@ -84,7 +84,6 @@ describe("SessionList input-required indicator", () => {
         sessionId: "session-1",
         summary: "Waiting session",
         runState: "busy",
-        busy: true,
         pendingUserInputCount: 1,
         needsUserInput: true,
       }),

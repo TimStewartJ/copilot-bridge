@@ -139,22 +139,7 @@ Copy-Item -Path (Join-Path $repoRoot "scripts\start-release.ps1") -Destination (
 Copy-Item -Path (Join-Path $repoRoot "scripts\stop-release.ps1") -Destination (Join-Path $releaseRoot "stop.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\update-release.ps1") -Destination (Join-Path $releaseRoot "update.ps1")
 $supervisorHelperSource = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\bridge-supervisor-common.ps1") -Raw
-$supervisorHelperBase64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($supervisorHelperSource))
-$releaseCommonSource = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\release-common.ps1") -Raw
-$supervisorHelperPlaceholder = "__BRIDGE_SUPERVISOR_HELPER_BASE64__"
-$placeholderCount = [regex]::Matches(
-  $releaseCommonSource,
-  [regex]::Escape($supervisorHelperPlaceholder)
-).Count
-if ($placeholderCount -ne 1) {
-  throw "release-common.ps1 must contain exactly one supervisor bootstrap placeholder; found $placeholderCount."
-}
-$packagedReleaseCommon = $releaseCommonSource.Replace($supervisorHelperPlaceholder, $supervisorHelperBase64)
-[System.IO.File]::WriteAllText(
-  (Join-Path $releaseRoot "release-common.ps1"),
-  $packagedReleaseCommon,
-  (New-Object System.Text.UTF8Encoding($false))
-)
+Copy-Item -Path (Join-Path $repoRoot "scripts\release-common.ps1") -Destination (Join-Path $releaseRoot "release-common.ps1")
 [System.IO.File]::WriteAllText(
   (Join-Path $releaseRoot "bridge-supervisor-common.ps1"),
   $supervisorHelperSource,

@@ -51,8 +51,8 @@ const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; descriptio
   },
 };
 
-const TERMINAL_INSTALL_PHASES = new Set<string>(["succeeded", "failed", "rollback_failed"]);
-const FAILED_INSTALL_PHASES = new Set<string>(["failed", "rollback_failed"]);
+const TERMINAL_INSTALL_PHASES = new Set<string>(["succeeded", "failed"]);
+const FAILED_INSTALL_PHASES = new Set<string>(["failed"]);
 
 export function UpdatesSection() {
   const [channel, setChannel] = useState<UpdateChannel | null>(null);

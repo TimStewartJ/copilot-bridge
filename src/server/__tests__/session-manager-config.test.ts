@@ -16,17 +16,33 @@ import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { FEED_GUIDANCE } from "../session-instructions.js";
-import { COPILOT_CLI_LOCK_FILENAME } from "../copilot-cli-pin.js";
+import { COPILOT_CLI_LOCK_FILENAME, getPinnedCopilotCliDir, PINNED_COPILOT_CLI_MARKER } from "../copilot-cli-pin.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
   const tempDirs: string[] = [];
   // Keep these assertions independent of whatever copilot-cli.lock.json the
-  // running code tree pins (and of whether that build is cached on this host).
-  function npmCliOverrides() {
+  // running code tree pins (and of whether that build is cached on this host)
+  // by pointing the client options at a fake, ready pinned build.
+  function pinnedCliOverrides() {
+    const version = "1.0.81-6";
+    const platform = `${process.platform}-${process.arch}`;
     const root = makeTestDir("client-options-lock");
-    writeFileSync(join(root, COPILOT_CLI_LOCK_FILENAME), JSON.stringify({ source: "npm" }));
-    return { copilotCliRootDir: root };
+    writeFileSync(join(root, COPILOT_CLI_LOCK_FILENAME), JSON.stringify({
+      source: "github-release",
+      version,
+      assets: { [platform]: { name: `github-copilot-${version}-${platform}.tgz`, sha256: "a".repeat(64) } },
+    }));
+    const cacheDir = join(root, "cache");
+    const appDir = getPinnedCopilotCliDir(cacheDir, version);
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "@github/copilot", version }));
+    writeFileSync(join(appDir, "app.js"), "export {};\n");
+    writeFileSync(join(appDir, "index.js"), "export {};\n");
+    writeFileSync(join(appDir, PINNED_COPILOT_CLI_MARKER), JSON.stringify({
+      version, asset: "x.tgz", sha256: "a".repeat(64), installedAt: new Date().toISOString(),
+    }));
+    return { overrides: { copilotCliRootDir: root, copilotCliCacheDir: cacheDir }, appDir };
   }
 
   afterEach(() => {
@@ -40,15 +56,11 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: undefined }, () => {
-      expect(buildCopilotClientOptions()).toEqual(expect.objectContaining({
+      const { overrides, appDir } = pinnedCliOverrides();
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, overrides)).toEqual(expect.objectContaining({
         cliPath: resolveBridgeCopilotCliPath(),
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: expect.objectContaining({ COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() }),
-      }));
-      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, npmCliOverrides())).toEqual(expect.objectContaining({
-        cliPath: resolveBridgeCopilotCliPath(),
-        connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
+        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(), BRIDGE_COPILOT_APP_DIR: appDir },
       }));
     });
   });
@@ -58,11 +70,12 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
-      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, npmCliOverrides())).toEqual({
+      const { overrides, appDir } = pinnedCliOverrides();
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, overrides)).toEqual({
         cliPath: resolveBridgeCopilotCliPath(),
-        copilotCli: expect.objectContaining({ source: "npm" }),
+        copilotCli: { version: "1.0.81-6", appDir },
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
+        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(), BRIDGE_COPILOT_APP_DIR: appDir },
         gitHubToken: "github_pat_bridge",
         useLoggedInUser: false,
       });
@@ -74,16 +87,18 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_process" }, () => {
+      const { overrides, appDir } = pinnedCliOverrides();
       expect(buildCopilotClientOptions({
         COPILOT_HOME: copilotHome,
         [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
-      }, npmCliOverrides())).toEqual({
+      }, overrides)).toEqual({
         cliPath: resolveBridgeCopilotCliPath(),
-        copilotCli: expect.objectContaining({ source: "npm" }),
+        copilotCli: { version: "1.0.81-6", appDir },
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(),
+          BRIDGE_COPILOT_APP_DIR: appDir,
           [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
         },
         gitHubToken: "github_pat_client",
@@ -244,15 +259,15 @@ describe("SessionManager session config", () => {
     });
   });
 
-  it("drops the legacy adaptive-thinking override when resuming persisted sessions", () => {
+  it("recomputes the persisted model capabilities from current metadata when resuming", () => {
     const db = setupTestDb();
     const globalBus = createTestBus();
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
     tempDirs.push(copilotHome);
-    const sessionId = "persisted-adaptive-session";
+    const sessionId = "persisted-capabilities-session";
     const sessionDir = join(copilotHome, "session-state", sessionId);
     mkdirSync(sessionDir, { recursive: true });
-    // Written by Bridge builds that worked around CLI <= 1.0.80 thinking serialization.
+    // A stale override persisted by an earlier Bridge build must not be replayed verbatim.
     writeFileSync(
       join(sessionDir, "bridge-model-state.json"),
       JSON.stringify({

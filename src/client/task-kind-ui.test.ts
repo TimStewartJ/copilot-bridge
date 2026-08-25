@@ -698,9 +698,9 @@ describe("TaskDashboard unique overview", () => {
       sessionIds: ["session-1", "session-2", "session-pending"],
     }), {
       linkedSessions: [
-        { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", busy: false, archived: false },
-        { sessionId: "session-2", summary: "Review usage metrics", modifiedTime: "2026-05-02T10:00:00.000Z", busy: true, archived: false, runState: "busy" },
-        { sessionId: "session-pending", summary: "Running session", modifiedTime: "2026-05-02T11:00:00.000Z", busy: false, archived: false },
+        { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", archived: false },
+        { sessionId: "session-2", summary: "Review usage metrics", modifiedTime: "2026-05-02T10:00:00.000Z", archived: false, runState: "busy" },
+        { sessionId: "session-pending", summary: "Running session", modifiedTime: "2026-05-02T11:00:00.000Z", archived: false },
       ],
     });
 
@@ -807,7 +807,7 @@ describe("TaskDashboard unique overview", () => {
       sessionIds: ["session-1"],
     }), {
       linkedSessions: [
-        { sessionId: "session-1", summary: "Loading usage", modifiedTime: "2026-05-01T13:00:00.000Z", busy: false, archived: false },
+        { sessionId: "session-1", summary: "Loading usage", modifiedTime: "2026-05-01T13:00:00.000Z", archived: false },
       ],
     });
 

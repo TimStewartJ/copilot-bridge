@@ -122,7 +122,6 @@ function createSession(overrides: Partial<Session> = {}): Session {
     sessionId: "session-1",
     modifiedTime: "2026-01-01T00:00:00.000Z",
     lastVisibleActivityAt: "2026-01-01T00:00:00.000Z",
-    busy: false,
     archived: false,
     deferSummary: { count: 0, nextRunAt: null },
     ...overrides,

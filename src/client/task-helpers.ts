@@ -1,9 +1,8 @@
-import type { Task, TaskGroup } from "../api";
+import type { Task, TaskGroup } from "./api";
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
-  done: 1,
-  archived: 2,
+  archived: 1,
 };
 
 function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): number {
@@ -34,13 +33,11 @@ export function splitArchivedTasks(tasks: Task[]): { nonArchived: Task[]; archiv
 /** Group tasks by status category. */
 export function groupTasksByStatus(tasks: Task[]): {
   active: Task[];
-  done: Task[];
   archived: Task[];
 } {
   const sorted = sortTasksByStatusAndOrder(tasks);
   return {
     active: sorted.filter((t) => t.status === "active"),
-    done: sorted.filter((t) => t.status === "done"),
     archived: sorted.filter((t) => t.status === "archived"),
   };
 }

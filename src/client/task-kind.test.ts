@@ -3,34 +3,18 @@ import { getTaskKindLabel, getTaskKindUpdate, isOngoingTask } from "./task-kind"
 
 describe("getTaskKindUpdate", () => {
   it("clears doneWhen when switching to ongoing", () => {
-    expect(
-      getTaskKindUpdate({ kind: "task", status: "active", doneWhen: "Ship it" }, "ongoing"),
-    ).toEqual({
+    expect(getTaskKindUpdate({ kind: "task" }, "ongoing")).toEqual({
       kind: "ongoing",
-      doneWhen: null,
-    });
-  });
-
-  it("reopens done tasks when switching to ongoing", () => {
-    expect(
-      getTaskKindUpdate({ kind: "task", status: "done", doneWhen: "Merged" }, "ongoing"),
-    ).toEqual({
-      kind: "ongoing",
-      status: "active",
       doneWhen: null,
     });
   });
 
   it("returns null when nothing changes", () => {
-    expect(
-      getTaskKindUpdate({ kind: "ongoing", status: "active", doneWhen: undefined }, "ongoing"),
-    ).toBeNull();
+    expect(getTaskKindUpdate({ kind: "ongoing" }, "ongoing")).toBeNull();
   });
 
   it("switches ongoing items back to task without changing status", () => {
-    expect(
-      getTaskKindUpdate({ kind: "ongoing", status: "active", doneWhen: undefined }, "task"),
-    ).toEqual({
+    expect(getTaskKindUpdate({ kind: "ongoing" }, "task")).toEqual({
       kind: "task",
     });
   });
@@ -94,7 +78,7 @@ describe("task helpers", () => {
     const tasks = [
       createTaskHelper({ id: "normal-old", order: 0 }),
       createTaskHelper({ id: "ongoing-newer", kind: "ongoing", order: 4 }),
-      createTaskHelper({ id: "done-normal", status: "done", order: 0 }),
+      createTaskHelper({ id: "archived-normal", status: "archived", order: 0 }),
       createTaskHelper({ id: "normal-new", order: 1 }),
     ];
 
@@ -102,7 +86,7 @@ describe("task helpers", () => {
       "ongoing-newer",
       "normal-old",
       "normal-new",
-      "done-normal",
+      "archived-normal",
     ]);
   });
 

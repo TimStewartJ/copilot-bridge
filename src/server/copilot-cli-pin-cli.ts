@@ -1,7 +1,6 @@
 // CLI for the Bridge-pinned Copilot CLI channel (see copilot-cli-pin.ts).
 //
 //   npm run copilot-cli:pin -- 1.0.81-8 --reason "why"   write copilot-cli.lock.json for a GitHub release
-//   npm run copilot-cli:pin -- npm          point the lock back at the npm package
 //   npm run copilot-cli:ensure              download/verify/extract the pinned build now
 //   npm run copilot-cli:status              show what the next launch would use
 //   npm run copilot-cli:prune               drop cached builds not referenced by the lock
@@ -25,7 +24,7 @@ import {
 import { resolveRuntimePaths } from "./runtime-paths.js";
 
 function usage(): never {
-  console.error("Usage: copilot-cli-pin <pin <version>|npm> | ensure | status | prune [--keep-days N]");
+  console.error("Usage: copilot-cli-pin <pin <version>> | ensure | status | prune [--keep-days N]");
   process.exit(2);
 }
 
@@ -54,10 +53,6 @@ async function fetchReleaseChecksums(version: string): Promise<Map<string, strin
 }
 
 async function pin(version: string, reason?: string): Promise<void> {
-  if (version === "npm") {
-    writeLock({ source: "npm" });
-    return;
-  }
   const normalized = version.replace(/^v/, "");
   const checksums = await fetchReleaseChecksums(normalized);
   const assets: Partial<Record<CopilotCliPlatformKey, { name: string; sha256: string }>> = {};
@@ -96,14 +91,18 @@ async function main(): Promise<void> {
     case "ensure": {
       const result = await ensurePinnedCopilotCli({ cacheDir, log: (message) => console.log(message) });
       console.log(`Launch target: ${describeCopilotCliResolution(result)}`);
-      if (result.source === "npm-fallback") process.exitCode = 1;
       return;
     }
     case "status": {
       const lock = readCopilotCliLock();
-      console.log(`Lock: ${lock.source === "npm" ? "npm package" : `github-release ${lock.version}`}`);
+      console.log(`Lock: github-release ${lock.version}`);
       console.log(`Cache: ${cacheDir}`);
-      console.log(`Launch target: ${describeCopilotCliResolution(resolveCopilotCliForLaunch({ cacheDir }))}`);
+      try {
+        console.log(`Launch target: ${describeCopilotCliResolution(resolveCopilotCliForLaunch({ cacheDir }))}`);
+      } catch (error) {
+        console.log(`Launch target: not ready (${error instanceof Error ? error.message : String(error)}); run copilot-cli:ensure`);
+        process.exitCode = 1;
+      }
       return;
     }
     case "prune": {
@@ -112,7 +111,7 @@ async function main(): Promise<void> {
       if (!Number.isFinite(keepDays) || keepDays < 0) usage();
       const lock = readCopilotCliLock();
       const removed = prunePinnedCopilotCliCache(cacheDir, {
-        keepVersions: lock.source === "github-release" ? [lock.version] : [],
+        keepVersions: [lock.version],
         minAgeMs: keepDays * 24 * 60 * 60_000,
       });
       console.log(removed.length > 0 ? `Removed:\n${removed.join("\n")}` : "Nothing to prune");

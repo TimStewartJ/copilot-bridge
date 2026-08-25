@@ -28,7 +28,6 @@ describe("getSessionWorkspaceQueryOptions", () => {
       availableWorktrees: [],
       canResetToTask: true,
       runState: "idle",
-      busy: false,
       gitStatus: {
         status: "not_repo",
         cwd: "/workspace/task",
@@ -74,7 +73,6 @@ describe("workspace mutation cache updates", () => {
     availableWorktrees: [],
     canResetToTask: true,
     runState: "idle",
-    busy: false,
     gitStatus: {
       status: "not_repo",
       cwd: "/workspace/override",
