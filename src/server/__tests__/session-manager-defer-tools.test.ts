@@ -3,7 +3,6 @@ import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 import { parseDeferId } from "../defer-ids.js";
-import { TRANSCRIPT_SIZE_WARNING_BYTES } from "../tools/defer-tools.js";
 
 function findTool(tools: ReturnType<typeof getBridgeToolDefinitions>, name: string) {
   const tool = tools.find((t) => t.name === name);
@@ -144,7 +143,7 @@ describe("unified defer tools", () => {
     }
   });
 
-  it("lists inactive defers when requested and reports transcript size warnings", async () => {
+  it("lists inactive defers when requested", async () => {
     const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
@@ -159,11 +158,8 @@ describe("unified defer tools", () => {
 
     const defaultResult = await listTool.handler({}, makeInvocation("session-A")) as any;
     expect(defaultResult.deferrals.map((item: any) => item.status).sort()).toEqual(["active", "pending"]);
+    expect(defaultResult.warning).toBeUndefined();
 
-    const transcriptSizeBytes = Math.round(96.1 * 1024 * 1024);
-    vi.spyOn(ctx.sessionManager, "listSessionsFromDisk").mockResolvedValue([
-      { sessionId: "session-A", eventLogSizeBytes: transcriptSizeBytes },
-    ] as any);
     const result = await listTool.handler({ includeInactive: true }, makeInvocation("session-A")) as any;
 
     expect(result.deferrals.map((item: any) => item.status).sort()).toEqual([
@@ -176,44 +172,6 @@ describe("unified defer tools", () => {
       status: "failed",
       lastError: "resumeSession timed out after 60s",
     });
-    expect(result.transcriptSizeBytes).toBe(transcriptSizeBytes);
-    expect(result.warning).toContain("This session's transcript is 96.1 MB");
-    expect(result.warning).toContain(`above ${TRANSCRIPT_SIZE_WARNING_BYTES / (1024 * 1024)} MB`);
-  });
-
-  it("includes transcript size without warning below the threshold", async () => {
-    const { ctx } = createTestApp();
-    const listTool = findTool(getBridgeToolDefinitions(ctx), "defer_list");
-    vi.spyOn(ctx.sessionManager, "listSessionsFromDisk").mockResolvedValue([
-      { sessionId: "session-A", eventLogSizeBytes: 1024 },
-    ] as any);
-
-    const result = await listTool.handler({}, makeInvocation("session-A")) as any;
-
-    expect(result.transcriptSizeBytes).toBe(1024);
-    expect(result.warning).toBeUndefined();
-  });
-
-  it("warns when creating an interval defer from a large transcript session", async () => {
-    const { ctx } = createTestApp();
-    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
-    const transcriptSizeBytes = Math.round(96.1 * 1024 * 1024);
-    vi.spyOn(ctx.sessionManager, "listSessionsFromDisk").mockResolvedValue([
-      { sessionId: "session-A", eventLogSizeBytes: transcriptSizeBytes },
-    ] as any);
-
-    const result = await createTool.handler(
-      { prompt: "poll deployment", intervalSeconds: 300, maxRuns: 2 },
-      makeInvocation("session-A"),
-    ) as any;
-
-    expect(result).toMatchObject({
-      success: true,
-      kind: "interval",
-      transcriptSizeBytes,
-    });
-    expect(result.warning).toContain("This session's transcript is 96.1 MB");
-    expect(result.warning).toContain("Prefer monitoring from a fresh session");
   });
 
   it("cancels one-shot and recurring defers by public deferId", async () => {
