@@ -49,6 +49,7 @@ import {
   type QuietIntervalDeferTailTruncationRequest,
 } from "./session-history-truncation.js";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
+import { TRANSCRIPT_SIZE_WARNING_BYTES } from "../shared/transcript-size.js";
 import {
   extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
@@ -1791,6 +1792,21 @@ export class SessionRunner {
         throw new Error(SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE);
       }
       if (opts.historyTruncation?.mode !== "replace-quiet-interval-defer-tail") return;
+      try {
+        const fileStat = await stat(eventsJsonlPath);
+        if (fileStat.size >= TRANSCRIPT_SIZE_WARNING_BYTES) {
+          const sizeMB = (fileStat.size / (1024 * 1024)).toFixed(1);
+          const thresholdMB = (TRANSCRIPT_SIZE_WARNING_BYTES / (1024 * 1024)).toFixed(1);
+          console.warn(`[sdk] [${sid}] Quiet defer delivery into a large transcript (${sizeMB} MB >= ${thresholdMB} MB); consider rolling this monitor into a fresh session`);
+          this.recordSpan("session.transcript.large", 0, sessionId, {
+            bytes: fileStat.size,
+            thresholdBytes: TRANSCRIPT_SIZE_WARNING_BYTES,
+            deferId: opts.historyTruncation.deferId,
+          });
+        }
+      } catch {
+        // Size reporting is advisory; never let it block the delivery.
+      }
       const result = await truncateQuietIntervalDeferTail({
         session: activeSession,
         sessionId,
