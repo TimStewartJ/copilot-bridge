@@ -1,5 +1,7 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BridgeRuntimeStatus } from "../../bridge-management-api";
+import type { AgentBackendStatus } from "../../../shared/agent-backend-status.js";
 import type {
   ManagementJobDetail,
   ManagementJobListResponse,
@@ -48,6 +50,50 @@ const runtimeCapacity = {
   localMcpWeight: 0.25,
   waitTimeoutSeconds: 30,
 };
+
+type RuntimeStatusForTest = BridgeRuntimeStatus & { agentBackend: AgentBackendStatus };
+
+function createAgentBackendStatus(overrides: Partial<AgentBackendStatus> = {}): AgentBackendStatus {
+  return {
+    state: "ready",
+    connection: "connected",
+    pid: 31415,
+    createdAt: "2026-05-20T12:00:00.000Z",
+    lastDisconnect: { at: "2026-05-20T12:03:00.000Z", reason: "stdio closed", detail: "broken pipe" },
+    disconnectCount: 2,
+    recoveryCount: 1,
+    lastRecoveryAt: "2026-05-20T12:04:00.000Z",
+    lastRecoveryError: "resume failed",
+    lastInterruptedSessionCount: 3,
+    lastAutoResumedSessionCount: 2,
+    ...overrides,
+  };
+}
+
+function createRuntimeStatus(overrides: Partial<RuntimeStatusForTest> = {}): RuntimeStatusForTest {
+  return {
+    fetchedAt,
+    serverInstanceId: "server-1",
+    pid: 4242,
+    uptimeSeconds: 3_661,
+    isStaging: false,
+    sourceManagementAvailable: true,
+    sessions: { active: 3, stalled: 1, waitingForUserInput: 2 },
+    agents: {
+      running: 2,
+      idle: 1,
+      failed: 1,
+      total: 5,
+      liveSessions: 3,
+      staleSessions: 1,
+      unknownSessions: 0,
+    },
+    capacity: runtimeCapacity,
+    agentBackend: createAgentBackendStatus(),
+    ...overrides,
+  };
+}
+
 const baseJob = {
   type: "staging_preview",
   createdAt: "2026-05-20T12:00:00.000Z",
@@ -99,7 +145,7 @@ async function clickButton(harness: ReactDomHarness, text: string) {
   });
 }
 
-function mockManagementJobs(jobs: ManagementJobSummary[]) {
+function mockManagementJobs(jobs: ManagementJobSummary[], runtimeStatus: RuntimeStatusForTest = createRuntimeStatus()) {
   const list = createList(jobs);
   const details = new Map(jobs.map((job) => [job.id, createDetail(job)]));
   const listRefetch = vi.fn(async () => list);
@@ -153,25 +199,7 @@ function mockManagementJobs(jobs: ManagementJobSummary[]) {
     mutateAsync: retryMutateAsync,
   }));
   hookMocks.useBridgeRuntimeStatusQuery.mockImplementation(() => ({
-    data: {
-      fetchedAt,
-      serverInstanceId: "server-1",
-      pid: 4242,
-      uptimeSeconds: 3_661,
-      isStaging: false,
-      sourceManagementAvailable: true,
-      sessions: { active: 3, stalled: 1, waitingForUserInput: 2 },
-      agents: {
-        running: 2,
-        idle: 1,
-        failed: 1,
-        total: 5,
-        liveSessions: 3,
-        staleSessions: 1,
-        unknownSessions: 0,
-      },
-      capacity: runtimeCapacity,
-    },
+    data: runtimeStatus,
     isLoading: false,
     isFetching: false,
     error: null,
@@ -345,6 +373,16 @@ describe("ManagementJobsSection", () => {
       expect(text).toContain("Local MCP weight +0.25 per context");
       expect(text).toContain("2 requests are waiting for live capacity");
       expect(text).toContain("7 idle cached sessions can be evicted now.");
+      expect(text).toContain("Agent backend");
+      expect(text).toContain("ready");
+      expect(text).toContain("Connection connected");
+      expect(text).toContain("PID 31415");
+      expect(text).toContain("stdio closed - broken pipe");
+      expect(text).toContain("Disconnects 2");
+      expect(text).toContain("Recoveries 1");
+      expect(text).toContain("Interrupted 3");
+      expect(text).toContain("Auto-resumed 2");
+      expect(text).toContain("Last recovery error: resume failed");
 
       await clickButton(harness, "Evict idle cache");
       expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Evict 7 idle cached sessions?"));
@@ -371,11 +409,66 @@ describe("ManagementJobsSection", () => {
     }
   });
 
+  it.each([
+    ["ready", "text-success"],
+    ["starting", "text-warning"],
+    ["reconnecting", "text-warning"],
+    ["disconnected", "text-error"],
+    ["stopped", "text-text-muted"],
+  ] as const)("renders agent backend %s with the expected badge tone", async (state, toneClass) => {
+    mockManagementJobs([], createRuntimeStatus({ agentBackend: createAgentBackendStatus({ state }) }));
+
+    const harness = await renderSection();
+    try {
+      const badge = findAllByTag(harness.dom.container, "SPAN")
+        .find((candidate) => candidate.textContent === state);
+      expect(badge).toBeTruthy();
+      expect(getReactProps(badge)?.className).toContain(toneClass);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("enables force restart only for backend trouble or fully stalled active sessions", async () => {
+    mockManagementJobs([], createRuntimeStatus());
+    let harness = await renderSection();
+    try {
+      expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+
+    const disconnected = mockManagementJobs([], createRuntimeStatus({
+      agentBackend: createAgentBackendStatus({ state: "disconnected", connection: "disconnected" }),
+    }));
+    const confirm = vi.fn(() => true);
+    harness = await renderSection();
+    try {
+      (globalThis.window as unknown as { confirm: typeof confirm }).confirm = confirm;
+      expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(false);
+      await clickButton(harness, "Force restart");
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("fails every in-flight run locally"));
+      expect(disconnected.restartMutateAsync).toHaveBeenCalledWith({ force: true });
+    } finally {
+      await harness.cleanup();
+    }
+
+    mockManagementJobs([], createRuntimeStatus({
+      sessions: { active: 2, stalled: 2, waitingForUserInput: 0 },
+      agentBackend: createAgentBackendStatus({ state: "ready" }),
+    }));
+    harness = await renderSection();
+    try {
+      expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("disables restart-capable controls in staging previews", async () => {
     mockManagementJobs([]);
     hookMocks.useBridgeRuntimeStatusQuery.mockImplementation(() => ({
-      data: {
-        fetchedAt,
+      data: createRuntimeStatus({
         serverInstanceId: "staging-server",
         pid: 5000,
         uptimeSeconds: 60,
@@ -400,7 +493,7 @@ describe("ManagementJobsSection", () => {
           cleanup: { pending: 0, failed: 0, limit: 32 },
           waitingRequests: 0,
         },
-      },
+      }),
       isLoading: false,
       isFetching: false,
       error: null,

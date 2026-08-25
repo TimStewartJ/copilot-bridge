@@ -12,6 +12,7 @@ import { installSelectAwareDomShim } from "../test-dom-shim";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { queryClient, queryKeys } from "../queryClient";
 import { formatSessionModelLabel } from "../lib/session-model";
+import { TRANSCRIPT_SIZE_WARNING_BYTES, getTranscriptSizeWarning } from "../../shared/transcript-size.js";
 import { canKeepCurrentReasoningEffortForModel } from "./SessionList";
 
 const apiMocks = vi.hoisted(() => ({
@@ -75,6 +76,32 @@ afterEach(() => {
   queryClient.clear();
   vi.useRealTimers();
   vi.clearAllMocks();
+});
+
+
+describe("SessionList transcript size warning", () => {
+  it("renders large event logs with a warning tooltip", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Large transcript session",
+        eventLogSizeBytes: TRANSCRIPT_SIZE_WARNING_BYTES * 3,
+      }),
+    ]);
+
+    try {
+      const warning = getTranscriptSizeWarning(TRANSCRIPT_SIZE_WARNING_BYTES * 3);
+      expect(warning).toBeTruthy();
+      expect(dom.container.textContent).toContain("96.0 MB");
+      const sizeNode = findAllByTag(dom.container, "SPAN")
+        .find((candidate) => candidate.textContent === "96.0 MB");
+      expect(sizeNode).toBeTruthy();
+      expect(getReactProps(sizeNode)?.className).toContain("text-warning");
+      expect(getReactProps(sizeNode)?.title).toBe(warning);
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("SessionList input-required indicator", () => {

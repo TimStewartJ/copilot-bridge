@@ -172,6 +172,15 @@ describe("installed @github/copilot-sdk pending-interaction contract", () => {
     expect(client.match(/githubMcpToolOptions: config\.githubMcpToolOptions,/g)?.length).toBe(2);
     expect(client.match(/askUserVariant: config\.askUserVariant,/g)?.length).toBe(2);
   });
+
+  it("keeps greppable SDK transport disconnect warnings in the installed client", () => {
+    const clientPath = findInstalledSdkClient();
+    expect(clientPath, "No installed @github/copilot-sdk dist/client.js found.").toBeTruthy();
+    const client = readFileSync(clientPath!, "utf-8");
+
+    expect(client).toContain("JSON-RPC connection closed unexpectedly");
+    expect(client).toContain("[copilot-sdk] stdin pipe error");
+  });
 });
 
 describe("copilot-cli-loader", () => {

@@ -13,6 +13,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { BridgeRuntimeStatus } from "../../bridge-management-api";
+import type { AgentBackendLifecycleState, AgentBackendStatus } from "../../../shared/agent-backend-status.js";
 import {
   MANAGEMENT_JOB_STATUSES,
   MANAGEMENT_JOB_TYPES,
@@ -51,6 +52,7 @@ const ACTIVE_JOB_FILTERS: ManagementJobFilters = { statuses: ["queued", "running
 
 type JobTypeFilter = "all" | ManagementJobType;
 type JobStatusFilter = "all" | ManagementJobStatus;
+type RuntimeStatusWithAgentBackend = BridgeRuntimeStatus & { agentBackend?: AgentBackendStatus };
 
 export function ManagementJobsSection() {
   const [typeFilter, setTypeFilter] = useState<JobTypeFilter>("all");
@@ -104,6 +106,7 @@ export function ManagementJobsSection() {
   const controlBusy = enqueueMutation.isPending
     || restartMutation.isPending
     || evictIdleCacheMutation.isPending;
+  const runtimeStatus = runtimeQuery.data as RuntimeStatusWithAgentBackend | undefined;
 
   useEffect(() => {
     if (selectedJobId || jobs.length === 0) return;
@@ -189,7 +192,7 @@ export function ManagementJobsSection() {
   }, [activeJobsQuery, enqueueMutation, jobsQuery, runtimeQuery]);
 
   const handleRestart = useCallback(async () => {
-    const confirmed = window.confirm(buildRestartConfirmation(runtimeQuery.data));
+    const confirmed = window.confirm(buildRestartConfirmation(runtimeStatus));
     if (!confirmed) return;
 
     setActionError(null);
@@ -206,7 +209,29 @@ export function ManagementJobsSection() {
     } catch (error) {
       setActionError(`Restart failed: ${formatError(error)}`);
     }
-  }, [restartMutation, restartStatusQuery, runtimeQuery]);
+  }, [restartMutation, restartStatusQuery, runtimeQuery, runtimeStatus]);
+
+  const handleForceRestart = useCallback(async () => {
+    const confirmed = window.confirm(buildForceRestartConfirmation(runtimeStatus));
+    if (!confirmed) return;
+
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const forceRestart = restartMutation.mutateAsync as unknown as (options: { force: true }) => Promise<{ forced?: boolean; failedRuns?: number }>;
+      const result = await forceRestart({ force: true });
+      const failedRuns = typeof result.failedRuns === "number" ? result.failedRuns : null;
+      setActionMessage(
+        failedRuns === null
+          ? "Force restart requested. In-flight runs were failed locally."
+          : `Force restart requested. ${failedRuns} in-flight run${failedRuns === 1 ? "" : "s"} failed locally.`,
+      );
+      void runtimeQuery.refetch();
+      void restartStatusQuery.refetch();
+    } catch (error) {
+      setActionError(`Force restart failed: ${formatError(error)}`);
+    }
+  }, [restartMutation, restartStatusQuery, runtimeQuery, runtimeStatus]);
 
   const handleEvictIdleCache = useCallback(async () => {
     const capacity = runtimeQuery.data?.capacity;
@@ -239,26 +264,33 @@ export function ManagementJobsSection() {
 
   const restartPending = restartStatusQuery.data?.pending === true;
   const selfUpdateDisabledReason = getSelfUpdateDisabledReason({
-    runtime: runtimeQuery.data,
+    runtime: runtimeStatus,
     runtimeError: runtimeQuery.error,
     restartPending,
     activeExclusiveJob,
     busy: controlBusy,
   });
   const restartDisabledReason = getRestartDisabledReason({
-    runtime: runtimeQuery.data,
+    runtime: runtimeStatus,
     runtimeError: runtimeQuery.error,
     restartPending,
     activeExclusiveJob,
     busy: controlBusy,
   });
-  const cacheCapacity = runtimeQuery.data?.capacity.cache;
+  const forceRestartDisabledReason = getForceRestartDisabledReason({
+    runtime: runtimeStatus,
+    runtimeError: runtimeQuery.error,
+    restartPending,
+    activeExclusiveJob,
+    busy: controlBusy,
+  });
+  const cacheCapacity = runtimeStatus?.capacity.cache;
   const idleCachedSessions = cacheCapacity
     ? Math.max(0, cacheCapacity.readyParents - cacheCapacity.protectedParents)
     : 0;
   const evictIdleCacheDisabledReason = controlBusy
     ? "Another management control is in progress."
-    : !runtimeQuery.data
+    : !runtimeStatus
       ? "Runtime cache status is unavailable."
       : idleCachedSessions === 0
         ? "No idle cached sessions to evict."
@@ -282,13 +314,13 @@ export function ManagementJobsSection() {
     >
       <div className="space-y-4">
         <CurrentActivityCard
-          status={runtimeQuery.data ?? null}
+          status={runtimeStatus ?? null}
           loading={runtimeQuery.isLoading && !runtimeQuery.data}
           error={runtimeQuery.error}
         />
 
         <CapacityCard
-          status={runtimeQuery.data ?? null}
+          status={runtimeStatus ?? null}
           loading={runtimeQuery.isLoading && !runtimeQuery.data}
           error={runtimeQuery.error}
         />
@@ -296,6 +328,7 @@ export function ManagementJobsSection() {
         <BridgeControlsCard
           selfUpdateDisabledReason={selfUpdateDisabledReason}
           restartDisabledReason={restartDisabledReason}
+          forceRestartDisabledReason={forceRestartDisabledReason}
           queueingUpdate={enqueueMutation.isPending}
           restarting={restartMutation.isPending}
           evictingIdleCache={evictIdleCacheMutation.isPending}
@@ -303,6 +336,7 @@ export function ManagementJobsSection() {
           evictIdleCacheDisabledReason={evictIdleCacheDisabledReason}
           onQueueSelfUpdate={() => void handleSelfUpdate()}
           onRestart={() => void handleRestart()}
+          onForceRestart={() => void handleForceRestart()}
           onEvictIdleCache={() => void handleEvictIdleCache()}
         />
 
@@ -399,7 +433,7 @@ function CurrentActivityCard({
   loading,
   error,
 }: {
-  status: BridgeRuntimeStatus | null;
+  status: RuntimeStatusWithAgentBackend | null;
   loading: boolean;
   error: unknown;
 }) {
@@ -451,10 +485,73 @@ function CurrentActivityCard({
               </span>
             )}
           </div>
+          <AgentBackendBlock backend={status?.agentBackend ?? null} />
         </>
       )}
     </div>
   );
+}
+
+function AgentBackendBlock({ backend }: { backend: AgentBackendStatus | null }) {
+  if (!backend) {
+    return (
+      <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+        Agent backend status is unavailable from this server version.
+      </div>
+    );
+  }
+
+  const lastDisconnect = backend.lastDisconnect;
+  return (
+    <div className="rounded-md border border-border bg-bg-primary p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-text-secondary">Agent backend</span>
+        <AgentBackendStateBadge state={backend.state} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-text-muted">
+        <span>Connection {backend.connection ?? "unknown"}</span>
+        <span>PID {backend.pid ?? "unknown"}</span>
+        <span>Backend started {formatDateTime(backend.createdAt)}</span>
+      </div>
+      {lastDisconnect && (
+        <div className="mt-2 text-text-muted">
+          Last disconnect {formatDateTime(lastDisconnect.at)}: {lastDisconnect.reason}
+          {lastDisconnect.detail ? ` - ${lastDisconnect.detail}` : ""}
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-text-faint">
+        <span>Disconnects {backend.disconnectCount}</span>
+        <span>Recoveries {backend.recoveryCount}</span>
+        <span>Interrupted {backend.lastInterruptedSessionCount}</span>
+        <span>Auto-resumed {backend.lastAutoResumedSessionCount}</span>
+      </div>
+      {backend.lastRecoveryError && (
+        <div className="mt-2 text-error">Last recovery error: {backend.lastRecoveryError}</div>
+      )}
+    </div>
+  );
+}
+
+function AgentBackendStateBadge({ state }: { state: AgentBackendLifecycleState }) {
+  return (
+    <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${agentBackendStateClassName(state)}`}>
+      {state}
+    </span>
+  );
+}
+
+function agentBackendStateClassName(state: AgentBackendLifecycleState): string {
+  switch (state) {
+    case "ready":
+      return "bg-success/15 text-success";
+    case "starting":
+    case "reconnecting":
+      return "bg-warning/15 text-warning";
+    case "disconnected":
+      return "bg-error/10 text-error";
+    case "stopped":
+      return "bg-bg-surface text-text-muted";
+  }
 }
 
 function CapacityCard({
@@ -462,7 +559,7 @@ function CapacityCard({
   loading,
   error,
 }: {
-  status: BridgeRuntimeStatus | null;
+  status: RuntimeStatusWithAgentBackend | null;
   loading: boolean;
   error: unknown;
 }) {
@@ -592,6 +689,7 @@ function CapacityBar({
 function BridgeControlsCard({
   selfUpdateDisabledReason,
   restartDisabledReason,
+  forceRestartDisabledReason,
   evictIdleCacheDisabledReason,
   queueingUpdate,
   restarting,
@@ -599,10 +697,12 @@ function BridgeControlsCard({
   idleCachedSessions,
   onQueueSelfUpdate,
   onRestart,
+  onForceRestart,
   onEvictIdleCache,
 }: {
   selfUpdateDisabledReason: string | null;
   restartDisabledReason: string | null;
+  forceRestartDisabledReason: string | null;
   evictIdleCacheDisabledReason: string | null;
   queueingUpdate: boolean;
   restarting: boolean;
@@ -610,6 +710,7 @@ function BridgeControlsCard({
   idleCachedSessions: number;
   onQueueSelfUpdate: () => void;
   onRestart: () => void;
+  onForceRestart: () => void;
   onEvictIdleCache: () => void;
 }) {
   return (
@@ -648,17 +749,31 @@ function BridgeControlsCard({
           <p className="mt-1 text-xs text-text-muted">
             Reload configuration and dependencies without pulling or deploying code changes.
           </p>
-          <button
-            type="button"
-            onClick={onRestart}
-            disabled={Boolean(restartDisabledReason)}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {restarting ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
-            {restarting ? "Queueing…" : "Restart Bridge"}
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onRestart}
+              disabled={Boolean(restartDisabledReason)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {restarting ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
+              {restarting ? "Queueing…" : "Restart Bridge"}
+            </button>
+            <button
+              type="button"
+              onClick={onForceRestart}
+              disabled={Boolean(forceRestartDisabledReason)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-error/40 bg-error/10 px-3 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {restarting ? <Loader2 size={12} className="animate-spin" /> : <AlertTriangle size={12} />}
+              {restarting ? "Queueing…" : "Force restart"}
+            </button>
+          </div>
           <p className="mt-2 text-[11px] text-text-faint">
             {restartDisabledReason ?? "The launcher will wait for current sessions before cutover."}
+          </p>
+          <p className="mt-1 text-[11px] text-text-faint">
+            {forceRestartDisabledReason ?? "Force restart is available for backend disconnects or fully stalled active sessions."}
           </p>
         </div>
 
@@ -1298,7 +1413,7 @@ function getSelfUpdateDisabledReason({
   activeExclusiveJob,
   busy,
 }: {
-  runtime: BridgeRuntimeStatus | undefined;
+  runtime: RuntimeStatusWithAgentBackend | undefined;
   runtimeError: unknown;
   restartPending: boolean;
   activeExclusiveJob: ManagementJobSummary | null;
@@ -1322,7 +1437,7 @@ function getRestartDisabledReason({
   activeExclusiveJob,
   busy,
 }: {
-  runtime: BridgeRuntimeStatus | undefined;
+  runtime: RuntimeStatusWithAgentBackend | undefined;
   runtimeError: unknown;
   restartPending: boolean;
   activeExclusiveJob: ManagementJobSummary | null;
@@ -1338,7 +1453,34 @@ function getRestartDisabledReason({
   return null;
 }
 
-function buildRestartConfirmation(runtime: BridgeRuntimeStatus | undefined): string {
+function getForceRestartDisabledReason({
+  runtime,
+  runtimeError,
+  restartPending,
+  activeExclusiveJob,
+  busy,
+}: {
+  runtime: RuntimeStatusWithAgentBackend | undefined;
+  runtimeError: unknown;
+  restartPending: boolean;
+  activeExclusiveJob: ManagementJobSummary | null;
+  busy: boolean;
+}): string | null {
+  const baseReason = getRestartDisabledReason({ runtime, runtimeError, restartPending, activeExclusiveJob, busy });
+  if (baseReason) return baseReason;
+  if (!runtime) return runtimeError ? "Runtime availability could not be checked." : "Checking availability…";
+  if (canForceRestart(runtime)) return null;
+  return "Available when the agent backend is disconnected or reconnecting, or every active session is stalled.";
+}
+
+function canForceRestart(runtime: RuntimeStatusWithAgentBackend): boolean {
+  const backendState = runtime.agentBackend?.state;
+  const backendNeedsRestart = backendState === "disconnected" || backendState === "reconnecting";
+  const allActiveSessionsStalled = runtime.sessions.active > 0 && runtime.sessions.stalled === runtime.sessions.active;
+  return backendNeedsRestart || allActiveSessionsStalled;
+}
+
+function buildRestartConfirmation(runtime: RuntimeStatusWithAgentBackend | undefined): string {
   if (!runtime) {
     return "Restart Bridge now?\n\nThe launcher will wait for active sessions before cutover.";
   }
@@ -1353,6 +1495,15 @@ function buildRestartConfirmation(runtime: BridgeRuntimeStatus | undefined): str
     ? "The launcher will wait for active sessions before cutover."
     : "The restart may begin immediately.";
   return `Restart Bridge now?\n\nCurrent activity: ${activity}.\n${timing}`;
+}
+
+function buildForceRestartConfirmation(runtime: RuntimeStatusWithAgentBackend | undefined): string {
+  const backendState = runtime?.agentBackend?.state ?? "unknown";
+  const active = runtime?.sessions.active ?? 0;
+  const stalled = runtime?.sessions.stalled ?? 0;
+  return `Force restart Bridge now?
+
+This fails every in-flight run locally before restarting the Bridge. Backend state: ${backendState}. Current sessions: ${active} active, ${stalled} stalled.`;
 }
 
 function jobTypeLabel(type: ManagementJobType): string {

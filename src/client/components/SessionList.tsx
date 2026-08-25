@@ -39,6 +39,7 @@ import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
+import { getTranscriptSizeWarning } from "../../shared/transcript-size.js";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -726,9 +727,17 @@ export default function SessionList({
               </>
             )}
             {session.context?.branch && ` · ${session.context.branch}`}
-            {session.eventLogSizeBytes
-              ? ` · ${formatSize(session.eventLogSizeBytes)}`
-              : ""}
+            {session.eventLogSizeBytes ? (
+              <>
+                {" · "}
+                <span
+                  className={getTranscriptSizeWarning(session.eventLogSizeBytes) ? "text-warning" : undefined}
+                  title={getTranscriptSizeWarning(session.eventLogSizeBytes) ?? undefined}
+                >
+                  {formatSize(session.eventLogSizeBytes)}
+                </span>
+              </>
+            ) : ""}
             {session.workspace?.overridesTaskWorkspace && (
               <>
                 {" · "}
