@@ -30,6 +30,7 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   // Backend-scoped
   "backend.listModels": 60_000,
   "backend.listSessions": 120_000,
+  "backend.checkSessionsInUse": 10_000,
   "backend.deleteSession": 60_000,
   "backend.getSessionMetadata": 60_000,
   "backend.forkSession": 120_000,

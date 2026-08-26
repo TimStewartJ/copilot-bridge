@@ -17,7 +17,7 @@ import {
 import { queryClient, queryKeys } from "../queryClient";
 import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot, Terminal } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import { useModalDialog } from "./shared/useModalDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -723,6 +723,18 @@ export default function SessionList({
                 >
                   <Clock size={9} className="shrink-0" aria-hidden="true" />
                   <span>{deferLabel}</span>
+                </span>
+              </>
+            )}
+            {session.externallyInUse && (
+              <>
+                {" · "}
+                <span
+                  className="inline-flex items-center gap-0.5 rounded-full border border-info/20 bg-info/10 px-1.5 py-0.5 align-middle text-[10px] font-medium text-info"
+                  title="This session is open in another Copilot client"
+                >
+                  <Terminal size={9} className="shrink-0" aria-hidden="true" />
+                  <span>Open elsewhere</span>
                 </span>
               </>
             )}

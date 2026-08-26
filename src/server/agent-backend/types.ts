@@ -488,6 +488,12 @@ export interface AgentBackend {
   /** List existing sessions known to the backend. */
   listSessions(): Promise<AgentSessionSummary[]>;
 
+  /**
+   * Return sessions held by another backend process. Optional because older
+   * runtimes may not expose the experimental sessions.checkInUse RPC.
+   */
+  checkSessionsInUse?(sessionIds: readonly string[]): Promise<Set<string> | undefined>;
+
   /** Create a brand-new session. */
   createSession(config: AgentSessionConfig): Promise<AgentSession>;
 

@@ -24,6 +24,7 @@ function createFakeSession(rpc: any = {}) {
 }
 
 function createFakeClient(session: ReturnType<typeof createFakeSession> = createFakeSession()) {
+  const checkInUse = vi.fn(async () => ({ inUse: ["s2"] }));
   return {
     session,
     start: vi.fn(async () => undefined),
@@ -35,7 +36,12 @@ function createFakeClient(session: ReturnType<typeof createFakeSession> = create
     resumeSession: vi.fn(async () => session),
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({ sessionId: "s1" })),
-    rpc: { sessions: { fork: vi.fn(async () => ({ sessionId: "fork-id" })) } },
+    rpc: {
+      sessions: {
+        fork: vi.fn(async () => ({ sessionId: "fork-id" })),
+        checkInUse,
+      },
+    },
   };
 }
 
@@ -73,6 +79,22 @@ describe("CopilotBackend wrap fidelity", () => {
     await expect(backend.listSessions()).resolves.toEqual([{ sessionId: "s1", title: "S1" }]);
     expect(client.listModels).toHaveBeenCalledOnce();
     expect(client.listSessions).toHaveBeenCalledOnce();
+  });
+
+  it("delegates batched in-use checks and normalizes the result", async () => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+
+    await expect(backend.checkSessionsInUse!(["s1", "s2"])).resolves.toEqual(new Set(["s2"]));
+    expect(client.rpc.sessions.checkInUse).toHaveBeenCalledWith({ sessionIds: ["s1", "s2"] });
+  });
+
+  it("reports in-use checks as unsupported when the RPC is missing", async () => {
+    const client = createFakeClient();
+    delete (client.rpc.sessions as any).checkInUse;
+    const backend = new CopilotBackend(client as any);
+
+    await expect(backend.checkSessionsInUse!(["s1"])).resolves.toBeUndefined();
   });
 
   it("forwards createSession/resumeSession config and wraps the returned session", async () => {

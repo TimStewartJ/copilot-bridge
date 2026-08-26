@@ -77,6 +77,8 @@ import type {
   PendingUserInputRequestView,
   UserInputRequestId,
 } from "./user-input-types.js";
+import { validateExternalSessionUse } from "./external-session-use.js";
+import type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
 import type {
   ElicitationRequestId,
   PendingElicitationRequestView,
@@ -4565,6 +4567,72 @@ export class SessionManager {
       agents: this.agentRegistry.getAggregate(),
       capacity: this.getSessionCapacityRuntimeStatus(),
     };
+  }
+
+  async getExternalSessionUse(sessionIds: readonly string[]): Promise<ExternalSessionUseSnapshot> {
+    const checkedAt = new Date().toISOString();
+    const uniqueSessionIds = [...new Set(sessionIds)];
+    if (uniqueSessionIds.length === 0) {
+      return { status: "available", inUse: [], checkedAt };
+    }
+
+    const backend = this.backend;
+    if (!backend || this.backendLifecycleState !== "ready") {
+      return { status: "unavailable", inUse: [], checkedAt };
+    }
+    if (typeof backend.checkSessionsInUse !== "function") {
+      return { status: "unsupported", inUse: [], checkedAt };
+    }
+
+    const startedAt = Date.now();
+    try {
+      const candidates = await backend.checkSessionsInUse(uniqueSessionIds);
+      if (!candidates) {
+        return { status: "unsupported", inUse: [], checkedAt };
+      }
+      if (candidates.size === 0) {
+        this.recordSpan("session.externalUse", Date.now() - startedAt, undefined, {
+          requested: uniqueSessionIds.length,
+          candidates: 0,
+          confirmed: 0,
+        });
+        return { status: "available", inUse: [], checkedAt };
+      }
+
+      const backendPid = backend.getConnectionStatus?.().pid;
+      if (typeof backendPid !== "number") {
+        console.warn("[sessions] External-use validation unavailable because the backend PID is unknown");
+        return { status: "unavailable", inUse: [], checkedAt };
+      }
+      const confirmed = await validateExternalSessionUse({
+        copilotHome: this.getCopilotHome(),
+        candidateSessionIds: [...candidates],
+        backendPid,
+      });
+      if (!confirmed) {
+        console.warn("[sessions] External-use validation unavailable because the process table could not be read");
+        return { status: "unavailable", inUse: [], checkedAt };
+      }
+
+      const inUse = uniqueSessionIds.filter((sessionId) => confirmed.has(sessionId));
+      this.recordSpan("session.externalUse", Date.now() - startedAt, undefined, {
+        requested: uniqueSessionIds.length,
+        candidates: candidates.size,
+        confirmed: inUse.length,
+      });
+      return { status: "available", inUse, checkedAt };
+    } catch (error) {
+      console.warn(
+        "[sessions] External-use check failed:",
+        error instanceof Error ? error.message : error,
+      );
+      this.recordSpan("session.externalUse", Date.now() - startedAt, undefined, {
+        requested: uniqueSessionIds.length,
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { status: "unavailable", inUse: [], checkedAt };
+    }
   }
 
   /**

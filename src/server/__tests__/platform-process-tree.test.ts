@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeadline } from "../deadline.js";
 import {
   captureProcessIdentity,
+  captureProcessStartTimes,
   createDirectoryLink,
   getDeviceHibernateCommand,
   removeDirectoryLink,
@@ -125,6 +126,35 @@ describe("process tree platform helpers", () => {
       pid: 100,
       startMarker: "1000",
     });
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures Windows process start times from .NET ticks with one bulk CIM call", async () => {
+    setPlatform("win32");
+    const unixEpochTicks = 621_355_968_000_000_000n;
+    const firstStart = (unixEpochTicks + 1_000n * 10_000n).toString();
+    const secondStart = (unixEpochTicks + 2_000n * 10_000n).toString();
+    mockExec((command, _args, _options, callback) => {
+      expect(command).toBe("powershell.exe");
+      callback(null, [`100 1 ${firstStart}`, `101 100 ${secondStart}`].join("\n"), "");
+    });
+
+    await expect(captureProcessStartTimes([100, 101, 999], createDeadline(5_000))).resolves.toEqual(
+      new Map([[100, 1_000], [101, 2_000]]),
+    );
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures POSIX process start times from ps output", async () => {
+    setPlatform("linux");
+    mockExec((command, _args, _options, callback) => {
+      expect(command).toBe("ps");
+      callback(null, "  3000     1 Mon Jan  1 00:00:00 2024", "");
+    });
+
+    await expect(captureProcessStartTimes([3000], createDeadline(5_000))).resolves.toEqual(
+      new Map([[3000, Date.parse("Mon Jan  1 00:00:00 2024 UTC")]]),
+    );
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 

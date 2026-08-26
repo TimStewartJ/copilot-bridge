@@ -194,6 +194,11 @@ export function createMockSessionManager() {
     }),
     refreshModels: async () => ({ models: [], refreshed: true, activeSessions: 0, refreshedAt: "2026-01-01T00:00:00.000Z", clientCreatedAt: "2026-01-01T00:00:00.000Z" }),
     listSessionsFromDisk: () => [],
+    getExternalSessionUse: async () => ({
+      status: "available" as const,
+      inUse: [],
+      checkedAt: "2026-01-01T00:00:00.000Z",
+    }),
     getSessionActivity: () => [],
     isSessionBusy: () => false,
     getSessionRunState: () => "idle",

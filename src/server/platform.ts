@@ -217,7 +217,12 @@ async function readPosixProcessTable(
     const { stdout } = await execFileAsync(
       "ps",
       ["-eo", "pid=,ppid=,lstart="],
-      { encoding: "utf8", timeout: timeoutMs, maxBuffer: PROCESS_TABLE_MAX_BUFFER },
+      {
+        encoding: "utf8",
+        timeout: timeoutMs,
+        maxBuffer: PROCESS_TABLE_MAX_BUFFER,
+        env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      },
     );
     return { ok: true, table: parsePosixProcessTable(String(stdout)) };
   } catch (error) {
@@ -309,6 +314,51 @@ export async function captureProcessIdentity(
   if (!result.ok) return null;
   const entry = result.table.get(pid);
   return entry?.startMarker ? { pid, startMarker: entry.startMarker } : null;
+}
+
+function parseProcessStartMarkerMs(
+  startMarker: string,
+  platform: NodeJS.Platform = process.platform,
+): number | undefined {
+  if (!startMarker) return undefined;
+  if (platform === "win32") {
+    try {
+      const ticks = BigInt(startMarker);
+      const unixEpochTicks = 621_355_968_000_000_000n;
+      if (ticks < unixEpochTicks) return undefined;
+      const milliseconds = Number((ticks - unixEpochTicks) / 10_000n);
+      return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const milliseconds = Date.parse(`${startMarker} UTC`);
+  return Number.isFinite(milliseconds) ? milliseconds : undefined;
+}
+
+/**
+ * Read process start times with one bounded process-table snapshot. Callers can
+ * pair these with PID-bearing files to reject stale files after PID reuse.
+ */
+export async function captureProcessStartTimes(
+  pids: readonly number[],
+  deadline: Deadline,
+): Promise<Map<number, number> | null> {
+  const requested = new Set(pids.filter(isValidPid));
+  if (requested.size === 0) return new Map();
+  if (deadlineExpired(deadline)) return null;
+
+  const result = await readProcessTable(deadline, PROCESS_IDENTITY_READ_TIMEOUT_MS);
+  if (!result.ok) return null;
+
+  const startTimes = new Map<number, number>();
+  for (const pid of requested) {
+    const marker = result.table.get(pid)?.startMarker;
+    if (!marker) continue;
+    const startTimeMs = parseProcessStartMarkerMs(marker);
+    if (startTimeMs !== undefined) startTimes.set(pid, startTimeMs);
+  }
+  return startTimes;
 }
 
 function identityMatches(table: Map<number, ProcessTableEntry>, identity: ProcessIdentity): boolean {

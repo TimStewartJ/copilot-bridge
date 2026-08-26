@@ -68,7 +68,7 @@ import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
-import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
+import { ArrowUpCircle, ClipboardList, Loader2, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const INITIAL_PAGE_SIZE = 50;
@@ -122,6 +122,7 @@ interface ChatViewProps {
   /** Incremented when server history was truncated and the loaded window must be replaced. */
   historySignal?: number;
   activeSessionActivityAt?: string;
+  externallyInUse?: boolean;
   backgroundAgents?: BackgroundAgentsSummary;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void; newWorkDisabled?: boolean; newWorkDisabledHint?: string;
@@ -594,6 +595,7 @@ export default function ChatView({
   busySignal = 0,
   historySignal = 0,
   activeSessionActivityAt,
+  externallyInUse = false,
   backgroundAgents,
   onForkSession,
   onRenderedReadThrough, newWorkDisabled = false, newWorkDisabledHint,
@@ -2519,6 +2521,15 @@ export default function ChatView({
           >
             View
           </button>
+        </div>
+      )}
+      {externallyInUse && (
+        <div
+          className="shrink-0 flex items-center gap-2 border-b border-info/20 bg-info/10 px-4 py-2 text-xs text-info"
+          role="status"
+        >
+          <Terminal size={12} className="shrink-0" aria-hidden="true" />
+          <span>This session is open in another Copilot client. Sending here is still allowed.</span>
         </div>
       )}
       {sessionModelSummary}

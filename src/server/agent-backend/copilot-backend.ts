@@ -570,6 +570,20 @@ export class CopilotBackend implements AgentBackend {
     return sessions as unknown as AgentSessionSummary[];
   }
 
+  async checkSessionsInUse(sessionIds: readonly string[]): Promise<Set<string> | undefined> {
+    const sessions = (this.client as any).rpc?.sessions;
+    const checkInUse = sessions?.checkInUse;
+    if (typeof checkInUse !== "function") return undefined;
+    const result = await this.rpc(
+      "backend.checkSessionsInUse",
+      () => checkInUse.call(sessions, { sessionIds: [...sessionIds] }),
+    );
+    const inUse = Array.isArray((result as any)?.inUse)
+      ? (result as any).inUse.filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+      : [];
+    return new Set(inUse);
+  }
+
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);

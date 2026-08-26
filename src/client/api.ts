@@ -36,6 +36,8 @@ import {
   type SessionForkJob,
   type StartSessionForkResponse,
 } from "../shared/session-fork.js";
+import type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
+export type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
 export type { SessionForkJob, SessionForkJobStatus, StartSessionForkResponse } from "../shared/session-fork.js";
 export type { McpServerConfig };
 export type { AgentInstruction } from "../shared/subagent.js";
@@ -164,6 +166,7 @@ export interface Session {
     branch?: string;
   };
   workspace?: SessionWorkspaceSummary;
+  externallyInUse?: boolean;
   isOptimistic?: boolean;
   optimisticUntil?: number;
 }
@@ -666,6 +669,33 @@ export async function fetchSessions(includeArchived = false): Promise<Session[]>
   const qs = params.toString() ? `?${params}` : "";
   const data = await apiFetch<{ sessions: Session[] }>(`/api/sessions${qs}`);
   return data.sessions;
+}
+
+export async function fetchExternalSessionUse(
+  sessionIds: readonly string[],
+  options?: { signal?: AbortSignal },
+): Promise<ExternalSessionUseSnapshot> {
+  const batchSize = 500;
+  const snapshots: ExternalSessionUseSnapshot[] = [];
+  for (let offset = 0; offset < sessionIds.length; offset += batchSize) {
+    snapshots.push(await apiFetch<ExternalSessionUseSnapshot>("/api/sessions/external-use", {
+      sessionIds: sessionIds.slice(offset, offset + batchSize),
+    }, options));
+  }
+  if (snapshots.length === 0) {
+    return { status: "available", inUse: [], checkedAt: new Date().toISOString() };
+  }
+  if (snapshots.some((snapshot) => snapshot.status === "unavailable")) {
+    return { status: "unavailable", inUse: [], checkedAt: snapshots.at(-1)!.checkedAt };
+  }
+  if (snapshots.some((snapshot) => snapshot.status === "unsupported")) {
+    return { status: "unsupported", inUse: [], checkedAt: snapshots.at(-1)!.checkedAt };
+  }
+  return {
+    status: "available",
+    inUse: [...new Set(snapshots.flatMap((snapshot) => snapshot.inUse))],
+    checkedAt: snapshots.at(-1)!.checkedAt,
+  };
 }
 
 export async function fetchTaskSessionStorage(
