@@ -19,8 +19,14 @@ describe("release scripts", () => {
       join(process.cwd(), "src", "server", "agent-tools-mcp", "server.ts"),
       "utf-8",
     );
+    const responseTransportSource = readFileSync(
+      join(process.cwd(), "src", "server", "response-transport.ts"),
+      "utf-8",
+    );
     expect(mcpServerSource).toMatch(/from\s+"@modelcontextprotocol\/sdk\//);
     expect(allowlist).toContain("@modelcontextprotocol/sdk");
+    expect(responseTransportSource).toMatch(/from\s+"compression"/);
+    expect(allowlist).toContain("compression");
   });
 
   it("includes and validates the platform-specific Copilot CLI runtime", () => {
@@ -35,6 +41,14 @@ describe("release scripts", () => {
     expect(smokeScript).toContain("copilot.exe");
     expect(smokeScript).toContain("sdk\\index.js");
     expect(smokeScript).toContain("import('@github/copilot-win32-x64/sdk')");
+  });
+
+  it("applies the Bridge SDK patch in packaged installs", () => {
+    const packageScript = readFileSync(join(process.cwd(), "scripts", "package-release.ps1"), "utf-8");
+
+    expect(packageScript).toContain('$runtimePackageJson.dependencies["patch-package"]');
+    expect(packageScript).toContain('postinstall = "patch-package --error-on-fail"');
+    expect(packageScript).toContain('(Join-Path $repoRoot "patches")');
   });
 
   it("uses GitHub actions backed by Node 24 or newer", () => {

@@ -14,7 +14,6 @@ import {
 import { buildBridgeChildEnv, loadBridgeEnvManagedKeys } from "./server/env-loader.js";
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
 import { BRIDGE_CONTROL_ROOT_ENV } from "./server/control-root.js";
-import { BRIDGE_COPILOT_CLI_CACHE_DIR_ENV } from "./server/copilot-cli-pin.js";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
@@ -127,7 +126,6 @@ const RUNTIME_PATHS = resolveRuntimePaths(process.env);
 Object.assign(process.env, RUNTIME_PATHS.env);
 const DISTRIBUTION = resolveBridgeDistribution(process.env, ROOT);
 const DATA_DIR = RUNTIME_PATHS.dataDir;
-const COPILOT_CLI_CACHE_DIR = RUNTIME_PATHS.copilotCliCacheDir ?? join(DATA_DIR, "copilot-cli");
 const NODE_PATH = process.execPath; // use the same node binary that's running the launcher
 const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SIGNAL_FILE = join(DATA_DIR, "restart.signal");
@@ -945,7 +943,6 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   if (shuttingDown) return null;
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
-    [BRIDGE_COPILOT_CLI_CACHE_DIR_ENV]: COPILOT_CLI_CACHE_DIR,
     BRIDGE_DISTRIBUTION_MODE: resolveServerLaunchDistributionMode(DISTRIBUTION.mode, target.release !== undefined),
     [BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV]: DISTRIBUTION.mode,
     [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
@@ -1022,7 +1019,6 @@ function startManagementJobRunner(): ChildProcess | null {
   if (managementJobRunnerProcess) return managementJobRunnerProcess;
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
-    [BRIDGE_COPILOT_CLI_CACHE_DIR_ENV]: COPILOT_CLI_CACHE_DIR,
     BRIDGE_DISTRIBUTION_MODE: DISTRIBUTION.mode,
     [BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV]: DISTRIBUTION.mode,
     [BRIDGE_CONTROL_ROOT_ENV]: ROOT,

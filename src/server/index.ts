@@ -35,7 +35,6 @@ import { createApiCacheControlMiddleware, createResponseCompressionMiddleware } 
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import { createStorageMaintenance } from "./storage-maintenance.js";
 import { PRODUCTION_ROOT } from "./staging-preview-shared.js";
-import { describeCopilotCliResolution, ensurePinnedCopilotCli } from "./copilot-cli-pin.js";
 import {
   getValidationCommandLogDir,
   scheduleValidationCommandLogSweep,
@@ -188,15 +187,6 @@ async function main(): Promise<void> {
   console.log("║      Copilot Web Bridge                ║");
   console.log("╚════════════════════════════════════════╝");
   console.log();
-
-  // Must finish before the first agent backend spawns the CLI: the launch
-  // decision in buildCopilotClientOptions is synchronous and only sees what is
-  // already in the cache. Fail-closed: a download failure aborts startup.
-  const copilotCli = await ensurePinnedCopilotCli({
-    cacheDir: runtimePaths.copilotCliCacheDir ?? join(runtimePaths.dataDir, "copilot-cli"),
-    log: (message) => console.log(`[copilot-cli] ${message}`),
-  });
-  console.log(`[copilot-cli] Using ${describeCopilotCliResolution(copilotCli)}`);
 
   await sessionManager.initialize();
   configureRestartStateStore(runtimePaths);

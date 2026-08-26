@@ -79,6 +79,7 @@ function Read-UpdateManifestPublicKeyPem {
 $runtimeDependencyNames = @(
   "@github/copilot-sdk",
   "@modelcontextprotocol/sdk",
+  "compression",
   "express",
   "gray-matter",
   "multer",
@@ -96,7 +97,11 @@ $runtimePackageJson = [ordered]@{
   license = $packageJson.license
   engines = $packageJson.engines
   dependencies = Get-DependencyMap $packageJson.dependencies $runtimeDependencyNames
+  scripts = [ordered]@{
+    postinstall = "patch-package --error-on-fail"
+  }
 }
+$runtimePackageJson.dependencies["patch-package"] = $packageJson.devDependencies."patch-package"
 if ($packageJson.overrides) {
   $runtimePackageJson.overrides = $packageJson.overrides
 }
@@ -131,10 +136,7 @@ if (Test-Path $packageLockPath) {
 }
 Copy-Item -Path (Join-Path $repoRoot ".env.example") -Destination $appDir
 Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination $appDir
-$copilotCliLockPath = Join-Path $repoRoot "copilot-cli.lock.json"
-if (Test-Path $copilotCliLockPath) {
-  Copy-Item -Path $copilotCliLockPath -Destination $appDir
-}
+Copy-Item -Path (Join-Path $repoRoot "patches") -Destination (Join-Path $appDir "patches") -Recurse
 Copy-Item -Path (Join-Path $repoRoot "scripts\start-release.ps1") -Destination (Join-Path $releaseRoot "start.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\stop-release.ps1") -Destination (Join-Path $releaseRoot "stop.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\update-release.ps1") -Destination (Join-Path $releaseRoot "update.ps1")

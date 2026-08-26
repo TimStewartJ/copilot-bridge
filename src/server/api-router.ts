@@ -70,7 +70,6 @@ import {
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
-import { getCopilotCliRuntimeStatus } from "./copilot-cli-pin.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
 import { isRecord } from "../shared/is-record.js";
@@ -1866,7 +1865,6 @@ export function createApiRouter(
   router.get("/health", (_req, res) => {
     res.json({
       ok: true,
-      copilotCli: getCopilotCliRuntimeStatus() ?? undefined,
       agentBackend: ctx.sessionManager.getBackendStatus(),
       ...(ctx.docsIndex ? { docsFts: ctx.docsIndex.getFtsHealth() } : {}),
     });

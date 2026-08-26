@@ -362,14 +362,6 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   } = config;
   if (pendingInteractionEvents) {
     sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
-    // Copilot CLI >= 1.0.81 picks the ask_user implementation natively from the
-    // client kind unless the host names one; SDK clients default to the legacy
-    // question/choices variant, which needs a user-input handler Bridge does
-    // not provide, so ask_user would vanish. Ask for the structured elicitation
-    // variant explicitly. Older runtimes ignore the field (and the Bridge loader
-    // patch selects the same variant for them); the SDK forwards it through the
-    // transport patch in patches/@github+copilot-sdk+*.patch.
-    sdkConfig.askUserVariant = "elicitation";
   }
   return { sdkConfig, pendingInteractionEvents };
 }

@@ -88,13 +88,11 @@ For Copilot SDK authentication, set `BRIDGE_COPILOT_GITHUB_TOKEN` if you want Br
 
 GitHub work item and pull request enrichment reuses the same ambient auth: `BRIDGE_COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. With no token available it still enriches public repositories anonymously. Fully qualified references (`owner/repo#123`, an issue/PR URL, or an `owner/repo` PR repository) work without any GitHub provider settings; the optional owner/default-repo settings only resolve short references like `123` or `repo#123`.
 
-### Copilot CLI Version (pinned release)
+### Copilot CLI Version
 
-Bridge only ever launches the Copilot CLI build pinned by `copilot-cli.lock.json`, taken from [GitHub Releases](https://github.com/github/copilot-cli/releases) (prereleases land there before npm). The npm `@github/copilot` package that the SDK depends on is never launched.
-
-`{ "source": "github-release", "version": "1.0.81-8", "reason": "...", "assets": { "<platform>": { "name", "sha256" } } }` downloads that release tarball, verifies its SHA-256 against the lock, extracts it under `BRIDGE_COPILOT_CLI_CACHE_DIR` (default `<data dir>/copilot-cli/<version>`), and launches it. The cache is outside `node_modules` and the release slots, so `npm install`, slot pruning, and the CLI self-updater cannot disturb it.
-
-`npm run copilot-cli:pin -- 1.0.81-8 --reason "why"` writes the lock from the release's `SHA256SUMS.txt` (the lock is the only knob; the Bridge never self-updates the CLI). `npm run copilot-cli:ensure` downloads the pinned build now, `npm run copilot-cli:status` shows what the next launch uses, and `npm run copilot-cli:prune` drops cached builds the lock no longer references. The server and staging previews run the ensure step at startup and refuse to start if the pinned build cannot be made ready, so a broken pin fails the deploy instead of launching a different CLI version. The loader contract test (`copilot-cli-loader.test.ts`) gates the pinned bundle whenever it is cached, so a release that changes the patched runtime shapes fails validation instead of launch.
+Bridge pins the npm `@github/copilot` runtime to stable version 1.0.80 through the root package override and lock file.
+The SDK launches that installed platform package through the Bridge CLI wrapper so GitHub MCP authentication and native
+`ask_user` elicitation work with the stable bundle.
 
 ### Packaged Release Mode
 
