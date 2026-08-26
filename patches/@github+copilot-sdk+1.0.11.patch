@@ -1,5 +1,5 @@
 diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-index 7378159..d45391f 100644
+index f3c5272..cf105f1 100644
 --- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
 @@ -275,6 +275,7 @@ class CopilotClient {
@@ -10,7 +10,64 @@ index 7378159..d45391f 100644
    /** Token sent in `connect`; auto-generated when the SDK spawns its own CLI in TCP mode. */
    effectiveConnectionToken;
    onListModels;
-@@ -615,6 +616,7 @@ class CopilotClient {
+@@ -636,6 +637,7 @@ class CopilotClient {
+    * ```
+    */
+   async stop() {
++    this.stopping = true;
+     const errors = [];
+     const activeSessions = [...this.sessions.values()];
+     if (this.connectionConfig.kind === "inprocess") {
+@@ -1150,6 +1152,7 @@ class CopilotClient {
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+@@ -1374,6 +1377,7 @@ class CopilotClient {
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+@@ -2046,6 +2050,7 @@ stderr: ${stderrOutput}`
+       this.state = "error";
+       const reason = err instanceof Error ? err.stack ?? err.message : String(err);
+       this.logDebug(`stdin pipe error: ${reason}`);
++      console.warn(`[copilot-sdk] stdin pipe error: ${reason}`);
+       try {
+         this.connection?.dispose();
+       } catch {
+@@ -2144,9 +2149,11 @@ stderr: ${stderrOutput}`
+       }
+     );
+     this.connection.onClose(() => {
++      if (!this.stopping && !this.forceStopping) console.warn(`[copilot-sdk] JSON-RPC connection closed unexpectedly (state was ${this.state})`);
+       this.state = "disconnected";
+     });
+-    this.connection.onError((_error) => {
++    this.connection.onError((error) => {
++      if (!this.stopping && !this.forceStopping) console.warn(`[copilot-sdk] JSON-RPC connection error: ${error instanceof Error ? error.message : String(error)}`);
+       this.state = "disconnected";
+     });
+   }
+diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
+index 6036485..739a1b0 100644
+--- a/node_modules/@github/copilot-sdk/dist/client.js
++++ b/node_modules/@github/copilot-sdk/dist/client.js
+@@ -252,6 +252,7 @@ class CopilotClient {
+   options;
+   isExternalServer = false;
+   forceStopping = false;
++  stopping = false;
+   /** Token sent in `connect`; auto-generated when the SDK spawns its own CLI in TCP mode. */
+   effectiveConnectionToken;
+   onListModels;
+@@ -613,6 +614,7 @@ class CopilotClient {
     * ```
     */
    async stop() {
@@ -26,7 +83,7 @@ index 7378159..d45391f 100644
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1348,6 +1351,7 @@ class CopilotClient {
+@@ -1351,6 +1354,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -34,7 +91,7 @@ index 7378159..d45391f 100644
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -2019,6 +2023,7 @@ stderr: ${stderrOutput}`
+@@ -2023,6 +2027,7 @@ stderr: ${stderrOutput}`
        this.state = "error";
        const reason = err instanceof Error ? err.stack ?? err.message : String(err);
        this.logDebug(`stdin pipe error: ${reason}`);
@@ -42,64 +99,7 @@ index 7378159..d45391f 100644
        try {
          this.connection?.dispose();
        } catch {
-@@ -2117,9 +2122,11 @@ stderr: ${stderrOutput}`
-       }
-     );
-     this.connection.onClose(() => {
-+      if (!this.stopping && !this.forceStopping) console.warn(`[copilot-sdk] JSON-RPC connection closed unexpectedly (state was ${this.state})`);
-       this.state = "disconnected";
-     });
--    this.connection.onError((_error) => {
-+    this.connection.onError((error) => {
-+      if (!this.stopping && !this.forceStopping) console.warn(`[copilot-sdk] JSON-RPC connection error: ${error instanceof Error ? error.message : String(error)}`);
-       this.state = "disconnected";
-     });
-   }
-diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
-index 88a2390..7ac3842 100644
---- a/node_modules/@github/copilot-sdk/dist/client.js
-+++ b/node_modules/@github/copilot-sdk/dist/client.js
-@@ -252,6 +252,7 @@ class CopilotClient {
-   options;
-   isExternalServer = false;
-   forceStopping = false;
-+  stopping = false;
-   /** Token sent in `connect`; auto-generated when the SDK spawns its own CLI in TCP mode. */
-   effectiveConnectionToken;
-   onListModels;
-@@ -592,6 +593,7 @@ class CopilotClient {
-    * ```
-    */
-   async stop() {
-+    this.stopping = true;
-     const errors = [];
-     const activeSessions = [...this.sessions.values()];
-     if (this.connectionConfig.kind === "inprocess") {
-@@ -1104,6 +1106,7 @@ class CopilotClient {
-         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
-         ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
-         mcpServers: toWireMcpServers(config.mcpServers),
-+        githubMcpToolOptions: config.githubMcpToolOptions,
-         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
-         envValueMode: "direct",
-         customAgents: toWireCustomAgents(config.customAgents),
-@@ -1325,6 +1328,7 @@ class CopilotClient {
-         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
-         ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
-         mcpServers: toWireMcpServers(config.mcpServers),
-+        githubMcpToolOptions: config.githubMcpToolOptions,
-         mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
-         envValueMode: "direct",
-         customAgents: toWireCustomAgents(config.customAgents),
-@@ -1996,6 +2000,7 @@ stderr: ${stderrOutput}`
-       this.state = "error";
-       const reason = err instanceof Error ? err.stack ?? err.message : String(err);
-       this.logDebug(`stdin pipe error: ${reason}`);
-+      console.warn(`[copilot-sdk] stdin pipe error: ${reason}`);
-       try {
-         this.connection?.dispose();
-       } catch {
-@@ -2094,9 +2099,11 @@ stderr: ${stderrOutput}`
+@@ -2121,9 +2126,11 @@ stderr: ${stderrOutput}`
        }
      );
      this.connection.onClose(() => {
