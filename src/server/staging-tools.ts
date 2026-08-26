@@ -841,6 +841,7 @@ export interface StagingJobRunOptions {
   log?: (message: string) => void;
   startBackend?: boolean;
   registerInProcess?: boolean;
+  seedPreviewData?: (stagingDir: string) => void;
 }
 
 export async function runStagingPreviewJob(
@@ -958,6 +959,25 @@ export async function runStagingPreviewJob(
     );
   }
 
+  if (options.startBackend !== true) {
+    writeLog("Preparing isolated staging data snapshot...");
+    try {
+      const seedPreviewData = options.seedPreviewData ?? seedStagingData;
+      seedPreviewData(stagingDir);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return stagingFailure(
+        "Staging preview data preparation failed.",
+        `The isolated staging runtime could not be prepared: ${message}`,
+        {
+          sessionLog: `Staging preview data preparation failed for ${stagingDir}: ${message}`,
+          toolTelemetry: { stagingDir, previewPath: basePath, outDir },
+        },
+      );
+    }
+    writeLog("Isolated staging data snapshot ready.");
+  }
+
   const registerInProcess = options.registerInProcess ?? options.startBackend === true;
   if (registerInProcess) {
     activePreviews.set(prefix, outDir);
@@ -981,7 +1001,7 @@ export async function runStagingPreviewJob(
       writeLog("Express app not registered — frontend-only preview");
     }
   } else {
-    writeLog("Preview build complete; live server will discover the frontend and restore the backend lazily.");
+    writeLog("Preview build and data preparation complete; live server will discover the frontend and restore the backend lazily.");
   }
 
   const fullUrl = buildPublicUrl(basePath) ?? null;
