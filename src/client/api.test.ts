@@ -3,6 +3,7 @@ import {
   deleteDbEntryPage,
   createSession,
   createTaskSession,
+  fetchExternalSessionUse,
   fetchSessionFork,
   getSessionActivityTime,
   getSessionReadThroughActivityTime,
@@ -89,6 +90,47 @@ describe("getSessionReadThroughActivityTime", () => {
       },
       "2026-05-07T21:00:00.000Z",
     )).toBe("2026-05-07T21:00:00.000Z");
+  });
+});
+
+describe("external session use client API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("batches large session lists and merges confirmed IDs", async () => {
+    const sessionIds = Array.from(
+      { length: 501 },
+      (_, index) => `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`,
+    );
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          status: "available",
+          inUse: [sessionIds[0]],
+          checkedAt: "2026-08-26T20:00:00.000Z",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          status: "available",
+          inUse: [sessionIds[500]],
+          checkedAt: "2026-08-26T20:00:01.000Z",
+        }),
+      }));
+
+    await expect(fetchExternalSessionUse(sessionIds)).resolves.toEqual({
+      status: "available",
+      inUse: [sessionIds[0], sessionIds[500]],
+      checkedAt: "2026-08-26T20:00:01.000Z",
+    });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
   });
 });
 

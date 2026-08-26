@@ -1262,6 +1262,7 @@ export function createApiRouter(
     all: null,
   };
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
+  const MAX_EXTERNAL_USE_SESSION_IDS = 500;
   const ENRICHED_CACHE_INVALIDATION_DEBOUNCE_MS = 75;
   // Bounded so a rebuild over thousands of catalog sessions cannot flood the libuv
   // threadpool and starve concurrent transcript reads.
@@ -1847,6 +1848,24 @@ export function createApiRouter(
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
+  });
+
+  router.post("/sessions/external-use", async (req, res) => {
+    const body = isRecord(req.body) ? req.body : null;
+    if (!body || !Array.isArray(body.sessionIds)) {
+      return res.status(400).json({ error: "sessionIds must be an array" });
+    }
+    if (body.sessionIds.length > MAX_EXTERNAL_USE_SESSION_IDS) {
+      return res.status(400).json({
+        error: `sessionIds must contain at most ${MAX_EXTERNAL_USE_SESSION_IDS} entries`,
+      });
+    }
+    const sessionIds = [...new Set(body.sessionIds)];
+    if (!sessionIds.every((sessionId): sessionId is string =>
+      typeof sessionId === "string" && isCanonicalSessionId(sessionId))) {
+      return res.status(400).json({ error: "sessionIds must contain valid session IDs" });
+    }
+    res.json(await ctx.sessionManager.getExternalSessionUse(sessionIds));
   });
 
   router.get("/busy", (_req, res) => {

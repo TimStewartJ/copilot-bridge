@@ -98,6 +98,27 @@ describe("SessionList input-required indicator", () => {
   });
 });
 
+describe("SessionList external-use indicator", () => {
+  it("shows that a session is open in another Copilot client", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Shared session",
+        externallyInUse: true,
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("Open elsewhere");
+      const indicator = findAllByTag(dom.container, "SPAN")
+        .find((candidate) => getReactProps(candidate)?.title === "This session is open in another Copilot client");
+      expect(indicator).toBeDefined();
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 describe("SessionList defer summary indicator", () => {
   it("renders a single defer with the next run time", async () => {
     const { dom, cleanup } = await renderSessionList([
