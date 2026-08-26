@@ -25,6 +25,45 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Session routes (mocked)", () => {
+  it("POST /api/sessions/external-use returns confirmed external session use", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.getExternalSessionUse = vi.fn(async () => ({
+      status: "available" as const,
+      inUse: ["11111111-1111-4111-8111-111111111111"],
+      checkedAt: "2026-08-26T20:00:00.000Z",
+    }));
+    ({ app } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/external-use")
+      .send({
+        sessionIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.getExternalSessionUse).toHaveBeenCalledWith([
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]);
+    expect(res.body).toEqual({
+      status: "available",
+      inUse: ["11111111-1111-4111-8111-111111111111"],
+      checkedAt: "2026-08-26T20:00:00.000Z",
+    });
+  });
+
+  it("POST /api/sessions/external-use rejects invalid session IDs", async () => {
+    const res = await request(app)
+      .post("/api/sessions/external-use")
+      .send({ sessionIds: ["not-a-session-id"] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/valid session IDs/);
+  });
+
   it("GET /api/sessions restores event-log sizes for visible CLI catalog sessions", async () => {
     const copilotHome = join(makeTestDir("api-cli-catalog"), ".copilot");
     mkdirSync(copilotHome, { recursive: true });

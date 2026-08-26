@@ -77,6 +77,7 @@ import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
+import { useExternalSessionUseQuery } from "./hooks/queries/useExternalSessionUse";
 import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, {
   summarizeChatTabAttention,
@@ -149,9 +150,35 @@ export default function App() {
     refetchInterval: false,
     refetchOnWindowFocus: false,
   });
+  const activeSessionIds = useMemo(
+    () => activeSessions
+      .filter((session) => !session.isOptimistic)
+      .map((session) => session.sessionId)
+      .sort(),
+    [activeSessions],
+  );
+  const externalSessionUseQuery = useExternalSessionUseQuery(activeSessionIds);
+  const externalSessionUseStatus = externalSessionUseQuery.data?.status;
+  const externalSessionUseIds = externalSessionUseQuery.data?.inUse;
+  const externallyInUseSessionIds = useMemo(
+    () => new Set(
+      externalSessionUseStatus === "available"
+        ? externalSessionUseIds
+        : [],
+    ),
+    [externalSessionUseIds, externalSessionUseStatus],
+  );
   const sessions = useMemo(
-    () => mergeActiveAndArchivedSessions(activeSessions, archivedQuerySessions, archivedLoaded, restoringArchivedSessionIds),
-    [activeSessions, archivedQuerySessions, archivedLoaded, restoringArchivedSessionIds],
+    () => mergeActiveAndArchivedSessions(
+      activeSessions,
+      archivedQuerySessions,
+      archivedLoaded,
+      restoringArchivedSessionIds,
+    ).map((session) => ({
+      ...session,
+      externallyInUse: externallyInUseSessionIds.has(session.sessionId),
+    })),
+    [activeSessions, archivedQuerySessions, archivedLoaded, externallyInUseSessionIds, restoringArchivedSessionIds],
   );
   const archivedLoading = archivedLoaded && !archivedSessionsFetched;
   const tasksQuery = useTasksQuery();
@@ -2719,6 +2746,7 @@ function SessionRoute({
       busySignal={busySignal}
       historySignal={historySignal}
       activeSessionActivityAt={activeSessionActivityAt}
+      externallyInUse={activeSession?.externallyInUse}
       backgroundAgents={activeSession?.backgroundAgents}
       onForkSession={onForkSession}
       newWorkDisabled={newWorkDisabled || launchConfigurationLoading}

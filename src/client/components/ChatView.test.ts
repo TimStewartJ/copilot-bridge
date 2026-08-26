@@ -144,6 +144,7 @@ type RenderChatViewOptions = {
   activeSessionActivityAt?: string;
   busySignal?: number;
   composerKey?: string;
+  externallyInUse?: boolean;
   fetchMessagesFastResult?: Promise<FetchMessagesFastResult> | FetchMessagesFastResult;
   fetchSessionContextError?: Error;
   fetchSessionContextResult?: Promise<SessionContextResponse> | SessionContextResponse;
@@ -425,6 +426,7 @@ async function renderChatView(
             onSubmitVoiceCapture: vi.fn(),
             busySignal: nextOptions.busySignal,
             activeSessionActivityAt: nextOptions.activeSessionActivityAt,
+            externallyInUse: nextOptions.externallyInUse,
             onForkSession: nextOptions.onForkSession,
             onRenderedReadThrough: nextOptions.onRenderedReadThrough,
             newWorkDisabled: nextOptions.newWorkDisabled,
@@ -459,6 +461,22 @@ afterEach(() => {
   delete (window as unknown as { confirm?: typeof window.confirm }).confirm;
   vi.clearAllMocks();
   resetCachedChatSnapshotState();
+});
+
+describe("ChatView external session use", () => {
+  it("shows a non-blocking notice when another Copilot client holds the session", async () => {
+    const { dom, cleanup } = await renderChatView({
+      externallyInUse: true,
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+
+    try {
+      expect(dom.container.textContent).toContain("This session is open in another Copilot client.");
+      expect(dom.container.textContent).toContain("Sending here is still allowed.");
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("ChatView cached resume loading state", () => {
