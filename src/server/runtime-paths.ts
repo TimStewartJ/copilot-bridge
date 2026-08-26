@@ -2,7 +2,6 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import { BRIDGE_COPILOT_CLI_CACHE_DIR_ENV, resolveCopilotCliCacheDir } from "./copilot-cli-pin.js";
 import { resolveBridgeDistribution, type BridgeDistributionMode } from "./distribution-mode.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
@@ -15,8 +14,6 @@ export interface RuntimePaths {
   docsDir: string;
   docsSnapshotsDir?: string;
   copilotHome?: string;
-  /** Cache of Bridge-pinned Copilot CLI builds (see copilot-cli-pin.ts). Always set by resolveRuntimePaths. */
-  copilotCliCacheDir?: string;
   workspaceDir?: string;
   env: NodeJS.ProcessEnv;
 }
@@ -27,7 +24,6 @@ export interface RuntimePathOverrides {
   docsDir?: string;
   docsSnapshotsDir?: string;
   copilotHome?: string;
-  copilotCliCacheDir?: string;
   workspaceDir?: string;
 }
 
@@ -65,8 +61,6 @@ export function resolveRuntimePaths(
   const copilotHome = overrides.copilotHome
     ?? optionalEnvValue(env.COPILOT_HOME)
     ?? (releaseMode ? join(dataDir, ".copilot") : undefined);
-  const copilotCliCacheDir = optionalEnvValue(overrides.copilotCliCacheDir)
-    ?? resolveCopilotCliCacheDir(env, dataDir);
   const workspaceDir = overrides.workspaceDir;
 
   return {
@@ -75,7 +69,6 @@ export function resolveRuntimePaths(
     docsDir,
     docsSnapshotsDir,
     copilotHome,
-    copilotCliCacheDir,
     workspaceDir,
     env: withNonInteractiveCommandEnv({
       ...env,
@@ -83,7 +76,6 @@ export function resolveRuntimePaths(
       BRIDGE_DATA_DIR: dataDir,
       BRIDGE_DOCS_DIR: docsDir,
       BRIDGE_DOCS_SNAPSHOTS_DIR: docsSnapshotsDir,
-      [BRIDGE_COPILOT_CLI_CACHE_DIR_ENV]: copilotCliCacheDir,
       ...(copilotHome ? { COPILOT_HOME: copilotHome } : {}),
     }),
   };

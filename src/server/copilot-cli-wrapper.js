@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
 import { register } from "node:module";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const APP_MODE_ARGS = new Set(["--server", "--headless", "--acp"]);
 
@@ -11,24 +11,48 @@ function isAppMode(args) {
     || args.some((arg) => APP_MODE_ARGS.has(arg) || arg === "--prompt" || arg.startsWith("--prompt=") || arg === "-p" || (arg.startsWith("-p") && arg.length > 2));
 }
 
-function resolveCopilotPackageDir() {
-  // The Bridge server sets this to the pinned CLI build (see copilot-cli-pin.ts)
-  // only after the directory passed its readiness check, so a missing or broken
-  // value is a real fault and must not silently launch a different CLI version.
-  const pinnedDir = process.env.BRIDGE_COPILOT_APP_DIR;
-  if (!pinnedDir || !pinnedDir.trim()) {
-    throw new Error("BRIDGE_COPILOT_APP_DIR is not set; Bridge only launches the pinned Copilot CLI build.");
+async function prefersMuslLinux() {
+  try {
+    const { isNonGlibcLinuxSync } = await import("detect-libc");
+    return isNonGlibcLinuxSync();
+  } catch {
+    try {
+      const glibc = process.report?.getReport?.()?.header?.glibcVersionRuntime;
+      return !(typeof glibc === "string" && glibc.length > 0);
+    } catch {
+      return undefined;
+    }
   }
-  if (existsSync(join(pinnedDir, "app.js")) && existsSync(join(pinnedDir, "index.js"))) {
-    return pinnedDir;
+}
+
+async function platformPackageVariants() {
+  if (process.platform !== "linux") return [process.platform];
+  const musl = await prefersMuslLinux();
+  if (musl === true) return ["linuxmusl", "linux"];
+  if (musl === false) return ["linux", "linuxmusl"];
+  return ["linux", "linuxmusl"];
+}
+
+async function resolveCopilotPackageDir() {
+  const arch = process.arch;
+  for (const variant of await platformPackageVariants()) {
+    try {
+      const sdkPath = fileURLToPath(import.meta.resolve(`@github/copilot-${variant}-${arch}/sdk`));
+      const packageDir = dirname(dirname(sdkPath));
+      if (existsSync(join(packageDir, "app.js")) && existsSync(join(packageDir, "index.js"))) {
+        return packageDir;
+      }
+    } catch {
+      // The optional dependency for another libc/platform is not installed.
+    }
   }
   throw new Error(
-    `BRIDGE_COPILOT_APP_DIR=${pinnedDir} does not contain the Copilot application entry points (app.js/index.js).`,
+    "Unable to locate the platform-specific @github/copilot application entry points (app.js/index.js).",
   );
 }
 
 const args = process.argv.slice(2);
-const copilotPackageDir = resolveCopilotPackageDir();
+const copilotPackageDir = await resolveCopilotPackageDir();
 if (isAppMode(args)) {
   const appUrl = pathToFileURL(join(copilotPackageDir, "app.js")).href;
   process.env.BRIDGE_COPILOT_APP_URL = appUrl;
