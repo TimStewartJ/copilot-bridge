@@ -1,4 +1,4 @@
-import type { ToolResultObject } from "@github/copilot-sdk";
+import type { JsonValue, ToolResultObject } from "@github/copilot-sdk";
 
 export type ToolFailureResultType = Exclude<ToolResultObject["resultType"], "success">;
 export type BridgeToolNextAction = "proceed" | "respond" | "respond_or_defer" | "wait" | "retry" | "manual_recovery";
@@ -94,11 +94,31 @@ function formatBridgeToolControlText(metadata: BridgeToolControlMetadata): strin
   return lines.join("\n");
 }
 
+function isJsonValue(value: unknown, ancestors = new Set<object>()): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object") return false;
+  if (ancestors.has(value)) return false;
+
+  ancestors.add(value);
+  let valid: boolean;
+  if (Array.isArray(value)) {
+    valid = value.every((item) => isJsonValue(item, ancestors));
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    valid = (prototype === Object.prototype || prototype === null)
+      && Object.values(value).every((item) => isJsonValue(item, ancestors));
+  }
+  ancestors.delete(value);
+  return valid;
+}
+
 function normalizeToolTelemetry(toolTelemetry: Record<string, unknown> | undefined): ToolResultObject["toolTelemetry"] {
   if (!toolTelemetry) return undefined;
-  const fields = Object.fromEntries(
-    Object.entries(toolTelemetry).filter(([, value]) => value !== undefined),
-  );
+  const fields: Record<string, JsonValue> = {};
+  for (const [key, value] of Object.entries(toolTelemetry)) {
+    if (isJsonValue(value)) fields[key] = value;
+  }
   return Object.keys(fields).length > 0 ? { bridge: fields } : undefined;
 }
 

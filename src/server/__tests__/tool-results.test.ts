@@ -21,6 +21,61 @@ describe("tool results", () => {
     });
   });
 
+  it("preserves JSON-safe tool telemetry while omitting undefined fields", () => {
+    expect(toolFailure("Validation failed", {
+      toolTelemetry: {
+        command: "npm run check:pr",
+        retryable: false,
+        exitCode: 2,
+        detail: null,
+        nested: { branch: "main", flags: [true, 1, null, "ready"] },
+        omitted: undefined,
+      },
+    }).toolTelemetry).toEqual({
+      bridge: {
+        command: "npm run check:pr",
+        retryable: false,
+        exitCode: 2,
+        detail: null,
+        nested: { branch: "main", flags: [true, 1, null, "ready"] },
+      },
+    });
+  });
+
+  it("drops non-JSON telemetry without masking the original failure", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    expect(toolFailure("Validation failed", {
+      toolTelemetry: {
+        retained: "safe",
+        nonFinite: Number.POSITIVE_INFINITY,
+        bigint: 1n,
+        function: () => undefined,
+        date: new Date(0),
+        cyclic,
+        invalidArray: [1, undefined],
+        invalidObject: { valid: true, invalid: undefined },
+      },
+    })).toMatchObject({
+      textResultForLlm: "Validation failed",
+      resultType: "failure",
+      error: "Validation failed",
+      toolTelemetry: {
+        bridge: { retained: "safe" },
+      },
+    });
+  });
+
+  it("omits tool telemetry when no JSON-safe fields remain", () => {
+    expect(toolFailure("Validation failed", {
+      toolTelemetry: {
+        nonFinite: Number.NaN,
+        symbol: Symbol("unsupported"),
+      },
+    })).not.toHaveProperty("toolTelemetry");
+  });
+
   it("renders raw failure ToolResultObjects without relying on error.message", () => {
     expect(getToolExecutionDisplayText({
       success: false,
