@@ -1,43 +1,29 @@
-// Minified JS identifiers can legally contain "$" (and "_"), which the Copilot
-// bundle's minifier uses for some helper names (e.g. "$R"). Match the full set
-// of valid identifier characters so pattern matching survives minifier renames.
 const ID = String.raw`[$A-Za-z_][\w$]*`;
-// The resolver signature carries a defaulted parameter (`o=!1`), so parameters
-// are not bare identifiers. Only comma- and paren-free defaults are accepted: a
-// default containing either character fails the whole signature match, which
-// surfaces as a loud drift error instead of a silently mis-captured parameter
-// list.
 const PARAM = String.raw`${ID}(?:=[^,()]*)?`;
 
-// Copilot CLI >= 1.0.81 (the pinned channel, see copilot-cli.lock.json) resolves
-// the session auth natively: the GitHub MCP resolver receives the normalized
-// session.create/resume params (`hasGitHubToken`, `providerPresent`) and builds
-// the GitHub MCP config through a native call that takes the merged tool options
-// object. Bridge's `githubMcpToolOptions` arrives on that params object (the
-// host-construct path forwards unknown wire fields), so the patch widens the
-// injection guard and spreads the Bridge options into the config builder
-// argument without touching the native `githubMcpToolConfig` session layer,
-// which would flip `userOverrode` and re-enable the gh-overlap tools.
+// Exact contract for the stable 1.0.80 bundle. If the pinned package shape
+// changes, fail validation instead of applying a partial patch.
 const GITHUB_MCP_CONFIG_RESOLVER_SIGNATURE_PATTERN = new RegExp(
   String.raw`async resolveBuiltInGitHubMcpConfig\((${PARAM}(?:,${PARAM})*)\)\{`,
   "g",
 );
-const GITHUB_MCP_CONFIG_NATIVE_AUTH_GUARD_PATTERN = new RegExp(
-  String.raw`if\(!this\.shouldInjectBuiltInGitHubMcp\((${ID})\)\|\|\1\.providerPresent\)return;`,
+const GITHUB_MCP_CONFIG_RESOLVER_GUARD_PATTERN = new RegExp(
+  String.raw`if\(!this\.shouldInjectBuiltInGitHubMcp\((${ID})\)\|\|!(${ID})\|\|\1\.provider\)return;`,
   "g",
 );
-const GITHUB_MCP_CONFIG_NATIVE_AUTH_CONFIG_CALL_PATTERN = new RegExp(
-  String.raw`\{\.\.\.(${ID}),copilotIntegrationId:this\.integrationId,enableMcpApps:(${ID})\}\)`,
+const GITHUB_MCP_CONFIG_RESOLVER_RETURN_PATTERN = new RegExp(
+  String.raw`return\{config:(${ID})\((${ID}),(${ID}),(\{[^{}]*\})((?:,${ID}){1,2})\),userOverrode:(${ID})\.userOverrode\}`,
   "g",
 );
-const GITHUB_MCP_CONFIG_NATIVE_AUTH_RETURN_PATTERN = new RegExp(
-  String.raw`return\{config:JSON\.parse\((${ID})\.configJson\),userOverrode:(${ID})\.userOverrode\}`,
+const ASK_USER_ELICITATION_PATTERN = new RegExp(
+  String.raw`let (${ID})=!!(${ID})\.requestUserInput,(${ID})=!!\2\.featureFlags\?\.ASK_USER_ELICITATION&&!!\2\.requestElicitation;`,
   "g",
 );
-// The host's elicitation capability is handed to the native session plan, which
-// is what makes Bridge's transport-answered `ask_user` work without JS patches.
-// Its absence means the bundle is not the CLI generation this loader targets.
-const NATIVE_ELICITATION_CAPABILITY_PATTERN = /hostSupportsElicitation:/g;
+const ELICITATION_CALLBACK_PATTERN = new RegExp(
+  String.raw`requestElicitation:(${ID})\.toolConfig\.enableRequestElicitation\?`,
+  "g",
+);
+const SUPPORTS_ELICITATION_PATTERN = /supportsElicitation\(\)\{/g;
 
 function findMatchingBrace(source, openBraceIndex) {
   let depth = 0;
@@ -70,7 +56,9 @@ function findMatchingBrace(source, openBraceIndex) {
 export function patchCopilotAppSource(source) {
   const methodMatches = [...source.matchAll(GITHUB_MCP_CONFIG_RESOLVER_SIGNATURE_PATTERN)];
   if (methodMatches.length !== 1) {
-    throw new Error(`Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 config resolver, found ${methodMatches.length}.`);
+    throw new Error(
+      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 stable config resolver, found ${methodMatches.length}.`,
+    );
   }
   const methodMatch = methodMatches[0];
   const methodStart = methodMatch.index;
@@ -84,16 +72,16 @@ export function patchCopilotAppSource(source) {
   let guardMatches = 0;
   let resolverOptionsVar;
   methodSource = methodSource.replace(
-    GITHUB_MCP_CONFIG_NATIVE_AUTH_GUARD_PATTERN,
-    (match, optionsVar) => {
+    GITHUB_MCP_CONFIG_RESOLVER_GUARD_PATTERN,
+    (match, optionsVar, authVar) => {
       guardMatches++;
       resolverOptionsVar = optionsVar;
-      return `if((!this.shouldInjectBuiltInGitHubMcp(${optionsVar})&&!(__bridgeGithubMcpOptions&&!${optionsVar}.hasGitHubToken))||${optionsVar}.providerPresent)return;`;
+      return `if((!this.shouldInjectBuiltInGitHubMcp(${optionsVar})&&!(__bridgeGithubMcpOptions&&!${optionsVar}.gitHubToken))||!${authVar}||${optionsVar}.provider)return;`;
     },
   );
   if (guardMatches !== 1) {
     throw new Error(
-      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 native config resolver guard, found ${guardMatches}.`,
+      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 stable config resolver guard, found ${guardMatches}.`,
     );
   }
   methodSource = methodSource.replace(
@@ -101,31 +89,58 @@ export function patchCopilotAppSource(source) {
     `async resolveBuiltInGitHubMcpConfig(${methodMatch[1]}){const __bridgeGithubMcpOptions=${resolverOptionsVar}.githubMcpToolOptions;`,
   );
 
-  let configCallMatches = 0;
+  let returnMatches = 0;
   methodSource = methodSource.replace(
-    GITHUB_MCP_CONFIG_NATIVE_AUTH_CONFIG_CALL_PATTERN,
-    (match, toolOptionsVar, mcpAppsVar) => {
-      configCallMatches++;
-      return `{...${toolOptionsVar},copilotIntegrationId:this.integrationId,enableMcpApps:${mcpAppsVar},...__bridgeGithubMcpOptions})`;
+    GITHUB_MCP_CONFIG_RESOLVER_RETURN_PATTERN,
+    (match, configBuilder, tokenVar, authParam, configObject, trailingArgs, userOverrideVar) => {
+      returnMatches++;
+      const patchedConfigObject = configObject === "{}"
+        ? "{...__bridgeGithubMcpOptions}"
+        : `${configObject.slice(0, -1)},...__bridgeGithubMcpOptions}`;
+      return `return{config:${configBuilder}(${tokenVar},${authParam},${patchedConfigObject}${trailingArgs}),userOverrode:${userOverrideVar}.userOverrode}`;
     },
   );
-  if (configCallMatches !== 1) {
-    throw new Error(
-      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 native config call, found ${configCallMatches}.`,
-    );
-  }
-  const returnMatches = [...methodSource.matchAll(GITHUB_MCP_CONFIG_NATIVE_AUTH_RETURN_PATTERN)].length;
   if (returnMatches !== 1) {
     throw new Error(
-      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 native config resolver return, found ${returnMatches}.`,
+      `Unable to patch Copilot app for Bridge GitHub MCP auth: expected 1 stable config resolver return, found ${returnMatches}.`,
     );
   }
   source = source.slice(0, methodStart) + methodSource + source.slice(methodEnd + 1);
 
-  const nativeElicitationMatches = source.match(NATIVE_ELICITATION_CAPABILITY_PATTERN)?.length ?? 0;
-  if (nativeElicitationMatches === 0) {
+  let askUserMatches = 0;
+  source = source.replace(
+    ASK_USER_ELICITATION_PATTERN,
+    (match, legacyVar, optionsVar, elicitationVar) => {
+      askUserMatches++;
+      return `let ${legacyVar}=!!${optionsVar}.requestUserInput,${elicitationVar}=!!${optionsVar}.requestElicitation;`;
+    },
+  );
+  if (askUserMatches !== 1) {
     throw new Error(
-      "Unable to patch Copilot app for native ask_user elicitation: the bundle does not pass hostSupportsElicitation to the native session plan.",
+      `Unable to patch Copilot app for native ask_user elicitation: expected 1 stable tool-selection gate, found ${askUserMatches}.`,
+    );
+  }
+
+  const supportsElicitationMatches = source.match(SUPPORTS_ELICITATION_PATTERN)?.length ?? 0;
+  if (supportsElicitationMatches !== 1) {
+    throw new Error(
+      "Unable to patch Copilot app for SDK elicitation callbacks: "
+        + `expected 1 supportsElicitation definition, found ${supportsElicitationMatches}.`,
+    );
+  }
+
+  let elicitationCallbackMatches = 0;
+  source = source.replace(
+    ELICITATION_CALLBACK_PATTERN,
+    (match, toolPlanVar) => {
+      elicitationCallbackMatches++;
+      return `requestElicitation:(${toolPlanVar}.toolConfig.enableRequestElicitation`
+        + "||this.supportsElicitation())?";
+    },
+  );
+  if (elicitationCallbackMatches !== 1) {
+    throw new Error(
+      `Unable to patch Copilot app for SDK elicitation callbacks: expected 1 stable callback gate, found ${elicitationCallbackMatches}.`,
     );
   }
 

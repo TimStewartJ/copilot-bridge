@@ -16,35 +16,10 @@ import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { FEED_GUIDANCE } from "../session-instructions.js";
-import { COPILOT_CLI_LOCK_FILENAME, getPinnedCopilotCliDir, PINNED_COPILOT_CLI_MARKER } from "../copilot-cli-pin.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
   const tempDirs: string[] = [];
-  // Keep these assertions independent of whatever copilot-cli.lock.json the
-  // running code tree pins (and of whether that build is cached on this host)
-  // by pointing the client options at a fake, ready pinned build.
-  function pinnedCliOverrides() {
-    const version = "1.0.81-6";
-    const platform = `${process.platform}-${process.arch}`;
-    const root = makeTestDir("client-options-lock");
-    writeFileSync(join(root, COPILOT_CLI_LOCK_FILENAME), JSON.stringify({
-      source: "github-release",
-      version,
-      assets: { [platform]: { name: `github-copilot-${version}-${platform}.tgz`, sha256: "a".repeat(64) } },
-    }));
-    const cacheDir = join(root, "cache");
-    const appDir = getPinnedCopilotCliDir(cacheDir, version);
-    mkdirSync(appDir, { recursive: true });
-    writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "@github/copilot", version }));
-    writeFileSync(join(appDir, "app.js"), "export {};\n");
-    writeFileSync(join(appDir, "index.js"), "export {};\n");
-    writeFileSync(join(appDir, PINNED_COPILOT_CLI_MARKER), JSON.stringify({
-      version, asset: "x.tgz", sha256: "a".repeat(64), installedAt: new Date().toISOString(),
-    }));
-    return { overrides: { copilotCliRootDir: root, copilotCliCacheDir: cacheDir }, appDir };
-  }
-
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
@@ -56,11 +31,10 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: undefined }, () => {
-      const { overrides, appDir } = pinnedCliOverrides();
-      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, overrides)).toEqual(expect.objectContaining({
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual(expect.objectContaining({
         cliPath: resolveBridgeCopilotCliPath(),
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(), BRIDGE_COPILOT_APP_DIR: appDir },
+        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
       }));
     });
   });
@@ -70,12 +44,10 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
-      const { overrides, appDir } = pinnedCliOverrides();
-      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }, overrides)).toEqual({
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
         cliPath: resolveBridgeCopilotCliPath(),
-        copilotCli: { version: "1.0.81-6", appDir },
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(), BRIDGE_COPILOT_APP_DIR: appDir },
+        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
         gitHubToken: "github_pat_bridge",
         useLoggedInUser: false,
       });
@@ -87,18 +59,15 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_process" }, () => {
-      const { overrides, appDir } = pinnedCliOverrides();
       expect(buildCopilotClientOptions({
         COPILOT_HOME: copilotHome,
         [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
-      }, overrides)).toEqual({
+      })).toEqual({
         cliPath: resolveBridgeCopilotCliPath(),
-        copilotCli: { version: "1.0.81-6", appDir },
         connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(),
-          BRIDGE_COPILOT_APP_DIR: appDir,
           [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
         },
         gitHubToken: "github_pat_client",

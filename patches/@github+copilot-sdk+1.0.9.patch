@@ -18,25 +18,23 @@ index 7378159..d45391f 100644
      const errors = [];
      const activeSessions = [...this.sessions.values()];
      if (this.connectionConfig.kind === "inprocess") {
-@@ -1127,6 +1129,8 @@ class CopilotClient {
+@@ -1127,6 +1129,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
-+        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1348,6 +1352,8 @@ class CopilotClient {
+@@ -1348,6 +1351,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
-+        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -2019,6 +2025,7 @@ stderr: ${stderrOutput}`
+@@ -2019,6 +2023,7 @@ stderr: ${stderrOutput}`
        this.state = "error";
        const reason = err instanceof Error ? err.stack ?? err.message : String(err);
        this.logDebug(`stdin pipe error: ${reason}`);
@@ -44,7 +42,7 @@ index 7378159..d45391f 100644
        try {
          this.connection?.dispose();
        } catch {
-@@ -2117,9 +2124,11 @@ stderr: ${stderrOutput}`
+@@ -2117,9 +2122,11 @@ stderr: ${stderrOutput}`
        }
      );
      this.connection.onClose(() => {
@@ -77,25 +75,23 @@ index 88a2390..7ac3842 100644
      const errors = [];
      const activeSessions = [...this.sessions.values()];
      if (this.connectionConfig.kind === "inprocess") {
-@@ -1104,6 +1106,8 @@ class CopilotClient {
+@@ -1104,6 +1106,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
-+        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1325,6 +1329,8 @@ class CopilotClient {
+@@ -1325,6 +1328,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
 +        githubMcpToolOptions: config.githubMcpToolOptions,
-+        askUserVariant: config.askUserVariant,
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1996,6 +2002,7 @@ stderr: ${stderrOutput}`
+@@ -1996,6 +2000,7 @@ stderr: ${stderrOutput}`
        this.state = "error";
        const reason = err instanceof Error ? err.stack ?? err.message : String(err);
        this.logDebug(`stdin pipe error: ${reason}`);
@@ -103,7 +99,7 @@ index 88a2390..7ac3842 100644
        try {
          this.connection?.dispose();
        } catch {
-@@ -2094,9 +2101,11 @@ stderr: ${stderrOutput}`
+@@ -2094,9 +2099,11 @@ stderr: ${stderrOutput}`
        }
      );
      this.connection.onClose(() => {

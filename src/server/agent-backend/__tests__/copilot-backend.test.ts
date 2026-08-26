@@ -98,9 +98,6 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.createSession).toHaveBeenCalledWith({
       streaming: true,
       onElicitationRequest: expect.any(Function),
-      // Names the structured ask_user variant so runtimes that resolve it
-      // natively (Copilot CLI >= 1.0.81) keep ask_user in the toolset.
-      askUserVariant: "elicitation",
     });
     expect(session.registerElicitationHandler).toHaveBeenCalledWith(undefined);
   });

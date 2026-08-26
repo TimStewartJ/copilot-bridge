@@ -45,10 +45,6 @@
     "test:coverage": "vitest run --coverage",
     "preview:smoke": "tsx src/server/preview-smoke.ts",
     "preview:smoke:full": "tsx src/server/preview-smoke.ts --validate",
-    "copilot-cli:pin": "tsx src/server/copilot-cli-pin-cli.ts pin",
-    "copilot-cli:ensure": "tsx src/server/copilot-cli-pin-cli.ts ensure",
-    "copilot-cli:status": "tsx src/server/copilot-cli-pin-cli.ts status",
-    "copilot-cli:prune": "tsx src/server/copilot-cli-pin-cli.ts prune",
     "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
@@ -85,7 +81,7 @@
     "yaml": "^2.8.3"
   },
   "overrides": {
-    "@github/copilot": "1.0.79"
+    "@github/copilot": "1.0.80"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
