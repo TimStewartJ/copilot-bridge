@@ -700,6 +700,22 @@ describe("staging tools", () => {
     expect("BRIDGE_ACTIVE_RELEASE_ROOT" in spawnConfig.env).toBe(false);
   });
 
+  it("can isolate staged runtime data from the worktree for preview smoke validation", async () => {
+    const previewDataDir = join(createTempDir("bridge-stage-preview-data-"), "runtime");
+    vi.stubEnv("BRIDGE_STAGING_PREVIEW_DATA_DIR", previewDataDir);
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const stagingDir = createTempDir("bridge-stage-runtime-override-");
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+    const runtimePaths = mod.__testing.getExistingPreviewRuntime(stagingDir);
+
+    expect(seededDataDir).toBe(previewDataDir);
+    expect(runtimePaths?.dataDir).toBe(previewDataDir);
+    expect(existsSync(join(previewDataDir, "bridge.db"))).toBe(true);
+    expect(existsSync(join(stagingDir, "data", "bridge.db"))).toBe(false);
+  });
+
   it("reseeds a staging SQLite database even when stale target files already exist", async () => {
     const mod = await loadStagingToolsModule();
     const productionDataDir = createProductionDataDir();

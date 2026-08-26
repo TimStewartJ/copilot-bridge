@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeF
 import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import type express from "express";
@@ -308,7 +308,8 @@ function applyStagingSeedOverrides(dbPath: string): void {
 }
 
 function resolveStagingPreviewRuntimePaths(stagingDir: string): RuntimePaths {
-  const dataDir = join(stagingDir, "data");
+  const configuredDataDir = process.env.BRIDGE_STAGING_PREVIEW_DATA_DIR?.trim();
+  const dataDir = configuredDataDir ? resolve(configuredDataDir) : join(stagingDir, "data");
   return resolveRuntimePaths(process.env, {
     distributionMode: "development",
     dataDir,
