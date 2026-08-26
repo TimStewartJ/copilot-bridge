@@ -2642,6 +2642,61 @@ describe("staging tools", () => {
     )).toBe(false);
   });
 
+  it("prepares isolated data before a lazy staging preview is reported ready", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-preview-seed-");
+    const seedPreviewData = vi.fn<(target: string) => void>();
+    const logs: string[] = [];
+
+    const result = await mod.runStagingPreviewJob(
+      { stagingDir, validate: false },
+      {
+        startBackend: false,
+        registerInProcess: false,
+        seedPreviewData,
+        log: (message) => logs.push(message),
+      },
+    );
+
+    expect(seedPreviewData).toHaveBeenCalledOnce();
+    expect(seedPreviewData).toHaveBeenCalledWith(stagingDir);
+    expect(result).toMatchObject({ success: true });
+    expect(logs).toContain("Preparing isolated staging data snapshot...");
+    expect(logs).toContain("Isolated staging data snapshot ready.");
+    expect(logs.at(-1)).toContain("Staging preview ready at");
+  });
+
+  it("fails a lazy staging preview when isolated data preparation fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-preview-seed-failure-");
+    const logs: string[] = [];
+
+    const result = await mod.runStagingPreviewJob(
+      { stagingDir, validate: false },
+      {
+        startBackend: false,
+        registerInProcess: false,
+        seedPreviewData: () => {
+          throw new Error("snapshot failed");
+        },
+        log: (message) => logs.push(message),
+      },
+    );
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      toolTelemetry: {
+        bridge: {
+          stagingDir,
+          previewPath: `/staging/${basename(stagingDir)}/`,
+        },
+      },
+    });
+    expect(result.textResultForLlm).toContain("Staging preview data preparation failed.");
+    expect(result.textResultForLlm).toContain("snapshot failed");
+    expect(logs.some((message) => message.startsWith("Staging preview ready at"))).toBe(false);
+  });
+
   it("builds previews under the configured runtime preview root", async () => {
     const previewParent = createTempDir("bridge-stage-preview-root-");
     const tools = await loadStagingTools({ previewParent });
