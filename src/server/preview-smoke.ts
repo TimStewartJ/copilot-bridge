@@ -32,6 +32,7 @@ interface QueuedPreviewResult {
 interface PreviewSmokeSource {
   rootDir: string;
   dataDir: string;
+  previewDataDir: string;
   docsDir: string;
   docsSnapshotsDir: string;
   copilotHome: string;
@@ -62,6 +63,7 @@ const PREVIEW_SMOKE_ENV_KEYS = [
   "BRIDGE_DATA_DIR",
   "BRIDGE_DOCS_DIR",
   "BRIDGE_DOCS_SNAPSHOTS_DIR",
+  "BRIDGE_STAGING_PREVIEW_DATA_DIR",
   "COPILOT_HOME",
 ] as const;
 const PREVIEW_SMOKE_CLEANUP_MAX_RETRIES = 10;
@@ -208,6 +210,7 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
   mkdirSync(fixtureParent, { recursive: true });
   const rootDir = mkdtempSync(join(fixtureParent, "run-"));
   const dataDir = join(rootDir, "data");
+  const previewDataDir = join(rootDir, "preview-data");
   const docsDir = join(dataDir, "docs");
   const docsSnapshotsDir = join(dataDir, "backups", "docs", "snapshots");
   const copilotHome = join(dataDir, ".copilot");
@@ -228,7 +231,7 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
   const docsStore = createDocsStore(docsDir);
   docsStore.writePage("smoke/index", "# Preview Smoke Fixture\n\nSynthetic docs used by preview smoke validation.");
 
-  return { rootDir, dataDir, docsDir, docsSnapshotsDir, copilotHome, taskId };
+  return { rootDir, dataDir, previewDataDir, docsDir, docsSnapshotsDir, copilotHome, taskId };
 }
 
 function installPreviewSmokeSourceEnv(source: PreviewSmokeSource): () => void {
@@ -239,6 +242,7 @@ function installPreviewSmokeSourceEnv(source: PreviewSmokeSource): () => void {
   process.env.BRIDGE_DATA_DIR = source.dataDir;
   process.env.BRIDGE_DOCS_DIR = source.docsDir;
   process.env.BRIDGE_DOCS_SNAPSHOTS_DIR = source.docsSnapshotsDir;
+  process.env.BRIDGE_STAGING_PREVIEW_DATA_DIR = source.previewDataDir;
   process.env.COPILOT_HOME = source.copilotHome;
 
   return () => {
