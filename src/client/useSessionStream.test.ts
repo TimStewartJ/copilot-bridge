@@ -201,7 +201,7 @@ describe("useSessionStream EventSource lifecycle", () => {
       } as Response);
 
       await act(async () => {
-        await getState().sendMessage("hello", undefined, "autopilot");
+        await getState().sendMessage("hello", undefined, "autopilot", "client-message-1");
       });
 
       expect(fetchMock).toHaveBeenCalledOnce();
@@ -209,6 +209,7 @@ describe("useSessionStream EventSource lifecycle", () => {
         sessionId: "session-1",
         prompt: "hello",
         mode: "autopilot",
+        clientMessageId: "client-message-1",
       });
       expect(getSource().url).toBe("/api/sessions/session-1/stream");
       expect(getState()).toMatchObject({
@@ -279,7 +280,7 @@ describe("useSessionStream EventSource lifecycle", () => {
         resolveSend = resolve;
       }));
 
-      let sendPromise!: Promise<void>;
+      let sendPromise!: Promise<unknown>;
       await act(async () => {
         sendPromise = getState().sendMessage("hello");
         await waitTick();

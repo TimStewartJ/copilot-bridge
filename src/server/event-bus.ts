@@ -468,9 +468,9 @@ export class SessionEventBus {
   }
 
   /** Add a server-owned user entry before the SDK persists it. */
-  setPendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): string {
+  setPendingPrompt(prompt: string, attachments?: StartWorkAttachment[], messageId?: string): string {
     const userMessage: ProjectedUserMessage = {
-      id: randomUUID(),
+      id: messageId ?? randomUUID(),
       content: prompt,
       pending: true,
       ...(attachments?.length ? { attachments: structuredClone(attachments) } : {}),

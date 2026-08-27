@@ -157,6 +157,7 @@ type RenderChatViewOptions = {
     prompt: string,
     attachments?: Attachment[],
     mode?: "interactive" | "autopilot",
+    clientMessageId?: string,
   ) => Promise<void>;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
   sessionId?: string | null;
@@ -1034,6 +1035,18 @@ describe("ChatView draft materialization", () => {
         await waitTick();
       });
 
+      const pendingBubble = findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("first message")
+      ));
+      expect(pendingBubble?.getAttribute("data-delivery-state")).toBe("sending");
+      expect(onCreateAndSend).toHaveBeenCalledWith(
+        "first message",
+        undefined,
+        "interactive",
+        expect.stringMatching(/^client-/),
+      );
+
       await act(async () => {
         delivery.resolve();
         await sendPromise;
@@ -1226,8 +1239,8 @@ describe("ChatView draft materialization", () => {
 });
 
 describe("ChatView steering sends", () => {
-  it("waits for the authoritative stream before rendering a sent user message", async () => {
-    const sendAccepted = createDeferred<void>();
+  it("renders an idle-session send gray until acceptance and hands it off without flicker", async () => {
+    const sendAccepted = createDeferred<{ status: "accepted" }>();
     const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
       streamOverrides: {
         isStreaming: false,
@@ -1245,21 +1258,32 @@ describe("ChatView steering sends", () => {
         await waitTick();
       });
 
-      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+      const findBubbles = () => findAllByTag(dom.container, "DIV").filter((candidate) => (
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent?.includes("waiting for server")
-      ))).toHaveLength(0);
-      expect(sendMessageMock).toHaveBeenCalledWith("waiting for server", undefined, "interactive");
+      ));
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sending");
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        "waiting for server",
+        undefined,
+        "interactive",
+        expect.stringMatching(/^client-/),
+      );
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
 
       await act(async () => {
-        sendAccepted.resolve();
+        sendAccepted.resolve({ status: "accepted" });
         await sendPromise;
         await waitTick();
       });
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
+
       await render({
         streamOverrides: {
           pendingUserMessages: [{
-            id: "user-1",
+            id: clientMessageId,
             content: "waiting for server",
           }],
           isStreaming: true,
@@ -1267,13 +1291,10 @@ describe("ChatView steering sends", () => {
         },
       });
 
-      const streamedBubble = findAllByTag(dom.container, "DIV").find((candidate) => (
-        candidate.getAttribute?.("data-testid") === "message-bubble"
-        && candidate.textContent?.includes("waiting for server")
-      ));
-      expect(streamedBubble?.getAttribute("data-delivery-state")).toBe("sent");
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
     } finally {
-      sendAccepted.resolve();
+      sendAccepted.resolve({ status: "accepted" });
       await cleanup();
     }
   });
@@ -1313,7 +1334,14 @@ describe("ChatView steering sends", () => {
       expect(findOptimisticBubble()?.getAttribute("data-delivery-state")).toBe("failed");
       expect(findOptimisticBubble()?.getAttribute("data-delivery-error")).toBe("network unavailable");
       expect(dom.container.textContent).not.toContain("⚠️ Error:");
-      expect(sendMessageMock).toHaveBeenNthCalledWith(1, "please retry", [attachment], "autopilot");
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
+      expect(sendMessageMock).toHaveBeenNthCalledWith(
+        1,
+        "please retry",
+        [attachment],
+        "autopilot",
+        clientMessageId,
+      );
 
       await act(async () => {
         const retryButton = findButtonByAriaLabel(dom.container, "Retry sending message");
@@ -1323,20 +1351,24 @@ describe("ChatView steering sends", () => {
       });
       expect(findOptimisticBubble()?.getAttribute("data-delivery-state")).toBe("sending");
       expect(sendMessageMock).toHaveBeenCalledTimes(2);
-      expect(sendMessageMock).toHaveBeenNthCalledWith(2, "please retry", [attachment], "autopilot");
+      expect(sendMessageMock).toHaveBeenNthCalledWith(
+        2,
+        "please retry",
+        [attachment],
+        "autopilot",
+        clientMessageId,
+      );
 
       await act(async () => {
         retryAccepted.resolve();
         await waitTick();
       });
-      await waitUntilAct(act, () => (
-        findOptimisticBubble() === undefined
-      ));
+      expect(findOptimisticBubble()?.getAttribute("data-delivery-state")).toBe("sent");
 
       await render({
         streamOverrides: {
           pendingUserMessages: [{
-            id: "retry-user-1",
+            id: clientMessageId,
             content: "please retry",
             attachments: [attachment],
             sourceEventId: "retry-user-event-1",
@@ -1357,8 +1389,10 @@ describe("ChatView steering sends", () => {
     }
   });
 
-  it("allows sending a steering message while the session is streaming", async () => {
-    const { dom, act, cleanup, sendMessageMock } = await renderChatView({
+  it("keeps a busy-session steering message gray until the server accepts it", async () => {
+    vi.useFakeTimers();
+    const sendAccepted = createDeferred<{ status: "accepted"; mode: "steered" }>();
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
         runState: "busy",
@@ -1367,21 +1401,88 @@ describe("ChatView steering sends", () => {
         hasMore: false,
       },
     });
+    sendMessageMock.mockReturnValueOnce(sendAccepted.promise);
 
     try {
       const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      let sendPromise!: Promise<void>;
       await act(async () => {
-        await props.onSend("please adjust");
+        sendPromise = props.onSend("please adjust");
         await waitTick();
       });
 
-      expect(sendMessageMock).toHaveBeenCalledWith("please adjust", undefined);
-      expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
+      const findBubbles = () => findAllByTag(dom.container, "DIV").filter((candidate) => (
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent?.includes("please adjust")
-      ))).toHaveLength(0);
+      ));
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        "please adjust",
+        undefined,
+        undefined,
+        clientMessageId,
+      );
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sending");
+
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [{
+            id: clientMessageId,
+            content: "please adjust",
+          }],
+          isStreaming: true,
+          streamStatus: "streaming",
+        },
+      });
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sending");
+
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [
+          createMessage("entry-1"),
+          {
+            id: "canonical-before-acceptance",
+            role: "user",
+            content: "please adjust",
+            sourceEventId: "steered-user-event-1",
+          },
+          createMessage("disk-refresh-marker"),
+        ],
+        runState: "busy",
+        total: 3,
+        warm: true,
+        hasMore: false,
+        coverage: {},
+      });
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [{
+            id: clientMessageId,
+            content: "please adjust",
+            sourceEventId: "steered-user-event-1",
+          }],
+          historyEpoch: 1,
+          isStreaming: true,
+          streamStatus: "streaming",
+        },
+      });
+      await advanceTimersByTimeAct(act, 300);
+      expect(dom.container.textContent).toContain("disk-refresh-marker");
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sending");
+
+      await act(async () => {
+        sendAccepted.resolve({ status: "accepted", mode: "steered" });
+        await sendPromise;
+        await waitTick();
+      });
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
     } finally {
+      sendAccepted.resolve({ status: "accepted", mode: "steered" });
       await cleanup();
+      vi.useRealTimers();
     }
   });
 
@@ -1413,21 +1514,30 @@ describe("ChatView steering sends", () => {
       ));
       expect(findRetryBubble()?.getAttribute("data-delivery-state")).toBe("sending");
       expect(sendMessageMock).toHaveBeenCalledTimes(2);
-      expect(sendMessageMock.mock.calls[0]).toEqual(["retry steering", undefined]);
-      expect(sendMessageMock.mock.calls[1]).toEqual(["retry steering", undefined]);
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
+      expect(sendMessageMock.mock.calls[0]).toEqual([
+        "retry steering",
+        undefined,
+        undefined,
+        clientMessageId,
+      ]);
+      expect(sendMessageMock.mock.calls[1]).toEqual([
+        "retry steering",
+        undefined,
+        undefined,
+        clientMessageId,
+      ]);
 
       await act(async () => {
         retryAccepted.resolve();
         await waitTick();
       });
-      await waitUntilAct(act, () => (
-        findRetryBubble() === undefined
-      ));
+      expect(findRetryBubble()?.getAttribute("data-delivery-state")).toBe("sent");
 
       await render({
         streamOverrides: {
           pendingUserMessages: [{
-            id: "steering-retry-1",
+            id: clientMessageId,
             content: "retry steering",
             sourceEventId: "steering-retry-event-1",
           }],
@@ -1442,8 +1552,51 @@ describe("ChatView steering sends", () => {
     }
   });
 
+  it("does not carry an unresolved optimistic send into another chat", async () => {
+    const sendAccepted = createDeferred<void>();
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+    sendMessageMock.mockReturnValueOnce(sendAccepted.promise);
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      let sendPromise!: Promise<void>;
+      await act(async () => {
+        sendPromise = props.onSend("stay in the original chat");
+        await waitTick();
+      });
+      expect(dom.container.textContent).toContain("stay in the original chat");
+
+      await render({
+        sessionId: "session-2",
+        composerKey: "composer-2",
+        streamOverrides: {
+          isStreaming: false,
+          streamStatus: "idle",
+          pendingOrigin: null,
+        },
+      });
+      expect(dom.container.textContent).not.toContain("stay in the original chat");
+
+      await act(async () => {
+        sendAccepted.resolve();
+        await sendPromise;
+        await waitTick();
+      });
+      expect(dom.container.textContent).not.toContain("stay in the original chat");
+    } finally {
+      sendAccepted.resolve();
+      await cleanup();
+    }
+  });
+
   it("replaces a streamed user bubble with its canonical message without duplication", async () => {
-    const { dom, act, cleanup, render } = await renderChatView({
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1")],
         runState: "busy",
@@ -1467,10 +1620,11 @@ describe("ChatView steering sends", () => {
       expect(findAllByTag(dom.container, "DIV").filter((candidate) => (
         candidate.getAttribute?.("data-testid") === "message-bubble"
         && candidate.textContent === "please adjust"
-      ))).toHaveLength(0);
+      ))).toHaveLength(1);
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
 
       const streamedUser = {
-        id: "user-1",
+        id: clientMessageId,
         content: "please adjust",
         sourceEventId: "canonical-user-event-1",
       };
