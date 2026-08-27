@@ -141,9 +141,9 @@ describe("serializeSettingsPatch", () => {
     );
   });
 
-  it("preserves an explicit remembered-family clear", () => {
-    expect(serializeSettingsPatch({ lastModelFamily: undefined })).toBe(
-      JSON.stringify({ lastModelFamily: "" }),
+  it("preserves an explicit remembered-preset clear", () => {
+    expect(serializeSettingsPatch({ lastModelPreset: undefined })).toBe(
+      JSON.stringify({ lastModelPreset: "" }),
     );
   });
 

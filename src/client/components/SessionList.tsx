@@ -24,15 +24,15 @@ import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
 import { LaunchOptionRow } from "./shared/LaunchOptionControls";
-import ModelFamilyPicker from "./shared/ModelFamilyPicker";
+import ModelPresetPicker from "./shared/ModelPresetPicker";
 import {
   buildContextTierOptions,
   buildReasoningEffortOptions,
   getSelectableModels,
 } from "../lib/new-session-launch";
-import type { ModelFamilySelection } from "../lib/model-family-defaults";
-import { useModelFamilyMemory } from "../hooks/useModelFamilyMemory";
-import type { ModelFamily } from "../../shared/model-families.js";
+import type { ModelPresetSelection } from "../lib/model-presets";
+import { useModelPresets } from "../hooks/useModelPresets";
+import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import {
   modelSupportsLongContext,
 } from "../../shared/copilot-context.js";
@@ -286,6 +286,7 @@ export default function SessionList({
   const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
   const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
+  const [modelPresetDraft, setModelPresetDraft] = useState<ModelPresetSlot | undefined>();
   const [reasoningDraft, setReasoningDraft] = useState<"" | ReasoningEffort>("");
   const [contextTierDraft, setContextTierDraft] = useState<"" | CopilotContextTier>("");
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
@@ -365,14 +366,17 @@ export default function SessionList({
     && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
   // Memory is shared with the new-chat picker; only fetch settings once the
   // dialog is open so the list itself stays free of extra requests.
-  const modelFamilyMemory = useModelFamilyMemory({ enabled: !!modelDialogSessionId });
+  const modelPresetMemory = useModelPresets({ enabled: !!modelDialogSessionId });
+  const dialogPresetSlot = modelPresetDraft
+    ?? modelPresetMemory.findSlotForModel(modelDraft, availableModels);
   /**
-   * Applies a family or model pick to the unsaved dialog drafts only. Remembered
+   * Applies a preset or model pick to the unsaved dialog drafts only. Remembered
    * effort/context are restored when the target model can still honor them.
    */
-  const applyDialogSelection = useCallback((selection: ModelFamilySelection) => {
+  const applyDialogSelection = useCallback((selection: ModelPresetSelection) => {
     modelDialogTouchedRef.current = true;
     const modelInfo = modelOptions?.find((model) => model.id === selection.modelId);
+    setModelPresetDraft(selection.slot);
     setModelDraft(selection.modelId);
     setReasoningDraft(
       selection.reasoningEffort
@@ -385,17 +389,18 @@ export default function SessionList({
     );
   }, [modelOptions]);
 
-  const handleDialogFamilyChange = useCallback((family: ModelFamily) => {
-    const selection = modelFamilyMemory.selectFamily(family, {
+  const handleDialogPresetChange = useCallback((slot: ModelPresetSlot) => {
+    const selection = modelPresetMemory.selectPreset(slot, {
       models: availableModels,
       selectedModelId: modelDraft,
+      selectedPresetSlot: dialogPresetSlot,
     });
     if (selection) applyDialogSelection(selection);
-  }, [applyDialogSelection, availableModels, modelDraft, modelFamilyMemory]);
+  }, [applyDialogSelection, availableModels, dialogPresetSlot, modelDraft, modelPresetMemory]);
 
-  const handleDialogModelChange = useCallback((modelId: string) => {
-    applyDialogSelection(modelFamilyMemory.selectModel(modelId));
-  }, [applyDialogSelection, modelFamilyMemory]);
+  const handleDialogModelChange = useCallback((slot: ModelPresetSlot, modelId: string) => {
+    applyDialogSelection(modelPresetMemory.selectModel(slot, modelId));
+  }, [applyDialogSelection, modelPresetMemory]);
 
   const canSaveModelSwitch =
     !!modelDialogSessionId
@@ -450,6 +455,7 @@ export default function SessionList({
   useEffect(() => {
     if (!modelDialogSessionId || modelDialogTouchedRef.current || !modelDialogQuery.data) return;
     setModelDraft(modelDialogQuery.data.model ?? "");
+    setModelPresetDraft(undefined);
     setContextTierDraft(modelDialogQuery.data.contextTier ?? "");
   }, [modelDialogQuery.data, modelDialogSessionId]);
 
@@ -492,6 +498,7 @@ export default function SessionList({
     modelDialogTouchedRef.current = false;
     setModelDialogSessionId(sessionId);
     setModelDraft(currentState?.model ?? "");
+    setModelPresetDraft(undefined);
     setReasoningDraft("");
     setContextTierDraft(currentState?.contextTier ?? "");
     setModelSwitchError(null);
@@ -547,11 +554,14 @@ export default function SessionList({
       queryClient.setQueryData(queryKeys.sessionModel(modelDialogSessionId), nextState);
       // A saved switch is a committed choice, so it feeds the same memory the
       // new-chat picker reads.
-      modelFamilyMemory.remember({
-        modelId: savedModelId,
-        reasoningEffort: nextReasoningEffort,
-        contextTier: nextContextTier,
-      });
+      if (dialogPresetSlot) {
+        modelPresetMemory.remember({
+          slot: dialogPresetSlot,
+          modelId: savedModelId,
+          reasoningEffort: nextReasoningEffort,
+          contextTier: nextContextTier,
+        });
+      }
       setModelDialogSessionId(null);
     } catch (error) {
       setModelSwitchError(getErrorMessage(error));
@@ -561,9 +571,10 @@ export default function SessionList({
   }, [
     modelDialogQuery.data?.reasoningEffort,
     contextTierDraft,
+    dialogPresetSlot,
     modelDialogSessionId,
     modelDraft,
-    modelFamilyMemory,
+    modelPresetMemory,
     reasoningDraft,
     reasoningDraftCanBeSubmitted,
     canKeepCurrentReasoningEffort,
@@ -1075,14 +1086,15 @@ export default function SessionList({
                     Loading models...
                   </div>
                 ) : (
-                  <ModelFamilyPicker
+                  <ModelPresetPicker
                     idPrefix="session-model"
                     models={availableModels}
                     selectedModelId={modelDraft}
-                    globalDefaultModelId={modelFamilyMemory.globalDefaultModelId}
-                    familyDefaults={modelFamilyMemory.familyDefaults}
+                    selectedPresetSlot={dialogPresetSlot}
+                    globalDefaultModelId={modelPresetMemory.globalDefaultModelId}
+                    presets={modelPresetMemory.presets}
                     disabled={modelSwitchSaving}
-                    onSelectFamily={handleDialogFamilyChange}
+                    onSelectPreset={handleDialogPresetChange}
                     onSelectModel={handleDialogModelChange}
                   />
                 )}

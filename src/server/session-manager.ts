@@ -1343,6 +1343,7 @@ export class SessionManager {
     creationReservation: SessionCapacityReservation;
     startedAt: number;
     modelMetadata?: readonly CopilotModelContextMetadata[];
+    requestedContextTier?: CopilotContextTier;
     cacheReason: string;
     spanName: string;
     spanMetadata?: Record<string, unknown>;
@@ -1356,6 +1357,7 @@ export class SessionManager {
       creationReservation,
       startedAt,
       modelMetadata,
+      requestedContextTier,
       cacheReason,
       spanName,
       spanMetadata,
@@ -1397,7 +1399,11 @@ export class SessionManager {
       }
       const model = sessionConfig.model;
       if (typeof model === "string" && model.trim()) {
-        const { contextTier } = this.resolveModelRuntimeOptions(model, settings?.contextTier, modelMetadata);
+        const { contextTier } = this.resolveModelRuntimeOptions(
+          model,
+          requestedContextTier ?? settings?.contextTier,
+          modelMetadata,
+        );
         const state = {
           model,
           ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
@@ -3821,6 +3827,7 @@ export class SessionManager {
         creationReservation,
         startedAt: t0,
         ...(modelMetadata ? { modelMetadata } : {}),
+        ...(options.contextTier ? { requestedContextTier: options.contextTier } : {}),
         cacheReason: "session:create",
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
@@ -4173,6 +4180,9 @@ export class SessionManager {
         creationReservation,
         startedAt: t0,
         ...(modelMetadata ? { modelMetadata } : {}),
+        ...(options.contextTier ?? scheduleContext?.contextTier
+          ? { requestedContextTier: options.contextTier ?? scheduleContext?.contextTier }
+          : {}),
         cacheReason: "session:create-task",
         spanName: "session.createTask",
         spanMetadata: { taskId },
@@ -4884,7 +4894,11 @@ export class SessionManager {
       if (outcome.status === "fulfilled" && outcome.value?.modelId) {
         const current = outcome.value;
         const liveModelId = current.modelId;
-        const contextTier = normalizeCopilotContextTier(current.contextTier);
+        const persistedState = this.readPersistedSessionModelState(sessionId);
+        const contextTier = normalizeCopilotContextTier(current.contextTier)
+          ?? (persistedState.model === liveModelId
+            ? normalizeCopilotContextTier(persistedState.contextTier)
+            : undefined);
         return {
           model: liveModelId,
           ...(current.reasoningEffort !== undefined ? { reasoningEffort: current.reasoningEffort } : {}),

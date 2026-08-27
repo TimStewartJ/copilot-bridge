@@ -65,13 +65,13 @@ import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
 import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
 import { useTaskAgentDefinitionsQuery } from "./hooks/queries/useTaskAgentDefinitions";
-import { useModelFamilyMemory } from "./hooks/useModelFamilyMemory";
+import { useModelPresets } from "./hooks/useModelPresets";
 import {
   buildNewSessionCreateOptions,
   resolveNewSessionLaunchState,
 } from "./lib/new-session-launch";
-import type { ModelFamilySelection } from "./lib/model-family-defaults";
-import { getModelFamily, type ModelFamily } from "../shared/model-families.js";
+import type { ModelPresetSelection } from "./lib/model-presets";
+import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
@@ -2408,10 +2408,10 @@ function SessionRoute({
   const previousDraftRouteKeyRef = useRef(draftRouteKey);
   // Shared with the change-model dialog; only the draft route needs settings,
   // and cached settings are still read when fetching is disabled.
-  const modelFamilyMemory = useModelFamilyMemory({ enabled: isDraft });
-  const { familyDefaults, lastModelFamily } = modelFamilyMemory;
+  const modelPresetMemory = useModelPresets({ enabled: isDraft });
+  const { presets } = modelPresetMemory;
   const rememberedLaunchSelection = !draftLaunch?.model
-    ? modelFamilyMemory.resolveRememberedSelection(modelsQuery.data ?? [])
+    ? modelPresetMemory.resolveRememberedSelection(modelsQuery.data ?? [])
     : null;
   const effectiveSelectedModelId = draftLaunch?.model
     || rememberedLaunchSelection?.modelId
@@ -2439,7 +2439,10 @@ function SessionRoute({
         : undefined
     ),
   });
-  const rememberModelFamilyDefaults = modelFamilyMemory.remember;
+  const selectedPresetSlot = draftLaunch?.presetSlot ?? rememberedLaunchSelection?.slot;
+  const activePresetSlot = selectedPresetSlot
+    ?? modelPresetMemory.findSlotForModel(launchState.modelKey, launchState.availableModels);
+  const rememberModelPreset = modelPresetMemory.remember;
   const launchCreateOptions = useMemo(
     () => ({
       ...buildNewSessionCreateOptions(launchState),
@@ -2465,10 +2468,10 @@ function SessionRoute({
   }, []);
 
   /**
-   * A model choice is explicit draft state. Effort and context selections are
-   * model-scoped, so changing the model restores only values remembered for it.
+   * A model choice is explicit draft state. Effort and context selections follow
+   * the selected preset, while each selection remains scoped to its model id.
    */
-  const applyLaunchSelection = useCallback((selection: ModelFamilySelection) => {
+  const applyLaunchSelection = useCallback((selection: ModelPresetSelection) => {
     const reasoningEffortSelection = selection.reasoningEffort
       ? { modelId: selection.modelId, value: selection.reasoningEffort }
       : undefined;
@@ -2487,10 +2490,12 @@ function SessionRoute({
     setDraftLaunchOptions(composerKey, (current) => ({
       ...(current?.agent ? { agent: current.agent } : {}),
       model: selection.modelId,
+      presetSlot: selection.slot,
       ...(reasoningEffortSelection ? { reasoningEffort: reasoningEffortSelection } : {}),
       ...(contextTierSelection ? { contextTier: contextTierSelection } : {}),
     }));
-    rememberModelFamilyDefaults({
+    rememberModelPreset({
+      slot: selection.slot,
       modelId: selection.modelId,
       reasoningEffort: nextLaunchState.selectedReasoningEffort,
       contextTier: nextLaunchState.selectedContextTier,
@@ -2501,26 +2506,28 @@ function SessionRoute({
     defaultModelId,
     defaultReasoningEffort,
     launchState.availableModels,
-    rememberModelFamilyDefaults,
+    rememberModelPreset,
     setDraftLaunchOptions,
   ]);
 
-  const handleLaunchFamilyChange = useCallback((family: ModelFamily) => {
-    const selection = modelFamilyMemory.selectFamily(family, {
+  const handleLaunchPresetChange = useCallback((slot: ModelPresetSlot) => {
+    const selection = modelPresetMemory.selectPreset(slot, {
       models: launchState.availableModels,
       selectedModelId: launchState.modelKey,
+      selectedPresetSlot: activePresetSlot,
     });
     if (selection) applyLaunchSelection(selection);
   }, [
+    activePresetSlot,
     applyLaunchSelection,
     launchState.availableModels,
     launchState.modelKey,
-    modelFamilyMemory,
+    modelPresetMemory,
   ]);
 
-  const handleLaunchModelChange = useCallback((modelId: string) => {
-    applyLaunchSelection(modelFamilyMemory.selectModel(modelId));
-  }, [applyLaunchSelection, modelFamilyMemory]);
+  const handleLaunchModelChange = useCallback((slot: ModelPresetSlot, modelId: string) => {
+    applyLaunchSelection(modelPresetMemory.selectModel(slot, modelId));
+  }, [applyLaunchSelection, modelPresetMemory]);
 
   const handleLaunchReasoningEffortChange = useCallback((reasoningEffort?: string) => {
     if (!reasoningEffort) return;
@@ -2532,16 +2539,20 @@ function SessionRoute({
       };
       return next;
     });
-    rememberModelFamilyDefaults({
-      modelId: launchState.modelKey,
-      reasoningEffort,
-      contextTier: launchState.selectedContextTier,
-    });
+    if (activePresetSlot) {
+      rememberModelPreset({
+        slot: activePresetSlot,
+        modelId: launchState.modelKey,
+        reasoningEffort,
+        contextTier: launchState.selectedContextTier,
+      });
+    }
   }, [
+    activePresetSlot,
     composerKey,
     launchState.modelKey,
     launchState.selectedContextTier,
-    rememberModelFamilyDefaults,
+    rememberModelPreset,
     setDraftLaunchOptions,
   ]);
 
@@ -2555,16 +2566,20 @@ function SessionRoute({
       };
       return next;
     });
-    rememberModelFamilyDefaults({
-      modelId: launchState.modelKey,
-      reasoningEffort: launchState.selectedReasoningEffort,
-      contextTier,
-    });
+    if (activePresetSlot) {
+      rememberModelPreset({
+        slot: activePresetSlot,
+        modelId: launchState.modelKey,
+        reasoningEffort: launchState.selectedReasoningEffort,
+        contextTier,
+      });
+    }
   }, [
+    activePresetSlot,
     composerKey,
     launchState.modelKey,
     launchState.selectedReasoningEffort,
-    rememberModelFamilyDefaults,
+    rememberModelPreset,
     setDraftLaunchOptions,
   ]);
 
@@ -2687,11 +2702,9 @@ function SessionRoute({
       modelsLoading={modelsQuery.isLoading || launchDefaultsLoading}
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
       defaultModelId={defaultModelId}
-      familyDefaults={familyDefaults}
+      presets={presets}
       selectedModelId={launchState.modelKey}
-      selectedModelFamily={draftLaunch?.model
-        ? getModelFamily(draftLaunch.model)
-        : lastModelFamily}
+      selectedPresetSlot={activePresetSlot}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
@@ -2700,7 +2713,7 @@ function SessionRoute({
       agentDefinitions={taskId ? taskAgentDefinitionsQuery.data ?? [] : undefined}
       agentDefinitionsLoading={taskId ? taskAgentDefinitionsQuery.isLoading : undefined}
       selectedAgentName={draftLaunch?.agent}
-      onModelFamilyChange={handleLaunchFamilyChange}
+      onPresetChange={handleLaunchPresetChange}
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={handleLaunchReasoningEffortChange}
       onContextTierChange={handleLaunchContextTierChange}
