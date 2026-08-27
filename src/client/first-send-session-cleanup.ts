@@ -3,6 +3,7 @@ import {
   deleteSession as deleteSessionApi,
   sendChatMessage as sendChatMessageApi,
   type Attachment,
+  type ChatMessageSendOptions,
   type Session,
   type Task,
 } from "./api";
@@ -15,7 +16,7 @@ type SendChatMessage = (
   prompt: string,
   attachments?: Attachment[],
   mode?: SendMode,
-  options?: { waitForDelivery?: boolean },
+  options?: ChatMessageSendOptions,
 ) => Promise<unknown>;
 type QueryInvalidator = () => Promise<unknown>;
 export interface FailedFirstSendSessionCleanupOptions {
@@ -38,6 +39,7 @@ export interface SendMaterializedFirstPromptOptions {
   prompt: string;
   attachments?: Attachment[];
   mode?: SendMode;
+  clientMessageId?: string;
   sendChatMessage?: SendChatMessage;
   onRejected?: (error: unknown) => void | Promise<void>;
   logger?: Pick<Console, "error">;
@@ -107,12 +109,16 @@ export async function sendMaterializedFirstPrompt({
   prompt,
   attachments,
   mode,
+  clientMessageId,
   sendChatMessage = sendChatMessageApi,
   onRejected,
   logger = console,
 }: SendMaterializedFirstPromptOptions): Promise<void> {
   try {
-    await sendChatMessage(sessionId, prompt, attachments, mode, { waitForDelivery: true });
+    await sendChatMessage(sessionId, prompt, attachments, mode, {
+      waitForDelivery: true,
+      ...(clientMessageId ? { clientMessageId } : {}),
+    });
   } catch (error) {
     try {
       await onRejected?.(error);

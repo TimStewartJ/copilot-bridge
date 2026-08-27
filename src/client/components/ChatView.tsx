@@ -25,6 +25,7 @@ import {
   type BackgroundAgentsSummary,
   type ChatEntry,
   type ChatMessage,
+  type ChatMessageAcceptedResponse,
   type ChatMessageDelivery,
   type ChatVisualEntry,
   type McpServerStatus,
@@ -107,7 +108,12 @@ interface ChatViewProps {
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
   onDraftClear?: () => void;
-  onCreateAndSend?: (prompt: string, attachments?: Attachment[], mode?: SendMode) => Promise<void>;
+  onCreateAndSend?: (
+    prompt: string,
+    attachments?: Attachment[],
+    mode?: SendMode,
+    clientMessageId?: string,
+  ) => Promise<void>;
   emptyState?: ReactNode;
   defaultSendMode?: SendMode;
   voiceJob?: VoiceBackgroundJob | null;
@@ -181,6 +187,15 @@ interface PendingSend {
   content: string;
   attachments?: Attachment[];
   delivery?: ChatMessageDelivery;
+}
+
+let clientMessageIdCounter = 0;
+
+function createClientMessageId(): string {
+  const cryptoRef = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoRef?.randomUUID) return `client-${cryptoRef.randomUUID()}`;
+  clientMessageIdCounter += 1;
+  return `client-${Date.now().toString(36)}-${clientMessageIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function isFailedOptimisticChatMessage(message: ChatMessage): message is FailedOptimisticChatMessage {
@@ -1658,31 +1673,6 @@ export default function ChatView({
     updatePendingSends((current) => current.filter((send) => send.id !== messageId));
   }, [updatePendingSends]);
 
-  const appendFailedMessage = useCallback((
-    messageId: string,
-    ownerSessionId: string,
-    prompt: string,
-    attachments: Attachment[] | undefined,
-    mode: SendMode | undefined,
-    error: unknown,
-  ) => {
-    if (sessionIdRef.current !== ownerSessionId) return;
-    const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
-    updatePendingSends((current) => [
-      ...current.filter((send) => send.id !== messageId),
-      {
-        id: messageId,
-        content: prompt,
-        ...(attachments?.length ? { attachments } : {}),
-        delivery: {
-          failed: true,
-          ...(mode === undefined ? {} : { mode }),
-          error: errorMessage,
-        },
-      },
-    ]);
-  }, [updatePendingSends]);
-
   const deliverOptimisticMessage = useCallback(async (
     messageId: string,
     ownerSessionId: string | null,
@@ -1691,16 +1681,20 @@ export default function ChatView({
     mode: SendMode | undefined,
   ) => {
     try {
+      let response: ChatMessageAcceptedResponse | void;
       if (ownerSessionId === null) {
         if (!onCreateAndSend) throw new Error("Draft session creation is unavailable.");
-        await onCreateAndSend(prompt, attachments, mode);
+        response = await onCreateAndSend(prompt, attachments, mode, messageId);
       } else if (mode !== undefined) {
-        await sendMessage(prompt, attachments, mode);
+        response = await sendMessage(prompt, attachments, mode, messageId);
       } else {
-        await sendMessage(prompt, attachments);
+        response = await sendMessage(prompt, attachments, undefined, messageId);
       }
-      // The server now owns the prompt: its stream entry carries it until disk history does.
-      removeOptimisticMessage(messageId, ownerSessionId);
+      if (response?.mode === "command") {
+        removeOptimisticMessage(messageId, ownerSessionId);
+      } else {
+        updateOptimisticMessageDelivery(messageId, ownerSessionId, undefined);
+      }
       if (ownerSessionId === null && sessionIdRef.current) {
         loadAndReconnectRef.current({ background: true, replace: true });
       }
@@ -1747,7 +1741,7 @@ export default function ChatView({
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
       const draftMode = mode ?? DEFAULT_SEND_MODE;
-      const draftMessageId = "draft-user-0";
+      const draftMessageId = createClientMessageId();
       setCreating(true);
       updatePendingSends(() => [{
         id: draftMessageId,
@@ -1770,24 +1764,30 @@ export default function ChatView({
     invalidateHistoryRefresh();
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
-    try {
-      const messageMode = isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE);
-      if (messageMode) {
-        await sendMessage(prompt, attachments, messageMode);
-      } else {
-        await sendMessage(prompt, attachments);
-      }
-    } catch (error) {
-      appendFailedMessage(
-        `local-${Date.now()}`,
-        sessionId,
-        prompt,
-        attachments,
-        isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE),
-        error,
-      );
-    }
-  }, [sessionId, composerKey, loading, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, appendFailedMessage]);
+    const messageMode = isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE);
+    const messageId = createClientMessageId();
+    updatePendingSends((current) => [
+      ...current,
+      {
+        id: messageId,
+        content: prompt,
+        delivery: createSendingDelivery(messageMode),
+        ...(attachments?.length ? { attachments } : {}),
+      },
+    ]);
+    await deliverOptimisticMessage(messageId, sessionId, prompt, attachments, messageMode);
+  }, [
+    composerKey,
+    creating,
+    deliverOptimisticMessage,
+    invalidateHistoryRefresh,
+    isStreaming,
+    loading,
+    onCreateAndSend,
+    onDraftClear,
+    sessionId,
+    updatePendingSends,
+  ]);
 
   useEffect(() => {
     const queuedSend = queuedSendRef.current;
@@ -1849,6 +1849,14 @@ export default function ChatView({
   );
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
+  const clientOwnedCommittedSourceEventIds = useMemo(() => {
+    const sendsById = new Map(pendingSends.map((send) => [send.id, send]));
+    return new Set(pendingUserMessages.flatMap((message) => (
+      message.sourceEventId && sendsById.get(message.id)?.delivery !== undefined
+        ? [message.sourceEventId]
+        : []
+    )));
+  }, [pendingSends, pendingUserMessages]);
   /**
    * The live overlay, rendered strictly after committed history. It never interleaves with, or is
    * merged into, the disk-backed transcript: it only holds prompts and assistant text that
@@ -1856,12 +1864,18 @@ export default function ChatView({
    */
   const liveEntries = useMemo<ChatEntry[]>(() => {
     const nextEntries: ChatEntry[] = [];
+    const pendingSendsById = new Map(pendingSends.map((send) => [send.id, send]));
+    const projectedUserMessageIds = new Set(pendingUserMessages.map((message) => message.id));
+    const uncommittedProjectedUserMessageIds = new Set(uncommittedUserMessages.map((message) => message.id));
     for (const message of uncommittedUserMessages) {
+      const pendingSend = pendingSendsById.get(message.id);
+      if (pendingSend?.delivery?.failed) continue;
       nextEntries.push({
         id: `live-user-${message.id}`,
         type: "message",
         role: "user",
         content: message.content,
+        ...(pendingSend?.delivery ? { delivery: pendingSend.delivery } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.timestamp ? { timestamp: message.timestamp } : {}),
       });
@@ -1925,6 +1939,14 @@ export default function ChatView({
       });
     }
     for (const send of pendingSends) {
+      const hasProjectedMessage = projectedUserMessageIds.has(send.id);
+      const hasVisibleProjectedMessage = uncommittedProjectedUserMessageIds.has(send.id);
+      if (
+        (send.delivery === undefined && hasProjectedMessage)
+        || (send.delivery?.failed === false && hasVisibleProjectedMessage)
+      ) {
+        continue;
+      }
       nextEntries.push({
         id: send.id,
         type: "message",
@@ -1952,15 +1974,35 @@ export default function ChatView({
     hasStreamingText,
     isStreaming,
     pendingSends,
+    pendingUserMessages,
     uncommittedAssistantSegments,
     uncommittedCompletion,
     uncommittedLiveTools,
     uncommittedUserMessages,
     uncommittedVisuals,
   ]);
+
+  useEffect(() => {
+    const projectedUserMessageIds = new Set(pendingUserMessages.map((message) => message.id));
+    if (!pendingSendsRef.current.some((send) => (
+      send.delivery === undefined && projectedUserMessageIds.has(send.id)
+    ))) {
+      return;
+    }
+    updatePendingSends((current) => current.filter((send) => (
+      send.delivery !== undefined || !projectedUserMessageIds.has(send.id)
+    )));
+  }, [pendingUserMessages, updatePendingSends]);
   const committedEntries = useMemo(() => {
-    if (liveToolsById.size === 0) return entries;
-    return entries.map((entry) => {
+    const visibleEntries = clientOwnedCommittedSourceEventIds.size === 0
+      ? entries
+      : entries.filter((entry) => (
+          !isChatMessageEntry(entry)
+          || !entry.sourceEventId
+          || !clientOwnedCommittedSourceEventIds.has(entry.sourceEventId)
+        ));
+    if (liveToolsById.size === 0) return visibleEntries;
+    return visibleEntries.map((entry) => {
       if (entry.type !== "tool") return entry;
       const live = liveToolsById.get(entry.toolCall.toolCallId);
       if (!live) return entry;
@@ -2016,7 +2058,7 @@ export default function ChatView({
         },
       };
     });
-  }, [entries, liveToolsById]);
+  }, [clientOwnedCommittedSourceEventIds, entries, liveToolsById]);
   const displayEntries = useMemo(
     () => liveEntries.length > 0 ? [...committedEntries, ...liveEntries] : committedEntries,
     [committedEntries, liveEntries],

@@ -3009,7 +3009,7 @@ export function createApiRouter(
 
   // POST /chat — starts work, optionally waiting until the prompt reaches the SDK session
   router.post("/chat", async (req, res) => {
-    const { sessionId, prompt, attachments, mode, waitForDelivery } = req.body;
+    const { sessionId, prompt, attachments, mode, waitForDelivery, clientMessageId } = req.body;
 
     if (!sessionId || !prompt) {
       return res.status(400).json({ error: "sessionId and prompt are required" });
@@ -3019,6 +3019,16 @@ export function createApiRouter(
     }
     if (waitForDelivery !== undefined && typeof waitForDelivery !== "boolean") {
       return res.status(400).json({ error: "waitForDelivery must be a boolean" });
+    }
+    if (
+      clientMessageId !== undefined
+      && (
+        typeof clientMessageId !== "string"
+        || clientMessageId.trim().length === 0
+        || clientMessageId.length > 200
+      )
+    ) {
+      return res.status(400).json({ error: "clientMessageId must be a non-empty string of at most 200 characters" });
     }
 
     if (isRestartCutoverInProgress(await refreshRestartState())) {
@@ -3038,7 +3048,11 @@ export function createApiRouter(
 
     try {
       if (ctx.sessionManager.isSessionBusy(sessionId)) {
-        await ctx.sessionManager.steerSession(sessionId, prompt, attachments);
+        if (clientMessageId) {
+          await ctx.sessionManager.steerSession(sessionId, prompt, attachments, clientMessageId);
+        } else {
+          await ctx.sessionManager.steerSession(sessionId, prompt, attachments);
+        }
         res.status(202).json({
           status: "accepted",
           mode: parseSlashCommandPrompt(prompt) ? "command" : "steered",
@@ -3051,10 +3065,16 @@ export function createApiRouter(
           sessionId,
           prompt,
           attachments,
-          mode ? { mode } : undefined,
+          mode || clientMessageId ? {
+            ...(mode ? { mode } : {}),
+            ...(clientMessageId ? { clientMessageId } : {}),
+          } : undefined,
         );
-      } else if (mode) {
-        ctx.sessionManager.startWork(sessionId, prompt, attachments, { mode });
+      } else if (mode || clientMessageId) {
+        ctx.sessionManager.startWork(sessionId, prompt, attachments, {
+          ...(mode ? { mode } : {}),
+          ...(clientMessageId ? { clientMessageId } : {}),
+        });
       } else {
         ctx.sessionManager.startWork(sessionId, prompt, attachments);
       }

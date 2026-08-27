@@ -982,7 +982,12 @@ export function useSessionStream(
     return closeStream;
   }, [closeStream, sessionId]);
 
-  const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[], mode?: SendMode) => {
+  const sendMessage = useCallback(async (
+    prompt: string,
+    attachments?: Attachment[],
+    mode?: SendMode,
+    clientMessageId?: string,
+  ) => {
     if (!sessionId) return;
     const startedFromIdle = streamStateRef.current.streamStatus === "idle";
     if (startedFromIdle) {
@@ -994,14 +999,15 @@ export function useSessionStream(
       }));
     }
     try {
-      const response = await sendChatMessage(sessionId, prompt, attachments, mode);
+      const response = await sendChatMessage(sessionId, prompt, attachments, mode, { clientMessageId });
       if (response.mode === "steered" || response.mode === "command") {
         if (startedFromIdle && sessionRef.current === sessionId) connectStream(sessionId, "reconnect");
-        return;
+        return response;
       }
       if (sessionRef.current === sessionId) {
         connectStream(sessionId, "message", mode);
       }
+      return response;
     } catch (error) {
       if (startedFromIdle && sessionRef.current === sessionId) {
         setStreamState((current) => createState("idle", {

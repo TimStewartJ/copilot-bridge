@@ -227,6 +227,7 @@ export interface StartWorkOptions {
   completionAttention?: boolean | CompletionAttentionOptions;
   historyTruncation?: QuietIntervalDeferTailTruncationRequest;
   mode?: SendMode;
+  clientMessageId?: string;
 }
 
 async function setSessionModeForSend(session: AgentSession, mode: string): Promise<void> {
@@ -440,7 +441,7 @@ export class SessionRunner {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
-    bus.setPendingPrompt(prompt, attachments);
+    bus.setPendingPrompt(prompt, attachments, options.clientMessageId);
     return this.startBackgroundRun(
       sessionId,
       bus,
@@ -469,7 +470,12 @@ export class SessionRunner {
     throw new Error(delivery.message);
   }
 
-  async steerSession(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
+  async steerSession(
+    sessionId: string,
+    prompt: string,
+    attachments?: StartWorkAttachment[],
+    clientMessageId?: string,
+  ): Promise<void> {
     this.assertBackendAvailable();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
@@ -520,7 +526,7 @@ export class SessionRunner {
     const t0 = Date.now();
     console.log(`[sdk] [${sid}] Steering prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
 
-    bus.setPendingPrompt(prompt, attachments);
+    bus.setPendingPrompt(prompt, attachments, clientMessageId);
     this.touchSessionRun(sessionId);
     try {
       if (

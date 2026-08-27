@@ -4331,8 +4331,13 @@ export class SessionManager {
     await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, options);
   }
 
-  async steerSession(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
-    await this.sessionRunner.steerSession(sessionId, prompt, attachments);
+  async steerSession(
+    sessionId: string,
+    prompt: string,
+    attachments?: StartWorkAttachment[],
+    clientMessageId?: string,
+  ): Promise<void> {
+    await this.sessionRunner.steerSession(sessionId, prompt, attachments, clientMessageId);
   }
 
   /** @internal Test seam — delegates to the SessionRunner. */

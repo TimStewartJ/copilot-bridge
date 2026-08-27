@@ -2644,6 +2644,7 @@ function SessionRoute({
     prompt: string,
     attachments?: import("./api").Attachment[],
     mode?: SendMode,
+    clientMessageId?: string,
   ) => {
     const createOptions = launchCreateOptions;
     const newSessionId = await materializeSession(taskId, createOptions);
@@ -2661,6 +2662,7 @@ function SessionRoute({
       prompt,
       attachments,
       mode,
+      clientMessageId,
       onRejected: async () => {
         await cleanupFailedFirstSendSession(newSessionId, taskId);
         migrateVoiceRecording(newSessionId, composerKey);
