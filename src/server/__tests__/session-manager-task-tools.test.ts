@@ -43,8 +43,9 @@ describe("session manager task tools", () => {
       enum: ["task", "ongoing"],
       description: "Task kind",
     });
-    expect(updateTool.inputSchema.properties.status.enum).toEqual(["active", "archived"]);
-    expect(updateTool.inputSchema.properties.completionAction.enum).toEqual(["complete-and-archive"]);
+    expect(updateTool.inputSchema.properties.status).toBeUndefined();
+    expect(updateTool.inputSchema.properties.completionAction).toBeUndefined();
+    expect(updateTool.description).toContain("Task completion and archival are controlled by the UI");
     expect(updateTool.inputSchema.properties.priority.type).toBe("integer");
     expect(updateTool.inputSchema.properties.groupId.anyOf).toEqual([{ type: "string" }, { type: "null" }]);
     expect(updateTool.inputSchema.properties.nextAction).toBeUndefined();
@@ -203,11 +204,9 @@ describe("session manager task tools", () => {
     );
   });
 
-  it("task_update changes priority and supports status or completionAction", async () => {
+  it("task_update changes priority and group", async () => {
     const { ctx } = createTestApp();
     const priorityTask = ctx.taskStore.createTask("Priority update");
-    const statusTask = ctx.taskStore.createTask("Status update");
-    const completionTask = ctx.taskStore.createTask("Completion update");
     const group = ctx.taskGroupStore.createGroup("Temporary group");
     const groupedTask = ctx.taskStore.createTask("Ungroup update", group.id);
     const tool = getTool(ctx, "task_update");
@@ -224,43 +223,40 @@ describe("session manager task tools", () => {
     expect(ctx.taskStore.getTask(priorityTask.id)?.priority).toBe(0);
 
     await expect(tool.handler({
-      taskId: statusTask.id,
-      status: "archived",
-    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
-    expect(ctx.taskStore.getTask(statusTask.id)).toEqual(expect.objectContaining({
-      status: "archived",
-      completedAt: undefined,
-    }));
-
-    await expect(tool.handler({
-      taskId: completionTask.id,
-      completionAction: "complete-and-archive",
-    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
-    expect(ctx.taskStore.getTask(completionTask.id)).toEqual(expect.objectContaining({
-      status: "archived",
-      completedAt: expect.any(String),
-    }));
-
-    await expect(tool.handler({
       taskId: groupedTask.id,
       groupId: null,
     }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
     expect(ctx.taskStore.getTask(groupedTask.id)?.groupId).toBeUndefined();
   });
 
-  it("task_update rejects invalid status combinations, priorities, and group references", async () => {
+  it("task_update rejects task lifecycle fields that are reserved for the UI", async () => {
+    const { ctx } = createTestApp();
+    const statusTask = ctx.taskStore.createTask("Status archive guard");
+    const completionTask = ctx.taskStore.createTask("Completion archive guard");
+    const tool = getTool(ctx, "task_update");
+
+    await expect(tool.handler({
+      taskId: statusTask.id,
+      status: "archived",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("Task completion and archival are controlled by the UI."),
+    );
+    await expect(tool.handler({
+      taskId: completionTask.id,
+      completionAction: "complete-and-archive",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("Task completion and archival are controlled by the UI."),
+    );
+
+    expect(ctx.taskStore.getTask(statusTask.id)?.status).toBe("active");
+    expect(ctx.taskStore.getTask(completionTask.id)?.status).toBe("active");
+  });
+
+  it("task_update rejects invalid priorities and group references", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Invalid update");
     const tool = getTool(ctx, "task_update");
     const createTool = getTool(ctx, "task_create");
-
-    await expect(tool.handler({
-      taskId: task.id,
-      status: "archived",
-      completionAction: "complete-and-archive",
-    }, createInvocation("task_update"))).resolves.toEqual(
-      toolFailure("completionAction cannot be combined with status"),
-    );
 
     const invalidPriority: any = await tool.handler({
       taskId: task.id,
