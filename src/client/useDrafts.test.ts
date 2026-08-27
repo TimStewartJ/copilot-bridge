@@ -91,6 +91,7 @@ describe("useDrafts launch persistence", () => {
         ],
         launch: {
           model: "claude-sonnet-5",
+          presetSlot: "preset2",
           agent: "api-reviewer",
           reasoningEffort: { modelId: "claude-sonnet-5", value: 42 },
           contextTier: { modelId: "claude-sonnet-5", value: "long_context" },
@@ -132,6 +133,7 @@ describe("useDrafts launch persistence", () => {
       ],
       launch: {
         model: "claude-sonnet-5",
+        presetSlot: "preset2",
         agent: "api-reviewer",
         contextTier: { modelId: "claude-sonnet-5", value: "long_context" },
       },
@@ -170,6 +172,7 @@ describe("useDrafts launch persistence", () => {
         }],
         launch: {
           model: "gpt-5.6",
+          presetSlot: "preset1",
           reasoningEffort: { modelId: "gpt-5.6", value: "high" },
           contextTier: { modelId: "gpt-5.6", value: "default" },
         },
@@ -195,6 +198,7 @@ describe("useDrafts launch persistence", () => {
     await harness!.act(async () => {
       drafts!.setDraftLaunchOptions("draft:quickchat", {
         model: "gpt-5.6",
+        presetSlot: "preset1",
         reasoningEffort: { modelId: "gpt-5.6", value: "high" },
         contextTier: { modelId: "gpt-5.6", value: "long_context" },
       });
@@ -206,6 +210,7 @@ describe("useDrafts launch persistence", () => {
       text: "hello",
       launch: {
         model: "gpt-5.6",
+        presetSlot: "preset1",
         reasoningEffort: { modelId: "gpt-5.6", value: "high" },
         contextTier: { modelId: "gpt-5.6", value: "long_context" },
       },
@@ -218,6 +223,7 @@ describe("useDrafts launch persistence", () => {
 
     expect(drafts!.getDraft("draft:quickchat")?.launch).toEqual({
       model: "gpt-5.6",
+      presetSlot: "preset1",
       reasoningEffort: { modelId: "gpt-5.6", value: "high" },
       contextTier: { modelId: "gpt-5.6", value: "long_context" },
     });

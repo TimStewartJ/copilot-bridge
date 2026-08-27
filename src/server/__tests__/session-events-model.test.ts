@@ -11,6 +11,7 @@ import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { writePersistedSessionModelState } from "../session-model-state-sidecar.js";
 import supertest from "./test-http.js";
 
 // ── Parser unit tests ───────────────────────────────────────────────────────
@@ -235,6 +236,46 @@ describe("SessionManager.getSessionModelState", () => {
     const result = await manager.getSessionModelState("live-session");
 
     expect(result).toEqual({ model: "live-model-id", source: "live" });
+  });
+
+  it("restores persisted context when the live SDK omits it for the same model", async () => {
+    const dir = makeTestDir("model-state-live-context");
+    const sessionDir = join(dir, "session-state", "live-session");
+    writePersistedSessionModelState(sessionDir, {
+      model: "gpt-5.6",
+      contextTier: "long_context",
+    });
+    const manager = createManager(dir);
+    manager.sessionObjects.set("live-session", {
+      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "gpt-5.6", reasoningEffort: "high" }),
+    });
+
+    const result = await manager.getSessionModelState("live-session");
+
+    expect(result).toEqual({
+      model: "gpt-5.6",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+      source: "live",
+    });
+  });
+
+  it("does not restore persisted context when the live model changed", async () => {
+    const dir = makeTestDir("model-state-live-context-mismatch");
+    const sessionDir = join(dir, "session-state", "live-session");
+    writePersistedSessionModelState(sessionDir, {
+      model: "gpt-5.6",
+      contextTier: "long_context",
+    });
+    const manager = createManager(dir);
+    manager.sessionObjects.set("live-session", {
+      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "claude-sonnet-5" }),
+    });
+
+    await expect(manager.getSessionModelState("live-session")).resolves.toEqual({
+      model: "claude-sonnet-5",
+      source: "live",
+    });
   });
 
   it("falls back to events when live rpc.getCurrent throws", async () => {

@@ -136,7 +136,29 @@ describe("settings-store", () => {
     })).toThrow("browser.headed must be a boolean");
   });
 
-  it("persists and validates remembered model-family defaults", () => {
+  it("persists and validates remembered model presets", () => {
+    const updated = store.updateSettings({
+      modelPresets: {
+        preset1: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+        preset2: { model: "claude-opus-5", contextTier: "long_context" },
+      },
+      lastModelPreset: "preset2",
+    });
+    expect(updated.modelPresets).toEqual({
+      preset1: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+      preset2: { model: "claude-opus-5", contextTier: "long_context" },
+    });
+    expect(store.getSettings().lastModelPreset).toBe("preset2");
+
+    expect(() => store.updateSettings({
+      modelPresets: { preset4: { model: "gemini-3.1-pro" } } as any,
+    })).toThrow('modelPresets key "preset4" is not a known preset slot');
+    expect(() => store.updateSettings({
+      lastModelPreset: "preset4" as any,
+    })).toThrow("lastModelPreset must be preset1, preset2, or preset3");
+  });
+
+  it("migrates remembered model-family defaults into preset slots", () => {
     const updated = store.updateSettings({
       familyDefaults: {
         gpt: { model: "gpt-5.6-sol", reasoningEffort: "high" },
@@ -144,18 +166,14 @@ describe("settings-store", () => {
       },
       lastModelFamily: "claude",
     });
-    expect(updated.familyDefaults).toEqual({
-      gpt: { model: "gpt-5.6-sol", reasoningEffort: "high" },
-      claude: { model: "claude-opus-5", contextTier: "long_context" },
-    });
-    expect(store.getSettings().lastModelFamily).toBe("claude");
 
-    expect(() => store.updateSettings({
-      familyDefaults: { gemini: { model: "gemini-3.1-pro" } } as any,
-    })).toThrow('familyDefaults key "gemini" is not a known model family');
-    expect(() => store.updateSettings({
-      lastModelFamily: "gemini" as any,
-    })).toThrow("lastModelFamily must be gpt, claude, or other");
+    expect(updated.modelPresets).toEqual({
+      preset1: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+      preset2: { model: "claude-opus-5", contextTier: "long_context" },
+    });
+    expect(updated.lastModelPreset).toBe("preset2");
+    expect(updated.familyDefaults).toBeUndefined();
+    expect(updated.lastModelFamily).toBeUndefined();
   });
 
   it("validates the full update before changing MCP registry rows", () => {
@@ -215,7 +233,7 @@ describe("settings-store", () => {
 
   it.each([
     ["browser settings", { browser: { headed: "true" } }],
-    ["model-family settings", { familyDefaults: { gpt: { model: "gpt-5.6-sol", contextTier: "invalid" } } }],
+    ["model preset settings", { modelPresets: { preset1: { model: "gpt-5.6-sol", contextTier: "invalid" } } }],
   ])("rejects invalid nested persisted %s", (_label, raw) => {
     writeRawSettings(JSON.stringify(raw));
 
@@ -252,8 +270,8 @@ describe("settings-store", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
       contextTier: "long_context",
-      familyDefaults: {
-        gpt: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+      modelPresets: {
+        preset1: { model: "gpt-5.6-sol", reasoningEffort: "high" },
       },
       browser: {
         executablePath,

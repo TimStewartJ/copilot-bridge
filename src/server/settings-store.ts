@@ -11,6 +11,11 @@ import {
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
 import { isModelFamily, type ModelFamily } from "../shared/model-families.js";
+import {
+  getModelPresetSlotForFamily,
+  isModelPresetSlot,
+  type ModelPresetSlot,
+} from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
 
 export type ThemePreference = "light" | "dark" | "system";
@@ -32,6 +37,14 @@ export interface ModelFamilyDefault {
 
 export type ModelFamilyDefaults = Partial<Record<ModelFamily, ModelFamilyDefault>>;
 
+export interface ModelPreset {
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
+}
+
+export type ModelPresets = Partial<Record<ModelPresetSlot, ModelPreset>>;
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -42,6 +55,9 @@ export interface AppSettings {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
+  modelPresets?: ModelPresets;
+  lastModelPreset?: ModelPresetSlot;
+  /** Legacy input fields migrated into modelPresets. */
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
@@ -217,6 +233,70 @@ function normalizeModelFamilyDefaults(value: unknown): ModelFamilyDefaults | und
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeModelPreset(
+  value: unknown,
+  slot: ModelPresetSlot,
+): ModelPreset | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError(`modelPresets.${slot} must be an object`);
+  const raw = value;
+
+  if (raw.model !== undefined && raw.model !== null && typeof raw.model !== "string") {
+    validationError(`modelPresets.${slot}.model must be a string`);
+  }
+  const model = typeof raw.model === "string" ? raw.model.trim() : "";
+  if (!model) return undefined;
+
+  if (
+    raw.reasoningEffort !== undefined
+    && raw.reasoningEffort !== null
+    && typeof raw.reasoningEffort !== "string"
+  ) {
+    validationError(`modelPresets.${slot}.reasoningEffort must be a string`);
+  }
+  const reasoningEffort = typeof raw.reasoningEffort === "string"
+    ? raw.reasoningEffort.trim()
+    : "";
+  const contextTier = raw.contextTier;
+  if (
+    contextTier !== undefined
+    && contextTier !== null
+    && contextTier !== ""
+    && !isCopilotContextTier(contextTier)
+  ) {
+    validationError(`modelPresets.${slot}.contextTier must be default or long_context`);
+  }
+
+  return {
+    model,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
+  };
+}
+
+function normalizeModelPresets(value: unknown): ModelPresets | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("modelPresets must be an object");
+  const normalized: ModelPresets = {};
+  for (const [slot, entry] of Object.entries(value)) {
+    if (!isModelPresetSlot(slot)) {
+      validationError(`modelPresets key "${slot}" is not a known preset slot`);
+    }
+    const normalizedEntry = normalizeModelPreset(entry, slot);
+    if (normalizedEntry) normalized[slot] = normalizedEntry;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function migrateFamilyDefaults(familyDefaults: ModelFamilyDefaults | undefined): ModelPresets | undefined {
+  if (!familyDefaults) return undefined;
+  const presets: ModelPresets = {};
+  for (const [family, value] of Object.entries(familyDefaults)) {
+    if (value) presets[getModelPresetSlotForFamily(family as ModelFamily)] = value;
+  }
+  return Object.keys(presets).length > 0 ? presets : undefined;
+}
+
 function normalizeContextTier(value: unknown): CopilotContextTier | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (!isCopilotContextTier(value)) validationError("contextTier must be default or long_context");
@@ -226,6 +306,12 @@ function normalizeContextTier(value: unknown): CopilotContextTier | undefined {
 function normalizeLastModelFamily(value: unknown): ModelFamily | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (!isModelFamily(value)) validationError("lastModelFamily must be gpt, claude, or other");
+  return value;
+}
+
+function normalizeLastModelPreset(value: unknown): ModelPresetSlot | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (!isModelPresetSlot(value)) validationError("lastModelPreset must be preset1, preset2, or preset3");
   return value;
 }
 
@@ -272,8 +358,19 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
     );
   }
   if ("contextTier" in value) normalized.contextTier = normalizeContextTier(value.contextTier);
-  if ("familyDefaults" in value) normalized.familyDefaults = normalizeModelFamilyDefaults(value.familyDefaults);
-  if ("lastModelFamily" in value) normalized.lastModelFamily = normalizeLastModelFamily(value.lastModelFamily);
+  if ("modelPresets" in value) {
+    normalized.modelPresets = normalizeModelPresets(value.modelPresets);
+  } else if ("familyDefaults" in value) {
+    normalized.modelPresets = migrateFamilyDefaults(normalizeModelFamilyDefaults(value.familyDefaults));
+  }
+  if ("lastModelPreset" in value) {
+    normalized.lastModelPreset = normalizeLastModelPreset(value.lastModelPreset);
+  } else if ("lastModelFamily" in value) {
+    const family = normalizeLastModelFamily(value.lastModelFamily);
+    normalized.lastModelPreset = family ? getModelPresetSlotForFamily(family) : undefined;
+  }
+  delete normalized.familyDefaults;
+  delete normalized.lastModelFamily;
   if ("browser" in value) normalized.browser = normalizeBrowserSettings(value.browser);
   return normalized;
 }

@@ -1,10 +1,10 @@
-import type { ModelFamilyDefaults, ModelInfo, TaskAgentDefinitionSummary } from "../api";
+import type { ModelInfo, ModelPresets, TaskAgentDefinitionSummary } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
 import { LaunchOptionRow } from "./shared/LaunchOptionControls";
-import ModelFamilyPicker from "./shared/ModelFamilyPicker";
-import type { ModelFamily } from "../../shared/model-families.js";
+import ModelPresetPicker from "./shared/ModelPresetPicker";
+import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
 
@@ -13,9 +13,9 @@ interface NewSessionLaunchPanelProps {
   modelsLoading: boolean;
   modelsError?: string;
   defaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
+  presets?: ModelPresets;
   selectedModelId: string;
-  selectedModelFamily?: ModelFamily;
+  selectedPresetSlot?: ModelPresetSlot;
   reasoningEffortOptions: readonly LaunchOption<string>[];
   selectedReasoningEffort?: string;
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
@@ -24,8 +24,8 @@ interface NewSessionLaunchPanelProps {
   agentDefinitions?: readonly TaskAgentDefinitionSummary[];
   agentDefinitionsLoading?: boolean;
   selectedAgentName?: string;
-  onModelFamilyChange: (family: ModelFamily) => void;
-  onModelChange: (modelId: string) => void;
+  onPresetChange: (slot: ModelPresetSlot) => void;
+  onModelChange: (slot: ModelPresetSlot, modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort?: string) => void;
   onContextTierChange: (contextTier?: CopilotContextTier) => void;
   onModeChange: (mode: SendMode) => void;
@@ -42,9 +42,9 @@ export default function NewSessionLaunchPanel({
   modelsLoading,
   modelsError,
   defaultModelId,
-  familyDefaults,
+  presets,
   selectedModelId,
-  selectedModelFamily,
+  selectedPresetSlot,
   reasoningEffortOptions,
   selectedReasoningEffort,
   contextOptions,
@@ -53,7 +53,7 @@ export default function NewSessionLaunchPanel({
   agentDefinitions,
   agentDefinitionsLoading,
   selectedAgentName,
-  onModelFamilyChange,
+  onPresetChange,
   onModelChange,
   onReasoningEffortChange,
   onContextTierChange,
@@ -112,16 +112,16 @@ export default function NewSessionLaunchPanel({
                 Loading models...
               </div>
             ) : (
-              <ModelFamilyPicker
+              <ModelPresetPicker
                 idPrefix="new-session"
                 models={availableModels}
                 selectedModelId={selectedModelId}
-                selectedFamily={selectedModelFamily}
+                selectedPresetSlot={selectedPresetSlot}
                 globalDefaultModelId={defaultModelId}
-                familyDefaults={familyDefaults}
+                presets={presets}
                 allowUnselected
                 disabled={Boolean(modelsError)}
-                onSelectFamily={onModelFamilyChange}
+                onSelectPreset={onPresetChange}
                 onSelectModel={onModelChange}
               />
             )}

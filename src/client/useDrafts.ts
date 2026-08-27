@@ -4,6 +4,10 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import {
+  isModelPresetSlot,
+  type ModelPresetSlot,
+} from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
 
 const STORAGE_KEY = "copilot-bridge:session-drafts";
@@ -24,6 +28,7 @@ export interface DraftScopedLaunchSelection<T extends string> {
 
 export interface DraftLaunchOptions {
   model?: string;
+  presetSlot?: ModelPresetSlot;
   reasoningEffort?: DraftScopedLaunchSelection<string>;
   contextTier?: DraftScopedLaunchSelection<CopilotContextTier>;
   agent?: string;
@@ -122,7 +127,7 @@ function normalizeAttachment(value: unknown): NormalizedValue<Attachment> {
 function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOptions> {
   if (!isRecord(value)) return { changed: true };
 
-  let changed = !hasOnlyKeys(value, ["model", "reasoningEffort", "contextTier", "agent"]);
+  let changed = !hasOnlyKeys(value, ["model", "presetSlot", "reasoningEffort", "contextTier", "agent"]);
   const launch: DraftLaunchOptions = {};
 
   if ("model" in value) {
@@ -130,6 +135,14 @@ function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOpti
       launch.model = value.model;
     } else {
       changed = true;
+    }
+
+    if ("presetSlot" in value) {
+      if (isModelPresetSlot(value.presetSlot)) {
+        launch.presetSlot = value.presetSlot;
+      } else {
+        changed = true;
+      }
     }
   }
 
