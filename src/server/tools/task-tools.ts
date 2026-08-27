@@ -112,7 +112,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_update", {
-    description: "Update a task's title, kind, muted state, status, priority, notes, working directory, group, and/or tags. Only provided fields are changed.",
+    description: "Update a task's title, kind, muted state, priority, notes, working directory, group, definition of done, and/or tags. Only provided fields are changed. Task completion and archival are controlled by the UI.",
     parameters: {
       type: "object",
       properties: {
@@ -120,8 +120,6 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         title: { type: "string", description: "New title" },
         kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
         muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
-        status: { type: "string", enum: ["active", "archived"], description: "Task status" },
-        completionAction: { type: "string", enum: ["complete-and-archive"], description: "Complete and archive the task. Cannot be combined with status." },
         priority: { type: "integer", description: "Task priority" },
         notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },
         cwd: { type: "string", description: "Working directory path for the task" },
@@ -132,6 +130,9 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       required: ["taskId"],
     },
     handler: async (args: any) => {
+      if (args.status !== undefined || args.completionAction !== undefined) {
+        return toolFailure("Task completion and archival are controlled by the UI.");
+      }
       const updates: Record<string, unknown> = {};
       if (args.title !== undefined) updates.title = args.title;
       if (args.kind !== undefined) updates.kind = args.kind;
@@ -139,15 +140,13 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         if (typeof args.muted !== "boolean") return toolFailure("muted must be a boolean");
         updates.muted = args.muted;
       }
-      if (args.status !== undefined) updates.status = args.status;
-      if (args.completionAction !== undefined) updates.completionAction = args.completionAction;
       if (args.priority !== undefined) updates.priority = args.priority;
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId;
       if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, status, completionAction, priority, notes, cwd, groupId, doneWhen, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, notes, cwd, groupId, doneWhen, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
