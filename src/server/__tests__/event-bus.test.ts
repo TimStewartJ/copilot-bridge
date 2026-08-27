@@ -176,6 +176,19 @@ describe("event-bus", () => {
       ]);
     });
 
+    it("preserves a client message id in the projected prompt", () => {
+      const bus = getOrCreateBus("test-client-message-id-1");
+
+      const id = bus.setPendingPrompt("hello", undefined, "client-message-1");
+
+      expect(id).toBe("client-message-1");
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([{
+        id: "client-message-1",
+        content: "hello",
+        pending: true,
+      }]);
+    });
+
     it("broadcasts steering user message updates and discards failed delivery", () => {
       const bus = getOrCreateBus("test-user-message-broadcast-1");
       const events: StreamEvent[] = [];

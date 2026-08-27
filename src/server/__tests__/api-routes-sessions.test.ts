@@ -786,6 +786,26 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined, { mode: "autopilot" });
   });
 
+  it("POST /api/chat passes the client message id to new work", async () => {
+    ctx.sessionManager.startWork = vi.fn();
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({
+        sessionId: "test-session",
+        prompt: "hello",
+        clientMessageId: "client-message-1",
+      });
+
+    expect(res.status).toBe(202);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledWith(
+      "test-session",
+      "hello",
+      undefined,
+      { clientMessageId: "client-message-1" },
+    );
+  });
+
   it("POST /api/chat waits for first-prompt delivery when requested", async () => {
     ctx.sessionManager.startWork = vi.fn();
     ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockResolvedValue(undefined);
@@ -836,6 +856,27 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
+  it("POST /api/chat passes the client message id to busy-session steering", async () => {
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({
+        sessionId: "busy-session",
+        prompt: "adjust course",
+        clientMessageId: "client-message-2",
+      });
+
+    expect(res.status).toBe(202);
+    expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith(
+      "busy-session",
+      "adjust course",
+      undefined,
+      "client-message-2",
+    );
+  });
+
   it("POST /api/chat routes busy slash commands through command steering", async () => {
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.startWork = vi.fn();
@@ -861,6 +902,18 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("reconnecting");
+  });
+
+  it("POST /api/chat rejects invalid client message ids", async () => {
+    ctx.sessionManager.startWork = vi.fn();
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello", clientMessageId: " " });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("clientMessageId");
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
   it("POST /api/chat rejects new work while launcher restart cutover is in progress", async () => {

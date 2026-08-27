@@ -109,6 +109,25 @@ describe("sendChatMessage", () => {
       waitForDelivery: true,
     });
   });
+
+  it("includes the client message identity used for stream handoff", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      jsonResponse({ status: "accepted" })
+    ));
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+    const { sendChatMessage } = await import("./api.js");
+
+    await sendChatMessage("session-1", "hello", undefined, undefined, {
+      clientMessageId: "client-message-1",
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      sessionId: "session-1",
+      prompt: "hello",
+      clientMessageId: "client-message-1",
+    });
+  });
 });
 
 describe("chat history client API", () => {

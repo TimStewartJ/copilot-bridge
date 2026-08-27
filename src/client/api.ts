@@ -868,6 +868,11 @@ export interface ChatMessageAcceptedResponse {
   mode?: "steered" | "command";
 }
 
+export interface ChatMessageSendOptions {
+  waitForDelivery?: boolean;
+  clientMessageId?: string;
+}
+
 export interface SlashCommandInput {
   hint: string;
   required?: boolean;
@@ -895,7 +900,7 @@ export async function sendChatMessage(
   prompt: string,
   attachments?: Attachment[],
   mode?: SendMode,
-  options?: { waitForDelivery?: boolean },
+  options?: ChatMessageSendOptions,
 ): Promise<ChatMessageAcceptedResponse> {
   return apiFetch<ChatMessageAcceptedResponse>("/api/chat", {
     sessionId,
@@ -903,6 +908,7 @@ export async function sendChatMessage(
     ...(attachments?.length ? { attachments } : {}),
     ...(mode ? { mode } : {}),
     ...(options?.waitForDelivery ? { waitForDelivery: true } : {}),
+    ...(options?.clientMessageId ? { clientMessageId: options.clientMessageId } : {}),
   });
 }
 
