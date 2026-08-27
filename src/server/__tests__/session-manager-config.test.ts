@@ -16,6 +16,7 @@ import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { FEED_GUIDANCE } from "../session-instructions.js";
+import { readPersistedSessionModelState } from "../session-model-state-sidecar.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
@@ -226,6 +227,12 @@ describe("SessionManager session config", () => {
         },
       },
     });
+    expect(readPersistedSessionModelState(join(copilotHome, "session-state", "new-session")))
+      .toMatchObject({
+        model: "launch-model",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
   });
 
   it("recomputes the persisted model capabilities from current metadata when resuming", () => {

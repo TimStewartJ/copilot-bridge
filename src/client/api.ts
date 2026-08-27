@@ -9,6 +9,7 @@ import type {
 } from "../shared/copilot-context.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { ModelFamily } from "../shared/model-families.js";
+import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
@@ -1928,6 +1929,14 @@ export interface ModelFamilyDefault {
 
 export type ModelFamilyDefaults = Partial<Record<ModelFamily, ModelFamilyDefault>>;
 
+export interface ModelPreset {
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
+}
+
+export type ModelPresets = Partial<Record<ModelPresetSlot, ModelPreset>>;
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -1938,6 +1947,9 @@ export interface AppSettings {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
+  modelPresets?: ModelPresets;
+  lastModelPreset?: ModelPresetSlot;
+  /** Legacy fields accepted while persisted settings migrate to presets. */
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
@@ -1954,8 +1966,8 @@ export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
   if ("contextTier" in updates && updates.contextTier === undefined) {
     normalized.contextTier = "";
   }
-  if ("lastModelFamily" in updates && updates.lastModelFamily === undefined) {
-    normalized.lastModelFamily = "";
+  if ("lastModelPreset" in updates && updates.lastModelPreset === undefined) {
+    normalized.lastModelPreset = "";
   }
   return JSON.stringify(normalized);
 }

@@ -374,17 +374,31 @@ describe("SessionList change model dialog", () => {
     });
   }
 
-  async function clickFamilyTile(
+  async function clickPresetTile(
     harness: { act: any; dom: { container: any } },
-    family: string,
+    preset: string,
   ) {
     const tile = findAllByTag(harness.dom.container, "BUTTON")
       .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
-        .startsWith(`${family}:`));
-    if (!tile) throw new Error(`Family tile not found: ${family}`);
+        .startsWith(`${preset}:`));
+    if (!tile) throw new Error(`Preset tile not found: ${preset}`);
     await harness.act(async () => {
       getReactProps(tile)?.onClick?.();
     });
+  }
+
+  async function selectPresetModel(
+    harness: { act: any; dom: { container: any } },
+    preset: string,
+    modelName: string,
+  ) {
+    const caret = findAllByTag(harness.dom.container, "BUTTON")
+      .find((candidate) => getReactProps(candidate)?.["aria-label"] === `Choose ${preset} model`);
+    if (!caret) throw new Error(`Preset caret not found: ${preset}`);
+    await harness.act(async () => {
+      getReactProps(caret)?.onClick?.();
+    });
+    await clickButton(harness, modelName);
   }
 
   it("submits the effort and context tier picked from the option rows", async () => {
@@ -418,6 +432,27 @@ describe("SessionList change model dialog", () => {
     }
   });
 
+  it("opens with the current session's long-context tier selected", async () => {
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "high", contextTier: "long_context", source: "live" },
+      [TIERED_MODEL],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
+        { label: "model metadata" },
+      );
+
+      expect(getReactProps(findButton(harness.dom.container, "Long context (922K)"))?.["aria-pressed"])
+        .toBe(true);
+      expect(getReactProps(findButton(harness.dom.container, "Standard context (272K)"))?.["aria-pressed"])
+        .toBe(false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("drops a picked effort when switching to a model without effort metadata", async () => {
     const harness = await openModelDialog(
       { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
@@ -431,8 +466,7 @@ describe("SessionList change model dialog", () => {
       );
 
       await clickButton(harness, "High");
-      // "plain-model" has no gpt-/claude- prefix, so it lives in the Other family.
-      await clickFamilyTile(harness, "Other");
+      await clickPresetTile(harness, "Preset 3");
 
       await clickButton(harness, "Save");
       await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
@@ -445,7 +479,7 @@ describe("SessionList change model dialog", () => {
     }
   });
 
-  it("keeps SDK order in change-model family tiles and refine choices", async () => {
+  it("keeps SDK order in change-model preset menus", async () => {
     const harness = await openModelDialog(
       { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
       [
@@ -466,13 +500,13 @@ describe("SessionList change model dialog", () => {
         { label: "ordered model metadata" },
       );
 
-      const claudeTile = findAllByTag(harness.dom.container, "BUTTON")
-        .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Claude:"));
-      expect(claudeTile?.textContent).toBe("Claude Sonnet 5");
+      const preset2 = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Preset 2:"));
+      expect(preset2?.textContent).toContain("Claude Sonnet 5");
 
       const caret = findAllByTag(harness.dom.container, "BUTTON")
-        .find((button) => getReactProps(button)?.["aria-label"] === "Choose Claude model");
-      if (!caret) throw new Error("Claude refine caret was not rendered");
+        .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 2 model");
+      if (!caret) throw new Error("Preset 2 refine caret was not rendered");
       await harness.act(async () => {
         getReactProps(caret)?.onClick?.();
       });
@@ -480,6 +514,7 @@ describe("SessionList change model dialog", () => {
       const options = findAllByTag(harness.dom.container, "BUTTON")
         .filter((button) => getReactProps(button)?.role === "option");
       expect(options.map((button) => button.textContent)).toEqual([
+        "GPT-5.6",
         "Claude Sonnet 5",
         "Claude Haiku 4.5",
       ]);
@@ -533,7 +568,7 @@ describe("SessionList change model dialog", () => {
         () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
         { label: "model metadata" },
       );
-      await clickFamilyTile(harness, "Claude");
+      await clickPresetTile(harness, "Preset 2");
       await clickButton(harness, "Cancel");
 
       expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
@@ -584,10 +619,10 @@ describe("SessionList change model dialog", () => {
         { label: "change model dialog" },
       );
 
-      const findFamily = (family: string) => findAllByTag(harness.dom.container, "BUTTON")
+      const findPreset = (preset: string) => findAllByTag(harness.dom.container, "BUTTON")
         .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
-          .startsWith(`${family}:`));
-      expect(getReactProps(findFamily("GPT"))?.["aria-pressed"]).toBe(true);
+          .startsWith(`${preset}:`));
+      expect(getReactProps(findPreset("Preset 1"))?.["aria-pressed"]).toBe(true);
 
       await harness.act(async () => {
         resolveModelState({
@@ -598,16 +633,16 @@ describe("SessionList change model dialog", () => {
       });
       await waitUntilAct(
         harness.act,
-        () => getReactProps(findFamily("Claude"))?.["aria-pressed"] === true,
+        () => getReactProps(findPreset("Preset 2"))?.["aria-pressed"] === true,
         { label: "fresh model dialog state" },
       );
-      expect(getReactProps(findFamily("GPT"))?.["aria-pressed"]).toBe(false);
+      expect(getReactProps(findPreset("Preset 1"))?.["aria-pressed"]).toBe(false);
     } finally {
       await harness.cleanup();
     }
   });
 
-  describe("shared model family memory", () => {
+  describe("shared model preset memory", () => {
     const CLAUDE_OPUS: ModelInfo = {
       id: "claude-opus-5",
       name: "Claude Opus 5",
@@ -627,21 +662,21 @@ describe("SessionList change model dialog", () => {
       queryClient.setQueryData<AppSettings>(queryKeys.settings, { mcpServers: {}, ...settings });
     }
 
-    function findTile(harness: { dom: { container: any } }, family: string): any {
+    function findTile(harness: { dom: { container: any } }, preset: string): any {
       const tile = findAllByTag(harness.dom.container, "BUTTON")
         .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
-          .startsWith(`${family}:`));
-      if (!tile) throw new Error(`Family tile not found: ${family}`);
+          .startsWith(`${preset}:`));
+      if (!tile) throw new Error(`Preset tile not found: ${preset}`);
       return tile;
     }
 
-    it("shows the remembered model per family and restores its effort and context", async () => {
+    it("shows the remembered model per preset and restores its effort and context", async () => {
       seedSettings({
         model: "gpt-5.6",
-        familyDefaults: {
-          claude: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
+        modelPresets: {
+          preset2: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
         },
-        lastModelFamily: "gpt",
+        lastModelPreset: "preset1",
       });
       const harness = await openModelDialog(
         { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
@@ -654,10 +689,9 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        // Sonnet is first in SDK order, but the tile shows the remembered Opus.
-        expect(findTile(harness, "Claude").textContent).toBe("Claude Opus 5");
+        expect(findTile(harness, "Preset 2").textContent).toContain("Claude Opus 5");
 
-        await clickFamilyTile(harness, "Claude");
+        await clickPresetTile(harness, "Preset 2");
         await clickButton(harness, "Save");
         await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
           label: "session model patch",
@@ -676,8 +710,8 @@ describe("SessionList change model dialog", () => {
 
     it("drops remembered effort and context the target model cannot honor", async () => {
       seedSettings({
-        familyDefaults: {
-          claude: { model: "claude-sonnet-5", reasoningEffort: "xhigh", contextTier: "long_context" },
+        modelPresets: {
+          preset2: { model: "claude-sonnet-5", reasoningEffort: "xhigh", contextTier: "long_context" },
         },
       });
       const harness = await openModelDialog(
@@ -691,7 +725,7 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await clickFamilyTile(harness, "Claude");
+        await clickPresetTile(harness, "Preset 2");
         await clickButton(harness, "Save");
         await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
           label: "session model patch",
@@ -712,8 +746,8 @@ describe("SessionList change model dialog", () => {
 
     it("remembers a saved switch for the new-chat picker", async () => {
       seedSettings({
-        familyDefaults: { gpt: { model: "gpt-5.6", reasoningEffort: "low" } },
-        lastModelFamily: "gpt",
+        modelPresets: { preset1: { model: "gpt-5.6", reasoningEffort: "low" } },
+        lastModelPreset: "preset1",
       });
       apiMocks.patchSessionModel.mockResolvedValue({
         model: "claude-opus-5",
@@ -731,7 +765,7 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await clickFamilyTile(harness, "Claude");
+        await clickPresetTile(harness, "Preset 2");
         await clickButton(harness, "High");
         await clickButton(harness, "Long context (1M)");
         await clickButton(harness, "Save");
@@ -740,11 +774,11 @@ describe("SessionList change model dialog", () => {
         });
 
         const expected = {
-          familyDefaults: {
-            gpt: { model: "gpt-5.6", reasoningEffort: "low" },
-            claude: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
+          modelPresets: {
+            preset1: { model: "gpt-5.6", reasoningEffort: "low" },
+            preset2: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
           },
-          lastModelFamily: "claude",
+          lastModelPreset: "preset2",
         };
         expect(apiMocks.patchSettings).toHaveBeenCalledWith(expected);
         expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject(expected);
@@ -753,10 +787,17 @@ describe("SessionList change model dialog", () => {
       }
     });
 
-    it("leaves memory untouched when the dialog is cancelled", async () => {
+    it("can assign any model to a preset slot", async () => {
       seedSettings({
-        familyDefaults: { gpt: { model: "gpt-5.6" } },
-        lastModelFamily: "gpt",
+        modelPresets: {
+          preset1: { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default" },
+          preset2: { model: "claude-opus-5", reasoningEffort: "medium" },
+        },
+        lastModelPreset: "preset1",
+      });
+      apiMocks.patchSessionModel.mockResolvedValue({
+        model: "claude-opus-5",
+        reasoningEffort: "medium",
       });
       const harness = await openModelDialog(
         { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
@@ -769,13 +810,54 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await clickFamilyTile(harness, "Claude");
+        await selectPresetModel(harness, "Preset 1", "Claude Opus 5");
+        await clickButton(harness, "Medium");
+        await clickButton(harness, "Save");
+        await waitUntilAct(harness.act, () => apiMocks.patchSettings.mock.calls.length > 0, {
+          label: "settings patch",
+        });
+
+        expect(apiMocks.patchSessionModel).toHaveBeenCalledWith(
+          "session-1",
+          "claude-opus-5",
+          "medium",
+          "default",
+        );
+        expect(apiMocks.patchSettings).toHaveBeenCalledWith({
+          modelPresets: {
+            preset1: { model: "claude-opus-5", reasoningEffort: "medium", contextTier: "default" },
+            preset2: { model: "claude-opus-5", reasoningEffort: "medium" },
+          },
+          lastModelPreset: "preset1",
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("leaves memory untouched when the dialog is cancelled", async () => {
+      seedSettings({
+        modelPresets: { preset1: { model: "gpt-5.6" } },
+        lastModelPreset: "preset1",
+      });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL, CLAUDE_OPUS],
+      );
+      try {
+        await waitUntilAct(
+          harness.act,
+          () => (harness.dom.container.textContent ?? "").includes("Claude Opus 5"),
+          { label: "model metadata" },
+        );
+
+        await clickPresetTile(harness, "Preset 2");
         await clickButton(harness, "Cancel");
 
         expect(apiMocks.patchSettings).not.toHaveBeenCalled();
         expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject({
-          familyDefaults: { gpt: { model: "gpt-5.6" } },
-          lastModelFamily: "gpt",
+          modelPresets: { preset1: { model: "gpt-5.6" } },
+          lastModelPreset: "preset1",
         });
       } finally {
         await harness.cleanup();

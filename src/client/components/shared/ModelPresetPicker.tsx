@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
-import type { ModelFamilyDefaults, ModelInfo } from "../../api";
-import type { ModelFamily } from "../../../shared/model-families.js";
+import type { ModelInfo, ModelPresets } from "../../api";
+import type { ModelPresetSlot } from "../../../shared/model-presets.js";
 import {
-  resolveModelFamilyState,
-  type ModelFamilyPickerState,
-  type ModelFamilyTile,
-} from "../../lib/model-family-defaults";
+  resolveModelPresetState,
+  type ModelPresetTile,
+} from "../../lib/model-presets";
 import { formatModelMultiplier } from "./LaunchOptionControls";
 import {
   computeMenuPlacement,
@@ -18,30 +17,28 @@ function readViewport(): { width: number; height: number } {
   return { width: window.innerWidth || 0, height: window.innerHeight || 0 };
 }
 
-function FamilyRefineMenu({
+function PresetRefineMenu({
   tile,
   models,
-  selectedModelId,
   globalDefaultModelId,
   tileRefs,
   onSelect,
   onClose,
 }: {
-  tile: ModelFamilyTile;
+  tile: ModelPresetTile;
   models: readonly ModelInfo[];
-  selectedModelId?: string;
   globalDefaultModelId?: string;
-  tileRefs: { current: Partial<Record<ModelFamily, HTMLDivElement | null>> };
+  tileRefs: { current: Partial<Record<ModelPresetSlot, HTMLDivElement | null>> };
   onSelect: (modelId: string) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const firstItemRef = useRef<HTMLButtonElement | null>(null);
   const [placement, setPlacement] = useState<MenuPlacement | null>(null);
-  const family = tile.family;
+  const slot = tile.slot;
 
   const reposition = useCallback(() => {
-    const anchor = tileRefs.current[family];
+    const anchor = tileRefs.current[slot];
     const menu = menuRef.current;
     if (!anchor?.getBoundingClientRect || !menu?.getBoundingClientRect) return;
     const next = computeMenuPlacement(
@@ -49,7 +46,6 @@ function FamilyRefineMenu({
       menu.getBoundingClientRect(),
       readViewport(),
     );
-    // Bail on an unchanged placement so repositioning cannot loop through state.
     setPlacement((prev) => {
       if (prev === next) return prev;
       if (prev && next
@@ -61,13 +57,12 @@ function FamilyRefineMenu({
       }
       return next;
     });
-  }, [family, tileRefs]);
+  }, [slot, tileRefs]);
 
   useLayoutEffect(() => {
     reposition();
   }, [reposition, models.length]);
 
-  // The tile row scrolls horizontally, so track scrolls from any ancestor.
   useEffect(() => {
     window.addEventListener("resize", reposition);
     window.addEventListener("scroll", reposition, true);
@@ -107,7 +102,7 @@ function FamilyRefineMenu({
         : undefined}
     >
       {models.map((model, index) => {
-        const selected = model.id === selectedModelId;
+        const selected = model.id === tile.model?.id;
         return (
           <button
             key={model.id}
@@ -138,100 +133,89 @@ function FamilyRefineMenu({
   );
 }
 
-/**
- * Family-first model picker. Clicking a tile body switches to the model shown
- * for that family; the caret opens a menu to refine within the family. Families
- * with no selectable models render disabled.
- */
-export default function ModelFamilyPicker({
+export default function ModelPresetPicker({
   models,
   selectedModelId,
-  selectedFamily,
+  selectedPresetSlot,
   globalDefaultModelId,
-  familyDefaults,
+  presets,
   allowUnselected = false,
   disabled = false,
   idPrefix,
-  onSelectFamily,
+  onSelectPreset,
   onSelectModel,
 }: {
   models: readonly ModelInfo[];
   selectedModelId: string;
-  selectedFamily?: ModelFamily;
+  selectedPresetSlot?: ModelPresetSlot;
   globalDefaultModelId?: string;
-  familyDefaults?: ModelFamilyDefaults;
+  presets?: ModelPresets;
   allowUnselected?: boolean;
   disabled?: boolean;
   idPrefix: string;
-  onSelectFamily: (family: ModelFamily) => void;
-  onSelectModel: (modelId: string) => void;
+  onSelectPreset: (slot: ModelPresetSlot) => void;
+  onSelectModel: (slot: ModelPresetSlot, modelId: string) => void;
 }) {
-  const [openFamily, setOpenFamily] = useState<ModelFamily | null>(null);
+  const [openSlot, setOpenSlot] = useState<ModelPresetSlot | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const tileRefs = useRef<Partial<Record<ModelFamily, HTMLDivElement | null>>>({});
-
-  const state: ModelFamilyPickerState = resolveModelFamilyState({
+  const tileRefs = useRef<Partial<Record<ModelPresetSlot, HTMLDivElement | null>>>({});
+  const state = resolveModelPresetState({
     models,
     selectedModelId,
-    selectedFamily,
+    selectedPresetSlot,
     globalDefaultModelId,
-    familyDefaults,
+    presets,
   });
-  const hasResolvedSelection = selectedModelId
-    ? models.some((model) => model.id === selectedModelId)
-    : selectedFamily
-      ? state.modelsByFamily[selectedFamily].length > 0
-      : Boolean(globalDefaultModelId && models.some((model) => model.id === globalDefaultModelId));
+  const hasResolvedSelection = Boolean(
+    state.liveSlot && state.tiles.find((tile) => tile.slot === state.liveSlot)?.model,
+  );
 
   useEffect(() => {
-    if (!openFamily) return;
+    if (!openSlot) return;
     function handlePointerDown(event: MouseEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) setOpenFamily(null);
+      if (!containerRef.current?.contains(event.target as Node)) setOpenSlot(null);
     }
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, [openFamily]);
+  }, [openSlot]);
 
   useEffect(() => {
-    if (disabled) setOpenFamily(null);
+    if (disabled) setOpenSlot(null);
   }, [disabled]);
 
   return (
     <div
       ref={containerRef}
       role="group"
-      aria-label="Model family"
-      // Horizontal scroll keeps full model names readable at phone widths.
+      aria-label="Model presets"
       className="-mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-1"
     >
       {state.tiles.map((tile) => {
-        const familyModels = state.modelsByFamily[tile.family];
         const unavailable = !tile.model;
-        const tileDisabled = disabled || unavailable;
-        const open = openFamily === tile.family;
-        const live = tile.isLive && !unavailable && (!allowUnselected || hasResolvedSelection);
+        const bodyDisabled = disabled || unavailable;
+        const menuDisabled = disabled || state.availableModels.length === 0;
+        const open = openSlot === tile.slot;
+        const live = tile.isLive && (!allowUnselected || hasResolvedSelection);
         return (
           <div
-            key={tile.family}
+            key={tile.slot}
             ref={(node) => {
-              tileRefs.current[tile.family] = node;
+              tileRefs.current[tile.slot] = node;
             }}
-            className={`relative min-w-28 flex-1 shrink-0 snap-start rounded-md border transition-colors ${
+            className={`relative min-w-32 flex-1 shrink-0 snap-start rounded-md border transition-colors ${
               live ? "border-accent bg-accent/10" : "border-border bg-bg-surface"
-            } ${tileDisabled ? "opacity-60" : ""}`}
+            } ${menuDisabled ? "opacity-60" : ""}`}
           >
             <div className="flex items-stretch">
               <button
                 type="button"
-                id={`${idPrefix}-family-${tile.family}`}
-                // The family name is dropped visually to keep the tile to one
-                // line, so it is carried here for assistive tech instead.
-                aria-label={`${tile.label}: ${tile.model?.name ?? "no models available"}`}
+                id={`${idPrefix}-${tile.slot}`}
+                aria-label={`${tile.label}: ${tile.model?.name ?? "no model selected"}`}
                 aria-pressed={live}
-                disabled={tileDisabled}
+                disabled={bodyDisabled}
                 onClick={() => {
-                  setOpenFamily(null);
-                  onSelectFamily(tile.family);
+                  setOpenSlot(null);
+                  onSelectPreset(tile.slot);
                 }}
                 className={`min-w-0 flex-1 truncate rounded-l-md px-2.5 py-1.5 text-left text-sm enabled:hover:bg-bg-hover/40 disabled:cursor-not-allowed ${
                   live ? "font-semibold text-text-primary" : "text-text-secondary"
@@ -244,25 +228,24 @@ export default function ModelFamilyPicker({
                 aria-label={`Choose ${tile.label} model`}
                 aria-expanded={open}
                 aria-haspopup="listbox"
-                disabled={tileDisabled}
-                onClick={() => setOpenFamily(open ? null : tile.family)}
+                disabled={menuDisabled}
+                onClick={() => setOpenSlot(open ? null : tile.slot)}
                 className="flex w-6 shrink-0 items-center justify-center rounded-r-md border-l border-border text-text-faint enabled:hover:bg-bg-hover enabled:hover:text-text-primary disabled:cursor-not-allowed"
               >
                 <ChevronDown className="h-3.5 w-3.5" />
               </button>
             </div>
-            {open && !tileDisabled && (
-              <FamilyRefineMenu
+            {open && !menuDisabled && (
+              <PresetRefineMenu
                 tile={tile}
-                models={familyModels}
-                selectedModelId={tile.model?.id}
+                models={state.availableModels}
                 globalDefaultModelId={globalDefaultModelId}
                 tileRefs={tileRefs}
                 onSelect={(modelId) => {
-                  setOpenFamily(null);
-                  onSelectModel(modelId);
+                  setOpenSlot(null);
+                  onSelectModel(tile.slot, modelId);
                 }}
-                onClose={() => setOpenFamily(null)}
+                onClose={() => setOpenSlot(null)}
               />
             )}
           </div>
