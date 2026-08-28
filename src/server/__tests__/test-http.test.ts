@@ -31,6 +31,7 @@ describe("shared test HTTP transport", () => {
       const app = index % 2 === 0 ? firstApp : secondApp;
       const response = await request(app).get(`/value?index=${index}`);
       expect(response.status).toBe(200);
+      expect(response.headers["keep-alive"]).toBe("timeout=120");
       responses.push(response.body as Record<string, unknown>);
     }
 
