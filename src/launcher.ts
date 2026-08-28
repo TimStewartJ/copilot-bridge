@@ -34,7 +34,12 @@ import { fetchRestartBusyState, waitForIdleSessions as waitForIdleSessionsImpl }
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
-import { consumeRestartSignalFile, type RestartSignal, type RestartValidationMode } from "./server/restart-signal.js";
+import {
+  consumeRestartSignalFile,
+  type RestartSignal,
+  type RestartSignalConsumption,
+  type RestartValidationMode,
+} from "./server/restart-signal.js";
 import {
   pruneReleaseSlots,
   readActiveRelease,
@@ -74,6 +79,7 @@ import {
 } from "./launcher-restart-state-ops.js";
 import {
   didRestartRecover,
+  resolveRestartSignalAction,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
@@ -142,6 +148,7 @@ if (!process.env.BRIDGE_LAUNCHER_LOG_PATH) {
 }
 const LAUNCHER_LOG_PATH = getLauncherLogPath();
 const MAX_FAILURES = 3;
+const MAX_CLAIMED_SIGNAL_READ_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 120_000;
 const HEALTH_POLL_INTERVAL = 30_000;
@@ -181,6 +188,8 @@ const childProcessIdentities = new WeakMap<ChildProcess, Promise<ProcessIdentity
 let consecutiveFailures = 0;
 let restarting = false;
 let shuttingDown = false;
+let retryClaimedSignalRead = false;
+let claimedSignalReadFailures = 0;
 let crashRestarts = 0;
 let lastCrashTime = 0;
 let steadyHealthFailures = 0;
@@ -263,6 +272,18 @@ function clearSignal() {
 
 function clearInProgressSignal() {
   clearFile(IN_PROGRESS_SIGNAL_FILE);
+}
+
+function clearInProgressSignalStrict(): Error | null {
+  try {
+    unlinkSync(IN_PROGRESS_SIGNAL_FILE);
+    return null;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    return error instanceof Error ? error : new Error(String(error));
+  }
 }
 
 function markReleaseUpdateActivationSucceeded(candidateId: string): void {
@@ -668,25 +689,121 @@ async function recordFailureAndMaybeStop(
   }
 }
 
+async function clearRestartRequestViaServer(requestId: string): Promise<boolean> {
+  const response = await fetch(bridgeLocalUrl("/api/restart-clear"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ requestId }),
+  });
+  if (!response.ok) {
+    throw new Error(`restart lifecycle clear returned HTTP ${response.status}`);
+  }
+  const body = await response.json() as { cleared?: unknown };
+  if (typeof body.cleared !== "boolean") {
+    throw new Error("restart lifecycle clear returned an invalid response");
+  }
+  return body.cleared;
+}
+
+async function rejectInvalidRestartSignal(
+  result: Extract<RestartSignalConsumption, { status: "invalid" }>,
+): Promise<void> {
+  const message =
+    `Claimed restart signal is invalid: ${result.error.message}. No restart was attempted.`;
+  log(`❌ ${message}`);
+  if (result.releaseCandidateId) {
+    markReleaseUpdateActivationRejected(result.releaseCandidateId, message);
+  }
+  if (!result.requestId) {
+    log(
+      "Invalid claimed restart signal did not contain a valid requestId; "
+      + "the rejected claim will be removed without clearing restart state. "
+      + "Use POST /api/restart-clear after confirming any remaining pending lifecycle is stale.",
+    );
+  } else {
+    try {
+      const cleared = await clearRestartRequestViaServer(result.requestId);
+      if (cleared) {
+        log(`Cleared rejected restart request ${result.requestId}`);
+      } else {
+        log(
+          `Rejected restart request ${result.requestId} was no longer current; `
+          + "preserving the newer pending lifecycle",
+        );
+      }
+    } catch (error) {
+      log(
+        `Failed to clear rejected restart request ${result.requestId}: `
+        + `${error instanceof Error ? error.message : String(error)}. `
+        + "The rejected claim will still be removed; use POST /api/restart-clear "
+        + "after confirming any remaining pending lifecycle is stale.",
+      );
+    }
+  }
+
+  const clearError = clearInProgressSignalStrict();
+  if (clearError) {
+    log(
+      `Failed to remove rejected restart claim ${IN_PROGRESS_SIGNAL_FILE}: ${clearError.message}. `
+      + "Remove the file manually after confirming no restart is running.",
+    );
+  }
+}
+
 async function processRestartSignal(): Promise<void> {
   if (restarting || shuttingDown) return;
   restarting = true;
   let restartOutcome: RestartOutcome = "failed";
   let consumedSignal = false;
   try {
-    let signal: RestartSignal | null;
-    try {
-      signal = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
-    } catch (err) {
-      log(`Failed to claim restart signal (will retry): ${err}`);
+    const result = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
+    const action = resolveRestartSignalAction(result);
+    if (action === "none") {
+      retryClaimedSignalRead = false;
+      claimedSignalReadFailures = 0;
       return;
     }
-    if (!signal) return;
+    if (action === "retry") {
+      if (result.status !== "retryable-error") {
+        throw new Error(`Unexpected restart signal result for retry action: ${result.status}`);
+      }
+      if (result.stage === "read") {
+        claimedSignalReadFailures++;
+        retryClaimedSignalRead = claimedSignalReadFailures < MAX_CLAIMED_SIGNAL_READ_FAILURES;
+        const retryDetail = retryClaimedSignalRead
+          ? "will retry"
+          : "retry limit reached; inspect restart-in-progress.json and clear stale restart state manually";
+        log(`Failed to read claimed restart signal (${retryDetail}): ${result.error}`);
+        return;
+      }
+      log(
+        `Failed to claim restart signal (will retry): ${result.error}`,
+      );
+      return;
+    }
+    retryClaimedSignalRead = false;
+    claimedSignalReadFailures = 0;
+    if (action === "reject") {
+      if (result.status !== "invalid") {
+        throw new Error(`Unexpected restart signal result for reject action: ${result.status}`);
+      }
+      await rejectInvalidRestartSignal(result);
+      return;
+    }
+    if (result.status !== "claimed") {
+      throw new Error(`Unexpected restart signal result for restart action: ${result.status}`);
+    }
     consumedSignal = true;
-    restartOutcome = await restart(signal);
+    restartOutcome = await restart(result.signal);
   } finally {
     if (consumedSignal) {
-      clearInProgressSignal();
+      const clearError = clearInProgressSignalStrict();
+      if (clearError) {
+        log(
+          `Failed to remove completed restart claim ${IN_PROGRESS_SIGNAL_FILE}: ${clearError.message}. `
+          + "Remove the file manually after confirming the restart outcome.",
+        );
+      }
       if (shouldPersistReleaseFailureState({
         outcome: restartOutcome,
         hasPendingReleaseFailure: pendingReleaseFailure !== null,
@@ -1579,7 +1696,14 @@ async function main() {
 
   // Poll for restart signal
   setInterval(async () => {
-    if (!restarting && !recoveringServer && existsSync(SIGNAL_FILE)) {
+    if (
+      !restarting
+      && !recoveringServer
+      && (
+        existsSync(SIGNAL_FILE)
+        || (retryClaimedSignalRead && existsSync(IN_PROGRESS_SIGNAL_FILE))
+      )
+    ) {
       await processRestartSignal();
     }
   }, POLL_INTERVAL);
