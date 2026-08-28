@@ -274,6 +274,7 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBe("gpt-5.5");
     expect(cfg.reasoningEffort).toBe("xhigh");
+    expect(cfg.contextTier).toBe("long_context");
     expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
   });
 
@@ -404,6 +405,7 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBe("gpt-5.5");
     expect(cfg.reasoningEffort).toBe("high");
+    expect(cfg.contextTier).toBe("long_context");
     expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
   });
 
@@ -940,6 +942,7 @@ describe("session-config-builder", () => {
     });
 
     expect(cfg.model).toBe("gpt-5.5");
+    expect(cfg.contextTier).toBe("long_context");
     expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
   });
 

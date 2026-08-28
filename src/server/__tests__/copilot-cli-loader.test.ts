@@ -90,13 +90,13 @@ describe("installed @github/copilot-sdk pending-interaction contract", () => {
     expect(rpcTypes).not.toMatch(/pendingUserInputs|pendingElicitations/);
   });
 
-  it("forwards GitHub MCP options without the prerelease ask-user selector", () => {
+  it("forwards GitHub MCP and ask-user options supported by the pinned CLI", () => {
     const clientPath = findInstalledSdkClient();
     expect(clientPath, "No installed @github/copilot-sdk dist/client.js found.").toBeTruthy();
     const client = readFileSync(clientPath!, "utf-8");
 
     expect(client.match(/githubMcpToolOptions: config\.githubMcpToolOptions,/g)?.length).toBe(2);
-    expect(client).not.toContain("askUserVariant: config.askUserVariant");
+    expect(client.match(/askUserVariant: config\.askUserVariant,/g)?.length).toBe(2);
   });
 
   it("keeps greppable SDK transport disconnect warnings in the installed client", () => {
