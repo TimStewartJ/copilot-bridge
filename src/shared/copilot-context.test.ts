@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getContextWindowTokensForTier,
   getModelCapabilitiesOverride,
+  inferContextTierFromCapabilities,
 } from "./copilot-context.js";
 
 const TIERED_MODEL = {
@@ -45,6 +46,30 @@ describe("copilot context tiers", () => {
   it("uses the tier-specific context window for labels", () => {
     expect(getContextWindowTokensForTier(TIERED_MODEL, "default")).toBe(272_000);
     expect(getContextWindowTokensForTier(TIERED_MODEL, "long_context")).toBe(922_000);
+  });
+
+  it("recovers context tiers from persisted capability overrides", () => {
+    expect(inferContextTierFromCapabilities(TIERED_MODEL, {
+      limits: {
+        max_context_window_tokens: 1_050_000,
+        max_prompt_tokens: 922_000,
+      },
+    })).toBe("long_context");
+    expect(inferContextTierFromCapabilities(TIERED_MODEL, {
+      limits: {
+        max_context_window_tokens: 272_000,
+        max_prompt_tokens: 144_000,
+      },
+    })).toBe("default");
+  });
+
+  it("does not infer a tier from unrelated capability limits", () => {
+    expect(inferContextTierFromCapabilities(TIERED_MODEL, {
+      limits: {
+        max_context_window_tokens: 500_000,
+        max_prompt_tokens: 400_000,
+      },
+    })).toBeUndefined();
   });
 
   it("returns undefined for models without tiered context limits", () => {

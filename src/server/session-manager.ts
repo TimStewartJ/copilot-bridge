@@ -168,6 +168,7 @@ import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { AgentBackendDisconnect } from "./agent-backend/types.js";
 import {
   getModelCapabilitiesOverride,
+  inferContextTierFromCapabilities,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
   type CopilotContextTier,
@@ -2561,7 +2562,10 @@ export class SessionManager {
       },
     });
     if (opts.forResume && opts.sessionId) {
-      const persistedState = this.readPersistedSessionModelState(opts.sessionId);
+      const persistedState = this.readPersistedSessionModelState(opts.sessionId, modelMetadata);
+      if (persistedState.contextTier) {
+        cfg.contextTier = persistedState.contextTier;
+      }
       const modelCapabilities = this.resolvePersistedModelCapabilities(persistedState, modelMetadata);
       if (modelCapabilities) {
         cfg.modelCapabilities = modelCapabilities;
@@ -2659,8 +2663,15 @@ export class SessionManager {
     }
   }
 
-  private readPersistedSessionModelState(sessionId: string): PersistedSessionModelState {
-    return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
+  private readPersistedSessionModelState(
+    sessionId: string,
+    modelMetadata = this.modelMetadataForContextTiers,
+  ): PersistedSessionModelState {
+    const state = readPersistedSessionModelState(this.getSessionStateDir(sessionId));
+    if (state.contextTier || !state.model || !state.modelCapabilities) return state;
+    const model = modelMetadata?.find((candidate) => candidate.id === state.model);
+    const contextTier = inferContextTierFromCapabilities(model, state.modelCapabilities);
+    return contextTier ? { ...state, contextTier } : state;
   }
 
   private supportsSessionToolInitialization(): boolean {
@@ -4806,7 +4817,7 @@ export class SessionManager {
         }
       }
 
-      const persistedState = this.readPersistedSessionModelState(sessionId);
+      const persistedState = this.readPersistedSessionModelState(sessionId, modelMetadata);
       let currentBeforeSwitch: Awaited<ReturnType<AgentSession["getCurrentModel"]>>;
       try {
         currentBeforeSwitch = await session.getCurrentModel();
@@ -4825,10 +4836,12 @@ export class SessionManager {
         ?? (currentBeforeSwitch?.modelId === model
           ? normalizeCopilotContextTier(currentBeforeSwitch.contextTier)
           : undefined)
+        ?? (persistedState.model === model ? persistedState.contextTier : undefined)
         ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
       const resolvedContext = this.resolveModelRuntimeOptions(model, effectiveRequestedContextTier, modelMetadata);
       const setModelOptions = {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
         ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
       };
       const opts = Object.keys(setModelOptions).length > 0 ? setModelOptions : undefined;
@@ -4849,9 +4862,8 @@ export class SessionManager {
       const liveReasoningEffort = hasAuthoritativeUpdatedModel
         ? currentAfterSwitch?.reasoningEffort
         : effectiveReasoningEffort;
-      const liveContextTier = hasAuthoritativeUpdatedModel
-        ? normalizeCopilotContextTier(currentAfterSwitch?.contextTier)
-        : resolvedContext.contextTier;
+      const liveContextTier = normalizeCopilotContextTier(currentAfterSwitch?.contextTier)
+        ?? (liveModel === model ? resolvedContext.contextTier : undefined);
       this.persistSessionModelState(sessionId, {
         model: liveModel,
         ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),

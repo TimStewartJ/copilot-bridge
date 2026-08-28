@@ -310,6 +310,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         ?? scheduleContext?.contextTier
         ?? normalizeCopilotContextTier(settings?.contextTier),
     );
+    if (contextTier) cfg.contextTier = contextTier;
     const modelCapabilities = getModelCapabilitiesOverride(selectedModelMetadata, contextTier);
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;
   }

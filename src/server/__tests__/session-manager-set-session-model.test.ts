@@ -6,6 +6,7 @@ import { setupTestDb, createTestBus, createMockSessionManager, makeAgentSessionS
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { readPersistedSessionModelState } from "../session-model-state-sidecar.js";
 import supertest from "./test-http.js";
 import type { AgentCurrentModel, AgentSetModelOptions } from "../agent-backend/types.js";
 
@@ -148,6 +149,7 @@ describe("SessionManager.setSessionModel", () => {
     const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "default");
 
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
+      contextTier: "default",
       modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES,
     });
     expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "default" });
@@ -157,12 +159,13 @@ describe("SessionManager.setSessionModel", () => {
     });
   });
 
-  it("passes explicit model limits when selecting long context", async () => {
-    const manager = createManager(makeTestDir("model-context-long"));
+  it("preserves long context when the live SDK omits the selected tier", async () => {
+    const copilotHome = makeTestDir("model-context-long");
+    const manager = createManager(copilotHome);
     const session = createMockSession("gpt-5.5");
     session.getCurrentModel
       .mockResolvedValueOnce({ modelId: "gpt-5.5" })
-      .mockResolvedValueOnce({ modelId: "gpt-5.5", contextTier: "long_context" });
+      .mockResolvedValueOnce({ modelId: "gpt-5.5" });
     manager.backend = {};
     manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
     manager.sessionObjects.set("session-1", session);
@@ -170,9 +173,42 @@ describe("SessionManager.setSessionModel", () => {
     const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "long_context");
 
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
+      contextTier: "long_context",
       modelCapabilities: LONG_CONTEXT_CAPABILITIES,
     });
     expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "long_context" });
+    expect(readPersistedSessionModelState(join(copilotHome, "session-state", "session-1")))
+      .toMatchObject({
+        model: "gpt-5.5",
+        contextTier: "long_context",
+        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
+      });
+    await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
+      model: "gpt-5.5",
+      contextTier: "long_context",
+    });
+  });
+
+  it("recovers a missing tier from persisted long-context capabilities", async () => {
+    const copilotHome = makeTestDir("model-context-tier-recovery");
+    const manager = createManager(copilotHome);
+    const session = createMockSession("gpt-5.5");
+    manager.backend = {};
+    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    manager.sessionObjects.set("session-1", session);
+    mkdirSync(join(copilotHome, "session-state", "session-1"), { recursive: true });
+    writeFileSync(
+      join(copilotHome, "session-state", "session-1", "bridge-model-state.json"),
+      JSON.stringify({
+        model: "gpt-5.5",
+        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
+      }),
+    );
+
+    await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
+      model: "gpt-5.5",
+      contextTier: "long_context",
+    });
   });
 
   it("resumes a cold (non-cached) session WITHOUT model config, then sets model", async () => {
@@ -211,7 +247,10 @@ describe("SessionManager.setSessionModel", () => {
 
     expect(resumeSession).toHaveBeenCalledWith(
       "cold-session",
-      expect.objectContaining({ modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES }),
+      expect.objectContaining({
+        contextTier: "default",
+        modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES,
+      }),
     );
   });
 
@@ -232,7 +271,37 @@ describe("SessionManager.setSessionModel", () => {
 
     expect(resumeSession).toHaveBeenCalledWith(
       "cold-session",
-      expect.objectContaining({ modelCapabilities: LONG_CONTEXT_CAPABILITIES }),
+      expect.objectContaining({
+        contextTier: "long_context",
+        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
+      }),
+    );
+  });
+
+  it("reapplies long context when the persisted tier was lost", async () => {
+    const copilotHome = makeTestDir("model-context-resume-lost-tier");
+    const manager = createManager(copilotHome);
+    const session = createMockSession("previous-model");
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.backend = { resumeSession };
+    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    mkdirSync(join(copilotHome, "session-state", "cold-session"), { recursive: true });
+    writeFileSync(
+      join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),
+      JSON.stringify({
+        model: "gpt-5.5",
+        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
+      }),
+    );
+
+    await manager.setSessionModel("cold-session", "claude-opus-4.7");
+
+    expect(resumeSession).toHaveBeenCalledWith(
+      "cold-session",
+      expect.objectContaining({
+        contextTier: "long_context",
+        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
+      }),
     );
   });
 
