@@ -12,7 +12,6 @@
 // three modules, and it is the write side of the same predicate: it is what
 // makes isRestartAlreadyInFlight() start returning true.
 
-import { unlinkSync } from "node:fs";
 import { beginRestartPending, clearRestartPending } from "./restart-controller.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
 import {
@@ -116,13 +115,8 @@ export function lifecycleBusyToolFailure(options: {
   });
 }
 
-export function cleanupFailedRestartSignal(signalFile: string, requestId: string): void {
+export function cleanupFailedRestartSignal(requestId: string): void {
   clearRestartPending(requestId);
-  try {
-    unlinkSync(signalFile);
-  } catch {
-    // Best-effort cleanup after a failed signal write.
-  }
 }
 
 /**
@@ -138,9 +132,14 @@ export function writeRestartSignalOrRollback(
 ): number {
   const restartRequest = beginRestartPending();
   try {
-    writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
+    writeRestartSignalFile(signalFile, {
+      validationMode,
+      requestId: restartRequest.requestId,
+      source,
+      releaseCandidate,
+    });
   } catch (error) {
-    cleanupFailedRestartSignal(signalFile, restartRequest.requestId);
+    cleanupFailedRestartSignal(restartRequest.requestId);
     throw error;
   }
   return restartRequest.waitingSessions;

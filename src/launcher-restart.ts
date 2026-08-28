@@ -1,3 +1,5 @@
+import type { RestartSignalConsumption } from "./server/restart-signal.js";
+
 export type RestartOutcome =
   | "restarted"
   | "recovered-via-rollback"
@@ -7,6 +9,21 @@ export type RestartOutcome =
 export type VerifiedReplacement<T> =
   | { stopped: false; replacement: null }
   | { stopped: true; replacement: T };
+
+export type RestartSignalAction = "none" | "retry" | "reject" | "restart";
+
+export function resolveRestartSignalAction(result: RestartSignalConsumption): RestartSignalAction {
+  switch (result.status) {
+    case "none":
+      return "none";
+    case "retryable-error":
+      return "retry";
+    case "invalid":
+      return "reject";
+    case "claimed":
+      return "restart";
+  }
+}
 
 /**
  * The only legal path from one managed server to another: replacement creation

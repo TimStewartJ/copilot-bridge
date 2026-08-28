@@ -131,6 +131,7 @@ describe("runSelfUpdateJob active-release drift", () => {
       expect.stringContaining("restart.signal"),
       expect.objectContaining({
         validationMode: "deploy",
+        requestId: "restart-request-test",
         source: "self_update",
         releaseCandidate: expect.objectContaining({ commitSha: headSha }),
       }),
