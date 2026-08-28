@@ -168,7 +168,6 @@ import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { AgentBackendDisconnect } from "./agent-backend/types.js";
 import {
   getModelCapabilitiesOverride,
-  inferContextTierFromCapabilities,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
   type CopilotContextTier,
@@ -2562,7 +2561,7 @@ export class SessionManager {
       },
     });
     if (opts.forResume && opts.sessionId) {
-      const persistedState = this.readPersistedSessionModelState(opts.sessionId, modelMetadata);
+      const persistedState = this.readPersistedSessionModelState(opts.sessionId);
       if (persistedState.contextTier) {
         cfg.contextTier = persistedState.contextTier;
       }
@@ -2663,15 +2662,8 @@ export class SessionManager {
     }
   }
 
-  private readPersistedSessionModelState(
-    sessionId: string,
-    modelMetadata = this.modelMetadataForContextTiers,
-  ): PersistedSessionModelState {
-    const state = readPersistedSessionModelState(this.getSessionStateDir(sessionId));
-    if (state.contextTier || !state.model || !state.modelCapabilities) return state;
-    const model = modelMetadata?.find((candidate) => candidate.id === state.model);
-    const contextTier = inferContextTierFromCapabilities(model, state.modelCapabilities);
-    return contextTier ? { ...state, contextTier } : state;
+  private readPersistedSessionModelState(sessionId: string): PersistedSessionModelState {
+    return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
   }
 
   private supportsSessionToolInitialization(): boolean {
@@ -4817,7 +4809,7 @@ export class SessionManager {
         }
       }
 
-      const persistedState = this.readPersistedSessionModelState(sessionId, modelMetadata);
+      const persistedState = this.readPersistedSessionModelState(sessionId);
       let currentBeforeSwitch: Awaited<ReturnType<AgentSession["getCurrentModel"]>>;
       try {
         currentBeforeSwitch = await session.getCurrentModel();

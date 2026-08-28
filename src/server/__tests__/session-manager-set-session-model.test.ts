@@ -189,28 +189,6 @@ describe("SessionManager.setSessionModel", () => {
     });
   });
 
-  it("recovers a missing tier from persisted long-context capabilities", async () => {
-    const copilotHome = makeTestDir("model-context-tier-recovery");
-    const manager = createManager(copilotHome);
-    const session = createMockSession("gpt-5.5");
-    manager.backend = {};
-    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
-    manager.sessionObjects.set("session-1", session);
-    mkdirSync(join(copilotHome, "session-state", "session-1"), { recursive: true });
-    writeFileSync(
-      join(copilotHome, "session-state", "session-1", "bridge-model-state.json"),
-      JSON.stringify({
-        model: "gpt-5.5",
-        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
-      }),
-    );
-
-    await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
-      model: "gpt-5.5",
-      contextTier: "long_context",
-    });
-  });
-
   it("resumes a cold (non-cached) session WITHOUT model config, then sets model", async () => {
     const manager = createManager();
     const session = createMockSession("previous-model");
@@ -265,33 +243,6 @@ describe("SessionManager.setSessionModel", () => {
     writeFileSync(
       join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),
       JSON.stringify({ model: "gpt-5.5", contextTier: "long_context" }),
-    );
-
-    await manager.setSessionModel("cold-session", "claude-opus-4.7");
-
-    expect(resumeSession).toHaveBeenCalledWith(
-      "cold-session",
-      expect.objectContaining({
-        contextTier: "long_context",
-        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
-      }),
-    );
-  });
-
-  it("reapplies long context when the persisted tier was lost", async () => {
-    const copilotHome = makeTestDir("model-context-resume-lost-tier");
-    const manager = createManager(copilotHome);
-    const session = createMockSession("previous-model");
-    const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.backend = { resumeSession };
-    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
-    mkdirSync(join(copilotHome, "session-state", "cold-session"), { recursive: true });
-    writeFileSync(
-      join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),
-      JSON.stringify({
-        model: "gpt-5.5",
-        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
-      }),
     );
 
     await manager.setSessionModel("cold-session", "claude-opus-4.7");

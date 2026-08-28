@@ -135,37 +135,10 @@ export function getModelCapabilitiesOverride(
   return { limits };
 }
 
-export function inferContextTierFromCapabilities(
-  model: CopilotModelContextMetadata | null | undefined,
-  capabilities: Record<string, unknown> | undefined,
-): CopilotContextTier | undefined {
-  if (!modelSupportsLongContext(model)) return undefined;
-  const actualLimits = asRecord(capabilities?.limits);
-  if (!actualLimits) return undefined;
-
-  const matches = (tier: CopilotContextTier): boolean => {
-    const expectedLimits = getModelCapabilitiesOverride(model, tier)?.limits;
-    if (!expectedLimits) return false;
-    const entries = Object.entries(expectedLimits);
-    return entries.length > 0
-      && entries.every(([key, value]) => actualLimits[key] === value);
-  };
-
-  if (matches("long_context")) return "long_context";
-  if (matches("default")) return "default";
-  return undefined;
-}
-
 function finitePositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
 }
