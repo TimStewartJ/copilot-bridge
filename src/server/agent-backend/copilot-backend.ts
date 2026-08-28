@@ -574,7 +574,10 @@ export class CopilotBackend implements AgentBackend {
     const sessions = (this.client as any).rpc?.sessions;
     const checkInUse = sessions?.checkInUse;
     if (typeof checkInUse !== "function") return undefined;
-    const result = await this.rpc(
+    // This optional UI probe can queue behind active turns on the shared RPC
+    // channel. A timeout means the indicator is unavailable, not that the
+    // backend is dead; transport watchers and critical RPCs still detect loss.
+    const result = await boundRpc(
       "backend.checkSessionsInUse",
       () => checkInUse.call(sessions, { sessionIds: [...sessionIds] }),
     );

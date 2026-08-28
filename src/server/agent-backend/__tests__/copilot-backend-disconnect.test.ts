@@ -57,6 +57,11 @@ function createFakeClient(options: { ping?: () => Promise<unknown> } = {}) {
     resumeSession: vi.fn(),
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({})),
+    rpc: {
+      sessions: {
+        checkInUse: vi.fn(async () => ({ inUse: [] })),
+      },
+    },
   };
   return { client, connection, cliProcess };
 }
@@ -199,6 +204,28 @@ describe("CopilotBackend disconnect detection", () => {
       reason: "rpc-timeout",
       detail: expect.stringContaining("rpc-timeout:session.send"),
     }));
+  });
+
+  it("fails a hung external-use probe without declaring the backend disconnected", async () => {
+    vi.useFakeTimers();
+    const { client } = createFakeClient();
+    client.rpc.sessions.checkInUse.mockImplementation(() => new Promise(() => {}));
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+
+    const check = backend.checkSessionsInUse!(["s1"]);
+    const rejection = expect(check).rejects.toMatchObject({
+      code: "AGENT_RPC_TIMEOUT",
+      rpc: "backend.checkSessionsInUse",
+    });
+    await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["backend.checkSessionsInUse"]);
+    await rejection;
+
+    expect(client.ping).not.toHaveBeenCalled();
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(backend.getConnectionStatus()).toMatchObject({ state: "connected" });
   });
 
   it("coalesces concurrent health probes into one ping", async () => {
