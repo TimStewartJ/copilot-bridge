@@ -3,7 +3,7 @@
 import express from "express";
 import multer from "multer";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -2157,10 +2157,23 @@ export function createApiRouter(
   });
 
   // POST /restart-clear — manual escape hatch to dismiss a stale restart banner
-  router.post("/restart-clear", (_req, res) => {
+  router.post("/restart-clear", async (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
-    forceClearRestartPending();
-    res.json({ ok: true });
+    const body = req.body as { requestId?: unknown } | undefined;
+    const hasRequestId = body !== undefined && Object.hasOwn(body, "requestId");
+    const requestId = typeof body?.requestId === "string" && body.requestId.trim()
+      ? body.requestId.trim()
+      : undefined;
+    if (hasRequestId && !requestId) {
+      return res.status(400).json({ error: "requestId must be a non-empty string when present." });
+    }
+    const cleared = requestId
+      ? clearRestartPending(requestId)
+      : forceClearRestartPending();
+    if (cleared) {
+      await refreshRestartState();
+    }
+    res.json({ ok: true, cleared });
   });
 
   router.get("/restart-status", async (_req, res) => {
@@ -2232,15 +2245,11 @@ export function createApiRouter(
     try {
       writeRestartSignalFile(signalFile, {
         validationMode: "operational",
+        requestId: restartRequest.requestId,
         source: "settings_ui",
       });
     } catch (error) {
       clearRestartPending(restartRequest.requestId);
-      try {
-        unlinkSync(signalFile);
-      } catch {
-        // Best-effort cleanup after a failed signal write.
-      }
       return res.status(500).json({
         error: "Restart signal could not be written.",
         details: error instanceof Error ? error.message : String(error),

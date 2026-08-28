@@ -13,6 +13,7 @@ type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
 type MkdirSyncArgs = Parameters<typeof import("node:fs").mkdirSync>;
 type RenameSyncArgs = Parameters<typeof import("node:fs").renameSync>;
+type RmSyncArgs = Parameters<typeof import("node:fs").rmSync>;
 type StatSyncPath = Parameters<typeof import("node:fs").statSync>[0];
 type MockSpawnOptions = { cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean };
 type ToolInvocation = {
@@ -120,6 +121,7 @@ const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs
 const renameSyncCallMock = vi.hoisted(() => vi.fn<(...args: RenameSyncArgs) => void>());
 const readFileSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ReadFileSyncPath) => string | undefined>());
 const unlinkSyncCallMock = vi.hoisted(() => vi.fn<(path: UnlinkSyncPath) => void>());
+const rmSyncCallMock = vi.hoisted(() => vi.fn<(...args: RmSyncArgs) => void>());
 const preparePatchedPackagesForInstallMock = vi.fn(() => ({
   packages: [],
   discard: vi.fn(),
@@ -140,6 +142,17 @@ const buildPublicUrlMock = vi.fn(() => undefined);
 
 function isDataFilePath(path: string, filename: string): boolean {
   return basename(path) === filename && basename(dirname(path)) === "data";
+}
+
+function isRestartSignalTempPath(path: string): boolean {
+  const filename = basename(path);
+  return basename(dirname(path)) === "data"
+    && filename.startsWith(".restart.signal.")
+    && filename.endsWith(".tmp");
+}
+
+function hasRestartSignalWriteAttempt(): boolean {
+  return writeFileSyncCallMock.mock.calls.some(([file]) => isRestartSignalTempPath(String(file)));
 }
 
 function isValidationLogPath(path: string): boolean {
@@ -196,6 +209,7 @@ vi.mock("node:fs", async (importOriginal) => {
       if (
         isDataFilePath(normalized, "pre-deploy-sha")
         || isDataFilePath(normalized, "restart.signal")
+        || isRestartSignalTempPath(normalized)
         || isDataFilePath(normalized, "deps-hash")
         || isValidationLogPath(normalized)
         || isDeployValidationStampPath(normalized)
@@ -248,10 +262,15 @@ vi.mock("node:fs", async (importOriginal) => {
     renameSync: (...args: RenameSyncArgs) => {
       renameSyncCallMock(...args);
       const [, target] = args;
-      if (isDeployValidationStampPath(String(target)) || isStagingValidationStampPath(String(target))) return;
+      if (
+        isDataFilePath(String(target), "restart.signal")
+        || isDeployValidationStampPath(String(target))
+        || isStagingValidationStampPath(String(target))
+      ) return;
       return actual.renameSync(...args);
     },
     rmSync: (path: Parameters<typeof actual.rmSync>[0], ...args: unknown[]) => {
+      rmSyncCallMock(path, ...(args as []));
       if (rmSyncThrowDirs.has(String(path))) {
         throw new Error(`EBUSY: resource busy or locked, rm '${String(path)}'`);
       }
@@ -560,6 +579,7 @@ afterEach(() => {
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
+  rmSyncCallMock.mockReset();
   renameSyncCallMock.mockReset();
   stagingLogMock.mockReset();
   vi.resetModules();
@@ -832,7 +852,7 @@ describe("staging tools", () => {
     const signalFile = join(createTempDir("bridge-stage-signal-"), "data", "restart.signal");
 
     writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
-      if (isDataFilePath(String(args[0]), "restart.signal")) {
+      if (isRestartSignalTempPath(String(args[0]))) {
         throw new Error("disk full");
       }
     });
@@ -840,15 +860,20 @@ describe("staging tools", () => {
     expect(() => mod.__testing.writeRestartSignalOrRollback(signalFile)).toThrow(/disk full/);
     expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
     expect(clearRestartPendingMock).toHaveBeenCalledTimes(1);
-    expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(true);
+    expect(
+      rmSyncCallMock.mock.calls.some(([file]) => isRestartSignalTempPath(String(file))),
+    ).toBe(true);
+    expect(
+      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal")),
+    ).toBe(false);
     expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
       writeFileSyncCallMock.mock.invocationCallOrder[0],
     );
     expect(writeFileSyncCallMock.mock.invocationCallOrder[0]).toBeLessThan(
-      clearRestartPendingMock.mock.invocationCallOrder[0],
+      rmSyncCallMock.mock.invocationCallOrder[0],
     );
-    expect(clearRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
-      unlinkSyncCallMock.mock.invocationCallOrder[0],
+    expect(rmSyncCallMock.mock.invocationCallOrder[0]).toBeLessThan(
+      clearRestartPendingMock.mock.invocationCallOrder[0],
     );
   });
 
@@ -1337,7 +1362,7 @@ describe("staging tools", () => {
     expect(commands).not.toContain('git branch -D "staging/preview-deploy"');
     expect(commands).not.toContain("git worktree prune");
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
     expect(existsSync(stagingDir)).toBe(true);
@@ -2024,7 +2049,7 @@ describe("staging tools", () => {
     expect(commands).toContain(`git reset --hard ${preDeploySha}`);
     expect(commands).not.toContain("git push origin main");
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(hasRestartSignalWriteAttempt()).toBe(false);
   });
 
   it("blocks restart if pushed production HEAD differs from the validated release candidate", async () => {
@@ -2082,7 +2107,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("Restart signaling was blocked");
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(`git worktree remove "${stagingDir}" --force`);
   });
 
@@ -2144,7 +2169,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("retry-after-fix");
     expect(result.textResultForLlm).toContain("deploy gate exploded");
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
-    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain('git merge "staging/preview-deploy" --no-edit');
   });
@@ -2215,7 +2240,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("push rejected 2");
     expect(pushAttempts).toBe(2);
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).toContain("git reset --hard 1111111111111111111111111111111111111111");
@@ -2323,7 +2348,7 @@ describe("staging tools", () => {
     expect(result.content?.[0]?.text).toContain('"nextAction":"respond"');
     expect(result.content?.[0]?.text).toContain("end your turn");
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
+    expect(hasRestartSignalWriteAttempt()).toBe(false);
   });
 
   it("preserves an existing rollback checkpoint during deploy", async () => {
@@ -2854,12 +2879,12 @@ describe("staging tools", () => {
       expectIsolatedValidationEnv(options?.env);
     }
 
-    // pre-deploy-sha checkpoint must be written before restart.signal
+    // pre-deploy-sha checkpoint must be written before the atomic restart-signal temp
     const writtenPaths = writeFileSyncCallMock.mock.calls.map(([file]) => String(file));
     const checkpointWriteIndex = writtenPaths.findIndex((p) => isDataFilePath(p, "pre-deploy-sha"));
-    const signalWriteIndex = writtenPaths.findIndex((p) => isDataFilePath(p, "restart.signal"));
+    const signalWriteIndex = writtenPaths.findIndex((p) => isRestartSignalTempPath(p));
     expect(checkpointWriteIndex, "pre-deploy-sha must be written").toBeGreaterThan(-1);
-    expect(signalWriteIndex, "restart.signal must be written").toBeGreaterThan(-1);
+    expect(signalWriteIndex, "restart signal temp must be written").toBeGreaterThan(-1);
     expect(checkpointWriteIndex).toBeLessThan(signalWriteIndex);
     expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
       writeFileSyncCallMock.mock.invocationCallOrder[signalWriteIndex],

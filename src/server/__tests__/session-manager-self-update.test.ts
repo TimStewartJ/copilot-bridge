@@ -11,6 +11,8 @@ type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
 type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
+type RenameSyncArgs = Parameters<typeof import("node:fs").renameSync>;
+type RmSyncArgs = Parameters<typeof import("node:fs").rmSync>;
 type StatSyncPath = Parameters<typeof import("node:fs").statSync>[0];
 
 const execSyncMock = vi.hoisted(() => vi.fn<(cmd: string) => string>(() => ""));
@@ -36,9 +38,18 @@ const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => 
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
 const readFileSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ReadFileSyncPath) => string | undefined>());
 const unlinkSyncCallMock = vi.hoisted(() => vi.fn<(path: UnlinkSyncPath) => void>());
+const renameSyncCallMock = vi.hoisted(() => vi.fn<(...args: RenameSyncArgs) => void>());
+const rmSyncCallMock = vi.hoisted(() => vi.fn<(...args: RmSyncArgs) => void>());
 
 function isDataFilePath(path: string, filename: string): boolean {
   return basename(path) === filename && basename(dirname(path)) === "data";
+}
+
+function isRestartSignalTempPath(path: string): boolean {
+  const filename = basename(path);
+  return basename(dirname(path)) === "data"
+    && filename.startsWith(".restart.signal.")
+    && filename.endsWith(".tmp");
 }
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -79,6 +90,15 @@ vi.mock("node:fs", async (importOriginal) => {
     },
     unlinkSync: (path: Parameters<typeof actual.unlinkSync>[0]) => {
       unlinkSyncCallMock(path);
+    },
+    renameSync: (...args: RenameSyncArgs) => {
+      renameSyncCallMock(...args);
+      if (isDataFilePath(String(args[1]), "restart.signal")) return;
+      return actual.renameSync(...args);
+    },
+    rmSync: (...args: RmSyncArgs) => {
+      rmSyncCallMock(...args);
+      return actual.rmSync(...args);
     },
   };
 });
@@ -130,6 +150,8 @@ afterEach(async () => {
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
+  renameSyncCallMock.mockReset();
+  rmSyncCallMock.mockReset();
   vi.restoreAllMocks();
   vi.resetModules();
   try {
@@ -313,7 +335,7 @@ describe("self_restart", () => {
 
     writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
       const path = String(args[0]);
-      if (isDataFilePath(path, "restart.signal")) {
+      if (isRestartSignalTempPath(path)) {
         callOrder.push("writeSignalFile");
       }
     });
@@ -337,7 +359,7 @@ describe("self_restart", () => {
   it("clears restart state when self_restart cannot write the restart signal", async () => {
     existsSyncOverrideMock.mockImplementation(() => undefined);
     writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
-      if (isDataFilePath(String(args[0]), "restart.signal")) {
+      if (isRestartSignalTempPath(String(args[0]))) {
         throw new Error("disk full");
       }
     });
@@ -358,6 +380,11 @@ describe("self_restart", () => {
     expect(result).toMatchObject({ resultType: "failure" });
     expect(result.textResultForLlm).toContain("Restart signal could not be written.");
     expect(mod.isRestartPending()).toBe(false);
-    expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(true);
+    expect(
+      rmSyncCallMock.mock.calls.some(([file]) => isRestartSignalTempPath(String(file))),
+    ).toBe(true);
+    expect(
+      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal")),
+    ).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   describeLifecycleBusyState,
@@ -18,6 +18,7 @@ import {
   refreshRestartState,
 } from "../restart-controller.js";
 import { isRestartAlreadyInFlight, writeRestartState } from "../restart-state.js";
+import { consumeRestartSignalFile } from "../restart-signal.js";
 import type { ManagementJob, ManagementJobType } from "../management-job-store.js";
 import { makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
@@ -170,6 +171,38 @@ describe("request-scoped restart clears", () => {
       phase: "restarting",
     });
   });
+
+  it("clears an invalid claimed signal from the disk-derived in-flight gate", async () => {
+    const runtimePaths = makeTestRuntimePaths("restart-invalid-claim-scope");
+    configureRestartStateStore(runtimePaths);
+    const request = beginRestartPending();
+    await refreshRestartState();
+    const signalFile = join(runtimePaths.dataDir, "restart.signal");
+    const inProgressFile = join(runtimePaths.dataDir, "restart-in-progress.json");
+    writeFileSync(signalFile, JSON.stringify({
+      requestId: request.requestId,
+      validationMode: "deploy",
+      releaseCandidate: {
+        id: "slot-invalid",
+        root: "",
+        commitSha: "abc123",
+        source: "self_update",
+        dependencyHash: "deps123",
+      },
+    }));
+
+    const claim = consumeRestartSignalFile(signalFile, inProgressFile);
+    expect(claim).toMatchObject({
+      status: "invalid",
+      requestId: request.requestId,
+    });
+    expect(isRestartAlreadyInFlight(runtimePaths.dataDir)).toBe(true);
+
+    expect(clearRestartPending(request.requestId)).toBe(true);
+    rmSync(inProgressFile);
+    await refreshRestartState();
+    expect(isRestartAlreadyInFlight(runtimePaths.dataDir)).toBe(false);
+  });
 });
 
 describe("writeRestartSignalOrRollback", () => {
@@ -193,6 +226,11 @@ describe("writeRestartSignalOrRollback", () => {
     expect(isRestartPending(), "in-memory pending").toBe(true);
     expect(existsSync(signalFile), "signal file written in the same tick").toBe(true);
     expect(isRestartAlreadyInFlight(dataDir), "visible to the disk-derived gate").toBe(true);
+    expect(JSON.parse(readFileSync(signalFile, "utf8"))).toMatchObject({
+      validationMode: "operational",
+      source: "restart-inflight-test",
+      requestId: expect.any(String),
+    });
   });
 
   it("rolls the pending state back when the signal write fails", () => {

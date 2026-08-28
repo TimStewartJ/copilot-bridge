@@ -1,12 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   didRestartRecover,
+  resolveRestartSignalAction,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
   startAfterVerifiedStop,
   shouldPersistReleaseFailureState,
 } from "./launcher-restart.js";
+
+describe("resolveRestartSignalAction", () => {
+  it("retries filesystem contention, rejects invalid claims, and restarts only valid claims", () => {
+    expect(resolveRestartSignalAction({ status: "none" })).toBe("none");
+    expect(resolveRestartSignalAction({
+      status: "retryable-error",
+      stage: "claim",
+      error: new Error("busy"),
+    })).toBe("retry");
+    expect(resolveRestartSignalAction({
+      status: "invalid",
+      error: new Error("malformed releaseCandidate"),
+      requestId: "restart-request-invalid",
+    })).toBe("reject");
+    expect(resolveRestartSignalAction({
+      status: "invalid",
+      error: new Error("legacy malformed releaseCandidate"),
+    })).toBe("reject");
+    expect(resolveRestartSignalAction({
+      status: "claimed",
+      signal: {
+        requestedAt: "2026-08-27T10:00:00.000-07:00",
+        validationMode: "operational",
+        requestId: "restart-request-valid",
+      },
+    })).toBe("restart");
+  });
+});
 
 describe("rollbackRecoveryRequiresServerStart", () => {
   it("restarts only when recovery began from a stopped state", () => {
@@ -116,4 +145,3 @@ describe("resolveReleaseCandidateRestartOutcome", () => {
   });
 
   });
-

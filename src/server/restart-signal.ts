@@ -1,4 +1,6 @@
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 export type RestartValidationMode = "deploy" | "operational";
 
@@ -13,16 +15,33 @@ export interface RestartReleaseCandidate {
 export interface RestartSignal {
   requestedAt: string;
   validationMode: RestartValidationMode;
+  requestId?: string;
   source?: string;
   releaseCandidate?: RestartReleaseCandidate;
 }
+
+export type RestartSignalConsumption =
+  | { status: "none" }
+  | { status: "retryable-error"; stage: "claim" | "read"; error: unknown }
+  | {
+      status: "invalid";
+      error: Error;
+      requestId?: string;
+      releaseCandidateId?: string;
+    }
+  | { status: "claimed"; signal: RestartSignal };
 
 function isRestartValidationMode(value: unknown): value is RestartValidationMode {
   return value === "deploy" || value === "operational";
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 export function createRestartSignal(options: {
   validationMode: RestartValidationMode;
+  requestId?: string;
   source?: string;
   requestedAt?: string;
   releaseCandidate?: RestartReleaseCandidate;
@@ -30,6 +49,7 @@ export function createRestartSignal(options: {
   return {
     requestedAt: options.requestedAt ?? new Date().toISOString(),
     validationMode: options.validationMode,
+    ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.source ? { source: options.source } : {}),
     ...(options.releaseCandidate ? { releaseCandidate: options.releaseCandidate } : {}),
   };
@@ -37,6 +57,7 @@ export function createRestartSignal(options: {
 
 export function serializeRestartSignal(options: {
   validationMode: RestartValidationMode;
+  requestId?: string;
   source?: string;
   requestedAt?: string;
   releaseCandidate?: RestartReleaseCandidate;
@@ -44,19 +65,21 @@ export function serializeRestartSignal(options: {
   return `${JSON.stringify(createRestartSignal(options))}\n`;
 }
 
-function parseReleaseCandidate(value: unknown): RestartReleaseCandidate | undefined {
-  if (!value || typeof value !== "object") return undefined;
+function parseReleaseCandidate(value: unknown): RestartReleaseCandidate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Restart signal releaseCandidate must be an object");
+  }
   const record = value as Record<string, unknown>;
-  const id = typeof record.id === "string" && record.id.trim() ? record.id.trim() : "";
-  const root = typeof record.root === "string" && record.root.trim() ? record.root.trim() : "";
-  const commitSha = typeof record.commitSha === "string" && record.commitSha.trim()
-    ? record.commitSha.trim()
-    : "";
-  const source = typeof record.source === "string" && record.source.trim() ? record.source.trim() : "";
-  const dependencyHash = typeof record.dependencyHash === "string" && record.dependencyHash.trim()
-    ? record.dependencyHash.trim()
-    : "";
-  if (!id || !root || !commitSha || !source || !dependencyHash) return undefined;
+  const id = nonEmptyString(record.id);
+  const root = nonEmptyString(record.root);
+  const commitSha = nonEmptyString(record.commitSha);
+  const source = nonEmptyString(record.source);
+  const dependencyHash = nonEmptyString(record.dependencyHash);
+  if (!id || !root || !commitSha || !source || !dependencyHash) {
+    throw new Error(
+      "Restart signal releaseCandidate must include non-empty id, root, commitSha, source, and dependencyHash fields",
+    );
+  }
   return { id, root, commitSha, source, dependencyHash };
 }
 
@@ -66,20 +89,29 @@ export function parseRestartSignalContent(content: string): RestartSignal {
     throw new Error("Restart signal is empty");
   }
 
-  const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-  if (!parsed || typeof parsed !== "object" || !isRestartValidationMode(parsed.validationMode)) {
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Restart signal must be typed JSON with a valid validationMode");
   }
+  const record = parsed as Record<string, unknown>;
+  if (!isRestartValidationMode(record.validationMode)) {
+    throw new Error("Restart signal must be typed JSON with a valid validationMode");
+  }
+  const hasRequestId = Object.hasOwn(record, "requestId");
+  const requestId = nonEmptyString(record.requestId);
+  if (hasRequestId && !requestId) {
+    throw new Error("Restart signal requestId must be a non-empty string when present");
+  }
+  const hasReleaseCandidate = Object.hasOwn(record, "releaseCandidate");
 
   return createRestartSignal({
-    validationMode: parsed.validationMode,
-    requestedAt: typeof parsed.requestedAt === "string" && parsed.requestedAt.trim()
-      ? parsed.requestedAt
+    validationMode: record.validationMode,
+    requestId,
+    requestedAt: nonEmptyString(record.requestedAt),
+    source: nonEmptyString(record.source),
+    releaseCandidate: hasReleaseCandidate
+      ? parseReleaseCandidate(record.releaseCandidate)
       : undefined,
-    source: typeof parsed.source === "string" && parsed.source.trim()
-      ? parsed.source
-      : undefined,
-    releaseCandidate: parseReleaseCandidate(parsed.releaseCandidate),
   });
 }
 
@@ -91,27 +123,95 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
 
-export function consumeRestartSignalFile(signalFile: string, inProgressSignalFile: string): RestartSignal | null {
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function recoverInvalidSignalIdentity(content: string): {
+  requestId?: string;
+  releaseCandidateId?: string;
+} {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const record = parsed as Record<string, unknown>;
+    const requestId = nonEmptyString(record.requestId);
+    const candidate = record.releaseCandidate;
+    const releaseCandidateId = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? nonEmptyString((candidate as Record<string, unknown>).id)
+        : undefined;
+    return {
+      ...(requestId ? { requestId } : {}),
+      ...(releaseCandidateId ? { releaseCandidateId } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function consumeRestartSignalFile(
+  signalFile: string,
+  inProgressSignalFile: string,
+): RestartSignalConsumption {
+  let claimed = false;
   try {
     renameSync(signalFile, inProgressSignalFile);
+    claimed = true;
   } catch (error) {
-    if (isErrnoException(error) && error.code === "ENOENT") {
-      return null;
+    if (!isErrnoException(error) || error.code !== "ENOENT") {
+      return { status: "retryable-error", stage: "claim", error };
     }
-    throw error;
+    try {
+      statSync(signalFile);
+      return { status: "retryable-error", stage: "claim", error };
+    } catch (statError) {
+      if (!isErrnoException(statError) || statError.code !== "ENOENT") {
+        return { status: "retryable-error", stage: "claim", error: statError };
+      }
+    }
   }
+
+  let content: string;
   try {
-    return readRestartSignalFile(inProgressSignalFile);
+    content = readFileSync(inProgressSignalFile, "utf-8");
   } catch (error) {
-    try { unlinkSync(inProgressSignalFile); } catch {}
-    throw error;
+    if (!claimed && isErrnoException(error) && error.code === "ENOENT") {
+      return { status: "none" };
+    }
+    return { status: "retryable-error", stage: "read", error };
+  }
+
+  try {
+    return { status: "claimed", signal: parseRestartSignalContent(content) };
+  } catch (error) {
+    return {
+      status: "invalid",
+      error: toError(error),
+      ...recoverInvalidSignalIdentity(content),
+    };
   }
 }
 
 export function writeRestartSignalFile(signalFile: string, options: {
   validationMode: RestartValidationMode;
+  requestId?: string;
   source?: string;
   releaseCandidate?: RestartReleaseCandidate;
 }): void {
-  writeFileSync(signalFile, serializeRestartSignal(options));
+  const tempFile = join(dirname(signalFile), `.${basename(signalFile)}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tempFile, serializeRestartSignal(options), "utf8");
+    renameSync(tempFile, signalFile);
+  } catch (error) {
+    try {
+      rmSync(tempFile, { force: true });
+    } catch (cleanupError) {
+      throw new Error(
+        `Failed to publish restart signal (${toError(error).message}) and clean up ${tempFile}: `
+        + toError(cleanupError).message,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
