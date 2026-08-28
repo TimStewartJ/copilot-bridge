@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "../api";
+import { LAST_SETTINGS_CATEGORY_KEY } from "../lib/settings-routes";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -16,6 +17,7 @@ const settingsMocks = vi.hoisted(() => ({
   useSettingsQuery: vi.fn(),
   useTagsQuery: vi.fn(),
   mcpServersSection: vi.fn(),
+  settingsCategoryNav: vi.fn(),
 }));
 
 vi.mock("../hooks/queries/useSettings", () => ({
@@ -55,7 +57,13 @@ vi.mock("./settings", () => {
       "Change settings",
     ),
     ReasoningEffortSection: EmptySection,
-    SettingsCategoryNav: EmptySection,
+    SettingsCategoryNav: (props: {
+      activeCategory: string;
+      onSelectCategory: (category: string) => void;
+    }) => {
+      settingsMocks.settingsCategoryNav(props);
+      return null;
+    },
     SystemPromptSection: EmptySection,
     TagsSection: EmptySection,
     UpdatesSection: EmptySection,
@@ -81,6 +89,26 @@ const savedSettings: AppSettings = {
   mcpServers: {},
 };
 
+function stubLocalStorage(initial: Record<string, string> = {}): Storage {
+  const store = new Map(Object.entries(initial));
+  const storage: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear: vi.fn(() => store.clear()),
+    getItem: vi.fn((key: string) => store.get(key) ?? null),
+    key: vi.fn((index: number) => [...store.keys()][index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      store.delete(key);
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      store.set(key, String(value));
+    }),
+  };
+  vi.stubGlobal("localStorage", storage);
+  return storage;
+}
+
 function buttonsWithText(root: any, text: string): any[] {
   return findAllByTag(root, "BUTTON").filter((button) => button.textContent === text);
 }
@@ -101,19 +129,21 @@ function feedbackWithRole(root: any, role: "alert" | "status"): any {
   return feedback;
 }
 
-async function renderSettingsView(): Promise<ReactDomHarness> {
+async function renderSettingsView(
+  initialEntry = "/settings?group=integrations",
+): Promise<ReactDomHarness> {
   const harness = await createReactDomHarness();
   await harness.render(
     createElement(
       MemoryRouter,
-      { initialEntries: ["/settings?group=integrations"] },
+      { initialEntries: [initialEntry] },
       createElement(SettingsView),
     ),
   );
   await waitUntilAct(
     harness.act,
-    () => (harness.dom.container.textContent ?? "").includes("Change settings"),
-    { label: "settings draft controls" },
+    () => settingsMocks.settingsCategoryNav.mock.calls.length > 0,
+    { label: "settings category navigation" },
   );
   return harness;
 }
@@ -127,6 +157,7 @@ async function makeSettingsDirty(harness: ReactDomHarness): Promise<void> {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  stubLocalStorage();
   settingsMocks.mutateAsync.mockReset();
   settingsMocks.mutateAsync.mockImplementation(async (settings: AppSettings) => settings);
   settingsMocks.useSettingsMutation.mockReset();
@@ -141,6 +172,59 @@ beforeEach(() => {
   settingsMocks.useTagsQuery.mockReset();
   settingsMocks.useTagsQuery.mockReturnValue({ data: [] });
   settingsMocks.mcpServersSection.mockReset();
+  settingsMocks.settingsCategoryNav.mockReset();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("SettingsView category persistence", () => {
+  it("restores the last category when settings is reopened without a group", async () => {
+    localStorage.setItem(LAST_SETTINGS_CATEGORY_KEY, "diagnostics");
+
+    await renderSettingsView("/settings");
+
+    expect(settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory).toBe(
+      "diagnostics",
+    );
+  });
+
+  it("remembers category changes across mounts", async () => {
+    const harness = await renderSettingsView();
+    const categoryNavProps = settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0];
+    if (!categoryNavProps) throw new Error("Settings category nav was not rendered");
+
+    await harness.act(async () => {
+      categoryNavProps.onSelectCategory("usage");
+    });
+    await waitUntilAct(
+      harness.act,
+      () => settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory === "usage",
+      { label: "usage settings category" },
+    );
+
+    expect(localStorage.getItem(LAST_SETTINGS_CATEGORY_KEY)).toBe("usage");
+
+    await harness.cleanup();
+    settingsMocks.settingsCategoryNav.mockClear();
+    const reopenedHarness = await renderSettingsView("/settings");
+
+    expect(settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory).toBe(
+      "usage",
+    );
+
+    const reopenedCategoryNavProps = settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0];
+    if (!reopenedCategoryNavProps) throw new Error("Reopened settings category nav was not rendered");
+    await reopenedHarness.act(async () => {
+      reopenedCategoryNavProps.onSelectCategory("general");
+    });
+
+    expect(settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory).toBe(
+      "general",
+    );
+    expect(localStorage.getItem(LAST_SETTINGS_CATEGORY_KEY)).toBe("general");
+  });
 });
 
 describe("SettingsView save controls", () => {

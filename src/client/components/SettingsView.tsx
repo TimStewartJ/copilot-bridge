@@ -30,6 +30,10 @@ import {
   type CategoryId,
 } from "./settings/settings-layout";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
+import {
+  getLastSettingsCategory,
+  setLastSettingsCategory,
+} from "../lib/settings-routes";
 
 type SettingsToast = {
   message: string;
@@ -149,10 +153,15 @@ export default function SettingsView() {
   const [toast, setToast] = useState<SettingsToast | null>(null);
   const [mcpSectionResetSignal, setMcpSectionResetSignal] = useState(0);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [rememberedCategory, setRememberedCategory] = useState<CategoryId>(
+    getLastSettingsCategory,
+  );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const groupParam = searchParams.get("group");
-  const activeCategory = normalizeCategory(groupParam);
+  const activeCategory = groupParam === null
+    ? rememberedCategory
+    : normalizeCategory(groupParam);
 
   const hasChanges =
     settings && draft && JSON.stringify(settings) !== JSON.stringify(draft);
@@ -185,11 +194,20 @@ export default function SettingsView() {
   }, [activeCategory, groupParam, setSearchParams]);
 
   useEffect(() => {
-    scrollContainerRef.current?.scrollTo({ top: 0 });
+    setLastSettingsCategory(activeCategory);
+    if (groupParam !== null) {
+      setRememberedCategory(activeCategory);
+    }
+  }, [activeCategory, groupParam]);
+
+  useEffect(() => {
+    scrollContainerRef.current?.scrollTo?.({ top: 0 });
   }, [activeCategory]);
 
   const setActiveCategory = useCallback(
     (category: CategoryId) => {
+      setRememberedCategory(category);
+      setLastSettingsCategory(category);
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
