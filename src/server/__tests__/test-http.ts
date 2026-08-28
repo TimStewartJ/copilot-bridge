@@ -5,6 +5,7 @@ import rawRequest from "supertest";
 type TestClient = ReturnType<typeof rawRequest>;
 
 const TEST_ROUTE_PREFIX = "/__bridge_test_app__/";
+const TEST_HTTP_IDLE_TIMEOUT_MS = 120_000;
 const handlers = new Map<string, RequestListener>();
 const handlerIds = new WeakMap<RequestListener, string>();
 const keepAliveAgent = new Agent({
@@ -39,6 +40,10 @@ const server = createServer((req, res) => {
     res.destroy(error instanceof Error ? error : new Error(String(error)));
   }
 });
+// Full-suite contention can leave the shared client idle beyond Node's 5s
+// default, racing the next request against server-side socket cleanup.
+server.keepAliveTimeout = TEST_HTTP_IDLE_TIMEOUT_MS;
+server.headersTimeout = TEST_HTTP_IDLE_TIMEOUT_MS + 5_000;
 
 function ensureServer(): void {
   if (server.listening) return;
