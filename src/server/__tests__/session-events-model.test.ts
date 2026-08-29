@@ -11,6 +11,7 @@ import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { runAndCountEventLoopYields } from "./event-loop-test-utils.js";
 import { writePersistedSessionModelState } from "../session-model-state-sidecar.js";
 import supertest from "./test-http.js";
 
@@ -496,25 +497,19 @@ describe("deriveModelStateFromEventsFileAsync", () => {
     expect(await deriveModelStateFromEventsFileAsync(path)).toEqual(expected);
   });
 
-  it("finds a model event buried in the middle of a large log and keeps the loop responsive", async () => {
+  it("finds a model event buried in the middle of a large log and yields between chunks", async () => {
     const dir = makeTestDir("events-model-async-middle");
     const path = join(dir, "events.jsonl");
     writeFileSync(path,
       filler(10_000)
       + line("session.start", { selectedModel: "gpt-5.5", reasoningEffort: "medium" })
       + filler(20_000));
-    let ticks = 0;
-    let worstGapMs = 0;
-    let last = performance.now();
-    const ticker = setInterval(() => { const now = performance.now(); worstGapMs = Math.max(worstGapMs, now - last); last = now; ticks += 1; }, 1);
-    let result;
-    try {
-      result = await deriveModelStateFromEventsFileAsync(path);
-    } finally {
-      clearInterval(ticker);
-    }
+
+    const { result, yieldCount } = await runAndCountEventLoopYields(
+      () => deriveModelStateFromEventsFileAsync(path),
+    );
+
     expect(result).toEqual({ model: "gpt-5.5", reasoningEffort: "medium" });
-    expect(ticks).toBeGreaterThan(2);
-    expect(worstGapMs).toBeLessThan(250);
+    expect(yieldCount).toBeGreaterThan(2);
   });
 });

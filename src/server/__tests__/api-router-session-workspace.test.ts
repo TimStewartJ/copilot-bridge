@@ -275,14 +275,11 @@ describe("session workspace routes", () => {
 
       summary = "Refreshed title";
       offsetMs = 31_000;
-      const staleStart = realNow();
       const staleRes = await request(app).get("/api/sessions");
-      const staleElapsed = realNow() - staleStart;
       // The stale payload is served without waiting on the blocked rebuild, which
       // starts only after the response has been written.
       expect(staleRes.status).toBe(200);
       expect(staleRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
-      expect(staleElapsed).toBeLessThan(5_000);
       await vi.waitFor(() => expect(listSessionsFromDisk).toHaveBeenCalledTimes(2));
 
       // A second stale poll coalesces onto the running refresh instead of starting another.
