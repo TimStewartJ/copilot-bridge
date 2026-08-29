@@ -19,6 +19,7 @@ import {
   getSdkTurnId,
   isSdkAgentUserMessage,
   isSdkSubagentSessionError,
+  isSdkUserAuthoredMessage,
 } from "./sdk-event-identity.js";
 
 // Shared event→entry transform logic
@@ -349,6 +350,7 @@ export function createVisibleActivityTracker(
   function observe(event: any): string | undefined {
     if (event.type === "user.message") {
       if (isSdkAgentUserMessage(event)) return lastVisibleActivityAt;
+      if (quietTurn && !isSdkUserAuthoredMessage(event)) return lastVisibleActivityAt;
       quietTurn = isQuietIntervalDeferEvent(event);
       if (quietTurn) {
         openVisibleToolCallIds.clear();
