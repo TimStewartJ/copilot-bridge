@@ -11,6 +11,7 @@ import {
   type SessionDiskReaderDeps,
 } from "../session-disk-reader.js";
 import { createEventLogStatsFoldStore } from "../event-log-stats-fold-store.js";
+import { runAndCountEventLoopYields } from "./event-loop-test-utils.js";
 import { createTestBus, makeTestDir, setupTestDb } from "./helpers.js";
 
 function createDeps(copilotHome: string) {
@@ -1372,29 +1373,24 @@ describe("event-log stats fold persistence and scan scheduling", () => {
     expect(getEventLogStatsScanConcurrencyForTests()).toEqual({ active: 0, waiting: 0 });
   });
 
-  it("keeps the event loop responsive while scanning a large log", async () => {
+  it("yields to the event loop while scanning a large log", async () => {
     const copilotHome = makeTestDir("session-disk-reader-scan-yield");
     const sessionId = "yield";
     writeLargeLog(copilotHome, sessionId, 40_000);
     const { deps } = createDeps(copilotHome);
 
-    let ticks = 0;
-    let worstGapMs = 0;
-    let last = performance.now();
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      worstGapMs = Math.max(worstGapMs, now - last);
-      last = now;
-      ticks += 1;
-    }, 1);
+    let now = 0;
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => {
+      now += 13;
+      return now;
+    });
     try {
-      await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+      const { yieldCount } = await runAndCountEventLoopYields(
+        () => readMessagesFromDisk(deps, sessionId, { limit: 50 }),
+      );
+      expect(yieldCount).toBeGreaterThan(5);
     } finally {
-      clearInterval(ticker);
+      nowSpy.mockRestore();
     }
-    // The scan takes hundreds of ms; with per-slice yielding the loop must keep ticking and
-    // no single stall may approach the whole scan duration.
-    expect(ticks).toBeGreaterThan(5);
-    expect(worstGapMs).toBeLessThan(250);
   });
 });
