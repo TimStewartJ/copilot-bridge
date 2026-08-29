@@ -159,6 +159,38 @@ describe("event-transform visible activity", () => {
     ]);
   });
 
+  it("keeps SDK-sourced user messages inside the quiet defer activity window", () => {
+    const lastVisibleActivityAt = getLastVisibleActivityAt([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: {
+          content: [
+            "<defer>",
+            "deferId: interval_123",
+            "kind: interval",
+            "attentionMode: quiet",
+            "</defer>",
+          ].join("\n"),
+        },
+      },
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
+      },
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { content: "runtime context", source: "system" },
+      },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "No change yet." } },
+      { type: "session.idle", timestamp: "2026-04-10T10:00:04.000Z", data: {} },
+    ], "session-1");
+
+    expect(lastVisibleActivityAt).toBeUndefined();
+  });
+
   it("resumes normal visible activity at the next user turn if a quiet defer turn has no terminal event", () => {
     const lastVisibleActivityAt = getLastVisibleActivityAt([
       {

@@ -57,12 +57,39 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
       quietIntervalUserMessage("quiet-user"),
       { id: "turn-end", type: "assistant.turn_end", data: {} },
       { id: "normal-user", type: "user.message", data: { content: "hello" } },
+      { id: "system-context", type: "user.message", data: { content: "runtime context", source: "system" } },
       { id: "normal-turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
 
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("other-quiet-user", "interval_other"),
       { id: "turn-end", type: "assistant.turn_end", data: {} },
+    ], "interval_loop-1")).toBeUndefined();
+  });
+
+  it("keeps skill and system-injected user messages inside the completed quiet tail", () => {
+    expect(findQuietIntervalDeferTailTruncationCandidate([
+      quietIntervalUserMessage("quiet-user"),
+      { id: "skill-start", type: "tool.execution_start", data: { toolCallId: "skill-1", toolName: "skill" } },
+      { id: "skill-done", type: "tool.execution_complete", data: { toolCallId: "skill-1", success: true } },
+      {
+        id: "skill-context",
+        type: "user.message",
+        data: { content: "<skill-context name=\"browser\">...</skill-context>", source: "skill-browser" },
+      },
+      { id: "system-context", type: "user.message", data: { content: "runtime context", source: "system" } },
+      { id: "assistant", type: "assistant.message", data: { content: "No change" } },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
+      { id: "post-turn-system", type: "user.message", data: { content: "", source: "system" } },
+    ], "interval_loop-1")).toEqual({ eventId: "quiet-user", eventsToRemove: 8 });
+  });
+
+  it("still rejects sourced user modes that are not SDK context injection", () => {
+    expect(findQuietIntervalDeferTailTruncationCandidate([
+      quietIntervalUserMessage("quiet-user"),
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
+      { id: "autopilot-user", type: "user.message", data: { content: "Continue", source: "autopilot" } },
+      { id: "autopilot-turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
   });
 
@@ -281,6 +308,37 @@ describe("truncateQuietIntervalDeferTail", () => {
     });
     expect(session.methodCalls).toEqual(["truncateHistory"]);
     expect(spans).toEqual([{ name: "session.history.truncate", metadata: expect.objectContaining({ outcome: "truncated" }) }]);
+  });
+
+  it("grows past large sourced user messages to find the quiet defer boundary", async () => {
+    const events = [
+      quietIntervalUserMessage("quiet-user"),
+      {
+        id: "system-context",
+        type: "user.message",
+        data: { content: "x".repeat(300 * 1024), source: "system" },
+      },
+      { id: "assistant", type: "assistant.message", data: { content: "No change" } },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
+    ];
+    const session = new ReceiverSensitiveFakeSession(events);
+
+    const result = await truncateQuietIntervalDeferTail({
+      session,
+      sessionId: "session-1",
+      deferId: "interval_loop-1",
+      eventsPath: fixture(events),
+      maxTailBytes: 1024 * 1024,
+      logger: silentLogger,
+    });
+
+    expect(result).toEqual({
+      status: "truncated",
+      eventId: "quiet-user",
+      eventsRemoved: 4,
+      candidateEventsToRemove: 4,
+    });
+    expect(session.truncateCalls).toEqual([{ eventId: "quiet-user" }]);
   });
 
   it("skips without truncating when the last user turn is not a quiet defer for this loop", async () => {

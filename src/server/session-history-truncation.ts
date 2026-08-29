@@ -1,5 +1,6 @@
 import { isQuietIntervalDeferEvent } from "./event-transform.js";
 import { readSessionEventsTail, type SessionEventsTail } from "./session-disk-reader.js";
+import { isSdkUserAuthoredMessage } from "./sdk-event-identity.js";
 
 export const QUIET_INTERVAL_DEFER_TAIL_TRUNCATION_MODE = "replace-quiet-interval-defer-tail" as const;
 
@@ -96,6 +97,7 @@ function isFailureTerminalEvent(event: any): boolean {
 }
 
 function isTurnActivityEvent(event: any): boolean {
+  if (event?.type === "user.message") return isSdkUserAuthoredMessage(event);
   return TURN_ACTIVITY_EVENT_TYPES.has(event?.type);
 }
 
@@ -113,7 +115,7 @@ export function findQuietIntervalDeferTailTruncationCandidate(
   let candidateIndex = -1;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index] as any;
-    if (event?.type !== "user.message") continue;
+    if (!isSdkUserAuthoredMessage(event)) continue;
     if (!isQuietIntervalDeferEvent(event, deferId)) return undefined;
     candidateIndex = index;
     break;
@@ -127,7 +129,7 @@ export function findQuietIntervalDeferTailTruncationCandidate(
   for (let index = candidateIndex + 1; index < events.length; index += 1) {
     const event = events[index] as any;
 
-    if (event?.type === "user.message") return undefined;
+    if (isSdkUserAuthoredMessage(event)) return undefined;
 
     if (event?.type === "tool.execution_start") {
       const toolName = getToolName(event);
@@ -157,8 +159,8 @@ export function findQuietIntervalDeferTailTruncationCandidate(
   };
 }
 
-function hasUserMessage(events: unknown[]): boolean {
-  return events.some((event) => (event as any)?.type === "user.message");
+function hasUserAuthoredMessage(events: unknown[]): boolean {
+  return events.some(isSdkUserAuthoredMessage);
 }
 
 function isFileNotFound(error: unknown): boolean {
@@ -195,7 +197,7 @@ export async function truncateQuietIntervalDeferTail({
   try {
     tail = await readSessionEventsTail(eventsPath, {
       maxBytes: maxTailBytes,
-      hasEnough: hasUserMessage,
+      hasEnough: hasUserAuthoredMessage,
     });
   } catch (error) {
     if (isFileNotFound(error)) {
@@ -216,7 +218,7 @@ export async function truncateQuietIntervalDeferTail({
   }
 
   const events = tail.events;
-  if (!tail.complete && !hasUserMessage(events)) {
+  if (!tail.complete && !hasUserAuthoredMessage(events)) {
     logger.warn(
       `[sdk] [${sessionId.slice(0, 8)}] Quiet defer truncation skipped: no user turn within the last ${tail.bytesRead} bytes of events.jsonl (${tail.fileSize} bytes total)`,
     );
