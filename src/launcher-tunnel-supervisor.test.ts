@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildTunnelHostArgs,
   isTunnelAuthRedirect,
+  parseTunnelHostConnections,
   resolveTunnelName,
   TunnelSupervisor,
   type TunnelSupervisorDependencies,
@@ -56,15 +57,30 @@ function createHarness(options: {
   onReady?: (url: string) => void | Promise<void>;
   healthTimeoutMs?: number;
   healthSlowMs?: number;
+  hostConnections?: Array<number | null>;
+  hostRecoveryGraceMs?: number;
+  terminateDelayMs?: number;
 } = {}) {
   const children = options.children ?? [new FakeChild(101)];
   const fetchResponses = [...(options.fetchResponses ?? [])];
+  const hostConnections = [...(options.hostConnections ?? [])];
   const writtenStates: TunnelRuntimeState[] = [];
   const logs: string[] = [];
   const readyUrls: string[] = [];
   const spawnTunnel = vi.fn(() => asChild(children.shift() ?? new FakeChild(999)));
-  const terminateProcessTree = vi.fn(async (process: ProcessIdentity) => stopped(process));
+  const terminateProcessTree = vi.fn(async (process: ProcessIdentity) => {
+    if (options.terminateDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, options.terminateDelayMs));
+    }
+    return stopped(process);
+  });
   const fetchMock = vi.fn(async () => fetchResponses.shift() ?? new Response(null, { status: 200 }));
+  const inspectTunnelHost = vi.fn(async () => {
+    const next = hostConnections.length > 0 ? hostConnections.shift() : 1;
+    return next === null
+      ? { hostConnections: null, detail: "status unavailable" }
+      : { hostConnections: next ?? 1 };
+  });
   const captureProcessIdentity = vi.fn(async (pid: number): Promise<ProcessIdentity | null> => identity(pid));
   const writeState = vi.fn((_dataDir: string, state: TunnelRuntimeState) => writtenStates.push(state));
   const clearState = vi.fn();
@@ -74,6 +90,7 @@ function createHarness(options: {
     terminateProcessTree,
     waitForChildExit: vi.fn(async () => true),
     fetch: fetchMock as typeof fetch,
+    inspectTunnelHost,
     readState: vi.fn(() => options.state ?? null),
     writeState,
     clearState,
@@ -92,6 +109,7 @@ function createHarness(options: {
     healthIntervalMs: 50,
     healthTimeoutMs: options.healthTimeoutMs ?? 25,
     healthFailureThreshold: 2,
+    hostRecoveryGraceMs: options.hostRecoveryGraceMs ?? 20,
     ...(options.healthSlowMs !== undefined ? { healthSlowMs: options.healthSlowMs } : {}),
   }, deps);
   return {
@@ -101,6 +119,7 @@ function createHarness(options: {
     spawnTunnel,
     terminateProcessTree,
     fetchMock,
+    inspectTunnelHost,
     captureProcessIdentity,
     writeState,
     clearState,
@@ -150,6 +169,14 @@ describe("TunnelSupervisor", () => {
     expect(isTunnelAuthRedirect(302, "https://evil.example.com/auth/aad")).toBe(false);
     expect(isTunnelAuthRedirect(302, "https://rel.tunnels.api.visualstudio.com.evil.example/auth/aad")).toBe(false);
     expect(isTunnelAuthRedirect(302, "https://global.rel.tunnels.api.visualstudio.com/somewhere")).toBe(false);
+  });
+
+  it("parses the authoritative host connection count from Dev Tunnel JSON", () => {
+    expect(parseTunnelHostConnections('{"tunnel":{"hostConnections":1}}')).toBe(1);
+    expect(parseTunnelHostConnections('{"tunnel":{"hostConnections":0}}')).toBe(0);
+    expect(() => parseTunnelHostConnections('{"tunnel":{}}')).toThrow(
+      "missing or invalid tunnel.hostConnections",
+    );
   });
 
   it("publishes one runtime state after the direct child reports its URL", async () => {
@@ -327,6 +354,7 @@ describe("TunnelSupervisor", () => {
     }
 
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("https://")).length).toBeGreaterThanOrEqual(3);
+    expect(harness.inspectTunnelHost).toHaveBeenCalledWith("copilot-bridge", 25);
     expect(harness.terminateProcessTree).not.toHaveBeenCalled();
     expect(harness.logs.some((line) => line.includes("Public health check failed"))).toBe(false);
     expect(harness.logs.filter((line) => line.includes("access-controlled"))).toHaveLength(1);
@@ -359,34 +387,180 @@ describe("TunnelSupervisor", () => {
     expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
   });
 
-  it("recycles after repeated relay transport drops reported on stderr", async () => {
+  it("recycles when zero host connections persist through the recovery grace period", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const second = new FakeChild(102);
-    const harness = createHarness({ children: [first, second] });
+    const harness = createHarness({
+      children: [first, second],
+      hostConnections: [0, 0],
+      hostRecoveryGraceMs: 20,
+    });
     await startAndPublish(harness, first);
 
-    first.stderr.write('ClientSSH: Session closed unexpectedly due to ConnectionLost, "Session is disconnected.\nReason: ConnectionLost"\n');
-    await flushAsync();
+    await vi.advanceTimersByTimeAsync(50);
     expect(harness.terminateProcessTree).not.toHaveBeenCalled();
-    expect(harness.logs.some((line) => line.startsWith("[tunnel] Public health check failed (1/2 in last 1): relay transport dropped: ClientSSH"))).toBe(true);
+    expect(harness.logs).toContain(
+      "[tunnel] Dev Tunnel reports zero host connections; checking again in 20ms",
+    );
 
-    first.stderr.write("Error running client SSH session: Session closed while encrypting.\n");
-    await flushAsync();
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(20);
     await flushAsync();
     expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
-    // The replacement is spawned immediately after the stop, not after the next probe interval.
+    await vi.runOnlyPendingTimersAsync();
+    await flushAsync();
     expect(harness.spawnTunnel).toHaveBeenCalledTimes(2);
 
     second.stdout.write("Connect via browser: https://bridge.example.devtunnels.ms\n");
     await flushAsync();
-    await vi.advanceTimersByTimeAsync(0);
-    await flushAsync();
     expect(harness.supervisor.getUrl()).toBe("https://bridge.example.devtunnels.ms");
   });
 
-  it("ignores transport drops from a child that is no longer current", async () => {
+  it("keeps the current host when its connection recovers during the grace period", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({
+      children: [child],
+      hostConnections: [0, 1],
+      hostRecoveryGraceMs: 20,
+    });
+    await startAndPublish(harness, child);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(20);
+    await flushAsync();
+
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.spawnTunnel).toHaveBeenCalledTimes(1);
+    expect(harness.logs).toContain("[tunnel] Relay host connection recovered during the grace period");
+  });
+
+  it("preserves the disconnect grace period across a local health failure", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({
+      children: [first, second],
+      hostConnections: [0, 0],
+      hostRecoveryGraceMs: 20,
+      fetchResponses: [
+        new Response(null, { status: 200 }),
+        new Response(null, { status: 503 }),
+        new Response(null, { status: 200 }),
+      ],
+    });
+    await startAndPublish(harness, first);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(50);
+    await flushAsync();
+
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+  });
+
+  it("recycles after the grace period when host recovery cannot be confirmed", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({
+      children: [first, second],
+      hostConnections: [0, null],
+      hostRecoveryGraceMs: 20,
+    });
+    await startAndPublish(harness, first);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(20);
+    await flushAsync();
+
+    expect(harness.inspectTunnelHost).toHaveBeenCalledTimes(2);
+    expect(harness.fetchMock).toHaveBeenCalledTimes(2);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+  });
+
+  it("uses split CLI error output only to wake an authoritative host status check", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({
+      children: [first, second],
+      hostConnections: [0, 0],
+      hostRecoveryGraceMs: 20,
+    });
+    await startAndPublish(harness, first);
+
+    first.stderr.write("Error connecting host tunnel ses");
+    first.stderr.write("sion: Refreshed tunnel access token is not valid.\n");
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushAsync();
+
+    expect(harness.inspectTunnelHost).toHaveBeenCalledTimes(1);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(20);
+    await flushAsync();
+
+    expect(harness.inspectTunnelHost).toHaveBeenCalledTimes(2);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+  });
+
+  it("does not let status hints from a stopping child affect its replacement", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({
+      children: [first, second],
+      hostConnections: [0, 0],
+      hostRecoveryGraceMs: 20,
+      terminateDelayMs: 30,
+    });
+    await startAndPublish(harness, first);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(harness.terminateProcessTree).toHaveBeenCalledTimes(1);
+
+    first.stderr.write(
+      "Error connecting host tunnel session: Refreshed tunnel access token is not valid.\n",
+    );
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(30);
+    await flushAsync();
+    await vi.runOnlyPendingTimersAsync();
+    await flushAsync();
+
+    second.stdout.write("Connect via browser: https://bridge.example.devtunnels.ms\n");
+    await flushAsync();
+
+    expect(harness.terminateProcessTree).toHaveBeenCalledTimes(1);
+    expect(harness.spawnTunnel).toHaveBeenCalledTimes(2);
+    expect(harness.supervisor.getUrl()).toBe("https://bridge.example.devtunnels.ms");
+  });
+
+  it("falls back to the public probe when host status cannot be inspected", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({
+      children: [child],
+      hostConnections: [null, null],
+    });
+    await startAndPublish(harness, child);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(harness.fetchMock).toHaveBeenCalledTimes(4);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs.filter((line) => line.includes("Unable to verify relay host connections"))).toHaveLength(1);
+  });
+
+  it("ignores status hints from a child that is no longer current", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const second = new FakeChild(102);
@@ -396,10 +570,9 @@ describe("TunnelSupervisor", () => {
     await flushAsync();
 
     first.stderr.write("ClientSSH: Session closed unexpectedly due to ProtocolError\n");
-    first.stderr.write("ClientSSH: Session closed unexpectedly due to ProtocolError\n");
     await flushAsync();
 
-    expect(harness.logs.filter((line) => line.includes("relay transport dropped"))).toHaveLength(0);
+    expect(harness.inspectTunnelHost).not.toHaveBeenCalled();
     expect(harness.terminateProcessTree).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
@@ -39,14 +39,16 @@ const HEALTH_FAILURE_WINDOW = 5;
  * promptly is the leading indicator of a bad relay session and counts as a failure.
  */
 const HEALTH_SLOW_MS = 3_000;
+const HOST_RECOVERY_GRACE_MS = 15_000;
 const IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
 
-const TRANSPORT_DROP_RE = /ClientSSH: Session closed unexpectedly|Error running client SSH session/;
+const HOST_STATUS_WAKE_RE =
+  /ClientSSH: Session closed unexpectedly|Error running client SSH session|Error connecting host tunnel session/i;
 /**
  * An access-controlled tunnel answers unauthenticated requests with a redirect to the
- * Dev Tunnels sign-in page on the relay service. The relay answered and routed the
- * request, which is all the public probe needs to know; it has no credentials to go
- * further and must not count the auth gate as an outage.
+ * Dev Tunnels sign-in page even when the host connection is unavailable. The redirect
+ * only proves the authentication front door is reachable; host connectivity is checked
+ * separately through `devtunnel show`.
  */
 const TUNNEL_AUTH_REDIRECT_HOST_RE = /(?:^|\.)rel\.tunnels\.api\.visualstudio\.com$/i;
 const TUNNEL_AUTH_REDIRECT_PATH_RE = /^\/auth(?:\/|$)/i;
@@ -60,6 +62,11 @@ type ProbeResult = {
 type HealthObservation = {
   failed: boolean;
   durationMs: number;
+  detail?: string;
+};
+
+export type TunnelHostStatus = {
+  hostConnections: number | null;
   detail?: string;
 };
 
@@ -90,6 +97,7 @@ export type TunnelSupervisorOptions = {
   healthFailureThreshold?: number;
   healthFailureWindow?: number;
   healthSlowMs?: number;
+  hostRecoveryGraceMs?: number;
 };
 
 export type TunnelSupervisorDependencies = {
@@ -101,6 +109,7 @@ export type TunnelSupervisorDependencies = {
   ) => Promise<ProcessTreeTerminationResult>;
   waitForChildExit: typeof waitForChildExit;
   fetch: typeof fetch;
+  inspectTunnelHost: (name: string, timeoutMs: number) => Promise<TunnelHostStatus>;
   readState: (dataDir: string) => TunnelRuntimeState | null;
   writeState: (dataDir: string, state: TunnelRuntimeState) => void;
   clearState: (dataDir: string) => void;
@@ -116,10 +125,46 @@ const defaultDependencies: TunnelSupervisorDependencies = {
   terminateProcessTree,
   waitForChildExit,
   fetch,
+  inspectTunnelHost,
   readState: readTunnelRuntimeState,
   writeState: writeTunnelRuntimeState,
   clearState: clearTunnelRuntimeState,
 };
+
+function inspectTunnelHost(name: string, timeoutMs: number): Promise<TunnelHostStatus> {
+  return new Promise((resolve) => {
+    execFile(
+      "devtunnel",
+      ["show", name, "--json"],
+      { encoding: "utf8", timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({ hostConnections: null, detail: stderr.trim() || error.message });
+          return;
+        }
+        try {
+          resolve({ hostConnections: parseTunnelHostConnections(stdout) });
+        } catch (parseError) {
+          resolve({
+            hostConnections: null,
+            detail: `invalid devtunnel show JSON: ${
+              parseError instanceof Error ? parseError.message : String(parseError)
+            }`,
+          });
+        }
+      },
+    );
+  });
+}
+
+export function parseTunnelHostConnections(stdout: string): number {
+  const parsed = JSON.parse(stdout) as { tunnel?: { hostConnections?: unknown } };
+  const hostConnections = parsed.tunnel?.hostConnections;
+  if (typeof hostConnections !== "number" || !Number.isInteger(hostConnections) || hostConnections < 0) {
+    throw new Error("missing or invalid tunnel.hostConnections");
+  }
+  return hostConnections;
+}
 
 function enabled(env: NodeJS.ProcessEnv): boolean {
   return !/^(0|false|no|off)$/i.test(env.BRIDGE_ENABLE_TUNNEL || "");
@@ -186,6 +231,7 @@ export class TunnelSupervisor {
   private readonly healthFailureThreshold: number;
   private readonly healthFailureWindow: number;
   private readonly healthSlowMs: number;
+  private readonly hostRecoveryGraceMs: number;
   private readonly deps: TunnelSupervisorDependencies;
   private readonly tunnelEnabled: boolean;
   private readonly name: string;
@@ -203,6 +249,8 @@ export class TunnelSupervisor {
   /** Most recent health observations for the current child, oldest first. */
   private healthWindow: HealthObservation[] = [];
   private authGateLogged = false;
+  private hostDisconnectedAt: number | null = null;
+  private hostStatusFailureLogged = false;
   private timer: NodeJS.Timeout | null = null;
   private reconciling = false;
   private pendingDelayMs: number | null = null;
@@ -229,6 +277,7 @@ export class TunnelSupervisor {
       options.healthFailureWindow ?? HEALTH_FAILURE_WINDOW,
     );
     this.healthSlowMs = options.healthSlowMs ?? HEALTH_SLOW_MS;
+    this.hostRecoveryGraceMs = options.hostRecoveryGraceMs ?? HOST_RECOVERY_GRACE_MS;
     this.retryDelayMs = this.retryBaseMs;
     this.deps = dependencies;
     this.tunnelEnabled = enabled(this.env);
@@ -269,6 +318,7 @@ export class TunnelSupervisor {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    this.resetHostConnectionState();
     return this.asLauncherChild(this.child);
   }
 
@@ -350,8 +400,43 @@ export class TunnelSupervisor {
     const localUrl = `http://127.0.0.1:${this.port}/api/health`;
     const local = await probe(this.deps.fetch, localUrl, this.healthTimeoutMs);
     if (!local.healthy) {
-      // A public failure while the server itself is down says nothing about the tunnel.
+      // Do not recycle the tunnel while the server itself is unavailable.
       this.healthWindow = [];
+      return;
+    }
+
+    const hostStatus = await this.deps.inspectTunnelHost(this.name, this.healthTimeoutMs);
+    if (!this.isActiveChild(child)) return;
+    if (hostStatus.hostConnections === null) {
+      if (!this.hostStatusFailureLogged) {
+        this.hostStatusFailureLogged = true;
+        this.log(`[tunnel] Unable to verify relay host connections: ${hostStatus.detail ?? "unknown error"}`);
+      }
+    } else if (hostStatus.hostConnections > 0) {
+      if (this.hostDisconnectedAt !== null) {
+        this.log("[tunnel] Relay host connection recovered during the grace period");
+      }
+      this.resetHostConnectionState();
+    } else if (this.hostDisconnectedAt === null) {
+      this.hostStatusFailureLogged = false;
+      this.healthWindow = [];
+      this.hostDisconnectedAt = Date.now();
+      this.log(
+        `[tunnel] Dev Tunnel reports zero host connections; checking again in ${this.hostRecoveryGraceMs}ms`,
+      );
+    }
+    if (this.hostDisconnectedAt !== null) {
+      const remainingGraceMs = this.hostRecoveryGraceMs - (Date.now() - this.hostDisconnectedAt);
+      if (remainingGraceMs > 0) {
+        this.requestReconcile(remainingGraceMs);
+        return;
+      }
+      const stopReason = hostStatus.hostConnections === null
+        ? "host connection recovery could not be confirmed"
+        : "persistent zero host connections";
+      const stopped = await this.stopChild(child, stopReason);
+      if (!stopped) throw new Error("Unable to recycle disconnected tunnel");
+      this.requestReconcile(0);
       return;
     }
 
@@ -360,7 +445,7 @@ export class TunnelSupervisor {
     if (this.child !== child || !this.published) return;
     if (publicResult.detail === "auth-gated" && !this.authGateLogged) {
       this.authGateLogged = true;
-      this.log("[tunnel] Public endpoint is access-controlled (sign-in redirect); treating relay reachability as healthy");
+      this.log("[tunnel] Public endpoint is access-controlled; verifying host connectivity separately");
     }
     const slow = publicResult.healthy && publicResult.durationMs >= this.healthSlowMs;
     if (publicResult.healthy && !slow) {
@@ -412,25 +497,6 @@ export class TunnelSupervisor {
     this.requestReconcile(0);
   }
 
-  /**
-   * The devtunnel CLI reports relay transport drops on stderr long before a scheduled
-   * probe notices. Each drop counts as a failed observation; when that crosses the
-   * threshold the next reconcile recycles the child instead of waiting for more probes.
-   */
-  private onTransportDrop(child: ChildProcess, line: string): void {
-    if (this.child !== child || !this.published || !this.desired) return;
-    this.recordHealthObservation({ failed: true, durationMs: 0, detail: "relay transport dropped" });
-    const failures = this.logHealthFailure({
-      failed: true,
-      durationMs: 0,
-      detail: `relay transport dropped: ${line.split(/\r?\n/, 1)[0].slice(0, 160)}`,
-    });
-    if (failures < this.healthFailureThreshold) return;
-    this.healthWindow = [];
-    this.restartRequested = "repeated relay transport drops";
-    this.requestReconcile(0);
-  }
-
   private async cleanupOrphan(): Promise<void> {
     if (this.orphanChecked) return;
     this.orphanChecked = true;
@@ -456,6 +522,7 @@ export class TunnelSupervisor {
     if (!this.desired) return;
     const generation = ++this.generation;
     const child = this.deps.spawnTunnel(this.name, this.port);
+    this.resetHostConnectionState();
     this.child = child;
     this.identity = child.pid
       ? this.deps.captureProcessIdentity(
@@ -594,11 +661,15 @@ export class TunnelSupervisor {
       }, this.startupTimeoutMs);
 
       child.stdout?.on("data", onData);
+      let stderrTail = "";
       child.stderr?.on("data", (data: Buffer) => {
-        const line = data.toString().trim();
-        if (!line) return;
-        this.log(`[tunnel] ${line}`);
-        if (TRANSPORT_DROP_RE.test(line)) this.onTransportDrop(child, line);
+        const chunk = data.toString();
+        if (chunk.trim()) this.log(`[tunnel] ${chunk.trim()}`);
+        if (!this.isActiveChild(child)) return;
+        stderrTail = `${stderrTail}${chunk}`.slice(-1024);
+        if (!HOST_STATUS_WAKE_RE.test(stderrTail)) return;
+        stderrTail = "";
+        this.requestReconcile(0);
       });
       child.once("error", onError);
       child.once("exit", onStartupExit);
@@ -609,6 +680,7 @@ export class TunnelSupervisor {
         this.identity = null;
         this.url = null;
         this.published = false;
+        this.resetHostConnectionState();
         this.clearState();
         this.log(`[tunnel] Exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
         if (!this.desired || planned) return;
@@ -649,6 +721,7 @@ export class TunnelSupervisor {
       this.identity = null;
       this.url = null;
       this.published = false;
+      this.resetHostConnectionState();
       this.clearState();
     }
     return true;
@@ -660,6 +733,18 @@ export class TunnelSupervisor {
       process: child,
       identity: child === this.child ? this.identity : null,
     };
+  }
+
+  private resetHostConnectionState(): void {
+    this.hostDisconnectedAt = null;
+    this.hostStatusFailureLogged = false;
+  }
+
+  private isActiveChild(child: ChildProcess): boolean {
+    return this.child === child
+      && this.published
+      && this.desired
+      && !this.plannedStops.has(child);
   }
 
   private clearState(): void {
