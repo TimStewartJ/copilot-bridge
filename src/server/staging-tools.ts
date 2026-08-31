@@ -1761,7 +1761,8 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
       "Returns the staging directory path where you should make all edits. " +
-      "Use npm run check:fast plus the focused check lane that matches your edit while iterating, then npm run check:pr before calling staging_preview or staging_deploy.",
+      "Use npm run check:fast plus the focused check lane that matches your edit while iterating. " +
+      "Final validation is enforced by staging_preview by default, or by staging_deploy when preview validation was skipped or invalidated.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const prefix = randomBytes(4).toString("hex");
