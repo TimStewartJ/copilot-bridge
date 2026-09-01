@@ -5,10 +5,25 @@ import { AdoProvider, clearAdoProviderState } from "./ado.js";
 import { GitHubProvider, clearGitHubProviderState } from "./github.js";
 import { LinearProvider } from "./linear.js";
 import { NullProvider } from "./null.js";
-import type { WorkTrackingProvider, EnrichedWorkItem, EnrichedPR, ProviderName } from "./types.js";
+import type {
+  WorkTrackingProvider,
+  EnrichedWorkItem,
+  EnrichedPR,
+  ProviderName,
+  WorkTrackingIdentity,
+  WorkItemPullRequestLinksResult,
+} from "./types.js";
 import type { WorkItemRef, PRRef } from "../task-store.js";
 
-export type { WorkTrackingProvider, EnrichedWorkItem, EnrichedPR, ProviderName } from "./types.js";
+export type {
+  WorkTrackingProvider,
+  EnrichedWorkItem,
+  EnrichedPR,
+  ProviderName,
+  WorkItemPullRequestLink,
+  WorkItemPullRequestLinksResult,
+  WorkTrackingIdentity,
+} from "./types.js";
 export type { WorkItemRef, PRRef } from "../task-store.js";
 
 // ── Settings getter (set by api-router after context is ready) ────
@@ -143,4 +158,37 @@ export async function enrichPullRequests(refs: PRRef[]): Promise<EnrichedPR[]> {
   return refs.map((ref) =>
     results.find((r) => r.repoId === ref.repoId && r.prId === ref.prId && r.provider === ref.provider)!,
   );
+}
+
+export async function fetchAdoWorkItemPullRequestLinks(
+  workItemIds: string[],
+  pullRequests: PRRef[],
+): Promise<WorkItemPullRequestLinksResult> {
+  const provider = getProvider("ado");
+  if (!provider.fetchWorkItemPullRequestLinks) {
+    return {
+      links: [],
+      warnings: ["ADO relationship discovery is unavailable."],
+    };
+  }
+  try {
+    return await provider.fetchWorkItemPullRequestLinks(workItemIds, pullRequests);
+  } catch (err) {
+    console.error("[providers] ADO work item pull request relationship discovery failed:", err);
+    return {
+      links: [],
+      warnings: ["ADO relationships could not be loaded."],
+    };
+  }
+}
+
+export async function fetchAdoCurrentUser(): Promise<WorkTrackingIdentity | null> {
+  const provider = getProvider("ado");
+  if (!provider.fetchCurrentUser) return null;
+  try {
+    return await provider.fetchCurrentUser();
+  } catch (err) {
+    console.error("[providers] ADO authenticated user lookup failed:", err);
+    return null;
+  }
 }

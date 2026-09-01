@@ -1929,6 +1929,19 @@ export default function App() {
               }
             />
             <Route
+              path="dashboard/work-map"
+              element={
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
+                  scrollRestoration={mobileDashboardScrollRestoration}
+                />
+              }
+            />
+            <Route
               path="chats"
               element={
                 <div className="flex-1 flex items-center justify-center text-text-muted text-sm">

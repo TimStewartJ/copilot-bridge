@@ -39,7 +39,14 @@ import {
   normalizeScheduleAutoArchiveKeep,
   validateScheduleLaunchOptionUpdates,
 } from "./schedule-validation.js";
-import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
+import {
+  enrichWorkItems,
+  enrichPullRequests,
+  fetchAdoCurrentUser,
+  fetchAdoWorkItemPullRequestLinks,
+  clearProviderCache,
+  setSettingsGetter,
+} from "./providers/index.js";
 import {
   createApiJsonErrorHandler,
   createRequestTelemetryMiddleware,
@@ -137,6 +144,7 @@ import { BrowserHeadedCloseError, closeHeadedDiagnosticsBrowser, getBrowserDiagn
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
+import { buildWorkMapData } from "./work-map.js";
 import {
   isManagementJobStatus,
   isManagementJobType,
@@ -4520,6 +4528,42 @@ export function createApiRouter(
     } catch (err) {
       console.error("[dashboard:checklist] Error:", err);
       res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.get("/dashboard/work-map", async (req, res) => {
+    try {
+      const t0 = Date.now();
+      const adoConfig = ctx.settingsStore.getSettings().providers?.ado;
+      const includeArchived = req.query.includeArchived === "1" || req.query.includeArchived === "true";
+      if (adoConfig && (req.query.refresh === "1" || req.query.refresh === "true")) {
+        clearProviderCache();
+      }
+      const data = await buildWorkMapData({
+        tasks: ctx.taskStore.listTasks().filter((task) => includeArchived || task.status === "active"),
+        includeArchived,
+        adoConfig,
+        enrichWorkItems,
+        enrichPullRequests,
+        fetchRelationships: fetchAdoWorkItemPullRequestLinks,
+        fetchCurrentUser: fetchAdoCurrentUser,
+      });
+      res.json(data);
+      ctx.telemetryStore?.recordSpan({
+        name: "dashboard.work_map",
+        duration: Date.now() - t0,
+        source: "server",
+        metadata: {
+          enabled: data.enabled,
+          workItemCount: data.workItems.length,
+          pullRequestCount: data.pullRequests.length,
+          taskCount: data.tasks.length,
+          warningCount: data.warnings.length,
+        },
+      });
+    } catch (err) {
+      console.error("[dashboard:work-map] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

@@ -1,4 +1,4 @@
-import { CheckSquare, Inbox } from "lucide-react";
+import { CheckSquare, Inbox, Workflow } from "lucide-react";
 import {
   getDashboardPanelId,
   getDashboardTabId,
@@ -12,6 +12,8 @@ interface DashboardTabsProps {
   checklistCountClass: string;
   checklistCountTitle?: string;
   feedCount: number;
+  showWorkMap?: boolean;
+  workMapCount?: number;
 }
 
 function tabClass(selected: boolean): string {
@@ -29,6 +31,8 @@ export default function DashboardTabs({
   checklistCountClass,
   checklistCountTitle,
   feedCount,
+  showWorkMap = false,
+  workMapCount,
 }: DashboardTabsProps) {
   return (
     <div className="flex rounded-lg border border-border bg-bg-surface p-1" role="tablist" aria-label="Dashboard sections">
@@ -69,6 +73,25 @@ export default function DashboardTabs({
           </span>
         )}
       </button>
+      {showWorkMap && (
+        <button
+          type="button"
+          role="tab"
+          id={getDashboardTabId("work-map")}
+          aria-controls={getDashboardPanelId("work-map")}
+          aria-selected={activeTab === "work-map"}
+          onClick={() => onTabChange("work-map")}
+          className={tabClass(activeTab === "work-map")}
+        >
+          <Workflow size={14} />
+          <span>Work map</span>
+          {workMapCount !== undefined && workMapCount > 0 && (
+            <span className="rounded-full border border-border bg-bg-hover px-1.5 py-0.5 text-[11px] font-semibold leading-none text-text-faint">
+              {workMapCount}
+            </span>
+          )}
+        </button>
+      )}
     </div>
   );
 }

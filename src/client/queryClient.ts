@@ -58,6 +58,7 @@ export const queryKeys = {
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,
   dashboard: ["dashboard"] as const,
+  workMap: (includeArchived: boolean) => ["dashboard", "work-map", { includeArchived }] as const,
   copilotUsage: (scope?: {
     taskId?: string;
     includeSessions?: boolean;

@@ -120,3 +120,142 @@ describe("Task enrichment routes", () => {
     }
   });
 });
+
+describe("Dashboard work map route", () => {
+  it("stays disabled when the ADO provider is not configured", async () => {
+    const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks");
+    try {
+      const res = await request(app).get("/api/dashboard/work-map");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        enabled: false,
+        org: null,
+        project: null,
+        tasks: [],
+        workItems: [],
+        pullRequests: [],
+        warnings: [],
+      });
+      expect(relationshipSpy).not.toHaveBeenCalled();
+    } finally {
+      relationshipSpy.mockRestore();
+    }
+  });
+
+  it("joins ADO relationships with the Bridge tasks that own either endpoint", async () => {
+    ctx.settingsStore.updateSettings({
+      providers: { ado: { org: "msazure", project: "One" } },
+    });
+    const enrichWorkItemsSpy = vi.spyOn(providers, "enrichWorkItems").mockImplementation(async (refs) =>
+      refs.map((ref) => ({
+        id: ref.id,
+        provider: "ado",
+        title: `Work item ${ref.id}`,
+        state: ref.id === "10" ? "Active" : "New",
+        type: "Feature",
+        assignedTo: "Tim Stewart",
+        areaPath: "One\\Bridge",
+        url: `https://example.test/workitems/${ref.id}`,
+      })));
+    const enrichPullRequestsSpy = vi.spyOn(providers, "enrichPullRequests").mockImplementation(async (refs) =>
+      refs.map((ref) => ({
+        ...ref,
+        repoName: ref.repoName ?? "copilot-bridge",
+        title: `PR ${ref.prId}`,
+        status: "active",
+        createdBy: "Tim Stewart",
+        reviewerCount: 1,
+        url: `https://example.test/pullrequests/${ref.prId}`,
+      })));
+    const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks").mockResolvedValue({
+      links: [
+        { workItemId: "10", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
+        { workItemId: "11", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
+      ],
+      warnings: [],
+    });
+    const currentUserSpy = vi.spyOn(providers, "fetchAdoCurrentUser").mockResolvedValue({
+      displayName: "Tim Stewart",
+    });
+
+    try {
+      const workItemTask = ctx.taskStore.createTask("Track the feature");
+      ctx.taskStore.linkWorkItem(workItemTask.id, "10", "ado");
+      const pullRequestTask = ctx.taskStore.createTask("Review the implementation");
+      ctx.taskStore.linkPR(pullRequestTask.id, {
+        repoId: "copilot-bridge",
+        repoName: "copilot-bridge",
+        prId: 20,
+        provider: "ado",
+      });
+      const archivedTask = ctx.taskStore.createTask("Historical implementation");
+      ctx.taskStore.linkWorkItem(archivedTask.id, "12", "ado");
+      ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
+
+      const res = await request(app).get("/api/dashboard/work-map");
+
+      expect(res.status).toBe(200);
+      expect(relationshipSpy).toHaveBeenNthCalledWith(
+        1,
+        ["10"],
+        [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+      );
+      expect(res.body).toMatchObject({
+        enabled: true,
+        includeArchived: false,
+        currentUser: { displayName: "Tim Stewart" },
+        org: "msazure",
+        project: "One",
+        warnings: [],
+      });
+      expect(res.body.tasks).toHaveLength(2);
+      expect(res.body.tasks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: workItemTask.id, title: "Track the feature" }),
+        expect.objectContaining({ id: pullRequestTask.id, title: "Review the implementation" }),
+      ]));
+      expect(res.body.workItems).toEqual([
+        expect.objectContaining({
+          id: "10",
+          taskIds: [workItemTask.id],
+          pullRequestKeys: ["repo-guid:20"],
+        }),
+        expect.objectContaining({
+          id: "11",
+          taskIds: [],
+          pullRequestKeys: ["repo-guid:20"],
+        }),
+      ]);
+      expect(res.body.pullRequests).toEqual([
+        expect.objectContaining({
+          key: "repo-guid:20",
+          repoId: "repo-guid",
+          repoName: "copilot-bridge",
+          taskIds: [pullRequestTask.id],
+          workItemIds: ["10", "11"],
+        }),
+      ]);
+
+      const archivedRes = await request(app).get("/api/dashboard/work-map?includeArchived=1");
+
+      expect(archivedRes.status).toBe(200);
+      expect(relationshipSpy).toHaveBeenNthCalledWith(
+        2,
+        ["10", "12"],
+        [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+      );
+      expect(archivedRes.body.includeArchived).toBe(true);
+      expect(archivedRes.body.tasks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: archivedTask.id, status: "archived" }),
+      ]));
+      expect(archivedRes.body.workItems).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "12", taskIds: [archivedTask.id] }),
+      ]));
+    } finally {
+      enrichWorkItemsSpy.mockRestore();
+      enrichPullRequestsSpy.mockRestore();
+      relationshipSpy.mockRestore();
+      currentUserSpy.mockRestore();
+    }
+  });
+});
