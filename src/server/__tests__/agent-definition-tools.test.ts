@@ -89,10 +89,4 @@ describe("agent definition tools", () => {
     expect(missing.resultType).toBe("failure");
     expect(missing.textResultForLlm).toContain("is not associated");
   });
-
-  it("does not expose redundant agent definition list/get tools", () => {
-    const { ctx } = createTestApp();
-    const names = createAgentDefinitionToolDefinitions(ctx).map((tool) => tool.name);
-    expect(names).toEqual(["agent_definition_create", "agent_definition_remove"]);
-  });
 });

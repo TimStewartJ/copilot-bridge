@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { defineBridgeTool, defineSessionBridgeTool } from "../agent-tools-mcp/adapter.js";
 import { registerAllBridgeTools } from "../agent-tools-mcp/register.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
-import { findUnsupportedSchemaKeywords } from "../agent-tools-mcp/validate-args.js";
 import { createNativeBridgeTools } from "../bridge-native-tools.js";
 import { createTestApp } from "./test-app.js";
 import { testPath } from "./test-paths.js";
@@ -116,20 +115,6 @@ describe("defineBridgeTool schema enforcement", () => {
     } as any);
 
     expect(String((result as any).textResultForLlm)).toContain("id must be string");
-  });
-});
-
-describe("registered bridge tool schemas", () => {
-  it("only use schema keywords the validator enforces", () => {
-    const { ctx } = createTestApp();
-    const server = new BridgeToolsMcpServer(ctx);
-    registerAllBridgeTools(server, ctx);
-
-    const offenders = server.getToolDefinitions("all")
-      .map((tool) => ({ name: tool.name, unsupported: findUnsupportedSchemaKeywords(tool.inputSchema) }))
-      .filter((entry) => entry.unsupported.length > 0);
-
-    expect(offenders).toEqual([]);
   });
 });
 

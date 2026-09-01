@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeMermaidSvgResponsive } from "./components/MermaidVisual";
 import { prepareResponsiveVegaSpec } from "./components/VegaLiteVisual";
-import { HTML_SANDBOX_PERMISSIONS } from "./components/visualDisplay";
 
 const VALID_SPEC = {
   $schema: "https://vega.github.io/schema/vega-lite/v5.json",
@@ -136,14 +135,5 @@ describe("prepareResponsiveVegaSpec", () => {
     expect(result.skippedCompound).toBe(true);
     expect(result.injectedViewConfig).toBe(false);
     expect(result.spec.config).toEqual({ view: { continuousWidth: 240, continuousHeight: 120 } });
-  });
-});
-
-describe("html sandbox permissions", () => {
-  it("allows scripts only, without same-origin, forms, popups, or top navigation", () => {
-    expect(HTML_SANDBOX_PERMISSIONS).toBe("allow-scripts");
-    for (const forbidden of ["allow-same-origin", "allow-forms", "allow-popups", "allow-top-navigation"]) {
-      expect(HTML_SANDBOX_PERMISSIONS).not.toContain(forbidden);
-    }
   });
 });

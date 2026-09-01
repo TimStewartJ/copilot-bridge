@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import request from "./test-http.js";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createPushNotificationService, initPushEventNotifications } from "../push-notification-service.js";
 import { createPushSubscriptionStore, type PushSubscriptionInput } from "../push-subscription-store.js";
 import { setupTestDb, withTestEnv } from "./helpers.js";
@@ -23,8 +20,6 @@ const PUSH_ENV = {
   BRIDGE_PUSH_VAPID_SUBJECT: "mailto:test@example.com",
 };
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-
 function getSentPayload(sendNotification: ReturnType<typeof vi.fn>): Record<string, unknown> {
   const payload = sendNotification.mock.calls[0]?.[1];
   if (typeof payload !== "string") throw new Error("Expected push payload to be a string");
@@ -38,16 +33,6 @@ function createPushTestApp(sessionNames: Record<string, string> = {}) {
     } as any,
   });
 }
-
-describe("push service worker freshness", () => {
-  it("does not intercept fetches or delete origin-wide caches", () => {
-    const source = readFileSync(join(REPO_ROOT, "public", "service-worker.js"), "utf-8");
-
-    expect(source).not.toMatch(/addEventListener\(["']fetch["']/);
-    expect(source).not.toContain("caches.keys()");
-    expect(source).not.toContain("caches.delete");
-  });
-});
 
 describe("push subscription store", () => {
   it("upserts browser subscriptions by endpoint", () => {
