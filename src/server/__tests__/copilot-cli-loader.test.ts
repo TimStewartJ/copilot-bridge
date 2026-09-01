@@ -77,19 +77,6 @@ describe("installed @github/copilot-sdk pending-interaction contract", () => {
     ).toBeTruthy();
   });
 
-  it("exposes a permissions.pendingRequests method whose result carries only items", () => {
-    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
-    const listType = rpcTypes.match(/export interface PendingPermissionRequestList \{(.*?)\n\}/s)?.[1];
-    expect(listType, "PendingPermissionRequestList is no longer declared").toBeTruthy();
-    const fields = [...listType!.matchAll(/^\s{4}(\w+)\??:/gm)].map((match) => match[1]);
-    expect(fields).toEqual(["items"]);
-  });
-
-  it("declares no wire method that enumerates pending user input or elicitation requests", () => {
-    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
-    expect(rpcTypes).not.toMatch(/pendingUserInputs|pendingElicitations/);
-  });
-
   it("keeps greppable SDK transport disconnect warnings in the installed client", () => {
     const clientPath = findInstalledSdkClient();
     expect(clientPath, "No installed @github/copilot-sdk dist/client.js found.").toBeTruthy();

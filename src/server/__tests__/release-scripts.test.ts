@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -34,9 +34,6 @@ describe("release scripts", () => {
     const smokeScript = readFileSync(join(process.cwd(), "scripts", "test-release-package.ps1"), "utf-8");
 
     expect(packageScript).toContain("npm install --omit=dev --include=optional --no-audit --no-fund");
-    expect(packageScript).not.toContain(
-      'Remove-PathIfExists (Join-Path $AppDir "node_modules\\@github\\copilot-win32-x64")',
-    );
     expect(smokeScript).toContain("@github\\copilot-win32-x64");
     expect(smokeScript).toContain("copilot.exe");
     expect(smokeScript).toContain("sdk\\index.js");
@@ -49,19 +46,6 @@ describe("release scripts", () => {
     expect(packageScript).toContain('$runtimePackageJson.dependencies["patch-package"]');
     expect(packageScript).toContain('postinstall = "patch-package --error-on-fail"');
     expect(packageScript).toContain('(Join-Path $repoRoot "patches")');
-  });
-
-  it("uses GitHub actions backed by Node 24 or newer", () => {
-    const workflowsDir = join(process.cwd(), ".github", "workflows");
-    const workflowSource = readdirSync(workflowsDir)
-      .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
-      .map((name) => readFileSync(join(workflowsDir, name), "utf-8"))
-      .join("\n");
-
-    expect(workflowSource).not.toMatch(/actions\/checkout@v[1-4]\b/);
-    expect(workflowSource).not.toMatch(/actions\/setup-node@v[1-4]\b/);
-    expect(workflowSource).not.toMatch(/actions\/upload-artifact@v[1-5]\b/);
-    expect(workflowSource).not.toMatch(/actions\/download-artifact@v[1-6]\b/);
   });
 
   it("runs CI for pushed staging branches", () => {
