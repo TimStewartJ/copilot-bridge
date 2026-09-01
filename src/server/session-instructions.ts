@@ -18,6 +18,12 @@ Bridge-owned tools are first-class tools with canonical names such as staging_pr
 </tool_naming>
 `.trim();
 
+export const WORK_REFERENCE_GUIDANCE = `
+<work_reference_links>
+When referring to an Azure DevOps work item or pull request in a user-facing response, prefer its full Markdown link instead of only a numeric ID. Put the link on its own line when a rich preview would be useful. Copilot Bridge renders standalone Azure DevOps work-item and pull-request links as preview cards.
+</work_reference_links>
+`.trim();
+
 export const STAGING_INSTRUCTIONS = `
 <staging_workflow>
 When modifying code in this repository (the Copilot Bridge):

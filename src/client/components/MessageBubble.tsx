@@ -1,12 +1,15 @@
 import { memo, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { CircleAlert, FileText, RotateCcw, TextSelect } from "lucide-react";
+import { parseAdoWorkReferenceUrl, type AdoWorkReference } from "../../shared/ado-work-reference";
+import { isRecord } from "../../shared/is-record";
 import type { ChatMessage } from "../api";
 import { buildToolCallForest } from "../lib/tool-call-tree";
 import ToolCallTree from "./ToolCallTree";
 import CodeBlock from "./CodeBlock";
+import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
 import { APP_PROSE } from "./shared/prose-classes";
 
 interface MessageBubbleProps {
@@ -69,6 +72,45 @@ function renderToolCalls(toolCalls: NonNullable<ChatMessage["toolCalls"]>) {
     <ToolCallTree key={node.toolCall.toolCallId} node={node} />
   ));
 }
+
+function extractNodeText(node: unknown): string {
+  if (!isRecord(node)) return "";
+  if (node.type === "text" && typeof node.value === "string") return node.value;
+  if (!Array.isArray(node.children)) return "";
+  return node.children.map(extractNodeText).join("");
+}
+
+function standaloneWorkReference(node: unknown): {
+  url: string;
+  label: string;
+  reference: AdoWorkReference;
+} | null {
+  if (!isRecord(node) || !Array.isArray(node.children) || node.children.length !== 1) return null;
+  const link = node.children[0];
+  if (!isRecord(link) || link.type !== "element" || link.tagName !== "a") return null;
+  const properties = link.properties;
+  if (!isRecord(properties) || typeof properties.href !== "string") return null;
+  const reference = parseAdoWorkReferenceUrl(properties.href);
+  if (!reference) return null;
+  return {
+    url: properties.href,
+    label: extractNodeText(link),
+    reference,
+  };
+}
+
+const ChatMarkdownParagraph: NonNullable<Components["p"]> = ({ node, children, ...props }) => {
+  const workReference = standaloneWorkReference(node);
+  if (workReference) {
+    return <ChatWorkReferencePreview {...workReference} />;
+  }
+  return <p {...props}>{children}</p>;
+};
+
+const MESSAGE_MARKDOWN_COMPONENTS: Components = {
+  pre: CodeBlock,
+  p: ChatMarkdownParagraph,
+};
 
 export default memo(function MessageBubble({
   message,
@@ -191,7 +233,7 @@ export default memo(function MessageBubble({
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MESSAGE_MARKDOWN_COMPONENTS}>
                 {message.content}
               </ReactMarkdown>
             </div>

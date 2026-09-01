@@ -121,6 +121,91 @@ describe("Task enrichment routes", () => {
   });
 });
 
+describe("Work-reference preview route", () => {
+  it("previews a configured ADO work-item link", async () => {
+    ctx.settingsStore.updateSettings({
+      providers: { ado: { org: "exampleorg", project: "One" } },
+    });
+    const workItem = {
+      id: "30000015",
+      provider: "ado" as const,
+      title: "Review SDL bug",
+      state: "Active",
+      type: "Bug",
+      assignedTo: "Tim Stewart",
+      areaPath: "One\\Bridge",
+      url: "https://exampleorg.visualstudio.com/One/_workitems/edit/30000015",
+    };
+    const enrichSpy = vi.spyOn(providers, "enrichWorkItems").mockResolvedValue([workItem]);
+
+    try {
+      const res = await request(app)
+        .post("/api/work-references/preview")
+        .send({ url: workItem.url });
+
+      expect(res.status).toBe(200);
+      expect(enrichSpy).toHaveBeenCalledWith([{ id: "30000015", provider: "ado" }]);
+      expect(res.body).toEqual({ kind: "workItem", workItem });
+    } finally {
+      enrichSpy.mockRestore();
+    }
+  });
+
+  it("previews a configured ADO pull-request link", async () => {
+    ctx.settingsStore.updateSettings({
+      providers: { ado: { org: "exampleorg", project: "One" } },
+    });
+    const pullRequest = {
+      repoId: "repo-guid",
+      repoName: "example-repo",
+      prId: 10000002,
+      provider: "ado" as const,
+      title: "Fix region dropdown",
+      status: "active" as const,
+      createdBy: "Tim Stewart",
+      reviewerCount: 2,
+      url: "https://exampleorg.visualstudio.com/One/_git/example-repo/pullrequest/10000002",
+    };
+    const enrichSpy = vi.spyOn(providers, "enrichPullRequests").mockResolvedValue([pullRequest]);
+
+    try {
+      const res = await request(app)
+        .post("/api/work-references/preview")
+        .send({ url: pullRequest.url });
+
+      expect(res.status).toBe(200);
+      expect(enrichSpy).toHaveBeenCalledWith([{
+        repoId: "example-repo",
+        repoName: "example-repo",
+        prId: 10000002,
+        provider: "ado",
+      }]);
+      expect(res.body).toEqual({ kind: "pullRequest", pullRequest });
+    } finally {
+      enrichSpy.mockRestore();
+    }
+  });
+
+  it("rejects links outside the configured ADO organization or project", async () => {
+    ctx.settingsStore.updateSettings({
+      providers: { ado: { org: "exampleorg", project: "One" } },
+    });
+    const enrichSpy = vi.spyOn(providers, "enrichWorkItems");
+
+    try {
+      const res = await request(app)
+        .post("/api/work-references/preview")
+        .send({ url: "https://other.visualstudio.com/Project/_workitems/edit/42" });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("does not match");
+      expect(enrichSpy).not.toHaveBeenCalled();
+    } finally {
+      enrichSpy.mockRestore();
+    }
+  });
+});
+
 describe("Dashboard work map route", () => {
   it("stays disabled when the ADO provider is not configured", async () => {
     const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks");

@@ -240,6 +240,8 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
     expect(cfg.systemMessage.content).toContain("Prefer concise summaries.");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
+    expect(cfg.systemMessage.content).toContain("<work_reference_links>");
+    expect(cfg.systemMessage.content).toContain("full Markdown link instead of only a numeric ID");
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
   });
 
