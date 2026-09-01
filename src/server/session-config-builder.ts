@@ -26,6 +26,7 @@ import {
   RESEARCH_GUIDANCE,
   STAGING_INSTRUCTIONS,
   TOOL_NAMING_GUIDANCE,
+  WORK_REFERENCE_GUIDANCE,
 } from "./session-instructions.js";
 import {
   formatPromptTagList,
@@ -418,6 +419,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   contextParts.push(RESEARCH_GUIDANCE);
   contextParts.push(FEED_GUIDANCE);
   contextParts.push(TOOL_NAMING_GUIDANCE);
+  contextParts.push(WORK_REFERENCE_GUIDANCE);
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
   if (task && deps.tagStore) {

@@ -522,6 +522,10 @@ export interface EnrichedTaskData {
   pullRequests: EnrichedPR[];
 }
 
+export type WorkReferencePreview =
+  | { kind: "workItem"; workItem: EnrichedWorkItem }
+  | { kind: "pullRequest"; pullRequest: EnrichedPR };
+
 export interface WorkMapTask {
   id: string;
   title: string;
@@ -1502,6 +1506,10 @@ export async function fetchPlan(sessionId: string): Promise<PlanData> {
 
 export async function fetchEnrichedTask(id: string): Promise<EnrichedTaskData> {
   return apiFetch<EnrichedTaskData>(`/api/tasks/${id}/enriched`);
+}
+
+export async function fetchWorkReferencePreview(url: string): Promise<WorkReferencePreview> {
+  return apiFetch<WorkReferencePreview>("/api/work-references/preview", { url });
 }
 
 // ── Read State API ────────────────────────────────────────────────
