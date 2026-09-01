@@ -79,6 +79,10 @@ import {
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
+import {
+  matchesAdoProvider,
+  parseAdoWorkReferenceUrl,
+} from "../shared/ado-work-reference.js";
 import { isRecord } from "../shared/is-record.js";
 import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
@@ -3939,6 +3943,42 @@ export function createApiRouter(
       console.error("[enriched] Error:", err);
       res.json({ task, workItems: [], pullRequests: [] });
     }
+  });
+
+  router.post("/work-references/preview", async (req, res) => {
+    const url = typeof req.body?.url === "string" ? req.body.url : "";
+    const reference = parseAdoWorkReferenceUrl(url);
+    if (!reference) {
+      return res.status(400).json({
+        error: "Only Azure DevOps work-item and pull-request links can be previewed.",
+      });
+    }
+
+    const adoConfig = ctx.settingsStore.getSettings().providers?.ado;
+    if (!adoConfig) {
+      return res.status(503).json({ error: "The Azure DevOps provider is not configured." });
+    }
+    if (!matchesAdoProvider(reference, adoConfig)) {
+      return res.status(400).json({
+        error: "The Azure DevOps link does not match the configured organization and project.",
+      });
+    }
+
+    if (reference.kind === "workItem") {
+      const [workItem] = await enrichWorkItems([{
+        id: reference.workItemId,
+        provider: "ado",
+      }]);
+      return res.json({ kind: "workItem", workItem });
+    }
+
+    const [pullRequest] = await enrichPullRequests([{
+      repoId: reference.repoId,
+      repoName: reference.repoName,
+      prId: reference.prId,
+      provider: "ado",
+    }]);
+    return res.json({ kind: "pullRequest", pullRequest });
   });
 
   router.get("/tasks/:id/session-storage", async (req, res) => {

@@ -4,8 +4,6 @@ import {
   Archive,
   ArrowRight,
   BriefcaseBusiness,
-  ClipboardList,
-  GitPullRequest,
   RefreshCw,
   Search,
   Workflow,
@@ -17,11 +15,11 @@ import type {
   WorkMapWorkItem,
 } from "../api";
 import { timeAgo } from "../time";
-import { PR_STATUS_STYLES, WI_STATE_STYLES, WI_TYPE_ICONS } from "../work-item-styles";
 import { getDashboardPanelId, getDashboardTabId } from "../lib/dashboard-routes";
 import EmptyState from "./shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
+import { PullRequestPreviewCard, WorkItemPreviewCard } from "./WorkReferenceCards";
 
 interface DashboardWorkMapProps {
   active: boolean;
@@ -155,67 +153,6 @@ function MetricCard({
       <div className={`text-xl font-semibold ${tone}`}>{value}</div>
       <div className={UI.text.metricLabel}>{label}</div>
     </div>
-  );
-}
-
-function WorkItemCard({ item }: { item: WorkMapWorkItem }) {
-  const typeInfo = WI_TYPE_ICONS[item.type ?? ""];
-  return (
-    <a
-      href={item.url}
-      target="_blank"
-      rel="noopener"
-      className={`${UI.surface.cardInset} block border-l-2 border-l-error px-3 py-3 transition-colors hover:bg-bg-hover`}
-    >
-      <div className="flex items-center gap-2">
-        <span className={typeInfo?.color ?? "text-text-muted"}>
-          {typeInfo?.icon ?? <ClipboardList size={14} />}
-        </span>
-        <span className="text-xs font-semibold text-accent">#{item.id}</span>
-        {item.state && (
-          <span className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] ${WI_STATE_STYLES[item.state] ?? UI.chip.muted}`}>
-            {item.state}
-          </span>
-        )}
-      </div>
-      <div className="mt-2 text-sm font-medium leading-snug text-text-primary">
-        {item.title ?? `ADO work item ${item.id}`}
-      </div>
-      <div className="mt-2 space-y-0.5 text-[10px] text-text-faint">
-        {(item.type || item.assignedTo) && (
-          <div>{[item.type, item.assignedTo].filter(Boolean).join(" - ")}</div>
-        )}
-        {item.areaPath && <div className="truncate">{item.areaPath}</div>}
-      </div>
-    </a>
-  );
-}
-
-function PullRequestCard({ pullRequest }: { pullRequest: WorkMapPullRequest }) {
-  const statusInfo = PR_STATUS_STYLES[pullRequest.status ?? ""];
-  return (
-    <a
-      href={pullRequest.url}
-      target="_blank"
-      rel="noopener"
-      className={`${UI.surface.cardInset} block border-l-2 border-l-info px-3 py-3 transition-colors hover:bg-bg-hover`}
-    >
-      <div className="flex items-center gap-2">
-        {statusInfo
-          ? <span className={`h-2 w-2 shrink-0 rounded-full ${statusInfo.dot}`} />
-          : <GitPullRequest size={13} className="text-text-muted" />}
-        <span className="text-xs font-semibold text-accent">PR #{pullRequest.prId}</span>
-        {statusInfo && (
-          <span className="ml-auto text-[10px] text-text-muted">{statusInfo.label}</span>
-        )}
-      </div>
-      <div className="mt-2 text-sm font-medium leading-snug text-text-primary">
-        {pullRequest.title ?? `Pull request ${pullRequest.prId}`}
-      </div>
-      <div className="mt-2 text-[10px] text-text-faint">
-        {pullRequest.repoName ?? pullRequest.repoId}
-      </div>
-    </a>
   );
 }
 
@@ -556,7 +493,7 @@ export default function DashboardWorkMap({
                       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-faint">
                         ADO work item
                       </div>
-                      <WorkItemCard item={cluster.workItem} />
+                      <WorkItemPreviewCard item={cluster.workItem} />
                     </div>
                     <Connector label="Related pull requests" />
                     <div>
@@ -566,7 +503,7 @@ export default function DashboardWorkMap({
                       </div>
                       <div className="space-y-2">
                         {cluster.pullRequests.length > 0 ? cluster.pullRequests.map((pr) => (
-                          <PullRequestCard key={pr.key} pullRequest={pr} />
+                          <PullRequestPreviewCard key={pr.key} pullRequest={pr} />
                         )) : (
                           <div className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-xs text-text-faint">
                             No related PR discovered
@@ -612,7 +549,7 @@ export default function DashboardWorkMap({
                     <Connector label="Pull request" />
                     <div>
                       <StackLabel>Pull request</StackLabel>
-                      <PullRequestCard pullRequest={pullRequest} />
+                      <PullRequestPreviewCard pullRequest={pullRequest} />
                     </div>
                     <Connector label="Bridge tasks" />
                     <div>

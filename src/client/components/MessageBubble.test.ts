@@ -1,7 +1,19 @@
 import { createElement } from "react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage } from "../api";
-import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
+import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+  waitUntilAct,
+} from "../test-react-harness";
+
+const apiMocks = vi.hoisted(() => ({ fetchWorkReferencePreview: vi.fn() }));
+
+vi.mock("../api", async () => {
+  const actual = await vi.importActual<typeof import("../api")>("../api");
+  return { ...actual, fetchWorkReferencePreview: apiMocks.fetchWorkReferencePreview };
+});
 
 let MessageBubble: typeof import("./MessageBubble").default;
 
@@ -12,6 +24,10 @@ beforeAll(async () => {
   } finally {
     await harness.cleanup();
   }
+});
+
+beforeEach(() => {
+  apiMocks.fetchWorkReferencePreview.mockReset();
 });
 
 describe("MessageBubble pending user messages", () => {
@@ -131,6 +147,77 @@ describe("MessageBubble text selection mode", () => {
         getReactProps(doneButton)?.onClick?.();
       });
       expect(onFinishSelectingText).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
+describe("MessageBubble Azure DevOps references", () => {
+  it("renders a standalone work-item markdown link as the shared rich preview card", async () => {
+    const url = "https://msazure.visualstudio.com/One/_workitems/edit/37655015";
+    apiMocks.fetchWorkReferencePreview.mockResolvedValue({
+      kind: "workItem",
+      workItem: {
+        id: "37655015",
+        provider: "ado",
+        title: "Review SDL bug",
+        state: "Active",
+        type: "Bug",
+        assignedTo: "Tim Stewart",
+        areaPath: "One\\Bridge",
+        url,
+      },
+    });
+    const harness = await createReactDomHarness();
+    const message = {
+      role: "assistant",
+      content: `[Review SDL bug](${url})`,
+    } satisfies ChatMessage;
+
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+      await waitUntilAct(
+        harness.act,
+        () => findAllByTag(harness.dom.container, "DIV").some((candidate) => (
+          candidate.getAttribute?.("data-work-reference-preview") === "loaded"
+        )),
+        { label: "work-reference preview load" },
+      );
+
+      expect(apiMocks.fetchWorkReferencePreview).toHaveBeenCalledWith(url);
+      const preview = findAllByTag(harness.dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-work-reference-preview") === "loaded"
+      ));
+      expect(preview).toBeDefined();
+      const card = findAllByTag(harness.dom.container, "A").find((candidate) => (
+        candidate.getAttribute?.("data-work-reference-kind") === "workItem"
+      ));
+      expect(card?.getAttribute("href")).toBe(url);
+      expect(card?.getAttribute("target")).toBe("_blank");
+      expect(harness.dom.container.textContent).toContain("Active");
+      expect(harness.dom.container.textContent).toContain("Tim Stewart");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps an inline ADO link as a normal markdown link", async () => {
+    const url = "https://msazure.visualstudio.com/One/_workitems/edit/37655015";
+    const harness = await createReactDomHarness();
+    const message = {
+      role: "assistant",
+      content: `See [work item 37655015](${url}) before continuing.`,
+    } satisfies ChatMessage;
+
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+
+      expect(apiMocks.fetchWorkReferencePreview).not.toHaveBeenCalled();
+      expect(findAllByTag(harness.dom.container, "P")).toHaveLength(1);
+      const [link] = findAllByTag(harness.dom.container, "A");
+      expect(link?.getAttribute("href")).toBe(url);
+      expect(link?.getAttribute("data-work-reference-kind")).toBeNull();
     } finally {
       await harness.cleanup();
     }
