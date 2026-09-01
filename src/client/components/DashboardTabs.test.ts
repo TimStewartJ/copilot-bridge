@@ -10,6 +10,7 @@ import type { DashboardChecklistState } from "../hooks/useDashboardChecklist";
 import DashboardChecklist from "./DashboardChecklist";
 import DashboardFeed from "./DashboardFeed";
 import DashboardTabs from "./DashboardTabs";
+import DashboardWorkMap from "./DashboardWorkMap";
 
 function emptyChecklistState(): DashboardChecklistState {
   return {
@@ -128,6 +129,49 @@ describe("DashboardTabs ARIA wiring", () => {
       "aria-labelledby": getReactProps(tab)?.id,
       tabIndex: 0,
     });
+
+    await harness.render(
+      createElement(Fragment, null,
+        createElement(DashboardTabs, {
+          activeTab: "work-map",
+          onTabChange: vi.fn(),
+          checklistCount: 0,
+          checklistCountClass: "",
+          feedCount: 0,
+          showWorkMap: true,
+          workMapCount: 1,
+        }),
+        createElement(DashboardWorkMap, {
+          active: true,
+          data: {
+            enabled: true,
+            includeArchived: false,
+            currentUser: { displayName: "Tim Stewart" },
+            org: "msazure",
+            project: "One",
+            generatedAt: "2026-08-31T20:00:00.000Z",
+            tasks: [],
+            workItems: [],
+            pullRequests: [],
+            warnings: [],
+          },
+          isLoading: false,
+          error: null,
+          isRefreshing: false,
+          onRefresh: vi.fn(async () => undefined),
+          includeArchived: false,
+          onIncludeArchivedChange: vi.fn(),
+          onSelectTask: vi.fn(),
+        }),
+      ),
+    );
+
+    tab = selectedTab(harness.dom.container);
+    panel = controlledPanel(harness.dom.container, tab);
+    expect(getReactProps(panel)).toMatchObject({
+      role: "tabpanel",
+      "aria-labelledby": getReactProps(tab)?.id,
+      tabIndex: 0,
+    });
   });
 });
-

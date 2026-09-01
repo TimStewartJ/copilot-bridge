@@ -522,6 +522,40 @@ export interface EnrichedTaskData {
   pullRequests: EnrichedPR[];
 }
 
+export interface WorkMapTask {
+  id: string;
+  title: string;
+  kind: Task["kind"];
+  status: Task["status"];
+  priority: number;
+  nextAction: string | null;
+  waitingOn: string | null;
+}
+
+export interface WorkMapWorkItem extends EnrichedWorkItem {
+  taskIds: string[];
+  pullRequestKeys: string[];
+}
+
+export interface WorkMapPullRequest extends EnrichedPR {
+  key: string;
+  taskIds: string[];
+  workItemIds: string[];
+}
+
+export interface WorkMapData {
+  enabled: boolean;
+  includeArchived: boolean;
+  currentUser: { displayName: string } | null;
+  org: string | null;
+  project: string | null;
+  generatedAt: string;
+  tasks: WorkMapTask[];
+  workItems: WorkMapWorkItem[];
+  pullRequests: WorkMapPullRequest[];
+  warnings: string[];
+}
+
 export interface SessionStorageWarning {
   code: "missing" | "partial";
   message: string;
@@ -1695,6 +1729,17 @@ export interface DashboardChecklistData {
 
 export async function fetchDashboard(): Promise<DashboardChecklistData> {
   return apiFetch<DashboardChecklistData>("/api/dashboard/checklist");
+}
+
+export async function fetchWorkMap(options: {
+  forceRefresh?: boolean;
+  includeArchived?: boolean;
+} = {}): Promise<WorkMapData> {
+  const query = new URLSearchParams();
+  if (options.forceRefresh) query.set("refresh", "1");
+  if (options.includeArchived) query.set("includeArchived", "1");
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return apiFetch<WorkMapData>(`/api/dashboard/work-map${suffix}`);
 }
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";

@@ -33,6 +33,22 @@ export interface EnrichedPR {
   url: string;
 }
 
+export interface WorkItemPullRequestLink {
+  workItemId: string;
+  repoId: string;
+  repoAliases: string[];
+  prId: number;
+}
+
+export interface WorkItemPullRequestLinksResult {
+  links: WorkItemPullRequestLink[];
+  warnings: string[];
+}
+
+export interface WorkTrackingIdentity {
+  displayName: string;
+}
+
 // ── Provider interface ────────────────────────────────────────────
 
 export interface WorkTrackingProvider {
@@ -40,6 +56,11 @@ export interface WorkTrackingProvider {
 
   fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]>;
   fetchPullRequests(prs: PRRef[]): Promise<EnrichedPR[]>;
+  fetchWorkItemPullRequestLinks?(
+    workItemIds: string[],
+    pullRequests: PRRef[],
+  ): Promise<WorkItemPullRequestLinksResult>;
+  fetchCurrentUser?(): Promise<WorkTrackingIdentity | null>;
 
   getWorkItemUrl(id: string): string;
   getPullRequestUrl(pr: PRRef): string;

@@ -50,6 +50,7 @@ function getDashboardSegment(pathname: string | undefined): string {
   const tab = pathname ? getExplicitDashboardTabFromPathname(pathname) : null;
   if (tab === "checklist") return "Checklist";
   if (tab === "feed") return "Feed";
+  if (tab === "work-map") return "Work map";
   return "Home";
 }
 

@@ -3,10 +3,13 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { getDashboardTabPath, getExplicitDashboardTabFromPathname, getRememberedDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useFeedKindStatsQuery, useFeedPagesQuery } from "../hooks/queries/useFeed";
+import { useSettingsQuery } from "../hooks/queries/useSettings";
+import { useWorkMapQuery } from "../hooks/queries/useWorkMap";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
 import DashboardChecklist from "./DashboardChecklist";
 import DashboardFeed, { type FeedFilterState } from "./DashboardFeed";
 import DashboardTabs from "./DashboardTabs";
+import DashboardWorkMap from "./DashboardWorkMap";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { dashboardChecklistCountClass } from "./dashboard-checklist-helpers";
@@ -121,11 +124,21 @@ export default function Dashboard({
   const location = useLocation();
   const navigate = useNavigate();
   const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
+  const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
   const checklist = useDashboardChecklist(data);
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
+  const [includeArchivedWorkMap, setIncludeArchivedWorkMap] = useState(false);
   const [feedFilter, setFeedFilter] = useState<FeedFilterState>({ kind: "", keyPrefix: "" });
-  const activeTab = getRememberedDashboardTabFromPathname(location.pathname);
+  const requestedActiveTab = getRememberedDashboardTabFromPathname(location.pathname);
   const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
+  const workMapEnabled = Boolean(settings?.providers?.ado);
+  const activeTab = requestedActiveTab === "work-map" && !settingsLoading && !workMapEnabled
+    ? "checklist"
+    : requestedActiveTab;
+  const workMapQuery = useWorkMapQuery(
+    workMapEnabled && activeTab === "work-map",
+    includeArchivedWorkMap,
+  );
   const handleFeedFilterChange = useCallback((patch: Partial<FeedFilterState>) => {
     setFeedFilter((prev) => ({ ...prev, ...patch }));
   }, []);
@@ -195,12 +208,21 @@ export default function Dashboard({
   };
 
   const handleRefresh = async () => {
-    await Promise.all([refetchDashboard(), refetchFeed()]);
+    const refreshes: Array<Promise<unknown>> = [refetchDashboard(), refetchFeed()];
+    if (workMapEnabled && activeTab === "work-map") {
+      refreshes.push(workMapQuery.refetch());
+    }
+    await Promise.all(refreshes);
   };
 
   useEffect(() => {
     if (explicitActiveTab) setLastDashboardTab(explicitActiveTab);
   }, [explicitActiveTab]);
+
+  useEffect(() => {
+    if (settingsLoading || workMapEnabled || explicitActiveTab !== "work-map") return;
+    navigate(getDashboardTabPath("checklist"), { replace: true });
+  }, [explicitActiveTab, navigate, settingsLoading, workMapEnabled]);
 
   if (loading && !data) return <DashboardSkeleton />;
 
@@ -219,7 +241,7 @@ export default function Dashboard({
         className="absolute inset-0"
         scrollRestoration={scrollRestoration}
       >
-        <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-3">
+        <div className={`${activeTab === "work-map" ? "max-w-6xl" : "max-w-3xl"} mx-auto px-4 md:px-8 py-6 space-y-3`}>
           <DashboardTabs
             activeTab={activeTab}
             onTabChange={(tab) => {
@@ -230,6 +252,8 @@ export default function Dashboard({
             checklistCountClass={dashboardChecklistCountClass(checklist.checklistIndicator.state)}
             checklistCountTitle={checklist.checklistIndicatorLabel ?? undefined}
             feedCount={feedCards.length}
+            showWorkMap={workMapEnabled}
+            workMapCount={workMapQuery.data?.workItems.length}
           />
           <DashboardFeed
             active={activeTab === "feed"}
@@ -257,6 +281,17 @@ export default function Dashboard({
           <DashboardChecklist
             active={activeTab === "checklist"}
             checklist={checklist}
+            onSelectTask={onSelectTask}
+          />
+          <DashboardWorkMap
+            active={activeTab === "work-map"}
+            data={workMapQuery.data}
+            isLoading={workMapQuery.isLoading}
+            error={workMapQuery.error}
+            isRefreshing={workMapQuery.isRefreshing}
+            onRefresh={workMapQuery.refresh}
+            includeArchived={includeArchivedWorkMap}
+            onIncludeArchivedChange={setIncludeArchivedWorkMap}
             onSelectTask={onSelectTask}
           />
         </div>

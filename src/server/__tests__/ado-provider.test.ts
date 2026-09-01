@@ -367,4 +367,129 @@ describe("AdoProvider", () => {
     // 1 stale fetch + 1 fresh fetch — not one az invocation per failing request.
     expect(execSyncMock).toHaveBeenCalledTimes(2);
   });
+
+  it("discovers work item and pull request links in both directions and reuses enriched metadata", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/_apis/wit/workitems?")) {
+        return jsonResponse({
+          value: [{
+            id: 123,
+            fields: {
+              "System.Title": "Bridge work map",
+              "System.State": "Active",
+              "System.WorkItemType": "Feature",
+              "System.AssignedTo": { displayName: "Tim Stewart" },
+              "System.AreaPath": "One\\Bridge",
+            },
+            relations: [{
+              rel: "ArtifactLink",
+              url: "vstfs:///Git/PullRequestId/project-id%2Frepo-id%2F42",
+              attributes: { name: "Pull Request" },
+            }],
+          }],
+        });
+      }
+      if (url.includes("includeWorkItemRefs=true")) {
+        return jsonResponse({
+          repository: { id: "repo-id", name: "copilot-bridge" },
+          title: "Add work map",
+          status: "active",
+          createdBy: { displayName: "Tim Stewart" },
+          reviewers: [{}],
+          workItemRefs: [{ id: "123" }, { id: "456" }],
+        });
+      }
+      throw new Error(`Unexpected ADO URL: ${url}`);
+    });
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+    const pr = { repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 42, provider: "ado" as const };
+
+    const result = await provider.fetchWorkItemPullRequestLinks(["123"], [pr]);
+
+    expect(result).toEqual({
+      links: [
+        { workItemId: "123", repoId: "repo-id", repoAliases: ["copilot-bridge"], prId: 42 },
+        { workItemId: "456", repoId: "repo-id", repoAliases: ["copilot-bridge"], prId: 42 },
+      ],
+      warnings: [],
+    });
+    expect((await provider.fetchWorkItems(["123"]))[0]?.title).toBe("Bridge work map");
+    expect((await provider.fetchPullRequests([pr]))[0]?.title).toBe("Add work map");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports relationship refresh failures instead of silently returning an empty graph", async () => {
+    getFetchMock().mockResolvedValue(new Response(JSON.stringify({ message: "Unavailable" }), {
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchWorkItemPullRequestLinks(["123"], []);
+
+    expect(result.links).toEqual([]);
+    expect(result.warnings).toEqual([
+      "Some ADO work item relationships could not be refreshed.",
+    ]);
+  });
+
+  it("isolates an unreadable work item instead of losing the rest of an ADO batch", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
+      if (ids.includes("999")) {
+        return new Response(JSON.stringify({ message: "Work item 999 is unavailable" }), {
+          status: 404,
+          statusText: "Not Found",
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      return jsonResponse({
+        value: ids.map((id) => ({
+          id: Number(id),
+          fields: {
+            "System.Title": `Work item ${id}`,
+            "System.State": "Active",
+            "System.WorkItemType": "Task",
+          },
+          relations: [{
+            rel: "ArtifactLink",
+            url: `vstfs:///Git/PullRequestId/project-id%2Frepo-id%2F${id}`,
+            attributes: { name: "Pull Request" },
+          }],
+        })),
+      });
+    });
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchWorkItemPullRequestLinks(["123", "999", "456"], []);
+
+    expect(result.links.map((link) => link.workItemId)).toEqual(["123", "456"]);
+    expect(result.warnings).toEqual([
+      "Some ADO work item relationships could not be refreshed.",
+    ]);
+    expect((await provider.fetchWorkItems(["123", "456"])).map((item) => item.title))
+      .toEqual(["Work item 123", "Work item 456"]);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("loads and caches the authenticated ADO user's display name", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValue(jsonResponse({
+      authenticatedUser: { providerDisplayName: "Tim Stewart" },
+    }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Tim Stewart" });
+    await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Tim Stewart" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
