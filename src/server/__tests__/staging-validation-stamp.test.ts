@@ -15,7 +15,7 @@ const STAMP = {
   dependencyHash: "deps-1",
   gateId: "preview",
   gateVersion: 1,
-  command: "npm run check:fast && npm run check:pr",
+  command: "npm run check:pr",
   source: "staging_preview",
   validatedAt: "2026-05-16T23:00:00.000Z",
 };
