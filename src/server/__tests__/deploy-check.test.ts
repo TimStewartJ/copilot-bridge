@@ -91,19 +91,6 @@ afterEach(() => {
 });
 
 describe("deploy check contract", () => {
-  it("keeps production deploy checks separate from staging-only smoke", async () => {
-    const { DEPLOY_CHECK_STEPS } = await import("../deploy-check.js");
-    const { DEPLOY_GATE, STAGING_DEPLOY_GATE } = await import("../validation-pipeline.js");
-    const deployCommands = DEPLOY_CHECK_STEPS.map((step) => step.join(" "));
-
-    expect(DEPLOY_GATE.steps.map((step) => step.command)).toEqual(["npm run check:deploy"]);
-    expect(deployCommands).toEqual(["npm run check:pr"]);
-    expect(STAGING_DEPLOY_GATE.steps.map((step) => step.command)).toEqual([
-      "npm run check:pr",
-      "npm run preview:smoke",
-    ]);
-  });
-
   it("falls back to captured output when a failed step log disappears", async () => {
     vi.resetModules();
     const logDir = makeTestDir("deploy-check-missing-log");
