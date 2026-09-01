@@ -59,11 +59,6 @@ export const DEPLOY_GATE_VERSION = 2;
 // Bump when preview validation no longer proves the PR gate used by deploy fast-path reuse.
 export const PREVIEW_GATE_VERSION = 1;
 
-const FAST_CHECK_STEP: ValidationStep = {
-  command: "npm run check:fast",
-  timeoutMs: VALIDATION_TIMEOUT_MS,
-};
-
 const PR_CHECK_STEP: ValidationStep = {
   command: "npm run check:pr",
   timeoutMs: VALIDATION_TIMEOUT_MS,
@@ -94,7 +89,7 @@ const VITE_BUILD_STEP: ValidationStep = {
 export const PREVIEW_GATE: ValidationGate = {
   id: "preview",
   label: "Preview validation",
-  steps: [FAST_CHECK_STEP, PR_CHECK_STEP],
+  steps: [PR_CHECK_STEP],
 };
 
 export const PREVIEW_GATE_COMMAND = PREVIEW_GATE.steps.map((step) => step.command).join(" && ");
