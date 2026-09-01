@@ -432,7 +432,6 @@ function createProductionDataDir(): string {
 }
 
 const PREVIEW_VALIDATION_COMMANDS = [
-  "npm run check:fast",
   "npm run check:pr",
 ] as const;
 const PREVIEW_GATE_COMMAND = PREVIEW_VALIDATION_COMMANDS.join(" && ");
