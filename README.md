@@ -358,7 +358,7 @@ The bridge includes a few different maintenance paths:
 
 1. **`self_restart`** - restart the bridge for non-code restarts such as config reloads, env changes, and emergency restarts, with launcher-managed build and rollback. For Bridge code changes, use `staging_init` -> `staging_preview` -> `staging_deploy` instead.
 2. **`self_update`** - pull the latest repo state, sync dependencies, and restart safely.
-3. **`staging_init` -> `staging_preview` -> `staging_deploy`** - make larger changes in an isolated worktree, preview them, then deploy after approval.
+3. **`staging_init` -> `staging_preview` -> `staging_deploy`** - make larger changes in isolated worktrees, preview them, then queue up to 10 deploys for one combined restart.
 
 The launcher is responsible for checkpointing, building, health checks, and recovering from bad restarts.
 
