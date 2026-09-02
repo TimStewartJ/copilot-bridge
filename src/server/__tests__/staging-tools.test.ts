@@ -2706,6 +2706,47 @@ describe("staging tools", () => {
     expect(logs.at(-1)).toContain("Staging preview ready at");
   });
 
+  it("waits for live-server rebuild readiness before building or reseeding an existing preview", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-preview-rebuild-wait-");
+    const dataDir = join(stagingDir, "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, "bridge.db"), "existing preview database");
+    const readyPath = join(createTempDir("bridge-stage-preview-ready-"), "job.preview-rebuild-ready");
+    const seedPreviewData = vi.fn<(target: string) => void>();
+    const logs: string[] = [];
+
+    const resultPromise = mod.runStagingPreviewJob(
+      { stagingDir, validate: false },
+      {
+        startBackend: false,
+        registerInProcess: false,
+        seedPreviewData,
+        rebuildCoordination: { jobId: "preview-job-wait", readyPath },
+        log: (message) => logs.push(message),
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(logs).toContain(
+        `Waiting for the live server to stop the existing staged backend for ${basename(stagingDir)}...`,
+      );
+    });
+    expect(execSyncMock).not.toHaveBeenCalled();
+    expect(seedPreviewData).not.toHaveBeenCalled();
+
+    writeFileSync(readyPath, "{}");
+    const result = await resultPromise;
+
+    expect(result).toMatchObject({ success: true });
+    expect(execSyncMock.mock.calls.some(([command]) =>
+      String(command).startsWith("npx vite build --base"))).toBe(true);
+    expect(seedPreviewData).toHaveBeenCalledWith(stagingDir);
+    expect(logs).toContain(
+      `Existing staged backend for ${basename(stagingDir)} is stopped; rebuild may proceed.`,
+    );
+  });
+
   it("fails a lazy staging preview when isolated data preparation fails", async () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = createTempDir("bridge-stage-preview-seed-failure-");
@@ -2990,6 +3031,7 @@ describe("staging preview event-driven discovery", () => {
     type: "staging_preview" | "staging_deploy" | "self_update";
     status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
     input: unknown;
+    logPath?: string;
     createdAt: string;
     updatedAt: string;
   };
@@ -3018,6 +3060,7 @@ describe("staging preview event-driven discovery", () => {
       type: "staging_preview",
       status: "queued",
       input: { stagingDir, validate: true },
+      logPath: join(dirname(stagingDir), "management-jobs", "logs", "preview-job-1.log"),
       createdAt,
       updatedAt: createdAt,
     };
@@ -3144,6 +3187,7 @@ describe("staging preview event-driven discovery", () => {
         await actualCleanup(cleanupPrefix, cleanupOptions);
         midCycleRestorable.push(mod.__testing.backendManager.hasRestorableTarget(cleanupPrefix));
       });
+
     const fake = createFakeJobStore(makePreviewJob(stagingDir));
 
     vi.useFakeTimers();
@@ -3169,6 +3213,60 @@ describe("staging preview event-driven discovery", () => {
     } finally {
       vi.useRealTimers();
       cleanupSpy.mockRestore();
+    }
+  });
+
+  it("stops and suppresses a preview backend before rebuild, including temporary dist removal", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+    mod.__testing.backendManager.resetBackendState();
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const prefix = "preview-rebuild-coordinated";
+    const stagingDir = join(stagingParent, prefix);
+    const distDir = join(previewParent, prefix);
+    mkdirSync(stagingDir, { recursive: true });
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, "index.html"), "<!doctype html><p>old preview</p>");
+
+    createStagingPreviewTestApp(mod);
+    mod.registerExistingPreviewsFromDisk({ stagingParent, stagingPreviewParents: [previewParent] });
+    mod.__testing.backendManager.seedPreviewDataDir(prefix, join(stagingDir, "data"));
+    const fake = createFakeJobStore(makePreviewJob(stagingDir));
+    const readyPath = join(dirname(fake.job.logPath!), `${fake.job.id}.preview-rebuild-ready`);
+
+    vi.useFakeTimers();
+    try {
+      const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
+      controller!.watchJob(fake.job);
+
+      fake.complete("running");
+      await advanceTimersAndSettle(50, () => controller!.settle());
+
+      expect(existsSync(readyPath)).toBe(true);
+      expect(mod.__testing.backendManager.isRebuilding(prefix)).toBe(true);
+      expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
+
+      rmSync(join(distDir, "index.html"), { force: true });
+      await mod.__testing.cleanupMissingRegisteredPreviews(vi.fn());
+      expect(mod.__testing.hasActivePreview(prefix)).toBe(false);
+      expect(mod.__testing.backendManager.isRebuilding(prefix)).toBe(true);
+      expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
+
+      writeFileSync(join(distDir, "index.html"), "<!doctype html><p>rebuilt preview</p>");
+      fake.complete("succeeded");
+      await advanceTimersAndSettle(50, () => controller!.settle());
+
+      expect(existsSync(readyPath)).toBe(false);
+      expect(mod.__testing.backendManager.isRebuilding(prefix)).toBe(false);
+      expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
+      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      controller!.stop();
+    } finally {
+      vi.useRealTimers();
     }
   });
 

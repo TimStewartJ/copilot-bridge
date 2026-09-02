@@ -172,6 +172,52 @@ describe("staging preview discovery", () => {
     controller.stop();
   });
 
+  it("prepares a queued preview exactly once when the runner claims it", async () => {
+    const job = createJob({ status: "queued" });
+    const store = createFakeStore([job]);
+    const order: string[] = [];
+    const prepare = vi.fn(async (jobs: ManagementJob[]) => {
+      order.push(`prepare:${jobs.map((entry) => entry.id).join(",")}`);
+    });
+    const discover = vi.fn(async () => {
+      order.push("discover");
+    });
+    const controller = createStagingPreviewDiscovery({
+      store,
+      prepare,
+      discover,
+      pollIntervalMs: POLL_INTERVAL_MS,
+    });
+
+    controller.watchJob(job);
+    store.setJob({
+      ...job,
+      status: "running",
+      heartbeatAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(discover).not.toHaveBeenCalled();
+
+    store.setJob({
+      ...job,
+      status: "running",
+      heartbeatAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
+    expect(prepare).toHaveBeenCalledTimes(1);
+
+    store.setJob({ ...job, status: "succeeded", updatedAt: new Date().toISOString() });
+    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
+
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(order).toEqual([`prepare:${job.id}`, "discover"]);
+    controller.stop();
+  });
+
   it("resumes jobs a previous process left active and discovers on completion", async () => {
     const job = createJob({ id: "resumed-job", status: "running", heartbeatAt: new Date().toISOString() });
     const store = createFakeStore([job]);

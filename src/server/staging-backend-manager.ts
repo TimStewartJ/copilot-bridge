@@ -85,6 +85,8 @@ const activePreviewDataDirs = new Map<string, string>();
 const activeStagingRouters = new Map<string, RequestHandler>();
 const restorablePreviewTargets = new Map<string, PreviewTarget>();
 const lazyStagingRouters = new Map<string, RequestHandler>();
+const rebuildingStagingRouters = new Map<string, RequestHandler>();
+const rebuildingStagingPreviews = new Map<string, string>();
 const pendingStagingBackendStarts = new Map<string, Promise<StagingBackendStartResult>>();
 const stagingBackendStartFailures = new Map<string, StagingBackendStartFailure>();
 /**
@@ -106,6 +108,14 @@ export function hasRegisteredExpressApp(): boolean {
 }
 
 export function getStagingRouter(prefix: string): RequestHandler | undefined {
+  if (rebuildingStagingPreviews.has(prefix)) {
+    let router = rebuildingStagingRouters.get(prefix);
+    if (!router) {
+      router = createRebuildingStagingHandler(prefix);
+      rebuildingStagingRouters.set(prefix, router);
+    }
+    return router;
+  }
   return activeStagingRouters.get(prefix) ?? getLazyStagingRouter(prefix);
 }
 
@@ -119,6 +129,7 @@ export function hasStagingBackendState(prefix: string): boolean {
     || activePreviewDataDirs.has(prefix)
     || restorablePreviewTargets.has(prefix)
     || lazyStagingRouters.has(prefix)
+    || rebuildingStagingPreviews.has(prefix)
     || pendingStagingBackendStarts.has(prefix)
     || stagingBackendStartFailures.has(prefix);
 }
@@ -142,6 +153,8 @@ export async function cleanupStagingBackendResources(
   const removeData = options.removeData ?? true;
   restorablePreviewTargets.delete(prefix);
   lazyStagingRouters.delete(prefix);
+  rebuildingStagingRouters.delete(prefix);
+  rebuildingStagingPreviews.delete(prefix);
   stagingBackendStartFailures.delete(prefix);
   terminallyFailedPreviews.delete(prefix);
 
@@ -172,8 +185,85 @@ export async function cleanupStagingBackendResources(
 export function forgetStagingPreviewBackend(prefix: string): void {
   restorablePreviewTargets.delete(prefix);
   lazyStagingRouters.delete(prefix);
+  rebuildingStagingRouters.delete(prefix);
+  rebuildingStagingPreviews.delete(prefix);
   stagingBackendStartFailures.delete(prefix);
   terminallyFailedPreviews.delete(prefix);
+}
+
+export async function beginStagingPreviewRebuild(
+  prefix: string,
+  jobId: string,
+): Promise<void> {
+  rebuildingStagingPreviews.set(prefix, jobId);
+  rebuildingStagingRouters.delete(prefix);
+
+  const pendingStart = pendingStagingBackendStarts.get(prefix);
+  if (pendingStart) {
+    await pendingStart;
+  }
+  if (rebuildingStagingPreviews.get(prefix) !== jobId) return;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await teardownStagingBackend(prefix, {
+        removeData: false,
+        throwOnCleanupError: true,
+      });
+      break;
+    } catch (error) {
+      if (attempt >= 2 || rebuildingStagingPreviews.get(prefix) !== jobId) throw error;
+      log(`Retrying staged backend stop for ${prefix} after cleanup failure: ${error}`);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 1_000);
+      });
+    }
+  }
+  stagingBackendStartFailures.delete(prefix);
+}
+
+export function finishStagingPreviewRebuild(
+  prefix: string,
+  jobId: string,
+  options: { rebuilt: boolean },
+): boolean {
+  if (rebuildingStagingPreviews.get(prefix) !== jobId) return false;
+  if (activeStagingBackends.has(prefix)) return false;
+
+  if (options.rebuilt) {
+    restorablePreviewTargets.delete(prefix);
+    lazyStagingRouters.delete(prefix);
+    stagingBackendStartFailures.delete(prefix);
+    terminallyFailedPreviews.delete(prefix);
+  }
+  rebuildingStagingPreviews.delete(prefix);
+  rebuildingStagingRouters.delete(prefix);
+  return true;
+}
+
+export function abortStagingPreviewRebuild(
+  prefix: string,
+  jobId: string,
+): boolean {
+  if (rebuildingStagingPreviews.get(prefix) !== jobId) return false;
+
+  const backend = activeStagingBackends.get(prefix);
+  if (backend) {
+    if (childHasClosed(backend.child)) {
+      activeStagingBackends.delete(prefix);
+      activeStagingRouters.delete(prefix);
+    } else {
+      backend.stopping = false;
+      activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, backend));
+    }
+  }
+  rebuildingStagingPreviews.delete(prefix);
+  rebuildingStagingRouters.delete(prefix);
+  return true;
+}
+
+export function getStagingPreviewRebuildJobId(prefix: string): string | undefined {
+  return rebuildingStagingPreviews.get(prefix);
 }
 
 export function scheduleStartupBackendWarmup(
@@ -191,6 +281,7 @@ export function scheduleStartupBackendWarmup(
     void (async () => {
       for (const target of warmTargets) {
         if (!isPreviewActive(target.prefix)) continue;
+        if (rebuildingStagingPreviews.has(target.prefix)) continue;
         const result = await startStagingBackendOnce(target.prefix, target, "startup warmup");
         if (result.ok) {
           writeLog(`Warm restored staged backend for preview: ${target.prefix}`);
@@ -449,6 +540,11 @@ export function getExistingPreviewRuntime(stagingDir: string): RuntimePaths | nu
   return requiredPaths.every((path) => existsSync(path)) ? runtimePaths : null;
 }
 
+export function hasSeededStagingDatabase(stagingDir: string): boolean {
+  const runtimePaths = resolveStagingPreviewRuntimePaths(stagingDir);
+  return existsSync(join(runtimePaths.dataDir, "bridge.db"));
+}
+
 interface PreparePreviewRuntimeOptions {
   preserveExisting?: boolean;
 }
@@ -519,6 +615,17 @@ function createUnavailableStagingHandler(prefix: string, detail: string): Reques
   };
 }
 
+function createRebuildingStagingHandler(prefix: string): RequestHandler {
+  return (_req, res) => {
+    res.setHeader("Retry-After", "2");
+    res.status(503).json({
+      error: "Staging backend is rebuilding",
+      prefix,
+      retryAfterSeconds: 2,
+    });
+  };
+}
+
 function getLazyStagingRouter(prefix: string): RequestHandler | undefined {
   if (!restorablePreviewTargets.has(prefix)) return undefined;
 
@@ -579,9 +686,11 @@ async function handleLazyStagingRequest(
   }
 
   res.setHeader("Retry-After", String(startResult.retryAfterSeconds));
-  if (startResult.state === "starting") {
+  if (startResult.state === "starting" || startResult.state === "rebuilding") {
     res.status(503).json({
-      error: "Staging backend is starting",
+      error: startResult.state === "rebuilding"
+        ? "Staging backend is rebuilding"
+        : "Staging backend is starting",
       prefix,
       retryAfterSeconds: startResult.retryAfterSeconds,
     });
@@ -598,6 +707,7 @@ async function handleLazyStagingRequest(
 
 type EnsureStagingBackendResult =
   | { state: "ready" }
+  | { state: "rebuilding"; retryAfterSeconds: number }
   | { state: "starting"; retryAfterSeconds: number }
   | { state: "failed"; error: string; retryAfterSeconds: number };
 
@@ -606,6 +716,9 @@ async function ensureStagingBackendStarted(
   target: PreviewTarget,
   options: { reason: string; waitMs: number },
 ): Promise<EnsureStagingBackendResult> {
+  if (rebuildingStagingPreviews.has(prefix)) {
+    return { state: "rebuilding", retryAfterSeconds: 2 };
+  }
   if (activeStagingBackends.has(prefix)) {
     return { state: "ready" };
   }
@@ -648,6 +761,9 @@ function startStagingBackendOnce(
   target: PreviewTarget,
   reason: string,
 ): Promise<StagingBackendStartResult> {
+  if (rebuildingStagingPreviews.has(prefix)) {
+    return Promise.resolve({ ok: false, error: "Staging preview is rebuilding." });
+  }
   const existing = pendingStagingBackendStarts.get(prefix);
   if (existing) return existing;
 
@@ -689,6 +805,9 @@ async function startRestorableStagingBackend(
   reason: string,
   deps: StartRestorableStagingBackendDeps = {},
 ): Promise<StagingBackendStartResult> {
+  if (rebuildingStagingPreviews.has(prefix)) {
+    return { ok: false, error: "Staging preview is rebuilding." };
+  }
   if (activeStagingBackends.has(prefix)) return { ok: true };
 
   const enforceLimits = deps.enforceLimits ?? enforceStagingBackendResourceLimits;
@@ -1092,7 +1211,7 @@ export async function startStagingBackendProcess(
 /** Tear down a staging backend. Idle eviction preserves data so lazy restore can resume it. */
 async function teardownStagingBackend(
   prefix: string,
-  options: { removeData?: boolean } = {},
+  options: { removeData?: boolean; throwOnCleanupError?: boolean } = {},
 ): Promise<void> {
   const removeData = options.removeData ?? true;
   const staging = activeStagingBackends.get(prefix);
@@ -1107,6 +1226,7 @@ async function teardownStagingBackend(
     await staging.cleanup();
   } catch (err) {
     log(`Warning: staging cleanup error: ${err}`);
+    if (options.throwOnCleanupError) throw err;
   }
   activeStagingBackends.delete(prefix);
   if (removeData) {
@@ -1209,6 +1329,10 @@ export async function restoreStagingBackendWithRetry(
 }
 
 export const __testing = {
+  seedActiveBackend(prefix: string, backend: ActiveStagingBackend): void {
+    activeStagingBackends.set(prefix, backend);
+    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, backend));
+  },
   seedPreviewDataDir(prefix: string, dataDir: string): void {
     activePreviewDataDirs.set(prefix, dataDir);
   },
@@ -1241,12 +1365,17 @@ export const __testing = {
   hasPreviewDataDir(prefix: string): boolean {
     return activePreviewDataDirs.has(prefix);
   },
+  isRebuilding(prefix: string): boolean {
+    return rebuildingStagingPreviews.has(prefix);
+  },
   resetBackendState(): void {
     activeStagingBackends.clear();
     activePreviewDataDirs.clear();
     activeStagingRouters.clear();
     restorablePreviewTargets.clear();
     lazyStagingRouters.clear();
+    rebuildingStagingRouters.clear();
+    rebuildingStagingPreviews.clear();
     pendingStagingBackendStarts.clear();
     stagingBackendStartFailures.clear();
     terminallyFailedPreviews.clear();
