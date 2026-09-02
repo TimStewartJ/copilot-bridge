@@ -2061,6 +2061,13 @@ export class SessionManager {
     return this.workspaceController.resolveEffectiveSessionCwd(opts);
   }
 
+  getEffectiveSessionCwd(sessionId: string): string | undefined {
+    return this.resolveEffectiveSessionCwd({
+      sessionId,
+      task: this.findLinkedTask(sessionId),
+    });
+  }
+
   private persistSessionWorkspace(sessionId: string, cwd?: string): void {
     this.workspaceController.persistSessionWorkspace(sessionId, cwd);
   }
