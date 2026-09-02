@@ -66,7 +66,7 @@ export default function NewSessionLaunchPanel({
   );
 
   return (
-    <div className="flex flex-1 items-center justify-center px-4 py-8">
+    <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-4 md:items-center md:py-8">
       <div className="w-full max-w-lg px-1 py-5">
         <div className="mb-5">
           <h2 className="text-base font-semibold text-text-primary">Start a new chat</h2>

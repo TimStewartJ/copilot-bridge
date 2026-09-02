@@ -61,7 +61,7 @@ export default function RestartBanner({
             color: "var(--color-restart-imminent-text)",
           }}
     >
-      <div className="flex items-start gap-3">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
         <div className="mt-0.5 shrink-0">
           {useWaitingStyle ? <Users size={16} /> : <AlertTriangle size={16} />}
         </div>
@@ -74,19 +74,26 @@ export default function RestartBanner({
           </div>
           {abortError && <div className="mt-1 font-medium">{abortError}</div>}
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {waitingOnSessions && onAbortSessionsAndResume && (
-            <button
-              type="button"
-              onClick={onAbortSessionsAndResume}
-              disabled={abortingSessions}
-              className="rounded-md border border-current/30 bg-white/10 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
+        {waitingOnSessions && onAbortSessionsAndResume && (
+          <button
+            type="button"
+            onClick={onAbortSessionsAndResume}
+            disabled={abortingSessions}
+            aria-label="Abort sessions and resume with restart"
+            className="col-span-2 col-start-2 row-start-2 w-full rounded-md border border-current/30 bg-white/10 px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:w-auto sm:py-1"
+          >
+            <span className="sm:hidden">
+              {abortingSessions ? "Aborting sessions…" : "Abort, restart, and resume"}
+            </span>
+            <span className="hidden sm:inline">
               {abortingSessions ? "Aborting sessions…" : "Abort sessions and resume with restart"}
-            </button>
-          )}
-          <RefreshCw size={14} className="shrink-0 animate-spin opacity-80" />
-        </div>
+            </span>
+          </button>
+        )}
+        <RefreshCw
+          size={14}
+          className="col-start-3 row-start-1 mt-0.5 shrink-0 animate-spin opacity-80 sm:col-start-4"
+        />
       </div>
     </div>
   );
