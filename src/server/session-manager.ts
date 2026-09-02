@@ -535,8 +535,6 @@ interface SessionResumeLifecycleOptions {
   timeoutMessage?: string;
   reuseCachedSession?: boolean;
   reserveCachedSession?: boolean;
-  probeMcpStatus?: boolean;
-  probeTarget?: "resumed" | "cached";
   beforeResume?: () => void | Promise<void>;
   flushPendingEviction?: boolean;
 }
@@ -840,7 +838,6 @@ export class SessionManager {
         sessionId,
         createDeadline(SESSION_ABORT_TIMEOUT_MS),
       ),
-      probeMcpStatus: (sessionId, session) => this.probeMcpStatus(sessionId, session),
       markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
       deferMcpStatusSessionEviction: (sessionId, reason) => this.deferMcpStatusSessionEviction(sessionId, reason),
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
@@ -1387,7 +1384,6 @@ export class SessionManager {
       }
       releaseReservation();
 
-      await this.ensureSessionToolInitialization(session.sessionId, session);
       if (this.shuttingDown) {
         await this.evictCachedSession(
           session.sessionId,
@@ -1413,7 +1409,6 @@ export class SessionManager {
         this.persistSessionModelState(session.sessionId, state);
       }
       this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
-      this.probeMcpStatus(session.sessionId, session);
       this.invalidateSessionListCache(cacheReason);
       this.deps.globalBus.emit({ type: "sessions:changed", sessionId: session.sessionId });
       const duration = Date.now() - startedAt;
@@ -2214,8 +2209,6 @@ export class SessionManager {
       timeoutMessage,
       reuseCachedSession = false,
       reserveCachedSession = false,
-      probeMcpStatus = true,
-      probeTarget = "cached",
       beforeResume,
       flushPendingEviction = true,
     } = options;
@@ -2234,14 +2227,7 @@ export class SessionManager {
         const resumedSession = timeoutMessage
           ? await resumeSessionWithTimeout(resume, timeoutMessage)
           : await resume;
-        const cachedSession = await this.cacheResumedSession(sessionId, resumedSession, sessionConfig);
-        if (probeMcpStatus) {
-          this.probeMcpStatus(
-            sessionId,
-            probeTarget === "resumed" ? resumedSession : cachedSession,
-          );
-        }
-        session = cachedSession;
+        session = await this.cacheResumedSession(sessionId, resumedSession, sessionConfig);
       }
 
       if (!operation) return session;
@@ -3461,39 +3447,6 @@ export class SessionManager {
     );
   }
 
-  /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
-  private probeMcpStatus(sessionId: string, session: AgentSession): void {
-    if (this.mcpStatus.get(sessionId)?.complete) return;
-    const list = session.listMcpServers;
-    if (typeof list !== "function") return;
-    const startingSnapshot = this.mcpStatus.get(sessionId);
-    void this.waitForSessionToolInitialization(sessionId, session)
-      .then((initialized) => {
-        if (!initialized || this.sessionObjects.get(sessionId) !== session) return undefined;
-        return list.call(session);
-      })
-      .then((result) => {
-        if (result?.servers && this.sessionObjects.get(sessionId) === session) {
-          const current = this.mcpStatus.get(sessionId);
-          if (current?.complete) return;
-          const probed = normalizeMcpServerStatuses(result.servers);
-          const servers = current && current !== startingSnapshot
-            ? mergeMcpServerStatuses(probed, current.servers)
-            : probed;
-          this.mcpStatus.set(sessionId, { servers, complete: true });
-          const sid = sessionId.slice(0, 8);
-          console.log(`[sdk] [${sid}] 🔌 MCP probe: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
-        }
-      })
-      .catch((error) => {
-        if (this.mcpStatus.get(sessionId)?.complete) return;
-        console.warn(
-          `[sdk] [${sessionId.slice(0, 8)}] MCP status probe failed:`,
-          error instanceof Error ? error.message : error,
-        );
-      });
-  }
-
   private cacheResumedSession(
     sessionId: string,
     session: AgentSession,
@@ -3501,7 +3454,6 @@ export class SessionManager {
   ): Promise<AgentSession> {
     return this.cacheSession(sessionId, session, sessionConfig).then((cachedSession) => {
       if (cachedSession === session) {
-        void this.ensureSessionToolInitialization(sessionId, session);
         this.maybeAutoNameSession(sessionId, { session });
       }
       return cachedSession;
@@ -3613,7 +3565,6 @@ export class SessionManager {
       cancellationMessage: "MCP authentication resume cancelled before admission",
       timeoutMessage: "MCP auth resume timed out after 60s",
       reuseCachedSession: true,
-      probeMcpStatus: false,
       beforeResume: () => {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
       },
@@ -3889,7 +3840,6 @@ export class SessionManager {
           sessionId: result.sessionId,
           sessionConfig: forkResumeConfig,
           cancellationMessage: "Fork resume cancelled before admission",
-          probeTarget: "resumed",
         });
       } catch (error) {
         try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
@@ -4538,7 +4488,6 @@ export class SessionManager {
       cancellationMessage: "Session reload cancelled before admission",
       timeoutMessage: "reloadSession timed out after 60s",
       reserveCachedSession: true,
-      probeMcpStatus: false,
       beforeResume: async () => {
         await this.evictCachedSession(sessionId);
         this.mcpStatus.delete(sessionId);
@@ -4810,7 +4759,6 @@ export class SessionManager {
             "resumeSession timed out after 60s",
           );
           session = await this.cacheResumedSession(sessionId, session, resumeConfig);
-          this.probeMcpStatus(sessionId, session);
         } finally {
           this.endSessionResume(resumeLease);
         }

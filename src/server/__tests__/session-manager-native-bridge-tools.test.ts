@@ -199,43 +199,29 @@ describe("SessionManager native Bridge tools", () => {
       // No Bridge tools stdio/socket MCP server is injected anymore.
       expect(config.mcpServers["bridge-tools"]).toBeUndefined();
       expect(config.mcpServers["bridge-tools-session"]).toBeUndefined();
-      await vi.waitFor(async () => {
-        expect((await backend.createSession.mock.results[0].value).initializeTools).toHaveBeenCalledOnce();
-      });
+      const session = await backend.createSession.mock.results[0].value;
+      expect(session.initializeTools).not.toHaveBeenCalled();
+
+      await manager.startWorkAndWaitForDelivery(result.sessionId, "hello");
+      expect(session.initializeTools).toHaveBeenCalledOnce();
     } finally {
       await manager.gracefulShutdown();
       db.close();
     }
   });
 
-  it("serializes resumed-session MCP probing behind native tool initialization without blocking warmup", async () => {
+  it("warms a resumed session without initializing tools or probing MCP", async () => {
     const { manager, backend, db } = createManager();
-    const initializationGate = createDeferred<void>();
-    const callOrder: string[] = [];
     try {
       await manager.initialize();
       const session = createFakeSession("resumed-session");
-      session.initializeTools.mockImplementationOnce(async () => {
-        callOrder.push("initialize:start");
-        await initializationGate.promise;
-        callOrder.push("initialize:end");
-      });
-      session.listMcpServers.mockImplementationOnce(async () => {
-        callOrder.push("mcp:list");
-        return { servers: [] };
-      });
       backend.resumeSession.mockResolvedValueOnce(session);
 
       await expect(manager.warmSession(session.sessionId)).resolves.toBeUndefined();
 
-      expect(session.initializeTools).toHaveBeenCalledOnce();
+      expect(session.initializeTools).not.toHaveBeenCalled();
       expect(session.listMcpServers).not.toHaveBeenCalled();
-
-      initializationGate.resolve();
-      await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
-      expect(callOrder).toEqual(["initialize:start", "initialize:end", "mcp:list"]);
     } finally {
-      initializationGate.resolve();
       await manager.gracefulShutdown();
       db.close();
     }
@@ -333,7 +319,7 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
-  it("initializes each successive cached session once", async () => {
+  it("initializes each successive cached session once when explicitly requested", async () => {
     const { manager, db } = createManager();
     try {
       await manager.initialize();
@@ -345,6 +331,10 @@ describe("SessionManager native Bridge tools", () => {
           session: typeof firstSession,
           sessionConfig: { mcpServers: Record<string, never> },
         ): Promise<unknown>;
+        waitForSessionToolInitialization(
+          sessionId: string,
+          session: typeof firstSession,
+        ): Promise<boolean>;
         evictCachedSession(
           sessionId: string,
           expectedSession: typeof firstSession,
@@ -353,7 +343,13 @@ describe("SessionManager native Bridge tools", () => {
       };
 
       await sessionCache.cacheResumedSession(firstSession.sessionId, firstSession, { mcpServers: {} });
-      await vi.waitFor(() => expect(firstSession.initializeTools).toHaveBeenCalledOnce());
+      expect(firstSession.initializeTools).not.toHaveBeenCalled();
+      await expect(
+        Promise.all([
+          sessionCache.waitForSessionToolInitialization(firstSession.sessionId, firstSession),
+          sessionCache.waitForSessionToolInitialization(firstSession.sessionId, firstSession),
+        ]),
+      ).resolves.toEqual([true, true]);
 
       await sessionCache.evictCachedSession(
         firstSession.sessionId,
@@ -361,7 +357,10 @@ describe("SessionManager native Bridge tools", () => {
         "test replacement",
       );
       await sessionCache.cacheResumedSession(secondSession.sessionId, secondSession, { mcpServers: {} });
-      await vi.waitFor(() => expect(secondSession.initializeTools).toHaveBeenCalledOnce());
+      expect(secondSession.initializeTools).not.toHaveBeenCalled();
+      await expect(
+        sessionCache.waitForSessionToolInitialization(secondSession.sessionId, secondSession),
+      ).resolves.toBe(true);
 
       expect(firstSession.initializeTools).toHaveBeenCalledOnce();
       expect(secondSession.initializeTools).toHaveBeenCalledOnce();
@@ -371,16 +370,12 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
-  it("does not publish an MCP probe from a superseded session", async () => {
+  it("uses only the current session for an explicit MCP status request", async () => {
     const { manager, backend, db } = createManager();
-    const initializationGate = createDeferred<void>();
     try {
       await manager.initialize();
       const firstSession = createFakeSession("superseded-probe-session");
       const secondSession = createFakeSession("superseded-probe-session");
-      firstSession.initializeTools.mockImplementationOnce(async () => {
-        await initializationGate.promise;
-      });
       firstSession.listMcpServers.mockResolvedValueOnce({
         servers: [{ name: "old", status: "failed" }],
       });
@@ -401,7 +396,6 @@ describe("SessionManager native Bridge tools", () => {
           expectedSession: typeof firstSession,
           reason: string,
         ): Promise<unknown>;
-        probeMcpStatus(sessionId: string, session: typeof secondSession): void;
       };
       await sessionCache.evictCachedSession(
         firstSession.sessionId,
@@ -409,23 +403,20 @@ describe("SessionManager native Bridge tools", () => {
         "test replacement",
       );
       await sessionCache.cacheResumedSession(secondSession.sessionId, secondSession, { mcpServers: {} });
-      sessionCache.probeMcpStatus(secondSession.sessionId, secondSession);
-
-      initializationGate.resolve();
-      await vi.waitFor(() => expect(secondSession.listMcpServers).toHaveBeenCalledOnce());
-
-      expect(firstSession.listMcpServers).not.toHaveBeenCalled();
-      expect(await manager.getMcpStatus(secondSession.sessionId)).toEqual([
+      await expect(manager.getMcpStatus(secondSession.sessionId)).resolves.toEqual([
         { name: "current", status: "connected" },
       ]);
+
+      expect(firstSession.initializeTools).not.toHaveBeenCalled();
+      expect(firstSession.listMcpServers).not.toHaveBeenCalled();
+      expect(secondSession.listMcpServers).toHaveBeenCalledOnce();
     } finally {
-      initializationGate.resolve();
       await manager.gracefulShutdown();
       db.close();
     }
   });
 
-  it("logs a failed resumed-session initialization once before probing", async () => {
+  it("defers failed initialization reporting until MCP status is explicitly requested", async () => {
     const { manager, backend, db } = createManager();
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -435,9 +426,13 @@ describe("SessionManager native Bridge tools", () => {
       backend.resumeSession.mockResolvedValueOnce(session);
 
       await manager.warmSession(session.sessionId);
-      await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
+      expect(session.initializeTools).not.toHaveBeenCalled();
+      expect(session.listMcpServers).not.toHaveBeenCalled();
+
+      await expect(manager.getMcpStatus(session.sessionId)).resolves.toEqual([]);
 
       expect(session.initializeTools).toHaveBeenCalledOnce();
+      expect(session.listMcpServers).toHaveBeenCalledOnce();
       expect(consoleWarn).toHaveBeenCalledTimes(1);
       expect(consoleWarn).toHaveBeenCalledWith(
         `[sdk] [${session.sessionId.slice(0, 8)}] Native Bridge tool warmup failed: initialization failed`,
@@ -876,7 +871,8 @@ describe("SessionManager native Bridge tools", () => {
       await Promise.resolve();
 
       expect(manager.isSessionWarm("forked-session")).toBe(true);
-      expect(forkedSession.listMcpServers).toHaveBeenCalledTimes(1);
+      expect(forkedSession.initializeTools).not.toHaveBeenCalled();
+      expect(forkedSession.listMcpServers).not.toHaveBeenCalled();
       expect(endSessionResume).toHaveBeenCalledTimes(1);
       expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
     } finally {
@@ -906,7 +902,7 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
-  it("preserves fork success without a timeout when the MCP probe rejects", async () => {
+  it("preserves fork success without starting MCP initialization", async () => {
     const { manager, backend, db } = createManager();
     const resumeGate = createDeferred<ReturnType<typeof createFakeSession>>();
     let settled = false;
@@ -914,7 +910,6 @@ describe("SessionManager native Bridge tools", () => {
       await manager.initialize();
       vi.useFakeTimers();
       const forkedSession = createFakeSession("forked-session");
-      forkedSession.listMcpServers.mockRejectedValueOnce(new Error("probe failed"));
       backend.resumeSession.mockImplementationOnce(() => resumeGate.promise);
       const endSessionResume = vi.spyOn(manager as any, "endSessionResume");
       const flushPendingSessionEviction = vi.spyOn(manager as any, "flushPendingSessionEviction");
@@ -933,7 +928,8 @@ describe("SessionManager native Bridge tools", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-      expect(forkedSession.listMcpServers).toHaveBeenCalledTimes(1);
+      expect(forkedSession.initializeTools).not.toHaveBeenCalled();
+      expect(forkedSession.listMcpServers).not.toHaveBeenCalled();
       expect(endSessionResume).toHaveBeenCalledTimes(1);
       expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
     } finally {

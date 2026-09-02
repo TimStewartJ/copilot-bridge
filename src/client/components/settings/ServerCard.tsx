@@ -1,8 +1,15 @@
 import type { McpServerConfig, McpServerStatus } from "../../api";
 import { CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
-import { getMcpServerTransport, isLocalMcpServerConfig } from "../../../mcp-config";
+import {
+  classifyMcpServerExecution,
+  getMcpServerTransport,
+  isLocalMcpServerConfig,
+} from "../../../mcp-config";
 import { ConfigCard } from "./ConfigCard";
-import { summarizeMcpServerConfig } from "./mcp-display";
+import {
+  summarizeMcpServerConfig,
+  summarizeMcpServerExecution,
+} from "./mcp-display";
 
 export function ServerCard({
   name,
@@ -25,6 +32,7 @@ export function ServerCard({
 }) {
   const st = status?.status;
   const transport = getMcpServerTransport(config);
+  const execution = classifyMcpServerExecution(config);
   const statusBadge = (() => {
     switch (st) {
       case "connected":
@@ -84,6 +92,13 @@ export function ServerCard({
         <div className="text-xs text-text-muted">
           <span className="text-text-faint">transport:</span>{" "}
           <code className="text-text-secondary">{transport}</code>
+        </div>
+        <div className="text-xs text-text-muted">
+          <span className="text-text-faint">execution:</span>{" "}
+          <code className="text-text-secondary">{summarizeMcpServerExecution(config)}</code>
+          <span className="mt-0.5 block text-[11px] text-text-faint">
+            {execution.reason}
+          </span>
         </div>
         {isLocalMcpServerConfig(config) ? (
           <>

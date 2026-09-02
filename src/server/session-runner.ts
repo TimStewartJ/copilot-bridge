@@ -322,7 +322,6 @@ export interface SessionRunnerDeps {
   waitForSessionToolInitialization(sessionId: string, session: any): boolean | Promise<boolean>;
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
   abortSession(sessionId: string): Promise<boolean>;
-  probeMcpStatus(sessionId: string, session: any): void;
   markCachedSessionForEviction(sessionId: string, reason: string): void;
   /**
    * Queue a cached-session eviction without immediately attempting a flush.
@@ -707,7 +706,6 @@ export class SessionRunner {
             "resumeSession timed out after 60s",
           );
           s = await this.deps.cacheResumedSession(sessionId, s, resumeConfig);
-          this.deps.probeMcpStatus(sessionId, s);
           const resumeDuration = Date.now() - resumeStart;
           this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
           console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
