@@ -2744,7 +2744,7 @@ describe("staging tools", () => {
     const commitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     execSyncMock.mockImplementation((cmd: string) => {
       if (cmd === "git rev-parse HEAD") return `${commitSha}\n`;
-      return "";
+      return successfulCommandOutput(cmd);
     });
     const tools = await loadStagingTools();
     const stagingDir = createTempDir("bridge-stage-preview-stamp-");
