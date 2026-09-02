@@ -2864,7 +2864,6 @@ export function createApiRouter(
       if (sendSessionCapacityError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       if (/busy/i.test(message)) return res.status(409).json({ error: message });
-      if (/restart/i.test(message)) return res.status(503).json({ error: message });
       res.status(500).json({ error: message });
     }
   });

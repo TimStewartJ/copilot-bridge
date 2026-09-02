@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { forceClearRestartPending, SessionManager } from "../session-manager.js";
+import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, createMockSessionManager, makeAgentSessionStub, makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -101,7 +101,6 @@ const ADAPTIVE_MODEL = {
 describe("SessionManager.setSessionModel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    forceClearRestartPending();
   });
 
   it("calls setModel on a cached session and returns model info, including reasoningEffort", async () => {

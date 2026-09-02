@@ -139,11 +139,10 @@ function applyPreflightGuards(ctx: AppContext, type: ManagementJobType): void {
       );
     }
   }
-  // Disk-derived so a cutover queued by another process (the management-job
-  // runner triggers the restart, but the server is what gets restarted) is
-  // visible here. A process-local isRestartPending() is not.
+  // Self-update would queue another cutover. Preview builds are safe while a
+  // restart is pending, and deploy jobs have their own serialized batching.
   if (
-    type !== "staging_deploy"
+    type === "self_update"
     && isRestartAlreadyInFlight(ctx.runtimePaths?.dataDir ?? PRODUCTION_DATA_DIR)
   ) {
     throw new ManagementJobEnqueueError("A restart is already pending.", 409);

@@ -546,11 +546,10 @@ function stagingFailure(
  */
 function stagingRestartPendingFailure(
   stagingDir: string,
-  verb: "deploying" | "previewing",
 ) {
   return lifecycleBusyToolFailure({
     busy: { reason: "restart_in_flight" },
-    retryTarget: verb === "deploying" ? "the deploy" : "the preview",
+    retryTarget: "the deploy",
     toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE },
   });
 }
@@ -1315,7 +1314,7 @@ async function runStagingDeployJobImpl(
   }
 
   if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
-    return stagingRestartPendingFailure(stagingDir, "deploying");
+    return stagingRestartPendingFailure(stagingDir);
   }
 
   const prefix = basename(stagingDir);
@@ -2045,7 +2044,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       }
 
       if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
-        return stagingRestartPendingFailure(stagingDir, "deploying");
+        return stagingRestartPendingFailure(stagingDir);
       }
       return await runStagingDeployJob({ stagingDir, message });
     },
@@ -2097,9 +2096,6 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
         toolTelemetry: { stagingDir },
       },
     );
-  }
-  if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
-    return stagingRestartPendingFailure(stagingDir, "previewing");
   }
   const store = ctx.managementJobStore;
   if (!store) {
