@@ -3,8 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { McpServer } from "../../api";
 import { ServerCard } from "./ServerCard";
+import { ServerEditor } from "./ServerEditor";
 import { getNextTagMcpServerIds, TagMcpServerOption } from "./TagsSection";
-import { summarizeMcpServerConfig } from "./mcp-display";
+import {
+  summarizeMcpServerConfig,
+  summarizeMcpServerExecution,
+} from "./mcp-display";
 
 describe("summarizeMcpServerConfig", () => {
   it("summarizes local server command and args", () => {
@@ -20,6 +24,23 @@ describe("summarizeMcpServerConfig", () => {
     expect(summarizeMcpServerConfig({ type: "sse", url: "https://example.com/sse" })).toBe(
       "sse: https://example.com/sse",
     );
+  });
+
+  it("summarizes requested and effective execution policy", () => {
+    expect(summarizeMcpServerExecution({
+      command: "agency",
+      args: ["mcp", "ado"],
+      executionScope: "shared",
+    })).toBe("session isolated (shared requested)");
+    expect(summarizeMcpServerExecution({
+      command: "node",
+      args: ["server.js"],
+      executionScope: "session",
+    })).toBe("session isolated (explicit)");
+    expect(summarizeMcpServerExecution({
+      type: "http",
+      url: "https://example.com/mcp",
+    })).toBe("direct");
   });
 });
 
@@ -69,5 +90,43 @@ describe("ServerCard", () => {
 
     expect(html).toContain("Enabled by default");
     expect(html).toContain("Attach this server to every session.");
+  });
+
+  it("renders execution classification and its reason", () => {
+    const html = renderToStaticMarkup(createElement(ServerCard, {
+      name: "ado",
+      config: {
+        command: "agency",
+        args: ["mcp", "ado"],
+        executionScope: "shared",
+      },
+      onEdit: vi.fn(),
+      onRemove: vi.fn(),
+    }));
+
+    expect(html).toContain("session isolated (shared requested)");
+    expect(html).toContain("Shared execution is requested");
+  });
+});
+
+describe("ServerEditor", () => {
+  it("offers automatic, shared, and session-isolated execution policies for local servers", () => {
+    const html = renderToStaticMarkup(createElement(ServerEditor, {
+      name: "ado",
+      config: {
+        command: "agency",
+        args: ["mcp", "ado"],
+        executionScope: "auto",
+      },
+      existingNames: [],
+      onSave: vi.fn(),
+      onCancel: vi.fn(),
+    }));
+
+    expect(html).toContain("Execution policy");
+    expect(html).toContain("Automatic (recommended)");
+    expect(html).toContain("Shared broker (when available)");
+    expect(html).toContain("Session isolated");
+    expect(html).toContain("eligible for broker validation");
   });
 });

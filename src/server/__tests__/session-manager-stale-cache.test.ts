@@ -106,7 +106,7 @@ describe("SessionManager stale cached session recovery", () => {
     expect(session.listMcpServers).not.toHaveBeenCalled();
   });
 
-  it("does not let an in-flight fallback probe overwrite a pushed snapshot", async () => {
+  it("does not let an in-flight explicit status request overwrite a pushed snapshot", async () => {
     const { manager } = createManager();
     let resolveProbe!: (value: { servers: Array<{ name: string; status: string }> }) => void;
     const session = makeAgentSessionStub({
@@ -116,14 +116,14 @@ describe("SessionManager stale cached session recovery", () => {
     });
     manager.sessionObjects.set("session-1", session);
 
-    manager.probeMcpStatus("session-1", session);
+    const statusRequest = manager.getMcpStatus("session-1");
     await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
     manager.mcpStatus.set("session-1", {
       servers: [{ name: "event", status: "failed" }],
       complete: true,
     });
     resolveProbe({ servers: [{ name: "probe", status: "connected" }] });
-    await flushMicrotasks();
+    await expect(statusRequest).resolves.toEqual([{ name: "event", status: "failed" }]);
 
     expect(manager.mcpStatus.get("session-1")).toEqual({
       servers: [{ name: "event", status: "failed" }],

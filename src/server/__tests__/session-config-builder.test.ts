@@ -524,7 +524,7 @@ describe("session-config-builder", () => {
     const { mcpServerStore } = createMcpRegistryDeps();
     mcpServerStore.createMcpServer({
       name: "Default",
-      config: { command: "default-mcp", args: [] },
+      config: { command: "default-mcp", args: [], executionScope: "shared" },
       enabledByDefault: true,
     });
     mcpServerStore.createMcpServer({
@@ -547,6 +547,11 @@ describe("session-config-builder", () => {
 
     expect(cfg.mcpServers).toEqual({
       Default: { command: "default-mcp", args: [] },
+    });
+    expect(mcpServerStore.getMcpServerByName("Default")?.config).toEqual({
+      command: "default-mcp",
+      args: [],
+      executionScope: "shared",
     });
     expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });

@@ -1,12 +1,25 @@
 import { useState } from "react";
 import type { McpServerConfig } from "../../api";
 import {
+  classifyMcpServerExecution,
   getMcpServerTransport,
   isLocalMcpServerConfig,
+  type McpExecutionScope,
   type LocalMcpServerConfig,
   type RemoteMcpServerConfig,
 } from "../../../mcp-config";
 import { Field } from "./Field";
+
+function parseKeyValueLines(text: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq > 0) {
+      values[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    }
+  }
+  return values;
+}
 
 export function ServerEditor({
   name: initialName,
@@ -51,6 +64,9 @@ export function ServerEditor({
           .join("\n")
       : "",
   );
+  const [executionScope, setExecutionScope] = useState<McpExecutionScope>(
+    isLocalMcpServerConfig(initialConfig) ? initialConfig.executionScope ?? "auto" : "auto",
+  );
 
   const normalizedName = name.trim();
   const existingNameSet = new Set(existingNames.map((existingName) => existingName.toLocaleLowerCase()));
@@ -65,6 +81,21 @@ export function ServerEditor({
   const urlError = transport !== "local" && url.trim() === "" ? "URL is required" : null;
 
   const canSave = !nameError && !commandError && !urlError;
+  const draftLocalConfig: LocalMcpServerConfig = {
+    command: command.trim() || "pending",
+    args: argsText
+      .split("\n")
+      .map((arg) => arg.trim())
+      .filter(Boolean),
+    executionScope,
+    ...(Object.keys(parseKeyValueLines(envText)).length > 0
+      ? { env: parseKeyValueLines(envText) }
+      : {}),
+    ...(isLocalMcpServerConfig(initialConfig) && initialConfig.workingDirectory
+      ? { workingDirectory: initialConfig.workingDirectory }
+      : {}),
+  };
+  const execution = classifyMcpServerExecution(draftLocalConfig);
 
   const handleSubmit = () => {
     if (!canSave) return;
@@ -77,25 +108,20 @@ export function ServerEditor({
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
-    const env: Record<string, string> = {};
-    for (const line of envText.split("\n")) {
-      const eq = line.indexOf("=");
-      if (eq > 0) {
-        env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-      }
-    }
-    const headers: Record<string, string> = {};
-    for (const line of headersText.split("\n")) {
-      const eq = line.indexOf("=");
-      if (eq > 0) {
-        headers[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-      }
-    }
+    const env = parseKeyValueLines(envText);
+    const headers = parseKeyValueLines(headersText);
 
     if (transport === "local") {
-      const cfg: LocalMcpServerConfig = { command: command.trim(), args };
+      const cfg: LocalMcpServerConfig = {
+        command: command.trim(),
+        args,
+        executionScope,
+      };
       if (tools.length > 0) cfg.tools = tools;
       if (Object.keys(env).length > 0) cfg.env = env;
+      if (isLocalMcpServerConfig(initialConfig) && initialConfig.workingDirectory) {
+        cfg.workingDirectory = initialConfig.workingDirectory;
+      }
       onSave(cfg, name.trim());
       return;
     }
@@ -134,6 +160,21 @@ export function ServerEditor({
           <option value="sse">Remote SSE</option>
         </select>
       </Field>
+
+      {transport === "local" && (
+        <Field label="Execution policy">
+          <select
+            value={executionScope}
+            onChange={(e) => setExecutionScope(e.target.value as McpExecutionScope)}
+            className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+          >
+            <option value="auto">Automatic (recommended)</option>
+            <option value="shared">Shared broker (when available)</option>
+            <option value="session">Session isolated</option>
+          </select>
+          <p className="mt-1 text-[10px] text-text-faint">{execution.reason}</p>
+        </Field>
+      )}
 
       <Field
         label={transport === "local" ? "Command" : "URL"}
