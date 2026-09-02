@@ -404,7 +404,7 @@ describe("management job API routes", () => {
       expect(badInput.status).toBe(400);
     });
 
-    it("rejects enqueue when a restart is queued by another process", async () => {
+    it("allows previews and deploys but rejects self-update when a restart is queued by another process", async () => {
       const { app, ctx } = createManagementJobApiTestApp();
       const dataDir = ctx.runtimePaths?.dataDir;
       if (!dataDir) throw new Error("test app is missing runtime data dir");
@@ -418,6 +418,12 @@ describe("management job API routes", () => {
         const update = await request(app).post("/api/management-jobs").send({ type: "self_update" });
         expect(update.status).toBe(409);
         expect(update.body.error).toContain("restart is already pending");
+
+        const previewDir = makeRealStagingDir("preview-during-restart");
+        const preview = await request(app)
+          .post("/api/management-jobs")
+          .send({ type: "staging_preview", input: { stagingDir: previewDir } });
+        expect(preview.status).toBe(201);
 
         const stagingDir = makeRealStagingDir("deploy-during-restart");
         const deploy = await request(app)
