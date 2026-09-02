@@ -16,6 +16,8 @@ import {
   type DeferRunnerCoreContext,
   type ProcessOneResult,
 } from "./defer-runner-core.js";
+import { isRestartPending } from "./restart-controller.js";
+import { isRestartRecoveryPrompt } from "./restart-resume.js";
 
 // Re-export the shared timing/lease constants so existing importers keep working.
 export {
@@ -30,14 +32,20 @@ export {
 
 // ── Runner ────────────────────────────────────────────────────────
 
+export interface DeferredPromptRunnerOptions extends DeferRunnerOptions {
+  isRestartPending?: () => boolean;
+}
+
 export function createDeferredPromptRunner(
   store: DeferredPromptStore,
   sessionManager: SessionManager,
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
   summarySources: DeferSummarySources = { deferredPromptStore: store },
-  options: DeferRunnerOptions = {},
+  options: DeferredPromptRunnerOptions = {},
 ) {
+  const restartPending = options.isRestartPending ?? isRestartPending;
+
   function createProcessOne(ctx: DeferRunnerCoreContext) {
     async function processOne(id: string): Promise<ProcessOneResult> {
       if (!ctx.isStarted()) return "unchanged";
@@ -204,8 +212,14 @@ export function createDeferredPromptRunner(
     deliveryGuard,
     summarySources,
     labels: { tag: "deferred-runner", noun: "deferral", kind: "once" },
-    createProcessOne,
     ...options,
+    additionalReadiness: () => {
+      const restartRecoveryDue = store.listDue().some((item) => isRestartRecoveryPrompt(item.prompt));
+      return restartPending() && restartRecoveryDue
+        ? { ready: false, reason: "restart recovery prompts wait for reconnect" }
+        : { ready: true };
+    },
+    createProcessOne,
   });
 }
 

@@ -110,6 +110,7 @@ export interface DeferRunnerCoreOptions extends DeferRunnerOptions {
   deliveryGuard: DeferDeliveryGuard;
   summarySources: DeferSummarySources;
   labels: DeferRunnerLabels;
+  additionalReadiness?: () => { ready: boolean; reason?: string; retryAfterMs?: number };
   /** Pure factory: returns the runner's processOne strategy. Must not synchronously start processing. */
   createProcessOne: (ctx: DeferRunnerCoreContext) => (id: string) => Promise<ProcessOneResult>;
 }
@@ -189,7 +190,9 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   }
 
   function getDeferDeliveryReadiness(): { ready: boolean; reason?: string; retryAfterMs?: number } {
-    return sessionManager.getDeferDeliveryReadiness?.() ?? { ready: true };
+    const sessionReadiness = sessionManager.getDeferDeliveryReadiness?.() ?? { ready: true };
+    if (!sessionReadiness.ready) return sessionReadiness;
+    return options.additionalReadiness?.() ?? sessionReadiness;
   }
 
   function clearHoldLogState(): void {

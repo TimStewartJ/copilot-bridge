@@ -59,10 +59,12 @@ export interface RestartBridgeResponse {
   waitingSessions: number;
   forced?: boolean;
   failedRuns?: number;
+  resumingRuns?: number;
 }
 
 export interface RestartBridgeOptions {
   force?: boolean;
+  resume?: boolean;
 }
 
 export interface EvictIdleCacheResponse {
@@ -101,7 +103,10 @@ export async function restartBridge(options: RestartBridgeOptions = {}): Promise
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: options.force === true }),
+      body: JSON.stringify({
+        force: options.force === true,
+        ...(options.resume === true ? { resume: true } : {}),
+      }),
     },
   );
 }
