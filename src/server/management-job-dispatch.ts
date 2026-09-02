@@ -8,7 +8,6 @@ import {
   type StagingPreviewJobInput,
 } from "./staging-tools.js";
 import type { ManagementJob } from "./management-job-store.js";
-import { createPreviewRebuildCoordination } from "./staging-preview-rebuild-coordination.js";
 
 export interface ManagementJobDispatchOptions {
   log?: (message: string) => void;
@@ -71,7 +70,6 @@ export async function dispatchManagementJob(
         log: options.log,
         startBackend: false,
         registerInProcess: false,
-        rebuildCoordination: createPreviewRebuildCoordination(job) ?? undefined,
       });
       break;
     case "staging_deploy":

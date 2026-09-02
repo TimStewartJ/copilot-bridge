@@ -3,9 +3,9 @@
 // Staging previews are built by the separate management-job-runner process, so the
 // live server never observes the build in-process. The management_jobs table is the
 // only authoritative shared signal, and SQLite offers no cross-process change feed.
-// This controller therefore watches a job row only for the lifetime of that job.
-// Claimed preview jobs first prepare the live backend for a rebuild, then terminal
-// jobs reconcile artifacts. Every timer stops as soon as no job is being watched.
+// This controller therefore watches a job row only for the lifetime of that job:
+// discovery runs when a watched job reaches a terminal state, and every timer stops
+// as soon as no job is being watched. No permanent background interval remains.
 
 import {
   getManagementJobStaleAfterMs,
@@ -58,7 +58,6 @@ export interface StagingPreviewDiscoveryTrigger {
 
 export interface StagingPreviewDiscoveryDeps {
   store: ManagementJobStore;
-  prepare?: (jobs: ManagementJob[]) => Promise<void>;
   discover: (trigger: StagingPreviewDiscoveryTrigger) => Promise<void>;
   log?: (message: string) => void;
   now?: () => number;
@@ -95,7 +94,6 @@ interface WatchEntry {
   totalDeadlineMs: number;
   lastUpdatedAt: string;
   stalledRescanDone: boolean;
-  preparationRequested: boolean;
 }
 
 function parseTimestamp(value: string | undefined): number | null {
@@ -131,7 +129,6 @@ export function createStagingPreviewDiscovery(
   let drainPromise: Promise<void> | null = null;
   let queuedReason: StagingPreviewDiscoveryReason | null = null;
   const queuedJobs = new Map<string, ManagementJob>();
-  const queuedPreparationJobs = new Map<string, ManagementJob>();
 
   function schedule(): void {
     if (stopped || timer || ticking || watched.size === 0) return;
@@ -153,19 +150,7 @@ export function createStagingPreviewDiscovery(
 
   async function drain(): Promise<void> {
     try {
-      while (queuedPreparationJobs.size > 0 || queuedReason !== null) {
-        if (queuedPreparationJobs.size > 0) {
-          const jobs = [...queuedPreparationJobs.values()];
-          queuedPreparationJobs.clear();
-          try {
-            await deps.prepare?.(jobs);
-          } catch (error) {
-            writeLog(
-              `Warning: staging preview rebuild preparation failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-          continue;
-        }
+      while (queuedReason !== null) {
         const reason = queuedReason;
         if (reason === null) continue;
         const trigger: StagingPreviewDiscoveryTrigger = {
@@ -206,24 +191,12 @@ export function createStagingPreviewDiscovery(
     return drainPromise;
   }
 
-  function requestPreparation(jobs: ManagementJob[]): Promise<void> {
-    if (!deps.prepare || jobs.length === 0) return Promise.resolve();
-    for (const job of jobs) {
-      queuedPreparationJobs.set(job.id, job);
-    }
-    if (!drainPromise) {
-      drainPromise = drain();
-    }
-    return drainPromise;
-  }
-
   async function tick(): Promise<void> {
     ticking = true;
     try {
       if (stopped) return;
 
       const completedJobs: ManagementJob[] = [];
-      const preparationJobs: ManagementJob[] = [];
       let fallbackReason: StagingPreviewDiscoveryReason | null = null;
       const nowMs = now();
 
@@ -249,11 +222,6 @@ export function createStagingPreviewDiscovery(
           watched.delete(jobId);
           completedJobs.push(job);
           continue;
-        }
-
-        if (job.status === "running" && !entry.preparationRequested) {
-          entry.preparationRequested = true;
-          preparationJobs.push(job);
         }
 
         // A stalled runner may still be reclaimed by claimNext(), so keep watching.
@@ -287,9 +255,6 @@ export function createStagingPreviewDiscovery(
         }
       }
 
-      if (preparationJobs.length > 0) {
-        await requestPreparation(preparationJobs);
-      }
       if (completedJobs.length > 0) {
         await requestDiscovery("job-completed", completedJobs);
       } else if (fallbackReason) {
@@ -309,17 +274,12 @@ export function createStagingPreviewDiscovery(
     if (watched.has(job.id)) return;
     // The windows are anchored to adoption, not creation: a job resumed long after
     // a restart is still going to be built by the runner.
-    const preparationRequested = job.status === "running" && deps.prepare !== undefined;
     watched.set(job.id, {
       idleDeadlineMs: now() + maxIdleWatchMs,
       totalDeadlineMs: now() + maxTotalWatchMs,
       lastUpdatedAt: job.updatedAt,
       stalledRescanDone: false,
-      preparationRequested,
     });
-    if (preparationRequested) {
-      void requestPreparation([job]);
-    }
     schedule();
   }
 
@@ -377,7 +337,6 @@ export function createStagingPreviewDiscovery(
       watched.clear();
       queuedReason = null;
       queuedJobs.clear();
-      queuedPreparationJobs.clear();
     },
   };
 }

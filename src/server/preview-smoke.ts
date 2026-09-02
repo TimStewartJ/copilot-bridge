@@ -357,7 +357,7 @@ async function main(): Promise<void> {
     }, null, 2));
   } finally {
     if (stagingTools) {
-      await stagingTools.cleanupPreviewTarget(stagingDir, { removeData: false });
+      await stagingTools.cleanupPreviewTarget(stagingDir);
     }
     restoreEnv();
     cleanupPreviewSmokeSource(source);
