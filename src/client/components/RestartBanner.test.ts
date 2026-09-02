@@ -54,6 +54,10 @@ describe("RestartBanner", () => {
 
     expect(text).toContain("Abort sessions and resume with restart");
     const button = findAllByTag(harness!.dom.container, "button")[0];
+    expect(button.getAttribute("class")).toContain("row-start-2");
+    expect(button.getAttribute("class")).toContain("w-full");
+    expect(button.getAttribute("class")).toContain("sm:row-start-1");
+    expect(button.getAttribute("aria-label")).toBe("Abort sessions and resume with restart");
     await harness!.act(async () => {
       getReactProps(button)?.onClick?.();
     });

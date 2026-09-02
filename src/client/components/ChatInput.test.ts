@@ -103,6 +103,15 @@ describe("ChatInput voice retry", () => {
     }));
   }
 
+  it("keeps the composer visible in constrained chat layouts", async () => {
+    await renderChatInput();
+
+    const composer = findAllByTag(getHarness().dom.container, "DIV")
+      .find((element) => String(getReactProps(element)?.className ?? "").includes("shrink-0"));
+    expect(composer).toBeDefined();
+    expect(getReactProps(findTextarea(getHarness().dom.container))?.placeholder).toBe("Type a message...");
+  });
+
   function setVisualViewport(layoutHeight: number, visualHeight: number): void {
     Object.defineProperty(globalThis.document.documentElement, "clientHeight", {
       configurable: true,
