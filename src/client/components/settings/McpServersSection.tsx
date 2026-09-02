@@ -153,7 +153,7 @@ export function McpServersSection({
   return (
     <SettingsSection
       title="MCP Servers"
-      description="Registered tool servers. Enable by default to attach a server to every session; tags can select additional registered servers."
+      description="Registered tool servers. Enable by default to attach a server to every session; local servers can declare automatic, shared, or session-isolated execution."
       action={
         <button
           onClick={() => setAddingServer(true)}

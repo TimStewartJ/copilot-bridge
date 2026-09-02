@@ -15,7 +15,7 @@ describe("mcp-server-store", () => {
   it("creates, lists, updates, toggles, resolves, and deletes registry servers", () => {
     const local = store.createMcpServer({
       name: "Local",
-      config: { command: "echo", args: ["ok"] },
+      config: { command: "echo", args: ["ok"], executionScope: "shared" },
       enabledByDefault: true,
     });
     const remote = store.createMcpServer({
@@ -24,22 +24,34 @@ describe("mcp-server-store", () => {
     });
 
     expect(store.listMcpServers().map((server) => server.name)).toEqual(["Local", "Remote"]);
-    expect(store.resolveMcpServers()).toEqual({ Local: { command: "echo", args: ["ok"] } });
+    expect(store.resolveMcpServers()).toEqual({
+      Local: { command: "echo", args: ["ok"], executionScope: "shared" },
+    });
     expect(store.resolveMcpServers([remote.id, local.id])).toEqual({
       Remote: { type: "http", url: "https://example.test/mcp" },
-      Local: { command: "echo", args: ["ok"] },
+      Local: { command: "echo", args: ["ok"], executionScope: "shared" },
     });
 
     const updated = store.updateMcpServer(local.id, {
       name: "Renamed",
-      config: { command: "printf", args: ["ok"], env: { DEBUG: "1" } },
+      config: {
+        command: "printf",
+        args: ["ok"],
+        env: { DEBUG: "1" },
+        executionScope: "session",
+      },
       enabledByDefault: false,
     });
     expect(updated).toMatchObject({
       id: local.id,
       name: "Renamed",
       enabledByDefault: false,
-      config: { command: "printf", args: ["ok"], env: { DEBUG: "1" } },
+      config: {
+        command: "printf",
+        args: ["ok"],
+        env: { DEBUG: "1" },
+        executionScope: "session",
+      },
     });
 
     expect(store.setMcpServerEnabledByDefault(remote.id, true).enabledByDefault).toBe(true);
@@ -73,6 +85,12 @@ describe("mcp-server-store", () => {
       store.createMcpServer({
         name: "bad-remote",
         config: { type: "http", headers: { Authorization: 1 } } as any,
+      })
+    ).toThrow(/Invalid MCP server config/);
+    expect(() =>
+      store.createMcpServer({
+        name: "bad-scope",
+        config: { command: "echo", args: [], executionScope: "global" } as any,
       })
     ).toThrow(/Invalid MCP server config/);
   });

@@ -302,11 +302,10 @@ describe("SessionManager warmSession", () => {
     expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a warmed session when the best-effort MCP probe rejects", async () => {
+  it("keeps a warmed session without starting a best-effort MCP probe", async () => {
     const manager = createManager();
-    const probeError = new Error("probe failed");
     const resumedSession = {
-      listMcpServers: vi.fn().mockRejectedValue(probeError),
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
     };
     const cleanup = spyOnResumeCleanup(manager);
     manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
@@ -314,7 +313,7 @@ describe("SessionManager warmSession", () => {
     await expect(manager.warmSession("session-warm-probe-failure")).resolves.toBeUndefined();
     await Promise.resolve();
 
-    expect(resumedSession.listMcpServers).toHaveBeenCalledTimes(1);
+    expect(resumedSession.listMcpServers).not.toHaveBeenCalled();
     expect(manager.sessionObjects.get("session-warm-probe-failure")).toBe(resumedSession);
     expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
     expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);

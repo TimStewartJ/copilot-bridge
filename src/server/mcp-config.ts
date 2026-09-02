@@ -4,12 +4,20 @@ export interface McpServerConfigBase {
   tools?: string[];
 }
 
+export type McpExecutionScope = "auto" | "shared" | "session";
+export type McpExecutionMode = "direct" | "shared" | "session";
+
 export interface LocalMcpServerConfig extends McpServerConfigBase {
   type?: "local" | "stdio";
   command: string;
   args: string[];
   env?: Record<string, string>;
   workingDirectory?: string;
+  /**
+   * Bridge-owned execution intent. This is removed before forwarding the
+   * configuration to the Copilot runtime.
+   */
+  executionScope?: McpExecutionScope;
 }
 
 export interface RemoteMcpServerConfig extends McpServerConfigBase {
@@ -26,12 +34,29 @@ export interface RemoteMcpServerConfig extends McpServerConfigBase {
 
 export type McpServerConfig = LocalMcpServerConfig | RemoteMcpServerConfig;
 
+export interface McpExecutionClassification {
+  requestedScope: McpExecutionScope;
+  desiredMode: McpExecutionMode;
+  effectiveMode: McpExecutionMode;
+  shareCandidate: boolean;
+  reason: string;
+}
+
+export interface McpExecutionClassifierOptions {
+  sharedBrokerAvailable?: boolean;
+  sharingVerified?: boolean;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((item) => typeof item === "string");
+}
+
+function isMcpExecutionScope(value: unknown): value is McpExecutionScope {
+  return value === "auto" || value === "shared" || value === "session";
 }
 
 export function isMcpServerConfig(config: unknown): config is McpServerConfig {
@@ -42,6 +67,7 @@ export function isMcpServerConfig(config: unknown): config is McpServerConfig {
     return typeof config.url === "string"
       && config.url.trim().length > 0
       && (config.headers === undefined || isStringRecord(config.headers))
+      && config.executionScope === undefined
       && (config.oauthClientId === undefined || typeof config.oauthClientId === "string")
       && (config.oauthPublicClient === undefined || typeof config.oauthPublicClient === "boolean")
       && (
@@ -74,7 +100,8 @@ export function isMcpServerConfig(config: unknown): config is McpServerConfig {
     && config.command.trim().length > 0
     && isStringArray(config.args)
     && (config.env === undefined || isStringRecord(config.env))
-    && (config.workingDirectory === undefined || typeof config.workingDirectory === "string");
+    && (config.workingDirectory === undefined || typeof config.workingDirectory === "string")
+    && (config.executionScope === undefined || isMcpExecutionScope(config.executionScope));
 }
 
 export function assertMcpServerConfig(config: unknown): asserts config is McpServerConfig {
@@ -110,4 +137,100 @@ export function isRemoteMcpServerConfig(config: McpServerConfig): config is Remo
 
 export function isLocalMcpServerConfig(config: McpServerConfig): config is LocalMcpServerConfig {
   return !isRemoteMcpServerConfig(config);
+}
+
+function getStaticSharingBlocker(config: LocalMcpServerConfig): string | undefined {
+  if (config.workingDirectory?.trim()) {
+    return "A configured working directory may carry workspace-specific state.";
+  }
+  if (config.env && Object.keys(config.env).length > 0) {
+    return "Custom environment variables may carry session-specific identity or secrets.";
+  }
+  return undefined;
+}
+
+export function classifyMcpServerExecution(
+  config: McpServerConfig,
+  options: McpExecutionClassifierOptions = {},
+): McpExecutionClassification {
+  if (isRemoteMcpServerConfig(config)) {
+    return {
+      requestedScope: "auto",
+      desiredMode: "direct",
+      effectiveMode: "direct",
+      shareCandidate: false,
+      reason: "Remote HTTP and SSE servers already run outside individual Bridge sessions.",
+    };
+  }
+
+  const requestedScope = config.executionScope ?? "auto";
+  if (requestedScope === "session") {
+    return {
+      requestedScope,
+      desiredMode: "session",
+      effectiveMode: "session",
+      shareCandidate: false,
+      reason: "Session isolation was selected explicitly.",
+    };
+  }
+
+  const blocker = getStaticSharingBlocker(config);
+  if (blocker && requestedScope === "auto") {
+    return {
+      requestedScope,
+      desiredMode: "session",
+      effectiveMode: "session",
+      shareCandidate: false,
+      reason: `${blocker} This server remains session-isolated.`,
+    };
+  }
+
+  const shareCandidate = true;
+  const desiredMode = "shared";
+  if (!options.sharedBrokerAvailable) {
+    return {
+      requestedScope,
+      desiredMode,
+      effectiveMode: "session",
+      shareCandidate,
+      reason: requestedScope === "shared"
+        ? blocker
+          ? `Shared execution is requested for a server with session-sensitive configuration. ${blocker} It remains session-isolated until the broker can validate and key that configuration safely.`
+          : "Shared execution is requested. It remains session-isolated until the shared MCP broker is available."
+        : "This server is eligible for broker validation. It remains session-isolated until the shared MCP broker is available.",
+    };
+  }
+  if (!options.sharingVerified) {
+    return {
+      requestedScope,
+      desiredMode,
+      effectiveMode: "session",
+      shareCandidate,
+      reason: "The shared broker is available, but capability and identity validation has not approved this server.",
+    };
+  }
+  return {
+    requestedScope,
+    desiredMode,
+    effectiveMode: "shared",
+    shareCandidate,
+    reason: requestedScope === "shared"
+      ? "Shared execution was selected explicitly and passed broker validation."
+      : "Automatic policy selected shared execution after broker validation.",
+  };
+}
+
+export function toRuntimeMcpServerConfig(config: McpServerConfig): McpServerConfig {
+  if (isRemoteMcpServerConfig(config) || config.executionScope === undefined) return config;
+  const runtimeConfig = { ...config };
+  delete runtimeConfig.executionScope;
+  return runtimeConfig;
+}
+
+export function toRuntimeMcpServerConfigs(
+  configs: Record<string, McpServerConfig>,
+): Record<string, McpServerConfig> {
+  return Object.fromEntries(
+    Object.entries(configs).map(([name, config]) => [name, toRuntimeMcpServerConfig(config)]),
+  );
 }

@@ -8,7 +8,10 @@ import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
-import type { McpServerConfig } from "./mcp-config.js";
+import {
+  toRuntimeMcpServerConfigs,
+  type McpServerConfig,
+} from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import {
@@ -235,7 +238,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     streaming: true,
     includeSubAgentStreamingEvents: false,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
-    mcpServers: addBuiltInMcpServers(deps, resolvedMcpServers, sessionId),
+    mcpServers: toRuntimeMcpServerConfigs(
+      addBuiltInMcpServers(deps, resolvedMcpServers, sessionId),
+    ),
     ...(deps.nativeBridgeTools && deps.nativeBridgeTools.length > 0 ? { tools: deps.nativeBridgeTools } : {}),
     skillDirectories: [
       join(REPO_ROOT, "skills"),
