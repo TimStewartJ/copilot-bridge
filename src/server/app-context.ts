@@ -87,8 +87,8 @@ export interface AppContext {
   /** Periodic owner of session-overlay/defer row cleanup. Started at boot. */
   sessionOverlayMaintenance?: SessionOverlayMaintenance;
   /**
-   * Watches management jobs run by the separate runner process so staging previews
-   * are discovered when a job completes instead of on a permanent poll.
+   * Coordinates preview rebuild teardown and discovers completed preview artifacts
+   * from management jobs run by the separate runner process.
    */
   stagingPreviewDiscovery?: StagingPreviewDiscoveryController;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
