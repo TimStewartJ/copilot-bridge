@@ -7,6 +7,13 @@ import { fileURLToPath } from "node:url";
 import { createApiRouter } from "../api-router.js";
 import { createAppContext } from "../app-context-factory.js";
 import { __testing } from "../staging-tools.js";
+import {
+  abortStagingPreviewRebuild,
+  beginStagingPreviewRebuild,
+  finishStagingPreviewRebuild,
+  hasActiveStagingBackend,
+  __testing as backendManagerTesting,
+} from "../staging-backend-manager.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { makeTestDir, withTestEnv } from "./helpers.js";
 
@@ -136,6 +143,62 @@ function writeUsage(runtimePaths: RuntimePaths, inputTokens: number): void {
 }
 
 describe("staging preview backend child process", () => {
+  it("stops a registered backend before releasing a preview rebuild", async () => {
+    const stagingDir = createTempStagingDir();
+    writePreviewBackend(stagingDir);
+    writeFutureStore(stagingDir, "rebuild");
+    const runtimePaths = runtimePathsFor(stagingDir);
+    const prefix = "rebuild-stop-preview";
+    const backend = await __testing.startStagingBackendProcess(
+      prefix,
+      stagingDir,
+      runtimePaths,
+      `/staging/${prefix}/api`,
+      { startupTimeoutMs: 30_000 },
+    );
+    startedBackends.push(backend);
+    backendManagerTesting.seedActiveBackend(prefix, backend);
+
+    await beginStagingPreviewRebuild(prefix, "job-rebuild-stop");
+
+    expect(hasActiveStagingBackend(prefix)).toBe(false);
+    expect(backendManagerTesting.isRebuilding(prefix)).toBe(true);
+    expect(finishStagingPreviewRebuild(prefix, "job-rebuild-stop", { rebuilt: true })).toBe(true);
+    await cleanupBackend(backend);
+  });
+
+  it("restores the unchanged backend when rebuild teardown cannot stop it", async () => {
+    const stagingDir = createTempStagingDir();
+    writePreviewBackend(stagingDir);
+    writeFutureStore(stagingDir, "rebuild-abort");
+    const runtimePaths = runtimePathsFor(stagingDir);
+    const prefix = "rebuild-abort-preview";
+    const backend = await __testing.startStagingBackendProcess(
+      prefix,
+      stagingDir,
+      runtimePaths,
+      `/staging/${prefix}/api`,
+      { startupTimeoutMs: 30_000 },
+    );
+    startedBackends.push(backend);
+    backendManagerTesting.seedActiveBackend(prefix, backend);
+    const cleanup = backend.cleanup;
+    backend.cleanup = vi.fn(async () => {
+      throw new Error("process tree still alive");
+    });
+
+    await expect(beginStagingPreviewRebuild(prefix, "job-rebuild-abort"))
+      .rejects.toThrow("process tree still alive");
+    expect(backendManagerTesting.isRebuilding(prefix)).toBe(true);
+
+    expect(abortStagingPreviewRebuild(prefix, "job-rebuild-abort")).toBe(true);
+    expect(backendManagerTesting.isRebuilding(prefix)).toBe(false);
+    expect(hasActiveStagingBackend(prefix)).toBe(true);
+
+    backend.cleanup = cleanup;
+    await cleanupBackend(backend);
+  });
+
   it("uses the isolated incremental usage index and returns refresh progress without blocking", async () => {
     const stagingDir = makeTestDir("stage-usage-index");
     const runtimePaths = runtimePathsFor(stagingDir);

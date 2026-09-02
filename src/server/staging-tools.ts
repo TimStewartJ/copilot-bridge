@@ -46,11 +46,16 @@ import {
 } from "./staging-validation-stamp.js";
 import { config } from "./config.js";
 import {
+  abortStagingPreviewRebuild,
+  beginStagingPreviewRebuild,
   buildStagingBackendSpawnConfig,
   cleanupStagingBackendResources,
   createStagingProxyHandler,
+  finishStagingPreviewRebuild,
   forgetStagingPreviewBackend,
   getExistingPreviewRuntime,
+  getStagingPreviewRebuildJobId,
+  hasSeededStagingDatabase,
   hasActiveStagingBackend,
   getStagingRouter,
   hasPendingStagingBackendStart,
@@ -69,6 +74,14 @@ import {
   type RestoreStagingBackendWithRetryOptions,
   type SeedStagingDataOptions,
 } from "./staging-backend-manager.js";
+import {
+  clearPreviewRebuildReady,
+  createPreviewRebuildCoordination,
+  signalPreviewRebuildFailure,
+  signalPreviewRebuildReady,
+  waitForPreviewRebuildReady,
+  type PreviewRebuildCoordination,
+} from "./staging-preview-rebuild-coordination.js";
 import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   FAILURE_DETAIL_OUTPUT_LIMIT,
@@ -115,7 +128,11 @@ import { createValidationCommandEnv, prependNodePath } from "./validation-comman
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
-import { ActiveManagementJobError, type ManagementJobStore } from "./management-job-store.js";
+import {
+  ActiveManagementJobError,
+  type ManagementJob,
+  type ManagementJobStore,
+} from "./management-job-store.js";
 import {
   createStagingPreviewDiscovery,
   type StagingPreviewDiscoveryController,
@@ -353,11 +370,77 @@ async function runStagingPreviewDiscovery(
   writeLog: (msg: string) => void,
 ): Promise<void> {
   for (const job of trigger.completedJobs) {
-    if (job.type !== "staging_preview" || job.status !== "succeeded") continue;
-    await invalidateRebuiltPreviewBackend(job.input, writeLog);
+    if (job.type !== "staging_preview") continue;
+    const target = getPreviewJobTarget(job.input);
+    const coordination = createPreviewRebuildCoordination(job);
+    clearPreviewRebuildReady(coordination);
+    if (!target) continue;
+
+    const rebuildJobId = getStagingPreviewRebuildJobId(target.prefix);
+    if (rebuildJobId === job.id) {
+      const released = finishStagingPreviewRebuild(target.prefix, job.id, {
+        rebuilt: job.status === "succeeded",
+      });
+      if (released) {
+        writeLog(
+          job.status === "succeeded"
+            ? `Staging preview ${target.prefix} rebuild completed; lazy backend startup is enabled`
+            : `Staging preview ${target.prefix} rebuild ended with ${job.status}; the previous backend may start lazily again`,
+        );
+      } else {
+        writeLog(`Warning: staging preview ${target.prefix} remains suppressed because its previous backend did not stop cleanly`);
+      }
+    } else if (job.status === "succeeded") {
+      await invalidateRebuiltPreviewBackend(job.input, writeLog);
+    }
   }
   await cleanupMissingRegisteredPreviews(writeLog);
   registerExistingPreviewsFromDisk({ log: writeLog });
+}
+
+function getPreviewJobTarget(input: unknown): PreviewTarget | null {
+  const stagingDir = typeof input === "object" && input !== null
+    ? (input as { stagingDir?: unknown }).stagingDir
+    : undefined;
+  if (typeof stagingDir !== "string" || stagingDir.trim() === "") return null;
+  const target = createPreviewTarget(stagingDir);
+  return parsePreviewPrefix(target.prefix) ? target : null;
+}
+
+async function prepareStagingPreviewRebuilds(
+  jobs: ManagementJob[],
+  writeLog: (msg: string) => void,
+): Promise<void> {
+  for (const job of jobs) {
+    if (job.type !== "staging_preview") continue;
+    const target = getPreviewJobTarget(job.input);
+    const coordination = createPreviewRebuildCoordination(job);
+    if (!target || !coordination) {
+      writeLog(`Warning: management job ${job.id} could not establish staging preview rebuild coordination`);
+      continue;
+    }
+
+    try {
+      await beginStagingPreviewRebuild(target.prefix, job.id);
+      signalPreviewRebuildReady(coordination, target.prefix);
+      writeLog(`Staging preview ${target.prefix} backend stopped and suppressed for rebuild`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      abortStagingPreviewRebuild(target.prefix, job.id);
+      try {
+        signalPreviewRebuildFailure(coordination, target.prefix, message);
+      } catch (signalError) {
+        writeLog(
+          `Warning: could not report staging preview ${target.prefix} rebuild preparation failure: `
+          + `${signalError instanceof Error ? signalError.message : String(signalError)}`,
+        );
+      }
+      writeLog(
+        `Warning: could not prepare staging preview ${target.prefix} for rebuild: `
+        + message,
+      );
+    }
+  }
 }
 
 /**
@@ -406,6 +489,7 @@ export function startStagingPreviewDiscovery(options: {
     store,
     log: writeLog,
     pollIntervalMs: options.pollIntervalMs,
+    prepare: (jobs) => prepareStagingPreviewRebuilds(jobs, writeLog),
     discover: (trigger) => runStagingPreviewDiscovery(trigger, writeLog),
   });
   controller.resumeActiveJobs();
@@ -415,6 +499,11 @@ export function startStagingPreviewDiscovery(options: {
 async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void): Promise<void> {
   for (const [prefix, distDir] of [...activePreviews.entries()]) {
     if (existsSync(join(distDir, "index.html"))) continue;
+    if (getStagingPreviewRebuildJobId(prefix)) {
+      writeLog(`Staging preview ${prefix} assets are temporarily unavailable during rebuild`);
+      activePreviews.delete(prefix);
+      continue;
+    }
     writeLog(`Staging preview ${prefix} disappeared from disk — cleaning up in-process backend state`);
     activePreviews.delete(prefix);
     try {
@@ -842,6 +931,7 @@ export interface StagingJobRunOptions {
   startBackend?: boolean;
   registerInProcess?: boolean;
   seedPreviewData?: (stagingDir: string) => void;
+  rebuildCoordination?: PreviewRebuildCoordination;
 }
 
 export async function runStagingPreviewJob(
@@ -869,6 +959,28 @@ export async function runStagingPreviewJob(
   const { prefix, basePath, outDir } = target;
 
   writeLog(`Building staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
+
+  if (
+    options.startBackend !== true
+    && options.rebuildCoordination
+    && hasSeededStagingDatabase(stagingDir)
+  ) {
+    writeLog(`Waiting for the live server to stop the existing staged backend for ${prefix}...`);
+    try {
+      await waitForPreviewRebuildReady(options.rebuildCoordination);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return stagingFailure(
+        "Staging preview rebuild coordination failed.",
+        message,
+        {
+          sessionLog: `Staging preview rebuild coordination failed for ${stagingDir}: ${message}`,
+          toolTelemetry: { stagingDir, previewPath: basePath, outDir },
+        },
+      );
+    }
+    writeLog(`Existing staged backend for ${prefix} is stopped; rebuild may proceed.`);
+  }
 
   const previewParent = dirname(outDir);
   if (!existsSync(previewParent)) {
