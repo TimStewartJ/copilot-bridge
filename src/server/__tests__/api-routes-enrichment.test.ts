@@ -215,6 +215,7 @@ describe("Dashboard work map route", () => {
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
         enabled: false,
+        assignedToMe: false,
         org: null,
         project: null,
         tasks: [],
@@ -253,15 +254,23 @@ describe("Dashboard work map route", () => {
         reviewerCount: 1,
         url: `https://example.test/pullrequests/${ref.prId}`,
       })));
-    const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks").mockResolvedValue({
-      links: [
-        { workItemId: "10", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
-        { workItemId: "11", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
-      ],
-      warnings: [],
-    });
+    const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks")
+      .mockImplementation(async (ids) => ({
+        links: [
+          { workItemId: "10", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
+          { workItemId: "11", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
+          ...(ids.includes("13")
+            ? [{ workItemId: "13", repoId: "repo-two", repoAliases: ["other-repo"], prId: 30 }]
+            : []),
+        ],
+        warnings: [],
+      }));
     const currentUserSpy = vi.spyOn(providers, "fetchAdoCurrentUser").mockResolvedValue({
       displayName: "Tim Stewart",
+    });
+    const assignedWorkItemsSpy = vi.spyOn(providers, "fetchAdoAssignedWorkItemIds").mockResolvedValue({
+      ids: ["13"],
+      warnings: [],
     });
 
     try {
@@ -289,6 +298,7 @@ describe("Dashboard work map route", () => {
       expect(res.body).toMatchObject({
         enabled: true,
         includeArchived: false,
+        assignedToMe: false,
         currentUser: { displayName: "Tim Stewart" },
         org: "msazure",
         project: "One",
@@ -304,6 +314,7 @@ describe("Dashboard work map route", () => {
           id: "10",
           taskIds: [workItemTask.id],
           pullRequestKeys: ["repo-guid:20"],
+          assignedToCurrentUser: false,
         }),
         expect.objectContaining({
           id: "11",
@@ -321,11 +332,45 @@ describe("Dashboard work map route", () => {
         }),
       ]);
 
+      const assignedRes = await request(app).get("/api/dashboard/work-map?assignedToMe=1");
+
+      expect(assignedRes.status).toBe(200);
+      expect(assignedWorkItemsSpy).toHaveBeenCalledTimes(1);
+      expect(relationshipSpy).toHaveBeenNthCalledWith(
+        2,
+        ["13", "10"],
+        [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+      );
+      expect(assignedRes.body.assignedToMe).toBe(true);
+      expect(assignedRes.body.workItems).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "13",
+          taskIds: [],
+          pullRequestKeys: ["repo-two:30"],
+          assignedToCurrentUser: true,
+        }),
+      ]));
+      expect(assignedRes.body.pullRequests).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          key: "repo-two:30",
+          repoId: "repo-two",
+          prId: 30,
+          title: null,
+          status: null,
+          taskIds: [],
+          workItemIds: ["13"],
+        }),
+      ]));
+      expect(enrichPullRequestsSpy).toHaveBeenNthCalledWith(
+        2,
+        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+      );
+
       const archivedRes = await request(app).get("/api/dashboard/work-map?includeArchived=1");
 
       expect(archivedRes.status).toBe(200);
       expect(relationshipSpy).toHaveBeenNthCalledWith(
-        2,
+        3,
         ["10", "12"],
         [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
       );
@@ -341,6 +386,7 @@ describe("Dashboard work map route", () => {
       enrichPullRequestsSpy.mockRestore();
       relationshipSpy.mockRestore();
       currentUserSpy.mockRestore();
+      assignedWorkItemsSpy.mockRestore();
     }
   });
 });

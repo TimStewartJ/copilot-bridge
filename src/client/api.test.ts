@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteDbEntryPage,
   createSession,
+  createTask,
   createTaskSession,
   fetchExternalSessionUse,
   fetchSessionFork,
@@ -209,6 +210,30 @@ describe("serializeSettingsPatch", () => {
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ agent: "implementation-planner" }),
+        }),
+      ]);
+    });
+
+    it("creates a task with an initial work item link", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ task: { id: "task-1" } }),
+      })));
+
+      await createTask("New Task", {
+        workItem: { workItemId: "37655015", provider: "ado" },
+      });
+
+      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
+        "/api/tasks",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            title: "New Task",
+            workItem: { workItemId: "37655015", provider: "ado" },
+          }),
         }),
       ]);
     });

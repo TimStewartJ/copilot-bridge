@@ -44,6 +44,7 @@ import {
 import {
   enrichWorkItems,
   enrichPullRequests,
+  fetchAdoAssignedWorkItemIds,
   fetchAdoCurrentUser,
   fetchAdoWorkItemPullRequestLinks,
   clearProviderCache,
@@ -3890,10 +3891,34 @@ export function createApiRouter(
   });
 
   router.post("/tasks", (req, res) => {
-    const { title, groupId, kind } = req.body;
+    const { title, groupId, kind, workItem } = req.body;
     if (!title) return res.status(400).json({ error: "title is required" });
+    let initialWorkItem: { workItemId: string; provider: "ado" | "github" | "linear" } | undefined;
+    if (workItem !== undefined) {
+      if (!isRecord(workItem)) {
+        return res.status(400).json({ error: "workItem must be an object" });
+      }
+      const resolved = resolveWorkItemLink({
+        ...workItem,
+        providers: ctx.settingsStore.getSettings().providers,
+      });
+      if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+      initialWorkItem = resolved.value;
+    }
     try {
-      const task = ctx.taskStore.createTask(title, groupId, kind);
+      let task = ctx.taskStore.createTask(title, groupId, kind);
+      if (initialWorkItem) {
+        try {
+          task = ctx.taskStore.linkWorkItem(
+            task.id,
+            initialWorkItem.workItemId,
+            initialWorkItem.provider,
+          );
+        } catch (error) {
+          ctx.taskStore.deleteTask(task.id);
+          throw error;
+        }
+      }
       res.json({ task });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -4618,17 +4643,20 @@ export function createApiRouter(
       const t0 = Date.now();
       const adoConfig = ctx.settingsStore.getSettings().providers?.ado;
       const includeArchived = req.query.includeArchived === "1" || req.query.includeArchived === "true";
+      const assignedToMe = req.query.assignedToMe === "1" || req.query.assignedToMe === "true";
       if (adoConfig && (req.query.refresh === "1" || req.query.refresh === "true")) {
         clearProviderCache();
       }
       const data = await buildWorkMapData({
         tasks: ctx.taskStore.listTasks().filter((task) => includeArchived || task.status === "active"),
         includeArchived,
+        assignedToMe,
         adoConfig,
         enrichWorkItems,
         enrichPullRequests,
         fetchRelationships: fetchAdoWorkItemPullRequestLinks,
         fetchCurrentUser: fetchAdoCurrentUser,
+        fetchAssignedWorkItemIds: fetchAdoAssignedWorkItemIds,
       });
       res.json(data);
       ctx.telemetryStore?.recordSpan({

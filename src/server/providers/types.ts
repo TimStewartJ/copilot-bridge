@@ -49,6 +49,11 @@ export interface WorkTrackingIdentity {
   displayName: string;
 }
 
+export interface AssignedWorkItemsResult {
+  ids: string[];
+  warnings: string[];
+}
+
 // ── Provider interface ────────────────────────────────────────────
 
 export interface WorkTrackingProvider {
@@ -61,6 +66,7 @@ export interface WorkTrackingProvider {
     pullRequests: PRRef[],
   ): Promise<WorkItemPullRequestLinksResult>;
   fetchCurrentUser?(): Promise<WorkTrackingIdentity | null>;
+  fetchAssignedWorkItemIds?(): Promise<AssignedWorkItemsResult>;
 
   getWorkItemUrl(id: string): string;
   getPullRequestUrl(pr: PRRef): string;

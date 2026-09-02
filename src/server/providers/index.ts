@@ -11,6 +11,7 @@ import type {
   EnrichedPR,
   ProviderName,
   WorkTrackingIdentity,
+  AssignedWorkItemsResult,
   WorkItemPullRequestLinksResult,
 } from "./types.js";
 import type { WorkItemRef, PRRef } from "../task-store.js";
@@ -23,6 +24,7 @@ export type {
   WorkItemPullRequestLink,
   WorkItemPullRequestLinksResult,
   WorkTrackingIdentity,
+  AssignedWorkItemsResult,
 } from "./types.js";
 export type { WorkItemRef, PRRef } from "../task-store.js";
 
@@ -190,5 +192,24 @@ export async function fetchAdoCurrentUser(): Promise<WorkTrackingIdentity | null
   } catch (err) {
     console.error("[providers] ADO authenticated user lookup failed:", err);
     return null;
+  }
+}
+
+export async function fetchAdoAssignedWorkItemIds(): Promise<AssignedWorkItemsResult> {
+  const provider = getProvider("ado");
+  if (!provider.fetchAssignedWorkItemIds) {
+    return {
+      ids: [],
+      warnings: ["Assigned ADO work discovery is unavailable."],
+    };
+  }
+  try {
+    return await provider.fetchAssignedWorkItemIds();
+  } catch (err) {
+    console.error("[providers] ADO assigned work item discovery failed:", err);
+    return {
+      ids: [],
+      warnings: ["Assigned ADO work items could not be loaded."],
+    };
   }
 }
