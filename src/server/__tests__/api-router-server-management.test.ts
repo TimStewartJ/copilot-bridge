@@ -9,6 +9,7 @@ import {
   refreshRestartState,
 } from "../restart-controller.js";
 import { parseRestartSignalContent } from "../restart-signal.js";
+import { RESTART_RECOVERY_CONTINUE_PROMPT } from "../restart-resume.js";
 
 afterEach(async () => {
   forceClearRestartPending();
@@ -61,6 +62,42 @@ describe("api router server management reliability", () => {
       requestId: expect.any(String),
       source: "settings_ui",
     });
+  });
+
+  it("aborts a pending restart's interactive runs and queues durable resume prompts", async () => {
+    const { app, ctx } = createTestApp();
+    let lifecycleBlockingCount = 2;
+    ctx.sessionManager.getLifecycleBlockingSessionCount = vi.fn(() => lifecycleBlockingCount);
+    ctx.sessionManager.failAllActiveRuns = vi.fn(() => {
+      lifecycleBlockingCount = 0;
+      return [
+        { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
+        { sessionId: "session-b", promptAccepted: true, attentionMode: "quiet" as const },
+        { sessionId: "session-c", promptAccepted: false, attentionMode: "normal" as const },
+      ];
+    });
+    beginRestartPending();
+
+    const response = await request(app)
+      .post("/api/server/restart")
+      .send({ force: true, resume: true });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      ok: true,
+      waitingSessions: 0,
+      forced: true,
+      failedRuns: 3,
+      resumingRuns: 1,
+    });
+    expect(ctx.deferredPromptStore?.listForSession("session-a")).toEqual([
+      expect.objectContaining({
+        prompt: RESTART_RECOVERY_CONTINUE_PROMPT,
+        status: "pending",
+      }),
+    ]);
+    expect(ctx.deferredPromptStore?.listForSession("session-b")).toEqual([]);
+    expect(ctx.deferredPromptStore?.listForSession("session-c")).toEqual([]);
   });
 
   it("clears only the matching restart request and rejects malformed identities", async () => {

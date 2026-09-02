@@ -21,6 +21,7 @@ import {
   configureRestartStateStore,
   forceClearRestartPending,
   isRestartCutoverInProgress,
+  isRestartPending,
   isRestartPendingError,
   ModelRefreshBlockedError,
   RESTART_PENDING_MESSAGE,
@@ -28,6 +29,7 @@ import {
   SessionBackendDeleteError,
   SessionCapacityError,
   SessionHistoryUndoError,
+  syncRestartWaitingSessions,
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
@@ -176,6 +178,7 @@ import { openSseConnection } from "./sse-response.js";
 import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
 import { isLocalStagingModule } from "./path-utils.js";
 import { createSessionForkJobManager } from "./session-fork-job-manager.js";
+import { queueRestartRecoveryPrompts } from "./restart-resume.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 /** Idle grace windows (minutes) accepted by the hibernate-on-idle watcher. */
@@ -2226,8 +2229,22 @@ export function createApiRouter(
     const dataDir = ctx.runtimePaths?.dataDir;
     if (!dataDir) return res.status(503).json({ error: "Bridge runtime paths are not available." });
 
+    const body = req.body as { force?: unknown; resume?: unknown } | undefined;
+    const forced = body?.force === true;
+    const resume = body?.resume === true;
+    if (resume && !forced) {
+      return res.status(400).json({ error: "resume requires force=true." });
+    }
+    const deferredPromptStore = ctx.deferredPromptStore;
+    if (resume && deferredPromptStore === undefined) {
+      return res.status(503).json({ error: "Deferred prompt persistence is not available." });
+    }
+
+    await refreshRestartState();
+    const restartAlreadyPending = isRestartPending();
     const busy = findLifecycleBusyState({ dataDir, managementJobStore: ctx.managementJobStore });
-    if (busy) {
+    const escalatingPendingRestart = forced && resume && restartAlreadyPending;
+    if (busy && !escalatingPendingRestart) {
       if (busy.reason === "management_job") {
         return res.status(409).json({
           error: `Cannot restart while a ${busy.job.type} management job is ${busy.job.status}.`,
@@ -2240,38 +2257,63 @@ export function createApiRouter(
       return res.status(409).json({ error: "A restart is already pending." });
     }
 
-    const body = req.body as { force?: unknown } | undefined;
-    const forced = body?.force === true;
-    const failedRuns = forced
-      ? ctx.sessionManager.failAllActiveRuns("Bridge restart forced by operator").length
-      : 0;
+    const interruptedRuns = forced
+      ? ctx.sessionManager.failAllActiveRuns("Bridge restart forced by operator")
+      : [];
+    const failedRuns = interruptedRuns.length;
     if (forced) {
       console.warn(`[management] Forced bridge restart failed ${failedRuns} active run(s) locally.`);
     }
 
-    mkdirSync(dataDir, { recursive: true });
-    const signalFile = join(dataDir, "restart.signal");
-    const restartRequest = beginRestartPendingForExternalRequest(
-      ctx.sessionManager.getLifecycleBlockingSessionCount(),
-    );
+    const waitingSessions = ctx.sessionManager.getLifecycleBlockingSessionCount();
+    const restartRequest = restartAlreadyPending
+      ? null
+      : beginRestartPendingForExternalRequest(waitingSessions);
+    if (restartAlreadyPending) {
+      syncRestartWaitingSessions(waitingSessions);
+    }
+
+    let resumingRuns = 0;
     try {
-      writeRestartSignalFile(signalFile, {
-        validationMode: "operational",
-        requestId: restartRequest.requestId,
-        source: "settings_ui",
-      });
+      if (resume && deferredPromptStore) {
+        resumingRuns = queueRestartRecoveryPrompts({
+          deferredPromptStore,
+          deferredPromptRunner: ctx.deferredPromptRunner,
+          globalBus: ctx.globalBus,
+        }, interruptedRuns);
+      }
     } catch (error) {
-      clearRestartPending(restartRequest.requestId);
+      if (restartRequest) clearRestartPending(restartRequest.requestId);
+      console.error("[management] Failed to queue restart recovery prompts:", error);
       return res.status(500).json({
-        error: "Restart signal could not be written.",
+        error: "Restart recovery prompts could not be queued.",
         details: error instanceof Error ? error.message : String(error),
       });
     }
 
+    if (restartRequest) {
+      mkdirSync(dataDir, { recursive: true });
+      const signalFile = join(dataDir, "restart.signal");
+      try {
+        writeRestartSignalFile(signalFile, {
+          validationMode: "operational",
+          requestId: restartRequest.requestId,
+          source: "settings_ui",
+        });
+      } catch (error) {
+        clearRestartPending(restartRequest.requestId);
+        return res.status(500).json({
+          error: "Restart signal could not be written.",
+          details: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     res.status(202).json({
       ok: true,
-      waitingSessions: restartRequest.waitingSessions,
+      waitingSessions,
       ...(forced ? { forced: true, failedRuns } : {}),
+      ...(resume ? { resumingRuns } : {}),
     });
   });
 
