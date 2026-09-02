@@ -235,6 +235,7 @@ export function createMockSessionManager() {
     }),
     getActiveSessions: () => [],
     getLifecycleBlockingSessionCount: () => 0,
+    getEffectiveSessionCwd: () => undefined,
     failAllActiveRuns: () => [],
     isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),
