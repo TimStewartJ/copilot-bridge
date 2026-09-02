@@ -7,9 +7,20 @@ interface Props {
   restartPhase: RestartStatusPhase;
   waitingSessions: number;
   canAcceptNewWork: boolean;
+  abortingSessions?: boolean;
+  abortError?: string | null;
+  onAbortSessionsAndResume?: () => void;
 }
 
-export default function RestartBanner({ phase, restartPhase, waitingSessions, canAcceptNewWork }: Props) {
+export default function RestartBanner({
+  phase,
+  restartPhase,
+  waitingSessions,
+  canAcceptNewWork,
+  abortingSessions = false,
+  abortError = null,
+  onAbortSessionsAndResume,
+}: Props) {
   if (phase === "reconnected") {
     return (
       <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b text-sm" style={{ backgroundColor: "var(--color-success-bg, #d1fae5)", borderColor: "var(--color-success-border, #6ee7b7)", color: "var(--color-success-text, #065f46)" }}>
@@ -54,15 +65,28 @@ export default function RestartBanner({ phase, restartPhase, waitingSessions, ca
         <div className="mt-0.5 shrink-0">
           {useWaitingStyle ? <Users size={16} /> : <AlertTriangle size={16} />}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="font-semibold">
             {title}
           </div>
           <div className="opacity-90">
             {detail}
           </div>
+          {abortError && <div className="mt-1 font-medium">{abortError}</div>}
         </div>
-        <RefreshCw size={14} className="mt-0.5 ml-auto shrink-0 animate-spin opacity-80" />
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {waitingOnSessions && onAbortSessionsAndResume && (
+            <button
+              type="button"
+              onClick={onAbortSessionsAndResume}
+              disabled={abortingSessions}
+              className="rounded-md border border-current/30 bg-white/10 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {abortingSessions ? "Aborting sessions…" : "Abort sessions and resume with restart"}
+            </button>
+          )}
+          <RefreshCw size={14} className="shrink-0 animate-spin opacity-80" />
+        </div>
       </div>
     </div>
   );

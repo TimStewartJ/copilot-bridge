@@ -21,6 +21,7 @@ import {
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
   RESTART_PENDING_MESSAGE,
 } from "../session-manager.js";
+import { RESTART_RECOVERY_CONTINUE_PROMPT } from "../restart-resume.js";
 import type { DatabaseSync } from "../db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -100,6 +101,39 @@ describe("deferred-prompt-runner", () => {
         { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
       ]);
 
+      runner.shutdown();
+    });
+
+    it("holds restart recovery prompts until the restart clears", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const past = new Date(Date.now() - 1000).toISOString();
+      store.create("session-1", RESTART_RECOVERY_CONTINUE_PROMPT, past);
+      let restartPending = true;
+
+      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const runner = createDeferredPromptRunner(
+        store,
+        sm as any,
+        bus,
+        undefined,
+        undefined,
+        { isRestartPending: () => restartPending },
+      );
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sm._started).toEqual([]);
+      expect(store.listForSession("session-1")[0]?.status).toBe("pending");
+
+      restartPending = false;
+      bus.emit({ type: "server:restart-cleared" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm._started).toEqual([
+        { sessionId: "session-1", prompt: RESTART_RECOVERY_CONTINUE_PROMPT },
+      ]);
+      expect(store.listForSession("session-1")[0]?.status).toBe("completed");
       runner.shutdown();
     });
 

@@ -1,6 +1,6 @@
 import { createElement } from "react";
-import { afterEach, describe, expect, it } from "vitest";
-import { createReactDomHarness, type ReactDomHarness } from "../test-react-harness";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../test-react-harness";
 import RestartBanner from "./RestartBanner";
 
 describe("RestartBanner", () => {
@@ -40,5 +40,23 @@ describe("RestartBanner", () => {
 
     expect(text).toContain("Restart queued");
     expect(text).toContain("you can keep using Bridge");
+  });
+
+  it("offers to abort waiting sessions and resume them after restart", async () => {
+    const onAbortSessionsAndResume = vi.fn();
+    const text = await renderBanner({
+      phase: "pending",
+      restartPhase: "waiting-for-sessions",
+      waitingSessions: 2,
+      canAcceptNewWork: true,
+      onAbortSessionsAndResume,
+    });
+
+    expect(text).toContain("Abort sessions and resume with restart");
+    const button = findAllByTag(harness!.dom.container, "button")[0];
+    await harness!.act(async () => {
+      getReactProps(button)?.onClick?.();
+    });
+    expect(onAbortSessionsAndResume).toHaveBeenCalledOnce();
   });
 });

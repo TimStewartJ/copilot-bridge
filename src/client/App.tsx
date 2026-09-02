@@ -61,6 +61,7 @@ import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart
 import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
+import { useRestartBridgeMutation } from "./hooks/queries/useBridgeRuntimeStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
 import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
@@ -216,6 +217,7 @@ export default function App() {
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
   const { data: restartStatus, refetch: refetchRestartStatus } = useRestartStatusQuery();
+  const abortSessionsForRestart = useRestartBridgeMutation();
   useFavicon(settings?.favicon);
 
   // Buffer task:changed SSE invalidations during optimistic task mutations so
@@ -1697,6 +1699,9 @@ export default function App() {
           restartPhase={restartBanner.restartPhase}
           waitingSessions={restartBanner.waitingSessions}
           canAcceptNewWork={restartBanner.canAcceptNewWork}
+          abortingSessions={abortSessionsForRestart.isPending}
+          abortError={abortSessionsForRestart.error instanceof Error ? abortSessionsForRestart.error.message : null}
+          onAbortSessionsAndResume={() => abortSessionsForRestart.mutate({ force: true, resume: true })}
         />
       )}
       {backendStatusBanner.banner && (
