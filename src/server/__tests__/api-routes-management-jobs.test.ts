@@ -342,20 +342,26 @@ describe("management job API routes", () => {
       expect(res.body.error).toContain("validate must be a boolean");
     });
 
-    it("never silently reuses staging_deploy", async () => {
+    it("queues distinct deploy worktrees but rejects duplicates", async () => {
       const { app } = createManagementJobApiTestApp();
-      const stagingDir = makeRealStagingDir("deploy-strict");
+      const firstDir = makeRealStagingDir("deploy-first");
+      const secondDir = makeRealStagingDir("deploy-second");
 
       const first = await request(app)
         .post("/api/management-jobs")
-        .send({ type: "staging_deploy", input: { stagingDir, message: "first" } });
+        .send({ type: "staging_deploy", input: { stagingDir: firstDir, message: "first" } });
       expect(first.status).toBe(201);
 
       const second = await request(app)
         .post("/api/management-jobs")
-        .send({ type: "staging_deploy", input: { stagingDir, message: "second" } });
-      expect(second.status).toBe(409);
-      expect(second.body.activeJob.id).toBe(first.body.jobId);
+        .send({ type: "staging_deploy", input: { stagingDir: secondDir, message: "second" } });
+      expect(second.status).toBe(201);
+
+      const duplicate = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_deploy", input: { stagingDir: firstDir, message: "duplicate" } });
+      expect(duplicate.status).toBe(409);
+      expect(duplicate.body.activeJob.id).toBe(first.body.jobId);
     });
 
     it("rejects unknown types, missing fields, and non-object bodies", async () => {
@@ -409,9 +415,15 @@ describe("management job API routes", () => {
       // tell the server a cutover is queued.
       writeFileSync(signalFile, "{}");
       try {
-        const res = await request(app).post("/api/management-jobs").send({ type: "self_update" });
-        expect(res.status).toBe(409);
-        expect(res.body.error).toContain("restart is already pending");
+        const update = await request(app).post("/api/management-jobs").send({ type: "self_update" });
+        expect(update.status).toBe(409);
+        expect(update.body.error).toContain("restart is already pending");
+
+        const stagingDir = makeRealStagingDir("deploy-during-restart");
+        const deploy = await request(app)
+          .post("/api/management-jobs")
+          .send({ type: "staging_deploy", input: { stagingDir, message: "later" } });
+        expect(deploy.status).toBe(201);
       } finally {
         rmSync(signalFile, { force: true });
       }

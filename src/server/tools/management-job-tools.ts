@@ -7,6 +7,7 @@ import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-
 import { bridgeToolResult, getToolResultDisplayText, toolFailure, type BridgeToolNextAction } from "../tool-results.js";
 import type { ManagementJob } from "../management-job-store.js";
 import { formatManagementJobDeferGuidance } from "../management-job-tool-results.js";
+import { isRecord } from "../../shared/is-record.js";
 
 export interface RegisterManagementJobToolsOptions {
   hiddenTools?: ReadonlySet<string>;
@@ -21,6 +22,16 @@ function isStaleRunningJob(job: ManagementJob, now = Date.now()): boolean {
   if (!rawHeartbeat) return true;
   const heartbeatAt = Date.parse(rawHeartbeat);
   return !Number.isFinite(heartbeatAt) || now - heartbeatAt >= MANAGEMENT_JOB_STALE_AFTER_MS;
+}
+
+function isAwaitingDeployActivation(job: ManagementJob): boolean {
+  return job.type === "staging_deploy"
+    && job.status === "succeeded"
+    && isRecord(job.result)
+    && (
+      job.result.restartDeferred === true
+      || (job.result.restartQueued === true && job.result.restartActivated !== true)
+    );
 }
 
 function getJobResultSummary(job: ManagementJob): string | undefined {
@@ -50,6 +61,16 @@ function getManagementJobContract(job: ManagementJob): {
       toolNextAction: "respond",
       retryable: true,
       stalled: true,
+    };
+  }
+  if (isAwaitingDeployActivation(job)) {
+    return {
+      summary:
+        `Management job ${job.id} (${job.type}) is waiting for its shared batch restart to activate. `
+        + formatManagementJobDeferGuidance(job.id, "status"),
+      terminal: false,
+      toolNextAction: "wait",
+      retryable: false,
     };
   }
   if (TERMINAL_MANAGEMENT_JOB_STATUSES.has(job.status)) {

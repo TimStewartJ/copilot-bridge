@@ -12,6 +12,7 @@ import { createPreviewRebuildCoordination } from "./staging-preview-rebuild-coor
 
 export interface ManagementJobDispatchOptions {
   log?: (message: string) => void;
+  deferDeployRestart?: boolean;
 }
 
 export class ManagementJobExecutionError extends Error {
@@ -74,7 +75,10 @@ export async function dispatchManagementJob(
       });
       break;
     case "staging_deploy":
-      result = await runStagingDeployJob(stagingDeployInput(job.input), { log: options.log });
+      result = await runStagingDeployJob(stagingDeployInput(job.input), {
+        log: options.log,
+        deferDeployRestart: options.deferDeployRestart,
+      });
       break;
     default:
       throw new Error(`Unsupported management job type: ${(job as { type?: unknown }).type}`);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readSync, statSync, closeSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { isRecord } from "../shared/is-record.js";
 import type { DatabaseSync } from "./db.js";
 import { runImmediateTransaction } from "./db-transaction.js";
@@ -11,7 +11,7 @@ import {
   selectRetentionDeletions,
   type LogRetentionPolicy,
 } from "./log-retention.js";
-import { isPathAtOrUnder } from "./path-utils.js";
+import { isPathAtOrUnder, pathsEqual } from "./path-utils.js";
 
 export const MANAGEMENT_JOB_TYPES = ["self_update", "staging_preview", "staging_deploy"] as const;
 export const MANAGEMENT_JOB_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled"] as const;
@@ -42,6 +42,7 @@ export interface ManagementJobStore {
   list(options?: ManagementJobListOptions): ManagementJob[];
   listActive(types?: readonly ManagementJobType[]): ManagementJob[];
   claimNext(options?: ClaimNextManagementJobOptions): ManagementJob | null;
+  claimNextDeploy(options?: ClaimNextManagementJobOptions): ManagementJob | null;
   heartbeat(id: string, runnerPid?: number): void;
   succeed(id: string, result?: unknown): ManagementJob;
   fail(id: string, error: string, result?: unknown): ManagementJob;
@@ -118,7 +119,7 @@ export class ManagementJobNotCancellableError extends Error {
 }
 
 const ACTIVE_STATUSES: readonly ManagementJobStatus[] = ["queued", "running"];
-const EXCLUSIVE_DEPLOY_TYPES: readonly ManagementJobType[] = ["self_update", "staging_deploy"];
+const CUTOVER_TYPES: readonly ManagementJobType[] = ["self_update", "staging_deploy"];
 export const DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
 export const DEFAULT_MANAGEMENT_JOB_LIST_LIMIT = 50;
 export const MAX_MANAGEMENT_JOB_LIST_LIMIT = 200;
@@ -227,32 +228,53 @@ function findActiveExclusiveJob(db: DatabaseSync): ManagementJob | null {
   const row = db.prepare(`
     SELECT *
     FROM management_jobs
-    WHERE type IN (${placeholders(EXCLUSIVE_DEPLOY_TYPES)})
+    WHERE type IN (${placeholders(CUTOVER_TYPES)})
       AND status IN (${placeholders(ACTIVE_STATUSES)})
     ORDER BY createdAt ASC
     LIMIT 1
-  `).get(...EXCLUSIVE_DEPLOY_TYPES, ...ACTIVE_STATUSES) as ManagementJobRow | undefined;
+  `).get(...CUTOVER_TYPES, ...ACTIVE_STATUSES) as ManagementJobRow | undefined;
   return row ? rowToJob(row) : null;
 }
 
-function normalizedPreviewStagingDir(input: unknown): string {
+function normalizedStagingDir(input: unknown): string {
   const record = isRecord(input) ? input : {};
-  return String(record.stagingDir ?? "");
+  const value = String(record.stagingDir ?? "").trim();
+  return value ? resolve(value) : "";
 }
 
-function findActivePreviewJob(db: DatabaseSync, input: unknown): ManagementJob | null {
-  const stagingDir = normalizedPreviewStagingDir(input);
+function isDeployAwaitingActivation(job: ManagementJob): boolean {
+  return job.type === "staging_deploy"
+    && job.status === "succeeded"
+    && isRecord(job.result)
+    && (
+      job.result.restartDeferred === true
+      || (job.result.restartQueued === true && job.result.restartActivated !== true)
+    );
+}
+
+function findStagingJob(
+  db: DatabaseSync,
+  type: "staging_preview" | "staging_deploy",
+  input: unknown,
+): ManagementJob | null {
+  const stagingDir = normalizedStagingDir(input);
   if (!stagingDir) return null;
+  const statuses = type === "staging_deploy"
+    ? [...ACTIVE_STATUSES, "succeeded"] as const
+    : ACTIVE_STATUSES;
   const rows = db.prepare(`
     SELECT *
     FROM management_jobs
-    WHERE type = 'staging_preview'
-      AND status IN (${placeholders(ACTIVE_STATUSES)})
+    WHERE type = ?
+      AND status IN (${placeholders(statuses)})
     ORDER BY createdAt ASC
-  `).all(...ACTIVE_STATUSES) as unknown as ManagementJobRow[];
+  `).all(type, ...statuses) as unknown as ManagementJobRow[];
   const active = rows
     .map(rowToJob)
-    .find((job) => normalizedPreviewStagingDir(job.input) === stagingDir);
+    .find((job) => (
+      (job.status !== "succeeded" || isDeployAwaitingActivation(job))
+      && pathsEqual(normalizedStagingDir(job.input), stagingDir)
+    ));
   return active ?? null;
 }
 
@@ -336,11 +358,20 @@ export function createManagementJobStore(
   const store: ManagementJobStore = {
     enqueue(type, input = {}) {
       return runImmediateTransaction(db, () => {
-        if (EXCLUSIVE_DEPLOY_TYPES.includes(type)) {
+        if (type === "self_update") {
           const active = findActiveExclusiveJob(db);
           if (active) throw new ActiveManagementJobError(active);
+        } else if (type === "staging_deploy") {
+          const activeUpdate = db.prepare(`
+            SELECT * FROM management_jobs
+            WHERE type = 'self_update' AND status IN ('queued', 'running')
+            ORDER BY createdAt ASC LIMIT 1
+          `).get() as ManagementJobRow | undefined;
+          if (activeUpdate) throw new ActiveManagementJobError(rowToJob(activeUpdate));
+          const active = findStagingJob(db, type, input);
+          if (active) throw new ActiveManagementJobError(active);
         } else if (type === "staging_preview") {
-          const active = findActivePreviewJob(db, input);
+          const active = findStagingJob(db, type, input);
           if (active) throw new ActiveManagementJobError(active);
         }
 
@@ -439,6 +470,45 @@ export function createManagementJobStore(
               updatedAt = ?
           WHERE id = ?
             AND status IN ('queued', 'running')
+        `).run(runnerPid, timestamp, timestamp, timestamp, row.id);
+        const claimed = getJobRow(db, row.id);
+        if (!claimed) throw new Error(`Failed to read claimed management job ${row.id}`);
+        return rowToJob(claimed);
+      });
+    },
+
+    claimNextDeploy(claimOptions = {}) {
+      const staleAfterMs = claimOptions.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+      const cutoff = new Date(now().getTime() - staleAfterMs).toISOString();
+      const runnerPid = claimOptions.runnerPid ?? process.pid;
+      return runImmediateTransaction(db, () => {
+        const row = db.prepare(`
+          SELECT *
+          FROM management_jobs
+          WHERE type = 'staging_deploy'
+            AND (
+              (
+                status = 'queued'
+                AND NOT EXISTS (
+                  SELECT 1 FROM management_jobs AS active
+                  WHERE active.type IN ('self_update', 'staging_deploy')
+                    AND active.status = 'running'
+                    AND active.heartbeatAt IS NOT NULL
+                    AND active.heartbeatAt >= ?
+                )
+              )
+              OR (status = 'running' AND (heartbeatAt IS NULL OR heartbeatAt < ?))
+            )
+          ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, createdAt ASC
+          LIMIT 1
+        `).get(cutoff, cutoff) as ManagementJobRow | undefined;
+        if (!row) return null;
+        const timestamp = nowIso(now);
+        db.prepare(`
+          UPDATE management_jobs
+          SET status = 'running', runnerPid = ?, heartbeatAt = ?,
+              startedAt = COALESCE(startedAt, ?), updatedAt = ?
+          WHERE id = ? AND status IN ('queued', 'running')
         `).run(runnerPid, timestamp, timestamp, timestamp, row.id);
         const claimed = getJobRow(db, row.id);
         if (!claimed) throw new Error(`Failed to read claimed management job ${row.id}`);
