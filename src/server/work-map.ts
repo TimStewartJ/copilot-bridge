@@ -2,6 +2,7 @@ import type { Task } from "./task-store.js";
 import type {
   EnrichedPR,
   EnrichedWorkItem,
+  AssignedWorkItemsResult,
   WorkTrackingIdentity,
   WorkItemPullRequestLinksResult,
 } from "./providers/types.js";
@@ -19,6 +20,7 @@ export interface WorkMapTask {
 export interface WorkMapWorkItem extends EnrichedWorkItem {
   taskIds: string[];
   pullRequestKeys: string[];
+  assignedToCurrentUser: boolean;
 }
 
 export interface WorkMapPullRequest extends EnrichedPR {
@@ -30,6 +32,7 @@ export interface WorkMapPullRequest extends EnrichedPR {
 export interface WorkMapData {
   enabled: boolean;
   includeArchived: boolean;
+  assignedToMe: boolean;
   currentUser: WorkTrackingIdentity | null;
   org: string | null;
   project: string | null;
@@ -43,6 +46,7 @@ export interface WorkMapData {
 interface BuildWorkMapOptions {
   tasks: Task[];
   includeArchived?: boolean;
+  assignedToMe?: boolean;
   adoConfig?: { org: string; project: string };
   enrichWorkItems: (refs: Array<{ id: string; provider: "ado" }>) => Promise<EnrichedWorkItem[]>;
   enrichPullRequests: (refs: Array<{
@@ -61,6 +65,7 @@ interface BuildWorkMapOptions {
     }>,
   ) => Promise<WorkItemPullRequestLinksResult>;
   fetchCurrentUser: () => Promise<WorkTrackingIdentity | null>;
+  fetchAssignedWorkItemIds: () => Promise<AssignedWorkItemsResult>;
   now?: () => string;
 }
 
@@ -72,12 +77,34 @@ function uniqueSorted(values: Iterable<string>): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
+function uniqueInOrder(values: Iterable<string>): string[] {
+  return [...new Set(values)];
+}
+
+function buildPullRequestFallback(
+  config: { org: string; project: string },
+  pr: { repoId: string; repoName?: string; prId: number },
+): EnrichedPR {
+  return {
+    repoId: pr.repoId,
+    repoName: pr.repoName ?? null,
+    prId: pr.prId,
+    provider: "ado",
+    title: null,
+    status: null,
+    createdBy: null,
+    reviewerCount: 0,
+    url: `https://${config.org}.visualstudio.com/${config.project}/${pr.repoName ?? pr.repoId}/${pr.prId}`,
+  };
+}
+
 export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<WorkMapData> {
   const generatedAt = (options.now ?? (() => new Date().toISOString()))();
   if (!options.adoConfig) {
     return {
       enabled: false,
       includeArchived: options.includeArchived ?? false,
+      assignedToMe: options.assignedToMe ?? false,
       currentUser: null,
       org: null,
       project: null,
@@ -121,10 +148,20 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
 
   const explicitWorkItemIds = [...taskIdsByWorkItem.keys()];
   const explicitPullRequests = [...pullRequestRefs.values()];
-  const [relationshipResult, currentUser] = await Promise.all([
-    options.fetchRelationships(explicitWorkItemIds, explicitPullRequests),
+  const [assignedResult, currentUser] = await Promise.all([
+    options.assignedToMe
+      ? options.fetchAssignedWorkItemIds()
+      : Promise.resolve({ ids: [], warnings: [] }),
     options.fetchCurrentUser(),
   ]);
+  const workItemIdsForDiscovery = options.assignedToMe
+    ? uniqueInOrder([...assignedResult.ids, ...explicitWorkItemIds])
+    : uniqueSorted(explicitWorkItemIds);
+  const assignedWorkItemIds = new Set(assignedResult.ids);
+  const relationshipResult = await options.fetchRelationships(
+    workItemIdsForDiscovery,
+    explicitPullRequests,
+  );
 
   const pullRequestKeysByWorkItem = new Map<string, Set<string>>();
   const workItemIdsByPullRequest = new Map<string, Set<string>>();
@@ -163,23 +200,32 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     workItemIdsByPullRequest.set(key, workItemIds);
   }
 
-  const allWorkItemIds = uniqueSorted([
-    ...explicitWorkItemIds,
+  const allWorkItemIds = uniqueInOrder([
+    ...workItemIdsForDiscovery,
     ...relationshipResult.links.map((link) => link.workItemId),
   ]);
   const allPullRequestRefs = [...pullRequestRefs.values()];
-  const [enrichedWorkItems, enrichedPullRequests] = await Promise.all([
+  const pullRequestRefsForEnrichment = options.assignedToMe
+    ? allPullRequestRefs.filter((pr) =>
+        (taskIdsByPullRequest.get(prKey(pr.repoId, pr.prId))?.size ?? 0) > 0)
+    : allPullRequestRefs;
+  const [enrichedWorkItems, enrichedPullRequestDetails] = await Promise.all([
     options.enrichWorkItems(allWorkItemIds.map((id) => ({ id, provider: "ado" as const }))),
-    options.enrichPullRequests(allPullRequestRefs),
+    options.enrichPullRequests(pullRequestRefsForEnrichment),
   ]);
+  const enrichedPullRequestByKey = new Map(
+    enrichedPullRequestDetails.map((pr) => [prKey(pr.repoId, pr.prId), pr]),
+  );
 
   const workItems = enrichedWorkItems.map((item) => ({
     ...item,
     taskIds: uniqueSorted(taskIdsByWorkItem.get(item.id) ?? []),
     pullRequestKeys: uniqueSorted(pullRequestKeysByWorkItem.get(item.id) ?? []),
+    assignedToCurrentUser: assignedWorkItemIds.has(item.id),
   }));
-  const pullRequests = enrichedPullRequests.map((pr) => {
-    const key = prKey(pr.repoId, pr.prId);
+  const pullRequests = allPullRequestRefs.map((ref) => {
+    const key = prKey(ref.repoId, ref.prId);
+    const pr = enrichedPullRequestByKey.get(key) ?? buildPullRequestFallback(options.adoConfig!, ref);
     return {
       ...pr,
       key,
@@ -200,6 +246,7 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
   return {
     enabled: true,
     includeArchived: options.includeArchived ?? false,
+    assignedToMe: options.assignedToMe ?? false,
     currentUser,
     org: options.adoConfig.org,
     project: options.adoConfig.project,
@@ -207,6 +254,6 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     tasks,
     workItems,
     pullRequests,
-    warnings: relationshipResult.warnings,
+    warnings: [...assignedResult.warnings, ...relationshipResult.warnings],
   };
 }

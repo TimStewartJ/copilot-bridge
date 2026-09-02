@@ -4,6 +4,7 @@ import {
   Archive,
   ArrowRight,
   BriefcaseBusiness,
+  Plus,
   RefreshCw,
   Search,
   Workflow,
@@ -20,6 +21,11 @@ import EmptyState from "./shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
 import { PullRequestPreviewCard, WorkItemPreviewCard } from "./WorkReferenceCards";
+import {
+  DEFAULT_WORK_MAP_FILTERS,
+  loadWorkMapFilters,
+  saveWorkMapFilters,
+} from "../work-map-filter-state";
 
 interface DashboardWorkMapProps {
   active: boolean;
@@ -30,7 +36,10 @@ interface DashboardWorkMapProps {
   onRefresh: () => Promise<unknown>;
   includeArchived: boolean;
   onIncludeArchivedChange: (includeArchived: boolean) => void;
+  assignedToMeOnly: boolean;
+  onAssignedToMeChange: (assignedToMeOnly: boolean) => void;
   onSelectTask: (taskId: string) => void;
+  onCreateTaskForWorkItem: (workItem: WorkMapWorkItem) => Promise<void>;
 }
 
 interface WorkItemCluster {
@@ -51,16 +60,6 @@ const VISIBLE_RELATIONSHIP_STEP = 20;
 
 function isClosedWorkItem(item: WorkMapWorkItem): boolean {
   return item.state ? CLOSED_WORK_ITEM_STATES.has(item.state.toLowerCase()) : false;
-}
-
-function normalizedIdentity(value: string | null | undefined): string {
-  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
-}
-
-function isAssignedToCurrentUser(item: WorkMapWorkItem, currentUser: WorkMapData["currentUser"]): boolean {
-  const assignedTo = normalizedIdentity(item.assignedTo);
-  const displayName = normalizedIdentity(currentUser?.displayName);
-  return Boolean(assignedTo && displayName && assignedTo === displayName);
 }
 
 function taskTone(task: WorkMapTask): string {
@@ -242,13 +241,17 @@ export default function DashboardWorkMap({
   onRefresh,
   includeArchived,
   onIncludeArchivedChange,
+  assignedToMeOnly,
+  onAssignedToMeChange,
   onSelectTask,
+  onCreateTaskForWorkItem,
 }: DashboardWorkMapProps) {
-  const [search, setSearch] = useState("");
-  const [assignedToMeOnly, setAssignedToMeOnly] = useState(false);
-  const [openAdoOnly, setOpenAdoOnly] = useState(false);
-  const [gapsOnly, setGapsOnly] = useState(false);
+  const [search, setSearch] = useState(() => loadWorkMapFilters().search);
+  const [openAdoOnly, setOpenAdoOnly] = useState(() => loadWorkMapFilters().openAdoOnly);
+  const [gapsOnly, setGapsOnly] = useState(() => loadWorkMapFilters().gapsOnly);
   const [visibleRelationshipCount, setVisibleRelationshipCount] = useState(VISIBLE_RELATIONSHIP_STEP);
+  const [creatingTaskForWorkItemId, setCreatingTaskForWorkItemId] = useState<string | null>(null);
+  const [createTaskError, setCreateTaskError] = useState<string | null>(null);
 
   const model = useMemo(() => {
     if (!data) {
@@ -293,7 +296,7 @@ export default function DashboardWorkMap({
 
   const normalizedSearch = search.trim().toLowerCase();
   const visibleClusters = model.clusters.filter((cluster) => {
-    if (assignedToMeOnly && !isAssignedToCurrentUser(cluster.workItem, data?.currentUser ?? null)) {
+    if (assignedToMeOnly && !cluster.workItem.assignedToCurrentUser) {
       return false;
     }
     if (openAdoOnly && isClosedWorkItem(cluster.workItem)
@@ -332,6 +335,38 @@ export default function DashboardWorkMap({
   useEffect(() => {
     setVisibleRelationshipCount(VISIBLE_RELATIONSHIP_STEP);
   }, [assignedToMeOnly, gapsOnly, includeArchived, normalizedSearch, openAdoOnly]);
+
+  useEffect(() => {
+    saveWorkMapFilters({
+      search,
+      assignedToMeOnly,
+      openAdoOnly,
+      gapsOnly,
+      includeArchived,
+    });
+  }, [assignedToMeOnly, gapsOnly, includeArchived, openAdoOnly, search]);
+
+  const hasActiveFilters = Boolean(
+    search || assignedToMeOnly || openAdoOnly || gapsOnly || includeArchived,
+  );
+  const resetFilters = () => {
+    setSearch(DEFAULT_WORK_MAP_FILTERS.search);
+    onAssignedToMeChange(DEFAULT_WORK_MAP_FILTERS.assignedToMeOnly);
+    setOpenAdoOnly(DEFAULT_WORK_MAP_FILTERS.openAdoOnly);
+    setGapsOnly(DEFAULT_WORK_MAP_FILTERS.gapsOnly);
+    onIncludeArchivedChange(DEFAULT_WORK_MAP_FILTERS.includeArchived);
+  };
+  const createTaskForWorkItem = async (workItem: WorkMapWorkItem) => {
+    setCreatingTaskForWorkItemId(workItem.id);
+    setCreateTaskError(null);
+    try {
+      await onCreateTaskForWorkItem(workItem);
+    } catch (error) {
+      setCreateTaskError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingTaskForWorkItemId(null);
+    }
+  };
 
   if (!active) return null;
 
@@ -397,6 +432,11 @@ export default function DashboardWorkMap({
               </div>
             </div>
           )}
+          {createTaskError && (
+            <div className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error" role="alert">
+              Could not create the Bridge task: {createTaskError}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <MetricCard value={visibleMetrics.workItems} label="ADO work items" />
@@ -424,12 +464,11 @@ export default function DashboardWorkMap({
               <button
                 type="button"
                 aria-pressed={assignedToMeOnly}
-                disabled={!data.currentUser}
                 title={data.currentUser
                   ? `Show work assigned to ${data.currentUser.displayName}`
-                  : "ADO did not return the signed-in user"}
-                onClick={() => setAssignedToMeOnly((value) => !value)}
-                className={`rounded-md px-2.5 py-2 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  : "Show work assigned to the signed-in ADO user"}
+                onClick={() => onAssignedToMeChange(!assignedToMeOnly)}
+                className={`rounded-md px-2.5 py-2 text-[11px] font-medium transition-colors ${
                   assignedToMeOnly ? UI.chip.selected : "text-text-muted hover:bg-bg-hover"
                 }`}
               >
@@ -465,6 +504,15 @@ export default function DashboardWorkMap({
               >
                 Archived tasks
               </button>
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="rounded-md px-2.5 py-2 text-[11px] font-medium text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary"
+                >
+                  Reset
+                </button>
+              )}
             </div>
           </div>
 
@@ -526,9 +574,18 @@ export default function DashboardWorkMap({
                             onSelectTask={onSelectTask}
                           />
                         )) : (
-                          <div className="rounded-lg border border-dashed border-warning/40 bg-warning/5 px-3 py-5 text-center text-xs text-warning">
-                            No Bridge task
-                          </div>
+                          <button
+                            type="button"
+                            aria-label={`Create Bridge task for work item ${cluster.workItem.id}`}
+                            disabled={creatingTaskForWorkItemId !== null}
+                            onClick={() => { void createTaskForWorkItem(cluster.workItem); }}
+                            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-warning/40 bg-warning/5 px-3 py-5 text-center text-xs font-medium text-warning transition-colors hover:border-warning/60 hover:bg-warning/10 disabled:cursor-wait disabled:opacity-50"
+                          >
+                            <Plus size={13} />
+                            {creatingTaskForWorkItemId === cluster.workItem.id
+                              ? "Creating Bridge task..."
+                              : "No Bridge task - create one"}
+                          </button>
                         )}
                       </div>
                     </div>

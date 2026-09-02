@@ -13,7 +13,8 @@ import DashboardWorkMap from "./DashboardWorkMap";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { dashboardChecklistCountClass } from "./dashboard-checklist-helpers";
-import type { FeedCard, Task, TaskGroup } from "../api";
+import type { FeedCard, Task, TaskGroup, WorkMapWorkItem } from "../api";
+import { loadWorkMapFilters } from "../work-map-filter-state";
 
 const ACTIVE_FEED_PAGE_SIZE = 50;
 const RESOLVED_FEED_PAGE_SIZE = 50;
@@ -70,6 +71,7 @@ function flattenFeedPages(data: { pages: Array<{ cards: FeedCard[] }> } | undefi
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
+  onCreateTaskForWorkItem: (workItem: WorkMapWorkItem) => Promise<void>;
   onSelectSession: (sessionId: string, taskId?: string) => void;
   onStartPromptSession: (
     prompt: string,
@@ -115,6 +117,7 @@ function DashboardSkeleton() {
 
 export default function Dashboard({
   onSelectTask,
+  onCreateTaskForWorkItem,
   onSelectSession,
   onStartPromptSession,
   tasks = [],
@@ -127,7 +130,12 @@ export default function Dashboard({
   const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
   const checklist = useDashboardChecklist(data);
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
-  const [includeArchivedWorkMap, setIncludeArchivedWorkMap] = useState(false);
+  const [includeArchivedWorkMap, setIncludeArchivedWorkMap] = useState(
+    () => loadWorkMapFilters().includeArchived,
+  );
+  const [assignedToMeWorkMap, setAssignedToMeWorkMap] = useState(
+    () => loadWorkMapFilters().assignedToMeOnly,
+  );
   const [feedFilter, setFeedFilter] = useState<FeedFilterState>({ kind: "", keyPrefix: "" });
   const requestedActiveTab = getRememberedDashboardTabFromPathname(location.pathname);
   const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
@@ -138,6 +146,7 @@ export default function Dashboard({
   const workMapQuery = useWorkMapQuery(
     workMapEnabled && activeTab === "work-map",
     includeArchivedWorkMap,
+    assignedToMeWorkMap,
   );
   const handleFeedFilterChange = useCallback((patch: Partial<FeedFilterState>) => {
     setFeedFilter((prev) => ({ ...prev, ...patch }));
@@ -292,7 +301,10 @@ export default function Dashboard({
             onRefresh={workMapQuery.refresh}
             includeArchived={includeArchivedWorkMap}
             onIncludeArchivedChange={setIncludeArchivedWorkMap}
+            assignedToMeOnly={assignedToMeWorkMap}
+            onAssignedToMeChange={setAssignedToMeWorkMap}
             onSelectTask={onSelectTask}
+            onCreateTaskForWorkItem={onCreateTaskForWorkItem}
           />
         </div>
       </PullToRefresh>

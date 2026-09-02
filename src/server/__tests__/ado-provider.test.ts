@@ -492,4 +492,29 @@ describe("AdoProvider", () => {
     await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Tim Stewart" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("loads and caches work item IDs assigned to the authenticated ADO user", async () => {
+    execSyncMock.mockImplementation((command) =>
+      command.includes("--wiql") ? "[12,34,12]\n" : "token\n");
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    await expect(provider.fetchAssignedWorkItemIds()).resolves.toEqual({
+      ids: ["12", "34"],
+      warnings: [],
+    });
+    await expect(provider.fetchAssignedWorkItemIds()).resolves.toEqual({
+      ids: ["12", "34"],
+      warnings: [],
+    });
+    expect(execSyncMock).toHaveBeenCalledTimes(1);
+    expect(execSyncMock.mock.calls[0]?.[0]).toContain("WHERE [System.AssignedTo] = @Me");
+    expect(execSyncMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Resolved'");
+    expect(execSyncMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Removed'");
+    expect(execSyncMock.mock.calls[0]?.[1]).toMatchObject({
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    expect(getFetchMock()).not.toHaveBeenCalled();
+  });
 });

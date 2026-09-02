@@ -223,6 +223,44 @@ describe("Task routes", () => {
     expect(get.status).toBe(404);
   });
 
+  it("POST /api/tasks creates a task with an initial work item link", async () => {
+    const res = await request(app)
+      .post("/api/tasks")
+      .send({
+        title: "New Task",
+        workItem: { workItemId: "37655015", provider: "ado" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.task).toEqual(expect.objectContaining({
+      title: "New Task",
+      workItems: [{ id: "37655015", provider: "ado" }],
+      sessionIds: [],
+    }));
+  });
+
+  it("POST /api/tasks does not leave an empty task when the initial link fails", async () => {
+    const beforeIds = ctx.taskStore.listTasks().map((task) => task.id);
+    const linkSpy = vi.spyOn(ctx.taskStore, "linkWorkItem")
+      .mockImplementationOnce(() => {
+        throw new Error("link failed");
+      });
+    try {
+      const res = await request(app)
+        .post("/api/tasks")
+        .send({
+          title: "New Task",
+          workItem: { workItemId: "37655015", provider: "ado" },
+        });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("link failed");
+      expect(ctx.taskStore.listTasks().map((task) => task.id)).toEqual(beforeIds);
+    } finally {
+      linkSpy.mockRestore();
+    }
+  });
+
   it("POST /api/tasks/:id/link links a work item", async () => {
     const create = await request(app)
       .post("/api/tasks")

@@ -146,6 +146,7 @@ describe("DashboardTabs ARIA wiring", () => {
           data: {
             enabled: true,
             includeArchived: false,
+            assignedToMe: false,
             currentUser: { displayName: "Tim Stewart" },
             org: "msazure",
             project: "One",
@@ -161,7 +162,10 @@ describe("DashboardTabs ARIA wiring", () => {
           onRefresh: vi.fn(async () => undefined),
           includeArchived: false,
           onIncludeArchivedChange: vi.fn(),
+          assignedToMeOnly: false,
+          onAssignedToMeChange: vi.fn(),
           onSelectTask: vi.fn(),
+          onCreateTaskForWorkItem: vi.fn(async () => undefined),
         }),
       ),
     );

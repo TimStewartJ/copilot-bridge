@@ -38,6 +38,7 @@ import {
   type TaskDeletionErrorBody,
   type TaskDeletionPreview,
   type TaskGroup,
+  type WorkMapWorkItem,
   type CreateSessionOptions,
 } from "./api";
 import { useReadState } from "./useReadState";
@@ -1112,6 +1113,26 @@ export default function App() {
     }
   };
 
+  const handleCreateTaskForWorkItem = useCallback(async (workItem: WorkMapWorkItem) => {
+    try {
+      const task = await createTask("New Task", {
+        workItem: {
+          workItemId: workItem.id,
+          provider: workItem.provider,
+        },
+      });
+      queryClient.setQueryData<Task[]>(queryKeys.tasks, (current) => [
+        task,
+        ...(current ?? []).filter((candidate) => candidate.id !== task.id),
+      ]);
+      queryClient.setQueryData(queryKeys.task(task.id), task);
+      navigate(getTaskDraftSessionPath(task.id));
+    } catch (error) {
+      console.error(`Failed to create task for work item ${workItem.id}:`, error);
+      throw error;
+    }
+  }, [navigate, queryClient]);
+
   const handleUpdateTask = async (
     taskId: string,
     updates: Parameters<typeof patchTask>[1],
@@ -1887,6 +1908,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
@@ -1899,6 +1921,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
@@ -1912,6 +1935,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
@@ -1925,6 +1949,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
@@ -1938,6 +1963,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
