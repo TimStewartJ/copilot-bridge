@@ -28,6 +28,9 @@ export function queuedManagementJobResult(job: ManagementJob, action: string) {
   const restartNote = job.type === "self_update" || job.type === "staging_deploy"
     ? " For deploy/update jobs, the defer is only a scheduled follow-up; after creating it, end your turn so restart cutover is not blocked."
     : "";
+  const batchNote = job.type === "staging_deploy"
+    ? " The runner combines up to 10 queued deploys into one restart."
+    : "";
   return bridgeToolResult({
     success: true,
     jobId: job.id,
@@ -37,6 +40,6 @@ export function queuedManagementJobResult(job: ManagementJob, action: string) {
     retryable: false,
     summary:
       `${action} queued as management job ${job.id}. ` +
-      `The launcher-supervised runner will process it in the background. ${formatManagementJobDeferGuidance(job.id)}${restartNote}`,
+      `The launcher-supervised runner will process it in the background.${batchNote} ${formatManagementJobDeferGuidance(job.id)}${restartNote}`,
   });
 }

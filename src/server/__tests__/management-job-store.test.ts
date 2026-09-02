@@ -14,6 +14,7 @@ import {
   type ManagementJobDispatchOptions,
 } from "../management-job-dispatch.js";
 import {
+  MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
   runClaimedManagementJob,
   runManagementJobRunnerLoop,
 } from "../../management-job-runner.js";
@@ -89,6 +90,38 @@ describe("management job store", () => {
       const reclaimed = store.claimNext({ runnerPid: 2, staleAfterMs: 1_000 });
       expect(reclaimed?.id).toBe(job.id);
       expect(reclaimed?.runnerPid).toBe(2);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("queues distinct deploy worktrees and reserves each until activation", () => {
+    const { db, store, dataDir } = createStore("deploy-queue");
+    try {
+      const first = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "a"), message: "a" });
+      const second = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "b"), message: "b" });
+      expect(store.listActive(["staging_deploy"])).toHaveLength(2);
+      expect(() => store.enqueue("staging_deploy", {
+        stagingDir: join(dataDir, "a"),
+        message: "duplicate",
+      })).toThrow(ActiveManagementJobError);
+
+      store.succeed(first.id, {
+        restartDeferred: true,
+        releaseCandidate: {
+          id: "release-a",
+          root: join(dataDir, "release-a"),
+          commitSha: "commit-a",
+          source: "staging_deploy",
+          dependencyHash: "deps-a",
+        },
+      });
+      expect(() => store.enqueue("staging_deploy", {
+        stagingDir: join(dataDir, "a"),
+        message: "still reserved",
+      })).toThrow(ActiveManagementJobError);
+      expect(store.claimNextDeploy()?.id).toBe(second.id);
     } finally {
       db.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -430,6 +463,110 @@ describe("management job runner", () => {
     }
   });
 
+  it("drains deploys into one restart and finalizes them after activation", async () => {
+    const { db, store, dataDir } = createStore("runner-deploy-batch");
+    try {
+      const jobs = [1, 2, 3].map((index) => store.enqueue("staging_deploy", {
+        stagingDir: join(dataDir, `deploy-${index}`),
+        message: `deploy ${index}`,
+      }));
+      const queueRestart = vi.fn();
+      const cleanupDeploy = vi.fn(async () => {});
+      const dispatch = vi.fn(async (job: ManagementJob, options: ManagementJobDispatchOptions) => {
+        expect(options.deferDeployRestart).toBe(true);
+        const index = jobs.findIndex((candidate) => candidate.id === job.id) + 1;
+        return {
+          restartDeferred: true,
+          releaseCandidate: {
+            id: `release-${index}`,
+            root: join(dataDir, `release-${index}`),
+            commitSha: `commit-${index}`,
+            source: "staging_deploy",
+            dependencyHash: `deps-${index}`,
+          },
+        };
+      });
+
+      await runManagementJobRunnerLoop({
+        store,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch,
+        deployBatchDataDir: dataDir,
+        queueDeployRestart: queueRestart,
+        getActiveRelease: () => null,
+      });
+
+      expect(dispatch).toHaveBeenCalledTimes(3);
+      expect(queueRestart).toHaveBeenCalledOnce();
+      expect(queueRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-3" }));
+      expect(store.get(jobs[0].id)?.result).toMatchObject({ restartQueued: true, deployBatchSize: 3 });
+
+      let stopping = false;
+      await runManagementJobRunnerLoop({
+        store,
+        pollIntervalMs: 1,
+        log: () => {},
+        shouldStop: () => stopping,
+        deployBatchDataDir: dataDir,
+        cleanupDeploy,
+        getActiveRelease: () => {
+          stopping = true;
+          return {
+            id: "release-3",
+            root: join(dataDir, "release-3"),
+            commitSha: "commit-3",
+            source: "staging_deploy",
+            dependencyHash: "deps-3",
+          };
+        },
+      });
+
+      expect(cleanupDeploy).toHaveBeenCalledTimes(3);
+      expect(store.get(jobs[0].id)?.result).toMatchObject({ restartActivated: true });
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("caps each deploy batch and leaves later jobs queued", async () => {
+    const { db, store, dataDir } = createStore("runner-deploy-cap");
+    try {
+      const jobs = Array.from({ length: MANAGEMENT_DEPLOY_BATCH_MAX_JOBS + 1 }, (_, index) =>
+        store.enqueue("staging_deploy", {
+          stagingDir: join(dataDir, `deploy-${index}`),
+          message: `deploy ${index}`,
+        }));
+      const queueRestart = vi.fn();
+
+      await runManagementJobRunnerLoop({
+        store,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch: async (_job, options) => ({
+          restartDeferred: options.deferDeployRestart,
+          releaseCandidate: {
+            id: "release",
+            root: join(dataDir, "release"),
+            commitSha: "commit",
+            source: "staging_deploy",
+            dependencyHash: "deps",
+          },
+        }),
+        deployBatchDataDir: dataDir,
+        queueDeployRestart: queueRestart,
+        getActiveRelease: () => null,
+      });
+
+      expect(queueRestart).toHaveBeenCalledOnce();
+      expect(store.get(jobs.at(-1)!.id)?.status).toBe("queued");
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("prunes retention after a job but skips it when stepping aside for a restart", async () => {
     const continued = createStore("runner-retention");
     try {
@@ -555,7 +692,22 @@ describe("management job status tool", () => {
       });
 
       const deploy = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "deploy"), message: "Deploy" });
-      store.succeed(deploy.id, { success: true, commitSha: "abc123" });
+      store.succeed(deploy.id, {
+        success: true,
+        commitSha: "abc123",
+        restartQueued: true,
+        restartActivated: false,
+        releaseCandidate: {
+          id: "release",
+          root: join(dataDir, "release"),
+          commitSha: "abc123",
+          source: "staging_deploy",
+          dependencyHash: "deps",
+        },
+      });
+      const awaiting = await tool.handler({ jobId: deploy.id }, {} as any);
+      expect(awaiting).toMatchObject({ terminal: false, toolNextAction: "wait" });
+      store.succeed(deploy.id, { success: true, commitSha: "abc123", restartActivated: true });
       const deployed = await tool.handler({ jobId: deploy.id }, {} as any);
       expect(deployed).toMatchObject({
         success: true,

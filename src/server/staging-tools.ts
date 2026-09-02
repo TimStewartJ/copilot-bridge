@@ -160,6 +160,13 @@ async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise
   await cleanupPreviewTarget(stagingDir);
 }
 
+export async function cleanupCompletedStagingDeploy(stagingDir: string): Promise<void> {
+  const prefix = basename(stagingDir);
+  await cleanupPreviewArtifactsForStagingDir(stagingDir);
+  await removeWorktree(stagingDir, `staging/${prefix}`);
+  deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+}
+
 async function cleanupPreviewResources(
   prefix: string,
   options: { removeDist?: boolean; removeData?: boolean } = {},
@@ -932,6 +939,7 @@ export interface StagingJobRunOptions {
   registerInProcess?: boolean;
   seedPreviewData?: (stagingDir: string) => void;
   rebuildCoordination?: PreviewRebuildCoordination;
+  deferDeployRestart?: boolean;
 }
 
 export async function runStagingPreviewJob(
@@ -1802,40 +1810,43 @@ async function runStagingDeployJobImpl(
 
   await unstashProduction();
 
-  if (!existsSync(PRODUCTION_DATA_DIR)) mkdirSync(PRODUCTION_DATA_DIR, { recursive: true });
-  try {
-    writeRestartSignalOrRollback(SIGNAL_FILE, "deploy", "staging_deploy", releaseCandidate);
-  } catch (err) {
-    const failureMessage = err instanceof Error ? err.message : String(err);
-    writeLog(`Restart signal failed after deploy: ${failureMessage}`);
-    let cleanupNote = "";
+  const restartDeferred = options.deferDeployRestart === true;
+  if (!restartDeferred) {
+    if (!existsSync(PRODUCTION_DATA_DIR)) mkdirSync(PRODUCTION_DATA_DIR, { recursive: true });
     try {
-      await cleanupPreviewArtifactsForStagingDir(stagingDir);
-      await removeWorktree(stagingDir, branch);
-      deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
-      writeLog("Staging worktree cleaned up after restart signal failure");
-    } catch (cleanupErr) {
-      cleanupNote = `\n\nPost-deploy cleanup also failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`;
-      writeLog(`Warning: post-deploy cleanup failed after restart signal failure: ${cleanupErr}`);
+      writeRestartSignalOrRollback(SIGNAL_FILE, "deploy", "staging_deploy", releaseCandidate);
+    } catch (err) {
+      const failureMessage = err instanceof Error ? err.message : String(err);
+      writeLog(`Restart signal failed after deploy: ${failureMessage}`);
+      let cleanupNote = "";
+      try {
+        await cleanupPreviewArtifactsForStagingDir(stagingDir);
+        await removeWorktree(stagingDir, branch);
+        deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+        writeLog("Staging worktree cleaned up after restart signal failure");
+      } catch (cleanupErr) {
+        cleanupNote = `\n\nPost-deploy cleanup also failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`;
+        writeLog(`Warning: post-deploy cleanup failed after restart signal failure: ${cleanupErr}`);
+      }
+      return stagingFailure(
+        "Deployment pushed but restart signal failed.",
+        `Deployment ${commitSha} was pushed to ${prodBranch}, but the launcher restart signal could not be written. Manual restart is required.\n\n${failureMessage}${cleanupNote}`,
+        {
+          sessionLog: `Deployment ${commitSha} was pushed, but writing ${SIGNAL_FILE} failed: ${failureMessage}${cleanupNote}`,
+          toolTelemetry: { stagingDir, branch, prodBranch, commitSha, signalFile: SIGNAL_FILE },
+        },
+      );
     }
-    return stagingFailure(
-      "Deployment pushed but restart signal failed.",
-      `Deployment ${commitSha} was pushed to ${prodBranch}, but the launcher restart signal could not be written. Manual restart is required.\n\n${failureMessage}${cleanupNote}`,
-      {
-        sessionLog: `Deployment ${commitSha} was pushed, but writing ${SIGNAL_FILE} failed: ${failureMessage}${cleanupNote}`,
-        toolTelemetry: { stagingDir, branch, prodBranch, commitSha, signalFile: SIGNAL_FILE },
-      },
-    );
+    writeLog("Restart signal sent");
   }
-  writeLog("Restart signal sent");
 
-  try {
-    await cleanupPreviewArtifactsForStagingDir(stagingDir);
-    await removeWorktree(stagingDir, branch);
-    deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
-    writeLog("Staging worktree cleaned up");
-  } catch (err) {
-    writeLog(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
+  if (!restartDeferred) {
+    try {
+      await cleanupCompletedStagingDeploy(stagingDir);
+      writeLog("Staging worktree cleaned up");
+    } catch (err) {
+      writeLog(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
+    }
   }
 
   const deployElapsedMs = Date.now() - deployStartedAt;
@@ -1845,10 +1856,13 @@ async function runStagingDeployJobImpl(
     commitSha,
     elapsedMs: deployElapsedMs,
     validationElapsedMs,
+    ...(restartDeferred ? { restartDeferred: true, releaseCandidate } : {}),
     terminal: true,
     toolNextAction: "respond",
     retryable: false,
-    summary: `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent; stop issuing tools so cutover can proceed.`,
+    summary: restartDeferred
+      ? `Deployed ${commitSha}; restart is deferred until the current deploy batch finishes.`
+      : `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent; stop issuing tools so cutover can proceed.`,
   });
 }
 
@@ -2000,6 +2014,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       "Supports retries: if a previous deploy failed due to rebase conflicts, resolve them in the staging worktree " +
       "(git rebase <prodBranch>, fix conflicts, git add + git rebase --continue) then call staging_deploy again — " +
       "it will skip the commit step and proceed to merge. " +
+      "The runner combines up to 10 queued deploys into one restart. " +
       "Returns immediately with a management job id and Bridge-monitored background status. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
@@ -2113,9 +2128,6 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
         toolTelemetry: { stagingDir },
       },
     );
-  }
-  if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
-    return stagingRestartPendingFailure(stagingDir, "deploying");
   }
   const store = ctx.managementJobStore;
   if (!store) {

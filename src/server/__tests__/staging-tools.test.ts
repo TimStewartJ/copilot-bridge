@@ -1197,6 +1197,47 @@ describe("staging tools", () => {
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "deps-hash"))).toBe(false);
   });
 
+  it("defers restart and cleanup for a batched deploy", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = join(createTempDir("bridge-stage-parent-"), "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A" || cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy\n";
+      if (isStashListCommand(cmd)) return "";
+      if (isStashPushCommand(cmd)) return "No local changes to save\n";
+      if (cmd === "git pull --rebase origin main") return "";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd.startsWith("git diff ")) return "";
+      if (cmd === "git rev-parse --short HEAD") return "1111111\n";
+      if (cmd === "git push origin main") return "";
+      throw new Error(`Unexpected command: ${cmd}`);
+    });
+
+    const result = await mod.runStagingDeployJob(
+      { stagingDir, message: "batch" },
+      { deferDeployRestart: true },
+    ) as any;
+
+    expect(result).toMatchObject({
+      success: true,
+      restartDeferred: true,
+      releaseCandidate: { commitSha: "1111111111111111111111111111111111111111" },
+    });
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(
+      `git worktree remove "${stagingDir}" --force`,
+    );
+  });
+
   it("uses a matching preview validation stamp to run smoke-only deploy validation", async () => {
     const mod = await loadStagingToolsModule();
     const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;

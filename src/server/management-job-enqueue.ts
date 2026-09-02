@@ -142,7 +142,10 @@ function applyPreflightGuards(ctx: AppContext, type: ManagementJobType): void {
   // Disk-derived so a cutover queued by another process (the management-job
   // runner triggers the restart, but the server is what gets restarted) is
   // visible here. A process-local isRestartPending() is not.
-  if (isRestartAlreadyInFlight(ctx.runtimePaths?.dataDir ?? PRODUCTION_DATA_DIR)) {
+  if (
+    type !== "staging_deploy"
+    && isRestartAlreadyInFlight(ctx.runtimePaths?.dataDir ?? PRODUCTION_DATA_DIR)
+  ) {
     throw new ManagementJobEnqueueError("A restart is already pending.", 409);
   }
 }
