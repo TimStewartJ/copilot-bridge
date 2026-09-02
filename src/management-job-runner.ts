@@ -299,6 +299,16 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
     if (nextHold) {
       if (nextHold !== holdReason) log(`Holding queued jobs: ${nextHold}`);
       holdReason = nextHold;
+      const previewJob = options.store.claimNext({
+        runnerPid: process.pid,
+        staleAfterMs,
+        types: ["staging_preview"],
+      });
+      if (previewJob) {
+        await runClaimedManagementJob(options.store, previewJob, options);
+        await pruneManagementJobArtifacts(options.store, log);
+        continue;
+      }
       await wait(pollIntervalMs);
       continue;
     }

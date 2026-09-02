@@ -96,6 +96,21 @@ describe("management job store", () => {
     }
   });
 
+  it("claims only requested job types", () => {
+    const { db, store, dataDir } = createStore("claim-types");
+    try {
+      const update = store.enqueue("self_update", {});
+      const preview = store.enqueue("staging_preview", { stagingDir: "preview" });
+
+      expect(store.claimNext({ types: ["staging_preview"] })?.id).toBe(preview.id);
+      expect(store.get(update.id)?.status).toBe("queued");
+      expect(store.claimNext({ types: [] })).toBeNull();
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("queues distinct deploy worktrees and reserves each until activation", () => {
     const { db, store, dataDir } = createStore("deploy-queue");
     try {
@@ -400,6 +415,35 @@ describe("management job runner", () => {
     } finally {
       failure.db.close();
       rmSync(failure.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs preview jobs while restart-capable jobs are held", async () => {
+    const { db, store, dataDir } = createStore("runner-preview-during-restart");
+    try {
+      const update = store.enqueue("self_update", {});
+      const preview = store.enqueue("staging_preview", { stagingDir: "preview" });
+      let stopping = false;
+
+      await runManagementJobRunnerLoop({
+        store,
+        heartbeatIntervalMs: 10,
+        pollIntervalMs: 1,
+        getHoldReason: () => "a restart is in flight",
+        shouldStop: () => stopping,
+        log: () => {},
+        dispatch: async (job) => {
+          expect(job.id).toBe(preview.id);
+          stopping = true;
+          return { success: true };
+        },
+      });
+
+      expect(store.get(preview.id)?.status).toBe("succeeded");
+      expect(store.get(update.id)?.status).toBe("queued");
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 

@@ -72,6 +72,7 @@ export interface CreateManagementJobStoreOptions {
 export interface ClaimNextManagementJobOptions {
   runnerPid?: number;
   staleAfterMs?: number;
+  types?: readonly ManagementJobType[];
 }
 
 export interface ManagementJobListOptions {
@@ -444,20 +445,26 @@ export function createManagementJobStore(
       const staleAfterMs = claimOptions.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
       const cutoff = new Date(now().getTime() - staleAfterMs).toISOString();
       const runnerPid = claimOptions.runnerPid ?? process.pid;
+      const types = validateListTypes(claimOptions.types);
+      if (types?.length === 0) return null;
+      const typeFilter = types ? `AND type IN (${placeholders(types)})` : "";
       return runImmediateTransaction(db, () => {
         const row = db.prepare(`
           SELECT *
           FROM management_jobs
-          WHERE status = 'queued'
-             OR (
+          WHERE (
+              status = 'queued'
+              OR (
                status = 'running'
                AND (heartbeatAt IS NULL OR heartbeatAt < ?)
              )
+            )
+            ${typeFilter}
           ORDER BY
             CASE status WHEN 'queued' THEN 0 ELSE 1 END,
             createdAt ASC
           LIMIT 1
-        `).get(cutoff) as ManagementJobRow | undefined;
+        `).get(cutoff, ...(types ?? [])) as ManagementJobRow | undefined;
         if (!row) return null;
 
         const timestamp = nowIso(now);

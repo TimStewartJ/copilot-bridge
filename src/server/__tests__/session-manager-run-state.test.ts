@@ -1266,7 +1266,6 @@ describe("SessionManager run state", () => {
       };
       manager.sessionObjects.set("switch-session", switchSession);
 
-      const switching = manager.setSessionModel("switch-session", "gpt-5.5");
       manager.startWork("run-session", "hello");
       await flushMicrotasks();
 
@@ -1274,10 +1273,14 @@ describe("SessionManager run state", () => {
         requestId: "req-run-and-switch",
         phase: "waiting-for-sessions",
         requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 2,
+        waitingSessions: 1,
         launcherHeartbeatAt: null,
       });
       await refreshRestartState();
+
+      const switching = manager.setSessionModel("switch-session", "gpt-5.5");
+      await vi.waitFor(() => expect(switchSession.setModel).toHaveBeenCalledTimes(1));
+      expect(getRestartWaitingCount()).toBe(2);
 
       getReleaseSend()?.();
       await flushMicrotasks();

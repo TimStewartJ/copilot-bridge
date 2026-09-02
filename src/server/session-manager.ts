@@ -4732,7 +4732,6 @@ export class SessionManager {
     contextTier?: string,
   ): Promise<{ model: string; reasoningEffort?: string; contextTier?: CopilotContextTier; modelId?: string }> {
     const client = this.getBackend();
-    if (isRestartPending()) throw new Error("Cannot switch model while a restart is pending");
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
 
     const sid = sessionId.slice(0, 8);
