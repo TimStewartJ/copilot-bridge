@@ -2,9 +2,23 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import type { ManagementJob } from "./management-job-store.js";
 import { PROCESS_TREE_TERMINATION_BUDGET_MS } from "./platform.js";
+import {
+  STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS,
+  STAGING_BACKEND_REBUILD_STOP_MAX_ATTEMPTS,
+  STAGING_BACKEND_REBUILD_STOP_RETRY_DELAY_MS,
+  STAGING_BACKEND_STARTUP_TIMEOUT_MS,
+} from "./staging-preview-shared.js";
 
 const READY_FILE_SUFFIX = ".preview-rebuild-ready";
-const DEFAULT_READY_TIMEOUT_MS = PROCESS_TREE_TERMINATION_BUDGET_MS * 2 + 15_000;
+const DEFAULT_READY_TIMEOUT_MS =
+  STAGING_BACKEND_REBUILD_STOP_MAX_ATTEMPTS
+    * (
+      STAGING_BACKEND_STARTUP_TIMEOUT_MS
+      + STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS
+      + PROCESS_TREE_TERMINATION_BUDGET_MS
+    )
+  + STAGING_BACKEND_REBUILD_STOP_RETRY_DELAY_MS
+  + 15_000;
 const DEFAULT_READY_POLL_INTERVAL_MS = 100;
 
 export interface PreviewRebuildCoordination {

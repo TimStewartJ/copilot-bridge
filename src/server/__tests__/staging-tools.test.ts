@@ -129,7 +129,9 @@ const preparePatchedPackagesForInstallMock = vi.fn(() => ({
 }));
 const createDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
 const removeDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
-const captureProcessIdentityMock = vi.fn(async (pid: number) => ({
+const captureProcessIdentityMock = vi.fn<
+  (pid: number) => Promise<{ pid: number; startMarker: string } | null>
+>(async (pid: number) => ({
   pid,
   startMarker: `start-${pid}`,
 }));
@@ -2933,6 +2935,112 @@ describe("staging tools", () => {
 });
 
 describe("staging preview cleanup hardening", () => {
+  it("retries process identity capture when a new staging child is not visible in the first snapshot", async () => {
+    const mod = await loadStagingToolsModule();
+    const child = {
+      pid: 12345,
+      exitCode: null,
+      signalCode: null,
+    } as unknown as import("node:child_process").ChildProcess;
+    captureProcessIdentityMock.mockReset();
+    captureProcessIdentityMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ pid: 12345, startMarker: "start-12345" });
+
+    await expect(
+      mod.__testing.backendManager.captureStagingBackendIdentity(child, {
+        timeoutMs: 1_000,
+        retryDelayMs: 1,
+      }),
+    ).resolves.toEqual({ pid: 12345, startMarker: "start-12345" });
+
+    expect(captureProcessIdentityMock).toHaveBeenCalledTimes(2);
+    expect(stagingLogMock).toHaveBeenCalledWith(
+      "Captured staging backend creation identity for PID 12345 after 2 attempts",
+    );
+  });
+
+  it("recaptures a missing startup identity before terminating the staging child", async () => {
+    const mod = await loadStagingToolsModule();
+    const stdout = { destroyed: false };
+    const stderr = { destroyed: false };
+    const stdin = { destroyed: false };
+    const child = {
+      pid: 23456,
+      exitCode: null as number | null,
+      signalCode: null,
+      connected: true,
+      stdout,
+      stderr,
+      stdin,
+      off: vi.fn(),
+      once: vi.fn(),
+    } as unknown as import("node:child_process").ChildProcess;
+    const identity = { pid: 23456, startMarker: "start-23456" };
+    captureProcessIdentityMock.mockReset();
+    captureProcessIdentityMock.mockResolvedValueOnce(identity);
+    terminateProcessTreeMock.mockImplementationOnce(async (root) => {
+      expect(root).toEqual(identity);
+      Object.assign(child, { exitCode: 0, connected: false });
+      stdout.destroyed = true;
+      stderr.destroyed = true;
+      stdin.destroyed = true;
+      return {
+        ok: true,
+        status: "terminated",
+        root,
+      };
+    });
+
+    await expect(
+      mod.__testing.backendManager.stopStagingBackendChild(child, Promise.resolve(null)),
+    ).resolves.toBeUndefined();
+
+    expect(captureProcessIdentityMock).toHaveBeenCalledWith(
+      23456,
+      expect.objectContaining({ expiresAtUnixMs: expect.any(Number) }),
+    );
+    expect(terminateProcessTreeMock).toHaveBeenCalledWith(
+      identity,
+      expect.objectContaining({ expiresAtUnixMs: expect.any(Number) }),
+    );
+    expect(stagingLogMock).toHaveBeenCalledWith(
+      "Recapturing staging backend creation identity for PID 23456 before termination",
+    );
+  });
+
+  it("treats a child that exits during identity recapture as already stopped", async () => {
+    const mod = await loadStagingToolsModule();
+    const stdout = { destroyed: false };
+    const stderr = { destroyed: false };
+    const stdin = { destroyed: false };
+    const child = {
+      pid: 34567,
+      exitCode: null as number | null,
+      signalCode: null,
+      connected: true,
+      stdout,
+      stderr,
+      stdin,
+      off: vi.fn(),
+      once: vi.fn(),
+    } as unknown as import("node:child_process").ChildProcess;
+    captureProcessIdentityMock.mockReset();
+    captureProcessIdentityMock.mockImplementationOnce(async () => {
+      Object.assign(child, { exitCode: 0, connected: false });
+      stdout.destroyed = true;
+      stderr.destroyed = true;
+      stdin.destroyed = true;
+      return null;
+    });
+
+    await expect(
+      mod.__testing.backendManager.stopStagingBackendChild(child, Promise.resolve(null)),
+    ).resolves.toBeUndefined();
+
+    expect(terminateProcessTreeMock).not.toHaveBeenCalled();
+  });
+
   it("clears in-memory preview data dir state even when removePreviewData throws", async () => {
     const mod = await loadStagingToolsModule();
     mod.__testing.backendManager.resetBackendState();
