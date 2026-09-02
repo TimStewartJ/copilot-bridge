@@ -539,6 +539,7 @@ export interface WorkMapTask {
 export interface WorkMapWorkItem extends EnrichedWorkItem {
   taskIds: string[];
   pullRequestKeys: string[];
+  assignedToCurrentUser: boolean;
 }
 
 export interface WorkMapPullRequest extends EnrichedPR {
@@ -550,6 +551,7 @@ export interface WorkMapPullRequest extends EnrichedPR {
 export interface WorkMapData {
   enabled: boolean;
   includeArchived: boolean;
+  assignedToMe: boolean;
   currentUser: { displayName: string } | null;
   org: string | null;
   project: string | null;
@@ -1102,6 +1104,7 @@ export async function createTask(
   options: {
     groupId?: string;
     kind?: Task["kind"];
+    workItem?: { workItemId: string; provider?: ProviderName };
   } = {},
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>("/api/tasks", { title, ...options });
@@ -1742,10 +1745,12 @@ export async function fetchDashboard(): Promise<DashboardChecklistData> {
 export async function fetchWorkMap(options: {
   forceRefresh?: boolean;
   includeArchived?: boolean;
+  assignedToMe?: boolean;
 } = {}): Promise<WorkMapData> {
   const query = new URLSearchParams();
   if (options.forceRefresh) query.set("refresh", "1");
   if (options.includeArchived) query.set("includeArchived", "1");
+  if (options.assignedToMe) query.set("assignedToMe", "1");
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return apiFetch<WorkMapData>(`/api/dashboard/work-map${suffix}`);
 }

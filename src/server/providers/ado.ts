@@ -8,6 +8,7 @@ import type {
   WorkItemPullRequestLink,
   WorkItemPullRequestLinksResult,
   WorkTrackingIdentity,
+  AssignedWorkItemsResult,
   WorkTrackingProvider,
   AdoProviderConfig,
 } from "./types.js";
@@ -21,6 +22,7 @@ const TOKEN_REFRESH_BUFFER_MS = 60_000;
 const TOKEN_CACHE_TTL = 50 * 60_000;
 const TOKEN_FETCH_TIMEOUT_MS = 30_000;
 const TOKEN_FETCH_ATTEMPTS = 2;
+const ASSIGNED_WORK_ITEMS_FETCH_TIMEOUT_MS = 30_000;
 
 class AdoRequestError extends Error {
   readonly transient: boolean;
@@ -154,6 +156,7 @@ const prCache = createProviderCache<EnrichedPR>();
 const workItemLinkCache = createProviderCache<WorkItemPullRequestLink[]>();
 const prLinkCache = createProviderCache<WorkItemPullRequestLink[]>();
 const currentUserCache = createProviderCache<WorkTrackingIdentity>();
+const assignedWorkItemIdsCache = createProviderCache<string[]>();
 
 function shouldUseStaleFallback(err: unknown): boolean {
   if (err instanceof AdoRequestError) return err.transient;
@@ -167,6 +170,7 @@ export function clearAdoProviderState(): void {
   workItemLinkCache.clear();
   prLinkCache.clear();
   currentUserCache.clear();
+  assignedWorkItemIdsCache.clear();
 }
 
 // ── Provider ──────────────────────────────────────────────────────
@@ -558,6 +562,46 @@ export class AdoProvider implements WorkTrackingProvider {
       return shouldUseStaleFallback(err)
         ? currentUserCache.read(this.org, now, true)
         : null;
+    }
+  }
+
+  async fetchAssignedWorkItemIds(): Promise<AssignedWorkItemsResult> {
+    const now = Date.now();
+    const cacheKey = `${this.org}:${this.project}`;
+    const cached = assignedWorkItemIdsCache.read(cacheKey, now);
+    if (cached) return { ids: cached, warnings: [] };
+
+    try {
+      const query = [
+        "SELECT [System.Id] FROM WorkItems",
+        "WHERE [System.AssignedTo] = @Me",
+        "AND [System.State] <> 'Resolved'",
+        "AND [System.State] <> 'Removed'",
+        "ORDER BY [System.ChangedDate] DESC",
+      ].join(" ");
+      const raw = execSync(
+        `az boards query --wiql ${JSON.stringify(query)} --query "[].id" --output json`,
+        {
+          encoding: "utf-8",
+          timeout: ASSIGNED_WORK_ITEMS_FETCH_TIMEOUT_MS,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        throw new Error("ADO assigned work query returned a non-array result");
+      }
+      const ids = [...new Set<string>(parsed.flatMap((id): string[] =>
+        typeof id === "number" || typeof id === "string" ? [String(id)] : []))];
+      assignedWorkItemIdsCache.write(cacheKey, ids, now);
+      return { ids, warnings: [] };
+    } catch (err) {
+      console.error("[ado] Failed to fetch assigned work items:", err);
+      const stale = assignedWorkItemIdsCache.read(cacheKey, now, true);
+      return {
+        ids: stale ?? [],
+        warnings: ["Assigned ADO work items could not be refreshed."],
+      };
     }
   }
 
