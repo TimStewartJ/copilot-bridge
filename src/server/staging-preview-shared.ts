@@ -1,4 +1,13 @@
-import { readdirSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
@@ -14,6 +23,8 @@ export const PRODUCTION_DATA_DIR = PRODUCTION_RUNTIME_PATHS.dataDir;
 export const SIGNAL_FILE = join(PRODUCTION_DATA_DIR, "restart.signal");
 export const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_DATA_DIR, "pre-deploy-sha");
 export const STAGING_PREVIEW_DIR_ENV = "BRIDGE_STAGING_PREVIEW_DIR";
+export const STAGING_PREVIEW_ACTIVE_DIRNAME = ".active";
+export const STAGING_PREVIEW_GENERATIONS_DIRNAME = ".generations";
 export const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 export const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
@@ -23,8 +34,8 @@ export const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 export const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
 export const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
 export const STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS = 10_000;
-export const STAGING_BACKEND_REBUILD_STOP_MAX_ATTEMPTS = 2;
-export const STAGING_BACKEND_REBUILD_STOP_RETRY_DELAY_MS = 1_000;
+export const STAGING_BACKEND_SWITCH_STOP_MAX_ATTEMPTS = 2;
+export const STAGING_BACKEND_SWITCH_STOP_RETRY_DELAY_MS = 1_000;
 export const STAGING_BACKEND_REQUEST_START_WAIT_MS = 2_000;
 export const STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS = 30_000;
 export const STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
@@ -52,7 +63,17 @@ export interface PreviewTarget {
   stagingDir: string;
   basePath: string;
   outDir: string;
+  dataDir?: string;
+  generationId?: string;
   updatedAtMs: number;
+}
+
+interface ActivePreviewManifest {
+  version: 1;
+  prefix: string;
+  generationId: string;
+  stagingDir: string;
+  publishedAt: string;
 }
 
 export function parsePositiveIntegerEnv(name: string, fallback: number): number {
@@ -108,6 +129,11 @@ function isSafePreviewPrefix(prefix: string): boolean {
   return /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/.test(prefix) && !prefix.includes("..");
 }
 
+function isSafeGenerationId(generationId: string): boolean {
+  return /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/.test(generationId)
+    && !generationId.includes("..");
+}
+
 export function escapeSqliteStringLiteral(value: string): string {
   return value.replaceAll("'", "''");
 }
@@ -122,6 +148,175 @@ export function createPreviewTarget(stagingDir: string): PreviewTarget {
     outDir,
     updatedAtMs: directoryMtimeMs(outDir),
   };
+}
+
+export function createPreviewGenerationTarget(
+  stagingDir: string,
+  generationId: string,
+  previewParent = STAGING_PREVIEW_PARENT,
+): PreviewTarget {
+  const prefix = buildPreviewPrefix(stagingDir);
+  if (!isSafeGenerationId(generationId)) {
+    throw new Error(`Invalid staging preview generation id: ${generationId}`);
+  }
+  const generationDir = join(
+    previewParent,
+    STAGING_PREVIEW_GENERATIONS_DIRNAME,
+    prefix,
+    generationId,
+  );
+  const outDir = join(generationDir, "client");
+  return {
+    prefix,
+    stagingDir,
+    basePath: `/staging/${prefix}/`,
+    outDir,
+    dataDir: join(generationDir, "data"),
+    generationId,
+    updatedAtMs: directoryMtimeMs(generationDir),
+  };
+}
+
+function activePreviewManifestPath(prefix: string, previewParent: string): string {
+  return join(previewParent, STAGING_PREVIEW_ACTIVE_DIRNAME, `${prefix}.json`);
+}
+
+export function publishPreviewGeneration(
+  target: PreviewTarget,
+  previewParent = STAGING_PREVIEW_PARENT,
+): void {
+  if (!target.generationId || !target.dataDir) {
+    throw new Error(`Cannot publish legacy staging preview target: ${target.prefix}`);
+  }
+  if (!existsSync(join(target.outDir, "index.html"))) {
+    throw new Error(`Staging preview generation is missing index.html: ${target.outDir}`);
+  }
+  if (!existsSync(join(target.dataDir, "bridge.db"))) {
+    throw new Error(`Staging preview generation is missing bridge.db: ${target.dataDir}`);
+  }
+
+  const manifestPath = activePreviewManifestPath(target.prefix, previewParent);
+  mkdirSync(join(previewParent, STAGING_PREVIEW_ACTIVE_DIRNAME), { recursive: true });
+  const tempPath = `${manifestPath}.${process.pid}.${Date.now()}.tmp`;
+  const manifest: ActivePreviewManifest = {
+    version: 1,
+    prefix: target.prefix,
+    generationId: target.generationId,
+    stagingDir: target.stagingDir,
+    publishedAt: new Date().toISOString(),
+  };
+  try {
+    writeFileSync(tempPath, JSON.stringify(manifest, null, 2), "utf8");
+    renameSync(tempPath, manifestPath);
+  } finally {
+    rmSync(tempPath, { force: true });
+  }
+}
+
+export function readActivePreviewTarget(
+  prefix: string,
+  previewParent = STAGING_PREVIEW_PARENT,
+  stagingParent?: string,
+): PreviewTarget | null {
+  if (!parsePreviewPrefix(prefix)) return null;
+  const manifestPath = activePreviewManifestPath(prefix, previewParent);
+  if (!existsSync(manifestPath)) return null;
+
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<ActivePreviewManifest>;
+    if (
+      parsed.version !== 1
+      || parsed.prefix !== prefix
+      || typeof parsed.generationId !== "string"
+      || !isSafeGenerationId(parsed.generationId)
+      || typeof parsed.stagingDir !== "string"
+      || buildPreviewPrefix(parsed.stagingDir) !== prefix
+      || (
+        stagingParent !== undefined
+        && resolve(dirname(parsed.stagingDir)) !== resolve(stagingParent)
+      )
+    ) {
+      return null;
+    }
+    const target = createPreviewGenerationTarget(
+      parsed.stagingDir,
+      parsed.generationId,
+      previewParent,
+    );
+    if (
+      !existsSync(join(target.outDir, "index.html"))
+      || !target.dataDir
+      || !existsSync(join(target.dataDir, "bridge.db"))
+    ) {
+      return null;
+    }
+    return {
+      ...target,
+      updatedAtMs: Math.max(
+        directoryMtimeMs(manifestPath),
+        directoryMtimeMs(dirname(target.outDir)),
+      ),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function listActivePreviewTargets(
+  previewParent = STAGING_PREVIEW_PARENT,
+  stagingParent?: string,
+): PreviewTarget[] {
+  const activeDir = join(previewParent, STAGING_PREVIEW_ACTIVE_DIRNAME);
+  if (!existsSync(activeDir)) return [];
+  const targets: PreviewTarget[] = [];
+  for (const entry of readdirSync(activeDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const prefix = entry.name.slice(0, -".json".length);
+    const target = readActivePreviewTarget(prefix, previewParent, stagingParent);
+    if (target) targets.push(target);
+  }
+  return targets;
+}
+
+export function removePreviewGeneration(target: PreviewTarget): void {
+  if (!target.generationId) return;
+  removeDirectoryWithRetries(dirname(target.outDir));
+}
+
+export function prunePreviewGenerations(
+  prefix: string,
+  keepGenerationId: string,
+  previewParent = STAGING_PREVIEW_PARENT,
+): number {
+  const generationsDir = join(
+    previewParent,
+    STAGING_PREVIEW_GENERATIONS_DIRNAME,
+    prefix,
+  );
+  if (!existsSync(generationsDir)) return 0;
+  let removed = 0;
+  for (const entry of readdirSync(generationsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === keepGenerationId) continue;
+    removeDirectoryWithRetries(join(generationsDir, entry.name));
+    removed++;
+  }
+  return removed;
+}
+
+export function removePublishedPreview(
+  prefix: string,
+  previewParent = STAGING_PREVIEW_PARENT,
+): void {
+  rmSync(activePreviewManifestPath(prefix, previewParent), { force: true });
+  const generationsDir = join(
+    previewParent,
+    STAGING_PREVIEW_GENERATIONS_DIRNAME,
+    prefix,
+  );
+  if (existsSync(generationsDir)) removeDirectoryWithRetries(generationsDir);
+
+  const legacyDistDir = join(previewParent, prefix);
+  if (existsSync(legacyDistDir)) removeDirectoryWithRetries(legacyDistDir);
 }
 
 export function shouldManageStagingArtifacts(
@@ -143,6 +338,7 @@ export function previewTargetLastActivityMs(target: PreviewTarget): number {
   return Math.max(
     target.updatedAtMs,
     directoryMtimeMs(target.outDir),
+    target.dataDir ? directoryMtimeMs(target.dataDir) : 0,
     directoryMtimeMs(target.stagingDir),
   );
 }

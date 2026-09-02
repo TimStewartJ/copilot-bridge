@@ -532,6 +532,35 @@ function createStagingPreviewTestApp(mod: StagingToolsModule) {
   return app;
 }
 
+function publishTestPreviewGeneration(
+  mod: StagingToolsModule,
+  stagingDir: string,
+  generationId: string,
+  html: string,
+  previewParent?: string,
+) {
+  const target = mod.__testing.createPreviewGenerationTarget(
+    stagingDir,
+    generationId,
+    previewParent,
+  );
+  mkdirSync(target.outDir, { recursive: true });
+  mkdirSync(target.dataDir!, { recursive: true });
+  writeFileSync(join(target.outDir, "index.html"), html);
+  writeFileSync(join(target.dataDir!, "bridge.db"), "test database");
+  mod.__testing.publishPreviewGeneration(target, previewParent);
+  return target;
+}
+
+function successfulCommandOutput(command: string): string {
+  const viteOutDir = command.match(/\bnpx vite build\b.*--outDir "([^"]+)"/)?.[1];
+  if (viteOutDir) {
+    mkdirSync(viteOutDir, { recursive: true });
+    writeFileSync(join(viteOutDir, "index.html"), "<!doctype html>");
+  }
+  return "";
+}
+
 beforeEach(() => {
   // Validation log writes are intercepted through the node:fs mock above, but the
   // retention sweep they trigger uses node:fs/promises. Point every writer and
@@ -540,6 +569,7 @@ beforeEach(() => {
     "BRIDGE_VALIDATION_LOG_DIR",
     join(createTempDir("bridge-staging-validation-"), "data", "validation-logs"),
   );
+  execSyncMock.mockImplementation(successfulCommandOutput);
 });
 
 afterEach(() => {
@@ -573,7 +603,7 @@ afterEach(() => {
   buildPublicUrlMock.mockReset();
   buildPublicUrlMock.mockReturnValue(undefined);
   execSyncMock.mockReset();
-  execSyncMock.mockReturnValue("");
+  execSyncMock.mockImplementation(successfulCommandOutput);
   spawnMock.mockReset();
   captureProcessIdentityMock.mockClear();
   terminateProcessTreeMock.mockClear();
@@ -1016,6 +1046,44 @@ describe("staging tools", () => {
 
     expect(previewMap.get(prefix)).toBe(join(previewParent, prefix));
     expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+  });
+
+  it("restores the atomically published generation on server startup", async () => {
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const prefix = "preview-generated";
+    const stagingDir = join(stagingParent, prefix);
+    const previewMap = new Map<string, string>();
+    mkdirSync(stagingDir, { recursive: true });
+    const retired = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      "generation-retired",
+      "<!doctype html><p>retired</p>",
+      previewParent,
+    );
+    const target = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      "generation-startup",
+      "<!doctype html><p>generated</p>",
+      previewParent,
+    );
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+      activePreviewMap: previewMap,
+      expressApp: {} as any,
+      listBranchPrefixes: () => new Set([prefix]),
+      pruneGitWorktrees: vi.fn(),
+    });
+
+    expect(previewMap.get(prefix)).toBe(target.outDir);
+    expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+    expect(existsSync(dirname(retired.outDir))).toBe(false);
   });
 
   it("serves startup-discovered previews while prune is still waiting on branch discovery", async () => {
@@ -2728,7 +2796,56 @@ describe("staging tools", () => {
   it("prepares isolated data before a lazy staging preview is reported ready", async () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = createTempDir("bridge-stage-preview-seed-");
-    const seedPreviewData = vi.fn<(target: string) => void>();
+    const seedPreviewData = vi.fn<
+      (target: string, options?: { dataDir?: string }) => void
+    >((target, options) => {
+      mkdirSync(options!.dataDir!, { recursive: true });
+      writeFileSync(join(options!.dataDir!, "bridge.db"), "seeded");
+      mkdirSync(join(options!.dataDir!, "docs"), { recursive: true });
+    });
+    const logs: string[] = [];
+    const generationId = "generation-seed";
+
+    const result = await mod.runStagingPreviewJob(
+      { stagingDir, validate: false },
+      {
+        startBackend: false,
+        registerInProcess: false,
+        previewGenerationId: generationId,
+        seedPreviewData,
+        log: (message) => logs.push(message),
+      },
+    );
+
+    expect(seedPreviewData).toHaveBeenCalledOnce();
+    expect(seedPreviewData).toHaveBeenCalledWith(stagingDir, {
+      dataDir: join(
+        mod.__testing.getStagingPreviewParent(),
+        ".generations",
+        basename(stagingDir),
+        generationId,
+        "data",
+      ),
+    });
+    expect(result).toMatchObject({ success: true });
+    expect(logs).toContain("Preparing isolated staging data snapshot...");
+    expect(logs).toContain("Isolated staging data snapshot ready.");
+    expect(logs.at(-1)).toContain("Staging preview ready at");
+  });
+
+  it("builds and seeds a new generation without touching the existing preview database", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-preview-generation-");
+    const dataDir = join(stagingDir, "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, "bridge.db"), "existing preview database");
+    const generationId = "generation-next";
+    const seedPreviewData = vi.fn<
+      (target: string, options?: { dataDir?: string }) => void
+    >((_target, options) => {
+      mkdirSync(options!.dataDir!, { recursive: true });
+      writeFileSync(join(options!.dataDir!, "bridge.db"), "new preview database");
+    });
     const logs: string[] = [];
 
     const result = await mod.runStagingPreviewJob(
@@ -2736,58 +2853,19 @@ describe("staging tools", () => {
       {
         startBackend: false,
         registerInProcess: false,
+        previewGenerationId: generationId,
         seedPreviewData,
         log: (message) => logs.push(message),
       },
     );
-
-    expect(seedPreviewData).toHaveBeenCalledOnce();
-    expect(seedPreviewData).toHaveBeenCalledWith(stagingDir);
-    expect(result).toMatchObject({ success: true });
-    expect(logs).toContain("Preparing isolated staging data snapshot...");
-    expect(logs).toContain("Isolated staging data snapshot ready.");
-    expect(logs.at(-1)).toContain("Staging preview ready at");
-  });
-
-  it("waits for live-server rebuild readiness before building or reseeding an existing preview", async () => {
-    const mod = await loadStagingToolsModule();
-    const stagingDir = createTempDir("bridge-stage-preview-rebuild-wait-");
-    const dataDir = join(stagingDir, "data");
-    mkdirSync(dataDir, { recursive: true });
-    writeFileSync(join(dataDir, "bridge.db"), "existing preview database");
-    const readyPath = join(createTempDir("bridge-stage-preview-ready-"), "job.preview-rebuild-ready");
-    const seedPreviewData = vi.fn<(target: string) => void>();
-    const logs: string[] = [];
-
-    const resultPromise = mod.runStagingPreviewJob(
-      { stagingDir, validate: false },
-      {
-        startBackend: false,
-        registerInProcess: false,
-        seedPreviewData,
-        rebuildCoordination: { jobId: "preview-job-wait", readyPath },
-        log: (message) => logs.push(message),
-      },
-    );
-
-    await vi.waitFor(() => {
-      expect(logs).toContain(
-        `Waiting for the live server to stop the existing staged backend for ${basename(stagingDir)}...`,
-      );
-    });
-    expect(execSyncMock).not.toHaveBeenCalled();
-    expect(seedPreviewData).not.toHaveBeenCalled();
-
-    writeFileSync(readyPath, "{}");
-    const result = await resultPromise;
 
     expect(result).toMatchObject({ success: true });
     expect(execSyncMock.mock.calls.some(([command]) =>
       String(command).startsWith("npx vite build --base"))).toBe(true);
-    expect(seedPreviewData).toHaveBeenCalledWith(stagingDir);
-    expect(logs).toContain(
-      `Existing staged backend for ${basename(stagingDir)} is stopped; rebuild may proceed.`,
-    );
+    const target = mod.__testing.readActivePreviewTarget(basename(stagingDir));
+    expect(target).toMatchObject({ generationId });
+    expect(target?.dataDir).not.toBe(dataDir);
+    expect(readFileSync(join(dataDir, "bridge.db"), "utf8")).toBe("existing preview database");
   });
 
   it("fails a lazy staging preview when isolated data preparation fails", async () => {
@@ -2821,6 +2899,40 @@ describe("staging tools", () => {
     expect(logs.some((message) => message.startsWith("Staging preview ready at"))).toBe(false);
   });
 
+  it("keeps the published generation unchanged when replacement data preparation fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-preview-generation-failure-");
+    const previous = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      "generation-current",
+      "<!doctype html><p>current</p>",
+    );
+
+    const result = await mod.runStagingPreviewJob(
+      { stagingDir, validate: false },
+      {
+        startBackend: false,
+        registerInProcess: false,
+        previewGenerationId: "generation-failed",
+        seedPreviewData: () => {
+          throw new Error("snapshot failed");
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(mod.__testing.readActivePreviewTarget(previous.prefix)).toMatchObject({
+      generationId: "generation-current",
+      outDir: previous.outDir,
+    });
+    const failed = mod.__testing.createPreviewGenerationTarget(
+      stagingDir,
+      "generation-failed",
+    );
+    expect(existsSync(dirname(failed.outDir))).toBe(false);
+  });
+
   it("builds previews under the configured runtime preview root", async () => {
     const previewParent = createTempDir("bridge-stage-preview-root-");
     const tools = await loadStagingTools({ previewParent });
@@ -2838,9 +2950,10 @@ describe("staging tools", () => {
     );
 
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
-    expect(commands).toContain(
-      `npx vite build --base "/staging/${prefix}/" --outDir "${join(previewParent, prefix)}" --emptyOutDir`,
-    );
+    expect(commands.some((command) =>
+      command.startsWith(`npx vite build --base "/staging/${prefix}/" --outDir "`)
+      && command.includes(join(previewParent, ".generations", prefix))
+      && command.endsWith(`${join("client")}" --emptyOutDir`))).toBe(true);
     expect(commands.join("\n")).not.toContain(join("dist", "staging"));
   });
 
@@ -3225,7 +3338,6 @@ describe("staging preview event-driven discovery", () => {
     const stagingParent = createTempDir("bridge-stage-parent-");
     const prefix = "preview-job-built";
     const stagingDir = join(stagingParent, prefix);
-    const distDir = join(previewParent, prefix);
     mkdirSync(stagingDir, { recursive: true });
 
     const app = createStagingPreviewTestApp(mod);
@@ -3242,13 +3354,17 @@ describe("staging preview event-driven discovery", () => {
       expect(mod.getActivePreviews().has(prefix)).toBe(false);
 
       // The runner process writes the build, then marks the job terminal.
-      mkdirSync(distDir, { recursive: true });
-      writeFileSync(join(distDir, "index.html"), "<!doctype html><p>runner built preview</p>");
+      const target = publishTestPreviewGeneration(
+        mod,
+        stagingDir,
+        fake.job.id,
+        "<!doctype html><p>runner built preview</p>",
+      );
       fake.complete("succeeded");
 
       await advanceTimersAndSettle(50, () => controller!.settle());
 
-      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(mod.getActivePreviews().get(prefix)).toBe(target.outDir);
       expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
       // Discovery is finished: no repeating timer is left behind.
       expect(controller!.watchedJobIds()).toEqual([]);
@@ -3302,7 +3418,7 @@ describe("staging preview event-driven discovery", () => {
     }
   });
 
-  it("drops the stale staged backend when a preview is rebuilt", async () => {
+  it("activates a new generation and removes the retired runtime data", async () => {
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
     const previewParent = createTempDir("bridge-stage-preview-root-");
@@ -3310,34 +3426,30 @@ describe("staging preview event-driven discovery", () => {
     mod.__testing.resetActivePreviews();
     mod.__testing.backendManager.resetBackendState();
 
-    const backendMod = await import("../staging-backend-manager.js");
     const stagingParent = createTempDir("bridge-stage-parent-");
     const prefix = "preview-rebuilt";
     const stagingDir = join(stagingParent, prefix);
-    const distDir = join(previewParent, prefix);
     mkdirSync(stagingDir, { recursive: true });
-    mkdirSync(distDir, { recursive: true });
-    writeFileSync(join(distDir, "index.html"), "<!doctype html><p>rebuilt</p>");
+    const previous = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      "generation-old",
+      "<!doctype html><p>old</p>",
+    );
 
     createStagingPreviewTestApp(mod);
     mod.registerExistingPreviewsFromDisk({ stagingParent, stagingPreviewParents: [previewParent] });
-    // A staged backend is live for the previous build of this same prefix.
-    mod.__testing.backendManager.seedPreviewDataDir(prefix, createTempDir("bridge-preview-data-"));
+    mod.__testing.backendManager.seedPreviewDataDir(prefix, previous.dataDir!);
     expect(mod.__testing.backendManager.ensureLazyRouter(prefix)).toBe(true);
     expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
 
-    // Spy through to the real cleanup so the invalidate → re-register cycle is
-    // exercised end to end; record the state observed mid-cycle.
-    const actualCleanup = backendMod.cleanupStagingBackendResources;
-    const midCycleRestorable: boolean[] = [];
-    const cleanupSpy = vi
-      .spyOn(backendMod, "cleanupStagingBackendResources")
-      .mockImplementation(async (cleanupPrefix: string, cleanupOptions?: { removeData?: boolean }) => {
-        await actualCleanup(cleanupPrefix, cleanupOptions);
-        midCycleRestorable.push(mod.__testing.backendManager.hasRestorableTarget(cleanupPrefix));
-      });
-
     const fake = createFakeJobStore(makePreviewJob(stagingDir));
+    const next = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      fake.job.id,
+      "<!doctype html><p>rebuilt</p>",
+    );
 
     vi.useFakeTimers();
     try {
@@ -3346,26 +3458,72 @@ describe("staging preview event-driven discovery", () => {
       fake.complete("succeeded");
       await advanceTimersAndSettle(50, () => controller!.settle());
 
-      // The old child process is torn down (its seeded data is preserved) so the
-      // next request lazily restores a backend running the rebuilt code.
-      expect(cleanupSpy).toHaveBeenCalledWith(prefix, { removeData: false });
-      expect(midCycleRestorable).toEqual([false]);
       expect(mod.__testing.backendManager.hasLazyRouter(prefix)).toBe(false);
-      expect(mod.__testing.backendManager.hasPreviewDataDir(prefix)).toBe(true);
+      expect(mod.__testing.backendManager.hasPreviewDataDir(prefix)).toBe(false);
+      expect(existsSync(previous.dataDir!)).toBe(false);
 
-      // The same discovery pass re-registers the preview from the rebuilt dist.
       expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
-      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(mod.getActivePreviews().get(prefix)).toBe(next.outDir);
       expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
       expect(vi.getTimerCount()).toBe(0);
       controller!.stop();
     } finally {
       vi.useRealTimers();
-      cleanupSpy.mockRestore();
     }
   });
 
-  it("stops and suppresses a preview backend before rebuild, including temporary dist removal", async () => {
+  it("keeps the new generation active when retired data cleanup fails", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const mod = await loadStagingToolsModule({ previewParent });
+    mod.__testing.resetActivePreviews();
+    mod.__testing.backendManager.resetBackendState();
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const prefix = "preview-retired-data-cleanup";
+    const stagingDir = join(stagingParent, prefix);
+    mkdirSync(stagingDir, { recursive: true });
+    const previous = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      "generation-old",
+      "<!doctype html><p>old</p>",
+    );
+
+    createStagingPreviewTestApp(mod);
+    mod.registerExistingPreviewsFromDisk({ stagingParent, stagingPreviewParents: [previewParent] });
+    mod.__testing.backendManager.seedPreviewDataDir(prefix, previous.dataDir!);
+    rmSyncThrowDirs.add(previous.dataDir!);
+
+    const fake = createFakeJobStore(makePreviewJob(stagingDir));
+    const next = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      fake.job.id,
+      "<!doctype html><p>new</p>",
+    );
+
+    vi.useFakeTimers();
+    try {
+      const controller = mod.startStagingPreviewDiscovery({ store: fake.store, pollIntervalMs: 50 });
+      controller!.watchJob(fake.job);
+      fake.complete("succeeded");
+      await advanceTimersAndSettle(50, () => controller!.settle());
+
+      expect(mod.getActivePreviews().get(prefix)).toBe(next.outDir);
+      expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
+      expect(mod.__testing.backendManager.hasPreviewDataDir(prefix)).toBe(false);
+      expect(stagingLogMock).toHaveBeenCalledWith(
+        expect.stringContaining(`failed to remove retired preview data for ${prefix}`),
+      );
+      controller!.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the current generation live until the replacement is complete", async () => {
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
     const previewParent = createTempDir("bridge-stage-preview-root-");
@@ -3376,16 +3534,17 @@ describe("staging preview event-driven discovery", () => {
     const stagingParent = createTempDir("bridge-stage-parent-");
     const prefix = "preview-rebuild-coordinated";
     const stagingDir = join(stagingParent, prefix);
-    const distDir = join(previewParent, prefix);
     mkdirSync(stagingDir, { recursive: true });
-    mkdirSync(distDir, { recursive: true });
-    writeFileSync(join(distDir, "index.html"), "<!doctype html><p>old preview</p>");
+    const previous = publishTestPreviewGeneration(
+      mod,
+      stagingDir,
+      "generation-old",
+      "<!doctype html><p>old preview</p>",
+    );
 
     createStagingPreviewTestApp(mod);
     mod.registerExistingPreviewsFromDisk({ stagingParent, stagingPreviewParents: [previewParent] });
-    mod.__testing.backendManager.seedPreviewDataDir(prefix, join(stagingDir, "data"));
     const fake = createFakeJobStore(makePreviewJob(stagingDir));
-    const readyPath = join(dirname(fake.job.logPath!), `${fake.job.id}.preview-rebuild-ready`);
 
     vi.useFakeTimers();
     try {
@@ -3395,24 +3554,23 @@ describe("staging preview event-driven discovery", () => {
       fake.complete("running");
       await advanceTimersAndSettle(50, () => controller!.settle());
 
-      expect(existsSync(readyPath)).toBe(true);
-      expect(mod.__testing.backendManager.isRebuilding(prefix)).toBe(true);
+      expect(mod.getActivePreviews().get(prefix)).toBe(previous.outDir);
+      expect(mod.__testing.backendManager.isSwitching(prefix)).toBe(false);
       expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
 
-      rmSync(join(distDir, "index.html"), { force: true });
-      await mod.__testing.cleanupMissingRegisteredPreviews(vi.fn());
-      expect(mod.__testing.hasActivePreview(prefix)).toBe(false);
-      expect(mod.__testing.backendManager.isRebuilding(prefix)).toBe(true);
-      expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
-
-      writeFileSync(join(distDir, "index.html"), "<!doctype html><p>rebuilt preview</p>");
+      const next = publishTestPreviewGeneration(
+        mod,
+        stagingDir,
+        fake.job.id,
+        "<!doctype html><p>rebuilt preview</p>",
+      );
       fake.complete("succeeded");
       await advanceTimersAndSettle(50, () => controller!.settle());
 
-      expect(existsSync(readyPath)).toBe(false);
-      expect(mod.__testing.backendManager.isRebuilding(prefix)).toBe(false);
+      expect(mod.__testing.backendManager.isSwitching(prefix)).toBe(false);
       expect(mod.__testing.backendManager.hasRestorableTarget(prefix)).toBe(true);
-      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(mod.getActivePreviews().get(prefix)).toBe(next.outDir);
+      expect(existsSync(dirname(previous.outDir))).toBe(false);
       controller!.stop();
     } finally {
       vi.useRealTimers();
@@ -3439,7 +3597,6 @@ describe("staging preview event-driven discovery", () => {
     const stagingParent = createTempDir("bridge-stage-parent-");
     const prefix = "preview-cross-process";
     const stagingDir = join(stagingParent, prefix);
-    const distDir = join(previewParent, prefix);
     mkdirSync(stagingDir, { recursive: true });
 
     const app = createStagingPreviewTestApp(mod);
@@ -3455,13 +3612,17 @@ describe("staging preview event-driven discovery", () => {
       await advanceTimersAndSettle(50, () => controller!.settle());
       expect(mod.getActivePreviews().has(prefix)).toBe(false);
 
-      mkdirSync(distDir, { recursive: true });
-      writeFileSync(join(distDir, "index.html"), "<!doctype html><p>cross process preview</p>");
+      const target = publishTestPreviewGeneration(
+        mod,
+        stagingDir,
+        job.id,
+        "<!doctype html><p>cross process preview</p>",
+      );
       runnerStore.succeed(job.id, { previewPath: `/staging/${prefix}/` });
 
       await advanceTimersAndSettle(50, () => controller!.settle());
 
-      expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+      expect(mod.getActivePreviews().get(prefix)).toBe(target.outDir);
       expect(controller!.hasScheduledWork()).toBe(false);
       expect(vi.getTimerCount()).toBe(0);
 
