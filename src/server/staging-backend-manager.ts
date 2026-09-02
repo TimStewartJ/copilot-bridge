@@ -20,6 +20,7 @@ import {
   createDeadline,
   remainingMs,
   settleByDeadline,
+  sleepUntilDeadline,
 } from "./deadline.js";
 import { BRIDGE_CONTROL_ROOT_ENV } from "./control-root.js";
 import {
@@ -32,9 +33,12 @@ import {
   PRODUCTION_DATA_DIR,
   STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS,
   STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS,
+  STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS,
   STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS,
   STAGING_BACKEND_IDLE_TTL_MS,
   STAGING_BACKEND_LIVE_LIMIT,
+  STAGING_BACKEND_REBUILD_STOP_MAX_ATTEMPTS,
+  STAGING_BACKEND_REBUILD_STOP_RETRY_DELAY_MS,
   STAGING_BACKEND_REQUEST_START_WAIT_MS,
   STAGING_BACKEND_STARTUP_RESTORE_LIMIT,
   STAGING_BACKEND_START_MAX_ATTEMPTS,
@@ -204,7 +208,7 @@ export async function beginStagingPreviewRebuild(
   }
   if (rebuildingStagingPreviews.get(prefix) !== jobId) return;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= STAGING_BACKEND_REBUILD_STOP_MAX_ATTEMPTS; attempt++) {
     try {
       await teardownStagingBackend(prefix, {
         removeData: false,
@@ -212,10 +216,15 @@ export async function beginStagingPreviewRebuild(
       });
       break;
     } catch (error) {
-      if (attempt >= 2 || rebuildingStagingPreviews.get(prefix) !== jobId) throw error;
+      if (
+        attempt >= STAGING_BACKEND_REBUILD_STOP_MAX_ATTEMPTS
+        || rebuildingStagingPreviews.get(prefix) !== jobId
+      ) {
+        throw error;
+      }
       log(`Retrying staged backend stop for ${prefix} after cleanup failure: ${error}`);
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, 1_000);
+        setTimeout(resolve, STAGING_BACKEND_REBUILD_STOP_RETRY_DELAY_MS);
       });
     }
   }
@@ -1042,6 +1051,7 @@ export function buildStagingBackendSpawnConfig(
 }
 
 const closedStagingBackendChildren = new WeakSet<ChildProcess>();
+const STAGING_BACKEND_IDENTITY_RETRY_DELAY_MS = 100;
 
 function trackChildClose(child: ChildProcess): void {
   child.once("close", () => {
@@ -1064,6 +1074,34 @@ function childHasClosed(child: ChildProcess): boolean {
     && streamIsClosed(child.stdin);
 }
 
+async function captureStagingBackendIdentity(
+  child: ChildProcess,
+  options: {
+    timeoutMs?: number;
+    retryDelayMs?: number;
+  } = {},
+): Promise<ProcessIdentity | null> {
+  const pid = child.pid;
+  if (!pid) return null;
+
+  const deadline = createDeadline(options.timeoutMs ?? STAGING_BACKEND_STARTUP_TIMEOUT_MS);
+  const retryDelayMs = options.retryDelayMs ?? STAGING_BACKEND_IDENTITY_RETRY_DELAY_MS;
+  let attempts = 0;
+  do {
+    attempts++;
+    const identity = await captureProcessIdentity(pid, deadline);
+    if (identity) {
+      if (attempts > 1) {
+        log(`Captured staging backend creation identity for PID ${pid} after ${attempts} attempts`);
+      }
+      return identity;
+    }
+    if (childHasClosed(child)) return null;
+  } while (await sleepUntilDeadline(retryDelayMs, deadline));
+
+  return null;
+}
+
 function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (childHasClosed(child)) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -1084,12 +1122,22 @@ async function stopStagingBackendChild(
   identityPromise: Promise<ProcessIdentity | null>,
 ): Promise<void> {
   if (childHasClosed(child)) return;
-  const deadline = createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS);
-  const identityResult = await settleByDeadline(() => identityPromise, deadline);
-  const identity = identityResult.status === "fulfilled" ? identityResult.value : null;
+  const identityResult = await settleByDeadline(
+    () => identityPromise,
+    createDeadline(STAGING_BACKEND_STARTUP_TIMEOUT_MS),
+  );
+  let identity = identityResult.status === "fulfilled" ? identityResult.value : null;
+  if (!identity && !childHasClosed(child)) {
+    log(`Recapturing staging backend creation identity for PID ${child.pid ?? "unknown"} before termination`);
+    identity = await captureStagingBackendIdentity(child, {
+      timeoutMs: STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS,
+    });
+  }
   if (!identity) {
+    if (childHasClosed(child)) return;
     throw new Error("Staging backend creation identity was unavailable; refusing bare-PID termination.");
   }
+  const deadline = createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS);
   const result = await terminateProcessTree(identity, deadline);
   if (!result.ok) {
     const survivors = result.survivors?.map(({ pid }) => pid).join(",") ?? "none";
@@ -1132,9 +1180,7 @@ export async function startStagingBackendProcess(
     detached: shouldSpawnDetachedProcessGroup(),
   });
   trackChildClose(child);
-  const identity = child.pid
-    ? captureProcessIdentity(child.pid, createDeadline(STAGING_BACKEND_STARTUP_TIMEOUT_MS))
-    : Promise.resolve(null);
+  const identity = captureStagingBackendIdentity(child);
 
   child.stdout?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stdout", output, chunk));
   child.stderr?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stderr", output, chunk));
@@ -1329,6 +1375,8 @@ export async function restoreStagingBackendWithRetry(
 }
 
 export const __testing = {
+  captureStagingBackendIdentity,
+  stopStagingBackendChild,
   seedActiveBackend(prefix: string, backend: ActiveStagingBackend): void {
     activeStagingBackends.set(prefix, backend);
     activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, backend));
