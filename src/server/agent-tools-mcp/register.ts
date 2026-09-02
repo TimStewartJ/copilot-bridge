@@ -7,6 +7,7 @@ import { registerChecklistTools } from "../tools/checklist-tools.js";
 import { registerDocsTools } from "../tools/docs-tools.js";
 import { registerDeferTools } from "../tools/defer-tools.js";
 import { registerFeedTools } from "../tools/feed-tools.js";
+import { registerGitWorktreeTools } from "../tools/git-worktree-tools.js";
 import { registerReportIntentTool } from "../tools/report-intent-tool.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
 import { registerScheduleTools } from "../tools/schedule-tools.js";
@@ -51,6 +52,7 @@ export function registerAllBridgeTools(
   registerTagTools(server, ctx, { hiddenTools });
   registerChecklistTools(server, ctx, { hiddenTools });
   registerFeedTools(server, ctx, { hiddenTools });
+  registerGitWorktreeTools(server, ctx, { hiddenTools });
   registerScheduleTools(server, ctx, { hiddenTools });
   registerDocsTools(server, ctx, { hiddenTools });
   registerSelfAdminTools(server, ctx, { hiddenTools });
