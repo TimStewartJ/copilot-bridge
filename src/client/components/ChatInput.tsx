@@ -574,7 +574,7 @@ export default function ChatInput({
   const modeMenuEnabled = !showAbortControl;
 
   return (
-    <div className="border-t border-border/80 bg-bg-secondary/95">
+    <div className="shrink-0 border-t border-border/80 bg-bg-secondary/95">
       <div className={COMPOSER_RAIL_CLASS}>
         {uploading > 0 && (
           <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
@@ -777,7 +777,7 @@ export default function ChatInput({
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               enterKeyHint="enter"
-              placeholder="Type a message, use the mic, or attach a file..."
+              placeholder="Type a message..."
               rows={1}
               className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
             />

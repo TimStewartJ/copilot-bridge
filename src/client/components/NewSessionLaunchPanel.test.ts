@@ -50,6 +50,16 @@ describe("NewSessionLaunchPanel", () => {
     harness = null;
   });
 
+  it("keeps launch options scrollable when the chat viewport is constrained", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, requiredProps()));
+
+    const panel = findAllByTag(harness!.dom.container, "DIV")
+      .find((element) => String(getReactProps(element)?.className ?? "").includes("overflow-y-auto"));
+    expect(getReactProps(panel)?.className).toContain("min-h-0");
+    expect(getReactProps(panel)?.className).toContain("items-start");
+    expect(getReactProps(panel)?.className).toContain("md:items-center");
+  });
+
   it("starts the three presets with GPT, Claude, and Other defaults", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
