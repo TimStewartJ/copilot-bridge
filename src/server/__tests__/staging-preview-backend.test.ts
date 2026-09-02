@@ -1,20 +1,20 @@
 import express from "express";
 import request from "./test-http.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApiRouter } from "../api-router.js";
 import { createAppContext } from "../app-context-factory.js";
 import { __testing } from "../staging-tools.js";
 import {
-  abortStagingPreviewRebuild,
-  beginStagingPreviewRebuild,
-  finishStagingPreviewRebuild,
+  activateStagingPreviewTarget,
   hasActiveStagingBackend,
+  initializeStagingBackend,
   __testing as backendManagerTesting,
 } from "../staging-backend-manager.js";
 import type { RuntimePaths } from "../runtime-paths.js";
+import { createPreviewTarget } from "../staging-preview-shared.js";
 import { makeTestDir, withTestEnv } from "./helpers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +143,26 @@ function writeUsage(runtimePaths: RuntimePaths, inputTokens: number): void {
 }
 
 describe("staging preview backend child process", () => {
+  it("preserves published generation data when its backend fails to start", async () => {
+    const stagingDir = createTempStagingDir();
+    writePreviewBackend(stagingDir);
+    const runtimePaths = runtimePathsFor(stagingDir);
+    writeFileSync(join(runtimePaths.dataDir, "bridge.db"), "published generation");
+    const prefix = "failed-generation-start";
+
+    await expect(initializeStagingBackend(prefix, stagingDir, {
+      dataDir: runtimePaths.dataDir,
+      target: {
+        ...createPreviewTarget(stagingDir),
+        prefix,
+        dataDir: runtimePaths.dataDir,
+        generationId: "generation-published",
+      },
+    })).rejects.toThrow(/Cannot find module|exited before it was ready/);
+
+    expect(existsSync(join(runtimePaths.dataDir, "bridge.db"))).toBe(true);
+  });
+
   it("stops a registered backend before releasing a preview rebuild", async () => {
     const stagingDir = createTempStagingDir();
     writePreviewBackend(stagingDir);
@@ -159,11 +179,15 @@ describe("staging preview backend child process", () => {
     startedBackends.push(backend);
     backendManagerTesting.seedActiveBackend(prefix, backend);
 
-    await beginStagingPreviewRebuild(prefix, "job-rebuild-stop");
+    await activateStagingPreviewTarget({
+      ...createPreviewTarget(stagingDir),
+      prefix,
+      dataDir: runtimePaths.dataDir,
+    }, "job-rebuild-stop");
 
     expect(hasActiveStagingBackend(prefix)).toBe(false);
-    expect(backendManagerTesting.isRebuilding(prefix)).toBe(true);
-    expect(finishStagingPreviewRebuild(prefix, "job-rebuild-stop", { rebuilt: true })).toBe(true);
+    expect(backendManagerTesting.isSwitching(prefix)).toBe(false);
+    expect(backendManagerTesting.hasRestorableTarget(prefix)).toBe(true);
     await cleanupBackend(backend);
   });
 
@@ -187,12 +211,13 @@ describe("staging preview backend child process", () => {
       throw new Error("process tree still alive");
     });
 
-    await expect(beginStagingPreviewRebuild(prefix, "job-rebuild-abort"))
+    await expect(activateStagingPreviewTarget({
+      ...createPreviewTarget(stagingDir),
+      prefix,
+      dataDir: runtimePaths.dataDir,
+    }, "job-rebuild-abort"))
       .rejects.toThrow("process tree still alive");
-    expect(backendManagerTesting.isRebuilding(prefix)).toBe(true);
-
-    expect(abortStagingPreviewRebuild(prefix, "job-rebuild-abort")).toBe(true);
-    expect(backendManagerTesting.isRebuilding(prefix)).toBe(false);
+    expect(backendManagerTesting.isSwitching(prefix)).toBe(false);
     expect(hasActiveStagingBackend(prefix)).toBe(true);
 
     backend.cleanup = cleanup;

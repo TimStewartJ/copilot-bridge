@@ -137,30 +137,6 @@ describe("lazy staging backend startup failures are bounded", () => {
 });
 
 describe("lazy staging request rejections", () => {
-  it("suppresses lazy startup until a preview rebuild finishes", async () => {
-    const mod = await loadManager();
-    mod.__testing.resetBackendState();
-
-    const stagingDir = makeTestDir("staging-rebuilding-preview");
-    const target = { ...createPreviewTarget(stagingDir), prefix: PREFIX };
-    mod.rememberRestorablePreviewTarget(target);
-    expect(mod.__testing.ensureLazyRouter(PREFIX)).toBe(true);
-
-    await mod.beginStagingPreviewRebuild(PREFIX, "job-1");
-    expect(mod.__testing.isRebuilding(PREFIX)).toBe(true);
-    expect(mod.__testing.hasRestorableTarget(PREFIX)).toBe(true);
-
-    const restore = vi.fn(async () => ({ restored: true, attempts: 1 }));
-    await expect(
-      mod.__testing.startRestorableBackend(PREFIX, target, "test", { restore }),
-    ).resolves.toEqual({ ok: false, error: "Staging preview is rebuilding." });
-    expect(restore).not.toHaveBeenCalled();
-
-    expect(mod.finishStagingPreviewRebuild(PREFIX, "job-1", { rebuilt: false })).toBe(true);
-    expect(mod.__testing.isRebuilding(PREFIX)).toBe(false);
-    expect(mod.__testing.ensureLazyRouter(PREFIX)).toBe(true);
-  });
-
   it("forwards a handler rejection to next() instead of hanging the request", async () => {
     const mod = await loadManager();
     mod.__testing.resetBackendState();

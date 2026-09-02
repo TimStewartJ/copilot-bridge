@@ -3,7 +3,7 @@
 // and deploy only after validation passes.
 
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
 import type express from "express";
 import { randomBytes } from "node:crypto";
 import {
@@ -46,16 +46,12 @@ import {
 } from "./staging-validation-stamp.js";
 import { config } from "./config.js";
 import {
-  abortStagingPreviewRebuild,
-  beginStagingPreviewRebuild,
+  activateStagingPreviewTarget,
   buildStagingBackendSpawnConfig,
   cleanupStagingBackendResources,
   createStagingProxyHandler,
-  finishStagingPreviewRebuild,
   forgetStagingPreviewBackend,
   getExistingPreviewRuntime,
-  getStagingPreviewRebuildJobId,
-  hasSeededStagingDatabase,
   hasActiveStagingBackend,
   getStagingRouter,
   hasPendingStagingBackendStart,
@@ -75,14 +71,6 @@ import {
   type SeedStagingDataOptions,
 } from "./staging-backend-manager.js";
 import {
-  clearPreviewRebuildReady,
-  createPreviewRebuildCoordination,
-  signalPreviewRebuildFailure,
-  signalPreviewRebuildReady,
-  waitForPreviewRebuildReady,
-  type PreviewRebuildCoordination,
-} from "./staging-preview-rebuild-coordination.js";
-import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   FAILURE_DETAIL_OUTPUT_LIMIT,
   FAILURE_SESSION_LOG_OUTPUT_LIMIT,
@@ -98,13 +86,19 @@ import {
   STAGING_STALE_ARTIFACT_MAX_AGE_MS,
   STAGING_STALE_ARTIFACT_RECENT_GRACE_MS,
   buildPreviewPrefix,
+  createPreviewGenerationTarget,
   createPreviewTarget,
   directoryMtimeMs,
+  listActivePreviewTargets,
   listStagingPreviewParents,
   parsePreviewPrefix,
+  prunePreviewGenerations,
   previewTargetLastActivityMs,
-  removeDirectoryWithRetries,
+  publishPreviewGeneration,
+  readActivePreviewTarget,
+  removePreviewGeneration,
   removePreviewData,
+  removePublishedPreview,
   shouldManageStagingArtifacts,
   uniqueResolvedPaths,
   type PreviewTarget,
@@ -130,7 +124,6 @@ import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
 import {
   ActiveManagementJobError,
-  type ManagementJob,
   type ManagementJobStore,
 } from "./management-job-store.js";
 import {
@@ -321,11 +314,31 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
   for (const stagingPreviewParent of uniqueResolvedPaths(stagingPreviewParents)) {
     if (!existsSync(stagingPreviewParent)) continue;
     try {
+      const generatedPrefixes = new Set<string>();
+      for (const target of listActivePreviewTargets(stagingPreviewParent, stagingParent)) {
+        generatedPrefixes.add(target.prefix);
+        const currentFrontend = previewMap.get(target.prefix);
+        const isNewFrontend = currentFrontend === undefined;
+        if (isNewFrontend) {
+          previewMap.set(target.prefix, target.outDir);
+        }
+        if (isNewFrontend) registeredPreviewDirs++;
+        if (
+          shouldRegisterBackends
+          && previewMap.get(target.prefix) === target.outDir
+          && !hasRestorablePreviewTarget(target.prefix)
+          && !isPreviewRetiredAfterStartFailures(target.prefix, target.updatedAtMs)
+        ) {
+          rememberRestorablePreviewTarget(target);
+        }
+      }
+
       const distEntries = readdirSync(stagingPreviewParent, { withFileTypes: true });
       for (const entry of distEntries) {
         if (!entry.isDirectory()) continue;
         const parsed = parsePreviewPrefix(entry.name);
         if (!parsed) continue;
+        if (generatedPrefixes.has(entry.name)) continue;
 
         const distDir = join(stagingPreviewParent, entry.name);
         if (!existsSync(join(distDir, "index.html"))) continue;
@@ -378,27 +391,44 @@ async function runStagingPreviewDiscovery(
 ): Promise<void> {
   for (const job of trigger.completedJobs) {
     if (job.type !== "staging_preview") continue;
-    const target = getPreviewJobTarget(job.input);
-    const coordination = createPreviewRebuildCoordination(job);
-    clearPreviewRebuildReady(coordination);
-    if (!target) continue;
+    const legacyTarget = getPreviewJobTarget(job.input);
+    if (!legacyTarget) continue;
 
-    const rebuildJobId = getStagingPreviewRebuildJobId(target.prefix);
-    if (rebuildJobId === job.id) {
-      const released = finishStagingPreviewRebuild(target.prefix, job.id, {
-        rebuilt: job.status === "succeeded",
-      });
-      if (released) {
-        writeLog(
-          job.status === "succeeded"
-            ? `Staging preview ${target.prefix} rebuild completed; lazy backend startup is enabled`
-            : `Staging preview ${target.prefix} rebuild ended with ${job.status}; the previous backend may start lazily again`,
-        );
-      } else {
-        writeLog(`Warning: staging preview ${target.prefix} remains suppressed because its previous backend did not stop cleanly`);
+    if (job.status !== "succeeded") continue;
+
+    const target = readActivePreviewTarget(legacyTarget.prefix);
+    if (!target || resolve(target.stagingDir) !== resolve(legacyTarget.stagingDir)) {
+      writeLog(`Warning: staging preview ${legacyTarget.prefix} completed without a valid active generation`);
+      continue;
+    }
+
+    try {
+      await activateStagingPreviewTarget(target, job.id);
+      activePreviews.set(target.prefix, target.outDir);
+      writeLog(
+        `Staging preview ${target.prefix} activated generation ${target.generationId}`,
+      );
+    } catch (error) {
+      writeLog(
+        `Warning: could not activate staging preview generation for ${target.prefix}: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+
+    try {
+      const removed = prunePreviewGenerations(
+        target.prefix,
+        target.generationId!,
+      );
+      if (removed > 0) {
+        writeLog(`Removed ${removed} retired generation(s) for staging preview ${target.prefix}`);
       }
-    } else if (job.status === "succeeded") {
-      await invalidateRebuiltPreviewBackend(job.input, writeLog);
+    } catch (error) {
+      writeLog(
+        `Warning: could not remove retired staging preview generations for ${target.prefix}: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   await cleanupMissingRegisteredPreviews(writeLog);
@@ -412,69 +442,6 @@ function getPreviewJobTarget(input: unknown): PreviewTarget | null {
   if (typeof stagingDir !== "string" || stagingDir.trim() === "") return null;
   const target = createPreviewTarget(stagingDir);
   return parsePreviewPrefix(target.prefix) ? target : null;
-}
-
-async function prepareStagingPreviewRebuilds(
-  jobs: ManagementJob[],
-  writeLog: (msg: string) => void,
-): Promise<void> {
-  for (const job of jobs) {
-    if (job.type !== "staging_preview") continue;
-    const target = getPreviewJobTarget(job.input);
-    const coordination = createPreviewRebuildCoordination(job);
-    if (!target || !coordination) {
-      writeLog(`Warning: management job ${job.id} could not establish staging preview rebuild coordination`);
-      continue;
-    }
-
-    try {
-      await beginStagingPreviewRebuild(target.prefix, job.id);
-      signalPreviewRebuildReady(coordination, target.prefix);
-      writeLog(`Staging preview ${target.prefix} backend stopped and suppressed for rebuild`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      abortStagingPreviewRebuild(target.prefix, job.id);
-      try {
-        signalPreviewRebuildFailure(coordination, target.prefix, message);
-      } catch (signalError) {
-        writeLog(
-          `Warning: could not report staging preview ${target.prefix} rebuild preparation failure: `
-          + `${signalError instanceof Error ? signalError.message : String(signalError)}`,
-        );
-      }
-      writeLog(
-        `Warning: could not prepare staging preview ${target.prefix} for rebuild: `
-        + message,
-      );
-    }
-  }
-}
-
-/**
- * A rebuilt preview must not keep serving its previous staged backend: the runner
- * only replaces the frontend bundle, so the in-process child process still runs the
- * pre-rebuild code. Dropping the backend state here lets the next API request lazily
- * restore it from the new build (its seeded data dir is preserved).
- */
-async function invalidateRebuiltPreviewBackend(
-  input: unknown,
-  writeLog: (msg: string) => void,
-): Promise<void> {
-  const stagingDir = typeof input === "object" && input !== null
-    ? (input as { stagingDir?: unknown }).stagingDir
-    : undefined;
-  if (typeof stagingDir !== "string" || stagingDir.trim() === "") return;
-
-  const prefix = buildPreviewPrefix(stagingDir);
-  if (!parsePreviewPrefix(prefix)) return;
-  if (!hasStagingBackendState(prefix)) return;
-
-  try {
-    await cleanupStagingBackendResources(prefix, { removeData: false });
-    writeLog(`Staging preview ${prefix} was rebuilt — staged backend will restart on the new build`);
-  } catch (error) {
-    writeLog(`Warning: could not reset staged backend for rebuilt preview ${prefix}: ${error instanceof Error ? error.message : String(error)}`);
-  }
 }
 
 /**
@@ -496,7 +463,6 @@ export function startStagingPreviewDiscovery(options: {
     store,
     log: writeLog,
     pollIntervalMs: options.pollIntervalMs,
-    prepare: (jobs) => prepareStagingPreviewRebuilds(jobs, writeLog),
     discover: (trigger) => runStagingPreviewDiscovery(trigger, writeLog),
   });
   controller.resumeActiveJobs();
@@ -506,11 +472,6 @@ export function startStagingPreviewDiscovery(options: {
 async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void): Promise<void> {
   for (const [prefix, distDir] of [...activePreviews.entries()]) {
     if (existsSync(join(distDir, "index.html"))) continue;
-    if (getStagingPreviewRebuildJobId(prefix)) {
-      writeLog(`Staging preview ${prefix} assets are temporarily unavailable during rebuild`);
-      activePreviews.delete(prefix);
-      continue;
-    }
     writeLog(`Staging preview ${prefix} disappeared from disk — cleaning up in-process backend state`);
     activePreviews.delete(prefix);
     try {
@@ -524,10 +485,7 @@ async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void)
 
 function removeStagingDist(prefix: string): void {
   for (const previewParent of listStagingPreviewParents()) {
-    const distDir = join(previewParent, prefix);
-    if (existsSync(distDir)) {
-      removeDirectoryWithRetries(distDir);
-    }
+    removePublishedPreview(prefix, previewParent);
   }
   activePreviews.delete(prefix);
 }
@@ -831,11 +789,43 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   for (const stagingPreviewParent of uniqueResolvedPaths(stagingPreviewParents)) {
     if (!existsSync(stagingPreviewParent)) continue;
     try {
+      const generatedPrefixes = new Set<string>();
+      for (const target of listActivePreviewTargets(stagingPreviewParent, stagingParent)) {
+        generatedPrefixes.add(target.prefix);
+        const parsed = parsePreviewPrefix(target.prefix, activeWorktrees);
+        if (parsed) {
+          if (!restorablePreviews.has(target.prefix)) {
+            previewMap.set(target.prefix, target.outDir);
+            restorablePreviews.set(target.prefix, target);
+            restoredPreviewDirs++;
+          }
+          try {
+            prunePreviewGenerations(
+              target.prefix,
+              target.generationId!,
+              stagingPreviewParent,
+            );
+          } catch (error) {
+            writeLog(
+              `Warning: could not prune retired startup generations for ${target.prefix}: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        } else if (!skipOrphanPrune) {
+          removePublishedPreview(target.prefix, stagingPreviewParent);
+          previewMap.delete(target.prefix);
+          forgetStagingPreviewBackend(target.prefix);
+          orphanedPreviewDirs++;
+        }
+      }
+
       const distEntries = readdirSync(stagingPreviewParent, { withFileTypes: true });
       for (const entry of distEntries) {
         if (!entry.isDirectory()) continue;
+        if (entry.name.startsWith(".")) continue;
         const parsed = parsePreviewPrefix(entry.name, activeWorktrees);
         if (parsed) {
+          if (generatedPrefixes.has(entry.name)) continue;
           const distDir = join(stagingPreviewParent, entry.name);
           if (!restorablePreviews.has(entry.name)) {
             const target = createRestorablePreviewTarget(
@@ -901,6 +891,9 @@ export async function pruneOrphanedWorktrees(): Promise<void> {
 }
 
 export const __testing = {
+  createPreviewGenerationTarget,
+  publishPreviewGeneration,
+  readActivePreviewTarget,
   seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}) {
     return seedStagingData(stagingDir, options).dataDir;
   },
@@ -937,8 +930,11 @@ export interface StagingJobRunOptions {
   log?: (message: string) => void;
   startBackend?: boolean;
   registerInProcess?: boolean;
-  seedPreviewData?: (stagingDir: string) => void;
-  rebuildCoordination?: PreviewRebuildCoordination;
+  previewGenerationId?: string;
+  seedPreviewData?: (
+    stagingDir: string,
+    options?: SeedStagingDataOptions,
+  ) => void;
   deferDeployRestart?: boolean;
 }
 
@@ -963,32 +959,14 @@ export async function runStagingPreviewJob(
     );
   }
 
-  const target = createPreviewTarget(stagingDir);
+  const generationId = options.previewGenerationId ?? randomBytes(8).toString("hex");
+  const target = createPreviewGenerationTarget(stagingDir, generationId);
   const { prefix, basePath, outDir } = target;
 
-  writeLog(`Building staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
-
-  if (
-    options.startBackend !== true
-    && options.rebuildCoordination
-    && hasSeededStagingDatabase(stagingDir)
-  ) {
-    writeLog(`Waiting for the live server to stop the existing staged backend for ${prefix}...`);
-    try {
-      await waitForPreviewRebuildReady(options.rebuildCoordination);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return stagingFailure(
-        "Staging preview rebuild coordination failed.",
-        message,
-        {
-          sessionLog: `Staging preview rebuild coordination failed for ${stagingDir}: ${message}`,
-          toolTelemetry: { stagingDir, previewPath: basePath, outDir },
-        },
-      );
-    }
-    writeLog(`Existing staged backend for ${prefix} is stopped; rebuild may proceed.`);
-  }
+  writeLog(
+    `Building staging preview generation ${generationId}: `
+    + `${stagingDir} → ${outDir} (base: ${basePath})`,
+  );
 
   const previewParent = dirname(outDir);
   if (!existsSync(previewParent)) {
@@ -1069,6 +1047,7 @@ export async function runStagingPreviewJob(
     stagingDir,
   );
   if (!buildResult.ok) {
+    removePreviewGeneration(target);
     return commandFailure(
       "Staging preview build failed.",
       `Vite could not build the staging preview for ${basePath}.`,
@@ -1079,29 +1058,49 @@ export async function runStagingPreviewJob(
     );
   }
 
-  if (options.startBackend !== true) {
-    writeLog("Preparing isolated staging data snapshot...");
-    try {
-      const seedPreviewData = options.seedPreviewData ?? seedStagingData;
-      seedPreviewData(stagingDir);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return stagingFailure(
-        "Staging preview data preparation failed.",
-        `The isolated staging runtime could not be prepared: ${message}`,
-        {
-          sessionLog: `Staging preview data preparation failed for ${stagingDir}: ${message}`,
-          toolTelemetry: { stagingDir, previewPath: basePath, outDir },
-        },
-      );
-    }
-    writeLog("Isolated staging data snapshot ready.");
+  writeLog("Preparing isolated staging data snapshot...");
+  try {
+    const seedPreviewData = options.seedPreviewData ?? seedStagingData;
+    seedPreviewData(stagingDir, { dataDir: target.dataDir });
+  } catch (error) {
+    removePreviewGeneration(target);
+    const message = error instanceof Error ? error.message : String(error);
+    return stagingFailure(
+      "Staging preview data preparation failed.",
+      `The isolated staging runtime could not be prepared: ${message}`,
+      {
+        sessionLog: `Staging preview data preparation failed for ${stagingDir}: ${message}`,
+        toolTelemetry: { stagingDir, previewPath: basePath, outDir },
+      },
+    );
   }
+  writeLog("Isolated staging data snapshot ready.");
+
+  try {
+    publishPreviewGeneration(target);
+  } catch (error) {
+    removePreviewGeneration(target);
+    const message = error instanceof Error ? error.message : String(error);
+    return stagingFailure(
+      "Staging preview generation publish failed.",
+      `The completed preview generation could not be published atomically: ${message}`,
+      {
+        sessionLog: `Staging preview generation publish failed for ${stagingDir}: ${message}`,
+        toolTelemetry: {
+          stagingDir,
+          previewPath: basePath,
+          outDir,
+          generationId,
+        },
+      },
+    );
+  }
+  writeLog(`Published staging preview generation ${generationId}.`);
 
   const registerInProcess = options.registerInProcess ?? options.startBackend === true;
   if (registerInProcess) {
+    await activateStagingPreviewTarget(target, `in-process-${generationId}`);
     activePreviews.set(prefix, outDir);
-    rememberRestorablePreviewTarget(target);
   }
 
   let backendReady = false;
@@ -1110,7 +1109,10 @@ export async function runStagingPreviewJob(
   if (options.startBackend === true) {
     if (hasRegisteredExpressApp()) {
       try {
-        await initializeStagingBackend(prefix, stagingDir);
+        await initializeStagingBackend(prefix, stagingDir, {
+          dataDir: target.dataDir,
+          target,
+        });
         backendReady = true;
       } catch (err) {
         backendError = err instanceof Error ? err.message : String(err);
