@@ -18,7 +18,7 @@ import {
   type ProcessOneResult,
 } from "./defer-runner-core.js";
 import { isRestartPending } from "./restart-controller.js";
-import { formatReturnedDeferPrompt } from "./defer-result-message.js";
+import { createReturnedDeferDelivery } from "./defer-result-message.js";
 import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import { isRestartRecoveryPrompt } from "./restart-resume.js";
 
@@ -37,7 +37,6 @@ export {
 
 export interface DeferredPromptRunnerOptions extends DeferRunnerOptions {
   isRestartPending?: () => boolean;
-  onParentMessageQueued?: () => void;
 }
 
 export function createDeferredPromptRunner(
@@ -63,24 +62,37 @@ export function createDeferredPromptRunner(
       const item = store.get(id);
       if (!item || item.status !== "pending") return "unchanged";
       if (ctx.deliveryGuard.isActive(item.sessionId)) return "blocked";
+      const isDelivery = item.purpose === "delivery";
 
+      if (
+        isDelivery
+        && await sessionManager.hasPersistedUserMessage?.(item.sessionId, item.prompt)
+      ) {
+        return store.markCompletedById(id) ? "changed" : "unchanged";
+      }
       if (item.attempts >= MAX_ATTEMPTS) {
-        // Can't claim (no valid token), just directly cancel
-        const cancelled = store.cancelById(id);
-        console.error(`[deferred-runner] Deferral ${id} exceeded max attempts; cancelling`);
-        if (cancelled) {
+        const changed = isDelivery
+          ? store.markFailedById(id, `Exceeded max attempts (${MAX_ATTEMPTS})`)
+          : store.cancelById(id);
+        console.error(`[deferred-runner] ${isDelivery ? "Delivery" : "Deferral"} ${id} exceeded max attempts`);
+        if (changed) {
           ctx.recordSessionAttention(item.sessionId);
           ctx.emitDeferSummary(item.sessionId);
         }
-        return cancelled ? "changed" : "unchanged";
+        return changed ? "changed" : "unchanged";
       }
 
       // Check session exists
-      const sessionList = await sessionManager.listSessionsFromDisk({ includeArchived: false });
+      const sessionList = await sessionManager.listSessionsFromDisk({ includeArchived: isDelivery });
       if (!ctx.isStarted()) return "unchanged";
       if (ctx.deliveryGuard.isActive(item.sessionId)) return "blocked";
       const sessionExists = sessionList.some((s: any) => s.sessionId === item.sessionId);
       if (!sessionExists) {
+        if (isDelivery) {
+          return store.markFailedById(id, "Parent session no longer exists.")
+            ? "changed"
+            : "unchanged";
+        }
         const cancelled = store.cancelForSession(item.sessionId);
         console.warn(`[deferred-runner] Session ${item.sessionId} no longer exists; cancelling ${cancelled} deferral(s)`);
         if (cancelled > 0) ctx.emitDeferSummary(item.sessionId);
@@ -97,7 +109,7 @@ export function createDeferredPromptRunner(
       let claimToken: string | undefined;
       let workerLease: DeferWorkerLease | undefined;
       try {
-        const needsWorker = !isRestartRecoveryPrompt(item.prompt);
+        const needsWorker = !isDelivery && !isRestartRecoveryPrompt(item.prompt);
         const acquireWorker = (sessionManager as SessionManager & {
           tryAcquireDeferWorker?: () => DeferWorkerLease | undefined;
         }).tryAcquireDeferWorker;
@@ -155,9 +167,8 @@ export function createDeferredPromptRunner(
     ): Promise<void> {
       const { id, sessionId, prompt, attempts } = item;
       let shouldProcessNextDuePrompt = false;
-      let parentMessageQueued = false;
       try {
-        if (isRestartRecoveryPrompt(item.prompt)) {
+        if (item.purpose === "delivery" || isRestartRecoveryPrompt(item.prompt)) {
           await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
         } else {
           const workerInput: DeferWorkerInput = {
@@ -172,22 +183,15 @@ export function createDeferredPromptRunner(
           if (!result) {
             await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
           } else if (result.action === "return") {
-            const deliveryId = result.deliveryId ?? randomUUID();
-            const returnPrompt = formatReturnedDeferPrompt(
+            const delivery = createReturnedDeferDelivery(
               workerInput,
               result.message ?? "Deferred work completed.",
-              { deliveryId },
+              { deliveryId: result.deliveryId ?? randomUUID() },
             );
-            if (!store.completeWithMessage(id, claimToken, {
-              id: deliveryId,
-              sessionId,
-              prompt: returnPrompt,
-              sourceId: item.deferId,
-            })) {
+            if (!store.completeWithMessage(id, claimToken, delivery)) {
               throw new Error(`Failed to queue deferred worker result ${item.deferId}.`);
             }
             ctx.emitDeferSummary(sessionId);
-            parentMessageQueued = true;
             shouldProcessNextDuePrompt = true;
             return;
           } else if (result.action === "continue" || result.action === "notify") {
@@ -228,7 +232,7 @@ export function createDeferredPromptRunner(
           console.warn(
             `[deferred-runner] Retrying deferral ${id} after attempt ${nextAttempts}/${MAX_ATTEMPTS}${isBusy ? " (session busy)" : ""}: ${msg}`,
           );
-          const retried = store.retry(id, claimToken, retryAt);
+          const retried = store.retry(id, claimToken, retryAt, msg);
           if (!retried) {
             console.error(`[deferred-runner] Failed to re-queue deferral ${id}`);
           } else {
@@ -248,7 +252,6 @@ export function createDeferredPromptRunner(
       } finally {
         workerLease?.release();
         ctx.afterDeliverySettled(renewalTimer, sessionId, shouldProcessNextDuePrompt);
-        if (parentMessageQueued) options.onParentMessageQueued?.();
       }
     }
 

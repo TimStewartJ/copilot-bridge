@@ -1,6 +1,17 @@
 import { randomUUID } from "node:crypto";
 
 export const DEFERRED_WORK_RESULT_PROMPT_PREFIX = "<deferred-work-result>";
+const RETURNED_RESULT_INTRO =
+  "A temporary deferred-work session returned this result. Continue from it without repeating the completed check:";
+const RETURNED_RESULT_PATTERN = new RegExp([
+  `^${DEFERRED_WORK_RESULT_PROMPT_PREFIX}\\r?\\n`,
+  "deferId: ((once|interval)_[^\\r\\n]+)\\r?\\n",
+  "kind: (once|interval)",
+  "(?:\\r?\\ndeliveryId: ([^\\r\\n]+))?",
+  "(\\r?\\ncontinues: true)?",
+  "\\r?\\n</deferred-work-result>\\r?\\n\\r?\\n",
+  RETURNED_RESULT_INTRO,
+].join(""));
 
 export interface DeferredWorkResultMessage {
   deferId: string;
@@ -9,72 +20,47 @@ export interface DeferredWorkResultMessage {
   continues: boolean;
 }
 
-export function formatReturnedDeferPrompt(
-  input: Pick<DeferredWorkResultMessage, "deferId" | "kind">,
+export interface DeferredResultDelivery {
+  id: string;
+  sessionId: string;
+  sourceId: string;
+  prompt: string;
+}
+
+export function createReturnedDeferDelivery(
+  input: Pick<DeferredWorkResultMessage, "deferId" | "kind"> & { parentSessionId: string },
   message: string,
   options: { continues?: boolean; deliveryId?: string } = {},
-): string {
+): DeferredResultDelivery {
   const deliveryId = options.deliveryId ?? randomUUID();
-  return [
-    DEFERRED_WORK_RESULT_PROMPT_PREFIX,
-    `deferId: ${input.deferId}`,
-    `kind: ${input.kind}`,
-    `deliveryId: ${deliveryId}`,
-    ...(options.continues ? ["continues: true"] : []),
-    "</deferred-work-result>",
-    "",
-    "A temporary deferred-work session returned this result. Continue from it without repeating the completed check:",
-    "",
-    message,
-    ...(options.continues ? ["", "The recurring deferred check remains active."] : []),
-  ].join("\n");
+  return {
+    id: deliveryId,
+    sessionId: input.parentSessionId,
+    sourceId: input.deferId,
+    prompt: [
+      DEFERRED_WORK_RESULT_PROMPT_PREFIX,
+      `deferId: ${input.deferId}`,
+      `kind: ${input.kind}`,
+      `deliveryId: ${deliveryId}`,
+      ...(options.continues ? ["continues: true"] : []),
+      "</deferred-work-result>",
+      "",
+      RETURNED_RESULT_INTRO,
+      "",
+      message,
+      ...(options.continues ? ["", "The recurring deferred check remains active."] : []),
+    ].join("\n"),
+  };
 }
 
 export function parseReturnedDeferPrompt(prompt: string): DeferredWorkResultMessage | undefined {
-  const closingTag = "</deferred-work-result>";
-  const closingIndex = prompt.indexOf(closingTag);
-  if (!prompt.startsWith(`${DEFERRED_WORK_RESULT_PROMPT_PREFIX}\n`) || closingIndex < 0) {
-    return undefined;
-  }
-
-  const lines = prompt.slice(
-    DEFERRED_WORK_RESULT_PROMPT_PREFIX.length + 1,
-    closingIndex,
-  ).trimEnd().split(/\r?\n/);
-  const values = new Map<string, string>();
-  for (const line of lines) {
-    const separator = line.indexOf(": ");
-    if (separator < 1) return undefined;
-    const key = line.slice(0, separator);
-    const value = line.slice(separator + 2);
-    if (!["deferId", "kind", "deliveryId", "continues"].includes(key) || values.has(key)) {
-      return undefined;
-    }
-    values.set(key, value);
-  }
-
-  const deferId = values.get("deferId");
-  const kind = values.get("kind");
-  const deliveryId = values.get("deliveryId");
-  const continues = values.get("continues");
-  const body = prompt.slice(closingIndex + closingTag.length).replace(/^\r?\n\r?\n/, "");
-  if (
-    !deferId
-    || (!deferId.startsWith("once_") && !deferId.startsWith("interval_"))
-    || (kind !== "once" && kind !== "interval")
-    || (deliveryId !== undefined && !deliveryId.trim())
-    || (continues !== undefined && continues !== "true")
-    || !body.startsWith(
-      "A temporary deferred-work session returned this result. Continue from it without repeating the completed check:",
-    )
-  ) {
-    return undefined;
-  }
-
+  const match = RETURNED_RESULT_PATTERN.exec(prompt);
+  if (!match || match[2] !== match[3]) return undefined;
+  const [, deferId, , kind, deliveryId, continues] = match;
   return {
-    deferId,
-    kind,
+    deferId: deferId!,
+    kind: kind as "once" | "interval",
     ...(deliveryId ? { deliveryId } : {}),
-    continues: continues === "true",
+    continues: continues !== undefined,
   };
 }

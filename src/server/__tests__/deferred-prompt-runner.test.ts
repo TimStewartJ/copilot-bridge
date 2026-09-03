@@ -12,9 +12,8 @@ import {
 } from "../deferred-prompt-runner.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createSessionMessageOutboxStore } from "../session-message-outbox-store.js";
-import { createSessionMessageOutboxRunner } from "../session-message-outbox-runner.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
+import { createReturnedDeferDelivery } from "../defer-result-message.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
@@ -34,8 +33,15 @@ function makeMockSessionManager(overrides: Partial<{
   archivedSessions: Set<string>;
   busySessions: Set<string>;
   startWorkError?: Error;
+  persistedUserMessage?: boolean;
 }> = {}) {
-  const { sessions = [], archivedSessions = new Set(), busySessions = new Set(), startWorkError } = overrides;
+  const {
+    sessions = [],
+    archivedSessions = new Set(),
+    busySessions = new Set(),
+    startWorkError,
+    persistedUserMessage = false,
+  } = overrides;
   const started: Array<{ sessionId: string; prompt: string }> = [];
   const deliveryOptions: unknown[] = [];
   const attention: Array<{ sessionId: string; at?: string }> = [];
@@ -45,6 +51,7 @@ function makeMockSessionManager(overrides: Partial<{
         .filter((s) => options.includeArchived !== false || !archivedSessions.has(s))
         .map((s) => ({ sessionId: s })),
     isSessionBusy: (sid: string) => busySessions.has(sid),
+    hasPersistedUserMessage: vi.fn(async () => persistedUserMessage),
     startWork: (sessionId: string, prompt: string) => {
       if (startWorkError) throw startWorkError;
       started.push({ sessionId, prompt });
@@ -133,55 +140,11 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it("queues a worker return before delivering it to the parent", async () => {
-      const store = createDeferredPromptStore(db);
-      const outbox = createSessionMessageOutboxStore(db);
-      const bus = createGlobalBus();
-      const prompt = store.create(
-        "session-1",
-        "Check status",
-        new Date(Date.now() - 1_000).toISOString(),
-      );
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
-      sm.runDeferWorker = vi.fn(async () => ({
-        action: "return",
-        message: "Build failed.",
-        deliveryId: "delivery-1",
-      }));
-      const onParentMessageQueued = vi.fn();
-      const runner = createDeferredPromptRunner(
-        store,
-        sm,
-        bus,
-        undefined,
-        undefined,
-        { onParentMessageQueued },
-      );
-
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm.runDeferWorker).toHaveBeenCalledOnce();
-      expect(sm._started).toEqual([]);
-      expect(outbox.listForSession("session-1")).toEqual([
-        expect.objectContaining({
-          id: "delivery-1",
-          sessionId: "session-1",
-          prompt: expect.stringContaining("Build failed."),
-        }),
-      ]);
-      expect(store.get(prompt.id)?.status).toBe("completed");
-      expect(onParentMessageQueued).toHaveBeenCalledOnce();
-      runner.shutdown();
-    });
-
     it("releases the shared guard before waking parent-message delivery", async () => {
       const store = createDeferredPromptStore(db);
-      const outbox = createSessionMessageOutboxStore(db);
       const bus = createGlobalBus();
       const guard = createDeferDeliveryGuard();
-      store.create(
+      const prompt = store.create(
         "session-1",
         "Check status",
         new Date(Date.now() - 1_000).toISOString(),
@@ -193,17 +156,13 @@ describe("deferred-prompt-runner", () => {
         message: "Build failed.",
         deliveryId: "delivery-1",
       }));
-      const outboxRunner = createSessionMessageOutboxRunner(outbox, sm, bus, guard);
       const runner = createDeferredPromptRunner(
         store,
         sm,
         bus,
         guard,
-        undefined,
-        { onParentMessageQueued: () => outboxRunner.poke() },
       );
 
-      outboxRunner.start();
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
 
@@ -213,9 +172,84 @@ describe("deferred-prompt-runner", () => {
           prompt: expect.stringContaining("Build failed."),
         }),
       ]);
-      expect(outbox.get("delivery-1")?.status).toBe("completed");
+      expect(store.get(prompt.id)?.status).toBe("completed");
+      expect(store.get("delivery-1")?.status).toBe("completed");
       runner.shutdown();
-      outboxRunner.shutdown();
+    });
+
+    it("keeps and delivers a queued result when its parent is archived", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
+        { deferId: "interval_1", kind: "interval", parentSessionId: "session-1" },
+        "Build completed.",
+        { deliveryId: "delivery-1" },
+      ), new Date(Date.now() + 1_000).toISOString());
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        archivedSessions: new Set(["session-1"]),
+      });
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+      runner.start();
+      bus.emit({ type: "session:archived", sessionId: "session-1", archived: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.get(delivery.id)?.status).toBe("pending");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sm._started).toEqual([
+        { sessionId: "session-1", prompt: delivery.prompt },
+      ]);
+      expect(store.get(delivery.id)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("suppresses restart redelivery when the exact result is already persisted", async () => {
+      const store = createDeferredPromptStore(db);
+      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
+        { deferId: "once_1", kind: "once", parentSessionId: "session-1" },
+        "Already delivered.",
+        { deliveryId: "delivery-1" },
+      ));
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        persistedUserMessage: true,
+      });
+      const runner = createDeferredPromptRunner(store, sm as any, createGlobalBus());
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm.hasPersistedUserMessage).toHaveBeenCalledWith("session-1", delivery.prompt);
+      expect(sm._started).toEqual([]);
+      expect(store.get(delivery.id)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("deduplicates a persisted result even after its final attempt", async () => {
+      const store = createDeferredPromptStore(db);
+      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
+        { deferId: "once_1", kind: "once", parentSessionId: "session-1" },
+        "Already delivered.",
+        { deliveryId: "delivery-1" },
+      ));
+      db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
+        .run(MAX_ATTEMPTS, delivery.id);
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        persistedUserMessage: true,
+      });
+      const runner = createDeferredPromptRunner(store, sm as any, createGlobalBus());
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.get(delivery.id)).toMatchObject({
+        status: "completed",
+        lastError: undefined,
+      });
+      expect(sm._started).toEqual([]);
+      runner.shutdown();
     });
 
     it("does not let a stale worker complete a reactivated one-shot defer", async () => {

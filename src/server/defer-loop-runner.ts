@@ -1,6 +1,5 @@
 // Recurring defer loop runner — dispatches interval same-session prompts.
 
-import { randomUUID } from "node:crypto";
 import {
   getDeferLoopOccurrenceStatus,
   type DeferLoop,
@@ -12,7 +11,7 @@ import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-deliv
 import type { DeferSummarySources } from "./defer-summary.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
-import { formatReturnedDeferPrompt } from "./defer-result-message.js";
+import { createReturnedDeferDelivery } from "./defer-result-message.js";
 import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import {
   classifyDeferDeliveryError,
@@ -102,17 +101,11 @@ export function createDeferLoopRunner(
     status: Exclude<DeferLoopOccurrenceStatus, "active">,
   ): boolean {
     const workerInput = buildWorkerInput(loop);
-    const deliveryId = randomUUID();
-    const queued = store.markTerminalWithMessage(loop.id, status, {
-      id: deliveryId,
-      sessionId: loop.sessionId,
-      sourceId: loop.deferId,
-      prompt: formatReturnedDeferPrompt(
-        workerInput,
-        terminalMessage(loop, status),
-        { deliveryId },
-      ),
-    });
+    const queued = store.markTerminalWithMessage(
+      loop.id,
+      status,
+      createReturnedDeferDelivery(workerInput, terminalMessage(loop, status)),
+    );
     if (queued) options.onParentMessageQueued?.();
     return queued;
   }
@@ -250,128 +243,50 @@ export function createDeferLoopRunner(
           loop.runCount + 1,
           nextRunAt,
         );
-        if (result?.action === "return") {
-          const deliveryId = result.deliveryId ?? randomUUID();
-          const returnPrompt = formatReturnedDeferPrompt(
-            workerInput,
-            result.message ?? "Deferred work completed.",
-            { deliveryId },
-          );
-          if (!store.finishOccurrenceWithMessage(
-            loop.id,
-            claimToken,
-            {
-              id: deliveryId,
-              sessionId: loop.sessionId,
-              prompt: returnPrompt,
-              sourceId: loop.deferId,
-            },
-            acceptedAt.toISOString(),
-          )) {
-            const current = store.get(loop.id);
-            if (current?.status !== "cancelled") {
-              console.error(`[defer-loop-runner] Worker returned but failed to finish loop ${loop.id}`);
-            }
-          } else {
-            ctx.emitDeferSummary(loop.sessionId);
-            parentMessageQueued = true;
-          }
-        } else if (result?.action === "notify") {
-          const deliveryId = result.deliveryId ?? randomUUID();
-          const returnPrompt = formatReturnedDeferPrompt(
-            workerInput,
-            occurrenceStatus === "active"
-              ? result.message ?? "Deferred work update."
-              : `${result.message ?? "Deferred work update."}\n\n${terminalMessage(loop, occurrenceStatus)}`,
-            { continues: occurrenceStatus === "active", deliveryId },
-          );
-          const updated = store.completeOccurrenceWithMessage(
-            loop.id,
-            claimToken,
-            {
-              id: deliveryId,
-              sessionId: loop.sessionId,
-              prompt: returnPrompt,
-              sourceId: loop.deferId,
-            },
-            nextRunAt,
-            acceptedAt.toISOString(),
-          );
-          if (!updated) {
-            const current = store.get(loop.id);
-            if (current?.status !== "cancelled") {
-              console.error(`[defer-loop-runner] Worker notified but failed to update loop ${loop.id}`);
-            }
-          } else {
-            ctx.emitDeferSummary(loop.sessionId);
-            parentMessageQueued = true;
-            shouldProcessNextDueLoop = updated.status === "active";
-            if (updated.status !== "active") ctx.recordSessionAttention(loop.sessionId);
-          }
-        } else if (result?.action === "expired") {
-          const deliveryId = randomUUID();
-          const returnPrompt = formatReturnedDeferPrompt(
-            workerInput,
-            terminalMessage(loop, "expired"),
-            { deliveryId },
-          );
-          if (store.markTerminalWithMessage(
-            loop.id,
-            "expired",
-            {
-              id: deliveryId,
-              sessionId: loop.sessionId,
-              prompt: returnPrompt,
-              sourceId: loop.deferId,
-            },
-            { claimToken, now: acceptedAt.toISOString() },
-          )) {
-            ctx.recordSessionAttention(loop.sessionId);
-            ctx.emitDeferSummary(loop.sessionId);
-            parentMessageQueued = true;
-          }
-        } else if (result?.action === "finish") {
-          if (!store.finishOccurrence(loop.id, claimToken, acceptedAt.toISOString())) {
-            const current = store.get(loop.id);
-            if (current?.status !== "cancelled") {
-              console.error(`[defer-loop-runner] Worker completed but failed to finish loop ${loop.id}`);
-            }
-          } else {
-            ctx.emitDeferSummary(loop.sessionId);
+        const action = result?.action ?? "continue";
+        const status = action === "return" || action === "finish"
+          ? "completed"
+          : action === "expired"
+            ? "expired"
+            : occurrenceStatus;
+        const message = action === "return"
+          ? result?.message ?? "Deferred work completed."
+          : action === "notify"
+            ? status === "active"
+              ? result?.message ?? "Deferred work update."
+              : `${result?.message ?? "Deferred work update."}\n\n${terminalMessage(loop, status)}`
+            : action === "finish"
+              ? undefined
+            : status === "active"
+              ? undefined
+              : terminalMessage(loop, status);
+        const delivery = message
+          ? createReturnedDeferDelivery(workerInput, message, {
+              continues: status === "active",
+              ...(result?.deliveryId ? { deliveryId: result.deliveryId } : {}),
+            })
+          : undefined;
+        const updated = store.settleOccurrence(
+          loop.id,
+          claimToken,
+          nextRunAt,
+          acceptedAt.toISOString(),
+          {
+            ...(status === "active" ? {} : { status }),
+            ...(delivery ? { delivery } : {}),
+          },
+        );
+        if (!updated) {
+          const current = store.get(loop.id);
+          if (current?.status !== "cancelled") {
+            console.error(`[defer-loop-runner] Worker result failed to settle loop ${loop.id}`);
           }
         } else {
-          const deliveryId = randomUUID();
-          const updated = occurrenceStatus === "active"
-            ? store.completeOccurrence(loop.id, claimToken, nextRunAt, acceptedAt.toISOString())
-            : store.completeOccurrenceWithMessage(
-                loop.id,
-                claimToken,
-                {
-                  id: deliveryId,
-                  sessionId: loop.sessionId,
-                  sourceId: loop.deferId,
-                  prompt: formatReturnedDeferPrompt(
-                    workerInput,
-                    terminalMessage(loop, occurrenceStatus),
-                    { deliveryId },
-                  ),
-                },
-                nextRunAt,
-                acceptedAt.toISOString(),
-              );
-          if (!updated) {
-            const current = store.get(loop.id);
-            if (current?.status !== "cancelled") {
-              console.error(`[defer-loop-runner] Delivery completed but failed to update loop ${loop.id}`);
-            }
-          } else {
-            ctx.emitDeferSummary(loop.sessionId);
-            if (occurrenceStatus !== "active") parentMessageQueued = true;
-            if (updated.status === "active") {
-              shouldProcessNextDueLoop = true;
-            } else {
-              ctx.recordSessionAttention(loop.sessionId);
-            }
+          ctx.emitDeferSummary(loop.sessionId);
+          parentMessageQueued = delivery !== undefined;
+          shouldProcessNextDueLoop = updated.status === "active";
+          if (updated.status !== "active" && action !== "finish") {
+            ctx.recordSessionAttention(loop.sessionId);
           }
         }
       } catch (err: any) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseDeferId } from "../defer-ids.js";
+import { createReturnedDeferDelivery } from "../defer-result-message.js";
 import { createTestApp } from "./test-app.js";
 import request from "./test-http.js";
 
@@ -38,13 +39,11 @@ describe("session deferred activity routes", () => {
         contextTier: "default",
       },
     });
-    ctx.sessionMessageOutboxStore!.enqueue({
-      id: "delivery-1",
-      sessionId: SESSION_ID,
-      prompt: "Returned result",
-      source: "defer_result",
-      sourceId: once.deferId,
-    });
+    ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
+      { deferId: once.deferId, kind: "once", parentSessionId: SESSION_ID },
+      "Returned result",
+      { deliveryId: "delivery-1" },
+    ));
     ctx.telemetryStore!.recordSpan({
       name: "defer.worker",
       sessionId: SESSION_ID,
@@ -193,15 +192,13 @@ describe("session deferred activity routes", () => {
       nextRunAt: "2030-01-01T00:05:00.000Z",
     });
     ctx.deferLoopStore!.markCompleted(loop.id);
-    const delivery = ctx.sessionMessageOutboxStore!.enqueue({
-      id: "delivery-1",
-      sessionId: SESSION_ID,
-      prompt: "Build completed",
-      source: "defer_result",
-      sourceId: loop.deferId,
-    })!;
-    const claimed = ctx.sessionMessageOutboxStore!.claimDue(delivery.id, 60_000)!;
-    ctx.sessionMessageOutboxStore!.markFailed(
+    const delivery = ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
+      { deferId: loop.deferId, kind: "interval", parentSessionId: SESSION_ID },
+      "Build completed",
+      { deliveryId: "delivery-1" },
+    ));
+    const claimed = ctx.deferredPromptStore!.claimDue(delivery.id, 60_000)!;
+    ctx.deferredPromptStore!.markFailed(
       delivery.id,
       claimed.claimToken,
       "Backend unavailable",
@@ -227,7 +224,7 @@ describe("session deferred activity routes", () => {
       deliveryRetried: true,
     });
     expect(ctx.deferLoopStore!.get(loop.id)?.status).toBe("completed");
-    expect(ctx.sessionMessageOutboxStore!.get(delivery.id)).toMatchObject({
+    expect(ctx.deferredPromptStore!.get(delivery.id)).toMatchObject({
       status: "pending",
       attempts: 0,
     });
@@ -311,13 +308,11 @@ describe("session deferred activity routes", () => {
 
   it("keeps queued parent messages separate from scheduled defers", async () => {
     const { app, ctx } = createTestApp();
-    ctx.sessionMessageOutboxStore!.enqueue({
-      id: "delivery-1",
-      sessionId: SESSION_ID,
-      prompt: "<deferred-work-result>\nsecret returned result\n</deferred-work-result>",
-      source: "defer_result",
-      sourceId: "interval_1",
-    });
+    ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
+      { deferId: "interval_1", kind: "interval", parentSessionId: SESSION_ID },
+      "secret returned result",
+      { deliveryId: "delivery-1" },
+    ));
 
     const response = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
 

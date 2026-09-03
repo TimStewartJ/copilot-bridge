@@ -14,7 +14,6 @@ import {
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createSessionMessageOutboxStore } from "../session-message-outbox-store.js";
 import { RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
@@ -137,7 +136,6 @@ describe("defer-loop-runner", () => {
   it("returns a worker result to the parent once and finishes the loop", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
-    const outboxStore = createSessionMessageOutboxStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
@@ -165,7 +163,7 @@ describe("defer-loop-runner", () => {
 
     expect(sm._started).toEqual([]);
     expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1 });
-    expect(outboxStore.listForSession("session-1")).toEqual([
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
       expect.objectContaining({
         status: "pending",
         sourceId: loop.deferId,
@@ -179,7 +177,6 @@ describe("defer-loop-runner", () => {
   it("notifies the parent and keeps the loop active", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
-    const outboxStore = createSessionMessageOutboxStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
@@ -204,24 +201,50 @@ describe("defer-loop-runner", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1 });
-    expect(outboxStore.listForSession("session-1")).toEqual([
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
       expect.objectContaining({
         status: "pending",
         sourceId: loop.deferId,
         prompt: expect.stringContaining("Phase two started."),
       }),
     ]);
-    expect(outboxStore.listForSession("session-1")[0]?.prompt).toContain(
+    expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
       "The recurring deferred check remains active.",
     );
     expect(onParentMessageQueued).toHaveBeenCalledOnce();
     runner.shutdown();
   });
 
+  it("finishes a loop silently when the worker chooses finish", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.runDeferWorker = vi.fn(async () => ({ action: "finish" }));
+    const runner = createDeferLoopRunner(
+      store,
+      sm,
+      createGlobalBus(),
+      createDeferDeliveryGuard(),
+      { deferredPromptStore: promptStore, deferLoopStore: store },
+    );
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1 });
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([]);
+    runner.shutdown();
+  });
+
   it("returns a terminal notice when continue exhausts maxRuns", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
-    const outboxStore = createSessionMessageOutboxStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
@@ -251,7 +274,7 @@ describe("defer-loop-runner", () => {
       isFinalRun: true,
     }));
     expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1 });
-    expect(outboxStore.listForSession("session-1")).toEqual([
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
       expect.objectContaining({
         status: "pending",
         sourceId: loop.deferId,
@@ -425,7 +448,6 @@ describe("defer-loop-runner", () => {
   it("returns terminal notices for already exhausted and expired loops", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
-    const outboxStore = createSessionMessageOutboxStore(db);
     const bus = createGlobalBus();
     const dueAt = new Date(Date.now() - 1_000).toISOString();
     const maxRunLoop = store.create({
@@ -464,7 +486,7 @@ describe("defer-loop-runner", () => {
       { sessionId: "session-2", at: expect.any(String) },
       { sessionId: "session-1", at: expect.any(String) },
     ]));
-    expect(outboxStore.listForSession("session-2")).toEqual([
+    expect(promptStore.listDeliveriesForSession("session-2")).toEqual([
       expect.objectContaining({
         sourceId: expiredLoop.deferId,
         prompt: expect.stringContaining("expired before another check"),

@@ -1,11 +1,9 @@
 import type { DeferLoop } from "./defer-loop-store.js";
 import type { DeferWorkerAction, DeferWorkerKind } from "./defer-worker.js";
-import type { DeferredPrompt } from "./deferred-prompt-store.js";
-import type {
-  SessionMessageOutboxStatus,
-  SessionMessageOutboxStore,
-} from "./session-message-outbox-store.js";
+import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { TelemetrySpan, TelemetryStore } from "./telemetry-store.js";
+
+export type DeferDeliveryStatus = "pending" | "running" | "completed" | "failed";
 
 export type DeferActivityStatus =
   | DeferLoop["status"]
@@ -44,14 +42,14 @@ export interface DeferActivityRun {
   runCount?: number;
   error?: string;
   deliveryId?: string;
-  deliveryStatus?: SessionMessageOutboxStatus;
+  deliveryStatus?: DeferDeliveryStatus;
   deliveryError?: string;
 }
 
 export interface DeferActivityDelivery {
   id: string;
   deferId: string;
-  status: SessionMessageOutboxStatus;
+  status: DeferDeliveryStatus;
   createdAt: string;
   updatedAt: string;
   error?: string;
@@ -156,7 +154,7 @@ export function listDeferActivityRuns(
   options: {
     deferId?: string;
     limit?: number;
-    messageOutboxStore?: Pick<SessionMessageOutboxStore, "get">;
+    deferredPromptStore?: Pick<DeferredPromptStore, "get">;
   } = {},
 ): DeferActivityRun[] {
   if (!telemetryStore) return [];
@@ -175,9 +173,9 @@ export function listDeferActivityRuns(
     )
     .map((run) => {
       const delivery = run.deliveryId
-        ? options.messageOutboxStore?.get(run.deliveryId)
+        ? options.deferredPromptStore?.get(run.deliveryId)
         : undefined;
-      return delivery
+      return delivery?.purpose === "delivery" && delivery.status !== "cancelled"
         ? {
             ...run,
             deliveryStatus: delivery.status,
@@ -189,16 +187,16 @@ export function listDeferActivityRuns(
 }
 
 export function listDeferActivityDeliveries(
-  messageOutboxStore: Pick<SessionMessageOutboxStore, "listForSession"> | undefined,
+  deferredPromptStore: Pick<DeferredPromptStore, "listDeliveriesForSession"> | undefined,
   sessionId: string,
   options: { deferId?: string; limit?: number } = {},
 ): DeferActivityDelivery[] {
-  if (!messageOutboxStore) return [];
+  if (!deferredPromptStore) return [];
   const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
-  return messageOutboxStore
-    .listForSession(sessionId)
+  return deferredPromptStore
+    .listDeliveriesForSession(sessionId)
     .filter((item) =>
-      item.source === "defer_result"
+      item.status !== "cancelled"
       && !!item.sourceId
       && (!options.deferId || item.sourceId === options.deferId)
     )
@@ -206,7 +204,7 @@ export function listDeferActivityDeliveries(
     .map((item) => ({
       id: item.id,
       deferId: item.sourceId!,
-      status: item.status,
+      status: item.status as DeferDeliveryStatus,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       ...(item.lastError ? { error: item.lastError } : {}),
