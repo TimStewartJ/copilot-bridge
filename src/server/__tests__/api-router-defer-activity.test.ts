@@ -32,10 +32,18 @@ describe("session deferred activity routes", () => {
         deferId: once.deferId,
         kind: "once",
         action: "return",
+        deliveryId: "delivery-1",
         model: "small-model",
         reasoningEffort: "low",
         contextTier: "default",
       },
+    });
+    ctx.sessionMessageOutboxStore!.enqueue({
+      id: "delivery-1",
+      sessionId: SESSION_ID,
+      prompt: "Returned result",
+      source: "defer_result",
+      sourceId: once.deferId,
     });
     ctx.telemetryStore!.recordSpan({
       name: "defer.worker",
@@ -85,8 +93,16 @@ describe("session deferred activity routes", () => {
         deferId: once.deferId,
         action: "return",
         model: "small-model",
+        deliveryStatus: "pending",
       }),
     ]));
+    expect(response.body.recentDeliveries).toEqual([
+      expect.objectContaining({
+        id: "delivery-1",
+        deferId: once.deferId,
+        status: "pending",
+      }),
+    ]);
   });
 
   it("returns per-defer runs and rejects another session's defer", async () => {
@@ -168,6 +184,55 @@ describe("session deferred activity routes", () => {
     expect(ctx.deferLoopStore!.get(parseDeferId(loop.deferId)!.id)?.status).toBe("active");
   });
 
+  it("retries a failed parent delivery without rerunning completed work", async () => {
+    const { app, ctx } = createTestApp();
+    const loop = ctx.deferLoopStore!.create({
+      sessionId: SESSION_ID,
+      prompt: "Watch build 123",
+      intervalSeconds: 300,
+      nextRunAt: "2030-01-01T00:05:00.000Z",
+    });
+    ctx.deferLoopStore!.markCompleted(loop.id);
+    const delivery = ctx.sessionMessageOutboxStore!.enqueue({
+      id: "delivery-1",
+      sessionId: SESSION_ID,
+      prompt: "Build completed",
+      source: "defer_result",
+      sourceId: loop.deferId,
+    })!;
+    const claimed = ctx.sessionMessageOutboxStore!.claimDue(delivery.id, 60_000)!;
+    ctx.sessionMessageOutboxStore!.markFailed(
+      delivery.id,
+      claimed.claimToken,
+      "Backend unavailable",
+    );
+
+    const list = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
+    expect(list.body.defers[0]).toMatchObject({
+      deferId: loop.deferId,
+      failedDelivery: true,
+      canReactivate: true,
+    });
+    expect(list.body.recentDeliveries[0]).toMatchObject({
+      deferId: loop.deferId,
+      status: "failed",
+      error: "Backend unavailable",
+    });
+
+    const response = await request(app)
+      .post(`/api/sessions/${SESSION_ID}/defers/${loop.deferId}/reactivate`);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      status: "completed",
+      deliveryRetried: true,
+    });
+    expect(ctx.deferLoopStore!.get(loop.id)?.status).toBe("completed");
+    expect(ctx.sessionMessageOutboxStore!.get(delivery.id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
+  });
+
   it("does not claim to cancel an already running worker", async () => {
     const { app, ctx } = createTestApp();
     const loop = ctx.deferLoopStore!.create({
@@ -244,26 +309,20 @@ describe("session deferred activity routes", () => {
     );
   });
 
-  it("does not expose a queued parent-return prompt as a defer prompt", async () => {
+  it("keeps queued parent messages separate from scheduled defers", async () => {
     const { app, ctx } = createTestApp();
-    const once = ctx.deferredPromptStore!.create(
-      SESSION_ID,
-      "Original check",
-      new Date(Date.now() - 1_000).toISOString(),
-    );
-    const claimed = ctx.deferredPromptStore!.claimDue(once.id, 60_000)!;
-    ctx.deferredPromptStore!.queueWorkerReturn(
-      once.id,
-      claimed.claimToken,
-      "<deferred-work-result>\nsecret returned result\n</deferred-work-result>",
-    );
+    ctx.sessionMessageOutboxStore!.enqueue({
+      id: "delivery-1",
+      sessionId: SESSION_ID,
+      prompt: "<deferred-work-result>\nsecret returned result\n</deferred-work-result>",
+      source: "defer_result",
+      sourceId: "interval_1",
+    });
 
     const response = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
 
     expect(response.status).toBe(200);
-    expect(response.body.defers[0].prompt).toBe(
-      "Returning a completed deferred-work result to the parent session.",
-    );
+    expect(response.body.defers).toEqual([]);
     expect(JSON.stringify(response.body)).not.toContain("secret returned result");
   });
 });

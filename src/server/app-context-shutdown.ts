@@ -27,6 +27,7 @@ export function shutdownAppContextServices(
     ctx.scheduler?.setGlobalPause(true);
     ctx.sessionOverlayMaintenance?.stop();
     ctx.stagingPreviewDiscovery?.stop();
+    ctx.sessionMessageOutboxRunner?.shutdown();
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
 

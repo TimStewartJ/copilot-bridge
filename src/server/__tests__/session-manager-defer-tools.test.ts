@@ -287,6 +287,70 @@ describe("unified defer tools", () => {
     unsubscribe();
   });
 
+  it("retries a failed parent delivery without rerunning the source defer", async () => {
+    const { ctx } = createTestApp();
+    const outboxPoke = vi.fn();
+    ctx.sessionMessageOutboxRunner = {
+      start: vi.fn(),
+      poke: outboxPoke,
+      shutdown: vi.fn(),
+    } as any;
+    const loop = ctx.deferLoopStore!.create({
+      sessionId: "session-A",
+      prompt: "Check build",
+      intervalSeconds: 300,
+      nextRunAt: new Date().toISOString(),
+    });
+    ctx.deferLoopStore!.markCompleted(loop.id);
+    const delivery = ctx.sessionMessageOutboxStore!.enqueue({
+      id: "delivery-1",
+      sessionId: "session-A",
+      prompt: "Build completed",
+      source: "defer_result",
+      sourceId: loop.deferId,
+    })!;
+    const claimed = ctx.sessionMessageOutboxStore!.claimDue(delivery.id, 60_000)!;
+    ctx.sessionMessageOutboxStore!.markFailed(
+      delivery.id,
+      claimed.claimToken,
+      "Backend unavailable",
+    );
+    const tools = getBridgeToolDefinitions(ctx);
+    const listTool = findTool(tools, "defer_list");
+    const reactivateTool = findTool(tools, "defer_reactivate");
+
+    const beforeRetry = await listTool.handler(
+      { includeInactive: true },
+      makeInvocation("session-A"),
+    ) as any;
+    expect(beforeRetry.deferrals).toEqual([
+      expect.objectContaining({
+        deferId: loop.deferId,
+        parentDelivery: {
+          status: "failed",
+          error: "Backend unavailable",
+        },
+      }),
+    ]);
+
+    const result = await reactivateTool.handler(
+      { deferId: loop.deferId },
+      makeInvocation("session-A"),
+    ) as any;
+
+    expect(result).toMatchObject({
+      success: true,
+      status: "completed",
+      message: expect.stringContaining("queued for retry"),
+    });
+    expect(ctx.deferLoopStore!.get(loop.id)?.status).toBe("completed");
+    expect(ctx.sessionMessageOutboxStore!.get(delivery.id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
+    expect(outboxPoke).toHaveBeenCalledOnce();
+  });
+
   it("rejects defer reactivation for the wrong session or active status", async () => {
     const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);

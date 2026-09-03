@@ -145,7 +145,7 @@ export type DeferredWorkStatus =
   | "completed"
   | "failed"
   | "expired";
-export type DeferredWorkRunAction = "continue" | "finish" | "return" | "expired" | "error";
+export type DeferredWorkRunAction = "continue" | "notify" | "finish" | "return" | "expired" | "error";
 
 export interface DeferredWorkItem {
   deferId: string;
@@ -164,6 +164,7 @@ export interface DeferredWorkItem {
   lastError?: string;
   canCancel: boolean;
   canReactivate: boolean;
+  failedDelivery?: boolean;
 }
 
 export interface DeferredWorkRun {
@@ -178,12 +179,24 @@ export interface DeferredWorkRun {
   contextTier?: string;
   runCount?: number;
   error?: string;
+  deliveryStatus?: "pending" | "running" | "completed" | "failed";
+  deliveryError?: string;
+}
+
+export interface DeferredWorkDelivery {
+  id: string;
+  deferId: string;
+  status: "pending" | "running" | "completed" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
 }
 
 export interface SessionDeferredWork {
   sessionId: string;
   defers: DeferredWorkItem[];
   recentRuns: DeferredWorkRun[];
+  recentDeliveries: DeferredWorkDelivery[];
 }
 
 export interface Session {
@@ -1117,7 +1130,14 @@ export async function cancelSessionDefer(
 export async function reactivateSessionDefer(
   sessionId: string,
   deferId: string,
-): Promise<{ ok: true; deferId: string; kind: DeferredWorkKind; status: DeferredWorkStatus; nextRunAt: string }> {
+): Promise<{
+  ok: true;
+  deferId: string;
+  kind: DeferredWorkKind;
+  status: DeferredWorkStatus;
+  nextRunAt?: string;
+  deliveryRetried?: boolean;
+}> {
   const res = await fetch(
     `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/reactivate`,
     { method: "POST" },

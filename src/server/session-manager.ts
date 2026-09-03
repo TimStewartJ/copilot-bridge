@@ -103,7 +103,9 @@ import {
   clearEventLogStatsCache,
   findSessionEventIndex,
   listSessionsFromDisk as listSessionsFromDiskWithDeps,
+  readRecentUserMessages,
   readMessagesFromDisk as readMessagesFromDiskWithDeps,
+  resolveSessionEventsPath,
   type ReadMessagesFromDiskResult,
 } from "./session-disk-reader.js";
 import {
@@ -4360,6 +4362,14 @@ export class SessionManager {
       throw new Error("Session is being deleted");
     }
     await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, options);
+  }
+
+  async hasPersistedUserMessage(sessionId: string, prompt: string): Promise<boolean> {
+    const messages = await readRecentUserMessages(
+      resolveSessionEventsPath(this.getCopilotHome(), sessionId),
+      100,
+    );
+    return messages.includes(prompt);
   }
 
   async steerSession(

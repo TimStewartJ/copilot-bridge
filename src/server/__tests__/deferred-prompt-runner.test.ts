@@ -12,6 +12,9 @@ import {
 } from "../deferred-prompt-runner.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
+import { createSessionMessageOutboxStore } from "../session-message-outbox-store.js";
+import { createSessionMessageOutboxRunner } from "../session-message-outbox-runner.js";
+import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
@@ -132,6 +135,7 @@ describe("deferred-prompt-runner", () => {
 
     it("queues a worker return before delivering it to the parent", async () => {
       const store = createDeferredPromptStore(db);
+      const outbox = createSessionMessageOutboxStore(db);
       const bus = createGlobalBus();
       const prompt = store.create(
         "session-1",
@@ -142,22 +146,76 @@ describe("deferred-prompt-runner", () => {
       sm.runDeferWorker = vi.fn(async () => ({
         action: "return",
         message: "Build failed.",
+        deliveryId: "delivery-1",
       }));
-      const runner = createDeferredPromptRunner(store, sm, bus);
+      const onParentMessageQueued = vi.fn();
+      const runner = createDeferredPromptRunner(
+        store,
+        sm,
+        bus,
+        undefined,
+        undefined,
+        { onParentMessageQueued },
+      );
 
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(0);
 
       expect(sm.runDeferWorker).toHaveBeenCalledOnce();
+      expect(sm._started).toEqual([]);
+      expect(outbox.listForSession("session-1")).toEqual([
+        expect.objectContaining({
+          id: "delivery-1",
+          sessionId: "session-1",
+          prompt: expect.stringContaining("Build failed."),
+        }),
+      ]);
+      expect(store.get(prompt.id)?.status).toBe("completed");
+      expect(onParentMessageQueued).toHaveBeenCalledOnce();
+      runner.shutdown();
+    });
+
+    it("releases the shared guard before waking parent-message delivery", async () => {
+      const store = createDeferredPromptStore(db);
+      const outbox = createSessionMessageOutboxStore(db);
+      const bus = createGlobalBus();
+      const guard = createDeferDeliveryGuard();
+      store.create(
+        "session-1",
+        "Check status",
+        new Date(Date.now() - 1_000).toISOString(),
+      );
+      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      sm.hasPersistedUserMessage = vi.fn(async () => false);
+      sm.runDeferWorker = vi.fn(async () => ({
+        action: "return",
+        message: "Build failed.",
+        deliveryId: "delivery-1",
+      }));
+      const outboxRunner = createSessionMessageOutboxRunner(outbox, sm, bus, guard);
+      const runner = createDeferredPromptRunner(
+        store,
+        sm,
+        bus,
+        guard,
+        undefined,
+        { onParentMessageQueued: () => outboxRunner.poke() },
+      );
+
+      outboxRunner.start();
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
       expect(sm._started).toEqual([
         expect.objectContaining({
           sessionId: "session-1",
           prompt: expect.stringContaining("Build failed."),
         }),
       ]);
-      expect(store.get(prompt.id)?.status).toBe("completed");
+      expect(outbox.get("delivery-1")?.status).toBe("completed");
       runner.shutdown();
+      outboxRunner.shutdown();
     });
 
     it("does not let a stale worker complete a reactivated one-shot defer", async () => {
@@ -624,6 +682,7 @@ describe("deferred-prompt-runner", () => {
       expect(dp.status).toBe("pending");
       runner.shutdown();
     });
+
   });
 
   describe("retry logic", () => {

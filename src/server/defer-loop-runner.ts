@@ -1,17 +1,19 @@
 // Recurring defer loop runner — dispatches interval same-session prompts.
 
-import type { DeferLoop, DeferLoopStore } from "./defer-loop-store.js";
+import { randomUUID } from "node:crypto";
+import {
+  getDeferLoopOccurrenceStatus,
+  type DeferLoop,
+  type DeferLoopOccurrenceStatus,
+  type DeferLoopStore,
+} from "./defer-loop-store.js";
 import { toIntervalDeferId } from "./defer-ids.js";
 import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import type { DeferSummarySources } from "./defer-summary.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
-import {
-  formatReturnedDeferPrompt,
-  type DeferWorkerInput,
-  type DeferWorkerLease,
-  type DeferWorkerResult,
-} from "./defer-worker.js";
+import { formatReturnedDeferPrompt } from "./defer-result-message.js";
+import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import {
   classifyDeferDeliveryError,
   computeDeferRetryBackoffMs,
@@ -55,7 +57,7 @@ export function createDeferLoopRunner(
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
   summarySources: DeferSummarySources = { deferLoopStore: store },
-  options: DeferRunnerOptions & { onParentReturnQueued?: () => void } = {},
+  options: DeferRunnerOptions & { onParentMessageQueued?: () => void } = {},
 ) {
   const runWorker = async (input: DeferWorkerInput): Promise<DeferWorkerResult | undefined> => {
     const worker = (sessionManager as SessionManager & {
@@ -63,6 +65,57 @@ export function createDeferLoopRunner(
     }).runDeferWorker;
     return worker ? worker.call(sessionManager, input) : undefined;
   };
+
+  function buildWorkerInput(loop: DeferLoop, now = Date.now()): DeferWorkerInput {
+    const runCount = loop.runCount + 1;
+    const nextRunAt = new Date(now + loop.intervalSeconds * 1000).toISOString();
+    const occurrenceStatus = getDeferLoopOccurrenceStatus(loop, runCount, nextRunAt);
+    return {
+      deferId: loop.deferId,
+      kind: "interval",
+      parentSessionId: loop.sessionId,
+      prompt: loop.prompt,
+      runCount,
+      ...(loop.maxRuns !== undefined
+        ? {
+            maxRuns: loop.maxRuns,
+            remainingRunsAfterThis: Math.max(0, loop.maxRuns - runCount),
+          }
+        : {}),
+      isFinalRun: occurrenceStatus !== "active",
+      intervalSeconds: loop.intervalSeconds,
+      ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
+    };
+  }
+
+  function terminalMessage(
+    loop: DeferLoop,
+    status: Exclude<DeferLoopOccurrenceStatus, "active">,
+  ): string {
+    return status === "completed"
+      ? `Deferred work stopped after reaching its maximum of ${loop.maxRuns ?? loop.runCount} runs without returning a terminal result.`
+      : "Deferred work expired before another check could run without returning a terminal result.";
+  }
+
+  function queuePreflightTerminalReturn(
+    loop: DeferLoop,
+    status: Exclude<DeferLoopOccurrenceStatus, "active">,
+  ): boolean {
+    const workerInput = buildWorkerInput(loop);
+    const deliveryId = randomUUID();
+    const queued = store.markTerminalWithMessage(loop.id, status, {
+      id: deliveryId,
+      sessionId: loop.sessionId,
+      sourceId: loop.deferId,
+      prompt: formatReturnedDeferPrompt(
+        workerInput,
+        terminalMessage(loop, status),
+        { deliveryId },
+      ),
+    });
+    if (queued) options.onParentMessageQueued?.();
+    return queued;
+  }
 
   function createProcessOne(ctx: DeferRunnerCoreContext) {
     async function processOne(id: string): Promise<ProcessOneResult> {
@@ -73,7 +126,7 @@ export function createDeferLoopRunner(
 
       const now = new Date();
       if (loop.maxRuns !== undefined && loop.runCount >= loop.maxRuns) {
-        const completed = store.markCompleted(id);
+        const completed = queuePreflightTerminalReturn(loop, "completed");
         if (completed) {
           ctx.recordSessionAttention(loop.sessionId);
           ctx.emitDeferSummary(loop.sessionId);
@@ -81,7 +134,7 @@ export function createDeferLoopRunner(
         return completed ? "changed" : "unchanged";
       }
       if (loop.expiresAt && Date.parse(loop.expiresAt) <= now.getTime()) {
-        const expired = store.markExpired(id);
+        const expired = queuePreflightTerminalReturn(loop, "expired");
         if (expired) {
           ctx.recordSessionAttention(loop.sessionId);
           ctx.emitDeferSummary(loop.sessionId);
@@ -170,17 +223,9 @@ export function createDeferLoopRunner(
       workerLease?: DeferWorkerLease,
     ): Promise<void> {
       let shouldProcessNextDueLoop = false;
-      let parentReturnQueued = false;
+      let parentMessageQueued = false;
       try {
-        const workerInput: DeferWorkerInput = {
-          deferId: loop.deferId,
-          kind: "interval",
-          parentSessionId: loop.sessionId,
-          prompt: loop.prompt,
-          runCount: loop.runCount + 1,
-          intervalSeconds: loop.intervalSeconds,
-          ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
-        };
+        const workerInput = buildWorkerInput(loop);
         const result = workerLease
           ? await workerLease.run(workerInput)
           : await runWorker(workerInput);
@@ -199,16 +244,28 @@ export function createDeferLoopRunner(
           );
         }
         const acceptedAt = new Date();
+        const nextRunAt = new Date(acceptedAt.getTime() + loop.intervalSeconds * 1000).toISOString();
+        const occurrenceStatus = getDeferLoopOccurrenceStatus(
+          loop,
+          loop.runCount + 1,
+          nextRunAt,
+        );
         if (result?.action === "return") {
+          const deliveryId = result.deliveryId ?? randomUUID();
           const returnPrompt = formatReturnedDeferPrompt(
             workerInput,
             result.message ?? "Deferred work completed.",
+            { deliveryId },
           );
-          if (!store.finishOccurrenceWithReturn(
+          if (!store.finishOccurrenceWithMessage(
             loop.id,
             claimToken,
-            loop.sessionId,
-            returnPrompt,
+            {
+              id: deliveryId,
+              sessionId: loop.sessionId,
+              prompt: returnPrompt,
+              sourceId: loop.deferId,
+            },
             acceptedAt.toISOString(),
           )) {
             const current = store.get(loop.id);
@@ -217,12 +274,61 @@ export function createDeferLoopRunner(
             }
           } else {
             ctx.emitDeferSummary(loop.sessionId);
-            parentReturnQueued = true;
+            parentMessageQueued = true;
+          }
+        } else if (result?.action === "notify") {
+          const deliveryId = result.deliveryId ?? randomUUID();
+          const returnPrompt = formatReturnedDeferPrompt(
+            workerInput,
+            occurrenceStatus === "active"
+              ? result.message ?? "Deferred work update."
+              : `${result.message ?? "Deferred work update."}\n\n${terminalMessage(loop, occurrenceStatus)}`,
+            { continues: occurrenceStatus === "active", deliveryId },
+          );
+          const updated = store.completeOccurrenceWithMessage(
+            loop.id,
+            claimToken,
+            {
+              id: deliveryId,
+              sessionId: loop.sessionId,
+              prompt: returnPrompt,
+              sourceId: loop.deferId,
+            },
+            nextRunAt,
+            acceptedAt.toISOString(),
+          );
+          if (!updated) {
+            const current = store.get(loop.id);
+            if (current?.status !== "cancelled") {
+              console.error(`[defer-loop-runner] Worker notified but failed to update loop ${loop.id}`);
+            }
+          } else {
+            ctx.emitDeferSummary(loop.sessionId);
+            parentMessageQueued = true;
+            shouldProcessNextDueLoop = updated.status === "active";
+            if (updated.status !== "active") ctx.recordSessionAttention(loop.sessionId);
           }
         } else if (result?.action === "expired") {
-          if (store.markClaimedExpired(loop.id, claimToken)) {
+          const deliveryId = randomUUID();
+          const returnPrompt = formatReturnedDeferPrompt(
+            workerInput,
+            terminalMessage(loop, "expired"),
+            { deliveryId },
+          );
+          if (store.markTerminalWithMessage(
+            loop.id,
+            "expired",
+            {
+              id: deliveryId,
+              sessionId: loop.sessionId,
+              prompt: returnPrompt,
+              sourceId: loop.deferId,
+            },
+            { claimToken, now: acceptedAt.toISOString() },
+          )) {
             ctx.recordSessionAttention(loop.sessionId);
             ctx.emitDeferSummary(loop.sessionId);
+            parentMessageQueued = true;
           }
         } else if (result?.action === "finish") {
           if (!store.finishOccurrence(loop.id, claimToken, acceptedAt.toISOString())) {
@@ -234,8 +340,25 @@ export function createDeferLoopRunner(
             ctx.emitDeferSummary(loop.sessionId);
           }
         } else {
-          const nextRunAt = new Date(acceptedAt.getTime() + loop.intervalSeconds * 1000).toISOString();
-          const updated = store.completeOccurrence(loop.id, claimToken, nextRunAt, acceptedAt.toISOString());
+          const deliveryId = randomUUID();
+          const updated = occurrenceStatus === "active"
+            ? store.completeOccurrence(loop.id, claimToken, nextRunAt, acceptedAt.toISOString())
+            : store.completeOccurrenceWithMessage(
+                loop.id,
+                claimToken,
+                {
+                  id: deliveryId,
+                  sessionId: loop.sessionId,
+                  sourceId: loop.deferId,
+                  prompt: formatReturnedDeferPrompt(
+                    workerInput,
+                    terminalMessage(loop, occurrenceStatus),
+                    { deliveryId },
+                  ),
+                },
+                nextRunAt,
+                acceptedAt.toISOString(),
+              );
           if (!updated) {
             const current = store.get(loop.id);
             if (current?.status !== "cancelled") {
@@ -243,6 +366,7 @@ export function createDeferLoopRunner(
             }
           } else {
             ctx.emitDeferSummary(loop.sessionId);
+            if (occurrenceStatus !== "active") parentMessageQueued = true;
             if (updated.status === "active") {
               shouldProcessNextDueLoop = true;
             } else {
@@ -294,7 +418,7 @@ export function createDeferLoopRunner(
       } finally {
         workerLease?.release();
         ctx.afterDeliverySettled(renewalTimer, loop.sessionId, shouldProcessNextDueLoop);
-        if (parentReturnQueued) options.onParentReturnQueued?.();
+        if (parentMessageQueued) options.onParentMessageQueued?.();
       }
     }
 

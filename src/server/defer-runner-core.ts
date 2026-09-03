@@ -62,7 +62,7 @@ export interface DeferRunnerStoreAdapter {
   listDue(): ReadonlyArray<DeferRunnerDueItem>;
   reclaimExpiredRunning(now: string): number;
   listExpiredRunningSessionIds(now: string): string[];
-  cancelForSession(sessionId: string): number;
+  cancelForSession?(sessionId: string): number;
 }
 
 /** Log/summary labels per runner. */
@@ -72,7 +72,7 @@ export interface DeferRunnerLabels {
   /** Singular noun for reclaim/cancel logs, e.g. "deferral" or "loop". */
   noun: string;
   /** Stable telemetry discriminator for the defer kind. */
-  kind: "once" | "interval";
+  kind: "once" | "interval" | "outbox";
 }
 
 /**
@@ -110,6 +110,8 @@ export interface DeferRunnerCoreOptions extends DeferRunnerOptions {
   deliveryGuard: DeferDeliveryGuard;
   summarySources: DeferSummarySources;
   labels: DeferRunnerLabels;
+  cancelOnArchive?: boolean;
+  emitDeferSummary?: boolean;
   additionalReadiness?: () => { ready: boolean; reason?: string; retryAfterMs?: number };
   /** Pure factory: returns the runner's processOne strategy. Must not synchronously start processing. */
   createProcessOne: (ctx: DeferRunnerCoreContext) => (id: string) => Promise<ProcessOneResult>;
@@ -248,6 +250,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   }
 
   function emitDeferSummary(sessionId: string): void {
+    if (options.emitDeferSummary === false) return;
     emitSessionDeferSummary(globalBus, sessionId, summarySources);
   }
 
@@ -459,6 +462,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
       }
 
       if (event.type === "session:archived" && event.sessionId && event.archived === true) {
+        if (options.cancelOnArchive === false || !store.cancelForSession) return;
         const cancelled = store.cancelForSession(event.sessionId);
         if (cancelled > 0) {
           console.log(`[${tag}] Cancelled ${cancelled} ${noun}(s) for archived session ${event.sessionId}`);
