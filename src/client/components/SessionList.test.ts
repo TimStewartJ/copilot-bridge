@@ -22,11 +22,16 @@ const apiMocks = vi.hoisted(() => ({
   fetchSettings: vi.fn(),
   patchSettings: vi.fn(),
 }));
+const deferredWorkSheetMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return { ...actual, ...apiMocks };
 });
+
+vi.mock("./DeferredWorkSheet", () => ({
+  default: (props: unknown) => deferredWorkSheetMock(props),
+}));
 
 async function renderSessionList(sessions: Session[]) {
   const harness = await createReactDomHarness();
@@ -41,7 +46,7 @@ async function renderSessionList(sessions: Session[]) {
     showNewButton: false,
   }));
 
-  return { dom: harness.dom, cleanup: harness.cleanup };
+  return { dom: harness.dom, act: harness.act, cleanup: harness.cleanup };
 }
 
 function createSession(overrides: Partial<Session> & { sessionId: string }): Session {
@@ -132,6 +137,31 @@ describe("SessionList defer summary indicator", () => {
     try {
       expect(dom.container.textContent).toContain("Deferred session");
       expect(dom.container.textContent).toContain("Deferred in 5m");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("opens deferred work from the defer badge", async () => {
+    const session = createSession({
+      sessionId: "session-1",
+      summary: "Deferred session",
+      deferSummary: { count: 1, nextRunAt: minutesFromNow(5) },
+    });
+    const { dom, act, cleanup } = await renderSessionList([session]);
+
+    try {
+      const badge = findAllByTag(dom.container, "BUTTON").find(
+        (button) => getReactProps(button)?.title?.includes("Open deferred work"),
+      );
+      expect(badge).toBeDefined();
+      await act(async () => {
+        getReactProps(badge)?.onClick?.({ stopPropagation: vi.fn() });
+      });
+      expect(deferredWorkSheetMock).toHaveBeenCalledWith(expect.objectContaining({
+        session,
+        onClose: expect.any(Function),
+      }));
     } finally {
       await cleanup();
     }

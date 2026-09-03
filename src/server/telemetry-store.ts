@@ -69,6 +69,7 @@ export function createTelemetryStore(db: DatabaseSync) {
     source?: "server" | "client";
     limit?: number;
     since?: string;
+    metadataEquals?: Record<string, string | number>;
   } = {}): TelemetrySpan[] {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
@@ -88,6 +89,13 @@ export function createTelemetryStore(db: DatabaseSync) {
     if (opts.since) {
       conditions.push("createdAt >= ?");
       params.push(opts.since);
+    }
+    for (const [key, value] of Object.entries(opts.metadataEquals ?? {})) {
+      if (!/^[A-Za-z0-9_]+$/.test(key)) {
+        throw new Error(`Invalid telemetry metadata filter key: ${key}`);
+      }
+      conditions.push("json_extract(metadata, ?) = ?");
+      params.push(`$.${key}`, value);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

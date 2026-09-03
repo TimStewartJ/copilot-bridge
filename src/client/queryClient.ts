@@ -54,6 +54,7 @@ export const queryKeys = {
   sessionWorkspace: (sessionId: string, taskId?: string) =>
     ["session-workspace", sessionId, taskId ?? null] as const,
   sessionModel: (sessionId: string) => ["session-model", sessionId] as const,
+  sessionDefers: (sessionId: string) => ["session-defers", sessionId] as const,
   chatMessages: (sessionId: string) =>
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,

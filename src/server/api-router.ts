@@ -132,6 +132,12 @@ import {
 } from "./device-hibernate.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
+import {
+  formatLoopDeferActivity,
+  formatOneShotDeferActivity,
+  listDeferActivityRuns,
+  sortDeferActivityItems,
+} from "./defer-activity.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import {
@@ -2557,6 +2563,80 @@ export function createApiRouter(
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  router.get("/sessions/:id/defers", (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const defers = sortDeferActivityItems([
+      ...(ctx.deferredPromptStore?.listForSession(sessionId).map(formatOneShotDeferActivity) ?? []),
+      ...(ctx.deferLoopStore?.listForSession(sessionId).map(formatLoopDeferActivity) ?? []),
+    ]);
+    res.json({
+      sessionId,
+      defers,
+      recentRuns: listDeferActivityRuns(ctx.telemetryStore, sessionId),
+    });
+  });
+
+  router.get("/sessions/:id/defers/:deferId/runs", (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const parsed = parseDeferId(req.params.deferId);
+    if (!parsed) {
+      return res.status(404).json({ error: `Defer ${req.params.deferId} not found.` });
+    }
+    const item = parsed.kind === "once"
+      ? ctx.deferredPromptStore?.get(parsed.id)
+      : ctx.deferLoopStore?.get(parsed.id);
+    const runs = listDeferActivityRuns(ctx.telemetryStore, sessionId, {
+      deferId: req.params.deferId,
+      limit: 200,
+    });
+    if ((!item || item.sessionId !== sessionId) && runs.length === 0) {
+      return res.status(404).json({ error: `Defer ${req.params.deferId} not found.` });
+    }
+    res.json({
+      sessionId,
+      deferId: req.params.deferId,
+      runs,
+    });
+  });
+
+  router.post("/sessions/:id/defers/:deferId/cancel", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Defer cancellation")) return;
+    const sessionId = req.params.id;
+    const deferId = req.params.deferId;
+    const parsed = parseDeferId(deferId);
+    if (!parsed) return res.status(404).json({ error: `Defer ${deferId} not found.` });
+    const store = parsed.kind === "once" ? ctx.deferredPromptStore : ctx.deferLoopStore;
+    if (!store) return res.status(503).json({ error: "Deferred work store is unavailable." });
+    const existing = store.get(parsed.id);
+    if (!existing || existing.sessionId !== sessionId) {
+      return res.status(404).json({ error: `Defer ${deferId} not found.` });
+    }
+    const cancellable = parsed.kind === "once"
+      ? existing.status === "pending"
+      : existing.status === "active";
+    if (!cancellable) {
+      return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be cancelled.` });
+    }
+    if (!store.cancelById(parsed.id)) {
+      return res.status(409).json({ error: `Failed to cancel defer ${deferId}.` });
+    }
+    emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
+    ctx.deferredPromptRunner?.poke();
+    ctx.deferLoopRunner?.poke();
+    return res.json({
+      ok: true,
+      deferId,
+      kind: parsed.kind,
+      status: "cancelled",
+    });
   });
 
   router.post("/sessions/:id/defers/:deferId/reactivate", (req, res) => {

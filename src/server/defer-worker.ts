@@ -263,6 +263,8 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       this.deps.recordSpan?.("defer.worker", Date.now() - startedAt, input.parentSessionId, {
         action: result.action,
         kind: input.kind,
+        deferId: input.deferId,
+        runCount: input.runCount,
         model,
         reasoningEffort,
         contextTier: configuredContextTier,
@@ -272,6 +274,8 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       this.deps.recordSpan?.("defer.worker", Date.now() - startedAt, input.parentSessionId, {
         action: "error",
         kind: input.kind,
+        deferId: input.deferId,
+        runCount: input.runCount,
         model,
         error: error instanceof Error ? error.message : String(error),
       });

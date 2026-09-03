@@ -59,6 +59,35 @@ describe("telemetry-store", () => {
     expect(store.querySpans({ limit: 3 })).toHaveLength(3);
   });
 
+  it("filters spans by JSON metadata before applying the limit", () => {
+    store.recordSpan({
+      name: "defer.worker",
+      sessionId: "session-1",
+      duration: 100,
+      source: "server",
+      metadata: { deferId: "interval_target", action: "continue" },
+    });
+    store.recordSpans(Array.from({ length: 10 }, (_, index) => ({
+      name: "defer.worker",
+      sessionId: "session-1",
+      duration: index,
+      source: "server" as const,
+      metadata: { deferId: "interval_other", action: "continue" },
+    })));
+
+    expect(store.querySpans({
+      name: "defer.worker",
+      sessionId: "session-1",
+      limit: 1,
+      metadataEquals: { deferId: "interval_target" },
+    })).toEqual([
+      expect.objectContaining({
+        duration: 100,
+        metadata: expect.objectContaining({ deferId: "interval_target" }),
+      }),
+    ]);
+  });
+
   it("prunes spans older than the retention window and keeps recent ones", () => {
     store.recordSpan({ name: "old", duration: 100, source: "server" });
     db.prepare("UPDATE telemetry_spans SET createdAt = '2020-01-01T00:00:00Z'").run();

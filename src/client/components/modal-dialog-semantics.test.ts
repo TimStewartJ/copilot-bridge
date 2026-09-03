@@ -16,6 +16,7 @@ import {
 } from "../test-modal-dialog-dom";
 import type { Schedule, Task, VisualArtifact } from "../api";
 import DocPreviewSheet from "./DocPreviewSheet";
+import DeferredWorkSheet from "./DeferredWorkSheet";
 import FeedActionDialog from "./FeedActionDialog";
 import NotesSheet from "./NotesSheet";
 import PlanSheet from "./PlanSheet";
@@ -109,6 +110,17 @@ const overlayCases: OverlayCase[] = [
     accessibleName: "areas/cooking/recipes",
     element: (onClose) => createElement(DocPreviewSheet, {
       docPath: "areas/cooking/recipes",
+      onClose,
+    }),
+  },
+  {
+    name: "DeferredWorkSheet",
+    accessibleName: "Deferred Work",
+    element: (onClose) => createElement(DeferredWorkSheet, {
+      session: {
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        summary: "Deferred session",
+      },
       onClose,
     }),
   },
