@@ -23,6 +23,7 @@ import {
   LayoutDashboard,
   AlertTriangle,
   CheckCircle2,
+  Clock,
   RotateCcw,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
@@ -557,6 +558,20 @@ export default function TaskPanel({
         <div className="space-y-3 p-2">
           <div>
             <SectionLabel label="Sessions" count={task.sessionIds.length} />
+            {linkedSessions.some((session) => session.deferSummary.count > 0) && (
+              <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-accent/15 bg-accent/5 px-2.5 py-1.5 text-[11px] text-accent">
+                <Clock size={11} className="shrink-0" />
+                <span>
+                  {linkedSessions.reduce((count, session) => count + session.deferSummary.count, 0)} active deferred check{
+                    linkedSessions.reduce((count, session) => count + session.deferSummary.count, 0) === 1 ? "" : "s"
+                  } across {
+                    linkedSessions.filter((session) => session.deferSummary.count > 0).length
+                  } session{
+                    linkedSessions.filter((session) => session.deferSummary.count > 0).length === 1 ? "" : "s"
+                  }
+                </span>
+              </div>
+            )}
             <TaskSessionList
               task={task}
               linkedSessions={linkedSessions}

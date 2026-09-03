@@ -320,6 +320,25 @@ describe("TaskPanel", () => {
     }
   });
 
+  it("shows a deferred-work rollup across linked sessions", async () => {
+    const linkedSessions = [
+      createSession({
+        sessionId: "session-1",
+        deferSummary: { count: 2, nextRunAt: "2030-01-01T00:00:00.000Z" },
+      }),
+      createSession({
+        sessionId: "session-2",
+        deferSummary: { count: 1, nextRunAt: "2030-01-01T00:05:00.000Z" },
+      }),
+    ];
+    const html = await renderTaskPanelHtml(
+      createTask({ sessionIds: linkedSessions.map((session) => session.sessionId) }),
+      { linkedSessions },
+    );
+
+    expect(html).toContain("3 active deferred checks across 2 sessions");
+  });
+
   it("renders attached task agent definitions in the Details section", async () => {
     const definitions = [{
       taskId: "task-1",

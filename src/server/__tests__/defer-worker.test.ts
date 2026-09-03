@@ -51,6 +51,7 @@ describe("defer worker", () => {
       disconnect: vi.fn(async () => undefined),
     }));
     const deleteSession = vi.fn(async () => undefined);
+    const recordSpan = vi.fn();
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -71,6 +72,7 @@ describe("defer worker", () => {
       createSession: createSession as any,
       deleteSession,
       getCopilotHome: () => copilotHome,
+      recordSpan,
     });
 
     const result = await worker.run({
@@ -109,6 +111,17 @@ describe("defer worker", () => {
       10 * 60 * 1000,
     );
     expect(deleteSession).toHaveBeenCalledWith(expect.stringMatching(/^d3f3e000-/));
+    expect(recordSpan).toHaveBeenCalledWith(
+      "defer.worker",
+      expect.any(Number),
+      "parent-session",
+      expect.objectContaining({
+        deferId: "interval_1",
+        runCount: 2,
+        action: "return",
+        model: "small-model",
+      }),
+    );
   });
 
   it("automatically selects the cheapest helper model when none is configured", async () => {

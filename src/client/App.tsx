@@ -506,6 +506,7 @@ export default function App() {
       case "session:defer-summary":
         if (event.sessionId && event.deferSummary) {
           patchSessionInCache(event.sessionId, { deferSummary: event.deferSummary });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.sessionDefers(event.sessionId) });
         }
         break;
       case "session:history-truncated":
