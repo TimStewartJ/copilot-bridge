@@ -2,6 +2,7 @@
 // Uses Node.js built-in node:sqlite (DatabaseSync)
 
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -713,6 +714,8 @@ function initSchema(db: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       sessionId TEXT NOT NULL,
       prompt TEXT NOT NULL,
+      purpose TEXT NOT NULL DEFAULT 'defer',
+      sourceId TEXT,
       runAt TEXT NOT NULL,
       status TEXT NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
@@ -726,27 +729,6 @@ function initSchema(db: DatabaseSync): void {
       ON deferred_prompts(status, runAt);
     CREATE INDEX IF NOT EXISTS idx_deferred_prompts_sessionId_status_runAt
       ON deferred_prompts(sessionId, status, runAt);
-
-    -- Durable normal messages awaiting delivery to an idle parent session
-    CREATE TABLE IF NOT EXISTS session_message_outbox (
-      id TEXT PRIMARY KEY,
-      sessionId TEXT NOT NULL,
-      prompt TEXT NOT NULL,
-      source TEXT NOT NULL,
-      sourceId TEXT,
-      availableAt TEXT NOT NULL,
-      status TEXT NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      claimToken TEXT,
-      leaseExpiresAt TEXT,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      lastError TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_session_message_outbox_status_availableAt
-      ON session_message_outbox(status, availableAt);
-    CREATE INDEX IF NOT EXISTS idx_session_message_outbox_sessionId_createdAt
-      ON session_message_outbox(sessionId, createdAt);
 
     -- Recurring same-session deferred execution loops
     CREATE TABLE IF NOT EXISTS defer_loops (
@@ -851,43 +833,81 @@ function initSchema(db: DatabaseSync): void {
       ON bridge_session_state(lastAttentionAt);
   `);
 
-  const legacyWorkerReturns = db.prepare(`
-    SELECT id, sessionId, prompt
-    FROM deferred_prompts
-    WHERE status IN ('pending', 'running', 'failed', 'cancelled')
-      AND prompt LIKE '<deferred-work-result>%'
-  `).all() as Array<{ id: string; sessionId: string; prompt: string }>;
-  if (legacyWorkerReturns.length > 0) {
+  const deferredPromptColumns = new Set(
+    (db.prepare("PRAGMA table_info(deferred_prompts)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  const needsPurposeColumn = !deferredPromptColumns.has("purpose");
+  const needsSourceIdColumn = !deferredPromptColumns.has("sourceId");
+  const hasMessageOutbox = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_message_outbox'",
+  ).get();
+  if (needsPurposeColumn || needsSourceIdColumn || hasMessageOutbox) {
     db.exec("BEGIN IMMEDIATE");
     try {
-      const insertOutbox = db.prepare(`
-        INSERT OR IGNORE INTO session_message_outbox
-          (id, sessionId, prompt, source, sourceId, availableAt, status, attempts, createdAt, updatedAt)
-        VALUES (?, ?, ?, 'defer_result', ?, ?, 'pending', 0, ?, ?)
-      `);
-      const completeLegacy = db.prepare(`
-        UPDATE deferred_prompts
-        SET status = 'completed',
-            claimToken = NULL,
-            leaseExpiresAt = NULL,
-            lastError = NULL,
-            updatedAt = ?
-        WHERE id = ? AND status IN ('pending', 'running', 'failed', 'cancelled')
-      `);
-      const now = new Date().toISOString();
-      for (const row of legacyWorkerReturns) {
-        const result = parseReturnedDeferPrompt(row.prompt);
-        if (!result) continue;
-        insertOutbox.run(
-          result.deliveryId ?? row.id,
-          row.sessionId,
-          row.prompt,
-          result.deferId,
-          now,
-          now,
-          now,
-        );
-        completeLegacy.run(now, row.id);
+      if (needsPurposeColumn) {
+        db.exec("ALTER TABLE deferred_prompts ADD COLUMN purpose TEXT NOT NULL DEFAULT 'defer'");
+      }
+      if (needsSourceIdColumn) {
+        db.exec("ALTER TABLE deferred_prompts ADD COLUMN sourceId TEXT");
+      }
+      if (hasMessageOutbox) {
+        db.exec(`
+          DELETE FROM deferred_prompts
+          WHERE id IN (
+            SELECT prompt.id
+            FROM deferred_prompts prompt
+            JOIN session_message_outbox outbox ON outbox.id = prompt.id
+            WHERE prompt.sessionId = outbox.sessionId AND prompt.prompt = outbox.prompt
+          )
+        `);
+        const conflicts = db.prepare(`
+          SELECT outbox.id
+          FROM session_message_outbox outbox
+          JOIN deferred_prompts prompt ON prompt.id = outbox.id
+        `).all() as Array<{ id: string }>;
+        const rekeyConflict = db.prepare(`
+          UPDATE session_message_outbox
+          SET id = ?, prompt = replace(prompt, ?, ?)
+          WHERE id = ?
+        `);
+        for (const conflict of conflicts) {
+          const replacementId = randomUUID();
+          rekeyConflict.run(
+            replacementId,
+            `deliveryId: ${conflict.id}`,
+            `deliveryId: ${replacementId}`,
+            conflict.id,
+          );
+        }
+        db.exec(`
+          INSERT INTO deferred_prompts
+            (id, sessionId, prompt, purpose, sourceId, runAt, status, attempts,
+             claimToken, leaseExpiresAt, createdAt, updatedAt, lastError)
+          SELECT id, sessionId, prompt, 'delivery', sourceId, availableAt, status, attempts,
+                 claimToken, leaseExpiresAt, createdAt, updatedAt, lastError
+          FROM session_message_outbox;
+          DROP TABLE session_message_outbox;
+        `);
+      }
+      if (needsPurposeColumn || needsSourceIdColumn) {
+        const legacyDeliveryRows = db.prepare(`
+          SELECT id, prompt
+          FROM deferred_prompts
+          WHERE purpose = 'defer' AND prompt LIKE '<deferred-work-result>%'
+        `).all() as Array<{ id: string; prompt: string }>;
+        const markLegacyDelivery = db.prepare(`
+          UPDATE deferred_prompts
+          SET purpose = 'delivery', sourceId = ?,
+              status = CASE WHEN status = 'completed' THEN status ELSE 'pending' END,
+              attempts = CASE WHEN status = 'completed' THEN attempts ELSE 0 END,
+              claimToken = NULL, leaseExpiresAt = NULL, lastError = NULL
+          WHERE id = ?
+        `);
+        for (const row of legacyDeliveryRows) {
+          const parsed = parseReturnedDeferPrompt(row.prompt);
+          if (parsed) markLegacyDelivery.run(parsed.deferId, row.id);
+        }
       }
       db.exec("COMMIT");
     } catch (error) {

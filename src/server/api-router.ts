@@ -1439,7 +1439,6 @@ export function createApiRouter(
     ctx.deferLoopStore?.cancelForSession(sessionId);
     ctx.deferredPromptStore?.deleteForSession(sessionId);
     ctx.deferLoopStore?.deleteForSession(sessionId);
-    ctx.sessionMessageOutboxStore?.deleteForSession(sessionId);
 
     ctx.taskStore.unlinkSessionFromAllTasks(sessionId);
 
@@ -2573,7 +2572,7 @@ export function createApiRouter(
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
     const recentDeliveries = listDeferActivityDeliveries(
-      ctx.sessionMessageOutboxStore,
+      ctx.deferredPromptStore,
       sessionId,
     );
     const failedDeliveryIds = new Set(
@@ -2591,7 +2590,7 @@ export function createApiRouter(
       sessionId,
       defers,
       recentRuns: listDeferActivityRuns(ctx.telemetryStore, sessionId, {
-        messageOutboxStore: ctx.sessionMessageOutboxStore,
+        deferredPromptStore: ctx.deferredPromptStore,
       }),
       recentDeliveries,
     });
@@ -2612,10 +2611,10 @@ export function createApiRouter(
     const runs = listDeferActivityRuns(ctx.telemetryStore, sessionId, {
       deferId: req.params.deferId,
       limit: 200,
-      messageOutboxStore: ctx.sessionMessageOutboxStore,
+      deferredPromptStore: ctx.deferredPromptStore,
     });
     const deliveries = listDeferActivityDeliveries(
-      ctx.sessionMessageOutboxStore,
+      ctx.deferredPromptStore,
       sessionId,
       { deferId: req.params.deferId, limit: 200 },
     );
@@ -2679,9 +2678,9 @@ export function createApiRouter(
         return res.status(404).json({ error: `Defer ${deferId} not found.` });
       }
       const retriedDeliveries =
-        ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+        store.reactivateFailedDeliveryForSource(sessionId, deferId);
       if (retriedDeliveries > 0) {
-        ctx.sessionMessageOutboxRunner?.poke();
+        ctx.deferredPromptRunner?.poke();
         return res.json({
           ok: true,
           deferId,
@@ -2720,9 +2719,9 @@ export function createApiRouter(
       return res.status(404).json({ error: `Defer ${deferId} not found.` });
     }
     const retriedDeliveries =
-      ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+      ctx.deferredPromptStore?.reactivateFailedDeliveryForSource(sessionId, deferId) ?? 0;
     if (retriedDeliveries > 0) {
-      ctx.sessionMessageOutboxRunner?.poke();
+      ctx.deferredPromptRunner?.poke();
       return res.json({
         ok: true,
         deferId,

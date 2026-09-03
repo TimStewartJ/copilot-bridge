@@ -62,6 +62,17 @@ function createWorkerWithEvents(events: unknown[], label: string) {
   });
 }
 
+const workerInput = {
+  deferId: "interval_1",
+  kind: "interval" as const,
+  parentSessionId: "parent-session",
+  prompt: "Check build",
+};
+
+function runWorkerEvents(events: unknown[], label: string) {
+  return createWorkerWithEvents(events, label).run(workerInput);
+}
+
 describe("defer worker", () => {
   it("recognizes disposable worker session ids", () => {
     const sessionId = createDisposableDeferWorkerSessionId();
@@ -102,30 +113,14 @@ describe("defer worker", () => {
   });
 
   it("accepts a valid assistant result at turn end without waiting for session idle", async () => {
-    const worker = createDisposableDeferWorker({
-      getSettings: () => ({
-        mcpServers: {},
-        deferWorker: { model: "small-model", reasoningEffort: "low", contextTier: "default" },
-      }),
-      listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
-      buildSessionConfig: () => ({}),
-      getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
-      reserveCapacity: async () => () => undefined,
-      createSession: async (config) => createEventSession(
-        config.sessionId as string,
-        '<defer-result action="return">Build passed.</defer-result>',
-      ) as any,
-      deleteSession: async () => undefined,
-      getCopilotHome: () => makeTestDir("defer-worker-event-result"),
-    });
-
-    await expect(worker.run({
-      deferId: "interval_1",
-      kind: "interval",
-      parentSessionId: "parent-session",
-      prompt: "Check build",
-    })).resolves.toMatchObject({
+    await expect(runWorkerEvents([
+      { type: "assistant.turn_start", data: { turnId: "1" } },
+      {
+        type: "assistant.message",
+        data: { content: '<defer-result action="return">Build passed.</defer-result>' },
+      },
+      { type: "assistant.turn_end", data: { turnId: "1" } },
+    ], "defer-worker-event-result")).resolves.toMatchObject({
       action: "return",
       message: "Build passed.",
       deliveryId: expect.any(String),
@@ -133,53 +128,20 @@ describe("defer worker", () => {
   });
 
   it("does not accept a result message that still has pending tool requests", async () => {
-    let handler: ((event: unknown) => void) | undefined;
-    const worker = createDisposableDeferWorker({
-      getSettings: () => ({
-        mcpServers: {},
-        deferWorker: { model: "small-model", reasoningEffort: "low", contextTier: "default" },
-      }),
-      listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
-      buildSessionConfig: () => ({}),
-      getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
-      reserveCapacity: async () => () => undefined,
-      createSession: async (config) => ({
-        sessionId: config.sessionId as string,
-        on: (nextHandler: (event: unknown) => void) => {
-          handler = nextHandler;
-          return () => {
-            handler = undefined;
-          };
+    await expect(runWorkerEvents([
+      {
+        type: "assistant.message",
+        data: {
+          content: '<defer-result action="return">Premature.</defer-result>',
+          toolRequests: [{ toolCallId: "tool-1" }],
         },
-        send: async () => {
-          handler?.({
-            type: "assistant.message",
-            data: {
-              content: '<defer-result action="return">Premature.</defer-result>',
-              toolRequests: [{ toolCallId: "tool-1" }],
-            },
-          });
-          handler?.({
-            type: "session.error",
-            data: { message: "Tool failed." },
-          });
-        },
-      }) as any,
-      deleteSession: async () => undefined,
-      getCopilotHome: () => makeTestDir("defer-worker-pending-tools"),
-    });
-
-    await expect(worker.run({
-      deferId: "interval_1",
-      kind: "interval",
-      parentSessionId: "parent-session",
-      prompt: "Check build",
-    })).rejects.toThrow("Tool failed.");
+      },
+      { type: "session.error", data: { message: "Tool failed." } },
+    ], "defer-worker-pending-tools")).rejects.toThrow("Tool failed.");
   });
 
   it("ignores an intermediate result when more tool work follows", async () => {
-    const worker = createWorkerWithEvents([
+    await expect(runWorkerEvents([
       { type: "assistant.turn_start", data: { turnId: "1" } },
       {
         type: "assistant.message",
@@ -192,18 +154,12 @@ describe("defer worker", () => {
         data: { content: '<defer-result action="return">Final.</defer-result>' },
       },
       { type: "assistant.turn_end", data: { turnId: "1" } },
-    ], "defer-worker-intermediate-result");
-
-    await expect(worker.run({
-      deferId: "interval_1",
-      kind: "interval",
-      parentSessionId: "parent-session",
-      prompt: "Check build",
-    })).resolves.toMatchObject({ action: "return", message: "Final." });
+    ], "defer-worker-intermediate-result"))
+      .resolves.toMatchObject({ action: "return", message: "Final." });
   });
 
   it("does not revive an invalidated result from the idle fallback", async () => {
-    const worker = createWorkerWithEvents([
+    await expect(runWorkerEvents([
       { type: "assistant.turn_start", data: { turnId: "1" } },
       {
         type: "assistant.message",
@@ -215,18 +171,12 @@ describe("defer worker", () => {
       { type: "tool.execution_start", data: { toolCallId: "tool-1" } },
       { type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
       { type: "session.idle", data: {} },
-    ], "defer-worker-stale-idle-result");
-
-    await expect(worker.run({
-      deferId: "interval_1",
-      kind: "interval",
-      parentSessionId: "parent-session",
-      prompt: "Check build",
-    })).rejects.toThrow("ended without one valid result tag");
+    ], "defer-worker-stale-idle-result"))
+      .rejects.toThrow("ended without one valid result tag");
   });
 
   it("waits for outstanding tool completion after turn end", async () => {
-    const worker = createWorkerWithEvents([
+    await expect(runWorkerEvents([
       { type: "assistant.turn_start", data: { turnId: "1" } },
       { type: "tool.execution_start", data: { toolCallId: "tool-1" } },
       {
@@ -235,14 +185,8 @@ describe("defer worker", () => {
       },
       { type: "assistant.turn_end", data: { turnId: "1" } },
       { type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
-    ], "defer-worker-late-tool-completion");
-
-    await expect(worker.run({
-      deferId: "interval_1",
-      kind: "interval",
-      parentSessionId: "parent-session",
-      prompt: "Check build",
-    })).resolves.toMatchObject({ action: "return", message: "Done." });
+    ], "defer-worker-late-tool-completion"))
+      .resolves.toMatchObject({ action: "return", message: "Done." });
   });
 
   it("runs with configured model options and deletes the temporary session", async () => {

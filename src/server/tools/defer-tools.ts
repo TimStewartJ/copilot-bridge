@@ -280,9 +280,9 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           if (!existing) return toolFailure(`Defer ${deferId} not found.`);
           if (existing.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
           const retriedDeliveries =
-            ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+            ctx.deferredPromptStore.reactivateFailedDeliveryForSource(sessionId, deferId);
           if (retriedDeliveries > 0) {
-            ctx.sessionMessageOutboxRunner?.poke();
+            ctx.deferredPromptRunner?.poke();
             return {
               success: true,
               deferId,
@@ -314,9 +314,9 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         if (!loop) return toolFailure(`Defer ${deferId} not found.`);
         if (loop.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
         const retriedDeliveries =
-          ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+          ctx.deferredPromptStore?.reactivateFailedDeliveryForSource(sessionId, deferId) ?? 0;
         if (retriedDeliveries > 0) {
-          ctx.sessionMessageOutboxRunner?.poke();
+          ctx.deferredPromptRunner?.poke();
           return {
             success: true,
             deferId,
@@ -368,15 +368,10 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
             .map(formatLoop)
           : [];
         const parentDeliveries = new Map<string, { status: string; error?: string }>();
-        for (const delivery of ctx.sessionMessageOutboxStore?.listForSession(sessionId) ?? []) {
-          if (
-            delivery.source !== "defer_result"
-            || !delivery.sourceId
-            || parentDeliveries.has(delivery.sourceId)
-          ) {
-            continue;
-          }
-          parentDeliveries.set(delivery.sourceId, {
+        for (const delivery of ctx.deferredPromptStore?.listDeliveriesForSession(sessionId) ?? []) {
+          const sourceId = delivery.sourceId;
+          if (!sourceId || parentDeliveries.has(sourceId)) continue;
+          parentDeliveries.set(sourceId, {
             status: delivery.status,
             ...(delivery.lastError ? { error: delivery.lastError } : {}),
           });

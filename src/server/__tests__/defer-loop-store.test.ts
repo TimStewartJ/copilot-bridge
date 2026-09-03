@@ -96,7 +96,7 @@ describe("defer-loop-store", () => {
     const loop = store.create({ ...baseLoop, maxRuns: 1, nextRunAt: "2026-01-01T00:00:00.000Z" });
     const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
 
-    const completed = store.completeOccurrence(
+    const completed = store.settleOccurrence(
       loop.id,
       claimed.claimToken,
       "2026-01-01T00:05:00.000Z",
@@ -116,7 +116,7 @@ describe("defer-loop-store", () => {
     claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:10.000Z")!;
     expect(claimed.loop.attempts).toBe(2);
 
-    const completed = store.completeOccurrence(
+    const completed = store.settleOccurrence(
       loop.id,
       claimed.claimToken,
       "2026-01-01T00:05:00.000Z",

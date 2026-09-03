@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { installApiRouteTestHooks, makeTestDir, request } from "./api-routes-test-helpers.js";
 import { normalizeLiveSessionContextEvent } from "../session-context-normalizer.js";
 import { SessionBackendDeleteError } from "../session-manager.js";
+import { createReturnedDeferDelivery } from "../defer-result-message.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -65,7 +66,6 @@ describe("session deletion cleans up every owned subsystem", () => {
 
     const deferStore = ctx.deferredPromptStore!;
     const loopStore = ctx.deferLoopStore!;
-    const outboxStore = ctx.sessionMessageOutboxStore!;
 
     const activeOnce = deferStore.create(SESSION_ID, "future prompt", "2099-01-01T00:00:00.000Z");
     const terminalOnce = deferStore.create(SESSION_ID, "already ran", "2020-01-01T00:00:00.000Z");
@@ -91,18 +91,16 @@ describe("session deletion cleans up every owned subsystem", () => {
       intervalSeconds: 600,
       nextRunAt: "2099-01-01T00:00:00.000Z",
     });
-    const deletedMessage = outboxStore.enqueue({
-      id: "deleted-message",
-      sessionId: SESSION_ID,
-      prompt: "Result",
-      source: "defer_result",
-    })!;
-    const survivingMessage = outboxStore.enqueue({
-      id: "surviving-message",
-      sessionId: OTHER_SESSION_ID,
-      prompt: "Other result",
-      source: "defer_result",
-    })!;
+    const deletedMessage = deferStore.enqueueDelivery(createReturnedDeferDelivery(
+      { deferId: activeLoop.deferId, kind: "interval", parentSessionId: SESSION_ID },
+      "Result",
+      { deliveryId: "deleted-message" },
+    ));
+    const survivingMessage = deferStore.enqueueDelivery(createReturnedDeferDelivery(
+      { deferId: survivingLoop.deferId, kind: "interval", parentSessionId: OTHER_SESSION_ID },
+      "Other result",
+      { deliveryId: "surviving-message" },
+    ));
 
     const linkedA = ctx.taskStore.createTask("Linked A");
     const linkedB = ctx.taskStore.createTask("Linked B");
@@ -141,8 +139,8 @@ describe("session deletion cleans up every owned subsystem", () => {
     expect(loopStore.get(terminalLoop.id)).toBeUndefined();
     expect(loopStore.listForSession(SESSION_ID)).toEqual([]);
     expect(loopStore.get(survivingLoop.id)).toMatchObject({ status: "active" });
-    expect(outboxStore.get(deletedMessage.id)).toBeUndefined();
-    expect(outboxStore.get(survivingMessage.id)).toMatchObject({ status: "pending" });
+    expect(deferStore.get(deletedMessage.id)).toBeUndefined();
+    expect(deferStore.get(survivingMessage.id)).toMatchObject({ status: "pending" });
 
     // Only the linked tasks lost the link, and each emitted exactly one event.
     expect(ctx.taskStore.getTask(linkedA.id)!.sessionIds).not.toContain(SESSION_ID);

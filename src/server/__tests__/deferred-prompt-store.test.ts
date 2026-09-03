@@ -1,8 +1,14 @@
+import { DatabaseSync as NodeDatabaseSync } from "node:sqlite";
+import { join } from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
-import { setupTestDb } from "./helpers.js";
+import { makeTestDir, setupTestDb } from "./helpers.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import type { DeferredPromptStore } from "../deferred-prompt-store.js";
-import type { DatabaseSync } from "../db.js";
+import { openDatabase, type DatabaseSync } from "../db.js";
+import {
+  createReturnedDeferDelivery,
+  parseReturnedDeferPrompt,
+} from "../defer-result-message.js";
 
 let db: DatabaseSync;
 let store: DeferredPromptStore;
@@ -37,6 +43,39 @@ describe("deferred-prompt-store", () => {
       expect(results[0].prompt).toBe("First");
       expect(results[1].prompt).toBe("Second");
     });
+
+    it("does not classify user-authored result-like text as a delivery", () => {
+      const prompt = store.create(
+        "session-A",
+        "<deferred-work-result>\nUser-authored test content.",
+        "2030-01-01T00:01:00.000Z",
+      );
+      expect(store.listForSession("session-A")).toEqual([prompt]);
+      expect(store.listDeliveriesForSession("session-A")).toEqual([]);
+    });
+
+    it("keeps parent deliveries out of defer summaries and cancellation", () => {
+      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
+        { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
+        "Build completed.",
+        { deliveryId: "delivery-1" },
+      ));
+
+      expect(store.listForSession("session-A")).toEqual([]);
+      expect(store.listDeliveriesForSession("session-A")).toEqual([delivery]);
+      expect(store.getSummaryForSession("session-A")).toEqual({ count: 0, nextRunAt: null });
+      expect(store.cancelForSession("session-A")).toBe(0);
+      expect(store.get(delivery.id)?.status).toBe("pending");
+
+      const claimed = store.claimDue(delivery.id, 60_000)!;
+      expect(store.markFailed(delivery.id, claimed.claimToken, "Parent unavailable")).toBe(true);
+      expect(store.reactivateFailedDeliveryForSource("session-A", "interval_1")).toBe(1);
+      expect(store.get(delivery.id)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        lastError: undefined,
+      });
+    });
   });
 
   describe("listDue", () => {
@@ -48,6 +87,127 @@ describe("deferred-prompt-store", () => {
       const due = store.listDue();
       expect(due.map((d) => d.id)).toContain(dp1.id);
       expect(due.every((d) => d.runAt <= new Date().toISOString())).toBe(true);
+    });
+
+    describe("deferred delivery migration", () => {
+      it("moves the deployed outbox table into the shared deferred prompt queue", () => {
+        const dataDir = makeTestDir("deferred-delivery-migration");
+        const legacy = new NodeDatabaseSync(join(dataDir, "bridge.db"));
+        legacy.exec(`
+          CREATE TABLE deferred_prompts (
+            id TEXT PRIMARY KEY,
+            sessionId TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            runAt TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            claimToken TEXT,
+            leaseExpiresAt TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            lastError TEXT
+          );
+          CREATE TABLE session_message_outbox (
+            id TEXT PRIMARY KEY,
+            sessionId TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            source TEXT NOT NULL,
+            sourceId TEXT,
+            availableAt TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            claimToken TEXT,
+            leaseExpiresAt TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            lastError TEXT
+          )
+        `);
+        legacy.prepare(`
+          INSERT INTO deferred_prompts
+            (id, sessionId, prompt, runAt, status, createdAt, updatedAt)
+          VALUES ('delivery-1', 'session-source', 'Scheduled work',
+                  '2026-09-03T00:00:00.000Z', 'pending',
+                  '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z')
+        `).run();
+        const delivery = createReturnedDeferDelivery(
+          { deferId: "interval_1", kind: "interval", parentSessionId: "session-1" },
+          "Done.",
+          { deliveryId: "delivery-1" },
+        );
+        const overlappingDelivery = createReturnedDeferDelivery(
+          { deferId: "interval_2", kind: "interval", parentSessionId: "session-2" },
+          "Still pending.",
+          { deliveryId: "overlapping-delivery" },
+        );
+        legacy.prepare(`
+          INSERT INTO deferred_prompts
+            (id, sessionId, prompt, runAt, status, createdAt, updatedAt)
+          VALUES (?, ?, ?, '2026-09-03T00:00:00.000Z', 'completed',
+                  '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z')
+        `).run(
+          overlappingDelivery.id,
+          overlappingDelivery.sessionId,
+          overlappingDelivery.prompt,
+        );
+        legacy.prepare(`
+          INSERT INTO session_message_outbox
+            (id, sessionId, prompt, source, sourceId, availableAt, status, attempts,
+             createdAt, updatedAt)
+          VALUES (?, ?, ?, 'defer_result', 'interval_1', ?, 'pending', 0, ?, ?)
+        `).run(
+          delivery.id,
+          delivery.sessionId,
+          delivery.prompt,
+          "2026-09-03T00:00:00.000Z",
+          "2026-09-03T00:00:00.000Z",
+          "2026-09-03T00:00:00.000Z",
+        );
+        legacy.prepare(`
+          INSERT INTO session_message_outbox
+            (id, sessionId, prompt, source, sourceId, availableAt, status, attempts,
+             createdAt, updatedAt)
+          VALUES (?, ?, ?, 'defer_result', 'interval_2', ?, 'pending', 0, ?, ?)
+        `).run(
+          overlappingDelivery.id,
+          overlappingDelivery.sessionId,
+          overlappingDelivery.prompt,
+          "2026-09-03T00:00:00.000Z",
+          "2026-09-03T00:00:00.000Z",
+          "2026-09-03T00:00:00.000Z",
+        );
+        legacy.close();
+
+        const migrated = openDatabase(dataDir);
+        const migratedStore = createDeferredPromptStore(migrated);
+        expect(migratedStore.listDeliveriesForSession("session-1")).toEqual([
+          expect.objectContaining({
+            status: "pending",
+            sourceId: "interval_1",
+          }),
+        ]);
+        const migratedDelivery = migratedStore.listDeliveriesForSession("session-1")[0]!;
+        expect(migratedDelivery.id).not.toBe("delivery-1");
+        expect(parseReturnedDeferPrompt(migratedDelivery.prompt)?.deliveryId)
+          .toBe(migratedDelivery.id);
+        expect(migratedStore.get("delivery-1")).toMatchObject({
+          sessionId: "session-source",
+          purpose: "defer",
+        });
+        expect(migratedStore.get(overlappingDelivery.id)).toMatchObject({
+          purpose: "delivery",
+          sourceId: "interval_2",
+          status: "pending",
+        });
+        expect(migrated.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_message_outbox'",
+        ).get()).toBeUndefined();
+        migrated.close();
+
+        const reopened = openDatabase(dataDir);
+        expect(createDeferredPromptStore(reopened).get(migratedDelivery.id)?.status).toBe("pending");
+        reopened.close();
+      });
     });
 
   });

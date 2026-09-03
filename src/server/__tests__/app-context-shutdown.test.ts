@@ -11,7 +11,6 @@ function createShutdownSpies() {
     setGlobalPause: vi.fn(),
     schedulerShutdown: vi.fn(),
     overlayStop: vi.fn(),
-    outboxShutdown: vi.fn(),
     deferredPromptShutdown: vi.fn(),
     deferLoopShutdown: vi.fn(),
     usageReaderShutdown: vi.fn(async () => {}),
@@ -24,7 +23,6 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
   return {
     scheduler: { setGlobalPause: spies.setGlobalPause, shutdown: spies.schedulerShutdown },
     sessionOverlayMaintenance: { stop: spies.overlayStop },
-    sessionMessageOutboxRunner: { shutdown: spies.outboxShutdown },
     deferredPromptRunner: { shutdown: spies.deferredPromptShutdown },
     deferLoopRunner: { shutdown: spies.deferLoopShutdown },
     copilotUsageReader: { shutdown: spies.usageReaderShutdown },
@@ -43,7 +41,6 @@ describe("shutdownAppContextServices", () => {
 
     expect(spies.setGlobalPause).toHaveBeenCalledWith(true);
     expect(spies.overlayStop).toHaveBeenCalledTimes(1);
-    expect(spies.outboxShutdown).toHaveBeenCalledTimes(1);
     expect(spies.deferredPromptShutdown).toHaveBeenCalledTimes(1);
     expect(spies.deferLoopShutdown).toHaveBeenCalledTimes(1);
     expect(spies.usageReaderShutdown).toHaveBeenCalledTimes(1);
