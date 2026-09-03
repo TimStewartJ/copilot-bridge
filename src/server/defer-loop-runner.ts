@@ -84,6 +84,7 @@ export function createDeferLoopRunner(
       isFinalRun: occurrenceStatus !== "active",
       intervalSeconds: loop.intervalSeconds,
       ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
+      ...(loop.checkpoint ? { checkpoint: loop.checkpoint } : {}),
     };
   }
 
@@ -274,6 +275,7 @@ export function createDeferLoopRunner(
           {
             ...(status === "active" ? {} : { status }),
             ...(delivery ? { delivery } : {}),
+            ...(result?.checkpoint ? { checkpoint: result.checkpoint } : {}),
           },
         );
         if (!updated) {

@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildDeferWorkerSystemPrompt,
   buildDeferWorkerPrompt,
   createDisposableDeferWorker,
   createDisposableDeferWorkerSessionId,
   isDisposableDeferWorkerSessionId,
   parseDeferWorkerResult,
 } from "../defer-worker.js";
+import { DEFER_CHECKPOINT_MAX_BYTES } from "../defer-checkpoint.js";
 import { makeTestDir } from "./helpers.js";
 
 function createEventSession(
@@ -110,6 +112,64 @@ describe("defer worker", () => {
       '<defer-result action="notify">Still running.</defer-result>',
       "once",
     )).toThrow("One-shot defer worker cannot notify");
+  });
+
+  it("keeps recurring checkpoints separate from parent messages", () => {
+    expect(parseDeferWorkerResult(
+      '<defer-result action="continue"><defer-checkpoint>{"status":"running","buildId":42}</defer-checkpoint></defer-result>',
+      "interval",
+    )).toEqual({
+      action: "continue",
+      checkpoint: { status: "running", buildId: 42 },
+    });
+    expect(parseDeferWorkerResult(
+      '<defer-result action="notify"><defer-checkpoint>{"status":"succeeded"}</defer-checkpoint>\nBuild completed.</defer-result>',
+      "interval",
+    )).toEqual({
+      action: "notify",
+      message: "Build completed.",
+      checkpoint: { status: "succeeded" },
+    });
+
+    const prompt = buildDeferWorkerPrompt({
+      deferId: "interval_1",
+      kind: "interval",
+      parentSessionId: "parent-session",
+      prompt: "Check the build.",
+      checkpoint: { status: "succeeded", buildId: 42 },
+    });
+    expect(prompt).toContain("Private checkpoint from the previous occurrence:");
+    expect(prompt).toContain(
+      '<defer-checkpoint>{"status":"succeeded","buildId":42}</defer-checkpoint>',
+    );
+    expect(buildDeferWorkerSystemPrompt("interval")).toContain(
+      "Use the prior checkpoint as the baseline for change detection",
+    );
+  });
+
+  it("rejects malformed, oversized, and one-shot checkpoints", () => {
+    expect(() => parseDeferWorkerResult(
+      '<defer-result action="continue"><defer-checkpoint>not-json</defer-checkpoint></defer-result>',
+      "interval",
+    )).toThrow("must contain valid JSON");
+    expect(() => parseDeferWorkerResult(
+      '<defer-result action="continue"><defer-checkpoint>[]</defer-checkpoint></defer-result>',
+      "interval",
+    )).toThrow("must be a JSON object");
+    expect(() => parseDeferWorkerResult(
+      `<defer-result action="continue"><defer-checkpoint>${JSON.stringify({
+        value: "x".repeat(DEFER_CHECKPOINT_MAX_BYTES),
+      })}</defer-checkpoint></defer-result>`,
+      "interval",
+    )).toThrow(`exceeds ${DEFER_CHECKPOINT_MAX_BYTES} bytes`);
+    expect(() => parseDeferWorkerResult(
+      '<defer-result action="return"><defer-checkpoint>{"status":"done"}</defer-checkpoint>Done.</defer-result>',
+      "once",
+    )).toThrow("Only recurring defer workers");
+    expect(() => parseDeferWorkerResult(
+      '<defer-result action="return"><defer-checkpoint>{"status":"done"}</defer-checkpoint>Done.</defer-result>',
+      "interval",
+    )).toThrow("valid only when continuing");
   });
 
   it("accepts a valid assistant result at turn end without waiting for session idle", async () => {

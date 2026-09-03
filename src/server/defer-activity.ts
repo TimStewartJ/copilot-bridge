@@ -1,5 +1,6 @@
 import type { DeferLoop } from "./defer-loop-store.js";
 import type { DeferWorkerAction, DeferWorkerKind } from "./defer-worker.js";
+import type { DeferCheckpoint } from "./defer-checkpoint.js";
 import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { TelemetrySpan, TelemetryStore } from "./telemetry-store.js";
 
@@ -14,6 +15,7 @@ export interface DeferActivityItem {
   kind: DeferWorkerKind;
   name?: string;
   prompt: string;
+  checkpoint?: DeferCheckpoint;
   status: DeferActivityStatus;
   nextRunAt: string;
   intervalSeconds?: number;
@@ -77,6 +79,7 @@ export function formatLoopDeferActivity(loop: DeferLoop): DeferActivityItem {
     kind: "interval",
     ...(loop.name ? { name: loop.name } : {}),
     prompt: loop.prompt,
+    ...(loop.checkpoint ? { checkpoint: loop.checkpoint } : {}),
     status: loop.status,
     nextRunAt: loop.nextRunAt,
     intervalSeconds: loop.intervalSeconds,

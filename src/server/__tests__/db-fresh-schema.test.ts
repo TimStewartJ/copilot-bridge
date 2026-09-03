@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
 import { openDatabase, openMemoryDatabase } from "../db.js";
 import { makeTestDir } from "./helpers.js";
 
@@ -74,7 +75,49 @@ describe("fresh database schema", () => {
     expect(columnNames("bridge_session_state")).toEqual(
       expect.arrayContaining(["pendingAutoName", "pendingAutoNameReplaceTitle"]),
     );
+    expect(columnNames("defer_loops")).toContain("checkpoint");
 
     fresh.close();
+  });
+
+  it("adds the checkpoint column to an existing defer loop table", () => {
+    const dataDir = makeTestDir("db-defer-checkpoint-migration");
+    const legacy = new DatabaseSync(join(dataDir, "bridge.db"));
+    legacy.exec(`
+      CREATE TABLE defer_loops (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        name TEXT,
+        prompt TEXT NOT NULL,
+        intervalSeconds INTEGER NOT NULL,
+        nextRunAt TEXT NOT NULL,
+        status TEXT NOT NULL,
+        runCount INTEGER NOT NULL DEFAULT 0,
+        maxRuns INTEGER,
+        expiresAt TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        claimToken TEXT,
+        leaseExpiresAt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastError TEXT
+      );
+      INSERT INTO defer_loops
+        (id, sessionId, prompt, intervalSeconds, nextRunAt, status, createdAt, updatedAt)
+      VALUES
+        ('loop-1', 'session-1', 'Check build', 300, '2030-01-01T00:00:00.000Z',
+         'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const migrated = openDatabase(dataDir);
+    expect(
+      (migrated.prepare("PRAGMA table_info(defer_loops)").all() as unknown as { name: string }[])
+        .map((column) => column.name),
+    ).toContain("checkpoint");
+    expect(migrated.prepare(
+      "SELECT id, checkpoint FROM defer_loops WHERE id = 'loop-1'",
+    ).get()).toEqual({ id: "loop-1", checkpoint: null });
+    migrated.close();
   });
 });

@@ -2,6 +2,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
+import {
+  parseDeferCheckpointJson,
+  serializeDeferCheckpoint,
+  type DeferCheckpoint,
+} from "./defer-checkpoint.js";
 import { toIntervalDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
@@ -19,6 +24,7 @@ export interface DeferLoop {
   sessionId: string;
   name?: string;
   prompt: string;
+  checkpoint?: DeferCheckpoint;
   intervalSeconds: number;
   nextRunAt: string;
   status: DeferLoopStatus;
@@ -229,6 +235,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
       sessionId: raw.sessionId,
       name: raw.name ?? undefined,
       prompt: raw.prompt,
+      checkpoint: raw.checkpoint ? parseDeferCheckpointJson(raw.checkpoint) : undefined,
       intervalSeconds: raw.intervalSeconds,
       nextRunAt: raw.nextRunAt,
       status: raw.status as DeferLoopStatus,
@@ -349,6 +356,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
     options: {
       status?: Exclude<DeferLoopOccurrenceStatus, "active">;
       delivery?: DeferredResultDelivery;
+      checkpoint?: DeferCheckpoint;
     } = {},
   ): DeferLoop | undefined {
     db.exec("BEGIN IMMEDIATE");
@@ -366,13 +374,24 @@ export function createDeferLoopStore(db: DatabaseSync) {
         SET status = ?,
             runCount = ?,
             nextRunAt = ?,
+            checkpoint = COALESCE(?, checkpoint),
             attempts = 0,
             claimToken = NULL,
             leaseExpiresAt = NULL,
             lastError = NULL,
             updatedAt = ?
         WHERE id = ? AND status = 'running' AND claimToken = ?
-      `).run(status, runCount, nextRunAt, now, id, claimToken);
+      `).run(
+        status,
+        runCount,
+        nextRunAt,
+        options.checkpoint === undefined
+          ? null
+          : serializeDeferCheckpoint(options.checkpoint),
+        now,
+        id,
+        claimToken,
+      );
       if (options.delivery) {
         if (!insertDelivery(options.delivery, now)) {
           throw new Error(`Deferred delivery ${options.delivery.id} already exists.`);

@@ -59,6 +59,7 @@ function formatLoop(loop: any) {
     sessionId: loop.sessionId,
     ...(loop.name ? { name: loop.name } : {}),
     prompt: loop.prompt,
+    ...(loop.checkpoint ? { checkpoint: loop.checkpoint } : {}),
     intervalSeconds: loop.intervalSeconds,
     nextRunAt: loop.nextRunAt,
     status: loop.status,
@@ -79,7 +80,7 @@ export interface RegisterDeferToolsOptions {
 export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineSessionBridgeTool("defer_create", {
-      description: "Create a defer associated with this session. Each occurrence runs one bounded check in a temporary worker configured in Bridge Settings. For recurring work, describe when to continue quietly, notify the parent and continue, finish quietly, or return to the parent and stop. Do not tell the worker to call defer_cancel, task_complete, sleep, or poll repeatedly. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for recurrence with maxRuns or expiresAt as a safety stop; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
+      description: "Create a defer associated with this session. Each occurrence runs one bounded check in a temporary worker configured in Bridge Settings. Recurring workers can replace a bounded private JSON checkpoint that is supplied to the next occurrence without notifying the parent. For recurring work, describe when to continue quietly, notify the parent and continue, finish quietly, or return to the parent and stop. Do not tell the worker to call defer_cancel, task_complete, sleep, or poll repeatedly. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for recurrence with maxRuns or expiresAt as a safety stop; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
       parameters: {
         type: "object",
         properties: {
@@ -345,7 +346,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
     }),
 
     defineSessionBridgeTool("defer_list", {
-      description: "List same-session defers for this session. By default returns active defers only; set includeInactive to also return terminal entries.",
+      description: "List same-session defers for this session, including the latest private checkpoint for recurring defers when present. By default returns active defers only; set includeInactive to also return terminal entries.",
       parameters: {
         type: "object",
         properties: {
