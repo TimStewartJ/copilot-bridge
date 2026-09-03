@@ -1,4 +1,9 @@
-import type { RestartSignalConsumption } from "./server/restart-signal.js";
+import { isRecord } from "./shared/is-record.js";
+import type { ManagementJob } from "./server/management-job-store.js";
+import type {
+  RestartSignal,
+  RestartSignalConsumption,
+} from "./server/restart-signal.js";
 
 export type RestartOutcome =
   | "restarted"
@@ -23,6 +28,41 @@ export function resolveRestartSignalAction(result: RestartSignalConsumption): Re
     case "claimed":
       return "restart";
   }
+}
+
+export function isDeployRestartUpdatePending(
+  job: ManagementJob,
+  includeQueued = false,
+): boolean {
+  return job.type === "staging_deploy" && (
+    job.status === "running"
+    || (includeQueued && job.status === "queued")
+    || (
+      job.status === "succeeded"
+      && isRecord(job.result)
+      && job.result.restartDeferred === true
+    )
+  );
+}
+
+export function resolveRestartSignalUpdate(
+  current: RestartSignal,
+  result: RestartSignalConsumption,
+): RestartSignal {
+  if (result.status === "none") return current;
+  if (result.status === "retryable-error") {
+    throw new Error(`Failed to read the latest restart candidate: ${String(result.error)}`);
+  }
+  if (result.status === "invalid") {
+    throw new Error(`The latest restart candidate is invalid: ${result.error.message}`);
+  }
+  if (
+    current.requestId !== result.signal.requestId
+    || current.validationMode !== result.signal.validationMode
+  ) {
+    throw new Error("The pending restart candidate update did not match the active restart request");
+  }
+  return result.signal;
 }
 
 /**

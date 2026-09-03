@@ -35,11 +35,17 @@ import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
 import {
+  DEPLOY_BATCH_RESTART_SOURCE,
   consumeRestartSignalFile,
   type RestartSignal,
   type RestartSignalConsumption,
   type RestartValidationMode,
 } from "./server/restart-signal.js";
+import {
+  createManagementJobStore,
+  isDeployAwaitingActivation,
+  MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
+} from "./server/management-job-store.js";
 import {
   pruneReleaseSlots,
   readActiveRelease,
@@ -79,7 +85,9 @@ import {
 } from "./launcher-restart-state-ops.js";
 import {
   didRestartRecover,
+  isDeployRestartUpdatePending,
   resolveRestartSignalAction,
+  resolveRestartSignalUpdate,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
@@ -121,7 +129,6 @@ import {
 import { TunnelSupervisor } from "./launcher-tunnel-supervisor.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { openDatabase } from "./server/db.js";
-import { createManagementJobStore } from "./server/management-job-store.js";
 import { createGitPullRebaseCommand } from "./server/git-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1234,6 +1241,53 @@ function hasRunningManagementJobs(): boolean {
   }
 }
 
+function listPendingDeployRestartUpdates(includeQueued: boolean) {
+  let db: ReturnType<typeof openDatabase> | null = null;
+  try {
+    db = openDatabase(DATA_DIR);
+    const store = createManagementJobStore(db, { dataDir: DATA_DIR });
+    const jobs = store.list({
+      types: ["staging_deploy"],
+      statuses: ["queued", "running", "succeeded"],
+      order: "created-asc",
+      limit: 200,
+    });
+    const batchSize = jobs.filter((job) => (
+      job.status === "running" || isDeployAwaitingActivation(job)
+    )).length;
+    return jobs.filter((job) => isDeployRestartUpdatePending(
+      job,
+      includeQueued && batchSize < MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
+    ));
+  } finally {
+    db?.close();
+  }
+}
+
+async function waitForDeployRestartUpdates(includeQueued: boolean): Promise<void> {
+  const startedAt = Date.now();
+  let quietChecks = 0;
+  let lastPendingIds = "";
+  while (!shuttingDown) {
+    const pending = listPendingDeployRestartUpdates(includeQueued);
+    if (pending.length === 0) {
+      quietChecks++;
+      if (quietChecks >= 2) return;
+    } else {
+      quietChecks = 0;
+      const pendingIds = pending.map((job) => job.id).join(",");
+      if (pendingIds !== lastPendingIds) {
+        log(`Waiting for ${pending.length} deploy candidate update(s) before restart cutover`);
+        lastPendingIds = pendingIds;
+      }
+    }
+    if (Date.now() - startedAt >= BUSY_WAIT_TIMEOUT) {
+      throw new Error("Timed out waiting for deploy candidate updates before restart cutover");
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, POLL_INTERVAL));
+  }
+}
+
 function trackChildProcessIdentity(proc: ChildProcess): void {
   const identity = proc.pid
     ? captureProcessIdentity(proc.pid, createDeadline(CHILD_IDENTITY_CAPTURE_TIMEOUT_MS))
@@ -1374,8 +1428,9 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   const validationMode = signal.validationMode;
   clearReleaseFailureTracking();
   releaseCandidateSha = null;
-  const candidateRelease = resolveReleaseCandidate(DATA_DIR, signal.releaseCandidate);
-  const candidateOutcome = resolveReleaseCandidateRestartOutcome({
+  let effectiveSignal = signal;
+  let candidateRelease = resolveReleaseCandidate(DATA_DIR, effectiveSignal.releaseCandidate);
+  let candidateOutcome = resolveReleaseCandidateRestartOutcome({
     releaseCandidateRequested: signal.releaseCandidate !== undefined,
     releaseCandidateResolved: candidateRelease !== null,
   });
@@ -1391,7 +1446,6 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   }
   const hadRunningServerAtStart = serverProcess !== null;
   const previousLaunchTarget = serverLaunchTarget ?? resolveStartupLaunchTarget();
-  releaseCandidateSha = candidateRelease?.commitSha ?? normalizeGitHash(gitHash());
 
   // Preserve requestId / requestedAt from the queued state written by the server.
   const pickupInfo = await readRestartPickupInfo();
@@ -1404,8 +1458,42 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     await safeWriteRestartState(buildWaitingState(pickupInfo, count, new Date().toISOString()));
   });
 
-  // Transition: waiting-for-sessions → restarting (build / shutdown / swap begins now)
-  await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
+  if (effectiveSignal.source === DEPLOY_BATCH_RESTART_SOURCE) {
+    // Let the runner publish deploys that arrived while sessions were draining,
+    // then close admission and catch a claim that raced the phase transition.
+    await waitForDeployRestartUpdates(true);
+    await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
+    await waitForDeployRestartUpdates(false);
+
+    effectiveSignal = resolveRestartSignalUpdate(
+      effectiveSignal,
+      consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE),
+    );
+    if (effectiveSignal.releaseCandidate?.id !== signal.releaseCandidate?.id) {
+      log(
+        `Retargeted pending restart to release ${effectiveSignal.releaseCandidate?.id} `
+        + `(${effectiveSignal.releaseCandidate?.commitSha.slice(0, 8)})`,
+      );
+    }
+  } else {
+    await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
+  }
+  candidateRelease = resolveReleaseCandidate(DATA_DIR, effectiveSignal.releaseCandidate);
+  candidateOutcome = resolveReleaseCandidateRestartOutcome({
+    releaseCandidateRequested: effectiveSignal.releaseCandidate !== undefined,
+    releaseCandidateResolved: candidateRelease !== null,
+  });
+  if (candidateOutcome) {
+    if (effectiveSignal.releaseCandidate) {
+      markReleaseUpdateActivationRejected(
+        effectiveSignal.releaseCandidate.id,
+        "The updated release candidate metadata was invalid or missing; the current server was left running.",
+      );
+    }
+    log("Updated restart signal referenced an invalid release candidate — leaving the current server running");
+    return candidateOutcome;
+  }
+  releaseCandidateSha = candidateRelease?.commitSha ?? normalizeGitHash(gitHash());
 
   if (candidateRelease) {
     log(`Using prepared release candidate ${candidateRelease.id} (${candidateRelease.commitSha.slice(0, 8)}) — skipping production-root build`);
