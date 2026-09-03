@@ -39,6 +39,9 @@ export interface DeferLoopCreate {
   expiresAt?: string;
 }
 
+const REACTIVATED_EXPIRY_MIN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const REACTIVATED_EXPIRY_WORKER_SLACK_MS = 15 * 60 * 1000;
+
 export function createDeferLoopStore(db: DatabaseSync) {
   const insertRow = db.prepare(`
     INSERT INTO defer_loops
@@ -133,7 +136,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
   const reactivateStmt = db.prepare(`
     UPDATE defer_loops
     SET status = 'active', claimToken = NULL, leaseExpiresAt = NULL, attempts = 0, lastError = NULL,
-        nextRunAt = ?, updatedAt = ?
+        nextRunAt = ?, expiresAt = ?, updatedAt = ?
     WHERE id = ? AND status IN ('failed', 'cancelled', 'expired')
   `);
   const markFailedByIdStmt = db.prepare(`
@@ -395,7 +398,20 @@ export function createDeferLoopStore(db: DatabaseSync) {
    * recover loops that were marked failed by transient backend errors.
    */
   function reactivate(id: string, nextRunAt = new Date().toISOString()): boolean {
-    const result = reactivateStmt.run(nextRunAt, new Date().toISOString(), id);
+    const existing = get(id);
+    if (!existing) return false;
+    const now = new Date().toISOString();
+    const priorExpiryMs = existing.expiresAt ? Date.parse(existing.expiresAt) : Number.NaN;
+    const renewedExpiry = Number.isFinite(priorExpiryMs) && priorExpiryMs <= Date.parse(nextRunAt)
+      ? new Date(
+          Date.parse(nextRunAt)
+          + Math.max(
+            REACTIVATED_EXPIRY_MIN_WINDOW_MS,
+            existing.intervalSeconds * 1000 + REACTIVATED_EXPIRY_WORKER_SLACK_MS,
+          ),
+        ).toISOString()
+      : existing.expiresAt;
+    const result = reactivateStmt.run(nextRunAt, renewedExpiry ?? null, now, id);
     return (result as any).changes > 0;
   }
 

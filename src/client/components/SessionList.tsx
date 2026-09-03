@@ -40,6 +40,7 @@ import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
+import DeferredWorkSheet from "./DeferredWorkSheet";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -291,6 +292,9 @@ export default function SessionList({
   const [contextTierDraft, setContextTierDraft] = useState<"" | CopilotContextTier>("");
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
+  const [deferredWorkSessionId, setDeferredWorkSessionId] = useState<string | null>(null);
+  const [deferredWorkRestoreFocus, setDeferredWorkRestoreFocus] = useState<HTMLElement | null>(null);
+  const sessionButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const [menuError, setMenuError] = useState<string | null>(null);
   const modelDialogTouchedRef = useRef(false);
   const copyRequestRef = useRef(0);
@@ -682,6 +686,13 @@ export default function SessionList({
     return (
       <div key={id} className={`group relative min-w-0${isExiting ? " animate-session-exit" : ""}`}>
         <button
+          ref={(element) => {
+            if (element) {
+              sessionButtonRefs.current.set(id, element);
+            } else {
+              sessionButtonRefs.current.delete(id);
+            }
+          }}
           {...(selectMode ? {} : longPressBindings)}
           onClick={handleClick}
           title={session.summary || id}
@@ -693,7 +704,9 @@ export default function SessionList({
                 : isActive
                   ? "bg-bg-hover"
                   : "hover:bg-bg-hover"
-          } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
+          } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""} ${
+            deferLabel && !selectMode ? "pb-8" : ""
+          }`}
         >
           <div className={`${unread ? s.titleClass.replace("font-medium", "font-semibold") : s.titleClass} flex items-center min-w-0`}>
             {selectMode ? (
@@ -725,18 +738,6 @@ export default function SessionList({
           </div>
           <div className={`${s.metaClass} truncate`}>
             {isArchiving ? "Archiving…" : needsUserInput ? "Needs answer" : timeAgo(getSessionActivityTime(session))}
-            {deferLabel && (
-              <>
-                {" · "}
-                <span
-                  className="inline-flex items-center gap-0.5 rounded-full border border-accent/15 bg-accent/5 px-1.5 py-0.5 align-middle text-[10px] font-medium text-accent"
-                  title={deferLabel}
-                >
-                  <Clock size={9} className="shrink-0" aria-hidden="true" />
-                  <span>{deferLabel}</span>
-                </span>
-              </>
-            )}
             {session.externallyInUse && (
               <>
                 {" · "}
@@ -769,6 +770,25 @@ export default function SessionList({
             )}
           </div>
         </button>
+        {deferLabel && !selectMode && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setDeferredWorkRestoreFocus(
+                sessionButtonRefs.current.get(id) ?? event.currentTarget,
+              );
+              setDeferredWorkSessionId(id);
+            }}
+            className={`absolute bottom-1.5 left-3 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-0.5 truncate rounded-full border border-accent/15 bg-accent/5 px-1.5 py-0.5 text-[10px] font-medium text-accent hover:border-accent/35 hover:bg-accent/10 ${
+              isArch || isArchiving ? "opacity-50" : ""
+            }`}
+            title={`${deferLabel}. Open deferred work.`}
+          >
+            <Clock size={9} className="shrink-0" aria-hidden="true" />
+            <span className="truncate">{deferLabel}</span>
+          </button>
+        )}
       </div>
     );
   };
@@ -904,6 +924,19 @@ export default function SessionList({
             {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
             {copied ? "Copied!" : "Copy Session ID"}
           </button>
+          {ctxSession && (
+            <CtxItem
+              icon={<Clock size={14} />}
+              label="Deferred Work..."
+              onClick={() => {
+                setDeferredWorkRestoreFocus(
+                  sessionButtonRefs.current.get(ctxSession.sessionId) ?? null,
+                );
+                setDeferredWorkSessionId(ctxSession.sessionId);
+                closeMenu();
+              }}
+            />
+          )}
           {canReloadFromMenu && (
             <CtxItem
               icon={<RotateCw size={14} />}
@@ -1172,6 +1205,20 @@ export default function SessionList({
             </div>
           </div>
         </div>
+      )}
+
+      {deferredWorkSessionId && (
+        <DeferredWorkSheet
+          session={
+            sessions.find((session) => session.sessionId === deferredWorkSessionId)
+              ?? { sessionId: deferredWorkSessionId }
+          }
+          restoreFocusTo={deferredWorkRestoreFocus}
+          onClose={() => {
+            setDeferredWorkSessionId(null);
+            setDeferredWorkRestoreFocus(null);
+          }}
+        />
       )}
 
       {/* Task picker dialog (global variant) */}

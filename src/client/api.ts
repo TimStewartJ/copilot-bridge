@@ -136,6 +136,56 @@ export interface DeferSummary {
   nextRunAt: string | null;
 }
 
+export type DeferredWorkKind = "once" | "interval";
+export type DeferredWorkStatus =
+  | "pending"
+  | "active"
+  | "running"
+  | "cancelled"
+  | "completed"
+  | "failed"
+  | "expired";
+export type DeferredWorkRunAction = "continue" | "finish" | "return" | "expired" | "error";
+
+export interface DeferredWorkItem {
+  deferId: string;
+  kind: DeferredWorkKind;
+  name?: string;
+  prompt: string;
+  status: DeferredWorkStatus;
+  nextRunAt: string;
+  intervalSeconds?: number;
+  runCount?: number;
+  maxRuns?: number;
+  expiresAt?: string;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  lastError?: string;
+  canCancel: boolean;
+  canReactivate: boolean;
+}
+
+export interface DeferredWorkRun {
+  id: number;
+  deferId: string;
+  kind: DeferredWorkKind;
+  action: DeferredWorkRunAction;
+  durationMs: number;
+  completedAt: string;
+  model?: string;
+  reasoningEffort?: string;
+  contextTier?: string;
+  runCount?: number;
+  error?: string;
+}
+
+export interface SessionDeferredWork {
+  sessionId: string;
+  defers: DeferredWorkItem[];
+  recentRuns: DeferredWorkRun[];
+}
+
 export interface Session {
   sessionId: string;
   summary?: string;
@@ -1028,6 +1078,51 @@ export async function submitElicitationResponse(
     `/api/sessions/${encodeURIComponent(sessionId)}/elicitation/${encodeURIComponent(requestId)}/respond`,
     payload,
   );
+}
+
+export async function fetchSessionDefers(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionDeferredWork> {
+  return apiFetch<SessionDeferredWork>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/defers`,
+    undefined,
+    { signal },
+  );
+}
+
+export async function fetchSessionDeferRuns(
+  sessionId: string,
+  deferId: string,
+  signal?: AbortSignal,
+): Promise<{ sessionId: string; deferId: string; runs: DeferredWorkRun[] }> {
+  return apiFetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/runs`,
+    undefined,
+    { signal },
+  );
+}
+
+export async function cancelSessionDefer(
+  sessionId: string,
+  deferId: string,
+): Promise<{ ok: true; deferId: string; kind: DeferredWorkKind; status: "cancelled" }> {
+  const res = await fetch(
+    `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/cancel`,
+    { method: "POST" },
+  );
+  return parseApiResponse(res);
+}
+
+export async function reactivateSessionDefer(
+  sessionId: string,
+  deferId: string,
+): Promise<{ ok: true; deferId: string; kind: DeferredWorkKind; status: DeferredWorkStatus; nextRunAt: string }> {
+  const res = await fetch(
+    `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/reactivate`,
+    { method: "POST" },
+  );
+  return parseApiResponse(res);
 }
 
 function buildSessionWorkspaceQuery(taskId?: string): string {
