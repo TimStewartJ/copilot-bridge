@@ -159,7 +159,11 @@ describe("defer-loop-runner", () => {
       nextRunAt: new Date(Date.now() - 1_000).toISOString(),
     });
     const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
-    sm.runDeferWorker = vi.fn(async () => ({ action: "return", message: "Deployment failed." }));
+    sm.runDeferWorker = vi.fn(async () => ({
+      action: "return",
+      message: "Deployment failed.",
+      checkpoint: { status: "failed", reason: "validation" },
+    }));
     const deliveryGuard = createDeferDeliveryGuard();
     const onParentMessageQueued = vi.fn(() => {
       expect(deliveryGuard.isActive("session-1")).toBe(false);
@@ -177,7 +181,11 @@ describe("defer-loop-runner", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(sm._started).toEqual([]);
-    expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1 });
+    expect(store.get(loop.id)).toMatchObject({
+      status: "completed",
+      runCount: 1,
+      checkpoint: { status: "failed", reason: "validation" },
+    });
     expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
       expect.objectContaining({
         status: "pending",
