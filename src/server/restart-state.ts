@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import {
+  isDeployBatchRestartSignal,
+  readCurrentRestartSignalFile,
+} from "./restart-signal.js";
 
 export const RESTART_STATE_FILE_NAME = "restart-state.json";
 export const RESTART_SIGNAL_FILE_NAME = "restart.signal";
@@ -338,6 +342,23 @@ export function isRestartAlreadyInFlight(dataDir: string): boolean {
       error,
     );
     return true;
+  }
+}
+
+export function isDeployBatchRestartUpdateWindowOpen(dataDir: string): boolean {
+  try {
+    const state = readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME));
+    if (state.phase !== "queued" && state.phase !== "waiting-for-sessions") return false;
+    return isDeployBatchRestartSignal(readCurrentRestartSignalFile(
+      join(dataDir, RESTART_SIGNAL_FILE_NAME),
+      join(dataDir, RESTART_IN_PROGRESS_FILE_NAME),
+    ));
+  } catch (error) {
+    console.error(
+      `[restart] Failed to inspect the deploy-batch restart in ${dataDir}; keeping queued jobs held:`,
+      error,
+    );
+    return false;
   }
 }
 

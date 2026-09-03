@@ -48,6 +48,7 @@ import {
   __setRestartStateFsRetrySleepSyncForTests,
   buildRestartStateWithReleaseFailure,
   clearRestartState,
+  isDeployBatchRestartUpdateWindowOpen,
   isRestartAlreadyInFlight,
   readRestartState,
   readRestartStateSync,
@@ -222,6 +223,39 @@ describe("restart-state", () => {
       waitingSessions: 0,
       releaseFailure,
     });
+  });
+
+  it("opens deploy admission only while a deploy-batch restart is queued or waiting", () => {
+    const dataDir = join("repo", "data");
+    readFileSyncMock.mockImplementation((path: string) => {
+      if (path === join(dataDir, "restart-state.json")) return JSON.stringify(activeState);
+      if (path === join(dataDir, "restart-in-progress.json")) {
+        return JSON.stringify({
+          requestedAt: activeState.requestedAt,
+          requestId: activeState.requestId,
+          validationMode: "deploy",
+          source: "staging_deploy_batch",
+          releaseCandidate: {
+            id: "release-1",
+            root: "release-1",
+            commitSha: "commit-1",
+            source: "staging_deploy",
+            dependencyHash: "deps-1",
+          },
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    expect(isDeployBatchRestartUpdateWindowOpen(dataDir)).toBe(true);
+
+    readFileSyncMock.mockImplementation((path: string) => {
+      if (path === join(dataDir, "restart-state.json")) {
+        return JSON.stringify({ ...activeState, phase: "restarting" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    expect(isDeployBatchRestartUpdateWindowOpen(dataDir)).toBe(false);
   });
 
   it("round-trips queued, restarting, and idle phase states", async () => {

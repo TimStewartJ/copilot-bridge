@@ -514,7 +514,10 @@ describe("management job runner", () => {
         stagingDir: join(dataDir, `deploy-${index}`),
         message: `deploy ${index}`,
       }));
-      const queueRestart = vi.fn();
+      let stopping = false;
+      const queueRestart = vi.fn(() => {
+        stopping = true;
+      });
       const cleanupDeploy = vi.fn(async () => {});
       const dispatch = vi.fn(async (job: ManagementJob, options: ManagementJobDispatchOptions) => {
         expect(options.deferDeployRestart).toBe(true);
@@ -538,6 +541,7 @@ describe("management job runner", () => {
         dispatch,
         deployBatchDataDir: dataDir,
         queueDeployRestart: queueRestart,
+        shouldStop: () => stopping,
         getActiveRelease: () => null,
       });
 
@@ -546,7 +550,7 @@ describe("management job runner", () => {
       expect(queueRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-3" }));
       expect(store.get(jobs[0].id)?.result).toMatchObject({ restartQueued: true, deployBatchSize: 3 });
 
-      let stopping = false;
+      stopping = false;
       await runManagementJobRunnerLoop({
         store,
         pollIntervalMs: 1,
@@ -574,6 +578,69 @@ describe("management job runner", () => {
     }
   });
 
+  it("retargets a waiting restart when another deploy arrives", async () => {
+    const { db, store, dataDir } = createStore("runner-deploy-retarget");
+    try {
+      const first = store.enqueue("staging_deploy", {
+        stagingDir: join(dataDir, "deploy-1"),
+        message: "deploy 1",
+      });
+      let stopping = false;
+      let second: ManagementJob | undefined;
+      const queueRestart = vi.fn(() => {
+        second = store.enqueue("staging_deploy", {
+          stagingDir: join(dataDir, "deploy-2"),
+          message: "deploy 2",
+        });
+      });
+      const retargetRestart = vi.fn((_dataDir: string, _candidate: unknown) => {
+        stopping = true;
+      });
+      const dispatch = vi.fn(async (job: ManagementJob) => {
+        const index = job.id === first.id ? 1 : 2;
+        return {
+          restartDeferred: true,
+          releaseCandidate: {
+            id: `release-${index}`,
+            root: join(dataDir, `release-${index}`),
+            commitSha: `commit-${index}`,
+            source: "staging_deploy",
+            dependencyHash: `deps-${index}`,
+          },
+        };
+      });
+
+      await runManagementJobRunnerLoop({
+        store,
+        pollIntervalMs: 1,
+        log: () => {},
+        dispatch,
+        deployBatchDataDir: dataDir,
+        queueDeployRestart: queueRestart,
+        retargetDeployRestart: retargetRestart,
+        shouldStop: () => stopping,
+        getActiveRelease: () => null,
+      });
+
+      expect(queueRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-1" }));
+      expect(retargetRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-2" }));
+      expect(second).toBeDefined();
+      expect(store.get(first.id)?.result).toMatchObject({
+        restartQueued: true,
+        restartActivated: false,
+        deployBatchSize: 2,
+      });
+      expect(store.get(second!.id)?.result).toMatchObject({
+        restartQueued: true,
+        restartActivated: false,
+        deployBatchSize: 2,
+      });
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("caps each deploy batch and leaves later jobs queued", async () => {
     const { db, store, dataDir } = createStore("runner-deploy-cap");
     try {
@@ -582,7 +649,10 @@ describe("management job runner", () => {
           stagingDir: join(dataDir, `deploy-${index}`),
           message: `deploy ${index}`,
         }));
-      const queueRestart = vi.fn();
+      let stopping = false;
+      const queueRestart = vi.fn(() => {
+        stopping = true;
+      });
 
       await runManagementJobRunnerLoop({
         store,
@@ -600,6 +670,7 @@ describe("management job runner", () => {
         }),
         deployBatchDataDir: dataDir,
         queueDeployRestart: queueRestart,
+        shouldStop: () => stopping,
         getActiveRelease: () => null,
       });
 

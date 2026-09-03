@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   didRestartRecover,
+  isDeployRestartUpdatePending,
   resolveRestartSignalAction,
+  resolveRestartSignalUpdate,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
@@ -34,6 +36,64 @@ describe("resolveRestartSignalAction", () => {
         requestId: "restart-request-valid",
       },
     })).toBe("restart");
+  });
+
+  describe("deploy restart candidate updates", () => {
+    const current = {
+      requestedAt: "2026-09-03T04:07:54.155Z",
+      validationMode: "deploy" as const,
+      requestId: "restart-request-batch",
+      source: "staging_deploy_batch",
+      releaseCandidate: {
+        id: "release-1",
+        root: "release-1",
+        commitSha: "commit-1",
+        source: "staging_deploy",
+        dependencyHash: "deps-1",
+      },
+    };
+
+    it("waits for running deploys and completed deploys whose candidate is not published yet", () => {
+      const baseJob = {
+        id: "job-1",
+        type: "staging_deploy" as const,
+        input: {},
+        createdAt: current.requestedAt,
+        updatedAt: current.requestedAt,
+      };
+      expect(isDeployRestartUpdatePending({ ...baseJob, status: "running" })).toBe(true);
+      expect(isDeployRestartUpdatePending({ ...baseJob, status: "queued" }, true)).toBe(true);
+      expect(isDeployRestartUpdatePending({ ...baseJob, status: "queued" })).toBe(false);
+      expect(isDeployRestartUpdatePending({
+        ...baseJob,
+        status: "succeeded",
+        result: { restartDeferred: true },
+      })).toBe(true);
+      expect(isDeployRestartUpdatePending({
+        ...baseJob,
+        status: "succeeded",
+        result: { restartQueued: true },
+      })).toBe(false);
+    });
+
+    it("accepts only a newer candidate for the same restart request", () => {
+      expect(resolveRestartSignalUpdate(current, {
+        status: "claimed",
+        signal: {
+          ...current,
+          releaseCandidate: {
+            ...current.releaseCandidate,
+            id: "release-2",
+            commitSha: "commit-2",
+          },
+        },
+      }).releaseCandidate).toMatchObject({ id: "release-2", commitSha: "commit-2" });
+
+      expect(() => resolveRestartSignalUpdate(current, {
+        status: "claimed",
+        signal: { ...current, requestId: "different-request" },
+      })).toThrow("did not match the active restart request");
+    });
   });
 });
 

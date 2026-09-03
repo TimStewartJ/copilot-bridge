@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import { openDatabase, type DatabaseSync } from "./server/db.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
+  RESTART_IN_PROGRESS_FILE_NAME,
   RESTART_STATE_FILE_NAME,
   RESTART_SIGNAL_FILE_NAME,
+  isDeployBatchRestartUpdateWindowOpen,
   isRestartAlreadyInFlight,
   sweepStaleRestartStateTempFiles,
 } from "./server/restart-state.js";
@@ -14,9 +16,11 @@ import {
   createManagementJobStore,
   DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS,
   getManagementJobStaleAfterMs,
+  MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
   type ManagementJob,
   type ManagementJobStore,
 } from "./server/management-job-store.js";
+export { MANAGEMENT_DEPLOY_BATCH_MAX_JOBS } from "./server/management-job-store.js";
 import {
   dispatchManagementJob,
   ManagementJobExecutionError,
@@ -26,7 +30,11 @@ import { readActiveRelease } from "./server/release-slots.js";
 import { writeRestartSignalOrRollback } from "./server/restart-inflight.js";
 import { cleanupCompletedStagingDeploy } from "./server/staging-tools.js";
 import { isRecord } from "./shared/is-record.js";
-import type { RestartReleaseCandidate } from "./server/restart-signal.js";
+import {
+  DEPLOY_BATCH_RESTART_SOURCE,
+  publishDeployBatchRestartUpdate,
+  type RestartReleaseCandidate,
+} from "./server/restart-signal.js";
 
 export interface ManagementJobRunnerOptions {
   store: ManagementJobStore;
@@ -38,6 +46,7 @@ export interface ManagementJobRunnerOptions {
   getHoldReason?: () => string | null;
   deployBatchDataDir?: string;
   queueDeployRestart?: (dataDir: string, candidate: RestartReleaseCandidate) => void;
+  retargetDeployRestart?: (dataDir: string, candidate: RestartReleaseCandidate) => void;
   getActiveRelease?: (dataDir: string) => RestartReleaseCandidate | null;
   cleanupDeploy?: (stagingDir: string) => Promise<void>;
   /**
@@ -53,8 +62,6 @@ export interface ManagementJobRunnerOptions {
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEFAULT_STALE_AFTER_MS = DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS;
-export const MANAGEMENT_DEPLOY_BATCH_MAX_JOBS = 10;
-
 interface ClaimedJobResult {
   succeeded: boolean;
   result?: unknown;
@@ -197,9 +204,9 @@ async function reconcileDeploys(
   dataDir: string,
   log: (message: string) => void,
   options: ManagementJobRunnerOptions,
-): Promise<boolean> {
+): Promise<void> {
   const pending = listPendingDeploys(store);
-  if (pending.length === 0) return false;
+  if (pending.length === 0) return;
   const latest = pending[pending.length - 1];
   const active = activeRelease(options, dataDir);
 
@@ -222,32 +229,43 @@ async function reconcileDeploys(
       });
     }
     log(`Confirmed activation for ${pending.length} batched deploy(s)`);
-    return false;
+    return;
   }
 
-  if (pending.some((entry) => entry.result.restartQueued === true)) {
+  if (latest.result.restartQueued === true) {
+    if (isRestartAlreadyInFlight(dataDir)) return;
     const message = "The shared deploy restart did not activate the expected release.";
     for (const entry of pending) store.fail(entry.job.id, message, entry.result);
     cancelQueuedDeploys(store, `${message} Requeue after recovery.`);
-    return false;
+    return;
   }
 
+  const retargeting = pending.some((entry) => entry.result.restartQueued === true);
   try {
-    if (options.queueDeployRestart) {
+    if (retargeting && options.retargetDeployRestart) {
+      options.retargetDeployRestart(dataDir, latest.candidate);
+    } else if (retargeting) {
+      publishDeployBatchRestartUpdate(
+        join(dataDir, RESTART_SIGNAL_FILE_NAME),
+        join(dataDir, RESTART_IN_PROGRESS_FILE_NAME),
+        latest.candidate,
+      );
+    } else if (options.queueDeployRestart) {
       options.queueDeployRestart(dataDir, latest.candidate);
     } else {
       writeRestartSignalOrRollback(
         join(dataDir, RESTART_SIGNAL_FILE_NAME),
         "deploy",
-        "staging_deploy_batch",
+        DEPLOY_BATCH_RESTART_SOURCE,
         latest.candidate,
       );
     }
   } catch (error) {
-    const message = `Shared deploy restart could not be queued: ${formatError(error)}`;
+    const action = retargeting ? "updated" : "queued";
+    const message = `Shared deploy restart could not be ${action}: ${formatError(error)}`;
     for (const entry of pending) store.fail(entry.job.id, message, entry.result);
     cancelQueuedDeploys(store, `${message} Requeue after recovery.`);
-    return false;
+    return;
   }
   for (const entry of pending) {
     store.succeed(entry.job.id, {
@@ -258,16 +276,19 @@ async function reconcileDeploys(
       deployBatchSize: pending.length,
     });
   }
-  log(`Queued one restart for ${pending.length} batched deploy(s)`);
-  return true;
+  log(
+    retargeting
+      ? `Updated the pending restart to the newest of ${pending.length} batched deploy(s)`
+      : `Queued one restart for ${pending.length} batched deploy(s)`,
+  );
 }
 
 async function runDeployBatch(
   options: ManagementJobRunnerOptions,
   firstJob?: ManagementJob,
-): Promise<boolean> {
+): Promise<void> {
   const dataDir = options.deployBatchDataDir;
-  if (!dataDir) return false;
+  if (!dataDir) return;
   let attempted = listPendingDeploys(options.store).length;
   let job = firstJob;
   while (attempted < MANAGEMENT_DEPLOY_BATCH_MAX_JOBS) {
@@ -284,7 +305,7 @@ async function runDeployBatch(
       break;
     }
   }
-  return reconcileDeploys(options.store, dataDir, options.log ?? runnerLog, options);
+  await reconcileDeploys(options.store, dataDir, options.log ?? runnerLog, options);
 }
 
 export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOptions): Promise<void> {
@@ -315,15 +336,7 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
     holdReason = null;
     const pending = options.deployBatchDataDir ? listPendingDeploys(options.store) : [];
     if (options.deployBatchDataDir && pending.length > 0) {
-      const latest = pending[pending.length - 1];
-      const active = activeRelease(options, options.deployBatchDataDir);
-      const activationPending = pending.some((entry) => entry.result.restartQueued === true)
-        || (active?.id === latest.candidate.id && active.commitSha === latest.candidate.commitSha);
-      if (activationPending) {
-        if (await reconcileDeploys(options.store, options.deployBatchDataDir, log, options)) break;
-      } else if (await runDeployBatch(options)) {
-        break;
-      }
+      await runDeployBatch(options);
       await pruneManagementJobArtifacts(options.store, log);
       continue;
     }
@@ -333,7 +346,7 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
       continue;
     }
     if (job.type === "staging_deploy" && options.deployBatchDataDir) {
-      if (await runDeployBatch(options, job)) break;
+      await runDeployBatch(options, job);
       await pruneManagementJobArtifacts(options.store, log);
       continue;
     }
@@ -376,9 +389,12 @@ async function main(): Promise<void> {
     await runManagementJobRunnerLoop({
       store,
       shouldStop: () => stopping,
-      getHoldReason: () => isRestartAlreadyInFlight(runtimePaths.dataDir)
-        ? "a restart is in flight"
-        : null,
+      getHoldReason: () => {
+        if (!isRestartAlreadyInFlight(runtimePaths.dataDir)) return null;
+        return isDeployBatchRestartUpdateWindowOpen(runtimePaths.dataDir)
+          ? null
+          : "a restart is in flight";
+      },
       deployBatchDataDir: runtimePaths.dataDir,
       // After a deploy/update job, step aside if a restart is now queued so the
       // launcher respawns this runner on the freshly deployed code (it otherwise

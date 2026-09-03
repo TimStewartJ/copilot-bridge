@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   consumeRestartSignalFile,
   parseRestartSignalContent,
+  publishDeployBatchRestartUpdate,
+  readCurrentRestartSignalFile,
   serializeRestartSignal,
   writeRestartSignalFile,
 } from "../restart-signal.js";
@@ -255,5 +257,45 @@ describe("restart signal parsing", () => {
     })).toThrow();
     expect(readdirSync(failureDir).filter((entry) => entry.startsWith(".restart.signal."))).toEqual([]);
     expect(existsSync(blockedSignalFile)).toBe(true);
+  });
+
+  it("publishes a newer candidate for the same claimed deploy-batch restart", () => {
+    const dir = makeTestDir("restart-signal-deploy-update");
+    const signalFile = join(dir, "restart.signal");
+    const inProgressFile = join(dir, "restart-in-progress.json");
+    writeRestartSignalFile(inProgressFile, {
+      validationMode: "deploy",
+      requestId: "restart-request-batch",
+      source: "staging_deploy_batch",
+      requestedAt: "2026-09-03T04:07:54.155Z",
+      releaseCandidate: {
+        id: "release-1",
+        root: join(dir, "release-1"),
+        commitSha: "commit-1",
+        source: "staging_deploy",
+        dependencyHash: "deps-1",
+      },
+    });
+
+    publishDeployBatchRestartUpdate(signalFile, inProgressFile, {
+      id: "release-2",
+      root: join(dir, "release-2"),
+      commitSha: "commit-2",
+      source: "staging_deploy",
+      dependencyHash: "deps-2",
+    });
+
+    expect(readCurrentRestartSignalFile(signalFile, inProgressFile)).toMatchObject({
+      requestId: "restart-request-batch",
+      requestedAt: "2026-09-03T04:07:54.155Z",
+      releaseCandidate: { id: "release-2", commitSha: "commit-2" },
+    });
+    expect(consumeRestartSignalFile(signalFile, inProgressFile)).toMatchObject({
+      status: "claimed",
+      signal: {
+        requestId: "restart-request-batch",
+        releaseCandidate: { id: "release-2", commitSha: "commit-2" },
+      },
+    });
   });
 });

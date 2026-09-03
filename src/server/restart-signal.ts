@@ -3,6 +3,7 @@ import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:
 import { basename, dirname, join } from "node:path";
 
 export type RestartValidationMode = "deploy" | "operational";
+export const DEPLOY_BATCH_RESTART_SOURCE = "staging_deploy_batch";
 
 export interface RestartReleaseCandidate {
   id: string;
@@ -119,6 +120,44 @@ export function readRestartSignalFile(signalFile: string): RestartSignal {
   return parseRestartSignalContent(readFileSync(signalFile, "utf-8"));
 }
 
+export function readCurrentRestartSignalFile(
+  signalFile: string,
+  inProgressSignalFile: string,
+): RestartSignal | null {
+  for (const filePath of [signalFile, inProgressSignalFile]) {
+    try {
+      return readRestartSignalFile(filePath);
+    } catch (error) {
+      if (isErrnoException(error) && error.code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  return null;
+}
+
+export function isDeployBatchRestartSignal(signal: RestartSignal | null): signal is RestartSignal {
+  return signal?.validationMode === "deploy"
+    && signal.source === DEPLOY_BATCH_RESTART_SOURCE
+    && signal.releaseCandidate !== undefined;
+}
+
+export function publishDeployBatchRestartUpdate(
+  signalFile: string,
+  inProgressSignalFile: string,
+  releaseCandidate: RestartReleaseCandidate,
+): RestartSignal {
+  const current = readCurrentRestartSignalFile(signalFile, inProgressSignalFile);
+  if (!isDeployBatchRestartSignal(current) || !current.requestId) {
+    throw new Error("No mutable deploy-batch restart is waiting for a release candidate update");
+  }
+  const updated = createRestartSignal({
+    ...current,
+    releaseCandidate,
+  });
+  writeRestartSignalFile(signalFile, updated);
+  return updated;
+}
+
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
@@ -196,6 +235,7 @@ export function writeRestartSignalFile(signalFile: string, options: {
   validationMode: RestartValidationMode;
   requestId?: string;
   source?: string;
+  requestedAt?: string;
   releaseCandidate?: RestartReleaseCandidate;
 }): void {
   const tempFile = join(dirname(signalFile), `.${basename(signalFile)}.${randomUUID()}.tmp`);
