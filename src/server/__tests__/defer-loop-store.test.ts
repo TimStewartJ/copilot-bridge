@@ -128,6 +128,49 @@ describe("defer-loop-store", () => {
     expect(completed.attempts).toBe(0);
   });
 
+  it("persists and preserves a checkpoint atomically with an occurrence", () => {
+    const loop = store.create({
+      ...baseLoop,
+      nextRunAt: "2026-01-01T00:00:00.000Z",
+    });
+    let claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
+
+    expect(store.completeOccurrence(
+      loop.id,
+      "wrong-token",
+      "2026-01-01T00:05:00.000Z",
+      "2026-01-01T00:00:30.000Z",
+      { status: "wrong" },
+    )).toBeUndefined();
+    expect(store.get(loop.id)?.checkpoint).toBeUndefined();
+
+    const completed = store.completeOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2026-01-01T00:05:00.000Z",
+      "2026-01-01T00:00:30.000Z",
+      { status: "running", buildId: 42 },
+    )!;
+    expect(completed.checkpoint).toEqual({ status: "running", buildId: 42 });
+
+    const reopenedStore = createDeferLoopStore(db);
+    expect(reopenedStore.get(loop.id)?.checkpoint).toEqual({
+      status: "running",
+      buildId: 42,
+    });
+    claimed = reopenedStore.claimDue(
+      loop.id,
+      60_000,
+      "2026-01-01T00:05:00.000Z",
+    )!;
+    expect(reopenedStore.completeOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2026-01-01T00:10:00.000Z",
+      "2026-01-01T00:05:30.000Z",
+    )?.checkpoint).toEqual({ status: "running", buildId: 42 });
+  });
+
   it("cancels active and running loops for a session", () => {
     const active = store.create(baseLoop);
     const running = store.create({ ...baseLoop, prompt: "running" });

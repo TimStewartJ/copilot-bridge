@@ -106,6 +106,37 @@ describe("unified defer tools", () => {
     expect(pokeSpy).toHaveBeenCalled();
   });
 
+  it("lists the latest private checkpoint for a recurring defer", async () => {
+    const { ctx } = createTestApp();
+    const tools = getBridgeToolDefinitions(ctx);
+    const createTool = findTool(tools, "defer_create");
+    const listTool = findTool(tools, "defer_list");
+    const created = await createTool.handler(
+      { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3 },
+      makeInvocation("session-abc"),
+    ) as any;
+    const parsed = parseDeferId(created.deferId)!;
+    const loop = ctx.deferLoopStore!.get(parsed.id)!;
+    const claimed = ctx.deferLoopStore!.claimDue(
+      loop.id,
+      60_000,
+      loop.nextRunAt,
+    )!;
+    ctx.deferLoopStore!.completeOccurrence(
+      loop.id,
+      claimed.claimToken,
+      new Date(Date.parse(loop.nextRunAt) + 300_000).toISOString(),
+      new Date(Date.parse(loop.nextRunAt) + 1_000).toISOString(),
+      { status: "succeeded", buildId: 42 },
+    );
+
+    const result = await listTool.handler({}, makeInvocation("session-abc")) as any;
+    expect(result.deferrals).toContainEqual(expect.objectContaining({
+      deferId: created.deferId,
+      checkpoint: { status: "succeeded", buildId: 42 },
+    }));
+  });
+
   it("validates timing modes and recurring-only options", async () => {
     const { ctx } = createTestApp();
     const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
