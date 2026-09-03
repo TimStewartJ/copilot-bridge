@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseReturnedDeferPrompt } from "./defer-result-message.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 
@@ -726,6 +727,27 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_deferred_prompts_sessionId_status_runAt
       ON deferred_prompts(sessionId, status, runAt);
 
+    -- Durable normal messages awaiting delivery to an idle parent session
+    CREATE TABLE IF NOT EXISTS session_message_outbox (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      source TEXT NOT NULL,
+      sourceId TEXT,
+      availableAt TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimToken TEXT,
+      leaseExpiresAt TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_message_outbox_status_availableAt
+      ON session_message_outbox(status, availableAt);
+    CREATE INDEX IF NOT EXISTS idx_session_message_outbox_sessionId_createdAt
+      ON session_message_outbox(sessionId, createdAt);
+
     -- Recurring same-session deferred execution loops
     CREATE TABLE IF NOT EXISTS defer_loops (
       id TEXT PRIMARY KEY,
@@ -828,6 +850,51 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt
       ON bridge_session_state(lastAttentionAt);
   `);
+
+  const legacyWorkerReturns = db.prepare(`
+    SELECT id, sessionId, prompt
+    FROM deferred_prompts
+    WHERE status IN ('pending', 'running', 'failed', 'cancelled')
+      AND prompt LIKE '<deferred-work-result>%'
+  `).all() as Array<{ id: string; sessionId: string; prompt: string }>;
+  if (legacyWorkerReturns.length > 0) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const insertOutbox = db.prepare(`
+        INSERT OR IGNORE INTO session_message_outbox
+          (id, sessionId, prompt, source, sourceId, availableAt, status, attempts, createdAt, updatedAt)
+        VALUES (?, ?, ?, 'defer_result', ?, ?, 'pending', 0, ?, ?)
+      `);
+      const completeLegacy = db.prepare(`
+        UPDATE deferred_prompts
+        SET status = 'completed',
+            claimToken = NULL,
+            leaseExpiresAt = NULL,
+            lastError = NULL,
+            updatedAt = ?
+        WHERE id = ? AND status IN ('pending', 'running', 'failed', 'cancelled')
+      `);
+      const now = new Date().toISOString();
+      for (const row of legacyWorkerReturns) {
+        const result = parseReturnedDeferPrompt(row.prompt);
+        if (!result) continue;
+        insertOutbox.run(
+          result.deliveryId ?? row.id,
+          row.sessionId,
+          row.prompt,
+          result.deferId,
+          now,
+          now,
+          now,
+        );
+        completeLegacy.run(now, row.id);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
   initializeDocsFts(db);

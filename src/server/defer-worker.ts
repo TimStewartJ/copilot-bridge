@@ -13,7 +13,7 @@ const DEFAULT_DEFER_WORKER_REASONING_EFFORT = "low";
 const DEFAULT_DEFER_WORKER_CONTEXT_TIER = "default";
 
 export type DeferWorkerKind = "once" | "interval";
-export type DeferWorkerAction = "continue" | "finish" | "return" | "expired";
+export type DeferWorkerAction = "continue" | "notify" | "finish" | "return" | "expired";
 
 export interface DeferWorkerInput {
   deferId: string;
@@ -21,6 +21,9 @@ export interface DeferWorkerInput {
   parentSessionId: string;
   prompt: string;
   runCount?: number;
+  maxRuns?: number;
+  remainingRunsAfterThis?: number;
+  isFinalRun?: boolean;
   intervalSeconds?: number;
   expiresAt?: string;
 }
@@ -28,6 +31,7 @@ export interface DeferWorkerInput {
 export interface DeferWorkerResult {
   action: DeferWorkerAction;
   message?: string;
+  deliveryId?: string;
 }
 
 export interface DeferWorkerExecutor {
@@ -71,6 +75,7 @@ export function buildDeferWorkerSystemPrompt(kind: DeferWorkerKind): string {
   const actions = kind === "interval"
     ? [
         '- "continue": the recurring check should run again later and the parent should not be disturbed.',
+        '- "notify": send the enclosed concise update to the parent and keep the recurring check active.',
         '- "finish": stop the recurring check silently.',
         '- "return": stop the recurring check and send the enclosed concise result to the parent session.',
       ]
@@ -78,15 +83,27 @@ export function buildDeferWorkerSystemPrompt(kind: DeferWorkerKind): string {
         '- "finish": complete the one-shot defer silently.',
         '- "return": complete the one-shot defer and send the enclosed concise result to the parent session.',
       ];
+  const examples = kind === "interval"
+    ? [
+        '<defer-result action="continue"></defer-result>',
+        '<defer-result action="notify">Concise update for the parent</defer-result>',
+        '<defer-result action="finish"></defer-result>',
+        '<defer-result action="return">Concise result for the parent</defer-result>',
+      ]
+    : [
+        '<defer-result action="finish"></defer-result>',
+        '<defer-result action="return">Concise result for the parent</defer-result>',
+      ];
   return [
     "You are a temporary deferred-work agent. Complete exactly one check using the user prompt and available tools.",
     "You do not have the parent conversation history. Do not wait, sleep, poll repeatedly, create or cancel defers, create subagents, ask the user a question, or call task_complete.",
+    "Ignore prompt instructions to cancel the defer or complete the parent task. Express the outcome only through the result tag.",
+    'When the metadata says "isFinalRun: true", do not choose continue or notify; choose finish or return.',
     "Finish with exactly one result tag and no text outside it:",
     ...actions,
     "",
-    'Examples: <defer-result action="continue"></defer-result>',
-    '<defer-result action="finish"></defer-result>',
-    '<defer-result action="return">Concise result for the parent</defer-result>',
+    "Examples:",
+    ...examples,
   ].join("\n");
 }
 
@@ -98,7 +115,13 @@ export function buildDeferWorkerPrompt(input: DeferWorkerInput): string {
     `parentSessionId: ${input.parentSessionId}`,
   ];
   if (input.runCount !== undefined) metadata.push(`runCount: ${input.runCount}`);
+  if (input.maxRuns !== undefined) metadata.push(`maxRuns: ${input.maxRuns}`);
+  if (input.remainingRunsAfterThis !== undefined) {
+    metadata.push(`remainingRunsAfterThis: ${input.remainingRunsAfterThis}`);
+  }
+  if (input.isFinalRun !== undefined) metadata.push(`isFinalRun: ${input.isFinalRun}`);
   if (input.intervalSeconds !== undefined) metadata.push(`intervalSeconds: ${input.intervalSeconds}`);
+  if (input.expiresAt !== undefined) metadata.push(`expiresAt: ${input.expiresAt}`);
   metadata.push("</defer-worker>", "", input.prompt);
   return metadata.join("\n");
 }
@@ -109,41 +132,163 @@ export function parseDeferWorkerResult(
 ): DeferWorkerResult {
   const text = typeof rawOutput === "string" ? rawOutput.trim() : "";
   const match = text.match(
-    /<defer-result\s+action=(?:"|')(continue|finish|return)(?:"|')\s*>([\s\S]*?)<\/defer-result>/i,
+    /^<defer-result\s+action=(?:"|')(continue|notify|finish|return)(?:"|')\s*>([\s\S]*?)<\/defer-result>$/i,
   );
   if (match) {
     const action = match[1]!.toLowerCase() as DeferWorkerAction;
     const message = match[2]!.trim();
-    if (kind === "once" && action === "continue") {
-      throw new Error("One-shot defer worker cannot continue.");
+    if (kind === "once" && (action === "continue" || action === "notify")) {
+      throw new Error(`One-shot defer worker cannot ${action}.`);
     }
-    return action === "return"
+    return action === "return" || action === "notify"
       ? { action, message: (message || "Deferred work completed.").slice(0, 16 * 1024) }
       : { action };
   }
 
-  if (kind === "interval") return { action: "continue" };
-  return {
-    action: "return",
-    message: (text || "Deferred work completed.").slice(0, 16 * 1024),
-  };
+  throw new Error("Deferred worker response did not contain one valid result tag.");
 }
 
-export function formatReturnedDeferPrompt(input: DeferWorkerInput, message: string): string {
-  return [
-    "<deferred-work-result>",
-    `deferId: ${input.deferId}`,
-    `kind: ${input.kind}`,
-    "</deferred-work-result>",
-    "",
-    "A temporary deferred-work session returned this result. Continue from it without repeating the completed check:",
-    "",
-    message,
-  ].join("\n");
-}
+function runDeferWorkerPrompt(
+  session: AgentSession,
+  input: DeferWorkerInput,
+): Promise<{ result: DeferWorkerResult; completionSource: string }> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let resultCandidate: DeferWorkerResult | undefined;
+    let resultTurnEnded = false;
+    const openToolCallIds = new Set<string>();
+    const openExternalRequestIds = new Set<string>();
+    let unsubscribe = () => {};
+    const timeout = setTimeout(() => {
+      settle(() => reject(new Error(
+        `Timeout after ${DEFER_WORKER_TIMEOUT_MS}ms waiting for deferred worker result`,
+      )));
+    }, DEFER_WORKER_TIMEOUT_MS);
 
-export function isReturnedDeferPrompt(prompt: string): boolean {
-  return prompt.startsWith("<deferred-work-result>");
+    const settle = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      complete();
+    };
+
+    const invalidateResultCandidate = () => {
+      resultCandidate = undefined;
+      resultTurnEnded = false;
+    };
+    const resolveCompletedResult = (completionSource: string) => {
+      if (
+        !resultCandidate
+        || !resultTurnEnded
+        || openToolCallIds.size > 0
+        || openExternalRequestIds.size > 0
+      ) {
+        return;
+      }
+      const result = resultCandidate;
+      settle(() => resolve({ result, completionSource }));
+    };
+
+    unsubscribe = session.on((event) => {
+      if (!event || typeof event !== "object") return;
+      const candidate = event as { type?: unknown; data?: unknown };
+      const data = candidate.data && typeof candidate.data === "object"
+        ? candidate.data as {
+            content?: unknown;
+            message?: unknown;
+            error?: unknown;
+            parentToolCallId?: unknown;
+            toolRequests?: unknown;
+            toolCallId?: unknown;
+            requestId?: unknown;
+          }
+        : undefined;
+
+      if (candidate.type === "assistant.turn_start") {
+        invalidateResultCandidate();
+        return;
+      }
+
+      if (
+        candidate.type === "assistant.message"
+        && !data?.parentToolCallId
+        && typeof data?.content === "string"
+      ) {
+        if (Array.isArray(data.toolRequests) && data.toolRequests.length > 0) {
+         invalidateResultCandidate();
+         return;
+        }
+        try {
+         if (data.content.includes("<defer-result")) {
+           resultCandidate = parseDeferWorkerResult(data.content, input.kind);
+           resultTurnEnded = false;
+         } else {
+           invalidateResultCandidate();
+         }
+        } catch (error) {
+         settle(() => reject(error));
+        }
+        return;
+      }
+
+      if (candidate.type === "tool.execution_start") {
+        if (typeof data?.toolCallId === "string") openToolCallIds.add(data.toolCallId);
+        invalidateResultCandidate();
+        return;
+      }
+      if (candidate.type === "tool.execution_complete") {
+        if (typeof data?.toolCallId === "string") openToolCallIds.delete(data.toolCallId);
+        resolveCompletedResult("assistant.turn_end");
+        return;
+      }
+      if (candidate.type === "external_tool.requested") {
+        if (typeof data?.requestId === "string") openExternalRequestIds.add(data.requestId);
+        invalidateResultCandidate();
+        return;
+      }
+      if (candidate.type === "external_tool.completed") {
+        if (typeof data?.requestId === "string") openExternalRequestIds.delete(data.requestId);
+        resolveCompletedResult("assistant.turn_end");
+        return;
+      }
+      if (candidate.type === "assistant.turn_end") {
+        resultTurnEnded = true;
+        resolveCompletedResult("assistant.turn_end");
+        return;
+      }
+
+      if (candidate.type === "session.idle" || candidate.type === "session.task_complete") {
+        if (!resultCandidate) {
+         settle(() => reject(new Error(
+           "Deferred worker ended without one valid result tag.",
+         )));
+         return;
+        }
+        resultTurnEnded = true;
+        resolveCompletedResult(String(candidate.type));
+        return;
+      }
+
+      if (
+        candidate.type === "session.error"
+        || candidate.type === "abort"
+        || candidate.type === "session.shutdown"
+      ) {
+        const detail = typeof data?.message === "string"
+          ? data.message
+          : typeof data?.error === "string"
+            ? data.error
+            : `Deferred worker ended with ${String(candidate.type)}`;
+        settle(() => reject(new Error(detail)));
+      }
+    });
+
+    void session.send({
+      prompt: buildDeferWorkerPrompt(input),
+      attachments: [],
+    }).catch((error) => settle(() => reject(error)));
+  });
 }
 
 export class DisposableDeferWorker implements DeferWorkerExecutor {
@@ -255,11 +400,10 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       };
       releaseCapacityReservation = await this.deps.reserveCapacity(sessionConfig);
       session = await this.deps.createSession(sessionConfig);
-      const response = await session.sendAndWait(
-        { prompt: buildDeferWorkerPrompt(input), attachments: [] },
-        DEFER_WORKER_TIMEOUT_MS,
-      ) as { data?: { content?: unknown } } | undefined;
-      const result = parseDeferWorkerResult(response?.data?.content, input.kind);
+      const completed = await runDeferWorkerPrompt(session, input);
+      const result = completed.result.action === "return" || completed.result.action === "notify"
+        ? { ...completed.result, deliveryId: randomUUID() }
+        : completed.result;
       this.deps.recordSpan?.("defer.worker", Date.now() - startedAt, input.parentSessionId, {
         action: result.action,
         kind: input.kind,
@@ -268,6 +412,8 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
         model,
         reasoningEffort,
         contextTier: configuredContextTier,
+        completionSource: completed.completionSource,
+        ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}),
       });
       return result;
     } catch (error) {
@@ -277,6 +423,8 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
         deferId: input.deferId,
         runCount: input.runCount,
         model,
+        reasoningEffort,
+        contextTier: configuredContextTier,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;

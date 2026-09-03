@@ -22,6 +22,7 @@ export interface SessionOverlayMaintenanceResult {
   deletedScheduleRuns: number;
   prunedDeferredPrompts: number;
   prunedDeferLoops: number;
+  prunedSessionMessages: number;
 }
 
 export interface SessionOverlayMaintenanceOptions {
@@ -63,12 +64,15 @@ export function createSessionOverlayMaintenance(
     const deferCutoff = new Date(now() - deferRetentionMs).toISOString();
     const prunedDeferredPrompts = ctx.deferredPromptStore?.pruneTerminalRows(deferCutoff) ?? 0;
     const prunedDeferLoops = ctx.deferLoopStore?.pruneTerminalRows(deferCutoff) ?? 0;
+    const prunedSessionMessages =
+      ctx.sessionMessageOutboxStore?.pruneTerminalRows(deferCutoff) ?? 0;
 
     const result: SessionOverlayMaintenanceResult = {
       reaped: report.reaped,
       deletedScheduleRuns: report.deletedScheduleRuns.deleted,
       prunedDeferredPrompts,
       prunedDeferLoops,
+      prunedSessionMessages,
     };
 
     if (result.reaped > 0 || result.deletedScheduleRuns > 0) {
@@ -101,13 +105,15 @@ export function createSessionOverlayMaintenance(
     const total = result.reaped
       + result.deletedScheduleRuns
       + result.prunedDeferredPrompts
-      + result.prunedDeferLoops;
+      + result.prunedDeferLoops
+      + result.prunedSessionMessages;
     if (total === 0) return;
     logger.log(
       `[session-overlay] Reaped ${result.reaped} overlay row(s), `
       + `${result.deletedScheduleRuns} deleted-schedule run(s), `
       + `${result.prunedDeferredPrompts} terminal deferred prompt(s), `
-      + `${result.prunedDeferLoops} terminal defer loop(s)`,
+      + `${result.prunedDeferLoops} terminal defer loop(s), `
+      + `${result.prunedSessionMessages} terminal session message(s)`,
     );
   }
 

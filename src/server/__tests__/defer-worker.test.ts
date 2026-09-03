@@ -8,6 +8,60 @@ import {
 } from "../defer-worker.js";
 import { makeTestDir } from "./helpers.js";
 
+function createEventSession(
+  sessionId: string,
+  content: string,
+  options: { disconnect?: () => Promise<void> } = {},
+) {
+  let handler: ((event: unknown) => void) | undefined;
+  return {
+    sessionId,
+    on: (nextHandler: (event: unknown) => void) => {
+      handler = nextHandler;
+      return () => {
+        handler = undefined;
+      };
+    },
+    send: vi.fn(async () => {
+      handler?.({ type: "assistant.turn_start", data: { turnId: "1" } });
+      handler?.({ type: "assistant.message", data: { content } });
+      handler?.({ type: "assistant.turn_end", data: { turnId: "1" } });
+    }),
+    disconnect: options.disconnect ?? vi.fn(async () => undefined),
+  };
+}
+
+function createWorkerWithEvents(events: unknown[], label: string) {
+  return createDisposableDeferWorker({
+    getSettings: () => ({
+      mcpServers: {},
+      deferWorker: { model: "small-model", reasoningEffort: "low", contextTier: "default" },
+    }),
+    listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
+    buildSessionConfig: () => ({}),
+    getParentWorkingDirectory: () => undefined,
+    beginLifecycle: () => () => undefined,
+    reserveCapacity: async () => () => undefined,
+    createSession: async (config) => {
+      let handler: ((event: unknown) => void) | undefined;
+      return {
+        sessionId: config.sessionId as string,
+        on: (nextHandler: (event: unknown) => void) => {
+          handler = nextHandler;
+          return () => {
+            handler = undefined;
+          };
+        },
+        send: async () => {
+          for (const event of events) handler?.(event);
+        },
+      } as any;
+    },
+    deleteSession: async () => undefined,
+    getCopilotHome: () => makeTestDir(label),
+  });
+}
+
 describe("defer worker", () => {
   it("recognizes disposable worker session ids", () => {
     const sessionId = createDisposableDeferWorkerSessionId();
@@ -16,11 +70,15 @@ describe("defer worker", () => {
     expect(isDisposableDeferWorkerSessionId("normal-session")).toBe(false);
   });
 
-  it("parses continue, finish, return, and safe fallback outcomes", () => {
+  it("parses explicit outcomes and rejects malformed responses", () => {
     expect(parseDeferWorkerResult(
       '<defer-result action="continue"></defer-result>',
       "interval",
     )).toEqual({ action: "continue" });
+    expect(parseDeferWorkerResult(
+      '<defer-result action="notify">Build still running.</defer-result>',
+      "interval",
+    )).toEqual({ action: "notify", message: "Build still running." });
     expect(parseDeferWorkerResult(
       '<defer-result action="finish"></defer-result>',
       "interval",
@@ -29,27 +87,173 @@ describe("defer worker", () => {
       '<defer-result action="return">Build failed.</defer-result>',
       "interval",
     )).toEqual({ action: "return", message: "Build failed." });
-    expect(parseDeferWorkerResult("No valid tag", "interval")).toEqual({ action: "continue" });
-    expect(parseDeferWorkerResult("Reminder complete", "once")).toEqual({
-      action: "return",
-      message: "Reminder complete",
-    });
+    expect(() => parseDeferWorkerResult("No valid tag", "interval"))
+      .toThrow("did not contain one valid result tag");
+    expect(() => parseDeferWorkerResult("Reminder complete", "once"))
+      .toThrow("did not contain one valid result tag");
     expect(() => parseDeferWorkerResult(
       '<defer-result action="continue"></defer-result>',
       "once",
     )).toThrow("One-shot defer worker cannot continue");
+    expect(() => parseDeferWorkerResult(
+      '<defer-result action="notify">Still running.</defer-result>',
+      "once",
+    )).toThrow("One-shot defer worker cannot notify");
+  });
+
+  it("accepts a valid assistant result at turn end without waiting for session idle", async () => {
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({
+        mcpServers: {},
+        deferWorker: { model: "small-model", reasoningEffort: "low", contextTier: "default" },
+      }),
+      listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: () => () => undefined,
+      reserveCapacity: async () => () => undefined,
+      createSession: async (config) => createEventSession(
+        config.sessionId as string,
+        '<defer-result action="return">Build passed.</defer-result>',
+      ) as any,
+      deleteSession: async () => undefined,
+      getCopilotHome: () => makeTestDir("defer-worker-event-result"),
+    });
+
+    await expect(worker.run({
+      deferId: "interval_1",
+      kind: "interval",
+      parentSessionId: "parent-session",
+      prompt: "Check build",
+    })).resolves.toMatchObject({
+      action: "return",
+      message: "Build passed.",
+      deliveryId: expect.any(String),
+    });
+  });
+
+  it("does not accept a result message that still has pending tool requests", async () => {
+    let handler: ((event: unknown) => void) | undefined;
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({
+        mcpServers: {},
+        deferWorker: { model: "small-model", reasoningEffort: "low", contextTier: "default" },
+      }),
+      listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: () => () => undefined,
+      reserveCapacity: async () => () => undefined,
+      createSession: async (config) => ({
+        sessionId: config.sessionId as string,
+        on: (nextHandler: (event: unknown) => void) => {
+          handler = nextHandler;
+          return () => {
+            handler = undefined;
+          };
+        },
+        send: async () => {
+          handler?.({
+            type: "assistant.message",
+            data: {
+              content: '<defer-result action="return">Premature.</defer-result>',
+              toolRequests: [{ toolCallId: "tool-1" }],
+            },
+          });
+          handler?.({
+            type: "session.error",
+            data: { message: "Tool failed." },
+          });
+        },
+      }) as any,
+      deleteSession: async () => undefined,
+      getCopilotHome: () => makeTestDir("defer-worker-pending-tools"),
+    });
+
+    await expect(worker.run({
+      deferId: "interval_1",
+      kind: "interval",
+      parentSessionId: "parent-session",
+      prompt: "Check build",
+    })).rejects.toThrow("Tool failed.");
+  });
+
+  it("ignores an intermediate result when more tool work follows", async () => {
+    const worker = createWorkerWithEvents([
+      { type: "assistant.turn_start", data: { turnId: "1" } },
+      {
+        type: "assistant.message",
+        data: { content: '<defer-result action="return">Premature.</defer-result>' },
+      },
+      { type: "tool.execution_start", data: { toolCallId: "tool-1" } },
+      { type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
+      {
+        type: "assistant.message",
+        data: { content: '<defer-result action="return">Final.</defer-result>' },
+      },
+      { type: "assistant.turn_end", data: { turnId: "1" } },
+    ], "defer-worker-intermediate-result");
+
+    await expect(worker.run({
+      deferId: "interval_1",
+      kind: "interval",
+      parentSessionId: "parent-session",
+      prompt: "Check build",
+    })).resolves.toMatchObject({ action: "return", message: "Final." });
+  });
+
+  it("does not revive an invalidated result from the idle fallback", async () => {
+    const worker = createWorkerWithEvents([
+      { type: "assistant.turn_start", data: { turnId: "1" } },
+      {
+        type: "assistant.message",
+        data: {
+          content: '<defer-result action="return">Premature.</defer-result>',
+          toolRequests: [{ toolCallId: "tool-1" }],
+        },
+      },
+      { type: "tool.execution_start", data: { toolCallId: "tool-1" } },
+      { type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
+      { type: "session.idle", data: {} },
+    ], "defer-worker-stale-idle-result");
+
+    await expect(worker.run({
+      deferId: "interval_1",
+      kind: "interval",
+      parentSessionId: "parent-session",
+      prompt: "Check build",
+    })).rejects.toThrow("ended without one valid result tag");
+  });
+
+  it("waits for outstanding tool completion after turn end", async () => {
+    const worker = createWorkerWithEvents([
+      { type: "assistant.turn_start", data: { turnId: "1" } },
+      { type: "tool.execution_start", data: { toolCallId: "tool-1" } },
+      {
+        type: "assistant.message",
+        data: { content: '<defer-result action="return">Done.</defer-result>' },
+      },
+      { type: "assistant.turn_end", data: { turnId: "1" } },
+      { type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
+    ], "defer-worker-late-tool-completion");
+
+    await expect(worker.run({
+      deferId: "interval_1",
+      kind: "interval",
+      parentSessionId: "parent-session",
+      prompt: "Check build",
+    })).resolves.toMatchObject({ action: "return", message: "Done." });
   });
 
   it("runs with configured model options and deletes the temporary session", async () => {
     const copilotHome = makeTestDir("defer-worker");
     const buildSessionConfig = vi.fn(() => ({ mcpServers: { ado: { type: "http" } } }));
-    const createSession = vi.fn(async (config: Record<string, unknown>) => ({
-      sessionId: config.sessionId as string,
-      sendAndWait: vi.fn(async () => ({
-        data: { content: '<defer-result action="return">Validation passed.</defer-result>' },
-      })),
-      disconnect: vi.fn(async () => undefined),
-    }));
+    const createSession = vi.fn(async (config: Record<string, unknown>) =>
+      createEventSession(
+        config.sessionId as string,
+        '<defer-result action="return">Validation passed.</defer-result>',
+      )
+    );
     const deleteSession = vi.fn(async () => undefined);
     const recordSpan = vi.fn();
     const worker = createDisposableDeferWorker({
@@ -84,7 +288,11 @@ describe("defer worker", () => {
       intervalSeconds: 1200,
     });
 
-    expect(result).toEqual({ action: "return", message: "Validation passed." });
+    expect(result).toMatchObject({
+      action: "return",
+      message: "Validation passed.",
+      deliveryId: expect.any(String),
+    });
     expect(buildSessionConfig).toHaveBeenCalledWith(expect.objectContaining({
       modelOverride: "small-model",
       reasoningEffortOverride: "low",
@@ -97,19 +305,16 @@ describe("defer worker", () => {
       mcpServers: { ado: { type: "http" } },
     }));
     const helper = await createSession.mock.results[0]!.value;
-    expect(helper.sendAndWait).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: buildDeferWorkerPrompt({
-          deferId: "interval_1",
-          kind: "interval",
-          parentSessionId: "parent-session",
-          prompt: "Check validation",
-          runCount: 2,
-          intervalSeconds: 1200,
-        }),
+    expect(helper.send).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: buildDeferWorkerPrompt({
+        deferId: "interval_1",
+        kind: "interval",
+        parentSessionId: "parent-session",
+        prompt: "Check validation",
+        runCount: 2,
+        intervalSeconds: 1200,
       }),
-      10 * 60 * 1000,
-    );
+    }));
     expect(deleteSession).toHaveBeenCalledWith(expect.stringMatching(/^d3f3e000-/));
     expect(recordSpan).toHaveBeenCalledWith(
       "defer.worker",
@@ -139,12 +344,10 @@ describe("defer worker", () => {
       getParentWorkingDirectory: () => undefined,
       beginLifecycle: () => () => undefined,
       reserveCapacity: async () => () => undefined,
-      createSession: async (config) => ({
-        sessionId: config.sessionId as string,
-        sendAndWait: async () => ({
-          data: { content: '<defer-result action="continue"></defer-result>' },
-        }),
-      }) as any,
+      createSession: async (config) => createEventSession(
+        config.sessionId as string,
+        '<defer-result action="continue"></defer-result>',
+      ) as any,
       deleteSession: async () => undefined,
       getCopilotHome: () => makeTestDir("defer-worker-auto"),
     });
@@ -184,12 +387,10 @@ describe("defer worker", () => {
       getParentWorkingDirectory: () => undefined,
       beginLifecycle: () => () => undefined,
       reserveCapacity: async () => () => undefined,
-      createSession: async (config) => ({
-        sessionId: config.sessionId as string,
-        sendAndWait: async () => ({
-          data: { content: '<defer-result action="continue"></defer-result>' },
-        }),
-      }) as any,
+      createSession: async (config) => createEventSession(
+        config.sessionId as string,
+        '<defer-result action="continue"></defer-result>',
+      ) as any,
       deleteSession: async () => undefined,
       getCopilotHome: () => makeTestDir("defer-worker-stale-model"),
     });
@@ -239,12 +440,12 @@ describe("defer worker", () => {
   });
 
   it("does not reintroduce a stale global model when automatic selection has no economy model", async () => {
-    const createSession = vi.fn(async (config: Record<string, unknown>) => ({
-      sessionId: config.sessionId as string,
-      sendAndWait: async () => ({
-        data: { content: '<defer-result action="finish"></defer-result>' },
-      }),
-    }));
+    const createSession = vi.fn(async (config: Record<string, unknown>) =>
+      createEventSession(
+        config.sessionId as string,
+        '<defer-result action="finish"></defer-result>',
+      )
+    );
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},

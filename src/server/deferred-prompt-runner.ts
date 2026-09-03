@@ -1,6 +1,7 @@
 // Deferred prompt runner — dispatches deferred same-session prompts on schedule
 // Recomputes all timers from SQLite on startup; no in-memory state is authoritative.
 
+import { randomUUID } from "node:crypto";
 import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { SessionManager } from "./session-manager.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -17,14 +18,9 @@ import {
   type ProcessOneResult,
 } from "./defer-runner-core.js";
 import { isRestartPending } from "./restart-controller.js";
+import { formatReturnedDeferPrompt } from "./defer-result-message.js";
+import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import { isRestartRecoveryPrompt } from "./restart-resume.js";
-import {
-  formatReturnedDeferPrompt,
-  isReturnedDeferPrompt,
-  type DeferWorkerInput,
-  type DeferWorkerLease,
-  type DeferWorkerResult,
-} from "./defer-worker.js";
 
 // Re-export the shared timing/lease constants so existing importers keep working.
 export {
@@ -41,6 +37,7 @@ export {
 
 export interface DeferredPromptRunnerOptions extends DeferRunnerOptions {
   isRestartPending?: () => boolean;
+  onParentMessageQueued?: () => void;
 }
 
 export function createDeferredPromptRunner(
@@ -100,8 +97,7 @@ export function createDeferredPromptRunner(
       let claimToken: string | undefined;
       let workerLease: DeferWorkerLease | undefined;
       try {
-        const needsWorker = !isRestartRecoveryPrompt(item.prompt)
-          && !isReturnedDeferPrompt(item.prompt);
+        const needsWorker = !isRestartRecoveryPrompt(item.prompt);
         const acquireWorker = (sessionManager as SessionManager & {
           tryAcquireDeferWorker?: () => DeferWorkerLease | undefined;
         }).tryAcquireDeferWorker;
@@ -159,8 +155,9 @@ export function createDeferredPromptRunner(
     ): Promise<void> {
       const { id, sessionId, prompt, attempts } = item;
       let shouldProcessNextDuePrompt = false;
+      let parentMessageQueued = false;
       try {
-        if (isRestartRecoveryPrompt(prompt) || isReturnedDeferPrompt(prompt)) {
+        if (isRestartRecoveryPrompt(item.prompt)) {
           await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
         } else {
           const workerInput: DeferWorkerInput = {
@@ -175,18 +172,26 @@ export function createDeferredPromptRunner(
           if (!result) {
             await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
           } else if (result.action === "return") {
+            const deliveryId = result.deliveryId ?? randomUUID();
             const returnPrompt = formatReturnedDeferPrompt(
               workerInput,
               result.message ?? "Deferred work completed.",
+              { deliveryId },
             );
-            if (!store.queueWorkerReturn(id, claimToken, returnPrompt)) {
+            if (!store.completeWithMessage(id, claimToken, {
+              id: deliveryId,
+              sessionId,
+              prompt: returnPrompt,
+              sourceId: item.deferId,
+            })) {
               throw new Error(`Failed to queue deferred worker result ${item.deferId}.`);
             }
             ctx.emitDeferSummary(sessionId);
+            parentMessageQueued = true;
             shouldProcessNextDuePrompt = true;
             return;
-          } else if (result.action === "continue") {
-            throw new Error("One-shot defer worker cannot continue.");
+          } else if (result.action === "continue" || result.action === "notify") {
+            throw new Error(`One-shot defer worker cannot ${result.action}.`);
           }
         }
         const completed = store.markCompleted(id, claimToken);
@@ -243,6 +248,7 @@ export function createDeferredPromptRunner(
       } finally {
         workerLease?.release();
         ctx.afterDeliverySettled(renewalTimer, sessionId, shouldProcessNextDuePrompt);
+        if (parentMessageQueued) options.onParentMessageQueued?.();
       }
     }
 
