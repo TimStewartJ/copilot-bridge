@@ -80,6 +80,8 @@ const NO_PROGRESS_ABORT_MS = 60 * 60_000;
 const NO_PROGRESS_BACKEND_PROBE_MS = 3 * 60_000;
 const SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE =
   "Session tool initialization did not complete before prompt delivery";
+const MCP_SESSION_RECOVERY_WINDOW_MS = 10 * 60_000;
+const MCP_SESSION_RECOVERY_MAX_ATTEMPTS = 2;
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
   "session.idle",
   "session.task_complete",
@@ -213,6 +215,23 @@ export function applyMcpServerStatusChange(
     status,
     ...(previous ? { previousStatus: previous.status } : {}),
   };
+}
+
+export function getStaleMcpSessionServerName(
+  toolName: string,
+  result: string | undefined,
+): string | undefined {
+  if (!result) return undefined;
+  const match = result.match(
+    /MCP server ['"]([^'"]+)['"]:[\s\S]*MCP error\s+-32001:\s*Session not found\b/i,
+  );
+  const serverName = match?.[1]?.trim();
+  if (!serverName) return undefined;
+  const normalizedToolName = toolName.trim().toLocaleLowerCase();
+  const normalizedServerName = serverName.toLocaleLowerCase();
+  return normalizedToolName.startsWith(`${normalizedServerName}-`)
+    ? serverName
+    : undefined;
 }
 
 export type SessionAttentionMode = "normal" | "quiet";
@@ -350,6 +369,10 @@ export interface SessionRunnerDeps {
 
 export class SessionRunner {
   private readonly watchdogPromises = new Map<string, Promise<void>>();
+  private readonly mcpSessionRecoveryAttempts = new Map<string, {
+    count: number;
+    windowStartedAt: number;
+  }>();
 
   constructor(private readonly deps: SessionRunnerDeps) {}
 
@@ -369,6 +392,42 @@ export class SessionRunner {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
+  }
+
+  private clearMcpSessionRecoveryAttempts(sessionId: string, serverName: string): void {
+    this.mcpSessionRecoveryAttempts.delete(`${sessionId}\0${serverName.toLocaleLowerCase()}`);
+  }
+
+  private scheduleStaleMcpSessionRecovery(sessionId: string, serverName: string): boolean {
+    const key = `${sessionId}\0${serverName.toLocaleLowerCase()}`;
+    const now = Date.now();
+    const previous = this.mcpSessionRecoveryAttempts.get(key);
+    const record = previous && now - previous.windowStartedAt < MCP_SESSION_RECOVERY_WINDOW_MS
+      ? previous
+      : { count: 0, windowStartedAt: now };
+    if (record.count >= MCP_SESSION_RECOVERY_MAX_ATTEMPTS) {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] MCP ${serverName} stale-session recovery suppressed after ${record.count} attempts`,
+      );
+      this.recordSpan("session.mcp.staleSessionRecoverySuppressed", 0, sessionId, {
+        serverName,
+        attempts: record.count,
+      });
+      return false;
+    }
+
+    record.count += 1;
+    this.mcpSessionRecoveryAttempts.set(key, record);
+    this.deps.mcpStatus.delete(sessionId);
+    this.deps.deferMcpStatusSessionEviction(sessionId, `mcp_session_not_found:${serverName}`);
+    console.warn(
+      `[sdk] [${sessionId.slice(0, 8)}] MCP ${serverName} lost its runtime session; refreshing the cached session after this run`,
+    );
+    this.recordSpan("session.mcp.staleSessionRecovery", 0, sessionId, {
+      serverName,
+      attempt: record.count,
+    });
+    return true;
   }
 
   private persistLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void {
@@ -668,9 +727,18 @@ export class SessionRunner {
     const configuredMcpServerNames = new Set(
       Object.keys(resumeConfig.mcpServers ?? {}).map((name) => name.trim().toLocaleLowerCase()),
     );
+    const configuredMcpServersByToolPrefix = [...Object.keys(resumeConfig.mcpServers ?? {})]
+      .filter((name) => name.trim())
+      .sort((a, b) => b.length - a.length);
     const isConfiguredMcpServer = (name: unknown): name is string =>
       typeof name === "string"
       && configuredMcpServerNames.has(name.trim().toLocaleLowerCase());
+    const getConfiguredMcpServerForTool = (toolName: string): string | undefined => {
+      const normalizedToolName = toolName.trim().toLocaleLowerCase();
+      return configuredMcpServersByToolPrefix.find((name) =>
+        normalizedToolName.startsWith(`${name.toLocaleLowerCase()}-`)
+      );
+    };
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -773,6 +841,7 @@ export class SessionRunner {
     const subAgentTerminalToolCallIds = new Set<string>();
     const subAgentTurnIdMap = new Map<string, string>();
     const activeExternalTools = new Map<string, ActiveExternalToolCall>();
+    const staleMcpServersScheduledThisRun = new Set<string>();
     const contextTelemetryProvider = this.client?.id ?? "copilot";
     const contextTelemetryProviderSessionId = sessionId;
     let currentBridgeTurnId: string | undefined;
@@ -1459,6 +1528,29 @@ export class SessionRunner {
           );
           const ok = outcome.success !== false;
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${outcome.displayName} (${ok ? "ok" : "failed"})`);
+          const configuredMcpServer = getConfiguredMcpServerForTool(completedToolName);
+          const configuredMcpServerKey = configuredMcpServer?.toLocaleLowerCase();
+          if (
+            ok
+            && configuredMcpServer
+            && configuredMcpServerKey
+            && !staleMcpServersScheduledThisRun.has(configuredMcpServerKey)
+          ) {
+            this.clearMcpSessionRecoveryAttempts(sessionId, configuredMcpServer);
+          } else if (!ok) {
+            const staleMcpServer = getStaleMcpSessionServerName(completedToolName, outcome.result);
+            const staleMcpServerKey = staleMcpServer?.toLocaleLowerCase();
+            if (
+              staleMcpServer
+              && staleMcpServerKey
+              && isConfiguredMcpServer(staleMcpServer)
+              && !staleMcpServersScheduledThisRun.has(staleMcpServerKey)
+            ) {
+              if (this.scheduleStaleMcpSessionRecovery(sessionId, staleMcpServer)) {
+                staleMcpServersScheduledThisRun.add(staleMcpServerKey);
+              }
+            }
+          }
           const toolStart = toolStartTimes.get(data?.toolCallId);
           if (toolStart) {
             this.recordSpan("tool.execution", Date.now() - toolStart, sessionId, {
@@ -1675,6 +1767,9 @@ export class SessionRunner {
           break;
         case "session.idle":
         case "session.task_complete": {
+          if (staleMcpServersScheduledThisRun.size > 0) {
+            this.deps.mcpStatus.delete(sessionId);
+          }
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const terminalCompletion = extractTerminalCompletion(event);
           const resolvedTerminalCompletion = terminalCompletion ?? pendingTerminalCompletion;
