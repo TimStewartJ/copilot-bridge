@@ -135,21 +135,21 @@ describe("defer-loop-store", () => {
     });
     let claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
 
-    expect(store.completeOccurrence(
+    expect(store.settleOccurrence(
       loop.id,
       "wrong-token",
       "2026-01-01T00:05:00.000Z",
       "2026-01-01T00:00:30.000Z",
-      { status: "wrong" },
+      { checkpoint: { status: "wrong" } },
     )).toBeUndefined();
     expect(store.get(loop.id)?.checkpoint).toBeUndefined();
 
-    const completed = store.completeOccurrence(
+    const completed = store.settleOccurrence(
       loop.id,
       claimed.claimToken,
       "2026-01-01T00:05:00.000Z",
       "2026-01-01T00:00:30.000Z",
-      { status: "running", buildId: 42 },
+      { checkpoint: { status: "running", buildId: 42 } },
     )!;
     expect(completed.checkpoint).toEqual({ status: "running", buildId: 42 });
 
@@ -163,7 +163,7 @@ describe("defer-loop-store", () => {
       60_000,
       "2026-01-01T00:05:00.000Z",
     )!;
-    expect(reopenedStore.completeOccurrence(
+    expect(reopenedStore.settleOccurrence(
       loop.id,
       claimed.claimToken,
       "2026-01-01T00:10:00.000Z",
