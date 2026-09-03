@@ -166,10 +166,31 @@ export function createDeferLoopStore(db: DatabaseSync) {
     SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE id = ? AND status IN ('active', 'running')
   `);
+  const finishOccurrenceStmt = db.prepare(`
+    UPDATE defer_loops
+    SET status = 'completed',
+        runCount = runCount + 1,
+        attempts = 0,
+        claimToken = NULL,
+        leaseExpiresAt = NULL,
+        lastError = NULL,
+        updatedAt = ?
+    WHERE id = ? AND status = 'running' AND claimToken = ?
+  `);
+  const insertWorkerReturnStmt = db.prepare(`
+    INSERT INTO deferred_prompts
+      (id, sessionId, prompt, runAt, status, attempts, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+  `);
   const markExpiredStmt = db.prepare(`
     UPDATE defer_loops
     SET status = 'expired', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE id = ? AND status IN ('active', 'running')
+  `);
+  const markClaimedExpiredStmt = db.prepare(`
+    UPDATE defer_loops
+    SET status = 'expired', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
+    WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
   const reclaimExpiredStmt = db.prepare(`
     UPDATE defer_loops
@@ -335,6 +356,34 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
+  function finishOccurrence(id: string, claimToken: string, now = new Date().toISOString()): boolean {
+    const result = finishOccurrenceStmt.run(now, id, claimToken);
+    return (result as any).changes > 0;
+  }
+
+  function finishOccurrenceWithReturn(
+    id: string,
+    claimToken: string,
+    sessionId: string,
+    prompt: string,
+    now = new Date().toISOString(),
+  ): boolean {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const finished = finishOccurrenceStmt.run(now, id, claimToken);
+      if ((finished as any).changes === 0) {
+        db.exec("ROLLBACK");
+        return false;
+      }
+      insertWorkerReturnStmt.run(randomUUID(), sessionId, prompt, now, now, now);
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   function markFailed(id: string, claimToken: string, lastError: string): boolean {
     const result = markFailedStmt.run(lastError, new Date().toISOString(), id, claimToken);
     return (result as any).changes > 0;
@@ -357,6 +406,11 @@ export function createDeferLoopStore(db: DatabaseSync) {
 
   function markExpired(id: string): boolean {
     const result = markExpiredStmt.run(new Date().toISOString(), id);
+    return (result as any).changes > 0;
+  }
+
+  function markClaimedExpired(id: string, claimToken: string): boolean {
+    const result = markClaimedExpiredStmt.run(new Date().toISOString(), id, claimToken);
     return (result as any).changes > 0;
   }
 
@@ -413,10 +467,13 @@ export function createDeferLoopStore(db: DatabaseSync) {
     retry,
     completeOccurrence,
     markCompleted,
+    finishOccurrence,
+    finishOccurrenceWithReturn,
     markFailed,
     markFailedById,
     reactivate,
     markExpired,
+    markClaimedExpired,
     cancelById,
     cancelForSession,
     deleteForSession,

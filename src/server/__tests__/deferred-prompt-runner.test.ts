@@ -81,6 +81,7 @@ describe("deferred-prompt-runner", () => {
       bus.subscribe((event) => {
         if (event.type === "session:defer-summary") summaryEvents.push(event);
       });
+
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Do something", past);
 
@@ -101,6 +102,90 @@ describe("deferred-prompt-runner", () => {
         { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
       ]);
 
+      runner.shutdown();
+    });
+
+    it("can finish a one-shot worker silently without waking the parent", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const prompt = store.create(
+        "session-1",
+        "Check status",
+        new Date(Date.now() - 1_000).toISOString(),
+      );
+      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      sm.runDeferWorker = vi.fn(async () => ({ action: "finish" }));
+      const runner = createDeferredPromptRunner(store, sm, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm.runDeferWorker).toHaveBeenCalledWith(expect.objectContaining({
+        deferId: prompt.deferId,
+        kind: "once",
+        parentSessionId: "session-1",
+      }));
+      expect(sm._started).toEqual([]);
+      expect(store.get(prompt.id)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("queues a worker return before delivering it to the parent", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const prompt = store.create(
+        "session-1",
+        "Check status",
+        new Date(Date.now() - 1_000).toISOString(),
+      );
+      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      sm.runDeferWorker = vi.fn(async () => ({
+        action: "return",
+        message: "Build failed.",
+      }));
+      const runner = createDeferredPromptRunner(store, sm, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm.runDeferWorker).toHaveBeenCalledOnce();
+      expect(sm._started).toEqual([
+        expect.objectContaining({
+          sessionId: "session-1",
+          prompt: expect.stringContaining("Build failed."),
+        }),
+      ]);
+      expect(store.get(prompt.id)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("does not let a stale worker complete a reactivated one-shot defer", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const prompt = store.create(
+        "session-1",
+        "Check status",
+        new Date(Date.now() - 1_000).toISOString(),
+      );
+      let resolveWorker!: (result: { action: "finish" }) => void;
+      const workerResult = new Promise<{ action: "finish" }>((resolve) => {
+        resolveWorker = resolve;
+      });
+      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      sm.runDeferWorker = vi.fn(() => workerResult);
+      const runner = createDeferredPromptRunner(store, sm, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.get(prompt.id)?.status).toBe("running");
+      expect(store.cancelById(prompt.id)).toBe(true);
+      expect(store.reactivate(prompt.id, new Date(Date.now() + 60_000).toISOString())).toBe(true);
+
+      resolveWorker({ action: "finish" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.get(prompt.id)?.status).toBe("pending");
       runner.shutdown();
     });
 

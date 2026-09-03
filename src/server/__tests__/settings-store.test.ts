@@ -103,6 +103,7 @@ describe("settings-store", () => {
         headed: true,
       },
     });
+
     expect(updated.browser).toEqual({
       executablePath: "C:\\Browsers\\chrome.exe",
       masterProfileDirectory: "C:\\Bridge\\browser-profile",
@@ -128,6 +129,27 @@ describe("settings-store", () => {
     const cleared = store.updateSettings({ browser: {} });
     expect(cleared.browser).toBeUndefined();
     expect(store.getSettings().browser).toBeUndefined();
+  });
+
+  it("persists and validates deferred worker model settings", () => {
+    expect(store.getSettings().deferWorker).toBeUndefined();
+
+    const updated = store.updateSettings({
+      deferWorker: {
+        model: " gpt-5-mini ",
+        reasoningEffort: " high ",
+        contextTier: "long_context",
+      },
+    });
+    expect(updated.deferWorker).toEqual({
+      model: "gpt-5-mini",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+    expect(store.getSettings().deferWorker).toEqual(updated.deferWorker);
+    expect(() => store.updateSettings({
+      deferWorker: { contextTier: "invalid" as any },
+    })).toThrow("deferWorker.contextTier must be default or long_context");
   });
 
   it("rejects non-boolean browser headed settings", () => {
@@ -234,6 +256,7 @@ describe("settings-store", () => {
   it.each([
     ["browser settings", { browser: { headed: "true" } }],
     ["model preset settings", { modelPresets: { preset1: { model: "gpt-5.6-sol", contextTier: "invalid" } } }],
+    ["defer worker settings", { deferWorker: { contextTier: "invalid" } }],
   ])("rejects invalid nested persisted %s", (_label, raw) => {
     writeRawSettings(JSON.stringify(raw));
 

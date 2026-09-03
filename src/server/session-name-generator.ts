@@ -127,7 +127,7 @@ export function isDisposableTitleSessionId(sessionId: string): boolean {
   return sessionId.startsWith(`${DISPOSABLE_TITLE_SESSION_ID_PREFIX}-`);
 }
 
-export function selectSessionTitleModel(models: AgentModelInfo[]): string | undefined {
+export function selectCheapHelperModel(models: AgentModelInfo[]): string | undefined {
   const selectableModels = models.filter(isSelectableTitleModel);
   const freeModels = selectableModels.filter(isFreeModel);
   const preferredFreeModels = freeModels.filter(isPreferredSmallModel).sort(byCostThenId);
@@ -138,6 +138,10 @@ export function selectSessionTitleModel(models: AgentModelInfo[]): string | unde
     .filter(isCheapPreferredModel)
     .sort(byCostThenId);
   return cheapPreferredModels[0]?.id;
+}
+
+export function selectSessionTitleModel(models: AgentModelInfo[]): string | undefined {
+  return selectCheapHelperModel(models);
 }
 
 export function buildSessionTitleSystemPrompt(): string {

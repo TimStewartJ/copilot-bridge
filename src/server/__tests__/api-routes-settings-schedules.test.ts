@@ -69,6 +69,31 @@ describe("Settings routes", () => {
     expect(providers.getProvider("github")).not.toBe(cachedProvider);
   });
 
+  it("PATCH /api/settings persists deferred worker model settings without evicting sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({
+        deferWorker: {
+          model: "gpt-5-mini",
+          reasoningEffort: "low",
+          contextTier: "default",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deferWorker).toEqual({
+      model: "gpt-5-mini",
+      reasoningEffort: "low",
+      contextTier: "default",
+    });
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
   it("PATCH /api/settings rejects mixed invalid updates without runtime side effects", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();

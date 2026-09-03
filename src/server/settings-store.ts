@@ -29,6 +29,12 @@ export interface BrowserSettings {
   headed?: boolean;
 }
 
+export interface DeferWorkerSettings {
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
+}
+
 export interface ModelFamilyDefault {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -61,6 +67,7 @@ export interface AppSettings {
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
+  deferWorker?: DeferWorkerSettings;
 }
 
 export class SettingsValidationError extends Error {
@@ -174,6 +181,34 @@ function normalizeBrowserSettings(value: unknown): BrowserSettings | undefined {
     ...(executablePath ? { executablePath } : {}),
     ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
     ...(headed ? { headed } : {}),
+  };
+}
+
+function normalizeDeferWorkerSettings(value: unknown): DeferWorkerSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("deferWorker must be an object");
+  const model = normalizeOptionalString(value.model, "model", {
+    trim: true,
+    emptyAsUndefined: true,
+  });
+  const reasoningEffort = normalizeOptionalString(value.reasoningEffort, "reasoningEffort", {
+    trim: true,
+    emptyAsUndefined: true,
+  });
+  const contextTier = value.contextTier;
+  if (
+    contextTier !== undefined
+    && contextTier !== null
+    && contextTier !== ""
+    && !isCopilotContextTier(contextTier)
+  ) {
+    validationError("deferWorker.contextTier must be default or long_context");
+  }
+  if (!model && !reasoningEffort && !isCopilotContextTier(contextTier)) return undefined;
+  return {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
   };
 }
 
@@ -372,6 +407,9 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   delete normalized.familyDefaults;
   delete normalized.lastModelFamily;
   if ("browser" in value) normalized.browser = normalizeBrowserSettings(value.browser);
+  if ("deferWorker" in value) {
+    normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
+  }
   return normalized;
 }
 
