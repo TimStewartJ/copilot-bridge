@@ -122,6 +122,7 @@ export class ManagementJobNotCancellableError extends Error {
 const ACTIVE_STATUSES: readonly ManagementJobStatus[] = ["queued", "running"];
 const CUTOVER_TYPES: readonly ManagementJobType[] = ["self_update", "staging_deploy"];
 export const DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
+export const MANAGEMENT_DEPLOY_BATCH_MAX_JOBS = 10;
 export const DEFAULT_MANAGEMENT_JOB_LIST_LIMIT = 50;
 export const MAX_MANAGEMENT_JOB_LIST_LIMIT = 200;
 export const MANAGEMENT_JOB_MAX_AGE_DAYS_ENV = "BRIDGE_MANAGEMENT_JOB_MAX_AGE_DAYS";
@@ -243,7 +244,7 @@ function normalizedStagingDir(input: unknown): string {
   return value ? resolve(value) : "";
 }
 
-function isDeployAwaitingActivation(job: ManagementJob): boolean {
+export function isDeployAwaitingActivation(job: ManagementJob): boolean {
   return job.type === "staging_deploy"
     && job.status === "succeeded"
     && isRecord(job.result)
