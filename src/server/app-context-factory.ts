@@ -38,8 +38,6 @@ import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
 import { createDeferLoopStore } from "./defer-loop-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
-import { createSessionMessageOutboxStore } from "./session-message-outbox-store.js";
-import { createSessionMessageOutboxRunner } from "./session-message-outbox-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createSessionManager } from "./session-manager.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
@@ -139,7 +137,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   }
   const deferredPromptStore = createDeferredPromptStore(db);
   const deferLoopStore = createDeferLoopStore(db);
-  const sessionMessageOutboxStore = createSessionMessageOutboxStore(db);
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
 
@@ -187,7 +184,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     managementJobStore,
     deferredPromptStore,
     deferLoopStore,
-    sessionMessageOutboxStore,
     scheduler,
     copilotHome,
     apiBasePath: options.apiBasePath,
@@ -225,23 +221,13 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     env: runtimePaths.env,
   });
   initPushEventNotifications(ctx, ctx.pushNotificationService);
-  ctx.sessionMessageOutboxRunner = createSessionMessageOutboxRunner(
-    sessionMessageOutboxStore,
-    sessionManager,
-    globalBus,
-    deferDeliveryGuard,
-    { telemetryStore },
-  );
   ctx.deferredPromptRunner = createDeferredPromptRunner(
     deferredPromptStore,
     sessionManager,
     globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
-    {
-      telemetryStore,
-      onParentMessageQueued: () => ctx.sessionMessageOutboxRunner?.poke(),
-    },
+    { telemetryStore },
   );
   ctx.deferLoopRunner = createDeferLoopRunner(
     deferLoopStore,
@@ -251,7 +237,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     { deferredPromptStore, deferLoopStore },
     {
       telemetryStore,
-      onParentMessageQueued: () => ctx.sessionMessageOutboxRunner?.poke(),
+      onParentMessageQueued: () => ctx.deferredPromptRunner?.poke(),
     },
   );
 
@@ -267,7 +253,6 @@ export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
     deferredPromptStore: ctx.deferredPromptStore,
     deferLoopStore: ctx.deferLoopStore,
   });
-  ctx.sessionMessageOutboxRunner?.start();
   ctx.deferredPromptRunner?.start();
   ctx.deferLoopRunner?.start();
 }

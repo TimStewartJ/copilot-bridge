@@ -5,11 +5,12 @@ import type { DatabaseSync } from "./db.js";
 import { toOnceDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
-import { prepareSessionMessageOutboxEnqueue } from "./session-message-outbox-store.js";
+import type { DeferredResultDelivery } from "./defer-result-message.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
 export type DeferredPromptStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type DeferredPromptPurpose = "defer" | "delivery";
 
 /** Upper bound on rows removed by a single terminal-row prune pass. */
 export const DEFAULT_TERMINAL_PRUNE_LIMIT = 500;
@@ -19,6 +20,8 @@ export interface DeferredPrompt {
   deferId: string;
   sessionId: string;
   prompt: string;
+  purpose: DeferredPromptPurpose;
+  sourceId?: string;
   /** ISO timestamp — when the prompt should be dispatched */
   runAt: string;
   status: DeferredPromptStatus;
@@ -28,6 +31,24 @@ export interface DeferredPrompt {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+}
+
+export function prepareDeferredResultDeliveryInsert(db: DatabaseSync) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO deferred_prompts
+      (id, sessionId, prompt, purpose, sourceId, runAt, status, attempts, createdAt, updatedAt)
+    VALUES (?, ?, ?, 'delivery', ?, ?, 'pending', 0, ?, ?)
+  `);
+  return (message: DeferredResultDelivery, now = new Date().toISOString()): boolean =>
+    (insert.run(
+      message.id,
+      message.sessionId,
+      message.prompt,
+      message.sourceId,
+      now,
+      now,
+      now,
+    ) as any).changes > 0;
 }
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -40,7 +61,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       (id, sessionId, prompt, runAt, status, attempts, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
   `);
-  const enqueueOutbox = prepareSessionMessageOutboxEnqueue(db);
+  const insertDelivery = prepareDeferredResultDeliveryInsert(db);
 
   const selectById = db.prepare(
     "SELECT * FROM deferred_prompts WHERE id = ?",
@@ -48,8 +69,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   const selectForSession = db.prepare(`
     SELECT * FROM deferred_prompts
-    WHERE sessionId = ?
+    WHERE sessionId = ? AND purpose = 'defer'
     ORDER BY runAt ASC, createdAt ASC
+  `);
+  const selectDeliveriesForSession = db.prepare(`
+    SELECT * FROM deferred_prompts
+    WHERE sessionId = ? AND purpose = 'delivery'
+    ORDER BY createdAt DESC
   `);
 
   const selectDue = db.prepare(`
@@ -88,12 +114,14 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SELECT COUNT(*) as count, MIN(runAt) as nextRunAt
     FROM deferred_prompts
     WHERE sessionId = ? AND status = 'pending'
+      AND purpose = 'defer'
   `);
 
   const selectSummariesBySession = db.prepare(`
     SELECT sessionId, COUNT(*) as count, MIN(runAt) as nextRunAt
     FROM deferred_prompts
     WHERE status = 'pending'
+      AND purpose = 'defer'
     GROUP BY sessionId
   `);
 
@@ -111,13 +139,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   // Completion/retry/failure require the matching claimToken
   const markCompletedStmt = db.prepare(`
     UPDATE deferred_prompts
-    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
+    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, lastError = NULL, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
 
   const markCompletedByIdStmt = db.prepare(`
     UPDATE deferred_prompts
-    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
+    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, lastError = NULL, updatedAt = ?
     WHERE id = ? AND status IN ('pending', 'running')
   `);
   const markFailedStmt = db.prepare(`
@@ -125,10 +153,16 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
+  const markFailedByIdStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
+    WHERE id = ? AND status IN ('pending', 'running')
+  `);
 
   const retryStmt = db.prepare(`
     UPDATE deferred_prompts
-    SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL, runAt = ?, updatedAt = ?
+    SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL,
+        runAt = ?, lastError = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
   const reactivateStmt = db.prepare(`
@@ -165,6 +199,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SET status = 'cancelled', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE sessionId = ?
       AND status IN ('pending', 'running')
+      AND purpose = 'defer'
+  `);
+  const reactivateFailedDeliveryStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL,
+        attempts = 0, lastError = NULL, runAt = ?, updatedAt = ?
+    WHERE sessionId = ? AND purpose = 'delivery' AND sourceId = ? AND status = 'failed'
   `);
 
   const deleteForSessionStmt = db.prepare("DELETE FROM deferred_prompts WHERE sessionId = ?");
@@ -193,6 +234,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       deferId: toOnceDeferId(raw.id),
       sessionId: raw.sessionId,
       prompt: raw.prompt,
+      purpose: raw.purpose as DeferredPromptPurpose,
+      sourceId: raw.sourceId ?? undefined,
       runAt: raw.runAt,
       status: raw.status as DeferredPromptStatus,
       attempts: raw.attempts,
@@ -224,6 +267,20 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   function listForSession(sessionId: string): DeferredPrompt[] {
     return (selectForSession.all(sessionId) as any[]).map(toRow);
+  }
+
+  function listDeliveriesForSession(sessionId: string): DeferredPrompt[] {
+    return (selectDeliveriesForSession.all(sessionId) as any[]).map(toRow);
+  }
+
+  function enqueueDelivery(
+    message: DeferredResultDelivery,
+    now = new Date().toISOString(),
+  ): DeferredPrompt {
+    if (!insertDelivery(message, now)) {
+      throw new Error(`Deferred delivery ${message.id} already exists.`);
+    }
+    return get(message.id)!;
   }
 
   function listDue(now = new Date().toISOString()): DeferredPrompt[] {
@@ -261,6 +318,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       FROM deferred_prompts
       WHERE sessionId = ?
         AND status IN ('pending', 'running')
+        AND purpose = 'defer'
       LIMIT 1
     `).get(sessionId) as { found?: number } | undefined;
     return row?.found === 1;
@@ -298,7 +356,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   function completeWithMessage(
     id: string,
     claimToken: string,
-    message: { id: string; sessionId: string; prompt: string; sourceId: string },
+    message: DeferredResultDelivery,
     now = new Date().toISOString(),
   ): boolean {
     db.exec("BEGIN IMMEDIATE");
@@ -308,15 +366,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
         db.exec("ROLLBACK");
         return false;
       }
-      const queued = enqueueOutbox({
-        id: message.id,
-        sessionId: message.sessionId,
-        prompt: message.prompt,
-        source: "defer_result",
-        sourceId: message.sourceId,
-        availableAt: now,
-      }, now);
-      if (!queued) throw new Error(`Session message ${message.id} already exists.`);
+      enqueueDelivery(message, now);
       db.exec("COMMIT");
       return true;
     } catch (error) {
@@ -327,6 +377,11 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   function markFailed(id: string, claimToken: string, lastError: string): boolean {
     const result = markFailedStmt.run(lastError, new Date().toISOString(), id, claimToken);
+    return (result as any).changes > 0;
+  }
+
+  function markFailedById(id: string, lastError: string): boolean {
+    const result = markFailedByIdStmt.run(lastError, new Date().toISOString(), id);
     return (result as any).changes > 0;
   }
 
@@ -343,9 +398,22 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
-  function retry(id: string, claimToken: string, runAt: string): boolean {
-    const result = retryStmt.run(runAt, new Date().toISOString(), id, claimToken);
+  function retry(id: string, claimToken: string, runAt: string, lastError?: string): boolean {
+    const result = retryStmt.run(runAt, lastError ?? null, new Date().toISOString(), id, claimToken);
     return (result as any).changes > 0;
+  }
+
+  function reactivateFailedDeliveryForSource(
+    sessionId: string,
+    sourceDeferId: string,
+  ): number {
+    const now = new Date().toISOString();
+    return (reactivateFailedDeliveryStmt.run(
+      now,
+      now,
+      sessionId,
+      sourceDeferId,
+    ) as any).changes as number;
   }
 
   function releaseClaimWithoutAttempt(id: string, claimToken: string): boolean {
@@ -401,6 +469,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     create,
     get,
     listForSession,
+    listDeliveriesForSession,
+    enqueueDelivery,
     listDue,
     getNextPending,
     getNextFuturePending,
@@ -414,7 +484,9 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     markCompletedById,
     completeWithMessage,
     markFailed,
+    markFailedById,
     reactivate,
+    reactivateFailedDeliveryForSource,
     retry,
     releaseClaimWithoutAttempt,
     renewClaim,

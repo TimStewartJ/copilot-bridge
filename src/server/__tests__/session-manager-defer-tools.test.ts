@@ -3,6 +3,7 @@ import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 import { parseDeferId } from "../defer-ids.js";
+import { createReturnedDeferDelivery } from "../defer-result-message.js";
 
 function findTool(tools: ReturnType<typeof getBridgeToolDefinitions>, name: string) {
   const tool = tools.find((t) => t.name === name);
@@ -289,10 +290,10 @@ describe("unified defer tools", () => {
 
   it("retries a failed parent delivery without rerunning the source defer", async () => {
     const { ctx } = createTestApp();
-    const outboxPoke = vi.fn();
-    ctx.sessionMessageOutboxRunner = {
+    const deliveryPoke = vi.fn();
+    ctx.deferredPromptRunner = {
       start: vi.fn(),
-      poke: outboxPoke,
+      poke: deliveryPoke,
       shutdown: vi.fn(),
     } as any;
     const loop = ctx.deferLoopStore!.create({
@@ -302,15 +303,13 @@ describe("unified defer tools", () => {
       nextRunAt: new Date().toISOString(),
     });
     ctx.deferLoopStore!.markCompleted(loop.id);
-    const delivery = ctx.sessionMessageOutboxStore!.enqueue({
-      id: "delivery-1",
-      sessionId: "session-A",
-      prompt: "Build completed",
-      source: "defer_result",
-      sourceId: loop.deferId,
-    })!;
-    const claimed = ctx.sessionMessageOutboxStore!.claimDue(delivery.id, 60_000)!;
-    ctx.sessionMessageOutboxStore!.markFailed(
+    const delivery = ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
+      { deferId: loop.deferId, kind: "interval", parentSessionId: "session-A" },
+      "Build completed",
+      { deliveryId: "delivery-1" },
+    ));
+    const claimed = ctx.deferredPromptStore!.claimDue(delivery.id, 60_000)!;
+    ctx.deferredPromptStore!.markFailed(
       delivery.id,
       claimed.claimToken,
       "Backend unavailable",
@@ -344,11 +343,11 @@ describe("unified defer tools", () => {
       message: expect.stringContaining("queued for retry"),
     });
     expect(ctx.deferLoopStore!.get(loop.id)?.status).toBe("completed");
-    expect(ctx.sessionMessageOutboxStore!.get(delivery.id)).toMatchObject({
+    expect(ctx.deferredPromptStore!.get(delivery.id)).toMatchObject({
       status: "pending",
       attempts: 0,
     });
-    expect(outboxPoke).toHaveBeenCalledOnce();
+    expect(deliveryPoke).toHaveBeenCalledOnce();
   });
 
   it("rejects defer reactivation for the wrong session or active status", async () => {

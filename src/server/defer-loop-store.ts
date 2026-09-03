@@ -5,8 +5,11 @@ import type { DatabaseSync } from "./db.js";
 import { toIntervalDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
-import { DEFAULT_TERMINAL_PRUNE_LIMIT } from "./deferred-prompt-store.js";
-import { prepareSessionMessageOutboxEnqueue } from "./session-message-outbox-store.js";
+import {
+  DEFAULT_TERMINAL_PRUNE_LIMIT,
+  prepareDeferredResultDeliveryInsert,
+} from "./deferred-prompt-store.js";
+import type { DeferredResultDelivery } from "./defer-result-message.js";
 
 export type DeferLoopStatus = "active" | "running" | "cancelled" | "completed" | "failed" | "expired";
 
@@ -56,7 +59,7 @@ const REACTIVATED_EXPIRY_MIN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const REACTIVATED_EXPIRY_WORKER_SLACK_MS = 15 * 60 * 1000;
 
 export function createDeferLoopStore(db: DatabaseSync) {
-  const enqueueOutbox = prepareSessionMessageOutboxEnqueue(db);
+  const insertDelivery = prepareDeferredResultDeliveryInsert(db);
   const insertRow = db.prepare(`
     INSERT INTO defer_loops
       (id, sessionId, name, prompt, intervalSeconds, nextRunAt, status, runCount,
@@ -182,17 +185,6 @@ export function createDeferLoopStore(db: DatabaseSync) {
     UPDATE defer_loops
     SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE id = ? AND status IN ('active', 'running')
-  `);
-  const finishOccurrenceStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'completed',
-        runCount = runCount + 1,
-        attempts = 0,
-        claimToken = NULL,
-        leaseExpiresAt = NULL,
-        lastError = NULL,
-        updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
   const markTerminalFromActiveStmt = db.prepare(`
     UPDATE defer_loops
@@ -354,7 +346,10 @@ export function createDeferLoopStore(db: DatabaseSync) {
     claimToken: string,
     nextRunAt: string,
     now: string,
-    parentMessage?: { id: string; sessionId: string; prompt: string; sourceId: string },
+    options: {
+      status?: Exclude<DeferLoopOccurrenceStatus, "active">;
+      delivery?: DeferredResultDelivery;
+    } = {},
   ): DeferLoop | undefined {
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -364,7 +359,8 @@ export function createDeferLoopStore(db: DatabaseSync) {
         return undefined;
       }
       const runCount = row.runCount + 1;
-      const status = getDeferLoopOccurrenceStatus(toRow(row), runCount, nextRunAt);
+      const status = options.status
+        ?? getDeferLoopOccurrenceStatus(toRow(row), runCount, nextRunAt);
       db.prepare(`
         UPDATE defer_loops
         SET status = ?,
@@ -377,16 +373,10 @@ export function createDeferLoopStore(db: DatabaseSync) {
             updatedAt = ?
         WHERE id = ? AND status = 'running' AND claimToken = ?
       `).run(status, runCount, nextRunAt, now, id, claimToken);
-      if (parentMessage) {
-        const queued = enqueueOutbox({
-          id: parentMessage.id,
-          sessionId: parentMessage.sessionId,
-          prompt: parentMessage.prompt,
-          source: "defer_result",
-          sourceId: parentMessage.sourceId,
-          availableAt: now,
-        }, now);
-        if (!queued) throw new Error(`Session message ${parentMessage.id} already exists.`);
+      if (options.delivery) {
+        if (!insertDelivery(options.delivery, now)) {
+          throw new Error(`Deferred delivery ${options.delivery.id} already exists.`);
+        }
       }
       db.exec("COMMIT");
       return get(id);
@@ -396,70 +386,15 @@ export function createDeferLoopStore(db: DatabaseSync) {
     }
   }
 
-  function completeOccurrence(
-    id: string,
-    claimToken: string,
-    nextRunAt: string,
-    now = new Date().toISOString(),
-  ): DeferLoop | undefined {
-    return settleOccurrence(id, claimToken, nextRunAt, now);
-  }
-
-  function completeOccurrenceWithMessage(
-    id: string,
-    claimToken: string,
-    message: { id: string; sessionId: string; prompt: string; sourceId: string },
-    nextRunAt: string,
-    now = new Date().toISOString(),
-  ): DeferLoop | undefined {
-    return settleOccurrence(id, claimToken, nextRunAt, now, message);
-  }
-
   function markCompleted(id: string): boolean {
     const result = markCompletedStmt.run(new Date().toISOString(), id);
     return (result as any).changes > 0;
   }
 
-  function finishOccurrence(id: string, claimToken: string, now = new Date().toISOString()): boolean {
-    const result = finishOccurrenceStmt.run(now, id, claimToken);
-    return (result as any).changes > 0;
-  }
-
-  function finishOccurrenceWithMessage(
-    id: string,
-    claimToken: string,
-    message: { id: string; sessionId: string; prompt: string; sourceId: string },
-    now = new Date().toISOString(),
-  ): boolean {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const finished = finishOccurrenceStmt.run(now, id, claimToken);
-      if ((finished as any).changes === 0) {
-        db.exec("ROLLBACK");
-        return false;
-      }
-
-      const queued = enqueueOutbox({
-        id: message.id,
-        sessionId: message.sessionId,
-        prompt: message.prompt,
-        source: "defer_result",
-        sourceId: message.sourceId,
-        availableAt: now,
-      }, now);
-      if (!queued) throw new Error(`Session message ${message.id} already exists.`);
-      db.exec("COMMIT");
-      return true;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
   function markTerminalWithMessage(
     id: string,
     status: Exclude<DeferLoopOccurrenceStatus, "active">,
-    message: { id: string; sessionId: string; prompt: string; sourceId: string },
+    message: DeferredResultDelivery,
     options: { claimToken?: string; now?: string } = {},
   ): boolean {
     const now = options.now ?? new Date().toISOString();
@@ -472,15 +407,9 @@ export function createDeferLoopStore(db: DatabaseSync) {
         db.exec("ROLLBACK");
         return false;
       }
-      const queued = enqueueOutbox({
-        id: message.id,
-        sessionId: message.sessionId,
-        prompt: message.prompt,
-        source: "defer_result",
-        sourceId: message.sourceId,
-        availableAt: now,
-      }, now);
-      if (!queued) throw new Error(`Session message ${message.id} already exists.`);
+      if (!insertDelivery(message, now)) {
+        throw new Error(`Deferred delivery ${message.id} already exists.`);
+      }
       db.exec("COMMIT");
       return true;
     } catch (error) {
@@ -583,11 +512,8 @@ export function createDeferLoopStore(db: DatabaseSync) {
     renewClaim,
     releaseClaimWithoutAttempt,
     retry,
-    completeOccurrence,
-    completeOccurrenceWithMessage,
+    settleOccurrence,
     markCompleted,
-    finishOccurrence,
-    finishOccurrenceWithMessage,
     markTerminalWithMessage,
     markFailed,
     markFailedById,
