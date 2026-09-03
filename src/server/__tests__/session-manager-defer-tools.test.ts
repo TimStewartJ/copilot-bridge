@@ -122,12 +122,12 @@ describe("unified defer tools", () => {
       60_000,
       loop.nextRunAt,
     )!;
-    ctx.deferLoopStore!.completeOccurrence(
+    ctx.deferLoopStore!.settleOccurrence(
       loop.id,
       claimed.claimToken,
       new Date(Date.parse(loop.nextRunAt) + 300_000).toISOString(),
       new Date(Date.parse(loop.nextRunAt) + 1_000).toISOString(),
-      { status: "succeeded", buildId: 42 },
+      { checkpoint: { status: "succeeded", buildId: 42 } },
     );
 
     const result = await listTool.handler({}, makeInvocation("session-abc")) as any;
