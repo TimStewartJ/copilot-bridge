@@ -5,6 +5,7 @@ export { ProviderEditor } from "./ProviderEditor";
 export { SystemPromptSection } from "./SystemPromptSection";
 export { ModelSection } from "./ModelSection";
 export { ReasoningEffortSection } from "./ReasoningEffortSection";
+export { DeferWorkerSection } from "./DeferWorkerSection";
 export { AppearanceSection } from "./AppearanceSection";
 export { NotificationsSection } from "./NotificationsSection";
 export { DeviceManagementSection } from "./DeviceManagementSection";

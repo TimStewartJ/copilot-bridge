@@ -7,6 +7,12 @@ import type { DeferSummarySources } from "./defer-summary.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
 import {
+  formatReturnedDeferPrompt,
+  type DeferWorkerInput,
+  type DeferWorkerLease,
+  type DeferWorkerResult,
+} from "./defer-worker.js";
+import {
   classifyDeferDeliveryError,
   computeDeferRetryBackoffMs,
   createDeferRunnerCore,
@@ -49,8 +55,15 @@ export function createDeferLoopRunner(
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
   summarySources: DeferSummarySources = { deferLoopStore: store },
-  options: DeferRunnerOptions = {},
+  options: DeferRunnerOptions & { onParentReturnQueued?: () => void } = {},
 ) {
+  const runWorker = async (input: DeferWorkerInput): Promise<DeferWorkerResult | undefined> => {
+    const worker = (sessionManager as SessionManager & {
+      runDeferWorker?: (workerInput: DeferWorkerInput) => Promise<DeferWorkerResult>;
+    }).runDeferWorker;
+    return worker ? worker.call(sessionManager, input) : undefined;
+  };
+
   function createProcessOne(ctx: DeferRunnerCoreContext) {
     async function processOne(id: string): Promise<ProcessOneResult> {
       if (!ctx.isStarted()) return "unchanged";
@@ -101,9 +114,21 @@ export function createDeferLoopRunner(
       if (!ctx.deliveryGuard.tryClaim(loop.sessionId)) return "blocked";
 
       let claimToken: string | undefined;
+      let workerLease: DeferWorkerLease | undefined;
       try {
+        const acquireWorker = (sessionManager as SessionManager & {
+          tryAcquireDeferWorker?: () => DeferWorkerLease | undefined;
+        }).tryAcquireDeferWorker;
+        if (acquireWorker) {
+          workerLease = acquireWorker.call(sessionManager);
+          if (!workerLease) {
+            ctx.deliveryGuard.release(loop.sessionId);
+            return "blocked";
+          }
+        }
         const claimed = store.claimDue(id, LEASE_MS);
         if (!claimed) {
+          workerLease?.release();
           ctx.deliveryGuard.release(loop.sessionId);
           return "unchanged";
         }
@@ -118,7 +143,7 @@ export function createDeferLoopRunner(
           }
         });
 
-        void finishDelivery(claimedLoop, claimed.claimToken, renewalTimer).catch((err) => {
+        void finishDelivery(claimedLoop, claimed.claimToken, renewalTimer, workerLease).catch((err) => {
           console.error(`[defer-loop-runner] Unexpected delivery error for loop ${id}:`, err);
         });
         return "claimed";
@@ -132,6 +157,7 @@ export function createDeferLoopRunner(
             console.error(`[defer-loop-runner] Failed to roll back interrupted claim setup for loop ${id}:`, releaseError);
           }
         }
+        workerLease?.release();
         ctx.deliveryGuard.release(loop.sessionId);
         throw error;
       }
@@ -141,35 +167,87 @@ export function createDeferLoopRunner(
       loop: DeferLoop,
       claimToken: string,
       renewalTimer: ReturnType<typeof setInterval>,
+      workerLease?: DeferWorkerLease,
     ): Promise<void> {
       let shouldProcessNextDueLoop = false;
+      let parentReturnQueued = false;
       try {
-        await sessionManager.startWorkAndWaitForDelivery(
-          loop.sessionId,
-          formatLoopPrompt(loop),
-          undefined,
-          {
-            attentionMode: "quiet",
-            historyTruncation: {
-              mode: "replace-quiet-interval-defer-tail",
-              deferId: loop.deferId,
+        const workerInput: DeferWorkerInput = {
+          deferId: loop.deferId,
+          kind: "interval",
+          parentSessionId: loop.sessionId,
+          prompt: loop.prompt,
+          runCount: loop.runCount + 1,
+          intervalSeconds: loop.intervalSeconds,
+          ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
+        };
+        const result = workerLease
+          ? await workerLease.run(workerInput)
+          : await runWorker(workerInput);
+        if (!result) {
+          await sessionManager.startWorkAndWaitForDelivery(
+            loop.sessionId,
+            formatLoopPrompt(loop),
+            undefined,
+            {
+              attentionMode: "quiet",
+              historyTruncation: {
+                mode: "replace-quiet-interval-defer-tail",
+                deferId: loop.deferId,
+              },
             },
-          },
-        );
+          );
+        }
         const acceptedAt = new Date();
-        const nextRunAt = new Date(acceptedAt.getTime() + loop.intervalSeconds * 1000).toISOString();
-        const updated = store.completeOccurrence(loop.id, claimToken, nextRunAt, acceptedAt.toISOString());
-        if (!updated) {
-          const current = store.get(loop.id);
-          if (current?.status !== "cancelled") {
-            console.error(`[defer-loop-runner] Delivery completed but failed to update loop ${loop.id}`);
+        if (result?.action === "return") {
+          const returnPrompt = formatReturnedDeferPrompt(
+            workerInput,
+            result.message ?? "Deferred work completed.",
+          );
+          if (!store.finishOccurrenceWithReturn(
+            loop.id,
+            claimToken,
+            loop.sessionId,
+            returnPrompt,
+            acceptedAt.toISOString(),
+          )) {
+            const current = store.get(loop.id);
+            if (current?.status !== "cancelled") {
+              console.error(`[defer-loop-runner] Worker returned but failed to finish loop ${loop.id}`);
+            }
+          } else {
+            ctx.emitDeferSummary(loop.sessionId);
+            parentReturnQueued = true;
+          }
+        } else if (result?.action === "expired") {
+          if (store.markClaimedExpired(loop.id, claimToken)) {
+            ctx.recordSessionAttention(loop.sessionId);
+            ctx.emitDeferSummary(loop.sessionId);
+          }
+        } else if (result?.action === "finish") {
+          if (!store.finishOccurrence(loop.id, claimToken, acceptedAt.toISOString())) {
+            const current = store.get(loop.id);
+            if (current?.status !== "cancelled") {
+              console.error(`[defer-loop-runner] Worker completed but failed to finish loop ${loop.id}`);
+            }
+          } else {
+            ctx.emitDeferSummary(loop.sessionId);
           }
         } else {
-          ctx.emitDeferSummary(loop.sessionId);
-          if (updated.status === "active") {
-            shouldProcessNextDueLoop = true;
+          const nextRunAt = new Date(acceptedAt.getTime() + loop.intervalSeconds * 1000).toISOString();
+          const updated = store.completeOccurrence(loop.id, claimToken, nextRunAt, acceptedAt.toISOString());
+          if (!updated) {
+            const current = store.get(loop.id);
+            if (current?.status !== "cancelled") {
+              console.error(`[defer-loop-runner] Delivery completed but failed to update loop ${loop.id}`);
+            }
           } else {
-            ctx.recordSessionAttention(loop.sessionId);
+            ctx.emitDeferSummary(loop.sessionId);
+            if (updated.status === "active") {
+              shouldProcessNextDueLoop = true;
+            } else {
+              ctx.recordSessionAttention(loop.sessionId);
+            }
           }
         }
       } catch (err: any) {
@@ -214,7 +292,9 @@ export function createDeferLoopRunner(
           console.error(`[defer-loop-runner] Loop ${loop.id} failed after ${nextAttempts} attempt(s): ${msg}`);
         }
       } finally {
+        workerLease?.release();
         ctx.afterDeliverySettled(renewalTimer, loop.sessionId, shouldProcessNextDueLoop);
+        if (parentReturnQueued) options.onParentReturnQueued?.();
       }
     }
 

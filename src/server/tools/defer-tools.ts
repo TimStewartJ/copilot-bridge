@@ -79,11 +79,11 @@ export interface RegisterDeferToolsOptions {
 export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineSessionBridgeTool("defer_create", {
-      description: "Create a same-session defer. Use delaySeconds or runAt for a one-shot follow-up in this session. Use intervalSeconds for same-session polling/recurrence with an explicit stop condition such as maxRuns or expiresAt; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
+      description: "Create a defer associated with this session. Deferred work runs in a temporary worker configured in Bridge Settings and returns to this session only when needed. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for polling/recurrence with an explicit stop condition such as maxRuns or expiresAt; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
       parameters: {
         type: "object",
         properties: {
-          prompt: { type: "string", description: "Prompt to send to this same session." },
+          prompt: { type: "string", description: "Prompt for the temporary deferred-work session." },
           delaySeconds: { type: "number", description: "One-shot same-session follow-up: seconds from now. Provide exactly one timing mode." },
           runAt: { type: "string", description: "One-shot same-session follow-up: ISO timestamp. Provide exactly one timing mode." },
           intervalSeconds: { type: "number", description: `Same-session polling/recurrence interval in seconds. Must be an integer of at least ${DEFER_MIN_INTERVAL_SECONDS} seconds (${DEFER_MIN_INTERVAL_SECONDS / 60} minutes). Use instead of chained one-shots; cannot be combined with delaySeconds or runAt.` },

@@ -8,6 +8,7 @@ import {
   SystemPromptSection,
   ModelSection,
   ReasoningEffortSection,
+  DeferWorkerSection,
   AppearanceSection,
   NotificationsSection,
   DeviceManagementSection,
@@ -298,6 +299,7 @@ export default function SettingsView() {
               <SystemPromptSection draft={draft} setDraft={setDraft} />
               <ModelSection draft={draft} setDraft={setDraft} />
               <ReasoningEffortSection draft={draft} setDraft={setDraft} />
+              <DeferWorkerSection draft={draft} setDraft={setDraft} />
               <AppearanceSection draft={draft} setDraft={setDraft} />
               <NotificationsSection />
               <DeviceManagementSection />

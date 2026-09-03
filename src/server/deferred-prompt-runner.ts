@@ -18,6 +18,13 @@ import {
 } from "./defer-runner-core.js";
 import { isRestartPending } from "./restart-controller.js";
 import { isRestartRecoveryPrompt } from "./restart-resume.js";
+import {
+  formatReturnedDeferPrompt,
+  isReturnedDeferPrompt,
+  type DeferWorkerInput,
+  type DeferWorkerLease,
+  type DeferWorkerResult,
+} from "./defer-worker.js";
 
 // Re-export the shared timing/lease constants so existing importers keep working.
 export {
@@ -45,6 +52,12 @@ export function createDeferredPromptRunner(
   options: DeferredPromptRunnerOptions = {},
 ) {
   const restartPending = options.isRestartPending ?? isRestartPending;
+  const runWorker = async (input: DeferWorkerInput): Promise<DeferWorkerResult | undefined> => {
+    const worker = (sessionManager as SessionManager & {
+      runDeferWorker?: (workerInput: DeferWorkerInput) => Promise<DeferWorkerResult>;
+    }).runDeferWorker;
+    return worker ? worker.call(sessionManager, input) : undefined;
+  };
 
   function createProcessOne(ctx: DeferRunnerCoreContext) {
     async function processOne(id: string): Promise<ProcessOneResult> {
@@ -85,10 +98,24 @@ export function createDeferredPromptRunner(
       if (!ctx.deliveryGuard.tryClaim(item.sessionId)) return "blocked";
 
       let claimToken: string | undefined;
+      let workerLease: DeferWorkerLease | undefined;
       try {
+        const needsWorker = !isRestartRecoveryPrompt(item.prompt)
+          && !isReturnedDeferPrompt(item.prompt);
+        const acquireWorker = (sessionManager as SessionManager & {
+          tryAcquireDeferWorker?: () => DeferWorkerLease | undefined;
+        }).tryAcquireDeferWorker;
+        if (needsWorker && acquireWorker) {
+          workerLease = acquireWorker.call(sessionManager);
+          if (!workerLease) {
+            ctx.deliveryGuard.release(item.sessionId);
+            return "blocked";
+          }
+        }
         // Claim the prompt (CAS)
         const claimed = store.claimDue(id, LEASE_MS);
         if (!claimed) {
+          workerLease?.release();
           ctx.deliveryGuard.release(item.sessionId);
           return "unchanged"; // someone else claimed it
         }
@@ -103,7 +130,7 @@ export function createDeferredPromptRunner(
           }
         });
 
-        void finishDelivery(claimedPrompt, claimed.claimToken, renewalTimer)
+        void finishDelivery(claimedPrompt, claimed.claimToken, renewalTimer, workerLease)
           .catch((err) => {
             console.error(`[deferred-runner] Unexpected delivery error for deferral ${id}:`, err);
           });
@@ -118,6 +145,7 @@ export function createDeferredPromptRunner(
             console.error(`[deferred-runner] Failed to roll back interrupted claim setup for deferral ${id}:`, releaseError);
           }
         }
+        workerLease?.release();
         ctx.deliveryGuard.release(item.sessionId);
         throw error;
       }
@@ -127,19 +155,45 @@ export function createDeferredPromptRunner(
       item: DeferredPrompt,
       claimToken: string,
       renewalTimer: ReturnType<typeof setInterval>,
+      workerLease?: DeferWorkerLease,
     ): Promise<void> {
       const { id, sessionId, prompt, attempts } = item;
       let shouldProcessNextDuePrompt = false;
       try {
-        await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
-        const completed = store.markCompleted(id, claimToken);
-        if (!completed) {
-          const completedById = store.markCompletedById(id);
-          if (!completedById) {
-            console.error(`[deferred-runner] Delivery completed but failed to mark deferral ${id} completed`);
-          } else {
+        if (isRestartRecoveryPrompt(prompt) || isReturnedDeferPrompt(prompt)) {
+          await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
+        } else {
+          const workerInput: DeferWorkerInput = {
+            deferId: item.deferId,
+            kind: "once",
+            parentSessionId: sessionId,
+            prompt,
+          };
+          const result = workerLease
+            ? await workerLease.run(workerInput)
+            : await runWorker(workerInput);
+          if (!result) {
+            await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
+          } else if (result.action === "return") {
+            const returnPrompt = formatReturnedDeferPrompt(
+              workerInput,
+              result.message ?? "Deferred work completed.",
+            );
+            if (!store.queueWorkerReturn(id, claimToken, returnPrompt)) {
+              throw new Error(`Failed to queue deferred worker result ${item.deferId}.`);
+            }
             ctx.emitDeferSummary(sessionId);
             shouldProcessNextDuePrompt = true;
+            return;
+          } else if (result.action === "continue") {
+            throw new Error("One-shot defer worker cannot continue.");
+          }
+        }
+        const completed = store.markCompleted(id, claimToken);
+        if (!completed) {
+          const current = store.get(id);
+          if (current?.status === "running" && current.claimToken === claimToken) {
+            console.error(`[deferred-runner] Delivery completed but failed to mark deferral ${id} completed`);
           }
         } else {
           ctx.emitDeferSummary(sessionId);
@@ -187,6 +241,7 @@ export function createDeferredPromptRunner(
           console.error(`[deferred-runner] Deferral ${id} failed after ${nextAttempts} attempt(s): ${msg}`);
         }
       } finally {
+        workerLease?.release();
         ctx.afterDeliverySettled(renewalTimer, sessionId, shouldProcessNextDuePrompt);
       }
     }

@@ -64,6 +64,7 @@ describe("defer-loop-runner", () => {
     bus.subscribe((event) => {
       if (event.type === "session:defer-summary") summaryEvents.push(event);
     });
+
     const dueAt = new Date(Date.now() - 60_000).toISOString();
     const loop = store.create({
       sessionId: "session-1",
@@ -103,6 +104,89 @@ describe("defer-loop-runner", () => {
     ]);
     expect(sm._attention).toEqual([]);
     runner.shutdown();
+  });
+
+  it("uses an isolated worker and continues without waking the parent", async () => {
+    const store = createDeferLoopStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
+    const runner = createDeferLoopRunner(store, sm, bus);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sm.runDeferWorker).toHaveBeenCalledWith(expect.objectContaining({
+      deferId: loop.deferId,
+      kind: "interval",
+      parentSessionId: "session-1",
+      intervalSeconds: 300,
+    }));
+    expect(sm._started).toEqual([]);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1 });
+    runner.shutdown();
+  });
+
+  it("returns a worker result to the parent once and finishes the loop", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.runDeferWorker = vi.fn(async () => ({ action: "return", message: "Deployment failed." }));
+    const deliveryGuard = createDeferDeliveryGuard();
+    const onParentReturnQueued = vi.fn(() => {
+      expect(deliveryGuard.isActive("session-1")).toBe(false);
+    });
+    const runner = createDeferLoopRunner(
+      store,
+      sm,
+      bus,
+      deliveryGuard,
+      { deferredPromptStore: promptStore, deferLoopStore: store },
+      { onParentReturnQueued },
+    );
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sm._started).toEqual([]);
+    expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1 });
+    expect(promptStore.listForSession("session-1")).toEqual([
+      expect.objectContaining({
+        status: "pending",
+        prompt: expect.stringContaining("Deployment failed."),
+      }),
+    ]);
+    expect(onParentReturnQueued).toHaveBeenCalledOnce();
+    runner.shutdown();
+  });
+
+  it("expires a claimed worker occurrence without touching a reactivated loop", async () => {
+    const store = createDeferLoopStore(db);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll deployment",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const claimed = store.claimDue(loop.id, LEASE_MS)!;
+    expect(store.cancelById(loop.id)).toBe(true);
+    expect(store.reactivate(loop.id)).toBe(true);
+
+    expect(store.markClaimedExpired(loop.id, claimed.claimToken)).toBe(false);
+    expect(store.get(loop.id)?.status).toBe("active");
   });
 
   it("holds due loops while defer delivery readiness is not ready and resumes later", async () => {

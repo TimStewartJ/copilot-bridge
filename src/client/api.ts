@@ -1985,6 +1985,12 @@ export interface BrowserSettings {
   headed?: boolean;
 }
 
+export interface DeferWorkerSettings {
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
+}
+
 export interface ModelFamilyDefault {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -2017,6 +2023,7 @@ export interface AppSettings {
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
+  deferWorker?: DeferWorkerSettings;
 }
 
 export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
@@ -2032,6 +2039,9 @@ export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
   }
   if ("lastModelPreset" in updates && updates.lastModelPreset === undefined) {
     normalized.lastModelPreset = "";
+  }
+  if ("deferWorker" in updates && updates.deferWorker === undefined) {
+    normalized.deferWorker = {};
   }
   return JSON.stringify(normalized);
 }

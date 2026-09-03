@@ -235,7 +235,10 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
-    { telemetryStore },
+    {
+      telemetryStore,
+      onParentReturnQueued: () => ctx.deferredPromptRunner?.poke(),
+    },
   );
 
   return { ctx, db };
