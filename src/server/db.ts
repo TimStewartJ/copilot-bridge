@@ -736,6 +736,7 @@ function initSchema(db: DatabaseSync): void {
       sessionId TEXT NOT NULL,
       name TEXT,
       prompt TEXT NOT NULL,
+      checkpoint TEXT,
       intervalSeconds INTEGER NOT NULL,
       nextRunAt TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -832,6 +833,14 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt
       ON bridge_session_state(lastAttentionAt);
   `);
+
+  const deferLoopColumns = new Set(
+    (db.prepare("PRAGMA table_info(defer_loops)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  if (!deferLoopColumns.has("checkpoint")) {
+    db.exec("ALTER TABLE defer_loops ADD COLUMN checkpoint TEXT");
+  }
 
   const deferredPromptColumns = new Set(
     (db.prepare("PRAGMA table_info(deferred_prompts)").all() as Array<{ name: string }>)

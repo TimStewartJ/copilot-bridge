@@ -116,7 +116,12 @@ describe("defer-loop-runner", () => {
       nextRunAt: new Date(Date.now() - 1_000).toISOString(),
     });
     const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
-    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
+    sm.runDeferWorker = vi.fn()
+      .mockResolvedValueOnce({
+        action: "continue",
+        checkpoint: { status: "running", buildId: 42 },
+      })
+      .mockResolvedValueOnce({ action: "finish" });
     const runner = createDeferLoopRunner(store, sm, bus);
 
     runner.start();
@@ -129,7 +134,17 @@ describe("defer-loop-runner", () => {
       intervalSeconds: 300,
     }));
     expect(sm._started).toEqual([]);
-    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1 });
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      runCount: 1,
+      checkpoint: { status: "running", buildId: 42 },
+    });
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(sm.runDeferWorker).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      checkpoint: { status: "running", buildId: 42 },
+    }));
+    expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 2 });
     runner.shutdown();
   });
 
@@ -186,7 +201,11 @@ describe("defer-loop-runner", () => {
       maxRuns: 3,
     });
     const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
-    sm.runDeferWorker = vi.fn(async () => ({ action: "notify", message: "Phase two started." }));
+    sm.runDeferWorker = vi.fn(async () => ({
+      action: "notify",
+      message: "Phase two started.",
+      checkpoint: { phase: 2 },
+    }));
     const onParentMessageQueued = vi.fn();
     const runner = createDeferLoopRunner(
       store,
@@ -200,7 +219,11 @@ describe("defer-loop-runner", () => {
     runner.start();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1 });
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      runCount: 1,
+      checkpoint: { phase: 2 },
+    });
     expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
       expect.objectContaining({
         status: "pending",
@@ -210,6 +233,9 @@ describe("defer-loop-runner", () => {
     ]);
     expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
       "The recurring deferred check remains active.",
+    );
+    expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).not.toContain(
+      "defer-checkpoint",
     );
     expect(onParentMessageQueued).toHaveBeenCalledOnce();
     runner.shutdown();
