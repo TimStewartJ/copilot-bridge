@@ -130,6 +130,21 @@ describe("defer worker", () => {
       message: "Build completed.",
       checkpoint: { status: "succeeded" },
     });
+    expect(parseDeferWorkerResult(
+      '<defer-result action="finish"><defer-checkpoint>{"status":"succeeded"}</defer-checkpoint></defer-result>',
+      "interval",
+    )).toEqual({
+      action: "finish",
+      checkpoint: { status: "succeeded" },
+    });
+    expect(parseDeferWorkerResult(
+      '<defer-result action="return"><defer-checkpoint>{"status":"failed"}</defer-checkpoint>\nBuild failed.</defer-result>',
+      "interval",
+    )).toEqual({
+      action: "return",
+      message: "Build failed.",
+      checkpoint: { status: "failed" },
+    });
 
     const prompt = buildDeferWorkerPrompt({
       deferId: "interval_1",
@@ -144,6 +159,9 @@ describe("defer worker", () => {
     );
     expect(buildDeferWorkerSystemPrompt("interval")).toContain(
       "Use the prior checkpoint as the baseline for change detection",
+    );
+    expect(buildDeferWorkerSystemPrompt("interval")).toContain(
+      "With finish or return, it is retained as the final snapshot",
     );
   });
 
@@ -166,10 +184,6 @@ describe("defer worker", () => {
       '<defer-result action="return"><defer-checkpoint>{"status":"done"}</defer-checkpoint>Done.</defer-result>',
       "once",
     )).toThrow("Only recurring defer workers");
-    expect(() => parseDeferWorkerResult(
-      '<defer-result action="return"><defer-checkpoint>{"status":"done"}</defer-checkpoint>Done.</defer-result>',
-      "interval",
-    )).toThrow("valid only when continuing");
   });
 
   it("accepts a valid assistant result at turn end without waiting for session idle", async () => {
