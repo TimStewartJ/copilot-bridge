@@ -3,6 +3,7 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionManager } from "../session-manager.js";
 import {
   applyMcpServerStatusChange,
+  getStaleMcpSessionServerName,
   normalizeMcpServerStatuses,
 } from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -77,10 +78,26 @@ describe("SessionManager stale cached session recovery", () => {
       status: "future-status",
       error: "bad",
     });
+
     expect(partial.snapshot).toEqual({
       servers: [{ name: "incremental", status: "unknown", error: "bad" }],
       complete: false,
     });
+  });
+
+  it("recognizes only namespaced MCP session-not-found failures", () => {
+    const failure = "MCP server 'demo': McpError: MCP error -32001: Session not found";
+
+    expect(getStaleMcpSessionServerName("demo-read", failure)).toBe("demo");
+    expect(getStaleMcpSessionServerName("other-read", failure)).toBeUndefined();
+    expect(getStaleMcpSessionServerName(
+      "demo-read",
+      "MCP server 'demo': McpError: MCP error -32002: Session not found",
+    )).toBeUndefined();
+    expect(getStaleMcpSessionServerName(
+      "demo-read",
+      "MCP server 'demo': McpError: MCP error -32001: Item not found",
+    )).toBeUndefined();
   });
 
   it("does not probe again after a pushed complete MCP snapshot, including empty", async () => {
@@ -205,6 +222,7 @@ describe("SessionManager stale cached session recovery", () => {
           },
           timestamp: "2026-05-21T19:05:43.659Z",
         });
+
         emit({
           type: "session.mcp_server_status_changed",
           data: {
@@ -245,6 +263,111 @@ describe("SessionManager stale cached session recovery", () => {
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
+  });
+
+  it("schedules cached session refresh when an MCP tool reports a stale runtime session", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const cachedSession = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "tool.execution_start",
+          data: {
+            toolCallId: "tool-1",
+            toolName: "demo-read",
+            arguments: {},
+          },
+          timestamp: "2026-09-02T20:24:13.000Z",
+        });
+        emit({
+          type: "tool.execution_complete",
+          data: {
+            toolCallId: "tool-1",
+            success: false,
+            error: {
+              message: "MCP server 'demo': McpError: MCP error -32001: Session not found",
+              code: "failure",
+            },
+          },
+          timestamp: "2026-09-02T20:24:15.000Z",
+        });
+        emit({
+          type: "assistant.message",
+          data: { content: "The MCP session became stale. Retry once." },
+          timestamp: "2026-09-02T20:24:16.000Z",
+        });
+        emit({
+          type: "session.idle",
+          data: {},
+          timestamp: "2026-09-02T20:24:17.000Z",
+        });
+      });
+    });
+
+    manager.sessionObjects.set("session-1", cachedSession);
+    manager.mcpStatus.set("session-1", {
+      servers: [{ name: "demo", status: "connected" }],
+      complete: true,
+    });
+
+    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
+
+    expect(manager.mcpStatus.has("session-1")).toBe(false);
+    expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
+    expect(cachedSession.disconnect).not.toHaveBeenCalled();
+
+    manager.flushPendingSessionEviction("session-1");
+    await manager._drainCacheQueue();
+
+    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.sessionObjects.has("session-1")).toBe(false);
+    expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
+  });
+
+  it("caps repeated automatic MCP stale-session refreshes", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const createStaleSession = () => createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "tool.execution_start",
+          data: { toolCallId: "tool-1", toolName: "demo-read", arguments: {} },
+        });
+        emit({
+          type: "tool.execution_complete",
+          data: {
+            toolCallId: "tool-1",
+            success: false,
+            error: {
+              message: "MCP server 'demo': McpError: MCP error -32001: Session not found",
+            },
+          },
+        });
+        emit({ type: "session.idle", data: {} });
+      });
+    });
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const session = createStaleSession();
+      manager.sessionObjects.set("session-1", session);
+      manager.mcpStatus.set("session-1", {
+        servers: [{ name: "demo", status: "connected" }],
+        complete: true,
+      });
+
+      await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
+
+      if (attempt <= 2) {
+        expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
+        manager.flushPendingSessionEviction("session-1");
+        await manager._drainCacheQueue();
+        expect(session.disconnect).toHaveBeenCalledTimes(1);
+      } else {
+        expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
+        expect(manager.mcpStatus.has("session-1")).toBe(true);
+        expect(session.disconnect).not.toHaveBeenCalled();
+      }
+    }
   });
 
   it("defers MCP-status eviction without flushing, even when no run is busy", async () => {
