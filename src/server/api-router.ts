@@ -131,6 +131,7 @@ import {
   scheduleHibernate,
 } from "./device-hibernate.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
+import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import {
@@ -1660,7 +1661,10 @@ export function createApiRouter(
       const catalogSessions = listSessionsFromCliCatalog(ctx, meta);
       const usingCliCatalog = catalogSessions !== undefined;
       const sessions = (catalogSessions ?? await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived }))
-        .filter((session: any) => !isDisposableTitleSessionId(session.sessionId));
+        .filter((session: any) =>
+          !isDisposableTitleSessionId(session.sessionId)
+          && !isDisposableDeferWorkerSessionId(session.sessionId)
+        );
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const readState = ctx.readStateStore.getReadState();
       const taskLookup = createSessionListTaskLookup(ctx);

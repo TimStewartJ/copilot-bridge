@@ -20,6 +20,20 @@ function expectFailure(result: unknown): string {
 }
 
 describe("unified defer tools", () => {
+  it("keeps defer_create model-agnostic", () => {
+    const { ctx } = createTestApp();
+    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
+    expect(Object.keys(createTool.inputSchema.properties ?? {}).sort()).toEqual([
+      "delaySeconds",
+      "expiresAt",
+      "intervalSeconds",
+      "maxRuns",
+      "name",
+      "prompt",
+      "runAt",
+    ]);
+  });
+
   it("creates a one-shot defer with a public once_ deferId", async () => {
     const { ctx } = createTestApp();
     const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");

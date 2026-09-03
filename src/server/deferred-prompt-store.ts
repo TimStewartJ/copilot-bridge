@@ -118,6 +118,18 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE id = ? AND status IN ('pending', 'running')
   `);
+  const queueWorkerReturnStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET prompt = ?,
+        runAt = ?,
+        status = 'pending',
+        attempts = 0,
+        claimToken = NULL,
+        leaseExpiresAt = NULL,
+        lastError = NULL,
+        updatedAt = ?
+    WHERE id = ? AND status = 'running' AND claimToken = ?
+  `);
 
   const markFailedStmt = db.prepare(`
     UPDATE deferred_prompts
@@ -289,6 +301,22 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
+  function queueWorkerReturn(
+    id: string,
+    claimToken: string,
+    prompt: string,
+    runAt = new Date().toISOString(),
+  ): boolean {
+    const result = queueWorkerReturnStmt.run(
+      prompt,
+      runAt,
+      new Date().toISOString(),
+      id,
+      claimToken,
+    );
+    return (result as any).changes > 0;
+  }
+
   function markFailed(id: string, claimToken: string, lastError: string): boolean {
     const result = markFailedStmt.run(lastError, new Date().toISOString(), id, claimToken);
     return (result as any).changes > 0;
@@ -376,6 +404,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     claimDue,
     markCompleted,
     markCompletedById,
+    queueWorkerReturn,
     markFailed,
     reactivate,
     retry,

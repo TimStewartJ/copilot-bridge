@@ -189,6 +189,14 @@ import {
   type SessionAutoNameOptions,
   type SessionNameAutogenerator,
 } from "./session-name-autogen.js";
+import {
+  createDisposableDeferWorker,
+  DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX,
+  type DeferWorkerInput,
+  type DeferWorkerLease,
+  type DeferWorkerResult,
+  type DisposableDeferWorker,
+} from "./defer-worker.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
@@ -676,6 +684,7 @@ export class SessionManager {
   private readonly agentRegistry: SessionAgentRegistry;
   private readonly sessionNameRpc: SessionNameRpc;
   private readonly sessionNameAutogenerator: SessionNameAutogenerator;
+  private readonly deferWorker: DisposableDeferWorker;
   private readonly sessionRunner: SessionRunner;
   readonly sessionRuns: Map<string, SessionRunRecord>;
 
@@ -796,6 +805,35 @@ export class SessionManager {
       getSessionNameMetadata: (sessionId) => this.sessionNameRpc.readSessionNameMetadataFromWorkspace(sessionId),
       setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
+      logger: console,
+    });
+    this.deferWorker = createDisposableDeferWorker({
+      getSettings: () => this.deps.settingsStore?.getSettings() ?? { mcpServers: {} },
+      listModels: () => this.listModels(),
+      buildSessionConfig: (options) => this.buildSessionConfig(options),
+      getParentWorkingDirectory: (sessionId) => this.getEffectiveSessionCwd(sessionId),
+      beginLifecycle: () => {
+        if (this.shuttingDown) throw new Error(PROMPT_DELIVERY_SHUTDOWN_MESSAGE);
+        if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+          throw new Error(RESTART_PENDING_MESSAGE);
+        }
+        return this.beginSessionCreationLifetime();
+      },
+      reserveCapacity: async (sessionConfig) => {
+        const reservation = await this.beginSessionCreation(sessionConfig);
+        return () => this.endSessionCreation(reservation);
+      },
+      createSession: async (sessionConfig) => {
+        const client = await this.getBackendAfterRotation();
+        return client.createSession(sessionConfig);
+      },
+      deleteSession: async (sessionId) => {
+        const client = await this.getBackendAfterRotation();
+        return client.deleteSession(sessionId);
+      },
+      getCopilotHome: () => this.getCopilotHome(),
+      recordSpan: (name, duration, sessionId, metadata) =>
+        this.recordSpan(name, duration, sessionId, metadata),
       logger: console,
     });
     this.sessionRunner = new SessionRunner({
@@ -3115,7 +3153,7 @@ export class SessionManager {
       return this.backendRotation;
     }
 
-    const activeSessions = this.getActiveSessions().length;
+    const activeSessions = this.getLifecycleBlockingSessionCount();
     if (activeSessions > 0) {
       throw new ModelRefreshBlockedError(activeSessions);
     }
@@ -3210,6 +3248,7 @@ export class SessionManager {
     this.attachBackendLifecycle(backend);
     console.log("[sdk] Agent backend ready");
     this.sweepLeakedDisposableTitleSessions();
+    this.sweepLeakedDisposableDeferWorkerSessions();
   }
 
   private sweepLeakedDisposableTitleSessions(): void {
@@ -3233,6 +3272,30 @@ export class SessionManager {
         error: error instanceof Error ? error.message : String(error),
       });
       console.warn(`[sdk] Disposable title session sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private sweepLeakedDisposableDeferWorkerSessions(): void {
+    const start = Date.now();
+    try {
+      const sweptIds = sweepLeakedCliSessionStoreRows({
+        copilotHome: this.getCopilotHome(),
+        idPrefix: DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX,
+        cutoffTimestampMs: this.processStartedAtMs - SessionManager.DISPOSABLE_TITLE_SWEEP_GRACE_MS,
+      });
+      this.recordSpan("defer.worker.cleanupSweep", Date.now() - start, undefined, {
+        result: "ok",
+        count: sweptIds.length,
+      });
+      if (sweptIds.length > 0) {
+        console.warn(`[sdk] Cleaned up ${sweptIds.length} leaked disposable defer worker row(s)`);
+      }
+    } catch (error) {
+      this.recordSpan("defer.worker.cleanupSweep", Date.now() - start, undefined, {
+        result: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      console.warn(`[sdk] Disposable defer worker sweep failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -4277,6 +4340,14 @@ export class SessionManager {
       throw new Error("Session is being deleted");
     }
     this.sessionRunner.startWork(sessionId, prompt, attachments, options);
+  }
+
+  runDeferWorker(input: DeferWorkerInput): Promise<DeferWorkerResult> {
+    return this.deferWorker.run(input);
+  }
+
+  tryAcquireDeferWorker(): DeferWorkerLease | undefined {
+    return this.deferWorker.tryAcquire();
   }
 
   async startWorkAndWaitForDelivery(

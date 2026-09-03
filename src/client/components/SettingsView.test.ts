@@ -37,6 +37,7 @@ vi.mock("./settings", () => {
     BrowserDiagnosticsSection: EmptySection,
     CopilotUsageSection: EmptySection,
     DeviceManagementSection: EmptySection,
+    DeferWorkerSection: EmptySection,
     ManagementJobsSection: EmptySection,
     ModelSection: EmptySection,
     NotificationsSection: EmptySection,
