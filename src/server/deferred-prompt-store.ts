@@ -5,6 +5,7 @@ import type { DatabaseSync } from "./db.js";
 import { toOnceDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
+import { prepareSessionMessageOutboxEnqueue } from "./session-message-outbox-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       (id, sessionId, prompt, runAt, status, attempts, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
   `);
+  const enqueueOutbox = prepareSessionMessageOutboxEnqueue(db);
 
   const selectById = db.prepare(
     "SELECT * FROM deferred_prompts WHERE id = ?",
@@ -118,19 +120,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE id = ? AND status IN ('pending', 'running')
   `);
-  const queueWorkerReturnStmt = db.prepare(`
-    UPDATE deferred_prompts
-    SET prompt = ?,
-        runAt = ?,
-        status = 'pending',
-        attempts = 0,
-        claimToken = NULL,
-        leaseExpiresAt = NULL,
-        lastError = NULL,
-        updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
-  `);
-
   const markFailedStmt = db.prepare(`
     UPDATE deferred_prompts
     SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
@@ -174,7 +163,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   const cancelForSessionStmt = db.prepare(`
     UPDATE deferred_prompts
     SET status = 'cancelled', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
-    WHERE sessionId = ? AND status IN ('pending', 'running')
+    WHERE sessionId = ?
+      AND status IN ('pending', 'running')
   `);
 
   const deleteForSessionStmt = db.prepare("DELETE FROM deferred_prompts WHERE sessionId = ?");
@@ -216,7 +206,11 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   // ── Public API ────────────────────────────────────────────────────
 
-  function create(sessionId: string, prompt: string, runAt: string): DeferredPrompt {
+  function create(
+    sessionId: string,
+    prompt: string,
+    runAt: string,
+  ): DeferredPrompt {
     const id = randomUUID();
     const now = new Date().toISOString();
     insertRow.run(id, sessionId, prompt, runAt, now, now);
@@ -301,20 +295,34 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
-  function queueWorkerReturn(
+  function completeWithMessage(
     id: string,
     claimToken: string,
-    prompt: string,
-    runAt = new Date().toISOString(),
+    message: { id: string; sessionId: string; prompt: string; sourceId: string },
+    now = new Date().toISOString(),
   ): boolean {
-    const result = queueWorkerReturnStmt.run(
-      prompt,
-      runAt,
-      new Date().toISOString(),
-      id,
-      claimToken,
-    );
-    return (result as any).changes > 0;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const completed = markCompletedStmt.run(now, id, claimToken);
+      if ((completed as any).changes === 0) {
+        db.exec("ROLLBACK");
+        return false;
+      }
+      const queued = enqueueOutbox({
+        id: message.id,
+        sessionId: message.sessionId,
+        prompt: message.prompt,
+        source: "defer_result",
+        sourceId: message.sourceId,
+        availableAt: now,
+      }, now);
+      if (!queued) throw new Error(`Session message ${message.id} already exists.`);
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   function markFailed(id: string, claimToken: string, lastError: string): boolean {
@@ -404,7 +412,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     claimDue,
     markCompleted,
     markCompletedById,
-    queueWorkerReturn,
+    completeWithMessage,
     markFailed,
     reactivate,
     retry,

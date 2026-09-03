@@ -1,10 +1,10 @@
 import type { DeferLoop } from "./defer-loop-store.js";
-import {
-  isReturnedDeferPrompt,
-  type DeferWorkerAction,
-  type DeferWorkerKind,
-} from "./defer-worker.js";
+import type { DeferWorkerAction, DeferWorkerKind } from "./defer-worker.js";
 import type { DeferredPrompt } from "./deferred-prompt-store.js";
+import type {
+  SessionMessageOutboxStatus,
+  SessionMessageOutboxStore,
+} from "./session-message-outbox-store.js";
 import type { TelemetrySpan, TelemetryStore } from "./telemetry-store.js";
 
 export type DeferActivityStatus =
@@ -28,6 +28,7 @@ export interface DeferActivityItem {
   lastError?: string;
   canCancel: boolean;
   canReactivate: boolean;
+  failedDelivery?: boolean;
 }
 
 export interface DeferActivityRun {
@@ -42,19 +43,25 @@ export interface DeferActivityRun {
   contextTier?: string;
   runCount?: number;
   error?: string;
+  deliveryId?: string;
+  deliveryStatus?: SessionMessageOutboxStatus;
+  deliveryError?: string;
 }
 
-function displayPrompt(prompt: string): string {
-  return isReturnedDeferPrompt(prompt)
-    ? "Returning a completed deferred-work result to the parent session."
-    : prompt;
+export interface DeferActivityDelivery {
+  id: string;
+  deferId: string;
+  status: SessionMessageOutboxStatus;
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
 }
 
 export function formatOneShotDeferActivity(item: DeferredPrompt): DeferActivityItem {
   return {
     deferId: item.deferId,
     kind: "once",
-    prompt: displayPrompt(item.prompt),
+    prompt: item.prompt,
     status: item.status,
     nextRunAt: item.runAt,
     attempts: item.attempts,
@@ -112,6 +119,7 @@ function parseWorkerRun(span: TelemetrySpan): DeferActivityRun | undefined {
     || (kind !== "once" && kind !== "interval")
     || (
       action !== "continue"
+      && action !== "notify"
       && action !== "finish"
       && action !== "return"
       && action !== "expired"
@@ -136,13 +144,20 @@ function parseWorkerRun(span: TelemetrySpan): DeferActivityRun | undefined {
       : {},
     ...optionalRunCount(metadata) ? { runCount: optionalRunCount(metadata) } : {},
     ...optionalString(metadata, "error") ? { error: optionalString(metadata, "error") } : {},
+    ...optionalString(metadata, "deliveryId")
+      ? { deliveryId: optionalString(metadata, "deliveryId") }
+      : {},
   };
 }
 
 export function listDeferActivityRuns(
   telemetryStore: TelemetryStore | undefined,
   sessionId: string,
-  options: { deferId?: string; limit?: number } = {},
+  options: {
+    deferId?: string;
+    limit?: number;
+    messageOutboxStore?: Pick<SessionMessageOutboxStore, "get">;
+  } = {},
 ): DeferActivityRun[] {
   if (!telemetryStore) return [];
   const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
@@ -158,7 +173,44 @@ export function listDeferActivityRuns(
     .filter((run): run is DeferActivityRun =>
       !!run && (!options.deferId || run.deferId === options.deferId)
     )
+    .map((run) => {
+      const delivery = run.deliveryId
+        ? options.messageOutboxStore?.get(run.deliveryId)
+        : undefined;
+      return delivery
+        ? {
+            ...run,
+            deliveryStatus: delivery.status,
+            ...(delivery.lastError ? { deliveryError: delivery.lastError } : {}),
+          }
+        : run;
+    })
     .slice(0, limit);
+}
+
+export function listDeferActivityDeliveries(
+  messageOutboxStore: Pick<SessionMessageOutboxStore, "listForSession"> | undefined,
+  sessionId: string,
+  options: { deferId?: string; limit?: number } = {},
+): DeferActivityDelivery[] {
+  if (!messageOutboxStore) return [];
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
+  return messageOutboxStore
+    .listForSession(sessionId)
+    .filter((item) =>
+      item.source === "defer_result"
+      && !!item.sourceId
+      && (!options.deferId || item.sourceId === options.deferId)
+    )
+    .slice(0, limit)
+    .map((item) => ({
+      id: item.id,
+      deferId: item.sourceId!,
+      status: item.status,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      ...(item.lastError ? { error: item.lastError } : {}),
+    }));
 }
 
 export function sortDeferActivityItems(items: DeferActivityItem[]): DeferActivityItem[] {

@@ -79,11 +79,11 @@ export interface RegisterDeferToolsOptions {
 export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineSessionBridgeTool("defer_create", {
-      description: "Create a defer associated with this session. Deferred work runs in a temporary worker configured in Bridge Settings and returns to this session only when needed. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for polling/recurrence with an explicit stop condition such as maxRuns or expiresAt; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
+      description: "Create a defer associated with this session. Each occurrence runs one bounded check in a temporary worker configured in Bridge Settings. For recurring work, describe when to continue quietly, notify the parent and continue, finish quietly, or return to the parent and stop. Do not tell the worker to call defer_cancel, task_complete, sleep, or poll repeatedly. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for recurrence with maxRuns or expiresAt as a safety stop; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
       parameters: {
         type: "object",
         properties: {
-          prompt: { type: "string", description: "Prompt for the temporary deferred-work session." },
+          prompt: { type: "string", description: "One bounded check for the temporary worker, including the conditions for quiet continuation, notification, silent completion, or return-and-stop." },
           delaySeconds: { type: "number", description: "One-shot same-session follow-up: seconds from now. Provide exactly one timing mode." },
           runAt: { type: "string", description: "One-shot same-session follow-up: ISO timestamp. Provide exactly one timing mode." },
           intervalSeconds: { type: "number", description: `Same-session polling/recurrence interval in seconds. Must be an integer of at least ${DEFER_MIN_INTERVAL_SECONDS} seconds (${DEFER_MIN_INTERVAL_SECONDS / 60} minutes). Use instead of chained one-shots; cannot be combined with delaySeconds or runAt.` },
@@ -233,6 +233,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           const existing = ctx.deferredPromptStore.get(parsed.id);
           if (!existing) return toolFailure(`Defer ${deferId} not found.`);
           if (existing.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
+
           if (existing.status !== "pending" && existing.status !== "running") {
             return toolFailure(`Defer ${deferId} is ${existing.status} and cannot be cancelled.`);
           }
@@ -259,7 +260,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
     }),
 
     defineSessionBridgeTool("defer_reactivate", {
-      description: "Reactivate a failed, cancelled, or expired same-session defer by public deferId.",
+      description: "Reactivate a failed, cancelled, or expired same-session defer, or retry its failed parent delivery.",
       parameters: {
         type: "object",
         properties: {
@@ -278,6 +279,18 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           const existing = ctx.deferredPromptStore.get(parsed.id);
           if (!existing) return toolFailure(`Defer ${deferId} not found.`);
           if (existing.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
+          const retriedDeliveries =
+            ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+          if (retriedDeliveries > 0) {
+            ctx.sessionMessageOutboxRunner?.poke();
+            return {
+              success: true,
+              deferId,
+              kind: "once",
+              status: existing.status,
+              message: `Parent delivery for ${deferId} queued for retry.`,
+            };
+          }
           if (existing.status !== "failed" && existing.status !== "cancelled") {
             return toolFailure(`Defer ${deferId} is ${existing.status} and cannot be reactivated.`);
           }
@@ -300,6 +313,18 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         const loop = ctx.deferLoopStore.get(parsed.id);
         if (!loop) return toolFailure(`Defer ${deferId} not found.`);
         if (loop.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
+        const retriedDeliveries =
+          ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+        if (retriedDeliveries > 0) {
+          ctx.sessionMessageOutboxRunner?.poke();
+          return {
+            success: true,
+            deferId,
+            kind: "interval",
+            status: loop.status,
+            message: `Parent delivery for ${deferId} queued for retry.`,
+          };
+        }
         if (loop.status !== "failed" && loop.status !== "cancelled" && loop.status !== "expired") {
           return toolFailure(`Defer ${deferId} is ${loop.status} and cannot be reactivated.`);
         }
@@ -342,10 +367,27 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
             .filter((d) => includeInactive || d.status === "active" || d.status === "running")
             .map(formatLoop)
           : [];
+        const parentDeliveries = new Map<string, { status: string; error?: string }>();
+        for (const delivery of ctx.sessionMessageOutboxStore?.listForSession(sessionId) ?? []) {
+          if (
+            delivery.source !== "defer_result"
+            || !delivery.sourceId
+            || parentDeliveries.has(delivery.sourceId)
+          ) {
+            continue;
+          }
+          parentDeliveries.set(delivery.sourceId, {
+            status: delivery.status,
+            ...(delivery.lastError ? { error: delivery.lastError } : {}),
+          });
+        }
         return {
-          deferrals: [...oneShots, ...loops].sort((a, b) =>
-            Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt)
-          ),
+          deferrals: [...oneShots, ...loops]
+            .map((defer) => {
+              const parentDelivery = parentDeliveries.get(defer.deferId);
+              return parentDelivery ? { ...defer, parentDelivery } : defer;
+            })
+            .sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt)),
         };
       },
     }),

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type {
   DeferredWorkItem,
+  DeferredWorkDelivery,
   DeferredWorkRun,
   DeferredWorkStatus,
   Session,
@@ -59,6 +60,7 @@ function statusLabel(status: DeferredWorkStatus): string {
 function runLabel(run: DeferredWorkRun): string {
   switch (run.action) {
     case "continue": return "Continued";
+    case "notify": return "Notified parent and continued";
     case "finish": return "Finished silently";
     case "return": return "Returned to parent";
     case "expired": return "Expired";
@@ -68,7 +70,17 @@ function runLabel(run: DeferredWorkRun): string {
 
 function RunIcon({ run }: { run: DeferredWorkRun }) {
   if (run.action === "error") return <XCircle size={14} className="text-error" />;
-  if (run.action === "continue") return <Clock size={14} className="text-accent" />;
+  if (run.action === "continue" || run.action === "notify") {
+    return <Clock size={14} className="text-accent" />;
+  }
+  return <CheckCircle2 size={14} className="text-success" />;
+}
+
+function DeliveryIcon({ delivery }: { delivery: DeferredWorkDelivery }) {
+  if (delivery.status === "failed") return <XCircle size={14} className="text-error" />;
+  if (delivery.status === "pending" || delivery.status === "running") {
+    return <Clock size={14} className="text-accent" />;
+  }
   return <CheckCircle2 size={14} className="text-success" />;
 }
 
@@ -120,7 +132,7 @@ function DeferCard({
             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
           >
             <RotateCcw size={11} />
-            Reactivate
+            {item.failedDelivery ? "Retry delivery" : "Reactivate"}
           </button>
         )}
       </div>
@@ -169,6 +181,7 @@ export default function DeferredWorkSheet({
   const active = defers.filter((item) => ACTIVE_STATUSES.has(item.status));
   const inactive = defers.filter((item) => !ACTIVE_STATUSES.has(item.status));
   const runs = query.data?.recentRuns ?? [];
+  const deliveries = query.data?.recentDeliveries ?? [];
   const deferLabels = new Map(
     defers.map((item) => [
       item.deferId,
@@ -272,7 +285,7 @@ export default function DeferredWorkSheet({
               <Loader2 size={16} className="animate-spin" />
               Loading deferred work
             </div>
-          ) : defers.length === 0 && runs.length === 0 ? (
+          ) : defers.length === 0 && runs.length === 0 && deliveries.length === 0 ? (
             <EmptyState
               message="No deferred work"
               sub="Defers created by this session will appear here."
@@ -348,8 +361,12 @@ export default function DeferredWorkSheet({
                             {run.reasoningEffort && <span>{run.reasoningEffort} effort</span>}
                             {run.contextTier === "long_context" && <span>Long context</span>}
                             <span>{formatDuration(run.durationMs)}</span>
+                            {run.deliveryStatus && <span>Parent delivery {run.deliveryStatus}</span>}
                           </div>
                           {run.error && <p className="mt-1 break-words text-xs text-error">{run.error}</p>}
+                          {run.deliveryError && (
+                            <p className="mt-1 break-words text-xs text-error">{run.deliveryError}</p>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -357,6 +374,44 @@ export default function DeferredWorkSheet({
                 ) : (
                   <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
                     No worker checks recorded in the last seven days.
+                  </div>
+                )}
+              </section>
+
+              <section>
+                <div className="mb-2 flex items-center gap-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Parent deliveries</h3>
+                  <span className="rounded-full bg-bg-secondary px-1.5 py-0.5 text-[10px] text-text-faint">
+                    {deliveries.length}
+                  </span>
+                </div>
+                {deliveries.length > 0 ? (
+                  <div className="divide-y divide-border rounded-lg border border-border bg-bg-elevated">
+                    {deliveries.map((delivery) => (
+                      <div key={delivery.id} className="flex items-start gap-2.5 px-3 py-2.5">
+                        <DeliveryIcon delivery={delivery} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-text-primary">
+                              {deferLabels.get(delivery.deferId) ?? delivery.deferId} · {statusLabel(delivery.status)}
+                            </span>
+                            <span
+                              className="text-[10px] text-text-faint"
+                              title={new Date(delivery.updatedAt).toLocaleString()}
+                            >
+                              {timeAgo(delivery.updatedAt)}
+                            </span>
+                          </div>
+                          {delivery.error && (
+                            <p className="mt-1 break-words text-xs text-error">{delivery.error}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
+                    No parent deliveries recorded in the last seven days.
                   </div>
                 )}
               </section>

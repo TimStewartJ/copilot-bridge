@@ -135,6 +135,7 @@ import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
 import {
   formatLoopDeferActivity,
   formatOneShotDeferActivity,
+  listDeferActivityDeliveries,
   listDeferActivityRuns,
   sortDeferActivityItems,
 } from "./defer-activity.js";
@@ -1438,6 +1439,7 @@ export function createApiRouter(
     ctx.deferLoopStore?.cancelForSession(sessionId);
     ctx.deferredPromptStore?.deleteForSession(sessionId);
     ctx.deferLoopStore?.deleteForSession(sessionId);
+    ctx.sessionMessageOutboxStore?.deleteForSession(sessionId);
 
     ctx.taskStore.unlinkSessionFromAllTasks(sessionId);
 
@@ -2570,14 +2572,28 @@ export function createApiRouter(
     if (!isCanonicalSessionId(sessionId)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
+    const recentDeliveries = listDeferActivityDeliveries(
+      ctx.sessionMessageOutboxStore,
+      sessionId,
+    );
+    const failedDeliveryIds = new Set(
+      recentDeliveries
+        .filter((delivery) => delivery.status === "failed")
+        .map((delivery) => delivery.deferId),
+    );
     const defers = sortDeferActivityItems([
       ...(ctx.deferredPromptStore?.listForSession(sessionId).map(formatOneShotDeferActivity) ?? []),
       ...(ctx.deferLoopStore?.listForSession(sessionId).map(formatLoopDeferActivity) ?? []),
-    ]);
+    ].map((item) => failedDeliveryIds.has(item.deferId)
+      ? { ...item, canReactivate: true, failedDelivery: true }
+      : item));
     res.json({
       sessionId,
       defers,
-      recentRuns: listDeferActivityRuns(ctx.telemetryStore, sessionId),
+      recentRuns: listDeferActivityRuns(ctx.telemetryStore, sessionId, {
+        messageOutboxStore: ctx.sessionMessageOutboxStore,
+      }),
+      recentDeliveries,
     });
   });
 
@@ -2596,14 +2612,21 @@ export function createApiRouter(
     const runs = listDeferActivityRuns(ctx.telemetryStore, sessionId, {
       deferId: req.params.deferId,
       limit: 200,
+      messageOutboxStore: ctx.sessionMessageOutboxStore,
     });
-    if ((!item || item.sessionId !== sessionId) && runs.length === 0) {
+    const deliveries = listDeferActivityDeliveries(
+      ctx.sessionMessageOutboxStore,
+      sessionId,
+      { deferId: req.params.deferId, limit: 200 },
+    );
+    if ((!item || item.sessionId !== sessionId) && runs.length === 0 && deliveries.length === 0) {
       return res.status(404).json({ error: `Defer ${req.params.deferId} not found.` });
     }
     res.json({
       sessionId,
       deferId: req.params.deferId,
       runs,
+      deliveries,
     });
   });
 
@@ -2655,6 +2678,18 @@ export function createApiRouter(
       if (!existing || existing.sessionId !== sessionId) {
         return res.status(404).json({ error: `Defer ${deferId} not found.` });
       }
+      const retriedDeliveries =
+        ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+      if (retriedDeliveries > 0) {
+        ctx.sessionMessageOutboxRunner?.poke();
+        return res.json({
+          ok: true,
+          deferId,
+          kind: "once",
+          status: existing.status,
+          deliveryRetried: true,
+        });
+      }
       if (existing.status !== "failed" && existing.status !== "cancelled") {
         return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be reactivated.` });
       }
@@ -2683,6 +2718,18 @@ export function createApiRouter(
     const existing = store.get(parsed.id);
     if (!existing || existing.sessionId !== sessionId) {
       return res.status(404).json({ error: `Defer ${deferId} not found.` });
+    }
+    const retriedDeliveries =
+      ctx.sessionMessageOutboxStore?.reactivateFailedForSource(sessionId, deferId) ?? 0;
+    if (retriedDeliveries > 0) {
+      ctx.sessionMessageOutboxRunner?.poke();
+      return res.json({
+        ok: true,
+        deferId,
+        kind: "interval",
+        status: existing.status,
+        deliveryRetried: true,
+      });
     }
     if (existing.status !== "failed" && existing.status !== "cancelled" && existing.status !== "expired") {
       return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be reactivated.` });

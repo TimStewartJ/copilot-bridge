@@ -83,6 +83,26 @@ describe("DeferredWorkSheet", () => {
             model: "small-model",
             reasoningEffort: "low",
           },
+          {
+            id: 3,
+            deferId: "interval_active",
+            kind: "interval",
+            action: "notify",
+            deliveryStatus: "pending",
+            runCount: 2,
+            durationMs: 800,
+            completedAt: "2026-09-01T22:00:00.000Z",
+            model: "small-model",
+          },
+        ],
+        recentDeliveries: [
+          {
+            id: "delivery-1",
+            deferId: "interval_active",
+            status: "pending",
+            createdAt: "2026-09-01T22:00:00.000Z",
+            updatedAt: "2026-09-01T22:00:00.000Z",
+          },
         ],
       },
       isLoading: false,
@@ -103,6 +123,9 @@ describe("DeferredWorkSheet", () => {
     expect(harness.dom.container.textContent).toContain("Every 20m");
     expect(harness.dom.container.textContent).toContain("Provider unavailable");
     expect(harness.dom.container.textContent).toContain("Build monitor · Continued");
+    expect(harness.dom.container.textContent).toContain("Build monitor · Notified parent and continued");
+    expect(harness.dom.container.textContent).toContain("Parent delivery pending");
+    expect(harness.dom.container.textContent).toContain("Build monitor · Pending");
     expect(harness.dom.container.textContent).toContain("One-time defer · Failed");
     expect(buttonWithText(harness.dom.container, "Reactivate")).toBeDefined();
     const closeButton = findAllByTag(harness.dom.container, "BUTTON").find(
