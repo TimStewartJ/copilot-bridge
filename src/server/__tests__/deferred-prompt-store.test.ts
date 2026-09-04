@@ -345,6 +345,32 @@ describe("deferred-prompt-store", () => {
       expect(row.lastError).toBe("Oops");
     });
 
+    it("marks a claimed deferral failed and queues its parent message atomically", () => {
+      const dp = store.create("s1", "Prompt", new Date().toISOString());
+      const claimed = store.claimDue(dp.id, 60_000)!;
+      const delivery = createReturnedDeferDelivery(
+        { deferId: dp.deferId, kind: "once", parentSessionId: dp.sessionId },
+        "The one-shot defer stopped.",
+        { deliveryId: "failure-delivery" },
+      );
+
+      expect(store.failWithMessage(dp.id, "wrong", delivery, {
+        claimToken: "wrong-token",
+      })).toBe(false);
+      expect(store.listDeliveriesForSession(dp.sessionId)).toEqual([]);
+
+      expect(store.failWithMessage(dp.id, "worker failed", delivery, {
+        claimToken: claimed.claimToken,
+      })).toBe(true);
+      expect(store.get(dp.id)).toMatchObject({
+        status: "failed",
+        attempts: 1,
+        lastError: "worker failed",
+      });
+      expect(store.listDeliveriesForSession(dp.sessionId)).toEqual([
+        expect.objectContaining({ id: delivery.id, sourceId: dp.deferId }),
+      ]);
+    });
   });
 
   describe("retry", () => {
@@ -428,7 +454,7 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("reclaimExpiredRunning", () => {
-    it("moves expired running rows back to pending", () => {
+    it("moves expired running rows back to pending with an interruption error", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());
       // Claim with a lease that already expired
       const claimed = store.claimDue(dp.id, 1)!; // 1ms lease
@@ -436,7 +462,10 @@ describe("deferred-prompt-store", () => {
       const expiredNow = new Date(Date.now() + 10).toISOString();
       const reclaimed = store.reclaimExpiredRunning(expiredNow);
       expect(reclaimed).toBe(1);
-      expect(store.get(dp.id)!.status).toBe("pending");
+      expect(store.get(dp.id)).toMatchObject({
+        status: "pending",
+        lastError: "Deferred execution lease expired before completion.",
+      });
       // suppress unused variable warning
       void claimed;
     });
