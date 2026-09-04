@@ -109,6 +109,12 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
     days: [],
     sessions: [],
     unpricedModels: [],
+    deferWorkers: {
+      capturedRuns: 0,
+      parentSessions: 0,
+      retentionDays: 90,
+      ...createUsageTotals(0, 0),
+    },
   };
 }
 

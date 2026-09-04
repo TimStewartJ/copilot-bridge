@@ -46,6 +46,10 @@ export interface DeferActivityRun {
   deliveryId?: string;
   deliveryStatus?: DeferDeliveryStatus;
   deliveryError?: string;
+  usageCaptured?: boolean;
+  totalTokens?: number;
+  meteredAiCredits?: number;
+  estimatedAiCredits?: number;
 }
 
 export interface DeferActivityDelivery {
@@ -109,6 +113,13 @@ function optionalRunCount(metadata: Record<string, unknown>): number | undefined
     : undefined;
 }
 
+function optionalNumber(metadata: Record<string, unknown>, key: string): number | undefined {
+  const value = metadata[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
 function parseWorkerRun(span: TelemetrySpan): DeferActivityRun | undefined {
   const metadata = span.metadata;
   if (!metadata) return undefined;
@@ -147,6 +158,18 @@ function parseWorkerRun(span: TelemetrySpan): DeferActivityRun | undefined {
     ...optionalString(metadata, "error") ? { error: optionalString(metadata, "error") } : {},
     ...optionalString(metadata, "deliveryId")
       ? { deliveryId: optionalString(metadata, "deliveryId") }
+      : {},
+    ...(typeof metadata.usageCaptured === "boolean"
+      ? { usageCaptured: metadata.usageCaptured }
+      : {}),
+    ...optionalNumber(metadata, "totalTokens") !== undefined
+      ? { totalTokens: optionalNumber(metadata, "totalTokens") }
+      : {},
+    ...optionalNumber(metadata, "meteredAiCredits") !== undefined
+      ? { meteredAiCredits: optionalNumber(metadata, "meteredAiCredits") }
+      : {},
+    ...optionalNumber(metadata, "estimatedAiCredits") !== undefined
+      ? { estimatedAiCredits: optionalNumber(metadata, "estimatedAiCredits") }
       : {},
   };
 }

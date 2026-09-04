@@ -26,6 +26,7 @@ import {
   type CopilotUsageRangeKey,
 } from "../shared/copilot-usage-range.js";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage.js";
+import { COPILOT_DEFER_WORKER_USAGE_RETENTION_DAYS } from "../shared/copilot-usage.js";
 import { BRIDGE_SESSION_MODEL_STATE_FILE } from "./session-model-state-sidecar.js";
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
@@ -84,6 +85,12 @@ export interface CopilotUsageCostEstimate {
 export interface CopilotUsageSummaryTotals extends CopilotUsageTotals, CopilotUsageCostEstimate {
   unpricedModelCount: number;
   unpricedTokens: CopilotUsageTotals;
+}
+
+export interface CopilotUsageDeferWorkerSummary extends CopilotUsageTotals {
+  capturedRuns: number;
+  parentSessions: number;
+  retentionDays: number;
 }
 
 export interface CopilotUsageModelPricingMetadata {
@@ -169,6 +176,7 @@ export interface CopilotUsageSummary {
   days: CopilotUsageDayRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
+  deferWorkers: CopilotUsageDeferWorkerSummary;
   index?: CopilotUsageIndexStatus;
 }
 
@@ -186,6 +194,10 @@ export interface CopilotUsageReader {
     sessionIds?: readonly string[];
     range?: CopilotUsageRangeKey;
   }): Promise<CopilotUsageSummary>;
+  retainSessionUsage?(
+    sessionId: string,
+    result: CopilotUsageSessionScanResult,
+  ): void;
   invalidate(): void;
   startBackgroundRefresh?(): void;
   shutdown(): Promise<void>;
@@ -202,6 +214,12 @@ export interface CopilotUsageSessionScanResult {
   totals: CopilotUsageTotals;
   sessionRow?: CopilotUsageSessionRow;
   forkAccounting?: CopilotUsageForkAccounting;
+  source?: {
+    kind: "defer_worker";
+    deferId: string;
+    parentSessionId: string;
+    action: string;
+  };
 }
 
 export interface CopilotUsageForkAccounting {
@@ -326,6 +344,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
   const requestedSessionIds = sessionIds ? new Set(sessionIds) : null;
   const modelTotals = new Map<string, CopilotUsageModelRow>();
   const dailyModelTotals = new Map<string, Map<string, CopilotUsageModelRow>>();
+  const deferWorkerParentSessions = new Set<string>();
   const startDate = resolvedRange.startDate;
   const startAtMs = resolvedRange.startAt ? Date.parse(resolvedRange.startAt) : null;
   let resultCount = 0;
@@ -338,6 +357,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
         summary,
         modelTotals,
         dailyModelTotals,
+        deferWorkerParentSessions,
         requestedSessionIds,
         startDate,
         startAtMs,
@@ -354,6 +374,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
         updateCoverageWindow(summary.coverage, "included", usageAt);
       }
       addTotals(summary.totals, result.totals);
+      addDeferWorkerUsage(summary, result, result.totals, deferWorkerParentSessions);
       addDailyModelRows(dailyModelTotals, dailyRows);
       if (
         result.sessionRow
@@ -383,6 +404,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
     ? sessionsSeen ?? resultCount
     : summary.coverage.sessionsIncluded + summary.coverage.sessionsSkipped;
   summary.models = sortUsageModelRows([...modelTotals.values()]);
+  summary.deferWorkers.parentSessions = deferWorkerParentSessions.size;
   summary.days = createUsageDayRows(dailyModelTotals);
   summary.sessions.sort((left, right) => (
     compareNullableTimestampsDesc(left.shutdownAt, right.shutdownAt)
@@ -405,6 +427,7 @@ function accumulateRangedSessionResult(
     summary: CopilotUsageSummary;
     modelTotals: Map<string, CopilotUsageModelRow>;
     dailyModelTotals: Map<string, Map<string, CopilotUsageModelRow>>;
+    deferWorkerParentSessions: Set<string>;
     requestedSessionIds: Set<string> | null;
     startDate: string;
     startAtMs: number | null;
@@ -414,6 +437,7 @@ function accumulateRangedSessionResult(
     summary,
     modelTotals,
     dailyModelTotals,
+    deferWorkerParentSessions,
     requestedSessionIds,
     startDate,
     startAtMs,
@@ -467,6 +491,7 @@ function accumulateRangedSessionResult(
   }
 
   addTotals(summary.totals, sessionTotals);
+  addDeferWorkerUsage(summary, result, sessionTotals, deferWorkerParentSessions);
 
   const sessionId = result.sessionRow?.sessionId;
   if (sessionId && (!requestedSessionIds || requestedSessionIds.has(sessionId))) {
@@ -480,6 +505,19 @@ function accumulateRangedSessionResult(
       ...createZeroCostEstimate(),
     });
   }
+
+}
+
+function addDeferWorkerUsage(
+  summary: CopilotUsageSummary,
+  result: CopilotUsageSessionScanResult,
+  totals: CopilotUsageTotals,
+  parentSessions: Set<string>,
+): void {
+  if (result.source?.kind !== "defer_worker") return;
+  summary.deferWorkers.capturedRuns += 1;
+  parentSessions.add(result.source.parentSessionId);
+  addTotals(summary.deferWorkers, totals);
 }
 
 function sortUsageModelRows(rows: CopilotUsageModelRow[]): CopilotUsageModelRow[] {
@@ -633,11 +671,13 @@ export async function scanCopilotUsageSession(
     if (!eventsStat.isFile()) {
       return createSkippedResult("no_events", null, false);
     }
+
   } catch (error) {
     const code = getErrorCode(error);
     if (code === "ENOENT" || code === "ENOTDIR") {
       return createSkippedResult("no_events", null, false);
     }
+
     return createSkippedResult("parse_error", null, false);
   }
 
@@ -1232,6 +1272,12 @@ function createEmptySummary(now: () => number, range: CopilotUsageRange): Copilo
     days: [],
     sessions: [],
     unpricedModels: [],
+    deferWorkers: {
+      capturedRuns: 0,
+      parentSessions: 0,
+      retentionDays: COPILOT_DEFER_WORKER_USAGE_RETENTION_DAYS,
+      ...createZeroTotals(),
+    },
   };
 }
 

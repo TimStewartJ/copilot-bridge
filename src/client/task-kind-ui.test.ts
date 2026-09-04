@@ -243,6 +243,12 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
     days: [],
     sessions: [],
     unpricedModels: [],
+    deferWorkers: {
+      capturedRuns: 0,
+      parentSessions: 0,
+      retentionDays: 90,
+      ...createUsageTotals(),
+    },
     ...overrides,
   };
 }

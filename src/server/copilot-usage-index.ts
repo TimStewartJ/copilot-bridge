@@ -11,13 +11,15 @@ import {
   type CopilotUsageReader,
   type CopilotUsageSessionScanResult,
 } from "./copilot-usage.js";
-import type {
-  CopilotUsageCacheEntry,
-  CopilotUsageFileFingerprint,
-  CopilotUsageSessionFingerprint,
-  CopilotUsageStore,
+import {
+  createRetainedCopilotUsageEntry,
+  type CopilotUsageCacheEntry,
+  type CopilotUsageFileFingerprint,
+  type CopilotUsageSessionFingerprint,
+  type CopilotUsageStore,
 } from "./copilot-usage-store.js";
 import type { CopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
+import { COPILOT_DEFER_WORKER_USAGE_RETENTION_DAYS } from "../shared/copilot-usage.js";
 
 export interface IncrementalCopilotUsageReaderOptions {
   copilotHome: string;
@@ -180,13 +182,27 @@ export function createIncrementalCopilotUsageReader({
   }
 
   async function runRefresh(): Promise<void> {
-    const sessionIds = await listSessionDirectories(sessionStateDir);
-    const seenSessionIds = new Set(sessionIds);
-    const processedSessionIds = new Set<string>();
+    const retainedCutoff = new Date(
+      now() - COPILOT_DEFER_WORKER_USAGE_RETENTION_DAYS * 24 * 60 * 60_000,
+    ).toISOString();
+    for (const sessionId of store.pruneRetainedEntries(retainedCutoff)) {
+      cacheEntries.delete(sessionId);
+      persistedSessionIds.delete(sessionId);
+    }
+    const retainedSessionIds = new Set(
+      [...cacheEntries.values()]
+        .filter(isRetainedUsageEntry)
+        .map((entry) => entry.sessionId),
+    );
+    const sessionIds = (await listSessionDirectories(sessionStateDir))
+      .filter((sessionId) => !retainedSessionIds.has(sessionId));
+    const seenSessionIds = new Set([...sessionIds, ...retainedSessionIds]);
+    const processedSessionIds = new Set(retainedSessionIds);
     const checkedRequestedSessionIds = new Set<string>();
     const failedSessions: CopilotUsageSessionScanFailure[] = [];
     const failedSessionIds = new Set<string>();
-    status.sessionsTotal = sessionIds.length;
+    status.sessionsTotal = seenSessionIds.size;
+    status.sessionsProcessed = retainedSessionIds.size;
     status.cachedSessions = cacheEntries.size;
 
     const processRefreshBatch = async (batch: readonly string[]): Promise<void> => {
@@ -234,7 +250,10 @@ export function createIncrementalCopilotUsageReader({
     }
 
     const deletedSessionIds = [...persistedSessionIds]
-      .filter((sessionId) => !seenSessionIds.has(sessionId));
+      .filter((sessionId) =>
+        !seenSessionIds.has(sessionId)
+        && !isRetainedUsageEntry(cacheEntries.get(sessionId))
+      );
     if (deletedSessionIds.length > 0) {
       store.deleteEntries(deletedSessionIds);
       for (const sessionId of deletedSessionIds) {
@@ -261,7 +280,7 @@ export function createIncrementalCopilotUsageReader({
     }
     status.state = "idle";
     status.completedAt = completedAt;
-    status.sessionsProcessed = sessionIds.length;
+    status.sessionsProcessed = status.sessionsTotal;
     status.cachedSessions = cacheEntries.size;
     status.error = null;
   }
@@ -277,7 +296,10 @@ export function createIncrementalCopilotUsageReader({
       inspectSession,
     );
     const changedEntries = outcomes.flatMap((outcome) => (
-      outcome.kind === "updated" ? [outcome.entry] : []
+      outcome.kind === "updated"
+      && !isRetainedUsageEntry(cacheEntries.get(outcome.entry.sessionId))
+        ? [outcome.entry]
+        : []
     ));
     const failures = outcomes.filter(
       (outcome): outcome is CopilotUsageSessionScanFailure => outcome.kind === "failed",
@@ -349,6 +371,19 @@ export function createIncrementalCopilotUsageReader({
 
   return {
     readSummary,
+    retainSessionUsage: (sessionId, result) => {
+      const entry = createRetainedCopilotUsageEntry(
+        sessionId,
+        COPILOT_USAGE_PARSER_VERSION,
+        result,
+      );
+      store.upsertEntries([entry]);
+      cacheEntries.set(sessionId, entry);
+      persistedSessionIds.add(sessionId);
+      missingRequestedCheckedAt.delete(sessionId);
+      status.cachedSessions = cacheEntries.size;
+      status.sessionsTotal = Math.max(status.sessionsTotal, cacheEntries.size);
+    },
     invalidate: () => {
       requestModelPriceRefresh(true);
       scheduleRefresh(true);
@@ -363,6 +398,12 @@ export function createIncrementalCopilotUsageReader({
       await inflight;
     },
   };
+}
+
+function isRetainedUsageEntry(
+  entry: CopilotUsageCacheEntry | undefined,
+): entry is CopilotUsageCacheEntry {
+  return entry?.fingerprint.events.state === "retained";
 }
 
 async function listSessionDirectories(sessionStateDir: string): Promise<string[]> {
@@ -416,6 +457,7 @@ function fileFingerprintsEqual(
   right: CopilotUsageFileFingerprint,
 ): boolean {
   if (left.state === "error" || right.state === "error" || left.state !== right.state) return false;
+  if (left.state === "retained" || right.state === "retained") return true;
   if (left.state === "missing" || right.state === "missing") return true;
   return left.size === right.size && left.mtimeMs === right.mtimeMs;
 }

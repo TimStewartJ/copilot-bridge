@@ -115,6 +115,150 @@ describe("createIncrementalCopilotUsageReader", () => {
     db.close();
   });
 
+  it("retains worker usage without double-counting a lagging session directory", async () => {
+    const db = openMemoryDatabase();
+    const copilotHome = createCopilotHome();
+    const workerSessionId = "d3f3e000-0000-4000-8000-000000000001";
+    writeUsage(copilotHome, workerSessionId, 999);
+    const store = createCopilotUsageStore(db);
+    const sessionDir = join(copilotHome, "session-state", workerSessionId);
+    writeFileSync(join(sessionDir, "events.jsonl"), `${JSON.stringify({
+      type: "session.shutdown",
+      timestamp: "2026-09-03T20:00:00.000Z",
+      data: {
+        totalNanoAiu: 1_500_000_000,
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: 10, outputTokens: 5 },
+            totalNanoAiu: 1_500_000_000,
+          },
+        },
+      },
+    })}\n`);
+    const scanned = await scanCopilotUsageSession(
+      join(copilotHome, "session-state"),
+      workerSessionId,
+    );
+    const result = {
+      ...scanned,
+      source: {
+        kind: "defer_worker" as const,
+        deferId: "once_1",
+        parentSessionId: "parent-1",
+        action: "return",
+      },
+    };
+    const scanner = vi.fn(scanCopilotUsageSession);
+    const reader = createIncrementalCopilotUsageReader({
+      copilotHome,
+      store,
+      scanSession: scanner,
+    });
+    reader.retainSessionUsage?.(result.sessionRow!.sessionId, result);
+
+    const initial = await reader.readSummary({ refresh: true });
+    expect(initial.deferWorkers).toMatchObject({
+      capturedRuns: 1,
+      meteredAiCredits: 1.5,
+      totalTokens: 15,
+    });
+    await waitForSummary(reader, (summary) => summary.index?.state === "idle");
+    expect(scanner).not.toHaveBeenCalled();
+    expect(store.listEntries()).toEqual([
+      expect.objectContaining({
+        sessionId: result.sessionRow!.sessionId,
+        fingerprint: {
+          events: { state: "retained" },
+          modelState: { state: "retained" },
+        },
+      }),
+    ]);
+    await reader.shutdown();
+    rmSync(join(copilotHome, "session-state", workerSessionId), {
+      recursive: true,
+      force: true,
+    });
+
+    const reopened = createIncrementalCopilotUsageReader({ copilotHome, store });
+    const persisted = await reopened.readSummary({ refresh: true });
+    expect(persisted.deferWorkers).toMatchObject({
+      capturedRuns: 1,
+      meteredAiCredits: 1.5,
+      totalTokens: 15,
+    });
+    await waitForSummary(reopened, (summary) => summary.index?.state === "idle");
+    expect(store.listSessionIds()).toEqual([result.sessionRow!.sessionId]);
+    await reopened.shutdown();
+    db.close();
+  });
+
+  it("does not let an in-flight disk scan overwrite newly retained worker usage", async () => {
+    const db = openMemoryDatabase();
+    const copilotHome = createCopilotHome();
+    const workerSessionId = "d3f3e000-0000-4000-8000-000000000002";
+    writeUsage(copilotHome, workerSessionId, 999);
+    writeUsage(copilotHome, "retained-source", 15);
+    const retainedBase = await scanCopilotUsageSession(
+      join(copilotHome, "session-state"),
+      "retained-source",
+    );
+    const retained = {
+      ...retainedBase,
+      sessionRow: {
+        ...retainedBase.sessionRow!,
+        sessionId: workerSessionId,
+      },
+      source: {
+        kind: "defer_worker" as const,
+        deferId: "once_2",
+        parentSessionId: "parent-2",
+        action: "return",
+      },
+    };
+    rmSync(join(copilotHome, "session-state", "retained-source"), {
+      recursive: true,
+      force: true,
+    });
+
+    let releaseScan!: () => void;
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    let markScanStarted!: () => void;
+    const scanStarted = new Promise<void>((resolve) => {
+      markScanStarted = resolve;
+    });
+    const reader = createIncrementalCopilotUsageReader({
+      copilotHome,
+      store: createCopilotUsageStore(db),
+      batchSize: 1,
+      concurrency: 1,
+      scanSession: async (sessionStateDir, sessionId) => {
+        markScanStarted();
+        await scanGate;
+        return scanCopilotUsageSession(sessionStateDir, sessionId);
+      },
+    });
+
+    await reader.readSummary({ refresh: true });
+    await scanStarted;
+    reader.retainSessionUsage?.(workerSessionId, retained);
+    releaseScan();
+
+    const complete = await waitForSummary(
+      reader,
+      (summary) => summary.index?.state === "idle",
+    );
+    expect(complete.deferWorkers).toMatchObject({
+      capturedRuns: 1,
+      totalTokens: 15,
+    });
+    expect(complete.totals.totalTokens).toBe(15);
+    await reader.shutdown();
+    db.close();
+  });
+
   it("prioritizes requested task sessions and returns only requested session rows", async () => {
     const db = openMemoryDatabase();
     const copilotHome = createCopilotHome();

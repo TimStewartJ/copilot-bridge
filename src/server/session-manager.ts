@@ -199,6 +199,11 @@ import {
   type DeferWorkerResult,
   type DisposableDeferWorker,
 } from "./defer-worker.js";
+import {
+  COPILOT_USAGE_PARSER_VERSION,
+  type CopilotUsageSessionScanResult,
+} from "./copilot-usage.js";
+import { createRetainedCopilotUsageEntry } from "./copilot-usage-store.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
@@ -508,6 +513,10 @@ export interface SessionManagerDeps {
   bridgeToolsMcpServer?: BridgeToolsMcpServer;
   telemetryStore?: TelemetryStore;
   sessionContextStore?: SessionContextStore;
+  recordCopilotUsage?(
+    sessionId: string,
+    result: CopilotUsageSessionScanResult,
+  ): void;
   /** Custom env for the agent backend — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
   /**
@@ -600,6 +609,19 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     }),
     telemetryStore: ctx.telemetryStore,
     sessionContextStore: ctx.sessionContextStore,
+    recordCopilotUsage: (sessionId, result) => {
+      if (ctx.copilotUsageReader?.retainSessionUsage) {
+        ctx.copilotUsageReader.retainSessionUsage(sessionId, result);
+        return;
+      }
+      ctx.copilotUsageStore.upsertEntries([
+        createRetainedCopilotUsageEntry(
+          sessionId,
+          COPILOT_USAGE_PARSER_VERSION,
+          result,
+        ),
+      ]);
+    },
     config: opts.config,
     builtInMcpServers: opts.builtInMcpServers,
     bridgeToolsMcpServer: ctx.bridgeToolsMcpServer,
@@ -836,6 +858,8 @@ export class SessionManager {
       getCopilotHome: () => this.getCopilotHome(),
       recordSpan: (name, duration, sessionId, metadata) =>
         this.recordSpan(name, duration, sessionId, metadata),
+      recordUsage: (sessionId, result) =>
+        this.deps.recordCopilotUsage?.(sessionId, result),
       logger: console,
     });
     this.sessionRunner = new SessionRunner({

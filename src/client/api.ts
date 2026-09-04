@@ -181,6 +181,10 @@ export interface DeferredWorkRun {
   error?: string;
   deliveryStatus?: "pending" | "running" | "completed" | "failed";
   deliveryError?: string;
+  usageCaptured?: boolean;
+  totalTokens?: number;
+  meteredAiCredits?: number;
+  estimatedAiCredits?: number;
 }
 
 export interface DeferredWorkDelivery {
@@ -1915,6 +1919,12 @@ export interface CopilotUsageSummaryTotals extends CopilotUsageTotals, CopilotUs
   unpricedTokens: CopilotUsageTotals;
 }
 
+export interface CopilotUsageDeferWorkerSummary extends CopilotUsageTotals {
+  capturedRuns: number;
+  parentSessions: number;
+  retentionDays: number;
+}
+
 export interface CopilotUsageModelPricingMetadata {
   pricingKey: string | null;
   pricedAs: string | null;
@@ -1996,6 +2006,7 @@ export interface CopilotUsageSummary {
   days: CopilotUsageDayRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
+  deferWorkers: CopilotUsageDeferWorkerSummary;
 }
 
 export async function fetchCopilotUsage(options?: {
