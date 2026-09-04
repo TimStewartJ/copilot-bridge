@@ -112,6 +112,40 @@ describe("resumeSessionWithTimeout", () => {
       }
     }
   });
+
+  it("brackets late cleanup with timeout and settlement notifications", async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const session = { sessionId: "late-bracketed" };
+    let resolveResume!: (value: typeof session) => void;
+    const resume = new Promise<typeof session>((resolve) => {
+      resolveResume = resolve;
+    });
+
+    const result = resumeSessionWithTimeout(
+      resume,
+      "resumeSession timed out after 60s",
+      SESSION_RESUME_TIMEOUT_MS,
+      {
+        onTimeout: () => order.push("timeout"),
+        disconnectLateSession: async () => {
+          order.push("cleanup");
+        },
+        onLateSettled: () => order.push("settled"),
+      },
+    );
+    const rejection = expect(result).rejects.toThrow("resumeSession timed out after 60s");
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_TIMEOUT_MS);
+    await rejection;
+
+    expect(order).toEqual(["timeout"]);
+
+    resolveResume(session);
+    await flush();
+
+    expect(order).toEqual(["timeout", "cleanup", "settled"]);
+  });
+
   it("observes a late rejection without disconnecting", async () => {
     vi.useFakeTimers();
     const onLateError = vi.fn();

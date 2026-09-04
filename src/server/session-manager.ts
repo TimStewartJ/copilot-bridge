@@ -164,6 +164,7 @@ import {
   BACKEND_RECONNECTING_MESSAGE,
   BACKEND_RECOVERY_CONTINUE_PROMPT,
   BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
+  SESSION_RESUME_SETTLING_MESSAGE,
   isTransientBackendError,
 } from "./backend-availability.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
@@ -290,6 +291,7 @@ const DISCONNECT_MAX_ATTEMPTS = 2;
 const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = 30_000;
 const SESSION_TASK_CLEANUP_TIMEOUT_MS = 10_000;
 const SESSION_TASK_CLEANUP_POLL_MS = 100;
+const TIMED_OUT_SESSION_RESUME_SETTLE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_SESSION_CACHE_IDLE_TTL_MS = 60 * 60_000;
 const SESSION_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const PROCESS_TREE_SAMPLE_THROTTLE_MS = 60_000;
@@ -309,6 +311,11 @@ type SessionCapacityProfile = {
 type SessionCapacityReservation = {
   capacityUnits: number;
   localMcpInstances: number;
+};
+
+type TimedOutSessionResume = {
+  token: symbol;
+  timer?: ReturnType<typeof setTimeout>;
 };
 
 export type SessionCapacityReason =
@@ -548,7 +555,7 @@ export interface McpLoginResult {
 export type SessionHistoryUndoErrorCode = "busy" | "stale-boundary" | "unsupported";
 
 interface SessionResumeLifecycleOptions {
-  backend: Pick<AgentBackend, "resumeSession">;
+  backend: AgentBackend;
   sessionId: string;
   sessionConfig: { mcpServers?: Record<string, McpServerConfig> };
   cancellationMessage: string;
@@ -638,6 +645,7 @@ export class SessionManager {
   private backend: AgentBackend | null = null;
   private backendCreatedAtMs: number | null = null;
   private backendRotation: Promise<AgentBackend> | null = null;
+  private backendGeneration = 0;
   private backendLifecycleState: AgentBackendStatus["state"] = "starting";
   private backendDisconnectUnsubscribe: (() => void) | null = null;
   private lastBackendDisconnect: AgentBackendDisconnect | null = null;
@@ -658,6 +666,8 @@ export class SessionManager {
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
   private readonly pendingSessionResumeAdmissions = new Set<string>();
+  private readonly settlingTimedOutSessionResumes = new Map<string, TimedOutSessionResume>();
+  private timedOutSessionResumeSettleTimeoutMs = TIMED_OUT_SESSION_RESUME_SETTLE_TIMEOUT_MS;
   private readonly resumingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
   private creatingSessions = 0;
   private creatingCapacityUnits = 0;
@@ -891,6 +901,8 @@ export class SessionManager {
           isCancelled,
         }),
       endSessionResume: (lease) => this.endSessionResume(lease),
+      resumeSessionWithTimeout: (backend, sessionId, resume, timeoutMessage) =>
+        this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage),
       notifySessionCapacityChanged: () => this.notifySessionCapacityChanged(),
       cacheResumedSession: (sessionId, session, sessionConfig) =>
         this.cacheResumedSession(sessionId, session, sessionConfig),
@@ -2211,6 +2223,9 @@ export class SessionManager {
     } = {},
   ): Promise<SessionResumeLease | null> {
     const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
+    if (this.settlingTimedOutSessionResumes.has(sessionId)) {
+      throw new Error(SESSION_RESUME_SETTLING_MESSAGE);
+    }
     if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
       this.touchSessionTree(sessionId);
       this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
@@ -2257,6 +2272,101 @@ export class SessionManager {
     );
   }
 
+  private resumeAgentSessionWithTimeout(
+    owningBackend: AgentBackend,
+    sessionId: string,
+    resume: Promise<AgentSession>,
+    timeoutMessage: string,
+  ): Promise<AgentSession> {
+    const sid = sessionId.slice(0, 8);
+    const owningBackendGeneration = this.backendGeneration;
+    const token = Symbol(sessionId);
+    let releaseAfterLateSettlement = true;
+    const releaseBarrier = (): boolean => {
+      const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
+      if (barrier?.token !== token) return false;
+      if (barrier.timer) clearTimeout(barrier.timer);
+      this.settlingTimedOutSessionResumes.delete(sessionId);
+      this.notifySessionCapacityChanged();
+      return true;
+    };
+    return resumeSessionWithTimeout(resume, timeoutMessage, undefined, {
+      onTimeout: () => {
+        if (
+          this.backend !== owningBackend
+          || this.backendGeneration !== owningBackendGeneration
+        ) return;
+        const timer = setTimeout(() => {
+          if (releaseBarrier()) {
+            console.warn(
+              `[sdk] [${sid}] Timed-out session resume did not settle; allowing a fresh resume without cleaning up the stale handle`,
+            );
+          }
+        }, this.timedOutSessionResumeSettleTimeoutMs);
+        timer.unref?.();
+        const existing = this.settlingTimedOutSessionResumes.get(sessionId);
+        if (existing?.timer) clearTimeout(existing.timer);
+        this.settlingTimedOutSessionResumes.set(sessionId, { token, timer });
+      },
+      disconnectLateSession: async (session) => {
+        const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
+        if (barrier?.token !== token) return;
+        if (
+          this.backend !== owningBackend
+          || this.backendGeneration !== owningBackendGeneration
+        ) {
+          releaseBarrier();
+          return;
+        }
+        if (barrier.timer) {
+          clearTimeout(barrier.timer);
+          delete barrier.timer;
+        }
+        try {
+          await this.disposeSession(sessionId, session, "cleaning up timed-out session resume");
+        } catch (error) {
+          if (
+            this.backend === owningBackend
+            && this.backendGeneration === owningBackendGeneration
+          ) {
+            releaseAfterLateSettlement = false;
+            this.handleBackendDisconnect(owningBackend, {
+              at: new Date().toISOString(),
+              reason: "rpc-timeout",
+              detail: `timed-out resume cleanup failed for session ${sessionId}`,
+            });
+          }
+          throw error;
+        }
+      },
+      onLateError: (error) => {
+        console.warn(`[sdk] [${sid}] Timed-out session resume cleanup failed:`, error);
+      },
+      onLateSettled: () => {
+        if (releaseAfterLateSettlement) releaseBarrier();
+      },
+    }).then((session) => {
+      if (
+        this.backend !== owningBackend
+        || this.backendGeneration !== owningBackendGeneration
+      ) {
+        console.warn(`[sdk] [${sid}] Ignoring session resumed by a superseded backend`);
+        throw new Error(BACKEND_DISCONNECTED_MESSAGE);
+      }
+      return session;
+    });
+  }
+
+  private releaseTimedOutSessionResumeBarriers(): number {
+    const barriers = [...this.settlingTimedOutSessionResumes.values()];
+    this.settlingTimedOutSessionResumes.clear();
+    for (const barrier of barriers) {
+      if (barrier.timer) clearTimeout(barrier.timer);
+    }
+    if (barriers.length > 0) this.notifySessionCapacityChanged();
+    return barriers.length;
+  }
+
   private withSessionResumeLifecycle(options: SessionResumeLifecycleOptions): Promise<AgentSession>;
   private withSessionResumeLifecycle<T>(
     options: SessionResumeLifecycleOptions,
@@ -2290,7 +2400,7 @@ export class SessionManager {
         await beforeResume?.();
         const resume = backend.resumeSession(sessionId, sessionConfig);
         const resumedSession = timeoutMessage
-          ? await resumeSessionWithTimeout(resume, timeoutMessage)
+          ? await this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage)
           : await resume;
         session = await this.cacheResumedSession(sessionId, resumedSession, sessionConfig);
       }
@@ -2876,6 +2986,7 @@ export class SessionManager {
         this.handleBackendDisconnect(backend, info);
       });
     }
+    this.backendGeneration += 1;
     this.backendLifecycleState = "ready";
     this.emitBackendStatus();
   }
@@ -2979,6 +3090,7 @@ export class SessionManager {
       return;
     }
     this.backendDisconnectCount += 1;
+    this.releaseTimedOutSessionResumeBarriers();
     this.lastBackendDisconnect = info;
     this.backendLifecycleState = "disconnected";
     const cachedSessions = this.sessionObjects.size;
@@ -3180,7 +3292,8 @@ export class SessionManager {
       return this.backendRotation;
     }
 
-    const activeSessions = this.getLifecycleBlockingSessionCount();
+    const activeSessions = this.getLifecycleBlockingSessionCount()
+      + this.settlingTimedOutSessionResumes.size;
     if (activeSessions > 0) {
       throw new ModelRefreshBlockedError(activeSessions);
     }
@@ -3492,7 +3605,9 @@ export class SessionManager {
     if (!resumeLease) throw new Error("Session name resume cancelled before admission");
     let session: any | undefined;
     try {
-      session = await resumeSessionWithTimeout(
+      session = await this.resumeAgentSessionWithTimeout(
+        client,
+        sessionId,
         client.resumeSession(sessionId, sessionConfig),
         "name resume timed out after 60s",
       );
@@ -4859,7 +4974,9 @@ export class SessionManager {
         const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
         if (!resumeLease) throw new Error("Model switch resume cancelled before admission");
         try {
-          session = await resumeSessionWithTimeout(
+          session = await this.resumeAgentSessionWithTimeout(
+            client,
+            sessionId,
             client.resumeSession(sessionId, resumeConfig),
             "resumeSession timed out after 60s",
           );
@@ -5093,6 +5210,7 @@ export class SessionManager {
     }
 
     // Reserve time for forceStop. Both calls consume the same overall deadline.
+    this.releaseTimedOutSessionResumeBarriers();
     if (this.backend) {
       console.log("[sdk] Stopping Copilot SDK client...");
       const backend = this.backend;
