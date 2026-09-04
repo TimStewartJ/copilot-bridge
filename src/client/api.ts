@@ -133,6 +133,7 @@ export interface SessionWorkspaceDetails extends SessionWorkspaceSummary {
 /** Content-free defer indicator data for a single session. */
 export interface DeferSummary {
   count: number;
+  runningCount: number;
   nextRunAt: string | null;
 }
 

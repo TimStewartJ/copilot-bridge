@@ -24,7 +24,7 @@ function makeScheduleRun(runId: number): ScheduleRun {
     recordedAt: new Date(2026, 0, 1, 0, runId).toISOString(),
     recordedAtKnown: true,
     runState: "idle",
-    deferSummary: { count: 0, nextRunAt: null },
+    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
   };
 }
 

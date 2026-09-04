@@ -99,8 +99,8 @@ describe("defer-loop-runner", () => {
     expect(updated.runCount).toBe(1);
     expect(Date.parse(updated.nextRunAt)).toBe(Date.now() + 300_000);
     expect(summaryEvents).toEqual([
-      { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
-      { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, nextRunAt: updated.nextRunAt } },
+      { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, runningCount: 1, nextRunAt: null } },
+      { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, runningCount: 0, nextRunAt: updated.nextRunAt } },
     ]);
     expect(sm._attention).toEqual([]);
     runner.shutdown();

@@ -107,14 +107,19 @@ export function createDeferLoopStore(db: DatabaseSync) {
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
   `);
   const selectSummaryForSession = db.prepare(`
-    SELECT COUNT(*) as count, MIN(nextRunAt) as nextRunAt
+    SELECT COUNT(*) as count,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as runningCount,
+           MIN(CASE WHEN status = 'active' THEN nextRunAt END) as nextRunAt
     FROM defer_loops
-    WHERE sessionId = ? AND status = 'active'
+    WHERE sessionId = ? AND status IN ('active', 'running')
   `);
   const selectSummariesBySession = db.prepare(`
-    SELECT sessionId, COUNT(*) as count, MIN(nextRunAt) as nextRunAt
+    SELECT sessionId,
+           COUNT(*) as count,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as runningCount,
+           MIN(CASE WHEN status = 'active' THEN nextRunAt END) as nextRunAt
     FROM defer_loops
-    WHERE status = 'active'
+    WHERE status IN ('active', 'running')
     GROUP BY sessionId
   `);
 

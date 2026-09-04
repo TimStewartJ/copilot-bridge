@@ -279,9 +279,9 @@ export interface AgentSession {
   send(args: AgentSendArgs): Promise<unknown>;
   /**
    * Send a message and block until the agent finishes (resolves on
-   * `session.idle`).
+   * `session.idle`). Pass null to wait without a timeout.
    */
-  sendAndWait(args: AgentSendArgs, timeoutMs?: number): Promise<unknown>;
+  sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown>;
   abort(): Promise<unknown>;
   setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown>;
   disconnect?(): Promise<unknown> | void;

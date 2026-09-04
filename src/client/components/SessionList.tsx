@@ -57,6 +57,14 @@ export function formatDeferSummaryLabel(deferSummary?: Session["deferSummary"]):
   const count = deferSummary?.count ?? 0;
   if (count <= 0) return null;
 
+  const runningCount = Math.min(count, Math.max(0, deferSummary?.runningCount ?? 0));
+  if (runningCount > 0) {
+    if (runningCount === count) {
+      return count === 1 ? "Defer running" : `${count} defers running`;
+    }
+    return `${runningCount} running · ${count - runningCount} queued`;
+  }
+
   const nextRun = deferSummary?.nextRunAt ? timeAgo(deferSummary.nextRunAt) : null;
   if (count === 1) {
     return nextRun ? `Deferred ${nextRun}` : "Deferred";
@@ -602,6 +610,7 @@ export default function SessionList({
     const isSelected = selectedIds?.has(id);
     const needsUserInput = session.needsUserInput || (session.pendingUserInputCount ?? 0) > 0;
     const deferLabel = formatDeferSummaryLabel(session.deferSummary);
+    const deferRunning = (session.deferSummary?.runningCount ?? 0) > 0;
     const backgroundAgents = session.backgroundAgents;
     const showBackgroundAgents = hasSurfacedBackgroundAgents(backgroundAgents);
     const backgroundAgentsRunning = (backgroundAgents?.running ?? 0) > 0;
@@ -780,12 +789,18 @@ export default function SessionList({
               );
               setDeferredWorkSessionId(id);
             }}
-            className={`absolute bottom-1.5 left-3 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-0.5 truncate rounded-full border border-accent/15 bg-accent/5 px-1.5 py-0.5 text-[10px] font-medium text-accent hover:border-accent/35 hover:bg-accent/10 ${
+            className={`absolute bottom-1.5 left-3 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-0.5 truncate rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+              deferRunning
+                ? "border-info/30 bg-info/10 text-info hover:border-info/50 hover:bg-info/15"
+                : "border-accent/15 bg-accent/5 text-accent hover:border-accent/35 hover:bg-accent/10"
+            } ${
               isArch || isArchiving ? "opacity-50" : ""
             }`}
             title={`${deferLabel}. Open deferred work.`}
           >
-            <Clock size={9} className="shrink-0" aria-hidden="true" />
+            {deferRunning
+              ? <Loader2 size={9} className="shrink-0 animate-spin" aria-hidden="true" />
+              : <Clock size={9} className="shrink-0" aria-hidden="true" />}
             <span className="truncate">{deferLabel}</span>
           </button>
         )}

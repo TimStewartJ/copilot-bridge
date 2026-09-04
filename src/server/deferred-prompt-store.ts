@@ -111,16 +111,21 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   `);
 
   const selectSummaryForSession = db.prepare(`
-    SELECT COUNT(*) as count, MIN(runAt) as nextRunAt
+    SELECT COUNT(*) as count,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as runningCount,
+           MIN(CASE WHEN status = 'pending' THEN runAt END) as nextRunAt
     FROM deferred_prompts
-    WHERE sessionId = ? AND status = 'pending'
+    WHERE sessionId = ? AND status IN ('pending', 'running')
       AND purpose = 'defer'
   `);
 
   const selectSummariesBySession = db.prepare(`
-    SELECT sessionId, COUNT(*) as count, MIN(runAt) as nextRunAt
+    SELECT sessionId,
+           COUNT(*) as count,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as runningCount,
+           MIN(CASE WHEN status = 'pending' THEN runAt END) as nextRunAt
     FROM deferred_prompts
-    WHERE status = 'pending'
+    WHERE status IN ('pending', 'running')
       AND purpose = 'defer'
     GROUP BY sessionId
   `);

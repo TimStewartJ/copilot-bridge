@@ -22,6 +22,7 @@ describe("session list defer summaries", () => {
       intervalSeconds: 60,
       nextRunAt: "2030-01-01T00:05:00.000Z",
     });
+    ctx.deferLoopStore!.claimDue(loop.id, 60_000, loop.nextRunAt);
 
     const res = await request(app).get("/api/sessions");
 
@@ -31,7 +32,8 @@ describe("session list defer summaries", () => {
         sessionId: "session-1",
         deferSummary: {
           count: 2,
-          nextRunAt: "2030-01-01T00:05:00.000Z",
+          runningCount: 1,
+          nextRunAt: "2030-01-01T00:10:00.000Z",
         },
       }),
     ]);
@@ -67,11 +69,11 @@ describe("session list defer summaries", () => {
     expect(secondRes.status).toBe(200);
     expect(firstRes.body.sessions[0]).toMatchObject({
       sessionId: "session-1",
-      deferSummary: { count: 0, nextRunAt: null },
+      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     });
     expect(secondRes.body.sessions[0]).toMatchObject({
       sessionId: "session-1",
-      deferSummary: { count: 1, nextRunAt: "2030-01-01T00:10:00.000Z" },
+      deferSummary: { count: 1, runningCount: 0, nextRunAt: "2030-01-01T00:10:00.000Z" },
     });
     expect(JSON.stringify(secondRes.body)).not.toContain("prompt added after session cache warmup");
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
