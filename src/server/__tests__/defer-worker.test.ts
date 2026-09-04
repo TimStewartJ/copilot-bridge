@@ -480,9 +480,9 @@ describe("defer worker", () => {
       prompt: "Finish",
     })).resolves.toEqual({ action: "finish" });
 
-    await vi.waitFor(() => expect(deleteSession).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(releaseCapacity).toHaveBeenCalledOnce());
+    expect(deleteSession).toHaveBeenCalledOnce();
     const workerId = deleteSession.mock.calls[0]?.[0] as string;
-    expect(releaseCapacity).toHaveBeenCalledOnce();
     expect(existsSync(join(copilotHome, "session-state", workerId))).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("Disposable usage persistence failed"),
