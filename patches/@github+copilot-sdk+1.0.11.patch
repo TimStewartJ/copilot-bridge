@@ -1,5 +1,5 @@
 diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-index f3c5272..cf105f1 100644
+index f3c5272..167667f 100644
 --- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
 @@ -275,6 +275,7 @@ class CopilotClient {
@@ -18,7 +18,15 @@ index f3c5272..cf105f1 100644
      const errors = [];
      const activeSessions = [...this.sessions.values()];
      if (this.connectionConfig.kind === "inprocess") {
-@@ -1150,6 +1152,7 @@ class CopilotClient {
+@@ -1139,6 +1141,7 @@ class CopilotClient {
+         requestPermission: !!config.onPermissionRequest,
+         requestUserInput: !!config.onUserInputRequest,
+         requestElicitation: !!config.onElicitationRequest,
++        ...config.askUserVariant ? { askUserVariant: config.askUserVariant } : {},
+         ...config.enableMcpApps ? { requestMcpApps: true } : {},
+         ...config.githubMcpToolConfig != null ? { githubMcpToolConfig: config.githubMcpToolConfig } : {},
+         requestExitPlanMode: !!config.onExitPlanModeRequest,
+@@ -1150,6 +1153,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -26,7 +34,15 @@ index f3c5272..cf105f1 100644
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1374,6 +1377,7 @@ class CopilotClient {
+@@ -1353,6 +1357,7 @@ class CopilotClient {
+         requestPermission: config.onPermissionRequest !== import_types.defaultJoinSessionPermissionHandler,
+         requestUserInput: !!config.onUserInputRequest,
+         requestElicitation: !!config.onElicitationRequest,
++        ...config.askUserVariant ? { askUserVariant: config.askUserVariant } : {},
+         ...config.enableMcpApps ? { requestMcpApps: true } : {},
+         ...config.githubMcpToolConfig != null ? { githubMcpToolConfig: config.githubMcpToolConfig } : {},
+         requestExitPlanMode: !!config.onExitPlanModeRequest,
+@@ -1374,6 +1379,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -34,7 +50,7 @@ index f3c5272..cf105f1 100644
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -2046,6 +2050,7 @@ stderr: ${stderrOutput}`
+@@ -2046,6 +2052,7 @@ stderr: ${stderrOutput}`
        this.state = "error";
        const reason = err instanceof Error ? err.stack ?? err.message : String(err);
        this.logDebug(`stdin pipe error: ${reason}`);
@@ -42,7 +58,7 @@ index f3c5272..cf105f1 100644
        try {
          this.connection?.dispose();
        } catch {
-@@ -2144,9 +2149,11 @@ stderr: ${stderrOutput}`
+@@ -2144,9 +2151,11 @@ stderr: ${stderrOutput}`
        }
      );
      this.connection.onClose(() => {
@@ -56,7 +72,7 @@ index f3c5272..cf105f1 100644
      });
    }
 diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
-index 6036485..739a1b0 100644
+index 6036485..0852558 100644
 --- a/node_modules/@github/copilot-sdk/dist/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/client.js
 @@ -252,6 +252,7 @@ class CopilotClient {
@@ -75,7 +91,15 @@ index 6036485..739a1b0 100644
      const errors = [];
      const activeSessions = [...this.sessions.values()];
      if (this.connectionConfig.kind === "inprocess") {
-@@ -1127,6 +1129,7 @@ class CopilotClient {
+@@ -1116,6 +1118,7 @@ class CopilotClient {
+         requestPermission: !!config.onPermissionRequest,
+         requestUserInput: !!config.onUserInputRequest,
+         requestElicitation: !!config.onElicitationRequest,
++        ...config.askUserVariant ? { askUserVariant: config.askUserVariant } : {},
+         ...config.enableMcpApps ? { requestMcpApps: true } : {},
+         ...config.githubMcpToolConfig != null ? { githubMcpToolConfig: config.githubMcpToolConfig } : {},
+         requestExitPlanMode: !!config.onExitPlanModeRequest,
+@@ -1127,6 +1130,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -83,7 +107,15 @@ index 6036485..739a1b0 100644
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -1351,6 +1354,7 @@ class CopilotClient {
+@@ -1330,6 +1334,7 @@ class CopilotClient {
+         requestPermission: config.onPermissionRequest !== defaultJoinSessionPermissionHandler,
+         requestUserInput: !!config.onUserInputRequest,
+         requestElicitation: !!config.onElicitationRequest,
++        ...config.askUserVariant ? { askUserVariant: config.askUserVariant } : {},
+         ...config.enableMcpApps ? { requestMcpApps: true } : {},
+         ...config.githubMcpToolConfig != null ? { githubMcpToolConfig: config.githubMcpToolConfig } : {},
+         requestExitPlanMode: !!config.onExitPlanModeRequest,
+@@ -1351,6 +1356,7 @@ class CopilotClient {
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          ...this.onGitHubTelemetry != null ? { enableGitHubTelemetryForwarding: true } : {},
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -91,7 +123,7 @@ index 6036485..739a1b0 100644
          mcpOAuthTokenStorage: config.mcpOAuthTokenStorage,
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
-@@ -2023,6 +2027,7 @@ stderr: ${stderrOutput}`
+@@ -2023,6 +2029,7 @@ stderr: ${stderrOutput}`
        this.state = "error";
        const reason = err instanceof Error ? err.stack ?? err.message : String(err);
        this.logDebug(`stdin pipe error: ${reason}`);
@@ -99,7 +131,7 @@ index 6036485..739a1b0 100644
        try {
          this.connection?.dispose();
        } catch {
-@@ -2121,9 +2126,11 @@ stderr: ${stderrOutput}`
+@@ -2121,9 +2128,11 @@ stderr: ${stderrOutput}`
        }
      );
      this.connection.onClose(() => {

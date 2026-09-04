@@ -37,7 +37,8 @@ describe("release scripts", () => {
     expect(smokeScript).toContain("@github\\copilot-win32-x64");
     expect(smokeScript).toContain("copilot.exe");
     expect(smokeScript).toContain("sdk\\index.js");
-    expect(smokeScript).toContain("import('@github/copilot-win32-x64/sdk')");
+    expect(smokeScript).toContain("pathToFileURL(process.argv[1]).href");
+    expect(smokeScript).not.toContain("import('@github/copilot-win32-x64/sdk')");
   });
 
   it("applies the Bridge SDK patch in packaged installs", () => {

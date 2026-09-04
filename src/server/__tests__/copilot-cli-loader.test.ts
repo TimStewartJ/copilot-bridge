@@ -7,53 +7,78 @@ import { patchCopilotAppSource } from "../copilot-cli-loader.js";
 import { makeTestDir } from "./helpers.js";
 
 const STABLE_RESOLVER = `
-async resolveBuiltInGitHubMcpConfig(t,e,o){if(!this.shouldInjectBuiltInGitHubMcp(t)||!e||t.provider)return;let n={},l={userOverrode:!1};return{config:r(o,e,{mode:"stable"},n),userOverrode:l.userOverrode}}
+async resolveBuiltInGitHubMcpConfig(t,n,r,o=!1){if(!this.shouldInjectBuiltInGitHubMcp(t)||t.providerPresent)return;let s=await y.githubMcpShouldExcludeGhReplaceableTools(),a=await y.userSettingsLoad({}),l=this.options.featureFlags?.FIDES_IFC??!1,c=y.githubMcpResolveToolOptionsTyped(void 0,JSON.stringify(y.githubMcpToolOptionsFromSettings(a)),r===void 0?void 0:JSON.stringify(r),l,s),d={...c,copilotIntegrationId:this.integrationId,enableMcpApps:o},u=t[Nj],p=u?y.githubTokenProviderExistingAuthInfo(u):void 0,f=p?await y.githubMcpResolveConfigForAuthInfo(p,d):await y.githubMcpResolveConfigForAuthContext(this.authManager.managerConfig(),t.authContextId,d);if(f)return{config:JSON.parse(f.configJson),userOverrode:c.userOverrode}}
 `;
 const STABLE_ELICITATION = `
 class Host{
-select(e){let u=!!e.requestUserInput,c=!!e.featureFlags?.ASK_USER_ELICITATION&&!!e.requestElicitation;return{u,c}}
-callback(t){return{requestElicitation:t.toolConfig.enableRequestElicitation?()=>1:void 0}}
-supportsElicitation(){return m.sessionCapabilitiesEffectiveHas(this.nativeSessionId,"elicitation")}
+remoteOptions(t){return{hostSupportsElicitation:t?.requestElicitation===!0,enableElicitationCallback:t?.requestElicitation??!1}}
+createOptions(t){return{hostSupportsElicitation:t.requestElicitation===!0,enableElicitationCallback:t.requestElicitation??!1}}
+resumeOptions(t,n){return{hostSupportsElicitation:t.requestElicitation===!0||t.observePromptEvents===!0&&!this.extensionConnections.has(n),enableElicitationCallback:t.requestElicitation??!1}}
+rpcOptions(t){return{enableElicitationCallback:t.requestElicitation??!1}}
+supportsElicitation(){return m.sessionBaseSupportsCapability(this.nativeSessionId,"elicitation")}
 }
 `;
 
 describe("copilot-cli-loader stable contract", () => {
-  it("injects Bridge GitHub MCP options and enables native elicitation in the 1.0.80 shape", () => {
+  it("injects Bridge GitHub MCP options and validates native elicitation in the 1.0.81 shape", () => {
     const source = `class App{${STABLE_RESOLVER}${STABLE_ELICITATION}}`;
 
     const patched = patchCopilotAppSource(source);
 
     expect(patched).toContain(
-      "async resolveBuiltInGitHubMcpConfig(t,e,o){const __bridgeGithubMcpOptions=t.githubMcpToolOptions;",
+      "async resolveBuiltInGitHubMcpConfig(t,n,r,o=!1){const __bridgeGithubMcpOptions=t.githubMcpToolOptions;",
     );
     expect(patched).toContain(
-      "if((!this.shouldInjectBuiltInGitHubMcp(t)&&!(__bridgeGithubMcpOptions&&!t.gitHubToken))||!e||t.provider)return;",
+      "if((!this.shouldInjectBuiltInGitHubMcp(t)&&!(__bridgeGithubMcpOptions&&!t.hasGitHubToken))||t.providerPresent)return;",
     );
-    expect(patched).toContain('{mode:"stable",...__bridgeGithubMcpOptions}');
-    expect(patched).toContain("let u=!!e.requestUserInput,c=!!e.requestElicitation;");
     expect(patched).toContain(
-      "requestElicitation:(t.toolConfig.enableRequestElicitation||this.supportsElicitation())?",
+      "d={...c,copilotIntegrationId:this.integrationId,enableMcpApps:o,...__bridgeGithubMcpOptions}",
     );
+    expect(patched).toContain("hostSupportsElicitation:t.requestElicitation===!0");
+    expect(patched).toContain("enableElicitationCallback:t.requestElicitation??!1");
   });
 
   it("fails closed when the stable bundle contract drifts", () => {
-    const source = `class App{${STABLE_RESOLVER.replace("||!e||t.provider", "||t.providerPresent")}${STABLE_ELICITATION}}`;
+    const source = `class App{${STABLE_RESOLVER.replace("||t.providerPresent", "||t.providerPresent===!0")}${STABLE_ELICITATION}}`;
 
     expect(() => patchCopilotAppSource(source)).toThrow(
       "expected 1 stable config resolver guard, found 0",
     );
   });
 
+  it("fails closed when the merged GitHub MCP options stop feeding an auth resolver", () => {
+    const source = `class App{${
+      STABLE_RESOLVER.replace(
+        "this.authManager.managerConfig(),t.authContextId,d",
+        "this.authManager.managerConfig(),t.authContextId,c",
+      )
+    }${STABLE_ELICITATION}}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "stable config options do not feed both auth resolvers",
+    );
+  });
+
+  it("fails closed when a native elicitation capability gate disappears", () => {
+    const source = `class App{${STABLE_RESOLVER}${
+      STABLE_ELICITATION.replace("hostSupportsElicitation:t?.requestElicitation===!0,", "")
+    }}`;
+
+    expect(() => patchCopilotAppSource(source)).toThrow(
+      "expected 3 stable capability gates, found 2",
+    );
+  });
+
   const installedApp = findInstalledStableCopilotApp();
 
-  it("resolves the installed 1.0.80 platform package", () => {
+  it("resolves the installed 1.0.81 platform package", () => {
     expect(
       installedApp,
-      "No installed @github/copilot platform package at version 1.0.80. Run `npm install` before the server test lane.",
+      "No installed @github/copilot platform package at version 1.0.81. Run `npm install` before the server test lane.",
     ).toBeTruthy();
   });
 
-  it("patches the installed 1.0.80 bundle and emits syntactically valid ESM", () => {
+  it("patches the installed 1.0.81 bundle and emits syntactically valid ESM", () => {
     const source = readFileSync(installedApp!.appPath, "utf-8");
     const patched = patchCopilotAppSource(source);
 
@@ -64,6 +89,19 @@ describe("copilot-cli-loader stable contract", () => {
     const modulePath = join(dir, "patched-app.mjs");
     writeFileSync(modulePath, patched);
     expect(() => execFileSync(process.execPath, ["--check", modulePath], { stdio: "pipe" })).not.toThrow();
+  });
+
+  it("launches the installed 1.0.81 package through the Bridge wrapper", () => {
+    const wrapperPath = join(dirname(fileURLToPath(import.meta.url)), "..", "copilot-cli-wrapper.js");
+    const output = execFileSync(process.execPath, [wrapperPath, "--version"], {
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        COPILOT_AUTO_UPDATE: "false",
+      },
+    });
+
+    expect(output).toContain("1.0.81");
   });
 });
 
@@ -109,7 +147,7 @@ function findInstalledStableCopilotApp(): { appPath: string; packageDir: string 
     const appPath = join(packageDir, "app.js");
     if (!existsSync(packageJsonPath) || !existsSync(appPath)) continue;
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { version?: string };
-    if (packageJson.version === "1.0.80") return { appPath, packageDir };
+    if (packageJson.version === "1.0.81") return { appPath, packageDir };
   }
   return undefined;
 }

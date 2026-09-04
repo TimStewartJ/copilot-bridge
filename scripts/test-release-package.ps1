@@ -189,7 +189,8 @@ try {
   if ($hasNodeModules) {
     Push-Location $appRoot
     try {
-      & $nodeExe --input-type=module -e "Promise.all([import('@github/copilot-sdk'), import('@github/copilot-win32-x64/sdk')]).then(([{ CopilotClient }]) => { new CopilotClient({ autoStart: false }); console.log('Copilot SDK and Windows x64 runtime imports passed'); })"
+      $copilotPlatformSdk = Join-Path $appRoot "node_modules\@github\copilot-win32-x64\sdk\index.js"
+      & $nodeExe --input-type=module -e "import { pathToFileURL } from 'node:url'; Promise.all([import('@github/copilot-sdk'), import(pathToFileURL(process.argv[1]).href)]).then(([{ CopilotClient }]) => { new CopilotClient({ autoStart: false }); console.log('Copilot SDK and Windows x64 runtime imports passed'); })" $copilotPlatformSdk
       if ($LASTEXITCODE -ne 0) {
         throw "Copilot SDK or Windows x64 runtime import failed with exit code $LASTEXITCODE."
       }
