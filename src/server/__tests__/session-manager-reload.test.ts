@@ -135,6 +135,189 @@ describe("SessionManager reloadSession", () => {
     }
   });
 
+  it("blocks another resume until a timed-out resume finishes late cleanup", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const lateSession = makeAgentSessionStub({ disconnect: vi.fn() });
+    const recoveredSession = {
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    };
+    let resolveFirstResume!: (session: typeof lateSession) => void;
+    const resumeSession = vi.fn()
+      .mockImplementationOnce(() => new Promise<typeof lateSession>((resolve) => {
+        resolveFirstResume = resolve;
+      }))
+      .mockResolvedValueOnce(recoveredSession);
+    manager.backend = { resumeSession };
+
+    try {
+      const firstReload = manager.reloadSession("session-timeout-race");
+      const firstRejection = expect(firstReload).rejects.toThrow("reloadSession timed out after 60s");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await firstRejection;
+
+      await expect(manager.reloadSession("session-timeout-race"))
+        .rejects.toThrow("Session resume timed out and is still settling");
+      expect(resumeSession).toHaveBeenCalledTimes(1);
+
+      resolveFirstResume(lateSession);
+      await vi.advanceTimersByTimeAsync(0);
+      await manager._drainCacheQueue();
+      expect(lateSession.disconnect).toHaveBeenCalledTimes(1);
+
+      await expect(manager.reloadSession("session-timeout-race")).resolves.toEqual([]);
+      expect(resumeSession).toHaveBeenCalledTimes(2);
+      expect(manager.sessionObjects.get("session-timeout-race")).toBe(recoveredSession);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("allows recovery after the settling bound without disconnecting a stale late handle", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    manager.timedOutSessionResumeSettleTimeoutMs = 1_000;
+    const staleLateSession = makeAgentSessionStub({ disconnect: vi.fn() });
+    const recoveredSession = {
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    };
+    let resolveFirstResume!: (session: typeof staleLateSession) => void;
+    const resumeSession = vi.fn()
+      .mockImplementationOnce(() => new Promise<typeof staleLateSession>((resolve) => {
+        resolveFirstResume = resolve;
+      }))
+      .mockResolvedValueOnce(recoveredSession);
+    manager.backend = { resumeSession };
+
+    try {
+      const firstReload = manager.reloadSession("session-timeout-expiry");
+      const firstRejection = expect(firstReload).rejects.toThrow("reloadSession timed out after 60s");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await firstRejection;
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(manager.reloadSession("session-timeout-expiry")).resolves.toEqual([]);
+      expect(manager.sessionObjects.get("session-timeout-expiry")).toBe(recoveredSession);
+
+      resolveFirstResume(staleLateSession);
+      await vi.advanceTimersByTimeAsync(0);
+      await manager._drainCacheQueue();
+
+      expect(staleLateSession.disconnect).not.toHaveBeenCalled();
+      expect(manager.sessionObjects.get("session-timeout-expiry")).toBe(recoveredSession);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a superseded backend arm a resume barrier", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const staleLateSession = makeAgentSessionStub({ disconnect: vi.fn() });
+    const recoveredSession = {
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    };
+    let resolveFirstResume!: (session: typeof staleLateSession) => void;
+    const staleBackend = {
+      resumeSession: vi.fn(() => new Promise<typeof staleLateSession>((resolve) => {
+        resolveFirstResume = resolve;
+      })),
+    };
+    const recoveredBackend = {
+      resumeSession: vi.fn().mockResolvedValue(recoveredSession),
+    };
+    manager.backend = staleBackend;
+
+    try {
+      const firstReload = manager.reloadSession("session-backend-replaced");
+      manager.backend = recoveredBackend;
+
+      const firstRejection = expect(firstReload).rejects.toThrow("reloadSession timed out after 60s");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await firstRejection;
+
+      await expect(manager.reloadSession("session-backend-replaced")).resolves.toEqual([]);
+      expect(recoveredBackend.resumeSession).toHaveBeenCalledTimes(1);
+
+      resolveFirstResume(staleLateSession);
+      await vi.advanceTimersByTimeAsync(0);
+      await manager._drainCacheQueue();
+
+      expect(staleLateSession.disconnect).not.toHaveBeenCalled();
+      expect(manager.sessionObjects.get("session-backend-replaced")).toBe(recoveredSession);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the barrier and recovers the backend when late cleanup cannot finish", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const lateSession = makeAgentSessionStub({
+      disconnect: vi.fn(() => new Promise(() => {})),
+    });
+    let resolveResume!: (session: typeof lateSession) => void;
+    const backend = {
+      resumeSession: vi.fn(() => new Promise<typeof lateSession>((resolve) => {
+        resolveResume = resolve;
+      })),
+    };
+    const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+    manager.backend = backend;
+
+    try {
+      const firstReload = manager.reloadSession("session-cleanup-timeout");
+      const firstRejection = expect(firstReload).rejects.toThrow("reloadSession timed out after 60s");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await firstRejection;
+
+      resolveResume(lateSession);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(handleBackendDisconnect).toHaveBeenCalledWith(
+        backend,
+        expect.objectContaining({
+          reason: "rpc-timeout",
+          detail: expect.stringContaining("session-cleanup-timeout"),
+        }),
+      );
+      await expect(manager.reloadSession("session-cleanup-timeout"))
+        .rejects.toThrow("Session resume timed out and is still settling");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not cache a resume that resolves from a superseded backend", async () => {
+    const manager = createManager();
+    const staleSession = makeAgentSessionStub({ disconnect: vi.fn() });
+    const recoveredSession = {
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    };
+    let resolveStaleResume!: (session: typeof staleSession) => void;
+    const staleBackend = {
+      resumeSession: vi.fn(() => new Promise<typeof staleSession>((resolve) => {
+        resolveStaleResume = resolve;
+      })),
+    };
+    const recoveredBackend = {
+      resumeSession: vi.fn().mockResolvedValue(recoveredSession),
+    };
+    manager.backend = staleBackend;
+
+    const staleReload = manager.reloadSession("session-pre-timeout-replacement");
+    await vi.waitFor(() => expect(staleBackend.resumeSession).toHaveBeenCalledTimes(1));
+    manager.backend = recoveredBackend;
+    resolveStaleResume(staleSession);
+
+    await expect(staleReload).rejects.toThrow("Agent backend disconnected");
+    expect(manager.sessionObjects.has("session-pre-timeout-replacement")).toBe(false);
+    expect(staleSession.disconnect).not.toHaveBeenCalled();
+
+    await expect(manager.reloadSession("session-pre-timeout-replacement")).resolves.toEqual([]);
+    expect(manager.sessionObjects.get("session-pre-timeout-replacement")).toBe(recoveredSession);
+  });
+
   it("rejects busy or stalled sessions", async () => {
     for (const { label, runState } of [
       { label: "busy", runState: { state: "busy" as const, startedAt: Date.now(), lastEventAt: Date.now() } },

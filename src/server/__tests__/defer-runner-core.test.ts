@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
+  SESSION_RESUME_SETTLING_MESSAGE,
 } from "../backend-availability.js";
 import {
   classifyDeferDeliveryError,
@@ -20,6 +21,7 @@ describe("defer-runner-core delivery errors", () => {
     PROMPT_DELIVERY_ABORTED_MESSAGE,
     BACKEND_DISCONNECTED_MESSAGE,
     BACKEND_RECONNECTING_MESSAGE,
+    SESSION_RESUME_SETTLING_MESSAGE,
   ])("pauses without consuming an attempt for %s", (message) => {
     expect(classifyDeferDeliveryError(new Error(message))).toBe("pause");
   });
