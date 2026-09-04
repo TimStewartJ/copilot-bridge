@@ -425,7 +425,9 @@ describe("deferred-prompt-runner", () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const past = new Date(Date.now() - 1000).toISOString();
-      store.create("ghost-session", "Do something", past);
+      const missing = store.create("ghost-session", "Do something", past);
+      db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
+        .run(MAX_ATTEMPTS, missing.id);
 
       const sm = makeMockSessionManager({ sessions: [] }); // ghost not in list
       const runner = createDeferredPromptRunner(store, sm as any, bus);
@@ -435,6 +437,7 @@ describe("deferred-prompt-runner", () => {
       expect(sm._started).toHaveLength(0);
       const dp = store.listForSession("ghost-session")[0];
       expect(dp.status).toBe("cancelled");
+      expect(store.listDeliveriesForSession("ghost-session")).toEqual([]);
       runner.shutdown();
     });
 
@@ -460,7 +463,9 @@ describe("deferred-prompt-runner", () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const past = new Date(Date.now() - 1000).toISOString();
-      store.create("archived-session", "Do not send", past);
+      const archived = store.create("archived-session", "Do not send", past);
+      db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
+        .run(MAX_ATTEMPTS, archived.id);
 
       const sm = makeMockSessionManager({
         sessions: ["archived-session"],
@@ -473,6 +478,7 @@ describe("deferred-prompt-runner", () => {
       expect(sm._started).toHaveLength(0);
       const dp = store.listForSession("archived-session")[0];
       expect(dp.status).toBe("cancelled");
+      expect(store.listDeliveriesForSession("archived-session")).toEqual([]);
       runner.shutdown();
     });
 
@@ -873,9 +879,22 @@ describe("deferred-prompt-runner", () => {
         attempts: MAX_ATTEMPTS,
         lastError: message,
       });
-      expect(warnSpy).toHaveBeenCalledTimes(MAX_ATTEMPTS - 1);
+      expect(warnSpy.mock.calls.filter(([text]) =>
+        String(text).includes(`Retrying deferral ${dp.id} after attempt`)
+      )).toHaveLength(MAX_ATTEMPTS - 1);
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining(`Deferral ${dp.id} failed after ${MAX_ATTEMPTS} attempt(s)`),
+      );
+      expect(store.listDeliveriesForSession("session-1")).toEqual([
+        expect.objectContaining({
+          sourceId: dp.deferId,
+          prompt: expect.stringContaining(
+            `The one-shot defer ${dp.deferId} stopped after ${MAX_ATTEMPTS} failed attempts.`,
+          ),
+        }),
+      ]);
+      expect(store.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
+        `Last error: ${message}`,
       );
       runner.shutdown();
       warnSpy.mockRestore();
@@ -903,7 +922,73 @@ describe("deferred-prompt-runner", () => {
       expect(updated.status).toBe("failed");
       expect(updated.lastError).toContain("Fatal error");
       expect(sm._attention).toEqual([{ sessionId: "session-1", at: expect.any(String) }]);
+      expect(store.listDeliveriesForSession("session-1")).toEqual([
+        expect.objectContaining({
+          sourceId: dp.deferId,
+          prompt: expect.stringContaining("Deferred work is no longer active."),
+        }),
+      ]);
       runner.shutdown();
+    });
+
+    it("does not recursively notify when a parent delivery exhausts retries", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
+        { deferId: "interval_source", kind: "interval", parentSessionId: "session-1" },
+        "Source defer failed.",
+        { deliveryId: "failed-delivery" },
+      ));
+      db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
+        .run(MAX_ATTEMPTS - 1, delivery.id);
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        startWorkError: new Error("Parent delivery failed"),
+      });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.get(delivery.id)).toMatchObject({
+        status: "failed",
+        attempts: MAX_ATTEMPTS,
+        lastError: "Parent delivery failed",
+      });
+      expect(store.listDeliveriesForSession("session-1")).toHaveLength(1);
+      runner.shutdown();
+      errorSpy.mockRestore();
+    });
+
+    it("returns a failure queued before restart to the parent", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const dp = store.create("session-1", "Prompt", new Date(Date.now() - 1_000).toISOString());
+      db.prepare(`
+        UPDATE deferred_prompts
+        SET status = 'running', attempts = ?, lastError = ?,
+            claimToken = 'stale-claim', leaseExpiresAt = '2000-01-01T00:00:00.000Z'
+        WHERE id = ?
+      `).run(MAX_ATTEMPTS, "Previous attempt failed", dp.id);
+      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.get(dp.id)).toMatchObject({
+        status: "failed",
+        attempts: MAX_ATTEMPTS,
+        lastError: "Deferred execution lease expired before completion.",
+      });
+      expect(sm._started).toHaveLength(1);
+      expect(sm._started[0]?.prompt).toContain(
+        "Last error: Deferred execution lease expired before completion.",
+      );
+      runner.shutdown();
+      errorSpy.mockRestore();
     });
   });
 
@@ -1310,10 +1395,13 @@ describe("deferred-prompt-runner", () => {
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(started).toEqual([
+      expect(started.slice(0, 2)).toEqual([
         { sessionId: "session-1", prompt: "First" },
         { sessionId: "session-1", prompt: "Second" },
       ]);
+      expect(started[2]?.prompt).toContain(
+        `The one-shot defer ${first.deferId} stopped after ${MAX_ATTEMPTS} failed attempts.`,
+      );
       expect(store.get(first.id)?.status).toBe("failed");
       expect(store.get(second.id)?.status).toBe("completed");
       errorSpy.mockRestore();

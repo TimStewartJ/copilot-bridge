@@ -11,7 +11,10 @@ import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-deliv
 import type { DeferSummarySources } from "./defer-summary.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
-import { createReturnedDeferDelivery } from "./defer-result-message.js";
+import {
+  createFailedDeferDelivery,
+  createReturnedDeferDelivery,
+} from "./defer-result-message.js";
 import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import {
   classifyDeferDeliveryError,
@@ -135,17 +138,6 @@ export function createDeferLoopRunner(
         }
         return expired ? "changed" : "unchanged";
       }
-      if (loop.attempts >= MAX_ATTEMPTS) {
-        const failed = store.markFailedById(id, `Exceeded max attempts (${MAX_ATTEMPTS})`);
-        const cancelled = !failed && store.cancelById(id);
-        if (failed || cancelled) {
-          ctx.recordSessionAttention(loop.sessionId);
-          ctx.emitDeferSummary(loop.sessionId);
-        }
-        console.error(`[defer-loop-runner] Loop ${id} exceeded max attempts; stopping`);
-        return "changed";
-      }
-
       const sessionList = await sessionManager.listSessionsFromDisk({ includeArchived: false });
       if (!ctx.isStarted()) return "unchanged";
       if (ctx.deliveryGuard.isActive(loop.sessionId)) return "blocked";
@@ -155,6 +147,25 @@ export function createDeferLoopRunner(
         console.warn(`[defer-loop-runner] Session ${loop.sessionId} no longer exists; cancelling ${cancelled} loop(s)`);
         if (cancelled > 0) ctx.emitDeferSummary(loop.sessionId);
         return cancelled > 0 ? "changed" : "unchanged";
+      }
+      if (loop.attempts >= MAX_ATTEMPTS) {
+        const lastError = loop.lastError ?? `Exceeded max attempts (${MAX_ATTEMPTS})`;
+        const failed = store.failWithMessage(
+          id,
+          lastError,
+          createFailedDeferDelivery(
+            { ...buildWorkerInput(loop), ...(loop.name ? { name: loop.name } : {}) },
+            loop.attempts,
+            lastError,
+          ),
+        );
+        if (failed) {
+          ctx.recordSessionAttention(loop.sessionId);
+          ctx.emitDeferSummary(loop.sessionId);
+          options.onParentMessageQueued?.();
+        }
+        console.error(`[defer-loop-runner] Loop ${id} exceeded max attempts; stopping`);
+        return failed ? "changed" : "unchanged";
       }
 
       if (sessionManager.isSessionBusy(loop.sessionId)) return "blocked";
@@ -320,7 +331,16 @@ export function createDeferLoopRunner(
             ctx.emitDeferSummary(loop.sessionId);
           }
         } else {
-          const failed = store.markFailed(loop.id, claimToken, msg);
+          const failed = store.failWithMessage(
+            loop.id,
+            msg,
+            createFailedDeferDelivery(
+              { ...buildWorkerInput(loop), ...(loop.name ? { name: loop.name } : {}) },
+              nextAttempts,
+              msg,
+            ),
+            { claimToken },
+          );
           if (!failed) {
             const current = store.get(loop.id);
             if (current?.status !== "cancelled") {
@@ -329,6 +349,7 @@ export function createDeferLoopRunner(
           } else {
             ctx.recordSessionAttention(loop.sessionId);
             ctx.emitDeferSummary(loop.sessionId);
+            parentMessageQueued = true;
           }
           console.error(`[defer-loop-runner] Loop ${loop.id} failed after ${nextAttempts} attempt(s): ${msg}`);
         }

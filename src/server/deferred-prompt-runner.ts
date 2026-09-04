@@ -18,7 +18,10 @@ import {
   type ProcessOneResult,
 } from "./defer-runner-core.js";
 import { isRestartPending } from "./restart-controller.js";
-import { createReturnedDeferDelivery } from "./defer-result-message.js";
+import {
+  createFailedDeferDelivery,
+  createReturnedDeferDelivery,
+} from "./defer-result-message.js";
 import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import { isRestartRecoveryPrompt } from "./restart-resume.js";
 
@@ -70,11 +73,12 @@ export function createDeferredPromptRunner(
       ) {
         return store.markCompletedById(id) ? "changed" : "unchanged";
       }
-      if (item.attempts >= MAX_ATTEMPTS) {
-        const changed = isDelivery
-          ? store.markFailedById(id, `Exceeded max attempts (${MAX_ATTEMPTS})`)
-          : store.cancelById(id);
-        console.error(`[deferred-runner] ${isDelivery ? "Delivery" : "Deferral"} ${id} exceeded max attempts`);
+      if (isDelivery && item.attempts >= MAX_ATTEMPTS) {
+        const changed = store.markFailedById(
+          id,
+          item.lastError ?? `Exceeded max attempts (${MAX_ATTEMPTS})`,
+        );
+        console.error(`[deferred-runner] Delivery ${id} exceeded max attempts`);
         if (changed) {
           ctx.recordSessionAttention(item.sessionId);
           ctx.emitDeferSummary(item.sessionId);
@@ -97,6 +101,24 @@ export function createDeferredPromptRunner(
         console.warn(`[deferred-runner] Session ${item.sessionId} no longer exists; cancelling ${cancelled} deferral(s)`);
         if (cancelled > 0) ctx.emitDeferSummary(item.sessionId);
         return cancelled > 0 ? "changed" : "unchanged";
+      }
+      if (item.attempts >= MAX_ATTEMPTS) {
+        const lastError = item.lastError ?? `Exceeded max attempts (${MAX_ATTEMPTS})`;
+        const changed = store.failWithMessage(
+          id,
+          lastError,
+          createFailedDeferDelivery({
+            deferId: item.deferId,
+            kind: "once",
+            parentSessionId: item.sessionId,
+          }, item.attempts, lastError),
+        );
+        console.error(`[deferred-runner] Deferral ${id} exceeded max attempts`);
+        if (changed) {
+          ctx.recordSessionAttention(item.sessionId);
+          ctx.emitDeferSummary(item.sessionId);
+        }
+        return changed ? "changed" : "unchanged";
       }
 
       // Check session is not busy
@@ -239,7 +261,18 @@ export function createDeferredPromptRunner(
             ctx.emitDeferSummary(sessionId);
           }
         } else {
-          const failed = store.markFailed(id, claimToken, msg);
+          const failed = item.purpose === "delivery"
+            ? store.markFailed(id, claimToken, msg)
+            : store.failWithMessage(
+                id,
+                msg,
+                createFailedDeferDelivery({
+                  deferId: item.deferId,
+                  kind: "once",
+                  parentSessionId: sessionId,
+                }, nextAttempts, msg),
+                { claimToken },
+              );
           if (!failed) {
             console.error(`[deferred-runner] Failed to mark deferral ${id} failed`);
           } else {

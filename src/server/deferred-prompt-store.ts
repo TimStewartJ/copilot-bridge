@@ -222,7 +222,11 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   const reclaimExpiredStmt = db.prepare(`
     UPDATE deferred_prompts
-    SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
+    SET status = 'pending',
+        claimToken = NULL,
+        leaseExpiresAt = NULL,
+        lastError = 'Deferred execution lease expired before completion.',
+        updatedAt = ?
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
   `);
 
@@ -385,6 +389,33 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
+  function failWithMessage(
+    id: string,
+    lastError: string,
+    message: DeferredResultDelivery,
+    options: { claimToken?: string; now?: string } = {},
+  ): boolean {
+    const now = options.now ?? new Date().toISOString();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = options.claimToken
+        ? markFailedStmt.run(lastError, now, id, options.claimToken)
+        : markFailedByIdStmt.run(lastError, now, id);
+      if ((result as any).changes === 0) {
+        db.exec("ROLLBACK");
+        return false;
+      }
+      if (!insertDelivery(message, now)) {
+        throw new Error(`Deferred delivery ${message.id} already exists.`);
+      }
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /**
    * Reschedule a running prompt for retry (requires matching claimToken).
    */
@@ -485,6 +516,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     completeWithMessage,
     markFailed,
     markFailedById,
+    failWithMessage,
     reactivate,
     reactivateFailedDeliveryForSource,
     retry,

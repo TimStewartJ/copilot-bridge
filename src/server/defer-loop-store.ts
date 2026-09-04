@@ -224,7 +224,11 @@ export function createDeferLoopStore(db: DatabaseSync) {
   `);
   const reclaimExpiredStmt = db.prepare(`
     UPDATE defer_loops
-    SET status = 'active', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
+    SET status = 'active',
+        claimToken = NULL,
+        leaseExpiresAt = NULL,
+        lastError = 'Deferred execution lease expired before completion.',
+        updatedAt = ?
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
   `);
 
@@ -442,6 +446,33 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
+  function failWithMessage(
+    id: string,
+    lastError: string,
+    message: DeferredResultDelivery,
+    options: { claimToken?: string; now?: string } = {},
+  ): boolean {
+    const now = options.now ?? new Date().toISOString();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = options.claimToken
+        ? markFailedStmt.run(lastError, now, id, options.claimToken)
+        : markFailedByIdStmt.run(lastError, now, id);
+      if ((result as any).changes === 0) {
+        db.exec("ROLLBACK");
+        return false;
+      }
+      if (!insertDelivery(message, now)) {
+        throw new Error(`Deferred delivery ${message.id} already exists.`);
+      }
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /**
    * Return a failed (or cancelled/expired) loop to the active queue with a
    * fresh attempt budget, next due at `nextRunAt` (now by default). Used to
@@ -536,6 +567,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
     markTerminalWithMessage,
     markFailed,
     markFailedById,
+    failWithMessage,
     reactivate,
     markExpired,
     markClaimedExpired,
