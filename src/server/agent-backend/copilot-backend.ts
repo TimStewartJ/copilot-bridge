@@ -351,6 +351,7 @@ class CopilotAgentSession implements AgentSession {
 const PENDING_INTERACTION_PLACEHOLDER = async (): Promise<{ action: "cancel" }> => ({
   action: "cancel",
 });
+const PENDING_INTERACTION_ASK_USER_VARIANT = "elicitation";
 
 function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   sdkConfig: Record<string, unknown>;
@@ -362,6 +363,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   } = config;
   if (pendingInteractionEvents) {
     sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
+    sdkConfig.askUserVariant = PENDING_INTERACTION_ASK_USER_VARIANT;
   }
   return { sdkConfig, pendingInteractionEvents };
 }
