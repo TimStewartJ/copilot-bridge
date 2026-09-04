@@ -53,6 +53,26 @@ export function createReturnedDeferDelivery(
   };
 }
 
+export function createFailedDeferDelivery(
+  input: Pick<DeferredWorkResultMessage, "deferId" | "kind"> & {
+    parentSessionId: string;
+    name?: string;
+  },
+  attempts: number,
+  lastError: string,
+): DeferredResultDelivery {
+  const label = input.name
+    ? `"${input.name}" (${input.deferId})`
+    : input.deferId;
+  const workstream = input.kind === "interval" ? "Monitoring" : "Deferred work";
+  return createReturnedDeferDelivery(input, [
+    `The ${input.kind === "interval" ? "recurring" : "one-shot"} defer ${label} stopped after ${attempts} failed attempts.`,
+    `Last error: ${lastError}`,
+    "",
+    `${workstream} is no longer active. Reactivate the defer after resolving the error.`,
+  ].join("\n"));
+}
+
 export function parseReturnedDeferPrompt(prompt: string): DeferredWorkResultMessage | undefined {
   const match = RETURNED_RESULT_PATTERN.exec(prompt);
   if (!match || match[2] !== match[3]) return undefined;

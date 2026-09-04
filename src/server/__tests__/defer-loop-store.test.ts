@@ -171,6 +171,38 @@ describe("defer-loop-store", () => {
     )?.checkpoint).toEqual({ status: "running", buildId: 42 });
   });
 
+  it("marks a claimed loop failed and queues its parent message atomically", () => {
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({
+      ...baseLoop,
+      nextRunAt: "2026-01-01T00:00:00.000Z",
+    });
+    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
+    const delivery = {
+      id: "failure-delivery",
+      sessionId: loop.sessionId,
+      sourceId: loop.deferId,
+      prompt: "The recurring defer stopped.",
+    };
+
+    expect(store.failWithMessage(loop.id, "wrong", delivery, {
+      claimToken: "wrong-token",
+    })).toBe(false);
+    expect(promptStore.listDeliveriesForSession(loop.sessionId)).toEqual([]);
+
+    expect(store.failWithMessage(loop.id, "worker failed", delivery, {
+      claimToken: claimed.claimToken,
+    })).toBe(true);
+    expect(store.get(loop.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      lastError: "worker failed",
+    });
+    expect(promptStore.listDeliveriesForSession(loop.sessionId)).toEqual([
+      expect.objectContaining({ id: delivery.id, sourceId: loop.deferId }),
+    ]);
+  });
+
   it("cancels active and running loops for a session", () => {
     const active = store.create(baseLoop);
     const running = store.create({ ...baseLoop, prompt: "running" });
@@ -183,13 +215,16 @@ describe("defer-loop-store", () => {
     expect(store.listForSession("session-2")[0]?.status).toBe("active");
   });
 
-  it("reclaims expired running loops without consuming attempts", () => {
+  it("reclaims expired running loops with an interruption error", () => {
     const loop = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
     store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z");
 
     expect(store.reclaimExpiredRunning("2026-01-01T00:00:30.000Z")).toBe(0);
     expect(store.reclaimExpiredRunning("2026-01-01T00:01:00.000Z")).toBe(1);
-    expect(store.get(loop.id)!.status).toBe("active");
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      lastError: "Deferred execution lease expired before completion.",
+    });
   });
 });
 

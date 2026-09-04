@@ -558,9 +558,11 @@ describe("defer-loop-runner", () => {
 
   it("allows max attempt count for busy delivery errors", async () => {
     const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
+      name: "Busy deployment monitor",
       prompt: "Poll",
       intervalSeconds: 300,
       nextRunAt: new Date(Date.now() - 1_000).toISOString(),
@@ -585,6 +587,80 @@ describe("defer-loop-runner", () => {
       status: "failed",
       attempts: 5,
     });
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
+      expect.objectContaining({
+        sourceId: loop.deferId,
+        prompt: expect.stringContaining(
+          `The recurring defer "Busy deployment monitor" (${loop.deferId}) stopped after 5 failed attempts.`,
+        ),
+      }),
+    ]);
+    runner.shutdown();
+  });
+
+  it("returns a failure queued before restart to the parent", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    db.prepare(`
+      UPDATE defer_loops
+      SET status = 'running', attempts = ?, lastError = ?,
+          claimToken = 'stale-claim', leaseExpiresAt = '2000-01-01T00:00:00.000Z'
+      WHERE id = ?
+    `).run(MAX_ATTEMPTS, "Previous attempt failed", loop.id);
+    const onParentMessageQueued = vi.fn();
+    const runner = createDeferLoopRunner(
+      store,
+      makeMockSessionManager({ sessions: ["session-1"] }) as any,
+      bus,
+      createDeferDeliveryGuard(),
+      { deferredPromptStore: promptStore, deferLoopStore: store },
+      { onParentMessageQueued },
+    );
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.get(loop.id)).toMatchObject({
+      status: "failed",
+      attempts: MAX_ATTEMPTS,
+      lastError: "Deferred execution lease expired before completion.",
+    });
+    expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
+      "Last error: Deferred execution lease expired before completion.",
+    );
+    expect(onParentMessageQueued).toHaveBeenCalledOnce();
+    runner.shutdown();
+  });
+
+  it("does not queue an exhausted-loop failure for a missing parent", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({
+      sessionId: "missing-session",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    db.prepare("UPDATE defer_loops SET attempts = ?, lastError = ? WHERE id = ?")
+      .run(MAX_ATTEMPTS, "Worker failed", loop.id);
+    const runner = createDeferLoopRunner(
+      store,
+      makeMockSessionManager({ sessions: [] }) as any,
+      createGlobalBus(),
+    );
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.get(loop.id)?.status).toBe("cancelled");
+    expect(promptStore.listDeliveriesForSession("missing-session")).toEqual([]);
     runner.shutdown();
   });
 
@@ -593,6 +669,7 @@ describe("defer-loop-runner", () => {
     "resumeSession timed out after 60s",
   ])("retries transient loop delivery error with backoff until MAX_ATTEMPTS: %s", async (message) => {
     const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
@@ -628,6 +705,12 @@ describe("defer-loop-runner", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining(`Loop ${loop.id} failed after ${MAX_ATTEMPTS} attempt(s)`),
     );
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
+      expect.objectContaining({
+        sourceId: loop.deferId,
+        prompt: expect.stringContaining(`Last error: ${message}`),
+      }),
+    ]);
     runner.shutdown();
     warnSpy.mockRestore();
     errorSpy.mockRestore();
