@@ -163,6 +163,27 @@ describe("SessionManager model refresh", () => {
     expect(freshBackend.start).not.toHaveBeenCalled();
   });
 
+  it("blocks refresh while a timed-out resume is still settling", async () => {
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    const { manager } = createManager([oldBackend, freshBackend]);
+    const timer = setTimeout(() => {}, 60_000);
+
+    try {
+      await manager.initialize();
+      (manager as any).settlingTimedOutSessionResumes.set("settling-session", {
+        token: Symbol("settling-session"),
+        timer,
+      });
+
+      await expect(manager.refreshModels()).rejects.toBeInstanceOf(ModelRefreshBlockedError);
+      expect(oldBackend.stop).not.toHaveBeenCalled();
+      expect(freshBackend.start).not.toHaveBeenCalled();
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   it("restores the previous client when the fresh client fails to start", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);

@@ -2,6 +2,11 @@ export const SESSION_RESUME_TIMEOUT_MS = 60_000;
 
 export interface ResumeSessionWithTimeoutOptions<TSession> {
   /**
+   * Called synchronously when the timeout wins the race. Callers can use this
+   * to block another resume until the uncancellable SDK request settles.
+   */
+  onTimeout?: () => void;
+  /**
    * Cleanup for a resume promise that resolves *after* the timeout already
    * rejected. Such a session is orphaned: no caller receives this value, so it
    * is never cached and must be released here. Defaults to a duck-typed
@@ -15,6 +20,11 @@ export interface ResumeSessionWithTimeoutOptions<TSession> {
    * unhandled rejection.
    */
   onLateError?: (error: unknown) => void;
+  /**
+   * Called after a timed-out resume either rejects or completes its late
+   * session cleanup.
+   */
+  onLateSettled?: () => void;
 }
 
 async function defaultDisconnectLateSession<TSession>(session: TSession): Promise<void> {
@@ -39,13 +49,26 @@ export async function resumeSessionWithTimeout<TSession>(
   timeoutMs = SESSION_RESUME_TIMEOUT_MS,
   options: ResumeSessionWithTimeoutOptions<TSession> = {},
 ): Promise<TSession> {
-  const { disconnectLateSession = defaultDisconnectLateSession, onLateError } = options;
+  const {
+    disconnectLateSession = defaultDisconnectLateSession,
+    onTimeout,
+    onLateError,
+    onLateSettled,
+  } = options;
   const safeOnLateError = (error: unknown): void => {
     if (!onLateError) return;
     try {
       onLateError(error);
     } catch {
       /* best-effort observer */
+    }
+  };
+  const safeCall = (callback: (() => void) | undefined): void => {
+    if (!callback) return;
+    try {
+      callback();
+    } catch (error) {
+      safeOnLateError(error);
     }
   };
 
@@ -57,6 +80,7 @@ export async function resumeSessionWithTimeout<TSession>(
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
+          safeCall(onTimeout);
           reject(new Error(timeoutMessage));
         }, timeoutMs);
       }),
@@ -70,10 +94,13 @@ export async function resumeSessionWithTimeout<TSession>(
             await disconnectLateSession(session);
           } catch (error) {
             safeOnLateError(error);
+          } finally {
+            safeCall(onLateSettled);
           }
         },
         (error) => {
           safeOnLateError(error);
+          safeCall(onLateSettled);
         },
       );
     }

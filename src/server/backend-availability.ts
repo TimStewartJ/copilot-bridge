@@ -10,6 +10,8 @@ export const BACKEND_DISCONNECTED_MESSAGE =
   "Agent backend disconnected; the Bridge is restarting it. Try again shortly.";
 /** The backend is being replaced after a disconnect; new work is refused until it is back. */
 export const BACKEND_RECONNECTING_MESSAGE = "Agent backend is reconnecting; try again shortly.";
+/** An uncancellable timed-out resume is still settling; retry without consuming a delivery attempt. */
+export const SESSION_RESUME_SETTLING_MESSAGE = "Session resume timed out and is still settling; try again shortly.";
 /** The backend has not finished starting yet. */
 export const BACKEND_NOT_READY_MESSAGE = "Agent backend is not ready yet; try again shortly.";
 /** Model refresh rotation (pre-existing wording, kept for compatibility). */
@@ -28,6 +30,7 @@ export const BACKEND_RECOVERY_CONTINUE_PROMPT = [
 const BACKEND_UNAVAILABLE_MESSAGES = [
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
+  SESSION_RESUME_SETTLING_MESSAGE,
   BACKEND_NOT_READY_MESSAGE,
   BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
   BACKEND_NOT_INITIALIZED_MESSAGE,

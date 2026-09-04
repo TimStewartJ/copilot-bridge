@@ -59,7 +59,6 @@ import {
   getProviderTurnIdFromEvent,
   normalizeLiveSessionContextEvent,
 } from "./session-context-normalizer.js";
-import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
 import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
 import {
   getAssistantTurnInstanceId,
@@ -330,6 +329,12 @@ export interface SessionRunnerDeps {
     isCancelled?: () => boolean,
   ): Promise<SessionResumeLease | null>;
   endSessionResume(lease: SessionResumeLease): void;
+  resumeSessionWithTimeout(
+    backend: AgentBackend,
+    sessionId: string,
+    resume: Promise<any>,
+    timeoutMessage: string,
+  ): Promise<any>;
   notifySessionCapacityChanged(): void;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
@@ -769,7 +774,9 @@ export class SessionRunner {
         );
         if (!resumeLease) return null;
         try {
-          s = await resumeSessionWithTimeout(
+          s = await this.deps.resumeSessionWithTimeout(
+            this.client!,
+            sessionId,
             this.client!.resumeSession(sessionId, resumeConfig),
             "resumeSession timed out after 60s",
           );
