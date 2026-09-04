@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  buildCopilotUsageSummaryFromSessionResults,
   CopilotUsageReadError,
   readCopilotUsageSummary,
+  scanCopilotUsageSession,
   type CopilotUsageSummary,
   type CopilotUsageTotals,
 } from "../copilot-usage.js";
@@ -94,6 +96,74 @@ function summaryTotals(totals: CopilotUsageTotals): CopilotUsageSummary["totals"
 }
 
 describe("readCopilotUsageSummary", () => {
+  it("aggregates retained defer-worker shutdown usage with explicit attribution", () => {
+    const copilotHome = createCopilotHome();
+    const sessionId = "d3f3e000-0000-4000-8000-000000000001";
+    writeEvents(copilotHome, sessionId, [
+      {
+        id: "shutdown-1",
+        type: "session.shutdown",
+        timestamp: "2026-09-03T20:00:00.000Z",
+        data: {
+          totalNanoAiu: 2_500_000_000,
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: {
+                inputTokens: 100,
+                outputTokens: 20,
+                cacheReadTokens: 60,
+                cacheWriteTokens: 10,
+              },
+              tokenDetails: { input: { tokenCount: 30 } },
+              totalNanoAiu: 2_500_000_000,
+            },
+          },
+        },
+      },
+    ]);
+    return scanCopilotUsageSession(
+      join(copilotHome, "session-state"),
+      sessionId,
+    ).then((scanned) => {
+      const result = {
+        ...scanned,
+        source: {
+          kind: "defer_worker" as const,
+          deferId: "interval_1",
+          parentSessionId: "parent-1",
+          action: "return",
+        },
+      };
+
+      const summary = buildCopilotUsageSummaryFromSessionResults({
+        sessionResults: [result],
+        now: () => Date.parse("2026-09-03T21:00:00.000Z"),
+        range: "7d",
+      });
+
+      expect(result.source).toEqual({
+        kind: "defer_worker",
+        deferId: "interval_1",
+        parentSessionId: "parent-1",
+        action: "return",
+      });
+      expect(summary.totals).toMatchObject({
+        requests: 1,
+        inputTokens: 100,
+        totalTokens: 120,
+        meteredAiCredits: 2.5,
+      });
+      expect(summary.deferWorkers).toMatchObject({
+        capturedRuns: 1,
+        parentSessions: 1,
+        requests: 1,
+        totalTokens: 120,
+        meteredAiCredits: 2.5,
+      });
+    });
+  });
+
   it("aggregates included sessions, defaults missing metrics to zero, and sorts models by total tokens", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [

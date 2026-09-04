@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildDeferWorkerSystemPrompt,
   buildDeferWorkerPrompt,
@@ -13,23 +15,37 @@ import { makeTestDir } from "./helpers.js";
 function createEventSession(
   sessionId: string,
   content: string,
-  options: { disconnect?: () => Promise<void> } = {},
+  options: {
+    copilotHome?: string;
+    shutdownEvent?: unknown;
+    disconnect?: () => Promise<void>;
+  } = {},
 ) {
-  let handler: ((event: unknown) => void) | undefined;
+  const handlers = new Set<(event: unknown) => void>();
+  const emit = (event: unknown) => {
+    for (const handler of handlers) handler(event);
+  };
   return {
     sessionId,
     on: (nextHandler: (event: unknown) => void) => {
-      handler = nextHandler;
-      return () => {
-        handler = undefined;
-      };
+      handlers.add(nextHandler);
+      return () => handlers.delete(nextHandler);
     },
     send: vi.fn(async () => {
-      handler?.({ type: "assistant.turn_start", data: { turnId: "1" } });
-      handler?.({ type: "assistant.message", data: { content } });
-      handler?.({ type: "assistant.turn_end", data: { turnId: "1" } });
+      emit({ type: "assistant.turn_start", data: { turnId: "1" } });
+      emit({ type: "assistant.message", data: { content } });
+      emit({ type: "assistant.turn_end", data: { turnId: "1" } });
     }),
-    disconnect: options.disconnect ?? vi.fn(async () => undefined),
+    disconnect: options.disconnect ?? vi.fn(async () => {
+      if (options.shutdownEvent && options.copilotHome) {
+        const sessionDir = join(options.copilotHome, "session-state", sessionId);
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(
+          join(sessionDir, "events.jsonl"),
+          `${JSON.stringify(options.shutdownEvent)}\n`,
+        );
+      }
+    }),
   };
 }
 
@@ -45,17 +61,17 @@ function createWorkerWithEvents(events: unknown[], label: string) {
     beginLifecycle: () => () => undefined,
     reserveCapacity: async () => () => undefined,
     createSession: async (config) => {
-      let handler: ((event: unknown) => void) | undefined;
+      const handlers = new Set<(event: unknown) => void>();
       return {
         sessionId: config.sessionId as string,
         on: (nextHandler: (event: unknown) => void) => {
-          handler = nextHandler;
-          return () => {
-            handler = undefined;
-          };
+          handlers.add(nextHandler);
+          return () => handlers.delete(nextHandler);
         },
         send: async () => {
-          for (const event of events) handler?.(event);
+          for (const event of events) {
+            for (const handler of handlers) handler(event);
+          }
         },
       } as any;
     },
@@ -270,10 +286,36 @@ describe("defer worker", () => {
       createEventSession(
         config.sessionId as string,
         '<defer-result action="return">Validation passed.</defer-result>',
+        {
+          copilotHome,
+          shutdownEvent: {
+            id: "shutdown-1",
+            type: "session.shutdown",
+            timestamp: "2026-09-03T20:00:00.000Z",
+            data: {
+              totalNanoAiu: 2_500_000_000,
+              modelMetrics: {
+                "small-model": {
+                  requests: { count: 1 },
+                  usage: {
+                    inputTokens: 100,
+                    outputTokens: 20,
+                    cacheReadTokens: 60,
+                    cacheWriteTokens: 10,
+                    reasoningTokens: 5,
+                  },
+                  tokenDetails: { input: { tokenCount: 30 } },
+                  totalNanoAiu: 2_500_000_000,
+                },
+              },
+            },
+          },
+        },
       )
     );
     const deleteSession = vi.fn(async () => undefined);
     const recordSpan = vi.fn();
+    const recordUsage = vi.fn();
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -295,6 +337,7 @@ describe("defer worker", () => {
       deleteSession,
       getCopilotHome: () => copilotHome,
       recordSpan,
+      recordUsage,
     });
 
     const result = await worker.run({
@@ -343,7 +386,99 @@ describe("defer worker", () => {
         runCount: 2,
         action: "return",
         model: "small-model",
+        meteredAiCredits: 2.5,
+        totalTokens: 120,
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 60,
+        cacheWriteTokens: 10,
+        usageCaptured: true,
+        usageRetained: true,
       }),
+    );
+    expect(recordUsage).toHaveBeenCalledWith(
+      expect.stringMatching(/^d3f3e000-/),
+      expect.objectContaining({
+        source: {
+          kind: "defer_worker",
+          deferId: "interval_1",
+          parentSessionId: "parent-session",
+          action: "return",
+        },
+        totals: expect.objectContaining({
+          requests: 1,
+          totalTokens: 120,
+          meteredAiCredits: 2.5,
+        }),
+      }),
+    );
+    expect(recordUsage.mock.invocationCallOrder[0])
+      .toBeLessThan(deleteSession.mock.invocationCallOrder[0]!);
+  });
+
+  it("always cleans up when usage persistence and telemetry fail", async () => {
+    const copilotHome = makeTestDir("defer-worker-cleanup-after-telemetry");
+    const releaseCapacity = vi.fn();
+    const deleteSession = vi.fn(async (_sessionId: string) => undefined);
+    const logger = { warn: vi.fn() };
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({
+        mcpServers: {},
+        deferWorker: { model: "small-model", reasoningEffort: "low", contextTier: "default" },
+      }),
+      listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: () => () => undefined,
+      reserveCapacity: async () => releaseCapacity,
+      createSession: async (config) => createEventSession(
+        config.sessionId as string,
+        '<defer-result action="finish"></defer-result>',
+        {
+          copilotHome,
+          shutdownEvent: {
+            type: "session.shutdown",
+            timestamp: "2026-09-03T20:00:00.000Z",
+            data: {
+              totalNanoAiu: 500_000_000,
+              modelMetrics: {
+                "small-model": {
+                  requests: { count: 1 },
+                  usage: { inputTokens: 10, outputTokens: 5 },
+                  totalNanoAiu: 500_000_000,
+                },
+              },
+            },
+          },
+        },
+      ) as any,
+      deleteSession,
+      getCopilotHome: () => copilotHome,
+      recordUsage: () => {
+        throw new Error("usage write failed");
+      },
+      recordSpan: () => {
+        throw new Error("span write failed");
+      },
+      logger,
+    });
+
+    await expect(worker.run({
+      deferId: "once_2",
+      kind: "once",
+      parentSessionId: "parent-session",
+      prompt: "Finish",
+    })).resolves.toEqual({ action: "finish" });
+
+    const workerId = deleteSession.mock.calls[0]?.[0] as string;
+    expect(deleteSession).toHaveBeenCalledOnce();
+    expect(releaseCapacity).toHaveBeenCalledOnce();
+    expect(existsSync(join(copilotHome, "session-state", workerId))).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Disposable usage persistence failed"),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Disposable telemetry write failed"),
     );
   });
 

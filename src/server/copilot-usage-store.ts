@@ -4,7 +4,8 @@ import type { DatabaseSync } from "./db.js";
 export type CopilotUsageFileFingerprint =
   | { state: "file"; size: number; mtimeMs: number }
   | { state: "missing" }
-  | { state: "error" };
+  | { state: "error" }
+  | { state: "retained" };
 
 export interface CopilotUsageSessionFingerprint {
   events: CopilotUsageFileFingerprint;
@@ -18,11 +19,28 @@ export interface CopilotUsageCacheEntry {
   result: CopilotUsageSessionScanResult;
 }
 
+export function createRetainedCopilotUsageEntry(
+  sessionId: string,
+  parserVersion: number,
+  result: CopilotUsageSessionScanResult,
+): CopilotUsageCacheEntry {
+  return {
+    sessionId,
+    parserVersion,
+    fingerprint: {
+      events: { state: "retained" },
+      modelState: { state: "retained" },
+    },
+    result,
+  };
+}
+
 export interface CopilotUsageStore {
   listSessionIds(): string[];
   listEntries(): CopilotUsageCacheEntry[];
   upsertEntries(entries: readonly CopilotUsageCacheEntry[]): void;
   deleteEntries(sessionIds: readonly string[]): void;
+  pruneRetainedEntries(olderThanIso: string): string[];
   getLastCompletedAt(): string | null;
   setLastCompletedAt(completedAt: string): void;
 }
@@ -57,6 +75,15 @@ export function createCopilotUsageStore(db: DatabaseSync): CopilotUsageStore {
       updatedAt = excluded.updatedAt
   `);
   const deleteEntry = db.prepare("DELETE FROM copilot_usage_sessions WHERE sessionId = ?");
+  const selectRetainedBefore = db.prepare(`
+    SELECT sessionId
+    FROM copilot_usage_sessions
+    WHERE sessionId LIKE 'd3f3e000-%' AND updatedAt < ?
+  `);
+  const deleteRetainedBefore = db.prepare(`
+    DELETE FROM copilot_usage_sessions
+    WHERE sessionId LIKE 'd3f3e000-%' AND updatedAt < ?
+  `);
   const selectState = db.prepare("SELECT completedAt FROM copilot_usage_scan_state WHERE id = 1");
   const upsertState = db.prepare(`
     INSERT INTO copilot_usage_scan_state (id, completedAt)
@@ -127,6 +154,14 @@ export function createCopilotUsageStore(db: DatabaseSync): CopilotUsageStore {
     }
   }
 
+  function pruneRetainedEntries(olderThanIso: string): string[] {
+    const sessionIds = (
+      selectRetainedBefore.all(olderThanIso) as Array<{ sessionId: string }>
+    ).map((row) => row.sessionId);
+    if (sessionIds.length > 0) deleteRetainedBefore.run(olderThanIso);
+    return sessionIds;
+  }
+
   function getLastCompletedAt(): string | null {
     const row = selectState.get() as { completedAt?: unknown } | undefined;
     return typeof row?.completedAt === "string" ? row.completedAt : null;
@@ -141,6 +176,7 @@ export function createCopilotUsageStore(db: DatabaseSync): CopilotUsageStore {
     listEntries,
     upsertEntries,
     deleteEntries,
+    pruneRetainedEntries,
     getLastCompletedAt,
     setLastCompletedAt,
   };
@@ -155,7 +191,13 @@ function isSessionFingerprint(value: unknown): value is CopilotUsageSessionFinge
 function isFileFingerprint(value: unknown): value is CopilotUsageFileFingerprint {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  if (record.state === "missing" || record.state === "error") return true;
+  if (
+    record.state === "missing"
+    || record.state === "error"
+    || record.state === "retained"
+  ) {
+    return true;
+  }
   return record.state === "file"
     && typeof record.size === "number"
     && Number.isFinite(record.size)

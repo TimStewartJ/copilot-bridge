@@ -312,6 +312,12 @@ describe("Copilot usage routes", () => {
         unpricedModelCount: 1,
         unpricedTokens: unpricedTotals,
       },
+      deferWorkers: {
+        capturedRuns: 0,
+        parentSessions: 0,
+        retentionDays: 90,
+        ...expectedUsageTotals(),
+      },
       coverage: {
         sessionsSeen: 1,
         sessionsWithEvents: 1,

@@ -12,6 +12,11 @@ import {
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import { selectCheapHelperModel } from "./session-name-generator.js";
 import type { AppSettings } from "./settings-store.js";
+import {
+  buildCopilotUsageSummaryFromSessionResults,
+  scanCopilotUsageSession,
+  type CopilotUsageSessionScanResult,
+} from "./copilot-usage.js";
 
 export const DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX = "d3f3e000";
 const DEFER_WORKER_TIMEOUT_MS = 10 * 60 * 1000;
@@ -66,6 +71,10 @@ export interface DisposableDeferWorkerDeps {
     duration: number,
     sessionId?: string,
     metadata?: Record<string, unknown>,
+  ): void;
+  recordUsage?(
+    sessionId: string,
+    result: CopilotUsageSessionScanResult,
   ): void;
   logger?: Pick<Console, "warn">;
 }
@@ -419,6 +428,17 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
     const sessionId = createDisposableDeferWorkerSessionId();
     let session: AgentSession | undefined;
     let releaseCapacityReservation: (() => void) | undefined;
+    let spanDuration = 0;
+    let spanMetadata: Record<string, unknown> = {
+      action: "error",
+      kind: input.kind,
+      deferId: input.deferId,
+      runCount: input.runCount,
+      model,
+      reasoningEffort,
+      contextTier: configuredContextTier,
+      workerSessionId: sessionId,
+    };
 
     try {
       const workingDirectory = this.deps.getParentWorkingDirectory(input.parentSessionId);
@@ -454,7 +474,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       const result = completed.result.action === "return" || completed.result.action === "notify"
         ? { ...completed.result, deliveryId: randomUUID() }
         : completed.result;
-      this.deps.recordSpan?.("defer.worker", Date.now() - startedAt, input.parentSessionId, {
+      spanMetadata = {
         action: result.action,
         kind: input.kind,
         deferId: input.deferId,
@@ -463,11 +483,13 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
         reasoningEffort,
         contextTier: configuredContextTier,
         completionSource: completed.completionSource,
+        workerSessionId: sessionId,
         ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}),
-      });
+      };
+      spanDuration = Date.now() - startedAt;
       return result;
     } catch (error) {
-      this.deps.recordSpan?.("defer.worker", Date.now() - startedAt, input.parentSessionId, {
+      spanMetadata = {
         action: "error",
         kind: input.kind,
         deferId: input.deferId,
@@ -475,8 +497,10 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
         model,
         reasoningEffort,
         contextTier: configuredContextTier,
+        workerSessionId: sessionId,
         error: error instanceof Error ? error.message : String(error),
-      });
+      };
+      spanDuration = Date.now() - startedAt;
       throw error;
     } finally {
       try {
@@ -484,6 +508,86 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       } catch (error) {
         this.deps.logger?.warn(
           `[defer-worker] Disposable session disconnect failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      let scannedUsage: CopilotUsageSessionScanResult | undefined;
+      try {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          scannedUsage = await scanCopilotUsageSession(
+            join(this.deps.getCopilotHome(), "session-state"),
+            sessionId,
+          );
+          if (scannedUsage.included) break;
+          if (
+            scannedUsage.reason !== "no_shutdown"
+            && scannedUsage.reason !== "empty_model_metrics"
+          ) {
+            break;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        }
+      } catch (error) {
+        this.deps.logger?.warn(
+          `[defer-worker] Disposable usage scan failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (scannedUsage?.included) {
+        const usage: CopilotUsageSessionScanResult = {
+          ...scannedUsage,
+          source: {
+            kind: "defer_worker",
+            deferId: input.deferId,
+            parentSessionId: input.parentSessionId,
+            action: String(spanMetadata.action ?? "error"),
+          },
+        };
+        Object.assign(spanMetadata, usage.totals, { usageCaptured: true });
+        try {
+          const priced = buildCopilotUsageSummaryFromSessionResults({
+            sessionResults: [usage],
+            sdkModels: models,
+          });
+          Object.assign(spanMetadata, {
+            estimatedAiCredits: priced.totals.estimatedAiCredits,
+            estimatedCostUsd: priced.totals.estimatedCostUsd,
+          });
+        } catch (error) {
+          spanMetadata.usagePricingError = error instanceof Error
+            ? error.message
+            : String(error);
+          this.deps.logger?.warn(
+            `[defer-worker] Disposable usage pricing failed: ${spanMetadata.usagePricingError}`,
+          );
+        }
+        if (this.deps.recordUsage) {
+          try {
+            this.deps.recordUsage(sessionId, usage);
+            spanMetadata.usageRetained = true;
+          } catch (error) {
+            spanMetadata.usageRetained = false;
+            spanMetadata.usagePersistenceError = error instanceof Error
+              ? error.message
+              : String(error);
+            this.deps.logger?.warn(
+              `[defer-worker] Disposable usage persistence failed: ${spanMetadata.usagePersistenceError}`,
+            );
+          }
+        } else {
+          spanMetadata.usageRetained = false;
+        }
+      } else {
+        spanMetadata.usageCaptured = false;
+      }
+      try {
+        this.deps.recordSpan?.(
+          "defer.worker",
+          spanDuration || Date.now() - startedAt,
+          input.parentSessionId,
+          spanMetadata,
+        );
+      } catch (error) {
+        this.deps.logger?.warn(
+          `[defer-worker] Disposable telemetry write failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
       try {
@@ -511,7 +615,13 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
           `[defer-worker] Disposable session DB cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      releaseCapacityReservation?.();
+      try {
+        releaseCapacityReservation?.();
+      } catch (error) {
+        this.deps.logger?.warn(
+          `[defer-worker] Disposable capacity release failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 }

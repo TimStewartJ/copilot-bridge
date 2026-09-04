@@ -82,6 +82,10 @@ describe("DeferredWorkSheet", () => {
             completedAt: "2026-09-01T23:00:00.000Z",
             model: "small-model",
             reasoningEffort: "low",
+            usageCaptured: true,
+            totalTokens: 1_234,
+            meteredAiCredits: 2.5,
+            estimatedAiCredits: 1.25,
           },
           {
             id: 3,
@@ -125,6 +129,9 @@ describe("DeferredWorkSheet", () => {
     expect(harness.dom.container.textContent).toContain("Build monitor · Continued");
     expect(harness.dom.container.textContent).toContain("Build monitor · Notified parent and continued");
     expect(harness.dom.container.textContent).toContain("Parent delivery pending");
+    expect(harness.dom.container.textContent).toContain("1,234 tokens");
+    expect(harness.dom.container.textContent).toContain("2.5 metered credits");
+    expect(harness.dom.container.textContent).toContain("1.25 est. credits");
     expect(harness.dom.container.textContent).toContain("Build monitor · Pending");
     expect(harness.dom.container.textContent).toContain("One-time defer · Failed");
     expect(buttonWithText(harness.dom.container, "Reactivate")).toBeDefined();

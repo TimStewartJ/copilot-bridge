@@ -361,6 +361,16 @@ export default function DeferredWorkSheet({
                             {run.reasoningEffort && <span>{run.reasoningEffort} effort</span>}
                             {run.contextTier === "long_context" && <span>Long context</span>}
                             <span>{formatDuration(run.durationMs)}</span>
+                            {run.usageCaptured && run.totalTokens !== undefined && (
+                              <span>{formatNumber(run.totalTokens)} tokens</span>
+                            )}
+                            {run.usageCaptured && run.meteredAiCredits !== undefined && (
+                              <span>{formatCredits(run.meteredAiCredits)} metered credits</span>
+                            )}
+                            {run.usageCaptured && run.estimatedAiCredits !== undefined && (
+                              <span>{formatCredits(run.estimatedAiCredits)} est. credits</span>
+                            )}
+                            {run.usageCaptured === false && <span>Usage unavailable</span>}
                             {run.deliveryStatus && <span>Parent delivery {run.deliveryStatus}</span>}
                           </div>
                           {run.error && <p className="mt-1 break-words text-xs text-error">{run.error}</p>}
@@ -421,4 +431,12 @@ export default function DeferredWorkSheet({
       </div>
     </div>
   );
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatCredits(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(value);
 }
