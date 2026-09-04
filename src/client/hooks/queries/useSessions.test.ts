@@ -14,7 +14,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     sessionId: "session-1",
     summary: "Session",
     modifiedTime: "2026-04-27T18:00:00.000Z",
-    deferSummary: { count: 0, nextRunAt: null },
+    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }
@@ -143,9 +143,9 @@ describe("patchSessionQueryData", () => {
     const queryClient = new QueryClient();
     const activeQueryKey = queryKeys.sessions({ includeArchived: false });
     const archivedQueryKey = queryKeys.sessions({ includeArchived: true });
-    const pendingSummary = { count: 2, nextRunAt: "2030-01-01T00:00:00.000Z" };
-    const otherSummary = { count: 1, nextRunAt: "2030-01-02T00:00:00.000Z" };
-    const clearedSummary = { count: 0, nextRunAt: null };
+    const pendingSummary = { count: 2, runningCount: 0, nextRunAt: "2030-01-01T00:00:00.000Z" };
+    const otherSummary = { count: 1, runningCount: 0, nextRunAt: "2030-01-02T00:00:00.000Z" };
+    const clearedSummary = { count: 0, runningCount: 0, nextRunAt: null };
 
     queryClient.setQueryData<Session[]>(activeQueryKey, [
       createSession({ sessionId: "session-1", deferSummary: pendingSummary }),

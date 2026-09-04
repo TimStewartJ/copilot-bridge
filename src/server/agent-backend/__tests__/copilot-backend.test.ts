@@ -13,10 +13,11 @@ function createFakeSession(rpc: any = {}) {
   return {
     sessionId: "fake-session-id",
     send: vi.fn(async () => undefined),
+    sendAndWait: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
     setModel: vi.fn(async () => undefined),
     disconnect: vi.fn(),
-    on: vi.fn(() => () => undefined),
+    on: vi.fn((_handler: (event: any) => void) => () => undefined),
     getEvents: vi.fn(async () => [{ type: "test" }]),
     registerElicitationHandler: vi.fn(),
     rpc,
@@ -163,6 +164,65 @@ describe("CopilotBackend wrap fidelity", () => {
 });
 
 describe("CopilotAgentSession wrap fidelity", () => {
+  it("delegates bounded waits and provides an unbounded natural-completion mode", async () => {
+    const session = createFakeSession();
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+    const args = { prompt: "wait for me" };
+
+    await wrapped.sendAndWait(args, 1234);
+    expect(session.sendAndWait).toHaveBeenCalledWith(args, 1234);
+
+    let handler: ((event: any) => void) | undefined;
+    const unsubscribe = vi.fn();
+    session.on.mockImplementation((nextHandler: (event: any) => void) => {
+      handler = nextHandler;
+      return unsubscribe;
+    });
+    session.send.mockImplementationOnce(async () => {
+      handler?.({ type: "assistant.message", data: { content: "done" } });
+      handler?.({ type: "session.idle", data: {} });
+    });
+
+    await expect(wrapped.sendAndWait(args, null)).resolves.toMatchObject({
+      type: "assistant.message",
+      data: { content: "done" },
+    });
+    expect(session.sendAndWait).toHaveBeenCalledTimes(1);
+    expect(session.send).toHaveBeenCalledWith(args);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("does not finish an unbounded wait until both send and idle complete", async () => {
+    const session = createFakeSession();
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+    let handler: ((event: any) => void) | undefined;
+    let resolveSend!: () => void;
+    session.on.mockImplementation((nextHandler: (event: any) => void) => {
+      handler = nextHandler;
+      return () => undefined;
+    });
+    session.send.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      resolveSend = () => resolve(undefined);
+    }));
+
+    let settled = false;
+    const wait = wrapped.sendAndWait({ prompt: "wait for both" }, null);
+    void wait.then(() => {
+      settled = true;
+    });
+    handler?.({ type: "assistant.message", data: { content: "done" } });
+    handler?.({ type: "session.idle", data: {} });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveSend();
+    await expect(wait).resolves.toMatchObject({
+      type: "assistant.message",
+      data: { content: "done" },
+    });
+    expect(settled).toBe(true);
+  });
+
   it("forwards send/abort/setModel with identical arguments", async () => {
     const session = createFakeSession();
     const backend = new CopilotBackend(createFakeClient(session) as any);

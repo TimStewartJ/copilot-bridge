@@ -17,6 +17,7 @@ import {
   CopilotClient,
 } from "@github/copilot-sdk";
 
+import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
 import { boundRpc, type AgentRpcName } from "./rpc-timeouts.js";
 import type {
   AgentBackend,
@@ -185,7 +186,13 @@ interface CopilotRpcGuard {
  * probe so a dead channel is detected instead of hanging callers forever.
  */
 class CopilotAgentSession implements AgentSession {
-  constructor(private readonly session: any, private readonly rpc: CopilotRpcGuard) {}
+  constructor(
+    private readonly session: any,
+    private readonly rpc: CopilotRpcGuard,
+    private readonly onBackendDisconnect: (
+      handler: (info: AgentBackendDisconnect) => void,
+    ) => () => void,
+  ) {}
 
   get sessionId(): string {
     return this.session.sessionId;
@@ -195,9 +202,57 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.send", () => this.session.send(args));
   }
 
-  sendAndWait(args: AgentSendArgs, timeoutMs?: number): Promise<unknown> {
-    // Waits for the whole turn; callers own the timeout.
-    return this.session.sendAndWait(args, timeoutMs);
+  sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown> {
+    if (timeoutMs !== null) {
+      // Waits for the whole turn; callers own the timeout.
+      return this.session.sendAndWait(args, timeoutMs);
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let sendCompleted = false;
+      let idleObserved = false;
+      let lastAssistantMessage: unknown;
+      let unsubscribeSession = () => {};
+      let unsubscribeBackend = () => {};
+      const settle = (complete: () => void) => {
+        if (settled) return;
+        settled = true;
+        unsubscribeSession();
+        unsubscribeBackend();
+        complete();
+      };
+      const resolveIfComplete = () => {
+        if (sendCompleted && idleObserved) {
+          settle(() => resolve(lastAssistantMessage));
+        }
+      };
+      unsubscribeSession = this.session.on((event: any) => {
+        if (event?.type === "assistant.message") {
+          lastAssistantMessage = event;
+        } else if (event?.type === "session.idle") {
+          idleObserved = true;
+          resolveIfComplete();
+        } else if (event?.type === "session.error") {
+          const error = new Error(event?.data?.message ?? "Agent session failed.");
+          if (typeof event?.data?.stack === "string") error.stack = event.data.stack;
+          settle(() => reject(error));
+        }
+      });
+      unsubscribeBackend = this.onBackendDisconnect((info) => {
+        const detail = info.detail ? `: ${info.detail}` : "";
+        settle(() => reject(new Error(
+          `${BACKEND_DISCONNECTED_MESSAGE} (${info.reason}${detail})`,
+        )));
+      });
+      if (!settled) {
+        void Promise.resolve(this.session.send(args))
+          .then(() => {
+            sendCompleted = true;
+            resolveIfComplete();
+          })
+          .catch((error) => settle(() => reject(error)));
+      }
+    });
   }
 
   abort(): Promise<unknown> {
@@ -368,14 +423,19 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   return { sdkConfig, pendingInteractionEvents };
 }
 
-function wrapCopilotSession(session: any, pendingInteractionEvents: boolean, rpc: CopilotRpcGuard): AgentSession {
+function wrapCopilotSession(
+  session: any,
+  pendingInteractionEvents: boolean,
+  rpc: CopilotRpcGuard,
+  onBackendDisconnect: (handler: (info: AgentBackendDisconnect) => void) => () => void,
+): AgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
     // event interest during create/resume. Remove it before exposing the
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session, rpc);
+  return new CopilotAgentSession(session, rpc, onBackendDisconnect);
 }
 
 function formatDisconnectDetail(error: unknown): string | undefined {
@@ -562,6 +622,14 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
+  private subscribeSessionDisconnect(handler: (info: AgentBackendDisconnect) => void): () => void {
+    if (this.lastDisconnect) {
+      handler(this.lastDisconnect);
+      return () => {};
+    }
+    return this.onDisconnect(handler);
+  }
+
   async listModels(): Promise<AgentModelInfo[]> {
     const models = await this.rpc("backend.listModels", () => this.client.listModels());
     return models as AgentModelInfo[];
@@ -592,13 +660,23 @@ export class CopilotBackend implements AgentBackend {
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);
-    return wrapCopilotSession(session, prepared.pendingInteractionEvents, this.rpc);
+    return wrapCopilotSession(
+      session,
+      prepared.pendingInteractionEvents,
+      this.rpc,
+      (handler) => this.subscribeSessionDisconnect(handler),
+    );
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
-    return wrapCopilotSession(session, prepared.pendingInteractionEvents, this.rpc);
+    return wrapCopilotSession(
+      session,
+      prepared.pendingInteractionEvents,
+      this.rpc,
+      (handler) => this.subscribeSessionDisconnect(handler),
+    );
   }
 
   deleteSession(sessionId: string): Promise<unknown> {

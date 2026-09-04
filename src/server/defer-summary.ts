@@ -5,17 +5,20 @@ import type { GlobalBus } from "./global-bus.js";
 /** Content-free defer indicator data for a single session. */
 export interface DeferSummary {
   count: number;
+  runningCount: number;
   nextRunAt: string | null;
 }
 
 export interface DeferSummaryRow {
   count: number;
+  runningCount: number | null;
   nextRunAt: string | null;
 }
 
 export function normalizeDeferSummary(row: DeferSummaryRow | undefined): DeferSummary {
   return {
     count: Number(row?.count ?? 0),
+    runningCount: Number(row?.runningCount ?? 0),
     nextRunAt: row?.nextRunAt ?? null,
   };
 }
@@ -24,12 +27,13 @@ export function mergeDeferSummaries(...summaries: DeferSummary[]): DeferSummary 
   return summaries.reduce<DeferSummary>(
     (merged, summary) => ({
       count: merged.count + summary.count,
+      runningCount: merged.runningCount + summary.runningCount,
       nextRunAt:
         summary.nextRunAt !== null && (merged.nextRunAt === null || summary.nextRunAt < merged.nextRunAt)
           ? summary.nextRunAt
           : merged.nextRunAt,
     }),
-    { count: 0, nextRunAt: null },
+    { count: 0, runningCount: 0, nextRunAt: null },
   );
 }
 
@@ -40,8 +44,8 @@ export interface DeferSummarySources {
 
 export function getDeferSummaryForSession(sessionId: string, sources: DeferSummarySources): DeferSummary {
   return mergeDeferSummaries(
-    sources.deferredPromptStore?.getSummaryForSession(sessionId) ?? { count: 0, nextRunAt: null },
-    sources.deferLoopStore?.getSummaryForSession(sessionId) ?? { count: 0, nextRunAt: null },
+    sources.deferredPromptStore?.getSummaryForSession(sessionId) ?? { count: 0, runningCount: 0, nextRunAt: null },
+    sources.deferLoopStore?.getSummaryForSession(sessionId) ?? { count: 0, runningCount: 0, nextRunAt: null },
   );
 }
 
@@ -50,7 +54,7 @@ export interface DeferSummaryBulkSources {
   deferLoopStore?: Pick<DeferLoopStore, "listSummariesBySession">;
 }
 
-const EMPTY_DEFER_SUMMARY: DeferSummary = { count: 0, nextRunAt: null };
+const EMPTY_DEFER_SUMMARY: DeferSummary = { count: 0, runningCount: 0, nextRunAt: null };
 
 /**
  * Snapshot both stores once so list-shaped callers can resolve thousands of

@@ -66,7 +66,7 @@ describe("defer-loop-store", () => {
     expect(retried.lastError).toBe("busy");
   });
 
-  it("summarizes active loops for a session with the earliest next run time", () => {
+  it("summarizes active and running loops with the earliest queued run time", () => {
     const earliest = "2030-01-01T00:01:00.000Z";
     const later = "2030-01-01T00:02:00.000Z";
     const runningAt = "2030-01-01T00:00:30.000Z";
@@ -83,11 +83,13 @@ describe("defer-loop-store", () => {
     });
 
     expect(store.getSummaryForSession("session-1")).toEqual({
-      count: 2,
+      count: 3,
+      runningCount: 1,
       nextRunAt: earliest,
     });
     expect(store.getSummaryForSession("missing-session")).toEqual({
       count: 0,
+      runningCount: 0,
       nextRunAt: null,
     });
   });
@@ -256,6 +258,7 @@ describe("defer summary (merged)", () => {
 
     expect(summary).toEqual({
       count: 3,
+      runningCount: 0,
       nextRunAt: "2030-01-01T00:05:00.000Z",
     });
   });
@@ -274,9 +277,9 @@ describe("defer summary (merged)", () => {
     for (const sessionId of ["session-1", "session-2", "session-3", "session-4", "missing"]) {
       expect(lookup(sessionId)).toEqual(getDeferSummaryForSession(sessionId, { deferredPromptStore, deferLoopStore: store }));
     }
-    expect(lookup("session-1")).toEqual({ count: 2, nextRunAt: "2030-01-01T00:05:00.000Z" });
-    expect(lookup("session-4")).toEqual({ count: 0, nextRunAt: null });
+    expect(lookup("session-1")).toEqual({ count: 2, runningCount: 0, nextRunAt: "2030-01-01T00:05:00.000Z" });
+    expect(lookup("session-4")).toEqual({ count: 0, runningCount: 0, nextRunAt: null });
     expect(store.listSummariesBySession().has("session-4")).toBe(false);
-    expect(createDeferSummaryLookup({})("session-1")).toEqual({ count: 0, nextRunAt: null });
+    expect(createDeferSummaryLookup({})("session-1")).toEqual({ count: 0, runningCount: 0, nextRunAt: null });
   });
 });

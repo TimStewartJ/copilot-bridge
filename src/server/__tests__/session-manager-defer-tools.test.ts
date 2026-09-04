@@ -248,7 +248,7 @@ describe("unified defer tools", () => {
     expect(summaryEvents[0]).toMatchObject({
       type: "session:defer-summary",
       sessionId: "session-A",
-      deferSummary: { count: 1, nextRunAt: once.nextRunAt },
+      deferSummary: { count: 1, runningCount: 0, nextRunAt: once.nextRunAt },
     });
     expect(summaryEvents[1].deferSummary.nextRunAt).toBe(once.nextRunAt);
     expect(summaryEvents[2].deferSummary.nextRunAt).toBe(interval.nextRunAt);

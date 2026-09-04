@@ -356,7 +356,7 @@ describe("SessionList change-model dialog", () => {
         sessions: [{
           sessionId: "session-1",
           summary: "Active session",
-          deferSummary: { count: 0, nextRunAt: null },
+          deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
         }],
         activeSessionId: null,
         onSelectSession: vi.fn(),

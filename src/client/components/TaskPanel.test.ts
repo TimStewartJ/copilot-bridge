@@ -123,7 +123,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     modifiedTime: "2026-01-01T00:00:00.000Z",
     lastVisibleActivityAt: "2026-01-01T00:00:00.000Z",
     archived: false,
-    deferSummary: { count: 0, nextRunAt: null },
+    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }
@@ -324,11 +324,11 @@ describe("TaskPanel", () => {
     const linkedSessions = [
       createSession({
         sessionId: "session-1",
-        deferSummary: { count: 2, nextRunAt: "2030-01-01T00:00:00.000Z" },
+        deferSummary: { count: 2, runningCount: 0, nextRunAt: "2030-01-01T00:00:00.000Z" },
       }),
       createSession({
         sessionId: "session-2",
-        deferSummary: { count: 1, nextRunAt: "2030-01-01T00:05:00.000Z" },
+        deferSummary: { count: 1, runningCount: 0, nextRunAt: "2030-01-01T00:05:00.000Z" },
       }),
     ];
     const html = await renderTaskPanelHtml(
