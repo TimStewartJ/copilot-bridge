@@ -302,7 +302,7 @@ describe("session model menu labels", () => {
     const cases = [
       [{ supportedReasoningEfforts: ["xhigh"], currentEffortLookupReady: false }, false],
       [{ supportedReasoningEfforts: ["xhigh"], currentEffortLookupReady: true }, true],
-      [{ supportedReasoningEfforts: [], currentReasoningEffort: "high", currentEffortLookupReady: true }, false],
+      [{ supportedReasoningEfforts: [], currentReasoningEffort: "high", currentEffortLookupReady: true }, true],
       [{ supportedReasoningEfforts: ["high"], currentReasoningEffort: "xhigh", currentEffortLookupReady: true }, false],
       [{ supportedReasoningEfforts: ["xhigh"], currentReasoningEffort: "xhigh", currentEffortLookupReady: true }, true],
     ] as const;

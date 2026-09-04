@@ -17,6 +17,11 @@ import {
   CopilotClient,
 } from "@github/copilot-sdk";
 
+import {
+  HYDRAFUSION_MODEL_ID,
+  HYDRAFUSION_MODEL_NAME,
+  isHydraFusionModel,
+} from "../../shared/hydrafusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
 import { boundRpc, type AgentRpcName } from "./rpc-timeouts.js";
 import type {
@@ -60,6 +65,22 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   nativeBridgeTools: true,
   eagerNativeTools: true,
   toolMetadataWarmup: true,
+};
+
+const HYDRAFUSION_MODEL: AgentModelInfo = {
+  id: HYDRAFUSION_MODEL_ID,
+  name: HYDRAFUSION_MODEL_NAME,
+  selectionMode: "dynamic",
+  capabilities: {
+    supports: {
+      vision: false,
+      reasoningEffort: false,
+    },
+    limits: {
+      max_context_window_tokens: 0,
+    },
+  },
+  supportedReasoningEfforts: [],
 };
 
 function normalizeString(value: unknown): string | undefined {
@@ -632,6 +653,9 @@ export class CopilotBackend implements AgentBackend {
 
   async listModels(): Promise<AgentModelInfo[]> {
     const models = await this.rpc("backend.listModels", () => this.client.listModels());
+    if (!models.some((model) => isHydraFusionModel(model.id))) {
+      return [...models, HYDRAFUSION_MODEL] as AgentModelInfo[];
+    }
     return models as AgentModelInfo[];
   }
 
@@ -658,8 +682,17 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+    const useHydraFusion = isHydraFusionModel(config.model);
     const prepared = prepareCopilotSessionConfig(config);
+    if (useHydraFusion) {
+      delete prepared.sdkConfig.model;
+      delete prepared.sdkConfig.reasoningEffort;
+      delete prepared.sdkConfig.contextTier;
+      delete prepared.sdkConfig.modelCapabilities;
+      prepared.sdkConfig.enableExperimentalMode = true;
+    }
     const session = await this.client.createSession(prepared.sdkConfig as any);
+    if (useHydraFusion) await this.initializeHydraFusion(session);
     return wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,
@@ -677,6 +710,24 @@ export class CopilotBackend implements AgentBackend {
       this.rpc,
       (handler) => this.subscribeSessionDisconnect(handler),
     );
+  }
+
+  private async initializeHydraFusion(session: any): Promise<void> {
+    try {
+      await this.rpc("session.setModel", () => session.setModel(HYDRAFUSION_MODEL_ID));
+    } catch (error) {
+      try {
+        await this.rpc("backend.deleteSession", () =>
+          this.client.deleteSession(session.sessionId) as Promise<unknown>);
+      } catch (cleanupError) {
+        this.logger.warn(
+          `[copilot-backend] Failed to delete session after HydraFusion initialization failed: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+        );
+      }
+      throw error;
+    }
   }
 
   deleteSession(sessionId: string): Promise<unknown> {

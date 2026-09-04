@@ -170,6 +170,7 @@ import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { AgentBackendDisconnect } from "./agent-backend/types.js";
 import {
   getModelCapabilitiesOverride,
+  modelUsesDynamicSelection,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
   type CopilotContextTier,
@@ -4880,15 +4881,21 @@ export class SessionManager {
             ...persistedState,
             ...(await deriveModelStateFromEventsFileAsync(this.getSessionEventsPath(sessionId))),
           };
-      const effectiveReasoningEffort = reasoningEffort
-        ?? currentBeforeSwitch?.reasoningEffort
-        ?? fallbackState?.reasoningEffort;
-      const effectiveRequestedContextTier = contextTier
-        ?? (currentBeforeSwitch?.modelId === model
-          ? normalizeCopilotContextTier(currentBeforeSwitch.contextTier)
-          : undefined)
-        ?? (persistedState.model === model ? persistedState.contextTier : undefined)
-        ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
+      const selectedModelMetadata = modelMetadata?.find((candidate) => candidate.id === model);
+      const usesDynamicSelection = modelUsesDynamicSelection(selectedModelMetadata);
+      const effectiveReasoningEffort = usesDynamicSelection
+        ? undefined
+        : reasoningEffort
+          ?? currentBeforeSwitch?.reasoningEffort
+          ?? fallbackState?.reasoningEffort;
+      const effectiveRequestedContextTier = usesDynamicSelection
+        ? undefined
+        : contextTier
+          ?? (currentBeforeSwitch?.modelId === model
+            ? normalizeCopilotContextTier(currentBeforeSwitch.contextTier)
+            : undefined)
+          ?? (persistedState.model === model ? persistedState.contextTier : undefined)
+          ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
       const resolvedContext = this.resolveModelRuntimeOptions(model, effectiveRequestedContextTier, modelMetadata);
       const setModelOptions = {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
