@@ -155,6 +155,9 @@ export function ModelSection({
                 const next = structuredClone(draft);
                 next.model = e.target.value || undefined;
                 const nextModel = availableModels.find((model) => model.id === next.model);
+                if (nextModel?.supportedReasoningEfforts?.length === 0) {
+                  next.reasoningEffort = undefined;
+                }
                 if (!modelSupportsLongContext(nextModel)) {
                   next.contextTier = undefined;
                 } else if (!next.contextTier) {

@@ -5,6 +5,7 @@ import {
   getContextTierLabel,
   getContextWindowTokensForTier,
   modelSupportsLongContext,
+  modelUsesDynamicSelection,
   type CopilotContextTier,
 } from "../../shared/copilot-context.js";
 
@@ -78,6 +79,7 @@ export function buildReasoningEffortOptions(
 export function buildContextTierOptions(
   model: ModelInfo | undefined,
 ): LaunchOption<CopilotContextTier>[] {
+  if (modelUsesDynamicSelection(model)) return [];
   if (modelSupportsLongContext(model)) {
     return [
       {
@@ -108,6 +110,7 @@ function buildNewSessionContextTierOptions(
   model: ModelInfo | undefined,
 ): LaunchOption<CopilotContextTier>[] {
   if (!model) return [];
+  if (modelUsesDynamicSelection(model)) return [];
   if (modelSupportsLongContext(model)) return buildContextTierOptions(model);
 
   const defaultContextTokens = getContextWindowTokensForTier(model, "default");
@@ -165,7 +168,7 @@ export function resolveNewSessionLaunchState({
     contextTierSelection?.modelId === modelKey
       && contextOptions.some((option) => option.value === contextTierSelection.value)
       ? contextTierSelection.value
-      : effectiveModel
+      : effectiveModel && contextOptions.length > 0
         ? (modelSupportsLongContext(effectiveModel) ? (defaultContextTier ?? "default") : "default")
         : undefined;
   return {

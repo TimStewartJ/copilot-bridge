@@ -134,6 +134,35 @@ describe("SessionManager.setSessionModel", () => {
     expect(result).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
   });
 
+  it("drops fixed options when switching to a dynamically selected model", async () => {
+    const manager = createManager();
+    const session = createMockSession("gpt-5.6-sol");
+    session.getCurrentModel
+      .mockResolvedValueOnce({
+        modelId: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        contextTier: "long_context",
+      })
+      .mockResolvedValueOnce({ modelId: "hydrafusion" });
+    manager.backend = {};
+    manager.modelMetadataForContextTiers = [{
+      id: "hydrafusion",
+      name: "HydraFusion",
+      selectionMode: "dynamic",
+    }];
+    manager.sessionObjects.set("session-1", session);
+
+    const result = await manager.setSessionModel(
+      "session-1",
+      "hydrafusion",
+      "xhigh",
+      "long_context",
+    );
+
+    expect(session.setModel).toHaveBeenCalledWith("hydrafusion", undefined);
+    expect(result).toEqual({ model: "hydrafusion", modelId: "hydrafusion" });
+  });
+
   it("caps tiered models when selecting the default context tier", async () => {
     const manager = createManager(makeTestDir("model-context-default"));
     const session = createMockSession("gpt-5.5");

@@ -4,6 +4,7 @@ import { formatReasoningEffortLabel, getModelReasoningEfforts } from "../../reas
 import {
   getContextTierLabel,
   modelSupportsLongContext,
+  modelUsesDynamicSelection,
   type CopilotContextTier,
 } from "../../../shared/copilot-context.js";
 import { SettingsSection } from "./SettingsSection";
@@ -25,6 +26,7 @@ export function DeferWorkerSection({
     ...draft.deferWorker,
   };
   const selectedModel = availableModels.find((model) => model.id === settings.model);
+  const selectedModelUsesDynamicSelection = modelUsesDynamicSelection(selectedModel);
   const supportsLongContext = modelSupportsLongContext(selectedModel);
   const efforts = getModelReasoningEfforts(models, settings.model);
   if (settings.reasoningEffort && !efforts.includes(settings.reasoningEffort)) {
@@ -57,10 +59,14 @@ export function DeferWorkerSection({
               const supportedEfforts = nextModel?.supportedReasoningEfforts ?? [];
               update({
                 model,
-                contextTier: modelSupportsLongContext(nextModel)
+                contextTier: modelUsesDynamicSelection(nextModel)
+                  ? undefined
+                  : modelSupportsLongContext(nextModel)
                   ? (settings.contextTier ?? "default")
                   : "default",
-                reasoningEffort: settings.reasoningEffort
+                reasoningEffort: modelUsesDynamicSelection(nextModel)
+                  ? undefined
+                  : settings.reasoningEffort
                   && !supportedEfforts.includes(settings.reasoningEffort)
                   ? supportedEfforts.includes("low") ? "low" : supportedEfforts[0]
                   : settings.reasoningEffort,
@@ -78,10 +84,12 @@ export function DeferWorkerSection({
         <label className="space-y-1 text-xs font-medium text-text-secondary">
           <span>Context</span>
           <select
-            value={settings.contextTier ?? "default"}
+            value={selectedModelUsesDynamicSelection ? "" : settings.contextTier ?? "default"}
             onChange={(event) => update({ contextTier: event.target.value as CopilotContextTier })}
+            disabled={selectedModelUsesDynamicSelection}
             className="w-full appearance-none rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
           >
+            {selectedModelUsesDynamicSelection && <option value="">Selected dynamically</option>}
             <option value="default">
               {getContextTierLabel(selectedModel, "default") ?? "Standard context"}
             </option>
@@ -96,11 +104,12 @@ export function DeferWorkerSection({
         <label className="space-y-1 text-xs font-medium text-text-secondary">
           <span>Reasoning effort</span>
           <select
-            value={settings.reasoningEffort ?? ""}
+            value={selectedModelUsesDynamicSelection ? "" : settings.reasoningEffort ?? ""}
             onChange={(event) => update({ reasoningEffort: event.target.value || undefined })}
+            disabled={selectedModelUsesDynamicSelection}
             className="w-full appearance-none rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
           >
-            <option value="">Model default</option>
+            <option value="">{selectedModelUsesDynamicSelection ? "Selected dynamically" : "Model default"}</option>
             {efforts.map((effort) => (
               <option key={effort} value={effort}>
                 {formatReasoningEffortLabel(effort) ?? effort}

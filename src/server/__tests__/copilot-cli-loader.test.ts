@@ -20,7 +20,7 @@ supportsElicitation(){return m.sessionBaseSupportsCapability(this.nativeSessionI
 `;
 
 describe("copilot-cli-loader stable contract", () => {
-  it("injects Bridge GitHub MCP options and validates native elicitation in the 1.0.81 shape", () => {
+  it("injects Bridge GitHub MCP options and validates native elicitation in the 1.0.83 shape", () => {
     const source = `class App{${STABLE_RESOLVER}${STABLE_ELICITATION}}`;
 
     const patched = patchCopilotAppSource(source);
@@ -71,14 +71,14 @@ describe("copilot-cli-loader stable contract", () => {
 
   const installedApp = findInstalledStableCopilotApp();
 
-  it("resolves the installed 1.0.81 platform package", () => {
+  it("resolves the installed 1.0.83 platform package", () => {
     expect(
       installedApp,
-      "No installed @github/copilot platform package at version 1.0.81. Run `npm install` before the server test lane.",
+      "No installed @github/copilot platform package at version 1.0.83. Run `npm install` before the server test lane.",
     ).toBeTruthy();
   });
 
-  it("patches the installed 1.0.81 bundle and emits syntactically valid ESM", () => {
+  it("patches the installed 1.0.83 bundle and emits syntactically valid ESM", () => {
     const source = readFileSync(installedApp!.appPath, "utf-8");
     const patched = patchCopilotAppSource(source);
 
@@ -91,7 +91,7 @@ describe("copilot-cli-loader stable contract", () => {
     expect(() => execFileSync(process.execPath, ["--check", modulePath], { stdio: "pipe" })).not.toThrow();
   });
 
-  it("launches the installed 1.0.81 package through the Bridge wrapper", () => {
+  it("launches the installed 1.0.83 package through the Bridge wrapper", () => {
     const wrapperPath = join(dirname(fileURLToPath(import.meta.url)), "..", "copilot-cli-wrapper.js");
     const output = execFileSync(process.execPath, [wrapperPath, "--version"], {
       encoding: "utf-8",
@@ -101,7 +101,7 @@ describe("copilot-cli-loader stable contract", () => {
       },
     });
 
-    expect(output).toContain("1.0.81");
+    expect(output).toContain("1.0.83");
   });
 });
 
@@ -147,7 +147,7 @@ function findInstalledStableCopilotApp(): { appPath: string; packageDir: string 
     const appPath = join(packageDir, "app.js");
     if (!existsSync(packageJsonPath) || !existsSync(appPath)) continue;
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { version?: string };
-    if (packageJson.version === "1.0.81") return { appPath, packageDir };
+    if (packageJson.version === "1.0.83") return { appPath, packageDir };
   }
   return undefined;
 }

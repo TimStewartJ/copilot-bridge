@@ -17,6 +17,7 @@ export interface CopilotTieredTokenPrices extends CopilotTokenPrices {
 export interface CopilotModelContextMetadata {
   readonly id: string;
   readonly name?: string | null;
+  readonly selectionMode?: "dynamic";
   readonly supportedReasoningEfforts?: readonly string[];
   readonly defaultReasoningEffort?: string;
   readonly capabilities?: {
@@ -33,6 +34,12 @@ export interface CopilotModelContextMetadata {
     readonly multiplier?: number;
     readonly tokenPrices?: CopilotTieredTokenPrices;
   };
+}
+
+export function modelUsesDynamicSelection(
+  model: CopilotModelContextMetadata | null | undefined,
+): boolean {
+  return model?.selectionMode === "dynamic";
 }
 
 export interface CopilotModelCapabilitiesOverride {
