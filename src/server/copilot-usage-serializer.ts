@@ -100,6 +100,12 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
       unpricedModelCount: summary.totals.unpricedModelCount,
       unpricedTokens: serializeTokenTotals(summary.totals.unpricedTokens),
     },
+    deferWorkers: {
+      capturedRuns: summary.deferWorkers.capturedRuns,
+      parentSessions: summary.deferWorkers.parentSessions,
+      retentionDays: summary.deferWorkers.retentionDays,
+      ...serializeTokenTotals(summary.deferWorkers),
+    },
     coverage: {
       sessionsSeen: summary.coverage.sessionsSeen,
       sessionsWithEvents: summary.coverage.sessionsWithEvents,

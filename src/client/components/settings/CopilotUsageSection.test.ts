@@ -107,6 +107,12 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
     days: [],
     sessions: [],
     unpricedModels: [],
+    deferWorkers: {
+      capturedRuns: 0,
+      parentSessions: 0,
+      retentionDays: 90,
+      ...createUsageTotals(),
+    },
     ...overrides,
   };
 }
@@ -220,6 +226,7 @@ describe("CopilotUsageSection", () => {
       reasoningTokens: 1_000_000,
       totalTokens: 5_000_000,
     });
+
     const unpricedTotals = createUsageTotals({
       requests: 1,
       inputTokens: 100,
@@ -327,6 +334,33 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("unknown-model");
     expect(text).toContain("Exact public price");
     expect(text).toContain("Unpriced");
+  });
+
+  it("shows retained deferred-worker metering separately", () => {
+    const html = renderSection(createUsageSummary({
+      deferWorkers: {
+        capturedRuns: 4,
+        parentSessions: 2,
+        retentionDays: 90,
+        ...createUsageTotals({
+          requests: 4,
+          inputTokens: 1_000,
+          outputTokens: 100,
+          totalTokens: 1_100,
+          meteredAiCredits: 12.5,
+          meteredTokens: 1_100,
+        }),
+      },
+    })).replace(/<!-- -->/g, "");
+
+    expect(html).toContain("Deferred workers");
+    expect(html).toContain("Captured at worker shutdown");
+    expect(html).toContain("retained for 90 days");
+    expect(html).toContain("Captured runs");
+    expect(html).toContain("Parent sessions");
+    expect(html).toContain("12.5");
+    expect(html).toContain("$0.13");
+    expect(html).toContain("1,100");
   });
 
   it("shows unattributed GitHub metering separately from estimated model credits", () => {

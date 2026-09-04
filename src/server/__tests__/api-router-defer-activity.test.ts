@@ -37,6 +37,10 @@ describe("session deferred activity routes", () => {
         model: "small-model",
         reasoningEffort: "low",
         contextTier: "default",
+        usageCaptured: true,
+        totalTokens: 1_234,
+        meteredAiCredits: 2.5,
+        estimatedAiCredits: 1.25,
       },
     });
     ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
@@ -93,6 +97,10 @@ describe("session deferred activity routes", () => {
         action: "return",
         model: "small-model",
         deliveryStatus: "pending",
+        usageCaptured: true,
+        totalTokens: 1_234,
+        meteredAiCredits: 2.5,
+        estimatedAiCredits: 1.25,
       }),
     ]));
     expect(response.body.recentDeliveries).toEqual([

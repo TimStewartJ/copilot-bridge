@@ -125,7 +125,7 @@ export function CopilotUsageSection() {
   return (
     <SettingsSection
       title="Local Copilot Usage"
-      description="Estimated from local session history with GitHub Copilot public pricing assumptions. Not official billing."
+      description="Local session and retained defer-worker usage with GitHub Copilot public pricing assumptions. Not official billing."
       action={(
         <button
           onClick={() => void handleRefresh()}
@@ -176,7 +176,7 @@ export function CopilotUsageSection() {
         />
 
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-          Metered cost is what GitHub actually billed, read from each session log, and only covers sessions recent enough to carry that field. Cost that GitHub did not assign to a named model appears as Unattributed. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded.
+          Metered cost is what GitHub actually billed, read from session shutdown data, and only covers work recent enough to carry that field. Disposable defer-worker usage is retained before its temporary session is deleted. Cost that GitHub did not assign to a named model appears as Unattributed. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Active work before shutdown, other unpersisted sessions, and other devices are excluded.
         </div>
 
         {data && indexing && (
@@ -258,6 +258,27 @@ export function CopilotUsageSection() {
               <SummaryCard label="Coverage window" value={formatCoverageWindow(data.coverage)} />
             </div>
 
+            {data.deferWorkers.capturedRuns > 0 && (
+              <div className="rounded-md border border-accent/30 bg-accent/5 p-4 space-y-3">
+                <div>
+                  <div className="text-sm font-medium text-accent">Deferred workers</div>
+                  <p className="mt-1 text-xs text-text-muted">
+                    Captured at worker shutdown and retained for {formatNumber(data.deferWorkers.retentionDays)} days after disposable session cleanup.
+                  </p>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+                  <CoverageStat label="Captured runs" value={formatNumber(data.deferWorkers.capturedRuns)} />
+                  <CoverageStat label="Parent sessions" value={formatNumber(data.deferWorkers.parentSessions)} />
+                  <CoverageStat
+                    label="Metered cost"
+                    value={formatCurrencyUsd(data.deferWorkers.meteredAiCredits * COPILOT_AI_CREDIT_USD)}
+                  />
+                  <CoverageStat label="Metered credits" value={formatAiCredits(data.deferWorkers.meteredAiCredits)} />
+                  <CoverageStat label="Total tokens" value={formatNumber(data.deferWorkers.totalTokens)} />
+                </div>
+              </div>
+            )}
+
             {data.totals.unpricedModelCount > 0 && (
               <UnpricedModelsWarning
                 count={data.totals.unpricedModelCount}
@@ -274,7 +295,7 @@ export function CopilotUsageSection() {
                     Coverage and exclusions
                   </div>
                   <p className="mt-1 text-xs text-text-muted">
-                    Included sessions come from shutdown summaries still present on disk. Resumed sessions keep their earlier persisted shutdown usage, but active work after the latest shutdown is still excluded.
+                    Included sessions come from shutdown summaries still present on disk plus retained disposable defer-worker summaries. Resumed sessions keep their earlier persisted shutdown usage, but active work after the latest shutdown is still excluded.
                     {isRanged && " Counts are limited to sessions with recorded usage inside the selected window."}
                   </p>
                 </div>
