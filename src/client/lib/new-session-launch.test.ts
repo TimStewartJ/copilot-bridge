@@ -122,6 +122,30 @@ describe("new-session launch state", () => {
     expect(state.selectedContextTier).toBe("default");
   });
 
+  it("does not expose fixed options for dynamically selected models", () => {
+    const state = resolveNewSessionLaunchState({
+      models: [{
+        id: "hydrafusion",
+        name: "HydraFusion (Research Preview)",
+        selectionMode: "dynamic",
+        supportedReasoningEfforts: [],
+        capabilities: {
+          supports: { vision: false, reasoningEffort: false },
+          limits: { max_context_window_tokens: 0 },
+        },
+      }],
+      selectedModelId: "hydrafusion",
+      defaultReasoningEffort: "xhigh",
+      defaultContextTier: "long_context",
+    });
+
+    expect(state.reasoningEffortOptions).toEqual([]);
+    expect(state.selectedReasoningEffort).toBeUndefined();
+    expect(state.contextOptions).toEqual([]);
+    expect(state.selectedContextTier).toBeUndefined();
+    expect(buildNewSessionCreateOptions(state)).toEqual({ model: "hydrafusion" });
+  });
+
   it("does not invent launch options or freeze an inherited model before it is known", () => {
     const state = resolveNewSessionLaunchState({
       models: [],

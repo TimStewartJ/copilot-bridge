@@ -1,7 +1,7 @@
 const ID = String.raw`[$A-Za-z_][\w$]*`;
 const PARAM = String.raw`${ID}(?:=[^,()]*)?`;
 
-// Exact contract for the stable 1.0.81 bundle. If the pinned package shape
+// Exact contract for the stable 1.0.83 bundle. If the pinned package shape
 // changes, fail validation instead of applying a partial patch.
 const GITHUB_MCP_CONFIG_RESOLVER_SIGNATURE_PATTERN = new RegExp(
   String.raw`async resolveBuiltInGitHubMcpConfig\((${PARAM}(?:,${PARAM})*)\)\{`,

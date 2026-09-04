@@ -73,10 +73,18 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.forceStop).toHaveBeenCalledOnce();
   });
 
-  it("delegates listModels and listSessions verbatim", async () => {
+  it("delegates model/session listing and adds HydraFusion to the model catalog", async () => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
-    await expect(backend.listModels()).resolves.toEqual([{ id: "fake-model", name: "Fake" }]);
+    await expect(backend.listModels()).resolves.toEqual([
+      { id: "fake-model", name: "Fake" },
+      expect.objectContaining({
+        id: "hydrafusion",
+        name: "HydraFusion (Research Preview)",
+        selectionMode: "dynamic",
+        supportedReasoningEfforts: [],
+      }),
+    ]);
     await expect(backend.listSessions()).resolves.toEqual([{ sessionId: "s1", title: "S1" }]);
     expect(client.listModels).toHaveBeenCalledOnce();
     expect(client.listSessions).toHaveBeenCalledOnce();
@@ -109,6 +117,38 @@ describe("CopilotBackend wrap fidelity", () => {
     const resumed = await backend.resumeSession("abc", config);
     expect(client.resumeSession).toHaveBeenCalledWith("abc", config);
     expect(resumed.sessionId).toBe("fake-session-id");
+  });
+
+  it("creates HydraFusion sessions on the runtime default, then switches before returning", async () => {
+    const session = createFakeSession();
+    const client = createFakeClient(session);
+    const backend = new CopilotBackend(client as any);
+
+    await backend.createSession({
+      model: "hydrafusion",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+      modelCapabilities: { limits: { max_prompt_tokens: 1 } },
+      workingDirectory: "/x",
+    });
+
+    expect(client.createSession).toHaveBeenCalledWith({
+      enableExperimentalMode: true,
+      workingDirectory: "/x",
+    });
+    expect(session.setModel).toHaveBeenCalledWith("hydrafusion");
+  });
+
+  it("deletes a session when the HydraFusion switch fails", async () => {
+    const session = createFakeSession();
+    session.setModel.mockRejectedValueOnce(new Error("Model unavailable"));
+    const client = createFakeClient(session);
+    const backend = new CopilotBackend(client as any);
+
+    await expect(backend.createSession({ model: "hydrafusion" }))
+      .rejects.toThrow("Model unavailable");
+
+    expect(client.deleteSession).toHaveBeenCalledWith("fake-session-id");
   });
 
   it("advertises pending interaction events without leaving an in-process elicitation handler", async () => {

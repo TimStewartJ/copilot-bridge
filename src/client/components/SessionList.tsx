@@ -102,9 +102,7 @@ export function canKeepCurrentReasoningEffortForModel({
 }): boolean {
   if (!supportedReasoningEfforts) return true;
   if (!currentEffortLookupReady) return false;
-  if (supportedReasoningEfforts.length === 0) {
-    return !currentReasoningEffort;
-  }
+  if (supportedReasoningEfforts.length === 0) return true;
   if (!currentReasoningEffort) return true;
   return supportedReasoningEfforts.includes(currentReasoningEffort);
 }
@@ -348,6 +346,7 @@ export default function SessionList({
   const selectedDialogModel = modelOptions?.find((model) => model.id === modelDraft);
   const selectedDialogModelSupportsLongContext = modelSupportsLongContext(selectedDialogModel);
   const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;
+  const selectedDialogDisablesReasoning = supportedReasoningEfforts?.length === 0;
   const currentReasoningEffort = modelDialogQuery.data?.reasoningEffort;
   const currentEffortLookupReady = modelDialogQuery.isSuccess && !!modelDialogQuery.data;
   const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
@@ -553,8 +552,10 @@ export default function SessionList({
         submittedReasoningEffort,
         submittedContextTier,
       );
-      const nextReasoningEffort = result.reasoningEffort
-        ?? (submittedReasoningEffort || modelDialogQuery.data?.reasoningEffort);
+      const nextReasoningEffort = selectedDialogDisablesReasoning
+        ? undefined
+        : result.reasoningEffort
+          ?? (submittedReasoningEffort || modelDialogQuery.data?.reasoningEffort);
       const nextContextTier = result.contextTier ?? submittedContextTier;
       const savedModelId = result.modelId ?? result.model;
       const nextState: SessionModelState = {
@@ -592,6 +593,7 @@ export default function SessionList({
     canKeepCurrentReasoningEffort,
     preferredReasoningEffort,
     selectedDialogModelSupportsLongContext,
+    selectedDialogDisablesReasoning,
     supportedReasoningEfforts,
   ]);
 
@@ -1159,35 +1161,39 @@ export default function SessionList({
                 )}
               </div>
 
-              <div className="space-y-1.5">
+              {!selectedDialogDisablesReasoning && (
+                <div className="space-y-1.5">
+                  <LaunchOptionRow
+                    ariaLabel="Effort for this session"
+                    options={dialogReasoningOptions}
+                    selectedValue={dialogSelectedReasoningEffort}
+                    onChange={(value) => {
+                      modelDialogTouchedRef.current = true;
+                      setReasoningDraft(value ?? "");
+                    }}
+                    disabled={modelSwitchSaving}
+                  />
+                  {!canKeepCurrentReasoningEffort && currentEffortLookupReady && currentReasoningEffort && (
+                    <div className="text-xs text-text-faint">
+                      Current: {formatReasoningEffortLabel(currentReasoningEffort)}
+                      {" (not supported by selected model)"}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {dialogContextOptions.length > 0 && (
                 <LaunchOptionRow
-                  ariaLabel="Effort for this session"
-                  options={dialogReasoningOptions}
-                  selectedValue={dialogSelectedReasoningEffort}
+                  ariaLabel="Context for this session"
+                  options={dialogContextOptions}
+                  selectedValue={dialogSelectedContextTier}
                   onChange={(value) => {
                     modelDialogTouchedRef.current = true;
-                    setReasoningDraft(value ?? "");
+                    setContextTierDraft(value ?? "");
                   }}
                   disabled={modelSwitchSaving}
                 />
-                {!canKeepCurrentReasoningEffort && currentEffortLookupReady && currentReasoningEffort && (
-                  <div className="text-xs text-text-faint">
-                    Current: {formatReasoningEffortLabel(currentReasoningEffort)}
-                    {" (not supported by selected model)"}
-                  </div>
-                )}
-              </div>
-
-              <LaunchOptionRow
-                ariaLabel="Context for this session"
-                options={dialogContextOptions}
-                selectedValue={dialogSelectedContextTier}
-                onChange={(value) => {
-                  modelDialogTouchedRef.current = true;
-                  setContextTierDraft(value ?? "");
-                }}
-                disabled={modelSwitchSaving}
-              />
+              )}
             </div>
 
             {modelSwitchError && (

@@ -37,6 +37,7 @@ import type {
   PermissionRequestResult,
   SectionOverride,
 } from "@github/copilot-sdk";
+import type { CopilotModelContextMetadata } from "../../shared/copilot-context.js";
 
 /**
  * Declares which optional features a backend supports. Consumers (UI, run
@@ -78,7 +79,7 @@ export interface AgentCapabilities {
  * directly. Step 3 may replace these with backend-neutral shapes; for Step 1
  * they are aliases.
  */
-export type AgentModelInfo = ModelInfo;
+export type AgentModelInfo = ModelInfo & Pick<CopilotModelContextMetadata, "selectionMode">;
 export type AgentSectionOverride = SectionOverride;
 // Step 3: replace these Copilot-shaped aliases with backend-neutral permission types.
 export type AgentPermissionRequest = PermissionRequest;
