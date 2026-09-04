@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-import { resolveBridgeControlRoot } from "../control-root.js";
-
-const REPO_ROOT = resolveBridgeControlRoot(join(import.meta.dirname, "..", "..", ".."));
+const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 
 function readSdkClientSource(format: "esm" | "cjs"): string {
   const filePath = format === "esm"
@@ -27,6 +25,16 @@ describe("patched Copilot SDK tool serializer", () => {
       const source = readSdkClientSource(format);
       const optionsForwardingCount = source.match(/githubMcpToolOptions: config\.githubMcpToolOptions/g)?.length ?? 0;
       expect(optionsForwardingCount, format).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("forwards the structured ask_user variant on create and resume", () => {
+    for (const format of ["esm", "cjs"] as const) {
+      const source = readSdkClientSource(format);
+      const variantForwardingCount = source.match(
+        /\.\.\.config\.askUserVariant \? \{ askUserVariant: config\.askUserVariant \} : \{\}/g,
+      )?.length ?? 0;
+      expect(variantForwardingCount, format).toBe(2);
     }
   });
 });

@@ -37,8 +37,8 @@ async function resolveCopilotPackageDir() {
   const arch = process.arch;
   for (const variant of await platformPackageVariants()) {
     try {
-      const sdkPath = fileURLToPath(import.meta.resolve(`@github/copilot-${variant}-${arch}/sdk`));
-      const packageDir = dirname(dirname(sdkPath));
+      const cliPath = fileURLToPath(import.meta.resolve(`@github/copilot-${variant}-${arch}`));
+      const packageDir = dirname(cliPath);
       if (existsSync(join(packageDir, "app.js")) && existsSync(join(packageDir, "index.js"))) {
         return packageDir;
       }
@@ -47,7 +47,7 @@ async function resolveCopilotPackageDir() {
     }
   }
   throw new Error(
-    "Unable to locate the platform-specific @github/copilot application entry points (app.js/index.js).",
+    "Unable to locate the platform-specific @github/copilot package and application entry points (app.js/index.js).",
   );
 }
 

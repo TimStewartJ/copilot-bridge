@@ -120,6 +120,7 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.createSession).toHaveBeenCalledWith({
       streaming: true,
       onElicitationRequest: expect.any(Function),
+      askUserVariant: "elicitation",
     });
     expect(session.registerElicitationHandler).toHaveBeenCalledWith(undefined);
   });
