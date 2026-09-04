@@ -39,7 +39,7 @@ describe("api router defer reactivation", () => {
     expect(events).toContainEqual({
       type: "session:defer-summary",
       sessionId: "session-1",
-      deferSummary: { count: 1, nextRunAt: response.body.nextRunAt },
+      deferSummary: { count: 1, runningCount: 0, nextRunAt: response.body.nextRunAt },
     });
   });
 
@@ -80,7 +80,7 @@ describe("api router defer reactivation", () => {
     expect(events).toContainEqual({
       type: "session:defer-summary",
       sessionId: "session-1",
-      deferSummary: { count: 1, nextRunAt: response.body.nextRunAt },
+      deferSummary: { count: 1, runningCount: 0, nextRunAt: response.body.nextRunAt },
     });
   });
 

@@ -5,6 +5,7 @@
 
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BACKEND_DISCONNECTED_MESSAGE } from "../../backend-availability.js";
 import { CopilotBackend } from "../copilot-backend.js";
 import { AGENT_RPC_TIMEOUTS_MS } from "../rpc-timeouts.js";
 
@@ -204,6 +205,36 @@ describe("CopilotBackend disconnect detection", () => {
       reason: "rpc-timeout",
       detail: expect.stringContaining("rpc-timeout:session.send"),
     }));
+  });
+
+  it("rejects an unbounded natural-completion wait when the backend disconnects", async () => {
+    const { client, connection } = createFakeClient();
+    const handlers = new Set<(event: any) => void>();
+    const session = {
+      sessionId: "s1",
+      send: vi.fn(async () => undefined),
+      abort: vi.fn(),
+      setModel: vi.fn(),
+      disconnect: vi.fn(),
+      on: vi.fn((handler: (event: any) => void) => {
+        handlers.add(handler);
+        return () => handlers.delete(handler);
+      }),
+      registerElicitationHandler: vi.fn(),
+      rpc: {},
+    };
+    client.resumeSession = vi.fn(async () => session);
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    await backend.start();
+    const wrapped = await backend.resumeSession("s1", {} as any);
+
+    const wait = wrapped.sendAndWait({ prompt: "hello" }, null);
+    const rejection = expect(wait).rejects.toThrow(BACKEND_DISCONNECTED_MESSAGE);
+    await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
+    connection.fireClose();
+
+    await rejection;
+    expect(handlers.size).toBe(0);
   });
 
   it("fails a hung external-use probe without declaring the backend disconnected", async () => {

@@ -63,7 +63,7 @@ describe("deferred-prompt-store", () => {
 
       expect(store.listForSession("session-A")).toEqual([]);
       expect(store.listDeliveriesForSession("session-A")).toEqual([delivery]);
-      expect(store.getSummaryForSession("session-A")).toEqual({ count: 0, nextRunAt: null });
+      expect(store.getSummaryForSession("session-A")).toEqual({ count: 0, runningCount: 0, nextRunAt: null });
       expect(store.cancelForSession("session-A")).toBe(0);
       expect(store.get(delivery.id)?.status).toBe("pending");
 
@@ -224,7 +224,7 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("getSummaryForSession", () => {
-    it("counts pending prompts for a session and returns the earliest run time", () => {
+    it("counts pending and running prompts with the earliest queued run time", () => {
       const earliest = "2030-01-01T00:01:00.000Z";
       const later = "2030-01-01T00:02:00.000Z";
       const runningAt = "2030-01-01T00:00:30.000Z";
@@ -235,11 +235,13 @@ describe("deferred-prompt-store", () => {
       store.create("session-2", "Other", "2030-01-01T00:00:00.000Z");
 
       expect(store.getSummaryForSession("session-1")).toEqual({
-        count: 2,
+        count: 3,
+        runningCount: 1,
         nextRunAt: earliest,
       });
       expect(store.getSummaryForSession("missing-session")).toEqual({
         count: 0,
+        runningCount: 0,
         nextRunAt: null,
       });
     });
@@ -260,8 +262,8 @@ describe("deferred-prompt-store", () => {
 
       const summaries = store.listSummariesBySession();
       expect(summaries.get("session-1")).toEqual(store.getSummaryForSession("session-1"));
-      expect(summaries.get("session-1")).toEqual({ count: 2, nextRunAt: earliest });
-      expect(summaries.get("session-2")).toEqual({ count: 1, nextRunAt: "2030-01-01T00:00:00.000Z" });
+      expect(summaries.get("session-1")).toEqual({ count: 3, runningCount: 1, nextRunAt: earliest });
+      expect(summaries.get("session-2")).toEqual({ count: 1, runningCount: 0, nextRunAt: "2030-01-01T00:00:00.000Z" });
       expect(summaries.has("session-3")).toBe(false);
       expect(summaries.has("missing-session")).toBe(false);
     });

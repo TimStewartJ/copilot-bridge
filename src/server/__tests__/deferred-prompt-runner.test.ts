@@ -108,8 +108,8 @@ describe("deferred-prompt-runner", () => {
       const dp = store.listForSession("session-1")[0];
       expect(dp.status).toBe("completed");
       expect(summaryEvents).toEqual([
-        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
-        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
+        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, runningCount: 1, nextRunAt: null } },
+        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, runningCount: 0, nextRunAt: null } },
       ]);
 
       runner.shutdown();
@@ -749,11 +749,12 @@ describe("deferred-prompt-runner", () => {
       // After one attempt the prompt should be re-queued pending with backoff
       expect(dp.status).toBe("pending");
       expect(dp.attempts).toBe(1);
-      expect(summaryEvents.map((event) => event.deferSummary.count)).toEqual([0, 1]);
+      expect(summaryEvents.map((event) => event.deferSummary.count)).toEqual([1, 1]);
+      expect(summaryEvents.map((event) => event.deferSummary.runningCount)).toEqual([1, 0]);
       expect(summaryEvents.at(-1)).toMatchObject({
         type: "session:defer-summary",
         sessionId: "session-1",
-        deferSummary: { count: 1, nextRunAt: dp.runAt },
+        deferSummary: { count: 1, runningCount: 0, nextRunAt: dp.runAt },
       });
       runner.shutdown();
     });

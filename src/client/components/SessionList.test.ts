@@ -52,7 +52,7 @@ async function renderSessionList(sessions: Session[]) {
 function createSession(overrides: Partial<Session> & { sessionId: string }): Session {
   return {
     summary: "Test session",
-    deferSummary: { count: 0, nextRunAt: null },
+    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }
@@ -130,7 +130,7 @@ describe("SessionList defer summary indicator", () => {
       createSession({
         sessionId: "session-1",
         summary: "Deferred session",
-        deferSummary: { count: 1, nextRunAt: minutesFromNow(5) },
+        deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
       }),
     ]);
 
@@ -142,11 +142,48 @@ describe("SessionList defer summary indicator", () => {
     }
   });
 
+  it("renders a visibly distinct badge while a defer worker is running", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Running deferred session",
+        deferSummary: { count: 1, runningCount: 1, nextRunAt: null },
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("Defer running");
+      const badge = findAllByTag(dom.container, "BUTTON").find(
+        (button) => getReactProps(button)?.title?.includes("Defer running"),
+      );
+      expect(getReactProps(badge)?.className).toContain("text-info");
+      expect(getReactProps(badge)?.className).toContain("bg-info/10");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("shows running and queued defer counts together", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Mixed deferred session",
+        deferSummary: { count: 2, runningCount: 1, nextRunAt: minutesFromNow(5) },
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("1 running · 1 queued");
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("opens deferred work from the defer badge", async () => {
     const session = createSession({
       sessionId: "session-1",
       summary: "Deferred session",
-      deferSummary: { count: 1, nextRunAt: minutesFromNow(5) },
+      deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
     });
     const { dom, act, cleanup } = await renderSessionList([session]);
 
@@ -172,7 +209,7 @@ describe("SessionList defer summary indicator", () => {
       createSession({
         sessionId: "session-1",
         summary: "Queued session",
-        deferSummary: { count: 2, nextRunAt: minutesFromNow(5) },
+        deferSummary: { count: 2, runningCount: 0, nextRunAt: minutesFromNow(5) },
       }),
     ]);
 
@@ -188,7 +225,7 @@ describe("SessionList defer summary indicator", () => {
       createSession({
         sessionId: "session-1",
         summary: "Cleared session",
-        deferSummary: { count: 0, nextRunAt: minutesFromNow(5) },
+        deferSummary: { count: 0, runningCount: 0, nextRunAt: minutesFromNow(5) },
       }),
     ]);
 
@@ -208,7 +245,7 @@ describe("SessionList defer summary indicator", () => {
         summary: "Waiting deferred session",
         needsUserInput: true,
         pendingUserInputCount: 1,
-        deferSummary: { count: 1, nextRunAt: minutesFromNow(5) },
+        deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
       }),
     ]);
 

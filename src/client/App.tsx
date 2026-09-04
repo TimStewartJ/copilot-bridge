@@ -730,7 +730,7 @@ export default function App() {
         lastVisibleActivityAt: timestamp,
         runState: "idle",
         eventLogSizeBytes: 0,
-        deferSummary: { count: 0, nextRunAt: null },
+        deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
         isOptimistic: true,
         optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
       };
