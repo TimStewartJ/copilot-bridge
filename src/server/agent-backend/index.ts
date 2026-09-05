@@ -6,10 +6,7 @@
 
 import { CopilotClient } from "@github/copilot-sdk";
 
-import {
-  buildCopilotClientOptions,
-  type BridgeCopilotClientOptions,
-} from "../copilot-client-options.js";
+import { buildCopilotClientOptions } from "../copilot-client-options.js";
 import { CopilotBackend } from "./copilot-backend.js";
 import type { AgentBackend } from "./types.js";
 
@@ -66,7 +63,7 @@ export interface CreateAgentBackendOptions {
 export function createAgentBackend(opts: CreateAgentBackendOptions): AgentBackend {
   switch (opts.kind) {
     case "copilot": {
-      const options: BridgeCopilotClientOptions = buildCopilotClientOptions(opts.clientEnv);
+      const options = buildCopilotClientOptions(opts.clientEnv);
       return new CopilotBackend(new CopilotClient(options));
     }
     default: {

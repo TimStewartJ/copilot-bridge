@@ -536,6 +536,60 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
+  it("warms a pending creation by reusing its handle instead of resuming the same ID", async () => {
+    const { manager, backend, db } = createManager();
+    const creationGate = createDeferred<void>();
+    try {
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async (config: any) => {
+        await creationGate.promise;
+        return createFakeSession(config.sessionId, config.tools ?? []);
+      });
+      const { sessionId } = await manager.createSession({ background: true });
+      const warming = manager.warmSession(sessionId);
+      await flushMicrotasks();
+
+      expect(backend.resumeSession).not.toHaveBeenCalled();
+      expect(manager.isSessionWarm(sessionId)).toBe(false);
+
+      creationGate.resolve();
+      await expect(warming).resolves.toBeUndefined();
+      expect(manager.isSessionWarm(sessionId)).toBe(true);
+      expect(backend.createSession).toHaveBeenCalledOnce();
+      expect(backend.resumeSession).not.toHaveBeenCalled();
+    } finally {
+      creationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("surfaces pending creation failures to warm without attempting a resume", async () => {
+    const { manager, backend, db } = createManager();
+    const creationGate = createDeferred<void>();
+    const creationError = new Error("HydraFusion is unavailable");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async () => {
+        await creationGate.promise;
+        throw creationError;
+      });
+      const { sessionId } = await manager.createSession({ background: true });
+      const warming = manager.warmSession(sessionId);
+      const rejection = expect(warming).rejects.toBe(creationError);
+      creationGate.resolve();
+
+      await rejection;
+      expect(backend.resumeSession).not.toHaveBeenCalled();
+      expect(manager.isSessionWarm(sessionId)).toBe(false);
+    } finally {
+      creationGate.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
   it("keeps restart waiting on plain creation after an active run settles", async () => {
     const { manager, backend, db, runtimePaths } = createManager();
     const creationGate = createDeferred<void>();

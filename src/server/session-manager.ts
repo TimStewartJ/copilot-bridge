@@ -243,7 +243,6 @@ export type {
 export {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
-  resolveBridgeCopilotCliPath,
 } from "./copilot-client-options.js";
 
 type CopilotModelList = AgentModelInfo[];
@@ -4566,6 +4565,10 @@ export class SessionManager {
     if (this.deletingSessions.has(sessionId)) {
       throw new Error("Session is being deleted");
     }
+    await this.awaitPendingSessionCreation(sessionId);
+    if (this.deletingSessions.has(sessionId)) {
+      throw new Error("Session is being deleted");
+    }
     const client = this.getBackend();
     if (this.sessionObjects.has(sessionId)) {
       this.recordSpan("session.warm.alreadyCached", 0, sessionId);
@@ -4710,7 +4713,8 @@ export class SessionManager {
       timeoutMessage: "reloadSession timed out after 60s",
       reserveCachedSession: true,
       beforeResume: async () => {
-        await this.evictCachedSession(sessionId);
+        const cached = this.sessionObjects.get(sessionId);
+        if (cached) await this.disposeSession(sessionId, cached, "reloading session");
         this.mcpStatus.delete(sessionId);
         console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
       },

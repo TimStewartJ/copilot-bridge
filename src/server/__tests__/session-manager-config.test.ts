@@ -5,7 +5,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
-  resolveBridgeCopilotCliPath,
   SessionManager,
 } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -33,9 +32,11 @@ describe("SessionManager session config", () => {
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: undefined }, () => {
       expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual(expect.objectContaining({
-        cliPath: resolveBridgeCopilotCliPath(),
-        connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
+        connection: { kind: "stdio" },
+        env: {
+          COPILOT_HOME: copilotHome,
+          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+        },
       }));
     });
   });
@@ -46,9 +47,11 @@ describe("SessionManager session config", () => {
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
       expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
-        cliPath: resolveBridgeCopilotCliPath(),
-        connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
-        env: { COPILOT_HOME: copilotHome, COPILOT_CLI_PATH: resolveBridgeCopilotCliPath() },
+        connection: { kind: "stdio" },
+        env: {
+          COPILOT_HOME: copilotHome,
+          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+        },
         gitHubToken: "github_pat_bridge",
         useLoggedInUser: false,
       });
@@ -64,17 +67,36 @@ describe("SessionManager session config", () => {
         COPILOT_HOME: copilotHome,
         [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
       })).toEqual({
-        cliPath: resolveBridgeCopilotCliPath(),
-        connection: { kind: "stdio", path: resolveBridgeCopilotCliPath(), args: ["--experimental"] },
+        connection: { kind: "stdio" },
         env: {
           COPILOT_HOME: copilotHome,
-          COPILOT_CLI_PATH: resolveBridgeCopilotCliPath(),
+          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
           [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
         },
         gitHubToken: "github_pat_client",
         useLoggedInUser: false,
       });
     });
+  });
+
+  it("preserves other runtime flags and isolates the bundled runtime from CLI path overrides", () => {
+    const clientEnv = {
+      COPILOT_HOME: makeTestDir("hydrafusion-client-options"),
+      COPILOT_CLI_PATH: "custom-cli",
+      COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG, HYDRAFUSION, ,OTHER_FLAG",
+      COPILOT_CLI_DISABLED_FEATURE_FLAGS: "DISABLED_FLAG",
+    };
+
+    const options = buildCopilotClientOptions(clientEnv);
+
+    expect(options.connection).toEqual({ kind: "stdio" });
+    expect(options.env).toEqual({
+      COPILOT_HOME: clientEnv.COPILOT_HOME,
+      COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG,HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+      COPILOT_CLI_DISABLED_FEATURE_FLAGS: "DISABLED_FLAG",
+    });
+    expect(clientEnv.COPILOT_CLI_PATH).toBe("custom-cli");
+    expect(clientEnv.COPILOT_CLI_ENABLED_FEATURE_FLAGS).toBe("OTHER_FLAG, HYDRAFUSION, ,OTHER_FLAG");
   });
 
   it("frames feed cards as an opt-in durable queue instead of assistant status output", () => {

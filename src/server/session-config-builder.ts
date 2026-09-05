@@ -235,6 +235,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   }
   const cfg: any = {
     pendingInteractionEvents: true,
+    enableExperimentalMode: true,
     streaming: true,
     includeSubAgentStreamingEvents: false,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
