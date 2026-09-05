@@ -193,6 +193,83 @@ describe("SessionManager stale cached session recovery", () => {
     }));
   });
 
+  it("waits for stale wrapper cleanup before resuming the same session ID", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    let releaseDisconnect!: () => void;
+    const cachedSession = createSession(async () => {
+      throw new Error("Session not found for sessionId: session-1");
+    });
+    cachedSession.disconnect.mockImplementation(() => new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    }));
+    const freshSession = createSession((emit) => {
+      queueMicrotask(() => emit({ type: "session.idle", data: {} }));
+    });
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(freshSession),
+    };
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    const work = manager._doWork("session-1", "hello", bus);
+    await vi.waitFor(() => expect(cachedSession.disconnect).toHaveBeenCalledOnce());
+
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+    releaseDisconnect();
+    await expect(work).resolves.toBeUndefined();
+
+    expect(manager.backend.resumeSession).toHaveBeenCalledOnce();
+    expect(freshSession.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(manager.sessionObjects.get("session-1")).toBe(freshSession);
+  });
+
+  it("blocks concurrent same-ID resume admission until stale cleanup finishes", async () => {
+    const { manager } = createManager();
+    let releaseDisconnect!: () => void;
+    const cachedSession = createSession(() => {});
+    cachedSession.disconnect.mockImplementation(() => new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    }));
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    const abandon = manager.abandonCachedSession("session-1", cachedSession);
+    await vi.waitFor(() => expect(cachedSession.disconnect).toHaveBeenCalledOnce());
+
+    let admitted = false;
+    const admission = manager.beginSessionResume("session-1", {}).then((lease: unknown) => {
+      admitted = true;
+      return lease;
+    });
+    await flushMicrotasks();
+    expect(admitted).toBe(false);
+
+    releaseDisconnect();
+    await expect(abandon).resolves.toBeUndefined();
+    const lease = await admission;
+    expect(lease).not.toBeNull();
+    manager.endSessionResume(lease);
+  });
+
+  it("does not resume when stale wrapper cleanup cannot complete", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const cachedSession = createSession(async () => {
+      throw new Error("Session not found for sessionId: session-1");
+    });
+    cachedSession.disconnect.mockRejectedValue(new Error("transient cleanup failure"));
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(createSession(() => {})),
+    };
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    await expect(manager._doWork("session-1", "hello", bus)).rejects.toThrow(
+      "Session session-1 could not be reaped while abandoning cached session",
+    );
+
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.has("session-1")).toBe(false);
+  });
+
   it("does not retry closed-connection failures from a cold resume", async () => {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
