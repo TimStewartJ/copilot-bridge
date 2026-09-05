@@ -35,34 +35,6 @@ function Get-DependencyMap($Source, [string[]]$Names) {
   return $map
 }
 
-function Remove-PathIfExists([string]$Path) {
-  if (Test-Path $Path) {
-    Remove-Item -Path $Path -Recurse -Force
-  }
-}
-
-function Remove-ChildrenExcept([string]$Path, [string[]]$Keep) {
-  if (-not (Test-Path $Path)) {
-    return
-  }
-  Get-ChildItem -Path $Path -Force | Where-Object { $Keep -notcontains $_.Name } | ForEach-Object {
-    Remove-PathIfExists $_.FullName
-  }
-}
-
-function Optimize-RuntimeNodeModules([string]$AppDir) {
-  $copilotRoot = Join-Path $AppDir "node_modules\@github\copilot"
-  if (-not (Test-Path $copilotRoot)) {
-    return
-  }
-
-  Remove-ChildrenExcept (Join-Path $copilotRoot "prebuilds") @("win32-x64")
-  Remove-ChildrenExcept (Join-Path $copilotRoot "ripgrep\bin") @("win32-x64")
-  Remove-ChildrenExcept (Join-Path $copilotRoot "mxc-bin") @("x64")
-  Remove-ChildrenExcept (Join-Path $copilotRoot "koffi\build\koffi") @("win32_x64")
-  Remove-ChildrenExcept (Join-Path $copilotRoot "clipboard\node_modules\@teddyzhu") @("clipboard", "clipboard-win32-x64-msvc")
-}
-
 function Read-UpdateManifestPublicKeyPem {
   if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM)) {
     return $env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM
@@ -77,7 +49,6 @@ function Read-UpdateManifestPublicKeyPem {
 }
 
 $runtimeDependencyNames = @(
-  "@github/copilot",
   "@github/copilot-sdk",
   "@modelcontextprotocol/sdk",
   "compression",
@@ -121,7 +92,6 @@ if (Test-Path $releaseRoot) {
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 
 Copy-Item -Path (Join-Path $repoRoot "dist") -Destination (Join-Path $appDir "dist") -Recurse
-Copy-Item -Path (Join-Path $repoRoot "src\server\copilot-cli-wrapper.js") -Destination (Join-Path $appDir "dist\server\copilot-cli-wrapper.js")
 Copy-Item -Path (Join-Path $repoRoot "public") -Destination (Join-Path $appDir "public") -Recurse
 $runtimePackageJson | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $appDir "package.json") -Encoding UTF8
 if (Test-Path $packageLockPath) {
@@ -150,12 +120,11 @@ if (-not [string]::IsNullOrWhiteSpace($updateManifestPublicKeyPem)) {
 if ($IncludeNodeModules) {
   Push-Location $appDir
   try {
-    # The Copilot CLI native runtime is an optional dependency selected by OS and architecture.
+    # The SDK's native runtime is an optional dependency selected by OS and architecture.
     npm install --omit=dev --include=optional --no-audit --no-fund
   } finally {
     Pop-Location
   }
-  Optimize-RuntimeNodeModules $appDir
 }
 
 $sourceCommit = "unknown"
@@ -177,7 +146,7 @@ $manifest = [ordered]@{
   distributionMode = "release"
   includesNodeModules = [bool]$IncludeNodeModules
   nodeModulesMode = if ($IncludeNodeModules) { "runtime" } else { "none" }
-  nodeModulesOptimization = if ($IncludeNodeModules) { "win-x64-pruned" } else { "none" }
+  nodeModulesOptimization = if ($IncludeNodeModules) { "platform-native" } else { "none" }
   updateManifestPublicKeyPath = if (-not [string]::IsNullOrWhiteSpace($updateManifestPublicKeyPem)) { "update-manifest-public-key.pem" } else { $null }
   runtimeDependencies = $runtimeDependencyNames
 }

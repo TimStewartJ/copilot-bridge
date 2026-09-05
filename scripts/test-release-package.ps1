@@ -160,16 +160,15 @@ try {
   $nodeModulesRoot = Join-Path $appRoot "node_modules"
   if (Test-Path $nodeModulesRoot) {
     Assert-PathExists "Copilot SDK runtime" (Join-Path $nodeModulesRoot "@github\copilot-sdk\dist\index.js")
-    Assert-PathExists "Copilot CLI npm loader" (Join-Path $nodeModulesRoot "@github\copilot\npm-loader.js")
-    $copilotPlatformRoot = Join-Path $nodeModulesRoot "@github\copilot-win32-x64"
-    Assert-PathExists "Copilot CLI Windows x64 package" $copilotPlatformRoot
-    Assert-PathExists "Copilot CLI Windows x64 executable" (Join-Path $copilotPlatformRoot "copilot.exe")
-    Assert-PathExists "Copilot CLI Windows x64 app entrypoint" (Join-Path $copilotPlatformRoot "app.js")
-    Assert-PathExists "Copilot CLI Windows x64 command entrypoint" (Join-Path $copilotPlatformRoot "index.js")
-    Assert-PathExists "Copilot CLI Windows x64 SDK entrypoint" (Join-Path $copilotPlatformRoot "sdk\index.js")
+    $copilotPlatformRoot = Join-Path $nodeModulesRoot "@github\copilot-sdk\node_modules\@github\copilot-sdk-win32-x64"
+    if (-not (Test-Path (Join-Path $copilotPlatformRoot "package.json"))) {
+      $copilotPlatformRoot = Join-Path $nodeModulesRoot "@github\copilot-sdk-win32-x64"
+    }
+    Assert-PathExists "Copilot SDK Windows x64 package" $copilotPlatformRoot
+    Assert-PathExists "Copilot SDK Windows x64 host" (Join-Path $copilotPlatformRoot "copilot-sdk\index.js")
     $copilotPrebuildRoot = Join-Path $copilotPlatformRoot "prebuilds\win32-x64"
-    Assert-PathExists "Copilot CLI Windows x64 prebuilds" $copilotPrebuildRoot
-    Assert-PathExists "Copilot CLI Windows x64 native addon" (Join-Path $copilotPrebuildRoot "cli-native.node")
+    Assert-PathExists "Copilot SDK Windows x64 executable" (Join-Path $copilotPrebuildRoot "copilot-runtime.exe")
+    Assert-PathExists "Copilot SDK Windows x64 native addon" (Join-Path $copilotPrebuildRoot "runtime.node")
   }
 
   Write-Output "Release package layout is valid: $releaseRoot"
@@ -189,10 +188,10 @@ try {
   if ($hasNodeModules) {
     Push-Location $appRoot
     try {
-      $copilotPlatformSdk = Join-Path $appRoot "node_modules\@github\copilot-win32-x64\sdk\index.js"
-      & $nodeExe --input-type=module -e "import { pathToFileURL } from 'node:url'; Promise.all([import('@github/copilot-sdk'), import(pathToFileURL(process.argv[1]).href)]).then(([{ CopilotClient }]) => { new CopilotClient({ autoStart: false }); console.log('Copilot SDK and Windows x64 runtime imports passed'); })" $copilotPlatformSdk
+      $runtimeSmokeHome = Join-Path $tempDir "copilot-runtime-smoke"
+      & $nodeExe --input-type=module -e "import { CopilotClient } from '@github/copilot-sdk'; import { buildCopilotClientOptions } from './dist/server/copilot-client-options.js'; const client = new CopilotClient({ ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: process.argv[1], BRIDGE_COPILOT_GITHUB_TOKEN: '' }), useLoggedInUser: false }); try { await client.start(); await client.ping(); console.log('Copilot SDK bundled runtime startup passed'); } finally { await client.stop(); }" $runtimeSmokeHome
       if ($LASTEXITCODE -ne 0) {
-        throw "Copilot SDK or Windows x64 runtime import failed with exit code $LASTEXITCODE."
+        throw "Copilot SDK bundled runtime startup failed with exit code $LASTEXITCODE."
       }
     } finally {
       Pop-Location

@@ -119,36 +119,62 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(resumed.sessionId).toBe("fake-session-id");
   });
 
-  it("creates HydraFusion sessions on the runtime default, then switches before returning", async () => {
+  it("creates HydraFusion directly without fixed-model overrides or a fallback session", async () => {
     const session = createFakeSession();
     const client = createFakeClient(session);
     const backend = new CopilotBackend(client as any);
 
-    await backend.createSession({
+    const config = {
       model: "hydrafusion",
       reasoningEffort: "high",
       contextTier: "long_context",
       modelCapabilities: { limits: { max_prompt_tokens: 1 } },
       workingDirectory: "/x",
-    });
+    };
+    await backend.createSession(config);
 
     expect(client.createSession).toHaveBeenCalledWith({
+      model: "hydrafusion",
       enableExperimentalMode: true,
       workingDirectory: "/x",
     });
-    expect(session.setModel).toHaveBeenCalledWith("hydrafusion");
+    expect(session.setModel).not.toHaveBeenCalled();
+    expect(config.reasoningEffort).toBe("high");
+    expect(config.contextTier).toBe("long_context");
   });
 
-  it("deletes a session when the HydraFusion switch fails", async () => {
-    const session = createFakeSession();
-    session.setModel.mockRejectedValueOnce(new Error("Model unavailable"));
-    const client = createFakeClient(session);
+  it("surfaces unavailable HydraFusion creation without creating a default-model session", async () => {
+    const client = createFakeClient();
+    client.createSession.mockRejectedValueOnce(new Error("Model unavailable"));
     const backend = new CopilotBackend(client as any);
 
     await expect(backend.createSession({ model: "hydrafusion" }))
       .rejects.toThrow("Model unavailable");
 
-    expect(client.deleteSession).toHaveBeenCalledWith("fake-session-id");
+    expect(client.createSession).toHaveBeenCalledOnce();
+    expect(client.createSession).toHaveBeenCalledWith({
+      model: "hydrafusion",
+      enableExperimentalMode: true,
+    });
+    expect(client.session.setModel).not.toHaveBeenCalled();
+    expect(client.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("forwards HydraFusion resume configuration without fixed-model overrides", async () => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+
+    await backend.resumeSession("hydra-session", {
+      model: "hydrafusion",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+      modelCapabilities: { limits: { max_prompt_tokens: 1 } },
+    });
+
+    expect(client.resumeSession).toHaveBeenCalledWith("hydra-session", {
+      model: "hydrafusion",
+      enableExperimentalMode: true,
+    });
   });
 
   it("advertises pending interaction events without leaving an in-process elicitation handler", async () => {

@@ -224,6 +224,7 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBe("gpt-test");
     expect(cfg.reasoningEffort).toBe("high");
+    expect(cfg.enableExperimentalMode).toBe(true);
     expect(cfg.streaming).toBe(true);
     expect(cfg.includeSubAgentStreamingEvents).toBe(false);
     expect(cfg.mcpServers).toEqual({ configured: { command: "configured-mcp", args: [] } });
@@ -886,6 +887,7 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBeUndefined();
     expect(cfg.reasoningEffort).toBeUndefined();
+    expect(cfg.enableExperimentalMode).toBe(true);
     expect(cfg.streaming).toBe(true);
     expect(cfg.includeSubAgentStreamingEvents).toBe(false);
     expect(Object.keys(cfg.mcpServers)).toEqual(["Shared Tagged MCP"]);
