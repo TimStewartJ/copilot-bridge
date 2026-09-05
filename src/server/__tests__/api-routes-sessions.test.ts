@@ -93,15 +93,13 @@ describe("Session routes (mocked)", () => {
     mkdirSync(join(copilotHome, "session-state", "cli-sized-session"), { recursive: true });
     writeFileSync(join(copilotHome, "session-state", "cli-sized-session", "events.jsonl"), events);
     const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn(async () => {
-      throw new Error("should use CLI catalog");
-    });
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([]);
     ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
 
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
-    expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
     expect(res.body.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         sessionId: "cli-sized-session",
@@ -159,15 +157,13 @@ describe("Session routes (mocked)", () => {
       ].join("\n"),
     );
     const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn(async () => {
-      throw new Error("should use CLI catalog");
-    });
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([]);
     ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
 
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
-    expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
     expect(res.body.sessions).toEqual([
       expect.objectContaining({
         sessionId: "cli-named-session",
