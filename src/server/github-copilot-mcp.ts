@@ -1,3 +1,4 @@
+import type { GitHubMcpToolConfig } from "@github/copilot-sdk";
 import type { McpServerConfig } from "./mcp-config.js";
 import { resolveBridgeCopilotGitHubToken } from "./copilot-client-options.js";
 
@@ -12,11 +13,7 @@ export interface BuiltInMcpServerConfig {
   config: McpServerConfig;
 }
 
-export interface GitHubCopilotMcpToolOptions {
-  additionalTools: string[];
-}
-
-export function buildGitHubCopilotMcpToolOptions(): GitHubCopilotMcpToolOptions {
+export function buildGitHubCopilotMcpToolConfig(): GitHubMcpToolConfig {
   return {
     additionalTools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
   };

@@ -2601,7 +2601,7 @@ export class SessionManager {
    * `items` field). Bridge therefore indexes the runtime's own request ids off
    * its `*.requested` / `*.completed` events, which `session-runner` normalizes
    * per event at ingest. See the installed-SDK contract test in
-   * `copilot-cli-loader.test.ts`, which fails if a future SDK grows a real
+   * `copilot-runtime-contract.test.ts`, which fails if a future SDK grows a real
    * listing method and this decision needs revisiting.
    */
   private listPendingUserInputViews(sessionId: string): PendingUserInputRequestView[] {
