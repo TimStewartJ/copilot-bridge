@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { register } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -55,8 +54,6 @@ const args = process.argv.slice(2);
 const copilotPackageDir = await resolveCopilotPackageDir();
 if (isAppMode(args)) {
   const appUrl = pathToFileURL(join(copilotPackageDir, "app.js")).href;
-  process.env.BRIDGE_COPILOT_APP_URL = appUrl;
-  register(new URL("./copilot-cli-loader.js", import.meta.url));
   await import(appUrl);
 } else {
   await import(pathToFileURL(join(copilotPackageDir, "index.js")).href);

@@ -11,7 +11,7 @@ function readSdkClientSource(format: "esm" | "cjs"): string {
   return readFileSync(filePath, "utf8");
 }
 
-describe("patched Copilot SDK tool serializer", () => {
+describe("Copilot SDK native session contracts", () => {
   it("forwards Bridge eager-loading metadata on create and resume", () => {
     for (const format of ["esm", "cjs"] as const) {
       const source = readSdkClientSource(format);
@@ -20,10 +20,10 @@ describe("patched Copilot SDK tool serializer", () => {
     }
   });
 
-  it("keeps forwarding Bridge GitHub MCP tool options", () => {
+  it("forwards the official GitHub MCP tool config on create and resume", () => {
     for (const format of ["esm", "cjs"] as const) {
       const source = readSdkClientSource(format);
-      const optionsForwardingCount = source.match(/githubMcpToolOptions: config\.githubMcpToolOptions/g)?.length ?? 0;
+      const optionsForwardingCount = source.match(/githubMcpToolConfig: config\.githubMcpToolConfig/g)?.length ?? 0;
       expect(optionsForwardingCount, format).toBeGreaterThanOrEqual(2);
     }
   });
@@ -31,9 +31,7 @@ describe("patched Copilot SDK tool serializer", () => {
   it("forwards the structured ask_user variant on create and resume", () => {
     for (const format of ["esm", "cjs"] as const) {
       const source = readSdkClientSource(format);
-      const variantForwardingCount = source.match(
-        /\.\.\.config\.askUserVariant \? \{ askUserVariant: config\.askUserVariant \} : \{\}/g,
-      )?.length ?? 0;
+      const variantForwardingCount = source.match(/askUserVariant: config\.askUserVariant/g)?.length ?? 0;
       expect(variantForwardingCount, format).toBe(2);
     }
   });

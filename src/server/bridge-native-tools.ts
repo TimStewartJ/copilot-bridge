@@ -14,7 +14,7 @@ import { sniffImageMimeFromBase64 } from "./image-mime.js";
 export type BridgeNativeTool = Tool<Record<string, unknown>> & {
   /**
    * Copilot runtime external-tool loading policy. The runtime already honors
-   * this; Bridge patches the SDK serializer so the field reaches the host.
+   * this and SDK 1.0.13 forwards it to the host.
    */
   defer?: "never";
 };

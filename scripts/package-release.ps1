@@ -77,6 +77,7 @@ function Read-UpdateManifestPublicKeyPem {
 }
 
 $runtimeDependencyNames = @(
+  "@github/copilot",
   "@github/copilot-sdk",
   "@modelcontextprotocol/sdk",
   "compression",
@@ -97,13 +98,6 @@ $runtimePackageJson = [ordered]@{
   license = $packageJson.license
   engines = $packageJson.engines
   dependencies = Get-DependencyMap $packageJson.dependencies $runtimeDependencyNames
-  scripts = [ordered]@{
-    postinstall = "patch-package --error-on-fail"
-  }
-}
-$runtimePackageJson.dependencies["patch-package"] = $packageJson.devDependencies."patch-package"
-if ($packageJson.overrides) {
-  $runtimePackageJson.overrides = $packageJson.overrides
 }
 
 Set-Location $repoRoot
@@ -128,7 +122,6 @@ New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 
 Copy-Item -Path (Join-Path $repoRoot "dist") -Destination (Join-Path $appDir "dist") -Recurse
 Copy-Item -Path (Join-Path $repoRoot "src\server\copilot-cli-wrapper.js") -Destination (Join-Path $appDir "dist\server\copilot-cli-wrapper.js")
-Copy-Item -Path (Join-Path $repoRoot "src\server\copilot-cli-loader.js") -Destination (Join-Path $appDir "dist\server\copilot-cli-loader.js")
 Copy-Item -Path (Join-Path $repoRoot "public") -Destination (Join-Path $appDir "public") -Recurse
 $runtimePackageJson | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $appDir "package.json") -Encoding UTF8
 if (Test-Path $packageLockPath) {
@@ -136,7 +129,6 @@ if (Test-Path $packageLockPath) {
 }
 Copy-Item -Path (Join-Path $repoRoot ".env.example") -Destination $appDir
 Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination $appDir
-Copy-Item -Path (Join-Path $repoRoot "patches") -Destination (Join-Path $appDir "patches") -Recurse
 Copy-Item -Path (Join-Path $repoRoot "scripts\start-release.ps1") -Destination (Join-Path $releaseRoot "start.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\stop-release.ps1") -Destination (Join-Path $releaseRoot "stop.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\update-release.ps1") -Destination (Join-Path $releaseRoot "update.ps1")
