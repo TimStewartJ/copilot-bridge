@@ -55,6 +55,15 @@ function writeSessionFiles(copilotHome: string, sessionId: string, opts: {
 }
 
 describe("listSessionsFromDisk telemetry", () => {
+  it("treats an absent session directory as empty but surfaces other enumeration errors", async () => {
+    const copilotHome = makeTestDir("session-disk-enumeration");
+    const { deps } = createDeps(copilotHome);
+    await expect(listSessionsFromDisk(deps)).resolves.toEqual([]);
+
+    writeFileSync(join(copilotHome, "session-state"), "not a directory");
+    await expect(listSessionsFromDisk(deps)).rejects.toThrow();
+  });
+
   it("records separate disk-list phases", async () => {
     const copilotHome = makeTestDir("session-disk-list");
     writeSessionFiles(copilotHome, "session-a", {
