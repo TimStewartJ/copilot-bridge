@@ -1994,17 +1994,26 @@ export class SessionManager {
     );
   }
 
-  private abandonCachedSession(sessionId: string, expectedSession: AgentSession): Promise<void> {
-    return this.enqueueCache("abandon", sessionId, () => {
+  private async abandonCachedSession(sessionId: string, expectedSession: AgentSession): Promise<void> {
+    const { cleanup } = await this.enqueueCache("abandon", sessionId, () => {
       const current = this.sessionObjects.get(sessionId);
       if (current === expectedSession) {
-        this.evictCachedSessionUnsafe(sessionId, expectedSession, "abandoning cached session");
-      } else if (current) {
-        this.ignoreDuplicateSessionHandleUnsafe(sessionId, expectedSession, "abandoning superseded handle");
-      } else {
-        this.queueSessionCleanupUnsafe(sessionId, expectedSession, "abandoning uncached session");
+        this.removeReadySessionUnsafe(sessionId, expectedSession);
+        return {
+          cleanup: this.queueSessionCleanupUnsafe(sessionId, expectedSession, "abandoning cached session"),
+        };
       }
+      if (current) {
+        this.ignoreDuplicateSessionHandleUnsafe(sessionId, expectedSession, "abandoning superseded handle");
+        return { cleanup: Promise.resolve(true) };
+      }
+      return {
+        cleanup: this.queueSessionCleanupUnsafe(sessionId, expectedSession, "abandoning uncached session"),
+      };
     });
+    if (!await cleanup) {
+      throw new Error(`Session ${sessionId} could not be reaped while abandoning cached session`);
+    }
   }
 
   private async disposeSession(sessionId: string, session: AgentSession, reason: string): Promise<void> {
@@ -2213,6 +2222,24 @@ export class SessionManager {
     }
   }
 
+  private async awaitSessionCleanup(sessionId: string): Promise<void> {
+    while (true) {
+      const cleanups = await this.enqueueCache("await-cleanup", sessionId, () => {
+        const matching = [...this.cleanupOwnership.values()]
+          .filter((record) => record.sessionId === sessionId);
+        if (matching.some((record) => record.state === "failed" || !record.promise)) {
+          throw new Error(`Session ${sessionId} has cleanup that could not complete`);
+        }
+        return matching.map((record) => record.promise!);
+      });
+      if (cleanups.length === 0) return;
+      const results = await Promise.all(cleanups);
+      if (results.some((completed) => !completed)) {
+        throw new Error(`Session ${sessionId} has cleanup that could not complete`);
+      }
+    }
+  }
+
   private async beginSessionResume(
     sessionId: string,
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
@@ -2221,10 +2248,11 @@ export class SessionManager {
       reserveCachedSession?: boolean;
     } = {},
   ): Promise<SessionResumeLease | null> {
-    const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
     if (this.settlingTimedOutSessionResumes.has(sessionId)) {
       throw new Error(SESSION_RESUME_SETTLING_MESSAGE);
     }
+    await this.awaitSessionCleanup(sessionId);
+    const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
     if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
       this.touchSessionTree(sessionId);
       this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
