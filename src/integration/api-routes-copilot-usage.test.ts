@@ -1,0 +1,1030 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  COPILOT_USAGE_PARSER_VERSION,
+  scanCopilotUsageSession,
+} from "../server/copilot-usage.js";
+import { createCopilotModelPriceStore } from "../server/copilot-model-price-store.js";
+import { createCopilotUsageStore } from "../server/copilot-usage-store.js";
+import { openMemoryDatabase } from "../server/db.js";
+import type { serializeCopilotUsageSummary } from "../server/copilot-usage-serializer.js";
+import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage.js";
+import { createApiRouter } from "../server/api-router.js";
+import type { ApiRouteTestState } from "../test-support/api-routes.js";
+import {
+  createCopilotUsageTestHome,
+  createMockSessionManager,
+  createTestApp,
+  installApiRouteTestHooks,
+  join,
+  mkdirSync,
+  request,
+  writeCopilotUsageEvents,
+  writeFileSync,
+  writeRawCopilotUsageEvents,
+} from "../test-support/api-routes.js";
+
+let app: ApiRouteTestState["app"];
+type CopilotUsageApiBody = ReturnType<typeof serializeCopilotUsageSummary>;
+
+async function requestUsageUntil(
+  predicate: (body: CopilotUsageApiBody) => boolean,
+  path = "/api/copilot-usage",
+): Promise<{ status: number; body: CopilotUsageApiBody }> {
+  let latest: { status: number; body: CopilotUsageApiBody } | undefined;
+  await vi.waitFor(async () => {
+    const response = await request(app).get(path);
+    latest = { status: response.status, body: response.body };
+    expect(response.status).toBe(200);
+    expect(predicate(response.body)).toBe(true);
+  }, { timeout: 5_000 });
+  return latest!;
+}
+
+installApiRouteTestHooks((state) => {
+  ({ app } = state);
+});
+
+const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
+
+// Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
+// convert to round USD-per-1M rates.
+function sdkPriceableModel(
+  id: string,
+  rates: { input: number; output: number; cache: number },
+  name?: string,
+) {
+  return {
+    id,
+    name: name ?? id,
+    billing: {
+      tokenPrices: {
+        inputPrice: rates.input * 100,
+        outputPrice: rates.output * 100,
+        cachePrice: rates.cache * 100,
+        batchSize: 1_000_000,
+      },
+    },
+  };
+}
+
+function expectedUsageTotals(overrides: Partial<Record<
+  "requests" | "inputTokens" | "uncachedInputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens" | "meteredAiCredits" | "meteredTokens",
+  number
+>> = {}) {
+  return {
+    requests: 0,
+    inputTokens: 0,
+    uncachedInputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    meteredAiCredits: 0,
+    meteredTokens: 0,
+    ...overrides,
+  };
+}
+
+function expectedCostBreakdownUsd(overrides: Partial<Record<
+  "input" | "cachedInput" | "cacheWrite" | "output" | "reasoning" | "total",
+  number
+>> = {}) {
+  return {
+    input: 0,
+    cachedInput: 0,
+    cacheWrite: 0,
+    output: 0,
+    reasoning: 0,
+    total: 0,
+    ...overrides,
+  };
+}
+
+function expectedCostEstimate(overrides: {
+  estimatedCostUsd?: number;
+  estimatedAiCredits?: number;
+  costBreakdownUsd?: ReturnType<typeof expectedCostBreakdownUsd>;
+  billableOutputTokens?: number;
+} = {}) {
+  const costBreakdownUsd = overrides.costBreakdownUsd ?? expectedCostBreakdownUsd();
+  const estimatedCostUsd = overrides.estimatedCostUsd ?? costBreakdownUsd.total;
+  return {
+    estimatedCostUsd,
+    estimatedAiCredits: overrides.estimatedAiCredits ?? estimatedCostUsd / 0.01,
+    costBreakdownUsd,
+    billableOutputTokens: overrides.billableOutputTokens ?? 0,
+    reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
+  };
+}
+
+describe("Copilot usage routes", () => {
+  it("GET /api/copilot-usage preserves authoritative metering and its unattributed daily bucket", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-08-11T12:00:00.000Z",
+        data: {
+          totalNanoAiu: 300_000_000_000,
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { inputTokens: 100 },
+              totalNanoAiu: 100_000_000_000,
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
+    const unattributed = res.body.models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL);
+
+    expect(res.body.totals.meteredAiCredits).toBe(300);
+    expect(unattributed?.meteredAiCredits).toBe(200);
+    expect(res.body.days[0].meteredAiCredits).toBe(300);
+    expect(res.body.days[0].models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL)?.meteredAiCredits)
+      .toBe(200);
+    expect(res.body.sessions[0].meteredAiCredits).toBe(300);
+    expect(res.body.sessions[0].days[0].meteredAiCredits).toBe(300);
+    expect(res.body.totals.unpricedModelCount).toBe(1);
+    expect(res.body.unpricedModels.map((row) => row.model)).toEqual(["gpt-5.4"]);
+  });
+
+  it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 3, cost: 99, path: "secret-request-path", details: "secret-request-details" },
+              usage: {
+                // Inclusive of cache reads and writes, leaving 1M uncached.
+                inputTokens: 3_000_000,
+                outputTokens: 1_000_000,
+                cacheReadTokens: 1_000_000,
+                cacheWriteTokens: 1_000_000,
+                reasoningTokens: 1_000_000,
+                path: "secret-usage-path",
+                details: { trace: "secret-usage-details" },
+              },
+              path: "secret-model-path",
+              details: { raw: "secret-model-details" },
+            },
+            "unknown-model": {
+              requests: { count: 1 },
+              usage: {
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheReadTokens: 5,
+                cacheWriteTokens: 10,
+                reasoningTokens: 25,
+              },
+            },
+          },
+        },
+        path: "secret-event-path",
+        details: { trace: "secret-event-details" },
+      },
+    ]);
+    ({ app } = createTestApp({
+      copilotHome,
+      sessionManager: {
+        ...createMockSessionManager(),
+        listModels: vi.fn(async () => [sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4")]),
+      },
+    }));
+
+    const res = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.pricingStatus === "exact"
+    ));
+    const pricedTotals = expectedUsageTotals({
+      requests: 3,
+      inputTokens: 3_000_000,
+      uncachedInputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      cacheWriteTokens: 1_000_000,
+      reasoningTokens: 1_000_000,
+      totalTokens: 4_000_000,
+    });
+    const unpricedTotals = expectedUsageTotals({
+      requests: 1,
+      inputTokens: 100,
+      uncachedInputTokens: 85,
+      outputTokens: 50,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 10,
+      reasoningTokens: 25,
+      totalTokens: 150,
+    });
+    const aggregateTotals = expectedUsageTotals({
+      requests: 4,
+      inputTokens: 3_000_100,
+      uncachedInputTokens: 1_000_085,
+      outputTokens: 1_000_050,
+      cacheReadTokens: 1_000_005,
+      cacheWriteTokens: 1_000_010,
+      reasoningTokens: 1_000_025,
+      totalTokens: 4_000_150,
+    });
+    const pricedCostBreakdownUsd = expectedCostBreakdownUsd({
+      input: 2.5,
+      cachedInput: 0.25,
+      cacheWrite: 3.125,
+      output: 15,
+      reasoning: 0,
+      total: 20.875,
+    });
+    const pricedCostEstimate = expectedCostEstimate({
+      costBreakdownUsd: pricedCostBreakdownUsd,
+      billableOutputTokens: 1_000_000,
+    });
+    const unpricedCostEstimate = expectedCostEstimate({ billableOutputTokens: 50 });
+    const aggregateCostEstimate = expectedCostEstimate({
+      costBreakdownUsd: pricedCostBreakdownUsd,
+      billableOutputTokens: 1_000_050,
+    });
+    const pricedModelRow = {
+      model: "gpt-5.4",
+      sessions: 1,
+      ...pricedTotals,
+      ...pricedCostEstimate,
+      pricingKey: "gpt-5.4",
+      pricedAs: "gpt-5.4",
+      pricingStatus: "exact",
+      normalizedPricingModel: "gpt-5.4",
+    };
+    const unpricedModelRow = {
+      model: "unknown-model",
+      sessions: 1,
+      ...unpricedTotals,
+      ...unpricedCostEstimate,
+      pricingKey: null,
+      pricedAs: null,
+      pricingStatus: "unpriced",
+      normalizedPricingModel: "unknown-model",
+    };
+    const unpricedModelReportRow = {
+      model: "unknown-model",
+      sessions: 1,
+      ...unpricedTotals,
+      pricingKey: null,
+      pricedAs: null,
+      pricingStatus: "unpriced",
+      normalizedPricingModel: "unknown-model",
+    };
+    const dayRow = {
+      date: "2026-05-01",
+      ...aggregateTotals,
+      ...aggregateCostEstimate,
+      models: [
+        pricedModelRow,
+        unpricedModelRow,
+      ],
+    };
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      generatedAt: expect.any(String),
+      range: { key: "all", label: "All time", startAt: null, startDate: null },
+      index: {
+        state: "idle",
+        startedAt: expect.any(String),
+        completedAt: expect.any(String),
+        sessionsTotal: 1,
+        sessionsProcessed: 1,
+        sessionsUpdated: 1,
+        sessionsFailed: 0,
+        cachedSessions: 1,
+        warning: null,
+        error: null,
+      },
+      totals: {
+        ...aggregateTotals,
+        ...aggregateCostEstimate,
+        unpricedModelCount: 1,
+        unpricedTokens: unpricedTotals,
+      },
+      deferWorkers: {
+        capturedRuns: 0,
+        parentSessions: 0,
+        retentionDays: 90,
+        ...expectedUsageTotals(),
+      },
+      coverage: {
+        sessionsSeen: 1,
+        sessionsWithEvents: 1,
+        sessionsIncluded: 1,
+        sessionsSkipped: 0,
+        skippedByReason: {
+          no_events: 0,
+          no_shutdown: 0,
+          empty_model_metrics: 0,
+          parse_error: 0,
+        },
+        earliestIncludedAt: "2026-05-01T12:00:00.000Z",
+        latestIncludedAt: "2026-05-01T12:00:00.000Z",
+        earliestSkippedAt: null,
+        latestSkippedAt: null,
+      },
+      models: [
+        pricedModelRow,
+        unpricedModelRow,
+      ],
+      days: [dayRow],
+      sessions: [
+        {
+          sessionId: "usage-session",
+          shutdownAt: "2026-05-01T12:00:00.000Z",
+          ...aggregateTotals,
+          ...aggregateCostEstimate,
+          models: [
+            pricedModelRow,
+            unpricedModelRow,
+          ],
+          days: [dayRow],
+          unpricedModels: [unpricedModelReportRow],
+        },
+      ],
+      unpricedModels: [unpricedModelReportRow],
+    });
+    expect(res.body.totals).not.toHaveProperty("cost");
+    expect(res.body.models[0]).not.toHaveProperty("cost");
+    expect(res.body.models[0]).not.toHaveProperty("path");
+    expect(res.body.models[0]).not.toHaveProperty("details");
+    expect(res.body.sessions[0]).not.toHaveProperty("path");
+    expect(res.body.sessions[0]).not.toHaveProperty("details");
+    expect(JSON.stringify(res.body)).not.toContain(copilotHome);
+    expect(JSON.stringify(res.body)).not.toContain("secret-");
+  });
+
+  it("GET /api/copilot-usage resolves observed SDK model IDs through listModels metadata", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T13:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "opaque-sdk-id": {
+              requests: { count: 1 },
+              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    const listModels = vi.fn(async () => [
+      {
+        id: "opaque-sdk-id",
+        name: "Claude Opus 4.7",
+        billing: { note: "secret-sdk-field" },
+      },
+      sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
+    ]);
+    ({ app } = createTestApp({
+      copilotHome,
+      sessionManager: { ...createMockSessionManager(), listModels },
+    }));
+
+    const res = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.pricingStatus === "sdk-name"
+    ));
+
+    expect(res.status).toBe(200);
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(res.body.models[0]).toMatchObject({
+      model: "opaque-sdk-id",
+      pricingKey: "claude-opus-4.7",
+      pricedAs: "claude-opus-4.7",
+      pricingStatus: "sdk-name",
+      normalizedPricingModel: "claude-opus-4.7",
+    });
+    expect(res.body.models[0].estimatedCostUsd).toBeCloseTo(30);
+    expect(res.body.totals.unpricedModelCount).toBe(0);
+    expect(JSON.stringify(res.body)).not.toContain("secret-sdk-field");
+  });
+
+  it("filters per-session rows for settings and task-scoped callers while keeping global totals", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "task-session", [{
+      type: "session.shutdown",
+      timestamp: "2026-05-01T12:00:00.000Z",
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: 10 },
+          },
+        },
+      },
+    }]);
+    writeCopilotUsageEvents(copilotHome, "other-session", [{
+      type: "session.shutdown",
+      timestamp: "2026-05-01T13:00:00.000Z",
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: 20 },
+          },
+        },
+      },
+    }]);
+    const usageDb = openMemoryDatabase();
+    const copilotUsageStore = createCopilotUsageStore(usageDb);
+    const sessionStateDir = join(copilotHome, "session-state");
+    copilotUsageStore.upsertEntries([
+      {
+        sessionId: "task-session",
+        parserVersion: COPILOT_USAGE_PARSER_VERSION,
+        fingerprint: {
+          events: { state: "missing" },
+          modelState: { state: "missing" },
+        },
+        result: await scanCopilotUsageSession(sessionStateDir, "task-session"),
+      },
+      {
+        sessionId: "other-session",
+        parserVersion: COPILOT_USAGE_PARSER_VERSION,
+        fingerprint: {
+          events: { state: "missing" },
+          modelState: { state: "missing" },
+        },
+        result: await scanCopilotUsageSession(sessionStateDir, "other-session"),
+      },
+    ]);
+    copilotUsageStore.setLastCompletedAt(new Date().toISOString());
+    const state = createTestApp({ copilotHome, copilotUsageStore });
+    app = state.app;
+    const task = state.ctx.taskStore.createTask("Usage task");
+    state.ctx.taskStore.linkSession(task.id, "task-session");
+
+    const settingsRes = await request(app).get("/api/copilot-usage?sessions=none");
+    expect(settingsRes.status).toBe(200);
+    expect(settingsRes.body.totals.inputTokens).toBe(30);
+    expect(settingsRes.body.sessions).toEqual([]);
+
+    const taskRes = await request(app).get(`/api/copilot-usage?taskId=${task.id}`);
+    expect(taskRes.status).toBe(200);
+    expect(taskRes.body.totals.inputTokens).toBe(30);
+    expect(taskRes.body.sessions.map((row: { sessionId: string }) => row.sessionId)).toEqual(["task-session"]);
+    expect(taskRes.body.index).toMatchObject({
+      state: "idle",
+      requestedSessions: 1,
+      requestedSessionsCached: 1,
+    });
+
+    const missingTaskRes = await request(app).get("/api/copilot-usage?taskId=missing");
+    expect(missingTaskRes.status).toBe(404);
+    expect(missingTaskRes.body).toEqual({ error: "Task not found" });
+    usageDb.close();
+  });
+
+  it("GET /api/copilot-usage resolves SDK model objects through their serialized metadata", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+          timestamp: "2026-05-01T13:30:00.000Z",
+          data: {
+            modelMetrics: {
+            "opaque-serialized-sdk-id": {
+              requests: { count: 1 },
+              usage: { outputTokens: 10 },
+            },
+          },
+        },
+      },
+    ]);
+    const listModels = vi.fn(async () => [
+      {
+        toJSON: () => ({
+          id: "opaque-serialized-sdk-id",
+          name: "Claude Opus 4.7 (Context Low)",
+          billing: { note: "secret-sdk-field" },
+        }),
+      },
+      sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
+    ]);
+    ({ app } = createTestApp({
+      copilotHome,
+      sessionManager: { ...createMockSessionManager(), listModels },
+    }));
+
+    const res = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.pricingStatus === "sdk-name"
+    ));
+
+    expect(res.status).toBe(200);
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(res.body.models[0]).toMatchObject({
+      model: "opaque-serialized-sdk-id",
+      pricingKey: "claude-opus-4.7",
+      pricedAs: "claude-opus-4.7",
+      pricingStatus: "sdk-name",
+      normalizedPricingModel: "claude-opus-4.7",
+    });
+    expect(res.body.models[0].estimatedCostUsd).toBeCloseTo(0.00025);
+    expect(res.body.totals.unpricedModelCount).toBe(0);
+    expect(JSON.stringify(res.body)).not.toContain("secret-sdk-field");
+  });
+
+  it("GET /api/copilot-usage continues without SDK metadata when listModels fails", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T14:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "opaque-sdk-id": {
+              requests: { count: 1 },
+              usage: { inputTokens: 10, outputTokens: 5 },
+            },
+          },
+        },
+      },
+    ]);
+    const listModels = vi.fn(async () => {
+      throw new Error("models unavailable");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      ({ app } = createTestApp({
+        copilotHome,
+        sessionManager: { ...createMockSessionManager(), listModels },
+      }));
+
+      const res = await requestUsageUntil((body) => (
+        body.index.state === "idle"
+        && body.models[0]?.model === "opaque-sdk-id"
+      ));
+
+      expect(res.status).toBe(200);
+      expect(listModels).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[copilot-usage] listModels() failed; falling back to cached model prices.",
+        expect.any(Error),
+      );
+      expect(res.body.models[0]).toMatchObject({
+        model: "opaque-sdk-id",
+        pricingKey: null,
+        pricedAs: null,
+        pricingStatus: "unpriced",
+        normalizedPricingModel: "opaque-sdk-id",
+        estimatedCostUsd: 0,
+      });
+      expect(res.body.totals.unpricedModelCount).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("caches live model prices and serves them when listModels later fails", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T15:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    let calls = 0;
+    const listModels = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return [sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4")];
+      }
+      throw new Error("models unavailable");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      ({ app } = createTestApp({
+        copilotHome,
+        sessionManager: { ...createMockSessionManager(), listModels },
+      }));
+
+      const first = await requestUsageUntil((body) => (
+        body.index.state === "idle"
+        && body.models[0]?.pricingStatus === "exact"
+      ));
+      expect(first.status).toBe(200);
+      expect(first.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
+      const firstCost = first.body.models[0].estimatedCostUsd;
+      expect(firstCost).toBeCloseTo(17.5);
+
+      // Force a fresh read; live metadata now fails but the cached price persists.
+      await request(app).get("/api/copilot-usage?refresh=1");
+      const second = await requestUsageUntil((body) => (
+        calls >= 2
+        && body.index.state === "idle"
+        && body.models[0]?.pricingStatus === "exact"
+      ));
+      expect(second.status).toBe(200);
+      expect(listModels.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
+      expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(firstCost);
+      expect(second.body.totals.unpricedModelCount).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("prefers fresh live prices over a stale cached price for the same model id", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T16:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    let calls = 0;
+    const listModels = vi.fn(async () => {
+      calls += 1;
+      const output = calls === 1 ? 15 : 30;
+      return [sdkPriceableModel("gpt-5.4", { input: 2.5, output, cache: 0.25 }, "GPT-5.4")];
+    });
+
+    ({ app } = createTestApp({
+      copilotHome,
+      sessionManager: { ...createMockSessionManager(), listModels },
+    }));
+
+    const first = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.estimatedCostUsd === 15
+    ));
+    expect(first.body.models[0].estimatedCostUsd).toBeCloseTo(15);
+
+    await request(app).get("/api/copilot-usage?refresh=1");
+    const second = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.models[0]?.estimatedCostUsd === 30
+    ));
+    // The newer live price (30) must win over the previously cached price (15).
+    expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
+    expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(30);
+  });
+
+  it("keeps the incremental index scanning until delayed live prices are published", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T16:30:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.4": {
+              requests: { count: 1 },
+              usage: { outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+    const usageDb = openMemoryDatabase();
+    const copilotUsageStore = createCopilotUsageStore(usageDb);
+    const copilotModelPriceStore = createCopilotModelPriceStore(usageDb);
+    copilotModelPriceStore.upsertModelPrices([
+      sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4"),
+    ]);
+    let resolveModels: ((models: unknown[]) => void) | undefined;
+    const listModels = vi.fn(() => new Promise<unknown[]>((resolve) => {
+      resolveModels = resolve;
+    }));
+    ({ app } = createTestApp({
+      copilotHome,
+      copilotUsageStore,
+      copilotModelPriceStore,
+      sessionManager: { ...createMockSessionManager(), listModels },
+    }));
+
+    try {
+      const initial = await request(app).get("/api/copilot-usage");
+      expect(initial.status).toBe(200);
+      expect(initial.body.index.state).toBe("scanning");
+
+      let intermediate: typeof initial | undefined;
+      await vi.waitFor(async () => {
+        intermediate = await request(app).get("/api/copilot-usage");
+        expect(intermediate.body.index).toMatchObject({
+          state: "scanning",
+          sessionsProcessed: 1,
+          cachedSessions: 1,
+        });
+        expect(intermediate.body.models[0].estimatedCostUsd).toBeCloseTo(15);
+      }, { timeout: 5_000 });
+      expect(listModels).toHaveBeenCalledTimes(1);
+
+      resolveModels?.([
+        sdkPriceableModel("gpt-5.4", { input: 2.5, output: 30, cache: 0.25 }, "GPT-5.4"),
+      ]);
+
+      let complete: typeof initial | undefined;
+      await vi.waitFor(async () => {
+        complete = await request(app).get("/api/copilot-usage");
+        expect(complete.body.index.state).toBe("idle");
+        expect(complete.body.models[0].estimatedCostUsd).toBeCloseTo(30);
+      }, { timeout: 5_000 });
+      expect(complete?.body.totals.unpricedModelCount).toBe(0);
+    } finally {
+      usageDb.close();
+    }
+  });
+
+  it("returns cached staging usage immediately while refresh=1 scans and publishes updates progressively", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 1 },
+              usage: { inputTokens: 5, outputTokens: 4 },
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome, isStaging: true }));
+
+    const initial = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.totals.totalTokens === 9
+    ));
+    expect(initial.status).toBe(200);
+    expect(initial.body.totals.totalTokens).toBe(9);
+
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-02T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 2 },
+              usage: { inputTokens: 20, outputTokens: 10 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const cached = await request(app).get("/api/copilot-usage");
+    expect(cached.status).toBe(200);
+    expect(cached.body.totals.totalTokens).toBe(9);
+
+    const refreshed = await request(app).get("/api/copilot-usage?refresh=1");
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.index.state).toBe("scanning");
+    expect(refreshed.body.totals.totalTokens).toBe(9);
+
+    const completed = await requestUsageUntil((body) => (
+      body.index.state === "idle"
+      && body.totals.totalTokens === 30
+    ));
+    expect(completed.body.totals.requests).toBe(2);
+  });
+
+  it("GET /api/copilot-usage reads from injected copilotHome", async () => {
+    const copilotHome = createCopilotUsageTestHome({ dotDir: true });
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-03T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "claude-sonnet": {
+              requests: { count: 2 },
+              usage: { outputTokens: 11 },
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await requestUsageUntil((body) => body.index.state === "idle");
+
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([
+      expect.objectContaining({
+        model: "claude-sonnet",
+        requests: 2,
+        totalTokens: 11,
+      }),
+    ]);
+  });
+
+  it("GET /api/copilot-usage reports unreadable session-state as a safe background index error", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeFileSync(join(copilotHome, "session-state"), "not a directory");
+    ({ app } = createTestApp({ copilotHome }));
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await requestUsageUntil((body) => body.index.state === "error");
+
+      expect(res.status).toBe(200);
+      expect(res.body.index.error).toBe("Local Copilot usage indexing failed. Cached results are still available.");
+      expect(res.body.totals.totalTokens).toBe(0);
+      expect(JSON.stringify(res.body)).not.toContain(copilotHome);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+describe("Copilot usage range filtering", () => {
+  const NOW = new Date(2026, 4, 15, 12, 0, 0);
+
+  function localIso(year: number, monthIndex: number, day: number): string {
+    return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
+  }
+
+  function rangedShutdown(timestamp: string, cumulativeInputTokens: number) {
+    return {
+      type: "session.shutdown",
+      timestamp,
+      data: {
+        modelMetrics: {
+          "gpt-5.4": {
+            requests: { count: 1 },
+            usage: { inputTokens: cumulativeInputTokens },
+          },
+        },
+      },
+    };
+  }
+
+  it("GET /api/copilot-usage?range= narrows totals to the requested window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      const copilotHome = createCopilotUsageTestHome();
+      writeCopilotUsageEvents(copilotHome, "ranged-session", [
+        rangedShutdown(localIso(2026, 1, 10), 300),
+        rangedShutdown(localIso(2026, 4, 12), 1_500),
+      ]);
+      ({ app } = createTestApp({ copilotHome }));
+
+      const all = await requestUsageUntil((body) => body.index.state === "idle");
+      expect(all.body.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
+      expect(all.body.totals.inputTokens).toBe(1_500);
+      expect(all.body.days.map((day) => ({
+        date: day.date,
+        inputTokens: day.inputTokens,
+      }))).toEqual([
+        { date: "2026-02-10", inputTokens: 300 },
+        { date: "2026-05-12", inputTokens: 1_200 },
+      ]);
+      expect(all.body.sessions[0].days.map((day) => ({
+        date: day.date,
+        inputTokens: day.inputTokens,
+      }))).toEqual([
+        { date: "2026-02-10", inputTokens: 300 },
+        { date: "2026-05-12", inputTokens: 1_200 },
+      ]);
+
+      const mtd = await requestUsageUntil(
+        (body) => body.index.state === "idle",
+        "/api/copilot-usage?range=mtd",
+      );
+      expect(mtd.body.range.key).toBe("mtd");
+      expect(mtd.body.range.startDate).toBe("2026-05-01");
+      expect(mtd.body.totals.inputTokens).toBe(1_200);
+      expect(mtd.body.coverage.sessionsIncluded).toBe(1);
+      expect(mtd.body.days).toEqual([
+        expect.objectContaining({ date: "2026-05-12", inputTokens: 1_200 }),
+      ]);
+      expect(mtd.body.sessions[0].days).toEqual([
+        expect.objectContaining({ date: "2026-05-12", inputTokens: 1_200 }),
+      ]);
+
+      const bogus = await requestUsageUntil(
+        (body) => body.index.state === "idle",
+        "/api/copilot-usage?range=not-a-range",
+      );
+      expect(bogus.body.range.key).toBe("all");
+      expect(bogus.body.totals.inputTokens).toBe(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Copilot quota route", () => {
+  const quotaPayload = {
+    quotaSnapshots: {
+      chat: {
+        isUnlimitedEntitlement: true,
+        entitlementRequests: 0,
+        usedRequests: 0,
+        remainingPercentage: 100,
+      },
+      premium_interactions: {
+        isUnlimitedEntitlement: false,
+        entitlementRequests: 10_000_000,
+        usedRequests: 80_000,
+        remainingPercentage: 99.2,
+        resetDate: "2026-08-04T16:16:52.847-07:00",
+        tokenBasedBilling: true,
+        overageAllowedWithExhaustedQuota: true,
+        overage: 0,
+      },
+    },
+  };
+  const authPayload = {
+    authInfo: {
+      type: "user",
+      login: "timstewart_microsoft",
+      copilotUser: {
+        copilot_plan: "enterprise",
+        access_type_sku: "copilot_enterprise_seat_quota",
+        organization_login_list: ["ms-copilot"],
+        quota_reset_date: "2026-09-01",
+        quota_reset_date_utc: "2026-09-01T00:00:00.000Z",
+        quota_snapshots: {
+          premium_interactions: { entitlement: 10_000_000, quota_remaining: 9_920_606.1 },
+        },
+      },
+    },
+  };
+
+  it("GET /api/copilot-usage/quota normalizes the live counter", async () => {
+    const getAccountQuota = vi.fn(async () => quotaPayload);
+    const getAccountAuth = vi.fn(async () => authPayload);
+    ({ app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), getAccountQuota, getAccountAuth } as never,
+    }));
+
+    const res = await request(app).get("/api/copilot-usage/quota");
+
+    expect(res.status).toBe(200);
+    expect(res.body.available).toBe(true);
+    expect(res.body.primary).toEqual({
+      bucket: "premium_interactions",
+      unit: "ai_credits",
+      tokenBasedBilling: true,
+      isUnlimitedEntitlement: false,
+      entitlement: 10_000_000,
+      used: 79_393.9,
+      usedIsPrecise: true,
+      remaining: 9_920_606.1,
+      remainingPercentage: 99.2,
+      overage: 0,
+      overagePermitted: true,
+      resetAt: "2026-09-01T00:00:00.000Z",
+    });
+    expect(res.body.identity.login).toBe("timstewart_microsoft");
+    expect(res.body.snapshots).toHaveLength(2);
+    expect(getAccountQuota).toHaveBeenCalledTimes(1);
+
+    // Cached: a second read inside the TTL does not hit the backend again.
+    await request(app).get("/api/copilot-usage/quota");
+    expect(getAccountQuota).toHaveBeenCalledTimes(1);
+
+    await request(app).get("/api/copilot-usage/quota?refresh=1");
+    expect(getAccountQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("GET /api/copilot-usage/quota degrades instead of failing when the RPC is missing", async () => {
+    ({ app } = createTestApp());
+
+    const res = await request(app).get("/api/copilot-usage/quota");
+
+    expect(res.status).toBe(200);
+    expect(res.body.available).toBe(false);
+    expect(res.body.primary).toBeNull();
+    expect(typeof res.body.error).toBe("string");
+  });
+});
