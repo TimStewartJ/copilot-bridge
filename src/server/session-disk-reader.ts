@@ -907,7 +907,8 @@ export async function listSessionsFromDisk(
   let entries: any[];
   try {
     entries = await readdir(sessionStateDir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (!isFileNotFoundError(error)) throw error;
     deps.recordSpan("session.listFromDisk.enumerate", Date.now() - tEnumerate, undefined, {
       dirCount: 0,
       includeArchived,

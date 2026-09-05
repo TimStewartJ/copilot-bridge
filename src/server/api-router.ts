@@ -1667,11 +1667,16 @@ export function createApiRouter(
       const meta = ctx.sessionMetaStore.listMeta();
       const catalogSessions = listSessionsFromCliCatalog(ctx, meta);
       const usingCliCatalog = catalogSessions !== undefined;
-      const sessions = (catalogSessions ?? await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived }))
-        .filter((session: any) =>
-          !isDisposableTitleSessionId(session.sessionId)
-          && !isDisposableDeferWorkerSessionId(session.sessionId)
-        );
+      const diskSessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
+      const catalogSessionIds = new Set(catalogSessions?.map((session) => session.sessionId));
+      // The native SDK persists sessions on disk without necessarily indexing them in the CLI catalog.
+      const sessions = [
+        ...(catalogSessions ?? []),
+        ...diskSessions.filter((session) => !catalogSessionIds.has(session.sessionId)),
+      ].filter((session: any) =>
+        !isDisposableTitleSessionId(session.sessionId)
+        && !isDisposableDeferWorkerSessionId(session.sessionId)
+      );
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const readState = ctx.readStateStore.getReadState();
       const taskLookup = createSessionListTaskLookup(ctx);
