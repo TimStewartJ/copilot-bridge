@@ -104,6 +104,58 @@ describe("SessionManager reloadSession", () => {
     expect(manager.sessionObjects.has("busy-session")).toBe(true);
   });
 
+  it("waits for the old native session to disconnect before resuming the same ID", async () => {
+    const manager = createManager();
+    let finishDisconnect!: () => void;
+    const disconnectGate = new Promise<void>((resolve) => {
+      finishDisconnect = resolve;
+    });
+    const oldSession = makeAgentSessionStub({ disconnect: vi.fn(() => disconnectGate) });
+    const resumedSession = makeAgentSessionStub({
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    });
+    const resumeSession = vi.fn().mockResolvedValue(resumedSession);
+    manager.backend = { resumeSession };
+    manager.sessionObjects.set("session-detaching", oldSession);
+
+    const reloading = manager.reloadSession("session-detaching");
+    try {
+      await vi.waitFor(() => expect(oldSession.disconnect).toHaveBeenCalledOnce());
+      expect(resumeSession).not.toHaveBeenCalled();
+      expect(manager.isSessionBusy("session-detaching")).toBe(true);
+
+      finishDisconnect();
+      await expect(reloading).resolves.toEqual([]);
+      expect(manager.sessionObjects.get("session-detaching")).toBe(resumedSession);
+      expect(resumeSession).toHaveBeenCalledOnce();
+    } finally {
+      finishDisconnect();
+      await reloading;
+      await manager._drainCacheQueue();
+    }
+  });
+
+  it("does not resume or clear MCP state when the old session cannot be disconnected", async () => {
+    const manager = createManager();
+    const oldSession = makeAgentSessionStub({
+      disconnect: vi.fn().mockRejectedValue(new Error("detach failed")),
+    });
+    const resumeSession = vi.fn().mockResolvedValue(makeAgentSessionStub({
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    }));
+    const mcpState = { servers: [{ name: "demo", status: "connected" }], complete: true };
+    manager.backend = { resumeSession };
+    manager.sessionObjects.set("session-detach-failure", oldSession);
+    manager.mcpStatus.set("session-detach-failure", mcpState);
+
+    await expect(manager.reloadSession("session-detach-failure"))
+      .rejects.toThrow("could not be reaped while reloading session");
+
+    expect(resumeSession).not.toHaveBeenCalled();
+    expect(manager.mcpStatus.get("session-detach-failure")).toBe(mcpState);
+    expect(manager.isSessionBusy("session-detach-failure")).toBe(false);
+  });
+
   it("releases the resume lifecycle exactly once when reload times out", async () => {
     vi.useFakeTimers();
     const manager = createManager();
@@ -467,6 +519,26 @@ describe("SessionManager warmSession", () => {
       clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
     }) as any;
   }
+
+  it("rechecks deletion after waiting for session creation", async () => {
+    const manager = createManager();
+    const createdSession = makeAgentSessionStub({});
+    let finishCreation!: (session: typeof createdSession) => void;
+    const creation = new Promise<typeof createdSession>((resolve) => {
+      finishCreation = resolve;
+    });
+    const resumeSession = vi.fn();
+    manager.backend = { resumeSession };
+    manager.pendingSessionCreations.set("session-deleting", creation);
+
+    const warming = manager.warmSession("session-deleting");
+    manager.deletingSessions.add("session-deleting");
+    manager.sessionObjects.set("session-deleting", createdSession);
+    finishCreation(createdSession);
+
+    await expect(warming).rejects.toThrow("Session is being deleted");
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
 
   it("does not call setModel on the resumed session", async () => {
     const manager = createManager();

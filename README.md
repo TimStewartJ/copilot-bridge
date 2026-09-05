@@ -68,7 +68,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 ### Prerequisites
 
 - Node.js 22+ (uses `node:sqlite`)
-- [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`npm install -g @github/copilot`)
+- GitHub Copilot access, authenticated through `BRIDGE_COPILOT_GITHUB_TOKEN`, GitHub CLI, or a [Copilot CLI](https://github.com/github/copilot-cli) login
 - [Dev Tunnel CLI](https://aka.ms/devtunnels) (optional, for remote access)
 - Optional provider config for Azure DevOps, GitHub, or Linear if you want enriched work items and pull requests
 - Optional `COMPUTER_USE=true` if you want desktop automation tools on a trusted local machine
@@ -88,11 +88,16 @@ For Copilot SDK authentication, set `BRIDGE_COPILOT_GITHUB_TOKEN` if you want Br
 
 GitHub work item and pull request enrichment reuses the same ambient auth: `BRIDGE_COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. With no token available it still enriches public repositories anonymously. Fully qualified references (`owner/repo#123`, an issue/PR URL, or an `owner/repo` PR repository) work without any GitHub provider settings; the optional owner/default-repo settings only resolve short references like `123` or `repo#123`.
 
-### Copilot CLI Version
+### Copilot Runtime
 
-Bridge pins the npm `@github/copilot` runtime to stable version 1.0.83 as a direct dependency.
-Bridge uses `@github/copilot-sdk` 1.0.13 and launches the explicit runtime dependency through the CLI wrapper. The SDK
+Bridge uses `@github/copilot-sdk` 1.0.13 and its bundled, platform-specific native runtime.
+Install optional dependencies (the npm default); no separate CLI runtime override or wrapper is needed. The SDK
 natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge tool-loading metadata.
+
+HydraFusion uses the runtime's native orchestration, with its startup feature flags enabled and experimental
+mode supplied on session creation and resume. Sessions select `hydrafusion` directly, without first creating
+a different model's session. Reasoning effort and context tier are chosen by HydraFusion rather than fixed
+in Bridge. This is a research preview; its native feature flags are tied to the pinned SDK/runtime version.
 
 ### Packaged Release Mode
 
@@ -104,7 +109,7 @@ pwsh -NoProfile -File .\scripts\package-release.ps1 -IncludeNodeModules
 
 That creates a `release\copilot-bridge-<version>-stable-win-x64.zip` package with root-level `start.ps1`, `stop.ps1`, `update.ps1`, `install-startup-task.ps1`, and `uninstall-startup-task.ps1` scripts plus their shared `release-common.ps1` helper. Release mode starts the compiled launcher from `dist\launcher.js`, skips startup `git pull`, disables git-backed self-update/staging tools, and stores durable state outside the app folder.
 
-Use `-IncludeNodeModules` for teammate installs and update packages. It installs only the packaged server's runtime dependencies into `app\node_modules` instead of copying the full repository dependency tree, omits optional npm packages, and prunes Copilot CLI assets down to the Windows x64 runtime files the Bridge uses. Packages built without `node_modules` are source-light bundles for manual installs only; `update.ps1` rejects them because it cannot safely start and health-check the new app without dependencies.
+Use `-IncludeNodeModules` for teammate installs and update packages. It installs only the packaged server's runtime dependencies into `app\node_modules` instead of copying the full repository dependency tree, including the SDK's optional platform-native runtime package. Packages built without `node_modules` are source-light bundles for manual installs only; `update.ps1` rejects them because it cannot safely start and health-check the new app without dependencies.
 
 The packaging script writes a standard `.sha256` sidecar. Use `-Analyze` to generate package size/layout analysis, and `-SmokeTest` to validate the extracted package. When `-SmokeTest` is combined with `-IncludeNodeModules`, it starts the package with isolated temporary state, verifies `/api/health`, and stops it again:
 
