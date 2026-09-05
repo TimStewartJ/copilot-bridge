@@ -2,12 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, createMockSessionManager, makeAgentSessionStub, makeTestDir } from "./helpers.js";
-import { createTestApp } from "./test-app.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { readPersistedSessionModelState } from "../session-model-state-sidecar.js";
-import supertest from "./test-http.js";
 import type { AgentCurrentModel, AgentSetModelOptions } from "../agent-backend/types.js";
 
 function createManager(copilotHome?: string) {
@@ -491,138 +489,5 @@ describe("SessionManager.setSessionModel", () => {
     const result = await manager.setSessionModel("session-1", "gpt-5.5");
 
     expect(result).not.toHaveProperty("reasoningEffort");
-  });
-});
-
-describe("PATCH /api/sessions/:id/model route", () => {
-  const sessionId = "11111111-1111-4111-8111-111111111111";
-
-  it("returns 400 when model is missing", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app).patch(`/api/sessions/${sessionId}/model`).send({});
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/model/i);
-  });
-
-  it("returns 400 when model is empty string or only whitespace", async () => {
-    const { app } = createTestApp();
-    for (const model of ["", "   "]) {
-      const res = await supertest(app).patch(`/api/sessions/${sessionId}/model`).send({ model });
-      expect(res.status, `model=${JSON.stringify(model)}`).toBe(400);
-    }
-  });
-
-  it("returns 400 when reasoningEffort is not advertised by the SDK", async () => {
-    const { app } = createTestApp({
-      sessionManager: {
-        ...createMockSessionManager(),
-        listModels: async () => [
-          { id: "gpt-5.5", name: "GPT-5.5", supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] },
-        ],
-      } as any,
-    });
-    const res = await supertest(app)
-      .patch(`/api/sessions/${sessionId}/model`)
-      .send({ model: "gpt-5.5", reasoningEffort: "extreme" });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/reasoningEffort/i);
-  });
-
-  it("accepts an SDK-advertised reasoningEffort the legacy allowlist would have rejected", async () => {
-    const setSessionModel = vi.fn(async (_id: string, model: string, reasoningEffort?: string) => ({
-      model,
-      ...(reasoningEffort ? { reasoningEffort } : {}),
-    }));
-    const { app } = createTestApp({
-      sessionManager: {
-        ...createMockSessionManager(),
-        setSessionModel,
-        listModels: async () => [
-          { id: "claude-opus-4.7-1m", name: "Opus 1M", supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-        ],
-      } as any,
-    });
-    const res = await supertest(app)
-      .patch(`/api/sessions/${sessionId}/model`)
-      .send({ model: "claude-opus-4.7-1m", reasoningEffort: "max" });
-    expect(res.status).toBe(200);
-    expect(setSessionModel).toHaveBeenCalledWith(sessionId, "claude-opus-4.7-1m", "max", undefined);
-  });
-
-  it("returns 400 when contextTier is invalid", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app)
-      .patch(`/api/sessions/${sessionId}/model`)
-      .send({ model: "gpt-5.5", contextTier: "huge" });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/contextTier/i);
-  });
-
-  it("passes valid contextTier values to the session manager", async () => {
-    const setSessionModel = vi.fn(async (
-      _id: string,
-      model: string,
-      reasoningEffort?: string,
-      contextTier?: string,
-    ) => ({
-      model,
-      ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(contextTier ? { contextTier } : {}),
-    }));
-    const { app } = createTestApp({
-      sessionManager: {
-        listSessions: async () => [],
-        listSessionsFromDisk: () => [],
-        getSessionActivity: () => [],
-        isSessionBusy: () => false,
-        getSessionRunState: () => "idle",
-        getPendingUserInputCount: () => 0,
-        isSessionWarm: () => false,
-        setSessionModel,
-        getSessionModelState: async () => ({ source: "unknown" as const }),
-      } as any,
-    });
-
-    const res = await supertest(app)
-      .patch(`/api/sessions/${sessionId}/model`)
-      .send({ model: "gpt-5.5", reasoningEffort: "high", contextTier: "long_context" });
-
-    expect(res.status).toBe(200);
-    expect(setSessionModel).toHaveBeenCalledWith(sessionId, "gpt-5.5", "high", "long_context");
-    expect(res.body).toMatchObject({
-      model: "gpt-5.5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-  });
-
-  it("returns 409 when session is busy", async () => {
-    const { app } = createTestApp({
-      sessionManager: {
-        listSessions: async () => [],
-        listSessionsFromDisk: () => [],
-        getSessionActivity: () => [],
-        isSessionBusy: () => false,
-        getSessionRunState: () => "idle",
-        getPendingUserInputCount: () => 0,
-        isSessionWarm: () => false,
-        setSessionModel: async () => {
-          throw new Error("Cannot switch model on a busy session");
-        },
-      } as any,
-    });
-    const res = await supertest(app)
-      .patch(`/api/sessions/${sessionId}/model`)
-      .send({ model: "gpt-5.5" });
-    expect(res.status).toBe(409);
-  });
-
-  it("returns 400 for invalid session IDs", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app)
-      .patch("/api/sessions/not-a-uuid/model")
-      .send({ model: "gpt-5.5" });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/sessionId/i);
   });
 });

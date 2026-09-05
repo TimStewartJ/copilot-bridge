@@ -223,8 +223,9 @@ npm test              # full Vitest regression suite
 npm run check:fast    # x-plat audit + client/server type-checking
 npm run check:client  # client type-check + client lane
 npm run check:server  # server type-check + server/shared lane
+npm run check:integration # type-check + API, workflow, persistence/lifecycle, and native-platform integration tests
 npm run check:launcher # server type-check + launcher lane
-npm run check:staging # server type-check + staging/integration lane
+npm run check:staging # server type-check + staging tooling lane
 npm run check:pr      # fast gate + all lanes + full build
 npm run check:deploy  # PR gate + preview smoke
 npm run test:slow-report # full Vitest pass + top slowest files

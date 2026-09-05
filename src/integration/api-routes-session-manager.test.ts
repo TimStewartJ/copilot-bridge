@@ -1,0 +1,522 @@
+import { describe, expect, it, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import type { ApiRouteTestState } from "../test-support/api-routes.js";
+import {
+  createMockSessionManager,
+  createTestApp,
+  installApiRouteTestHooks,
+  join,
+  makeTestDir,
+  mkdirSync,
+  request,
+} from "../test-support/api-routes.js";
+import { SessionCapacityError, SessionHistoryUndoError } from "../server/session-manager.js";
+
+let app: ApiRouteTestState["app"];
+let ctx: ApiRouteTestState["ctx"];
+
+installApiRouteTestHooks((state) => {
+  ({ app, ctx } = state);
+});
+
+async function waitForForkJob(jobId: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const response = await request(app).get(`/api/session-forks/${jobId}`);
+    if (response.body.status === "succeeded" || response.body.status === "failed") {
+      return response;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Session fork job ${jobId} did not finish`);
+}
+
+// ── Session manager routes (mock-based) ──────────────────────────
+
+describe("Session manager routes", () => {
+  it("GET /api/sessions/:id/messages-fast returns runState for stalled sessions", async () => {
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+
+    const res = await request(app).get("/api/sessions/test-id/messages-fast");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ runState: "stalled" });
+  });
+
+  it("GET /api/busy includes background lifecycle work without inventing a session", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.getSessionActivity = vi.fn().mockReturnValue([]);
+    sessionManager.getLifecycleBlockingSessionCount = vi.fn().mockReturnValue(1);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/busy");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      busy: true,
+      count: 1,
+      sessionIds: [],
+      sessions: [],
+      backgroundOperations: 1,
+      agentBackend: expect.objectContaining({ state: "ready", connection: "connected" }),
+    });
+  });
+
+  it("GET /api/sessions/:id/messages-fast includes visible activity metadata", async () => {
+    ctx.sessionManager.readMessagesFromDisk = vi.fn().mockResolvedValue({
+      messages: [],
+      total: 0,
+      hasMore: false,
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      coverage: { latestEventId: "event-1" },
+    });
+
+    const res = await request(app).get("/api/sessions/test-id/messages-fast");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      coverage: { latestEventId: "event-1" },
+      warm: false,
+    });
+  });
+
+  it("GET /api/sessions/:id/stream returns a complete ephemeral snapshot", async () => {
+    const bus = ctx.eventBusRegistry.getOrCreateBus("stream-complete");
+    bus.reset();
+    bus.emit({ type: "thinking", turnId: "provider-turn-1" });
+    bus.emit({ type: "done", content: "Done", sourceEventId: "terminal-1" });
+
+    const res = await request(app).get("/api/sessions/stream-complete/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    expect(res.text).toContain("\"type\":\"snapshot\"");
+    expect(res.text).toContain("\"complete\":true");
+    expect(res.text).toContain("\"terminalType\":\"done\"");
+    // The terminal event is on disk, so the stream carries no transcript projection for it.
+    expect(res.text).not.toContain("\"terminalEventId\"");
+    expect(res.text).not.toContain("\"finalAssistantEntry\"");
+  });
+
+  it("GET /api/sessions/:id/stream restores a persisted synthetic terminal overlay", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("synthetic-terminal", {
+      type: "aborted",
+      runId: "run-synthetic",
+      timestamp: "2026-07-21T17:00:00.000Z",
+      notice: { kind: "stopped", timestamp: "2026-07-21T17:00:00.000Z" },
+    });
+
+    const res = await request(app).get("/api/sessions/synthetic-terminal/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("\"runId\":\"run-synthetic\"");
+    expect(res.text).toContain("\"terminalType\":\"aborted\"");
+    expect(res.text).toContain("\"kind\":\"stopped\"");
+  });
+
+  it("POST /api/sessions/:id/fork accepts immediately and passes safe event boundaries to the session manager", async () => {
+    let resolveFork: ((result: { sessionId: string }) => void) | undefined;
+    const sessionManager = createMockSessionManager();
+    sessionManager.forkSession = vi.fn(() => new Promise<{ sessionId: string }>((resolve) => {
+      resolveFork = resolve;
+    }));
+    sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "test-id",
+        summary: "Original session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/fork")
+      .send({ toEventId: "next-event" });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({
+      reused: false,
+      job: {
+        sourceSessionId: "test-id",
+        status: "queued",
+        bounded: true,
+      },
+    });
+
+    resolveFork?.({ sessionId: "bounded-fork" });
+    const completed = await waitForForkJob(res.body.job.id);
+
+    expect(completed.body).toMatchObject({
+      status: "succeeded",
+      sessionId: "bounded-fork",
+    });
+    expect(sessionManager.forkSession).toHaveBeenCalledWith("test-id", { toEventId: "next-event" });
+    expect(sessionManager.warmSession).toHaveBeenCalledWith("bounded-fork");
+    expect(sessionManager.setSessionName).toHaveBeenCalledWith("bounded-fork", "Fork from Original session");
+    expect(sessionManager.warmSession.mock.invocationCallOrder[0]).toBeLessThan(
+      sessionManager.setSessionName.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("POST /api/sessions/:id/fork rejects empty event boundaries", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.forkSession = vi.fn();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/fork")
+      .send({ toEventId: "   " });
+
+    expect(res.status).toBe(400);
+    expect(sessionManager.forkSession).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/sessions/:id/fork reports unforkable sessions as a client error", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.forkSession = vi.fn().mockRejectedValue(new Error("Session test-id not found or has no persisted events"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/fork");
+    const completed = await waitForForkJob(res.body.job.id);
+
+    expect(res.status).toBe(202);
+    expect(completed.body).toMatchObject({
+      status: "failed",
+      error: "Cannot fork a session before it has persisted conversation history.",
+    });
+  });
+
+  it("POST /api/sessions/:id/fork seeds the forked title from the CLI source summary", async () => {
+    const copilotHome = join(makeTestDir("api-fork-cli-catalog"), ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
+    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
+    try {
+      cliDb.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          cwd TEXT,
+          summary TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        );
+      `);
+      cliDb.prepare(`
+        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run("test-id", "/work", "Original session", "2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z");
+    } finally {
+      cliDb.close();
+    }
+    const sessionManager = createMockSessionManager();
+    sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
+    sessionManager.listSessionsFromDisk = vi.fn(async () => {
+      throw new Error("source title should come from CLI catalog");
+    });
+    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/fork");
+    const completed = await waitForForkJob(res.body.job.id);
+
+    expect(res.status).toBe(202);
+    expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
+    expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
+    expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
+    expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+    expect(ctx.bridgeSessionStateStore.getState("fork-session")).toMatchObject({
+      pendingAutoName: true,
+      pendingAutoNameReplaceTitle: "Fork of Original session",
+    });
+  });
+
+  it("POST /api/sessions/:id/fork still succeeds when fork title seeding fails", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
+    sessionManager.setSessionName = vi.fn().mockRejectedValue(new Error("Session not found: fork-session"));
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "test-id",
+        summary: "Original session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      ({ app, ctx } = createTestApp({ sessionManager }));
+      const task = ctx.taskStore.createTask("Linked task");
+      ctx.taskStore.linkSession(task.id, "test-id");
+      const events: any[] = [];
+      const unsubscribe = ctx.globalBus.subscribe((event) => events.push(event));
+
+      try {
+        const res = await request(app).post("/api/sessions/test-id/fork");
+        const completed = await waitForForkJob(res.body.job.id);
+
+        expect(res.status).toBe(202);
+        expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
+        expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
+        expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fork-session");
+        expect(events).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: "sessions:changed", sessionId: "fork-session" }),
+        ]));
+        expect(warn).toHaveBeenCalledWith(
+          "[sessions] Fork fork-ses created but could not be renamed:",
+          "Session not found: fork-session",
+        );
+        expect(ctx.bridgeSessionStateStore.getState("fork-session")).toMatchObject({
+          pendingAutoName: true,
+          pendingAutoNameReplaceTitle: undefined,
+        });
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("POST /api/sessions/:id/fork returns the created fork when immediate warm fails", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.warmSession = vi.fn().mockRejectedValue(new Error("warm failed"));
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "test-id",
+        summary: "Original session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      ({ app, ctx } = createTestApp({ sessionManager }));
+      const task = ctx.taskStore.createTask("Linked task");
+      ctx.taskStore.linkSession(task.id, "test-id");
+
+      const res = await request(app).post("/api/sessions/test-id/fork");
+      const completed = await waitForForkJob(res.body.job.id);
+
+      expect(res.status).toBe(202);
+      expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
+      expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fork-session");
+      expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
+      expect(sessionManager.setSessionName).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        "[sessions] Fork fork-ses created but could not be warmed:",
+        "warm failed",
+      );
+      expect(warn).toHaveBeenCalledWith(
+        "[sessions] Fork fork-ses rename skipped because warm resume failed",
+      );
+      expect(ctx.bridgeSessionStateStore.getState("fork-session")).toMatchObject({
+        pendingAutoName: true,
+        pendingAutoNameReplaceTitle: undefined,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("GET /api/session-forks/:id returns 404 for an unknown job", async () => {
+    const res = await request(app).get("/api/session-forks/missing-job");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Session fork job not found");
+  });
+
+  it("POST /api/sessions/:id/undo passes a validated turn boundary to the session manager", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.undoSessionTurn = vi.fn().mockResolvedValue({
+      eventsRemoved: 4,
+      lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+    });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: " user-event-2 " });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      eventsRemoved: 4,
+      lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+    });
+    expect(sessionManager.undoSessionTurn).toHaveBeenCalledWith("test-id", "user-event-2");
+  });
+
+  it("POST /api/sessions/:id/undo rejects empty and stale boundaries", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.undoSessionTurn = vi.fn().mockRejectedValue(
+      new SessionHistoryUndoError("stale-boundary", "This turn is no longer available to undo."),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const empty = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: "   " });
+    expect(empty.status).toBe(400);
+    expect(sessionManager.undoSessionTurn).not.toHaveBeenCalled();
+
+    const stale = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: "user-event-2" });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toContain("no longer available");
+    expect(stale.body.code).toBe("stale-boundary");
+  });
+
+  it("POST /api/sessions/:id/undo reports unsupported backends clearly", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.undoSessionTurn = vi.fn().mockRejectedValue(
+      new SessionHistoryUndoError("unsupported", "Session history undo is not available in this agent backend"),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/undo")
+      .send({ eventId: "user-event-2" });
+
+    expect(res.status).toBe(501);
+    expect(res.body.code).toBe("unsupported");
+  });
+
+  it("POST /api/sessions/:id/fork preserves all task links from the source session", async () => {
+    const sessionManager = createMockSessionManager();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const taskA = ctx.taskStore.createTask("Task A");
+    ctx.taskStore.linkSession(taskA.id, "test-id");
+    const taskB = ctx.taskStore.createTask("Task B");
+    ctx.taskStore.linkSession(taskB.id, "test-id");
+    sessionManager.warmSession = vi.fn().mockImplementation(async (sessionId: string) => {
+      expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain(sessionId);
+      expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain(sessionId);
+    });
+
+    const res = await request(app).post("/api/sessions/test-id/fork");
+    const completed = await waitForForkJob(res.body.job.id);
+
+    expect(res.status).toBe(202);
+    expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
+    expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain("fork-session");
+    expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain("fork-session");
+  });
+
+  it("POST /api/sessions/:id/reload reloads a session", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.reloadSession = vi.fn().mockResolvedValue([
+      { name: "demo", status: "connected", source: "settings" },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/reload");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ready: true,
+      servers: [{ name: "demo", status: "connected", source: "settings" }],
+    });
+    expect(sessionManager.reloadSession).toHaveBeenCalledWith("test-id");
+  });
+
+  it("POST /api/sessions/:id/reload rejects busy sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/reload");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot reload a busy session");
+  });
+
+  it("POST /api/sessions/:id/reload maps late busy errors to 409", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.reloadSession = vi.fn().mockRejectedValue(new Error("Cannot reload a busy session"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/reload");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot reload a busy session");
+  });
+
+  it("POST /api/sessions/:id/mcp-login starts MCP OAuth for a session server", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.loginMcpServer = vi.fn().mockResolvedValue({
+      serverName: "ado",
+      authorizationUrl: "https://login.example.test",
+      servers: [{ name: "ado", status: "needs-auth" }],
+    });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/mcp-login")
+      .send({ serverName: "ado", forceReauth: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      serverName: "ado",
+      authorizationUrl: "https://login.example.test",
+      servers: [{ name: "ado", status: "needs-auth" }],
+    });
+    expect(sessionManager.loginMcpServer).toHaveBeenCalledWith("test-id", "ado", { forceReauth: true });
+  });
+
+  it("POST /api/sessions/:id/mcp-login validates the request body", async () => {
+    const res = await request(app)
+      .post("/api/sessions/test-id/mcp-login")
+      .send({ forceReauth: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("serverName is required");
+  });
+
+  it("POST /api/sessions/:id/mcp-login maps busy sessions to 409", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.loginMcpServer = vi.fn().mockRejectedValue(new Error("Cannot authenticate MCP server for a busy session"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/mcp-login")
+      .send({ serverName: "ado" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot authenticate MCP server for a busy session");
+  });
+
+
+  it("POST /api/tasks/:id/session leaves the task unchanged when capacity stays full", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createTaskSession = vi.fn().mockRejectedValue(
+      new SessionCapacityError("context-limit", {
+        contexts: 17,
+        contextLimit: 16,
+        localMcpInstances: 40,
+        capacityUnits: 27,
+        capacityLimit: 64,
+      }),
+    );
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = (await request(app).post("/api/tasks").send({ title: "Queued task" })).body.task;
+
+    const res = await request(app).post(`/api/tasks/${task.id}/session`);
+
+    expect(res.status).toBe(429);
+    expect(res.body).toMatchObject({
+      code: "session_capacity",
+      details: {
+        reason: "context-limit",
+        contexts: 17,
+        contextLimit: 16,
+      },
+    });
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual([]);
+  });
+});

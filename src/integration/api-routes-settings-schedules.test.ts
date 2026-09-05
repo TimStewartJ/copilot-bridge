@@ -1,0 +1,723 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionStorageReader } from "../server/session-storage-reader.js";
+import type { ApiRouteTestState, DeferredPromptRunner } from "../test-support/api-routes.js";
+import {
+  createCopilotUsageTestHome,
+  createMockSessionManager,
+  createMockTranscriptionService,
+  createRestartRuntimePaths,
+  createTestApp,
+  createWavBuffer,
+  eventually,
+  get,
+  installApiRouteTestHooks,
+  join,
+  makeTestDir,
+  mkdirSync,
+  providers,
+  publishOutboundAttachment,
+  RESTART_PENDING_MESSAGE,
+  request,
+  scheduler,
+  writeCopilotUsageEvents,
+  writeRawCopilotUsageEvents,
+  writeFileSync,
+  writeRestartState,
+} from "../test-support/api-routes.js";
+
+let app: ApiRouteTestState["app"];
+let ctx: ApiRouteTestState["ctx"];
+let db: ApiRouteTestState["db"];
+
+installApiRouteTestHooks((state) => {
+  ({ app, ctx, db } = state);
+});
+
+afterEach(() => {
+  providers.clearProviderCache();
+});
+
+describe("Settings routes", () => {
+  it("PATCH /api/settings model change does NOT evict cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "claude-opus-4.7" });
+
+    expect(res.status).toBe(200);
+    // Model changes are future-only — no eviction, no setModel on cached sessions.
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings MCP change still evicts cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    const cachedProvider = providers.getProvider("github");
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ mcpServers: { test: { command: "echo", args: [] } } });
+
+    expect(res.status).toBe(200);
+    expect(evictSpy).toHaveBeenCalledOnce();
+    expect(providers.getProvider("github")).not.toBe(cachedProvider);
+  });
+
+  it("PATCH /api/settings persists deferred worker model settings without evicting sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({
+        deferWorker: {
+          model: "gpt-5-mini",
+          reasoningEffort: "low",
+          contextTier: "default",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deferWorker).toEqual({
+      model: "gpt-5-mini",
+      reasoningEffort: "low",
+      contextTier: "default",
+    });
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings rejects mixed invalid updates without runtime side effects", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      mcpServers: { before: { command: "before", args: [] } },
+    });
+    const cachedProvider = providers.getProvider("github");
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({
+        mcpServers: { after: { command: "after", args: [] } },
+        contextTier: "invalid",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("contextTier must be default or long_context");
+    expect(local.ctx.settingsStore.getMcpServers()).toEqual({
+      before: { command: "before", args: [] },
+    });
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(providers.getProvider("github")).toBe(cachedProvider);
+  });
+
+  it("GET /api/settings surfaces an unreadable persisted row", async () => {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run("{broken");
+
+    const res = await request(app).get("/api/settings");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Persisted app settings are unreadable");
+    expect(res.body.error).toContain('repair or remove key "app"');
+  });
+
+  it("PATCH /api/settings preserves unreadable settings without clearing caches or sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    const cachedProvider = providers.getProvider("github");
+    const raw = "{broken";
+    local.db.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run(raw);
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ theme: "dark" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Persisted app settings are unreadable");
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(providers.getProvider("github")).toBe(cachedProvider);
+    expect(
+      (local.db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string }).value,
+    ).toBe(raw);
+  });
+
+  it("PATCH /api/settings reports storage failures after rolling back MCP changes", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      mcpServers: { before: { command: "before", args: [] } },
+    });
+    local.db.exec(`
+      CREATE TRIGGER block_app_settings_update
+      BEFORE UPDATE ON settings
+      WHEN NEW.key = 'app'
+      BEGIN
+        SELECT RAISE(ABORT, 'settings write blocked');
+      END;
+    `);
+    const cachedProvider = providers.getProvider("github");
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ mcpServers: { after: { command: "after", args: [] } } });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("settings write blocked");
+    expect(local.ctx.settingsStore.getMcpServers()).toEqual({
+      before: { command: "before", args: [] },
+    });
+    expect(evictSpy).not.toHaveBeenCalled();
+    expect(providers.getProvider("github")).toBe(cachedProvider);
+  });
+});
+
+// ── Read State ───────────────────────────────────────────────────
+
+describe("Read state routes", () => {
+  it("POST /api/read-state/:sessionId honors an explicit read-through cursor", async () => {
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "2026-05-07T21:00:00.000Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:00:00.000Z");
+
+    const state = await request(app).get("/api/read-state");
+    expect(state.body["sess-1"]).toBe("2026-05-07T21:00:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId marks attention-only activity as read", async () => {
+    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:03:00.000Z");
+
+    const res = await request(app).post("/api/read-state/sess-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:03:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:03:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId honors explicit cursors through server-known attention activity", async () => {
+    ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
+    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:05:00.000Z");
+
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "2026-05-07T21:05:00.000Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:05:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:05:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId clamps explicit cursors to server-known activity", async () => {
+    ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
+    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:03:00.000Z");
+
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "2026-05-07T21:05:00.000Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:03:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:03:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId rejects invalid read-through cursors", async () => {
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "not-a-date" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("readThroughActivityAt");
+  });
+
+});
+
+// ── Schedule CRUD ────────────────────────────────────────────────
+
+describe("Schedule routes", () => {
+  let taskId: string;
+
+  beforeEach(async () => {
+    const task = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Schedule Host" });
+    taskId = task.body.task.id;
+    scheduler.initialize(ctx.sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+  });
+
+  it("GET /api/schedules requires a taskId query parameter", async () => {
+    for (const path of [
+      "/api/schedules",
+      "/api/schedules?taskId=",
+      "/api/schedules?taskId=one&taskId=two",
+    ]) {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/taskId/);
+    }
+  });
+
+  it("POST /api/schedules validates required fields", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({ name: "Missing fields" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/required/);
+  });
+
+  it("POST /api/schedules validates task exists", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({ taskId: "no-such-task", name: "X", prompt: "Y", type: "cron", cron: "0 0 * * *" });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/schedules requires cron for cron type", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({ taskId, name: "X", prompt: "Y", type: "cron" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/cron/);
+  });
+
+  it("POST /api/schedules creates a fresh-session schedule", async () => {
+    vi.spyOn(ctx.sessionManager, "listModels").mockResolvedValue([{
+      id: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      supportedReasoningEfforts: ["low", "high"],
+      billing: {
+        tokenPrices: {
+          contextMax: 200_000,
+          longContext: { contextMax: 1_000_000 },
+        },
+      },
+    }] as any);
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Fresh schedule",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        model: "  claude-sonnet-5  ",
+        reasoningEffort: " high ",
+        contextTier: "long_context",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      taskId,
+      name: "Fresh schedule",
+      type: "cron",
+      model: "claude-sonnet-5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+    expect(ctx.scheduleStore.getSchedule(res.body.id)).toMatchObject({
+      model: "claude-sonnet-5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+  });
+
+  it("POST /api/schedules accepts supported cron field counts", async () => {
+    for (const cron of ["*/5 * * * *", "0 */5 * * * *"]) {
+      const res = await request(app)
+        .post("/api/schedules")
+        .send({
+          taskId,
+          name: `Supported ${cron}`,
+          prompt: "Continue the conversation",
+          type: "cron",
+          cron,
+          timezone: "UTC",
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.cron).toBe(cron);
+    }
+  });
+
+  it("POST /api/schedules validates model overrides", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Bad model",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        model: 42,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/model/);
+  });
+
+  it("POST /api/schedules requires a schedule model for launch option overrides", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Missing model",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        reasoningEffort: "high",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/schedule model/);
+  });
+
+  it("POST /api/schedules rejects launch options unsupported by the schedule model", async () => {
+    vi.spyOn(ctx.sessionManager, "listModels").mockResolvedValue([{
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      supportedReasoningEfforts: ["high"],
+    }] as any);
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Unsupported effort",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/reasoningEffort/);
+  });
+
+  it("POST /api/schedules rejects unknown fields", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Legacy reuse",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        unexpectedField: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("unexpectedField");
+  });
+
+  it("PATCH /api/schedules rejects unknown fields", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Keep target",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({
+        name: "Renamed",
+        unexpectedField: false,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("unexpectedField");
+  });
+
+  it("PATCH /api/schedules updates schedules", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Successful patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ name: "Renamed schedule" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: schedule.id,
+      name: "Renamed schedule",
+    });
+  });
+
+  it("PATCH /api/schedules changes and clears model launch overrides", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Model patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    vi.spyOn(ctx.sessionManager, "listModels").mockResolvedValue([{
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      supportedReasoningEfforts: ["high"],
+      billing: {
+        tokenPrices: {
+          contextMax: 200_000,
+          longContext: { contextMax: 1_000_000 },
+        },
+      },
+    }] as any);
+
+    const updated = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({
+        model: "  gpt-5.6-sol  ",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+
+    const switched = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ model: "claude-sonnet-5" });
+    expect(switched.status).toBe(200);
+    expect(switched.body.model).toBe("claude-sonnet-5");
+    expect(switched.body.reasoningEffort).toBeUndefined();
+    expect(switched.body.contextTier).toBeUndefined();
+
+    const cleared = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ model: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.model).toBeUndefined();
+    expect(cleared.body.reasoningEffort).toBeUndefined();
+    expect(cleared.body.contextTier).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.model).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.reasoningEffort).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.contextTier).toBeUndefined();
+  });
+
+  it("PATCH /api/schedules rejects unsupported non-zero seconds crons", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Reject cron patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ cron: "30 */5 * * * *" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("seconds field is 0");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.cron).toBe("0 0 * * *");
+  });
+
+  it("PATCH /api/schedules allows unrelated edits to legacy unsupported crons", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Legacy unsupported cron",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "30 */5 * * * *",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await request(app)
+        .patch(`/api/schedules/${schedule.id}`)
+        .send({ name: "Legacy renamed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        id: schedule.id,
+        name: "Legacy renamed",
+        cron: "30 */5 * * * *",
+      });
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("PATCH /api/schedules applies autoArchiveKeep retention immediately", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Apply retention",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "new-session", "2026-01-02T00:00:00.000Z");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "old-session", "2026-01-01T00:00:00.000Z");
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "new-session", summary: "New run" } as any,
+      { sessionId: "old-session", summary: "Old run" } as any,
+    ];
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(false);
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ autoArchiveKeep: 1 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.autoArchiveKeep).toBe(1);
+    expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
+    expect(ctx.sessionMetaStore.isArchived("old-session")).toBe(true);
+  });
+
+  it("GET /api/schedules/:id/sessions returns sessions for a schedule", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Test Sched", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-1");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-2");
+    ctx.taskStore.linkSession(taskId, "sess-1");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.total).toBe(2);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: expect.any(String),
+      runId: expect.any(Number),
+      recordedAt: expect.any(String),
+      missing: true,
+    });
+    expect(res.body.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: "sess-1",
+        linkedTaskIds: [taskId],
+        diskSizeBytes: 0,
+        storageWarning: {
+          code: "missing",
+          message: "Session storage directory is missing.",
+        },
+      }),
+    ]));
+    expect(res.body).toHaveProperty("offset", 0);
+    expect(res.body).toHaveProperty("limit");
+  });
+
+  it("GET /api/schedules/:id/sessions returns 404 for unknown schedule", async () => {
+    const res = await request(app).get("/api/schedules/no-such-id/sessions");
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /api/schedules/:id/sessions respects limit and offset params", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Paged", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s2");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s3");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=2&offset=1`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.offset).toBe(1);
+    expect(res.body.limit).toBe(2);
+    expect(res.body.sessions).toHaveLength(2);
+  });
+
+  it("GET /api/schedules/:id/sessions includes recursive session storage totals", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Storage totals", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    const sessionId = "schedule-storage-session";
+    const sessionDir = join(ctx.copilotHome!, "session-state", sessionId);
+    mkdirSync(join(sessionDir, "files"), { recursive: true });
+    writeFileSync(join(sessionDir, "events.jsonl"), "events");
+    writeFileSync(join(sessionDir, "files", "artifact.txt"), "artifact");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, sessionId);
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId,
+      diskSizeBytes: "events".length + "artifact".length,
+    });
+    expect(res.body.sessions[0]).not.toHaveProperty("storageWarning");
+  });
+
+  it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {
+    const measureSession = vi.fn<SessionStorageReader["measureSession"]>().mockResolvedValue({
+      status: "complete",
+      diskSizeBytes: 17,
+    });
+    const sessionStorageReader: SessionStorageReader = { measureSession };
+    const local = createTestApp(undefined, { sessionStorageReader });
+    const localTask = local.ctx.taskStore.createTask("Repeated target task");
+    const schedule = local.ctx.scheduleStore.createSchedule({
+      taskId: localTask.id, name: "Repeated target", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    local.ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "shared-session", summary: "Shared session" } as any,
+    ];
+
+    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+
+    const res = await request(local.app).get(`/api/schedules/${schedule.id}/sessions`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.sessions[0].sessionId).toBe("shared-session");
+    expect(res.body.sessions[1].sessionId).toBe("shared-session");
+    expect(res.body.sessions[0].diskSizeBytes).toBe(17);
+    expect(res.body.sessions[1].diskSizeBytes).toBe(17);
+    expect(res.body.sessions[0].runId).not.toBe(res.body.sessions[1].runId);
+    expect(res.body.sessions[0].recordedAt).toEqual(expect.any(String));
+    expect(res.body.sessions[1].recordedAt).toEqual(expect.any(String));
+    expect(measureSession).toHaveBeenCalledTimes(1);
+    expect(measureSession).toHaveBeenCalledWith("shared-session");
+  });
+
+  it("GET /api/schedules/:id/sessions includes runState while keeping busy compatibility", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Run states", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "shared-session", summary: "Shared session" } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: "shared-session",
+      runState: "stalled",
+    });
+  });
+});
