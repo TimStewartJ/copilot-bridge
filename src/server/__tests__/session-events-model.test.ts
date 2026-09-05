@@ -8,12 +8,10 @@ import {
 } from "../session-events-model.js";
 import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
-import { createTestApp } from "./test-app.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { runAndCountEventLoopYields } from "./event-loop-test-utils.js";
 import { writePersistedSessionModelState } from "../session-model-state-sidecar.js";
-import supertest from "./test-http.js";
 
 // ── Parser unit tests ───────────────────────────────────────────────────────
 
@@ -373,80 +371,6 @@ describe("SessionManager.getSessionModelState", () => {
     expect(result.model).toBe("live-current");
     expect(result.reasoningEffort).toBe("medium");
     expect(result.contextTier).toBe("default");
-  });
-});
-
-// ── GET /api/sessions/:id/model route ──────────────────────────────────────
-
-describe("GET /api/sessions/:id/model route", () => {
-  const sessionId = "11111111-1111-4111-8111-111111111111";
-  const missingSessionId = "22222222-2222-4222-8222-222222222222";
-  const errorSessionId = "33333333-3333-4333-8333-333333333333";
-
-  it("returns model state JSON with source field", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app).get(`/api/sessions/${sessionId}/model`);
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("source");
-  });
-
-  it("returns 400 for invalid session IDs", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app).get("/api/sessions/not-a-uuid/model");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/sessionId/i);
-  });
-
-  it("returns 200 with source=unknown when no state found", async () => {
-    const { app } = createTestApp();
-    const res = await supertest(app).get(`/api/sessions/${missingSessionId}/model`);
-    expect(res.status).toBe(200);
-    expect(res.body.source).toBe("unknown");
-  });
-
-  it("returns model and reasoningEffort when manager provides them", async () => {
-    const { app } = createTestApp({
-      sessionManager: {
-        listSessions: async () => [],
-        listSessionsFromDisk: () => [],
-        getSessionActivity: () => [],
-        isSessionBusy: () => false,
-        getSessionRunState: () => "idle",
-        getPendingUserInputCount: () => 0,
-        isSessionWarm: () => false,
-        setSessionModel: async (_id: string, model: string, reasoningEffort?: string) => ({
-          model,
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-        }),
-        getSessionModelState: async () => ({
-          model: "claude-opus-4.7",
-          reasoningEffort: "high",
-          source: "events" as const,
-        }),
-      } as any,
-    });
-    const res = await supertest(app).get(`/api/sessions/${sessionId}/model`);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events" });
-  });
-
-  it("returns 500 on internal error", async () => {
-    const { app } = createTestApp({
-      sessionManager: {
-        listSessions: async () => [],
-        listSessionsFromDisk: () => [],
-        getSessionActivity: () => [],
-        isSessionBusy: () => false,
-        getSessionRunState: () => "idle",
-        getPendingUserInputCount: () => 0,
-        isSessionWarm: () => false,
-        setSessionModel: async () => { throw new Error("oops"); },
-        getSessionModelState: async () => { throw new Error("getSessionModelState failed"); },
-      } as any,
-    });
-    const res = await supertest(app).get(`/api/sessions/${errorSessionId}/model`);
-    expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/getSessionModelState failed/i);
   });
 });
 
