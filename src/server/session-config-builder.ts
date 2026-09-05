@@ -37,7 +37,7 @@ import {
 } from "./session-formatting.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
 import {
-  buildGitHubCopilotMcpToolOptions,
+  buildGitHubCopilotMcpToolConfig,
   buildGitHubCopilotSearchMcpServer,
   GITHUB_COPILOT_MCP_SERVER_NAME,
 } from "./github-copilot-mcp.js";
@@ -266,7 +266,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   }
 
   if (shouldUseSdkGitHubMcp(deps, resolvedMcpServers)) {
-    cfg.githubMcpToolOptions = buildGitHubCopilotMcpToolOptions();
+    cfg.githubMcpToolConfig = buildGitHubCopilotMcpToolConfig();
   }
 
   const settings = deps.settingsStore?.getSettings();

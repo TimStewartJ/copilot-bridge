@@ -90,10 +90,9 @@ GitHub work item and pull request enrichment reuses the same ambient auth: `BRID
 
 ### Copilot CLI Version
 
-Bridge pins the npm `@github/copilot` runtime to stable version 1.0.83 through the root package override and lock file.
-The SDK launches that installed platform package through the Bridge CLI wrapper so GitHub MCP authentication and native
-`ask_user` elicitation work with the stable bundle. Runtime 1.0.83 also enables the experimental HydraFusion model in
-Bridge by creating a session on the runtime default and switching the live session before the first prompt.
+Bridge pins the npm `@github/copilot` runtime to stable version 1.0.83 as a direct dependency.
+Bridge uses `@github/copilot-sdk` 1.0.13 and launches the explicit runtime dependency through the CLI wrapper. The SDK
+natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge tool-loading metadata.
 
 ### Packaged Release Mode
 
