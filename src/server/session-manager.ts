@@ -3344,12 +3344,12 @@ export class SessionManager {
           previousBackend.stop(),
         );
       } catch (error) {
+        this.backend = null;
+        this.backendCreatedAtMs = null;
+        this.backendLifecycleState = "disconnected";
+        this.emitBackendStatus();
         if (isModelRefreshClientRotationTimeoutError(error)) {
-          this.backend = null;
-          this.backendCreatedAtMs = null;
           this.forceStopTimedOutBackend(previousBackend, "stopping the previous client");
-        } else {
-          this.backend = previousBackend;
         }
         throw error;
       }

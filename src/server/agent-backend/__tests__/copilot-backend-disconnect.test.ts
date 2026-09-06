@@ -45,6 +45,7 @@ function createFakeClient(options: { ping?: () => Promise<unknown> } = {}) {
       connection.fireClose();
       client.state = "disconnected";
       client.connection = null;
+      return [];
     }),
     forceStop: vi.fn(async () => {
       connection.fireClose();
