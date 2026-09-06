@@ -13,7 +13,7 @@ describe("invalidateTaskChangeQueries", () => {
 
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["sessions"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["dashboard"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openChecklistItems });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskAgentDefinitions("task-123") });
@@ -38,7 +38,7 @@ describe("invalidateTaskChangeQueries", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(4);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.dashboard });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: ["dashboard"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
   });
 });
@@ -60,7 +60,7 @@ describe("createDeferredTaskChangeInvalidator", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(8);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.dashboard });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: ["dashboard"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
     expect(invalidateQueries).toHaveBeenNthCalledWith(5, { queryKey: queryKeys.taskChecklistItems("task-123") });
     expect(invalidateQueries).toHaveBeenNthCalledWith(6, { queryKey: queryKeys.taskAgentDefinitions("task-123") });

@@ -3,6 +3,7 @@ import type { ChecklistItem, DashboardChecklistItem } from "../api";
 import { patchChecklistItem, deleteChecklistItem } from "../api";
 import { deadlineUrgency, deadlineLabel, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../checklist-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
+import { FOCUS_LIFECYCLE_LABELS, isFocusOpen } from "../focus-view-model";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import {
@@ -30,6 +31,7 @@ interface BaseProps {
   onToggle?: () => void;
   /** Called on deadline change. If provided, replaces onUpdate for deadline changes. */
   onDeadlineChange?: (deadline: string | null) => void;
+  onInspectFocusObject?: (id: string) => void;
 }
 
 interface PanelVariantProps extends BaseProps {
@@ -214,6 +216,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
     <>
       <div
         ref={rowRef}
+        id={`focus-action-${checklistItem.id}`}
         data-checklist-item-id={checklistItem.id}
         className={rowClass}
         style={{ WebkitTouchCallout: "none" }}
@@ -227,7 +230,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
           }}
           className={`shrink-0 flex items-center justify-center ${
             isDashboard
-              ? "w-10 h-10 rounded-lg active:bg-bg-hover"
+              ? "w-11 h-11 rounded-lg active:bg-bg-hover"
               : "mt-0.5"
           }`}
            aria-label={checklistItem.done ? "Mark incomplete" : "Mark complete"}
@@ -311,6 +314,18 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
                   </span>
                 )
               )}
+            </div>
+          )}
+          {checklistItem.sources && checklistItem.sources.length > 0 && (
+            <div className="mt-1 space-y-1 text-xs text-text-muted">
+              {checklistItem.done && <p>Action complete; source outcomes are separate.</p>}
+              {checklistItem.sources.map((source) => (
+                <div key={`${source.sourceId}:${source.activationId}`} className="break-words">
+                  <span>Source {source.sourceType}: {source.title} — {FOCUS_LIFECYCLE_LABELS[source.lifecycle]}{isFocusOpen(source.lifecycle) ? " (still open)" : ""}</span>
+                  {props.onInspectFocusObject && <button type="button" className="ml-1 min-h-11 text-accent underline"
+                    onClick={(event) => { event.stopPropagation(); props.onInspectFocusObject?.(source.sourceId); }}>Inspect source</button>}
+                </div>
+              ))}
             </div>
           )}
         </div>

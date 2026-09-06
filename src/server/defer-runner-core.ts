@@ -8,6 +8,12 @@ import type { DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summary.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import { isBackendUnavailableError } from "./backend-availability.js";
+import { protectionRetryAt, type FocusProtectionStore } from "./focus-protection-store.js";
+import type {
+  FocusProtectionDisposition,
+  FocusProtectionHold,
+  FocusProtectionWindow,
+} from "../shared/focus-protection.js";
 
 // ── Shared timing/lease constants ─────────────────────────────────
 
@@ -47,6 +53,57 @@ export interface DeferRunnerDueItem {
   id: string;
   sessionId: string;
   wakeAt: string;
+  title?: string;
+  /** Recovery prompts and worker returns continue already-admitted work. */
+  continuation?: boolean;
+  /** Expiry/cancellation housekeeping does not admit new work. */
+  terminal?: boolean;
+  expiresAt?: string;
+}
+
+export interface DeferRunnerReadiness {
+  ready: boolean;
+  reason?: string;
+  retryAfterMs?: number;
+  /** Fixed deadlines must not slide or rearm on watchdog/idle/poke retries. */
+  retryAt?: string;
+  protectionWindow?: FocusProtectionWindow;
+}
+
+export function withFocusProtectionReadiness(
+  store: FocusProtectionStore | undefined,
+  kind: "defer" | "defer-loop",
+  item: DeferRunnerDueItem,
+  readiness: DeferRunnerReadiness = { ready: true },
+): DeferRunnerReadiness {
+  if (!readiness.ready || item.continuation || item.terminal || !store) return readiness;
+  const now = Date.now();
+  // The latest normal end also covers work that was offline or behind another readiness gate.
+  // The same work/slot key makes a later window's release strictly later than any older release.
+  const window = store.current(now) ?? store.latestCompleted(now);
+  if (!window) return readiness;
+  const retryAt = protectionRetryAt(window, `${kind}:${item.id}:${item.wakeAt}`);
+  if (Date.parse(item.wakeAt) >= Date.parse(window.endsAt) || now >= retryAt) return readiness;
+  return {
+    ready: false,
+    reason: `focus protection: ${window.reason}`,
+    retryAt: new Date(retryAt).toISOString(),
+    protectionWindow: window,
+  };
+}
+
+interface DeferProtectionSettlement {
+  disposition: FocusProtectionDisposition;
+  details?: Record<string, unknown>;
+}
+
+interface DeferRunnerHold {
+  item: DeferRunnerDueItem;
+  reason: string;
+  retryAt: number;
+  logKey: string;
+  telemetryKey: string;
+  protectionWindowId?: string;
 }
 
 /**
@@ -63,6 +120,7 @@ export interface DeferRunnerStoreAdapter {
   reclaimExpiredRunning(now: string): number;
   listExpiredRunningSessionIds(now: string): string[];
   cancelForSession(sessionId: string): number;
+  getProtectionDisposition?(hold: FocusProtectionHold): DeferProtectionSettlement | undefined;
 }
 
 /** Log/summary labels per runner. */
@@ -82,6 +140,9 @@ export interface DeferRunnerLabels {
 export interface DeferRunnerCoreContext {
   isStarted(): boolean;
   readonly deliveryGuard: DeferDeliveryGuard;
+  /** Synchronous admission check; repeat after asynchronous work and before taking any claims. */
+  holdIfNotReady(item: DeferRunnerDueItem): boolean;
+  settleProtectionHold(item: DeferRunnerDueItem, disposition: FocusProtectionDisposition): void;
   /** Start a lease-renewal interval (guards on started) and track it for shutdown cleanup. */
   startRenewal(renew: () => void): ReturnType<typeof setInterval>;
   emitDeferSummary(sessionId: string): void;
@@ -101,6 +162,8 @@ export interface DeferRunnerCoreContext {
 
 export interface DeferRunnerOptions {
   telemetryStore?: Pick<TelemetryStore, "recordSpan">;
+  focusProtectionStore?: FocusProtectionStore;
+  additionalReadiness?: (item: DeferRunnerDueItem) => DeferRunnerReadiness;
 }
 
 export interface DeferRunnerCoreOptions extends DeferRunnerOptions {
@@ -110,7 +173,6 @@ export interface DeferRunnerCoreOptions extends DeferRunnerOptions {
   deliveryGuard: DeferDeliveryGuard;
   summarySources: DeferSummarySources;
   labels: DeferRunnerLabels;
-  additionalReadiness?: () => { ready: boolean; reason?: string; retryAfterMs?: number };
   /** Pure factory: returns the runner's processOne strategy. Must not synchronously start processing. */
   createProcessOne: (ctx: DeferRunnerCoreContext) => (id: string) => Promise<ProcessOneResult>;
 }
@@ -126,15 +188,21 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   const { tag, noun } = labels;
 
   let nextTimer: ReturnType<typeof setTimeout> | undefined;
+  let nextTimerKey: string | undefined;
   let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+  let idleImmediate: ReturnType<typeof setImmediate> | undefined;
   let watchdogSweepPromise: Promise<void> | undefined;
   let busUnsubscribe: (() => void) | undefined;
   let started = false;
   let generation = 0;
   let processDuePromise: Promise<void> | undefined;
   let rerunRequested = false;
-  let holdLogged = false;
+  const heldItems = new Map<string, DeferRunnerHold>();
+  const loggedHolds = new Set<string>();
+  const recordedHolds = new Set<string>();
+  const persistedHolds = new Map<string, string>();
   const renewalTimers = new Set<ReturnType<typeof setInterval>>();
+  const protectionKind = labels.kind === "once" ? "defer" : "defer-loop";
 
   // ── Internal helpers ──────────────────────────────────────────────
 
@@ -143,7 +211,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   }
 
   function recordTelemetry(name: string, duration: number, metadata: Record<string, unknown>): void {
-    if (!options.telemetryStore) return;
+    if (!started || !options.telemetryStore) return;
     try {
       options.telemetryStore.recordSpan({
         name,
@@ -189,65 +257,112 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     }
   }
 
-  function getDeferDeliveryReadiness(): { ready: boolean; reason?: string; retryAfterMs?: number } {
+  function getDeferDeliveryReadiness(item: DeferRunnerDueItem): DeferRunnerReadiness {
+    if (item.terminal) return { ready: true };
     const sessionReadiness = sessionManager.getDeferDeliveryReadiness?.() ?? { ready: true };
     if (!sessionReadiness.ready) return sessionReadiness;
-    return options.additionalReadiness?.() ?? sessionReadiness;
+    return withFocusProtectionReadiness(
+      options.focusProtectionStore, protectionKind, item,
+      options.additionalReadiness?.(item) ?? sessionReadiness,
+    );
   }
 
-  function clearHoldLogState(): void {
-    holdLogged = false;
+  function settleProtectionHold(item: DeferRunnerDueItem, disposition: FocusProtectionDisposition): void {
+    options.focusProtectionStore?.settle({
+      kind: protectionKind, workId: item.id, scheduledFor: item.wakeAt,
+    }, disposition);
+    persistedHolds.delete(item.id);
   }
 
-  function armHoldRetry(retryAfterMs: number | undefined): void {
-    if (!started) return;
-    clearTimeout(nextTimer);
-    const delay = Math.min(Math.max(0, retryAfterMs ?? 5_000), MAX_TIMER_DELAY_MS);
-    const scheduledGeneration = generation;
-    nextTimer = setTimeout(() => {
-      if (!started || scheduledGeneration !== generation) return;
-      nextTimer = undefined;
-      processDue().catch((err) => {
-        console.error(`[${tag}] processDue error after delivery hold:`, err);
-      });
-    }, delay);
-  }
-
-  function holdIfNotReady(dueCount: number): boolean {
-    if (dueCount === 0) {
-      clearHoldLogState();
-      return false;
+  function reconcileProtectionHolds(): void {
+    if (!started || !options.focusProtectionStore || !store.getProtectionDisposition) return;
+    for (const hold of options.focusProtectionStore.outstanding(protectionKind)) {
+      const settlement = store.getProtectionDisposition(hold);
+      if (!settlement) continue;
+      options.focusProtectionStore.settle({
+        kind: protectionKind, workId: hold.workId, scheduledFor: hold.scheduledFor,
+      }, settlement.disposition, settlement.details);
+      if (heldItems.get(hold.workId)?.item.wakeAt === hold.scheduledFor) heldItems.delete(hold.workId);
+      persistedHolds.delete(hold.workId);
     }
-    const readiness = getDeferDeliveryReadiness();
+  }
+
+  function holdIfNotReady(item: DeferRunnerDueItem): boolean {
+    if (!started) return true;
+    const readiness = getDeferDeliveryReadiness(item);
     if (readiness.ready) {
-      clearHoldLogState();
+      heldItems.delete(item.id);
       return false;
     }
     const reason = readiness.reason ?? "defer delivery is not ready";
-    if (!holdLogged) {
-      console.info(`[${tag}] Holding ${dueCount} due item(s): ${reason}`);
-      holdLogged = true;
-    }
-    recordTelemetry("defer.runner.hold", 0, {
-      reason,
-      dueCount,
+    const logKey = JSON.stringify([reason, readiness.retryAt, readiness.protectionWindow?.id]);
+    const previous = heldItems.get(item.id);
+    const retryAt = readiness.retryAt ? Date.parse(readiness.retryAt)
+      : previous?.logKey === logKey && previous.retryAt > Date.now() ? previous.retryAt
+        : Date.now() + Math.max(1, readiness.retryAfterMs ?? 5_000);
+    heldItems.set(item.id, {
+      item, reason, retryAt, logKey,
+      telemetryKey: JSON.stringify([logKey, retryAt]),
+      protectionWindowId: readiness.protectionWindow?.id,
     });
-    armHoldRetry(readiness.retryAfterMs);
+    if (readiness.protectionWindow && options.focusProtectionStore) {
+      const key = JSON.stringify([readiness.protectionWindow.id, readiness.retryAt, item.wakeAt]);
+      if (persistedHolds.get(item.id) !== key) {
+        options.focusProtectionStore.hold(readiness.protectionWindow, {
+          kind: protectionKind, workId: item.id, scheduledFor: item.wakeAt,
+          sessionId: item.sessionId, title: item.title,
+        });
+        persistedHolds.set(item.id, key);
+      }
+    }
     return true;
   }
 
-  function getDueReadyForAnotherPass(): { ready: boolean; held: boolean } {
+  function reportHolds(): void {
+    const groups = new Map<string, { hold: DeferRunnerHold; count: number }>();
+    for (const hold of heldItems.values()) {
+      const group = groups.get(hold.telemetryKey);
+      if (group) group.count++;
+      else groups.set(hold.telemetryKey, { hold, count: 1 });
+    }
+    const logKeys = new Set([...heldItems.values()].map((hold) => hold.logKey));
+    for (const key of loggedHolds) if (!logKeys.has(key)) loggedHolds.delete(key);
+    for (const key of recordedHolds) if (!groups.has(key)) recordedHolds.delete(key);
+    for (const [key, { hold, count }] of groups) {
+      if (!loggedHolds.has(hold.logKey)) {
+        console.info(`[${tag}] Holding ${count} due item(s): ${hold.reason}`);
+        loggedHolds.add(hold.logKey);
+      }
+      if (!recordedHolds.has(key)) {
+        recordTelemetry("defer.runner.hold", 0, {
+          reason: hold.reason, dueCount: count,
+          ...(hold.protectionWindowId ? {
+            protectionWindowId: hold.protectionWindowId,
+            resumeAt: new Date(hold.retryAt).toISOString(),
+          } : {}),
+        });
+        recordedHolds.add(key);
+      }
+    }
+  }
+
+  function getReadyDue(): ReadonlyArray<DeferRunnerDueItem> {
     const due = store.listDue();
-    if (holdIfNotReady(due.length)) return { ready: false, held: true };
-    return {
-      held: false,
-      ready: due.some((item) =>
-        !deliveryGuard.isActive(item.sessionId) && !sessionManager.isSessionBusy(item.sessionId)
-      ),
-    };
+    const ids = new Set(due.map((item) => item.id));
+    for (const id of heldItems.keys()) if (!ids.has(id)) heldItems.delete(id);
+    for (const id of persistedHolds.keys()) if (!ids.has(id)) persistedHolds.delete(id);
+    const ready = due.filter((item) => !holdIfNotReady(item));
+    reportHolds();
+    return ready;
+  }
+
+  function getDueReadyForAnotherPass(): boolean {
+    return getReadyDue().some((item) => item.terminal
+      || (!deliveryGuard.isActive(item.sessionId) && !sessionManager.isSessionBusy(item.sessionId)));
   }
 
   function emitDeferSummary(sessionId: string): void {
+    if (!started) return;
     emitSessionDeferSummary(globalBus, sessionId, summarySources);
   }
 
@@ -256,26 +371,38 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   }
 
   function recordSessionAttention(sessionId: string, at = new Date().toISOString()): void {
-    if (typeof sessionManager.markSessionAttention !== "function") return;
+    if (!started || typeof sessionManager.markSessionAttention !== "function") return;
     sessionManager.markSessionAttention(sessionId, at);
   }
 
   function armNext(): void {
     if (!started) return;
+    const nextWakeAt = getNextWakeAt();
+    let wakeAtMs = nextWakeAt ? Date.parse(nextWakeAt) : Infinity;
+    let timerKey = nextWakeAt;
+    let isHold = false;
+    for (const hold of heldItems.values()) {
+      const expiresAt = hold.item.expiresAt ? Date.parse(hold.item.expiresAt) : Infinity;
+      const retryAt = Math.min(hold.retryAt, expiresAt);
+      if (retryAt < wakeAtMs) {
+        wakeAtMs = retryAt;
+        timerKey = `${hold.logKey}:${retryAt}`;
+        isHold = true;
+      }
+    }
+    if (nextTimer && nextTimerKey === timerKey) return;
     clearTimeout(nextTimer);
     nextTimer = undefined;
-
-    const nextWakeAt = getNextWakeAt();
-    if (!nextWakeAt) return;
-
-    const wakeAtMs = Date.parse(nextWakeAt);
+    nextTimerKey = timerKey;
+    if (!Number.isFinite(wakeAtMs)) return;
     const delay = Math.max(0, wakeAtMs - Date.now());
     const timerDelay = Math.min(delay, MAX_TIMER_DELAY_MS);
     const scheduledGeneration = generation;
     nextTimer = setTimeout(() => {
       if (!started || scheduledGeneration !== generation) return;
       nextTimer = undefined;
-      if (timerDelay === delay) {
+      nextTimerKey = undefined;
+      if (!isHold && timerDelay === delay) {
         recordTelemetry("defer.runner.timer_wake", 0, {
           scheduledFor: nextWakeAt,
           wakeDriftMs: Math.max(0, Date.now() - wakeAtMs),
@@ -311,18 +438,16 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
 
   async function processDueOnce(): Promise<void> {
     if (!started) return;
-    let held = false;
 
     try {
+      reconcileProtectionHolds();
       reclaimExpiredRunning();
-      const due = store.listDue();
+      // Remove per-item holds before FIFO dedup so they cannot strand a continuation.
+      const due = getReadyDue();
       if (due.length > 0) {
-        if (holdIfNotReady(due.length)) {
-          held = true;
-          return;
-        }
         const sessionsSeen = new Set<string>();
         const toProcess = due.filter((item) => {
+          if (item.terminal) return true;
           if (sessionsSeen.has(item.sessionId)) return false;
           sessionsSeen.add(item.sessionId);
           return true;
@@ -345,16 +470,18 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
           });
         }
         if (results.includes("changed")) {
-          const nextPass = getDueReadyForAnotherPass();
-          if (nextPass.ready) {
-            rerunRequested = true;
-          } else if (nextPass.held) {
-            held = true;
-          }
+          if (getDueReadyForAnotherPass()) rerunRequested = true;
         }
       }
     } finally {
-      if (!held) armNext();
+      if (started) {
+        try {
+          reconcileProtectionHolds();
+          reportHolds();
+        } finally {
+          armNext();
+        }
+      }
     }
   }
 
@@ -408,12 +535,11 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     renewalTimers.delete(renewalTimer);
     deliveryGuard.release(sessionId);
     if (started && shouldProcessNext) {
-      const nextPass = getDueReadyForAnotherPass();
-      if (nextPass.ready) {
+      if (getDueReadyForAnotherPass()) {
         processDue().catch((err) => {
           console.error(`[${tag}] processDue error after delivery settled:`, err);
         });
-      } else if (!nextPass.held) {
+      } else {
         armNext();
       }
     } else {
@@ -424,6 +550,8 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   const ctx: DeferRunnerCoreContext = {
     isStarted: () => started,
     deliveryGuard,
+    holdIfNotReady,
+    settleProtectionHold,
     startRenewal,
     emitDeferSummary,
     emitDeferSummaries,
@@ -441,6 +569,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     generation++;
 
     // Reclaim any running rows whose leases have expired
+    reconcileProtectionHolds();
     reclaimExpiredRunning();
     startWatchdog();
 
@@ -448,8 +577,10 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     busUnsubscribe = globalBus.subscribe((event) => {
       if (event.type === "session:idle" && event.sessionId) {
         // Give the session one tick to settle before we re-try
+        if (idleImmediate) return;
         const scheduledGeneration = generation;
-        setImmediate(() => {
+        idleImmediate = setImmediate(() => {
+          idleImmediate = undefined;
           if (!started || scheduledGeneration !== generation) return;
           processDue().catch((err) => {
             console.error(`[${tag}] processDue error on session:idle:`, err);
@@ -464,14 +595,17 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
           console.log(`[${tag}] Cancelled ${cancelled} ${noun}(s) for archived session ${event.sessionId}`);
           emitDeferSummary(event.sessionId);
         }
+        poke();
         return;
       }
 
-      if (event.type === "server:restart-cleared") {
+      if (event.type === "server:restart-cleared"
+        || event.type === "focus:protection-cleared"
+        || event.type === "focus:protection-changed") {
         const scheduledGeneration = generation;
         if (!started || scheduledGeneration !== generation) return;
         processDue().catch((err) => {
-          console.error(`[${tag}] processDue error on server:restart-cleared:`, err);
+          console.error(`[${tag}] processDue error on ${event.type}:`, err);
         });
       }
     });
@@ -499,6 +633,9 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     generation++;
     clearTimeout(nextTimer);
     nextTimer = undefined;
+    nextTimerKey = undefined;
+    clearImmediate(idleImmediate);
+    idleImmediate = undefined;
     clearInterval(watchdogTimer);
     watchdogTimer = undefined;
     watchdogSweepPromise = undefined;
@@ -508,6 +645,10 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     deliveryGuard.clear();
     for (const timer of renewalTimers) clearInterval(timer);
     renewalTimers.clear();
+    heldItems.clear();
+    loggedHolds.clear();
+    recordedHolds.clear();
+    persistedHolds.clear();
     started = false;
   }
 

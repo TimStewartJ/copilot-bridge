@@ -1,4 +1,5 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+import { isRecord } from "../shared/is-record.js";
 import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
@@ -10,6 +11,18 @@ import type {
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { ModelFamily } from "../shared/model-families.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
+import type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
+export type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
+import type {
+  FocusProtectionCreateRequest, FocusProtectionPage, FocusProtectionPreview,
+  FocusProtectionRequest, FocusProtectionSnapshot, FocusProtectionWindow,
+} from "../shared/focus-protection.js";
+export type {
+  FocusProtectionCreateRequest, FocusProtectionDeferImpact, FocusProtectionImpact,
+  FocusProtectionImpactSummary, FocusProtectionInFlight, FocusProtectionIntervention,
+  FocusProtectionPage, FocusProtectionPreview, FocusProtectionRequest,
+  FocusProtectionScheduleImpact, FocusProtectionSession, FocusProtectionSnapshot, FocusProtectionWindow,
+} from "../shared/focus-protection.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
@@ -557,6 +570,12 @@ export interface ChecklistItem {
   createdAt: string;
   completedAt?: string;
   deadline?: string; // YYYY-MM-DD
+  stableKey?: string;
+  sourceUrl?: string;
+  sources?: FocusActionSource[];
+  originalTaskId?: string;
+  originalTaskTitle?: string;
+  orphanedAt?: string;
 }
 
 // ── Enriched types ────────────────────────────────────────────────
@@ -718,13 +737,13 @@ export function resetConditionalGetCacheForTests(): void {
 async function apiFetch<T>(
   path: string,
   body?: unknown,
-  options?: { signal?: AbortSignal; reportTelemetry?: boolean },
+  options?: { signal?: AbortSignal; reportTelemetry?: boolean; method?: "POST" | "PATCH" },
 ): Promise<T> {
   const t0 = performance.now();
   const conditionalKey = body ? null : path;
   const opts: RequestInit = body
     ? {
-        method: "POST",
+        method: options?.method ?? "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
         signal: options?.signal,
@@ -1749,9 +1768,553 @@ export interface FeedSaveResult {
   created: boolean;
 }
 
+export interface FeedChecklistPromotionResult {
+  created: boolean;
+  card: FeedCard;
+  checklistItem: ChecklistItem;
+}
+
 export interface FeedPage {
   cards: FeedCard[];
   nextCursor: string | null;
+}
+
+export type FocusObjectType = "decision" | "alert" | "event";
+export type FocusLifecycle = "active" | "acknowledged" | "handed_off" | "resolved" | "accepted_risk" | "dismissed";
+export type FocusActor = "agent" | "user" | "legacy" | "system";
+export type FocusNotificationMode = "focus" | "summary" | "immediate";
+export type FocusEvidence = string | { summary: string; url?: string; observedAt?: string };
+
+export interface FocusObjectDetails {
+  objectId: string;
+  lifecycle: FocusLifecycle;
+  sourceFamily: string | null;
+  producer: string | null;
+  observedAt: string | null;
+  validUntil: string | null;
+  interventionBy: string | null;
+  evidence: FocusEvidence[];
+  impact: string | null;
+  consequenceOfDelay: string | null;
+  alternatives: string[];
+  recommendation: string | null;
+  fallback: string | null;
+  outcome: string | null;
+  resolutionReason: string | null;
+  notificationMode: FocusNotificationMode;
+  authorizationGrantId: string | null;
+  episodeReason: string | null;
+  contentFingerprint: string;
+  lastMeaningfulChangeAt: string;
+  acknowledgedAt: string | null;
+  handedOffAt: string | null;
+  resolvedAt: string | null;
+  originalTaskId: string | null;
+  originalTaskTitle: string | null;
+  orphanedAt: string | null;
+}
+
+export interface FocusActionSource {
+  sourceId: string;
+  sourceType: FocusObjectType;
+  activationId: string;
+  title: string;
+  lifecycle: FocusLifecycle;
+}
+
+export interface FocusLinkedAction {
+  actionId: string;
+  activationId: string;
+  createdAt: string;
+  action: ChecklistItem;
+}
+
+export interface FocusObjectBase {
+  id: string;
+  objectType: FocusObjectType;
+  dedupeKey: string | null;
+  title: string;
+  body: string | null;
+  priority: FeedCardPriority;
+  status: FeedCardStatus;
+  taskId: string | null;
+  sessionId: string | null;
+  url: string | null;
+  links: FeedCardLink[];
+  metadata: Record<string, unknown> | null;
+  visual: VisualArtifact | null;
+  launchPrompt: FeedCardAction | null;
+  pinned: boolean;
+  activationId: string;
+  lifecycle: FocusLifecycle;
+  details: FocusObjectDetails;
+  linkedActions: FocusLinkedAction[];
+  taskState: "global" | "active" | "muted" | "archived" | "orphaned";
+  taskTitle: string | null;
+  statusChangedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FocusDecision extends FocusObjectBase {
+  objectType: "decision";
+}
+
+export interface FocusAlert extends FocusObjectBase {
+  objectType: "alert";
+}
+
+export interface FocusEvent extends FocusObjectBase {
+  objectType: "event";
+  category: string;
+}
+
+export type FocusObject = FocusDecision | FocusAlert | FocusEvent;
+export type FocusObjectFor<T extends FocusObjectType> = Extract<FocusObject, { objectType: T }>;
+
+export type FocusObjectMutation = Partial<Pick<
+  FocusObjectBase,
+  "title" | "body" | "priority" | "status" | "taskId" | "sessionId" | "url" | "links" | "metadata" | "launchPrompt" | "pinned"
+>> & Partial<Pick<
+  FocusObjectDetails,
+  "lifecycle" | "sourceFamily" | "producer" | "observedAt" | "validUntil" | "interventionBy" | "evidence"
+  | "impact" | "consequenceOfDelay" | "alternatives" | "recommendation" | "fallback" | "outcome"
+  | "resolutionReason" | "notificationMode" | "authorizationGrantId" | "episodeReason"
+>> & {
+  key?: string;
+  question?: string;
+  category?: string;
+  lifecycleReason?: string;
+  newEpisode?: boolean;
+  expectedActivationId?: string;
+  recurring?: boolean;
+};
+
+export type FocusLifecycleMutation = { expectedActivationId: string; outcome?: string } & (
+  | { lifecycle: "active" | "acknowledged" | "handed_off"; lifecycleReason?: string }
+  | { lifecycle: "resolved" | "accepted_risk" | "dismissed"; lifecycleReason: string }
+);
+
+export interface FocusPromotionInput {
+  text: string;
+  taskId: string | null;
+  expectedActivationId: string;
+}
+
+export interface FocusDigestSample {
+  id: string;
+  title: string;
+  category: string;
+  priority: FeedCardPriority;
+  updatedAt: string;
+}
+
+export interface FocusDigest {
+  id: string;
+  family: string;
+  keyPrefix: string | null;
+  category: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  quiet: boolean;
+  count: number;
+  highPriorityCount: number;
+  latestUpdatedAt: string;
+  sourceFamily: string | null;
+  originalTaskId: string | null;
+  orphaned: boolean;
+  lastViewedAt: string | null;
+  newCount: number;
+  samples: FocusDigestSample[];
+}
+
+export type FocusDomain = "actions" | "alerts" | "decisions" | "unresolvedHandoffs" | "overdueHandoffs" | "quietConcerns" | "digests" | "coverage" | "authority" | "audits" | "compatibility" | "telemetry";
+export interface FocusDomainHealth {
+  status: "ok" | "error" | "unknown";
+  error?: string;
+}
+
+export interface FocusIntervention {
+  objectId: string;
+  objectType: FocusObjectType;
+  title: string;
+  interventionBy: string;
+  lifecycle: FocusLifecycle;
+}
+
+export interface FocusConcernSummary {
+  objectId: string;
+  objectType: "decision" | "alert";
+  activationId: string;
+  title: string;
+  lifecycle: FocusLifecycle;
+  interventionBy: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  taskState: FocusObject["taskState"];
+  originalTaskId: string | null;
+  originalTaskTitle: string | null;
+  orphanedAt: string | null;
+  sourceFamily: string | null;
+  producer: string | null;
+  sessionId: string | null;
+  updatedAt: string;
+}
+
+export interface FocusUnresolvedHandoffSummary extends FocusConcernSummary {
+  lifecycle: "handed_off";
+}
+
+export interface FocusOverdueHandoffSummary extends FocusUnresolvedHandoffSummary {
+  interventionBy: string;
+  attentionVisible: true;
+}
+
+export type FocusSuppressionReason = "muted" | "archived" | "orphaned";
+export interface FocusQuietConcernSummary extends FocusConcernSummary {
+  attentionVisible: false;
+  suppressionReason: FocusSuppressionReason;
+}
+
+export type FocusQuietConcern = (FocusDecision | FocusAlert) & {
+  attentionVisible: false;
+  suppressionReason: FocusSuppressionReason;
+};
+
+export interface FocusAuthorityGrant {
+  id: string;
+  stableKey: string | null;
+  title: string;
+  taskId: string | null;
+  sourceFamily: string;
+  producer: string;
+  scope: string;
+  status: "active" | "revoked";
+  validFrom: string;
+  validUntil: string;
+  allowImmediate: boolean;
+  allowQuietHoursOverride: boolean;
+  constraints: string[];
+  grantedBy: string;
+  revokedAt: string | null;
+  revokeReason: string | null;
+  orphanedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type FocusAuthorityMutation = Partial<Pick<
+  FocusAuthorityGrant,
+  "title" | "taskId" | "sourceFamily" | "producer" | "scope" | "status" | "validFrom" | "validUntil"
+  | "allowImmediate" | "allowQuietHoursOverride" | "constraints" | "grantedBy" | "revokeReason"
+>> & { key?: string };
+
+export type FocusCoverageState = "valid" | "at-risk" | "expired" | "broken" | "unknown";
+export interface FocusCoverageAssertion {
+  id: string;
+  stableKey: string | null;
+  title: string;
+  taskId: string | null;
+  sourceFamily: string;
+  producer: string;
+  scope: string;
+  explicitState: "valid" | "broken" | "unknown";
+  lastCheckedAt: string | null;
+  validUntil: string | null;
+  interventionBy: string | null;
+  expectedIntervalMinutes: number;
+  atRiskMinutes: number;
+  evidence: FocusEvidence[];
+  reason: string | null;
+  authorityGrantId: string | null;
+  originalTaskTitle: string | null;
+  orphanedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FocusCoverageRead extends FocusCoverageAssertion {
+  state: FocusCoverageState;
+  observationGap: string | null;
+  constrainedAutonomy: string[];
+}
+
+export interface FocusCoverageSummary {
+  total: number;
+  counts: Record<FocusCoverageState, number>;
+  observationGaps: Array<{ id: string; title: string; reason: string }>;
+  upcomingInterventions: Array<{ id: string; title: string; interventionBy: string }>;
+  constrainedAutonomy: Array<{ id: string; constraints: string[] }>;
+}
+
+export type FocusCoverageMutation = Partial<Pick<
+  FocusCoverageAssertion,
+  "title" | "taskId" | "sourceFamily" | "producer" | "scope" | "explicitState" | "lastCheckedAt"
+  | "validUntil" | "interventionBy" | "expectedIntervalMinutes" | "atRiskMinutes" | "evidence" | "reason" | "authorityGrantId"
+>> & { key?: string };
+
+export type FocusAuditCategory = "false_positive" | "missed_attention" | "stale" | "misclassified" | "leakage" | "notification" | "coverage" | "other";
+export interface FocusAttentionAudit {
+  id: string;
+  objectId: string | null;
+  title: string;
+  category: FocusAuditCategory;
+  severity: FeedCardPriority;
+  status: "open" | "resolved" | "dismissed";
+  notes: string;
+  outcome: string | null;
+  actor: FocusActor;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export type FocusAuditMutation = Partial<Pick<
+  FocusAttentionAudit, "objectId" | "title" | "category" | "severity" | "status" | "notes" | "outcome"
+>>;
+
+export type FocusHistoryObjectType = FocusObjectType | "action";
+export interface FocusEpisodeActionLink {
+  sourceId: string;
+  sourceType: FocusObjectType;
+  activationId: string;
+  actionId: string;
+  createdAt: string;
+}
+
+export interface FocusEpisodeSnapshot extends FocusObjectDetails {
+  schemaVersion: 1;
+  objectType: FocusObjectType;
+  title: string;
+  body: string | null;
+  category: string | null;
+  activationId: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  sessionId: string | null;
+  sessionIds: string[];
+  linkedActionIds: string[];
+  linkedActions: FocusEpisodeActionLink[];
+  createdAt: string;
+  updatedAt: string;
+  statusChangedAt: string;
+}
+
+export interface FocusTransitionDetails extends Record<string, unknown> {
+  previousEpisode?: FocusEpisodeSnapshot;
+}
+
+export interface FocusTransition {
+  id: string;
+  objectId: string;
+  objectType: FocusHistoryObjectType;
+  title: string;
+  activationId: string;
+  fromLifecycle: FocusLifecycle | null;
+  toLifecycle: FocusLifecycle | null;
+  reason: string;
+  actor: FocusActor;
+  relatedActionId: string | null;
+  sessionId: string | null;
+  details: FocusTransitionDetails;
+  createdAt: string;
+}
+
+export interface FocusHistoryEntry {
+  id: string;
+  objectType: FocusHistoryObjectType;
+  title: string;
+  updatedAt: string;
+  object: FocusObject | ChecklistItem | null;
+  deleted: boolean;
+  quarantined: boolean;
+  transitions: FocusTransition[];
+  transitionTotal: number;
+  matchSource: "current" | "previous_episode" | "transition";
+  matchedEpisode: FocusEpisodeSnapshot | null;
+  matchedTransition: FocusTransition | null;
+}
+
+export interface FocusHistoryPage {
+  objects: FocusHistoryEntry[];
+  total: number;
+  nextOffset: number | null;
+}
+
+export interface FocusReadFilters {
+  query?: string;
+  taskId?: string;
+  originalTaskId?: string;
+  lifecycle?: FocusLifecycle;
+  sourceFamily?: string;
+  activationId?: string;
+}
+
+export interface FocusHistoryFilter extends FocusReadFilters {
+  objectId?: string;
+  objectType?: FocusHistoryObjectType;
+}
+
+export interface FocusQuietConcernFilter extends FocusReadFilters {
+  objectType?: "decision" | "alert";
+}
+
+export interface FocusEpisodeRead {
+  objectId: string;
+  activationId: string;
+  currentObject: FocusObject | null;
+  isCurrentEpisode: boolean;
+  previousEpisode: FocusEpisodeSnapshot | null;
+  transitions: FocusTransition[];
+  transitionTotal: number;
+  nextOffset: number | null;
+  deleted: boolean;
+  quarantined: boolean;
+  historyIncomplete: boolean;
+}
+
+export type FocusLaunchSource = "launch_prompt" | "discussion";
+export type FocusLaunchStatus = "prepared" | "creating" | "created" | "ready" | "failed" | "unknown" | "superseded";
+export type FocusLaunchErrorStage = "creation" | "link" | "prompt";
+export interface FocusLaunchIdentity {
+  objectId: string;
+  activationId: string;
+  source: FocusLaunchSource;
+}
+
+export interface FocusSessionCreationOptions {
+  model?: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+  agent?: string;
+}
+
+export interface FocusLaunchRequest extends FocusLaunchIdentity, FocusSessionCreationOptions {
+  taskId?: string | null;
+  prompt?: string;
+}
+
+export interface FocusSessionLaunch extends FocusLaunchIdentity {
+  id: string;
+  objectType: FocusObjectType;
+  objectTitle: string;
+  status: FocusLaunchStatus;
+  taskId: string | null;
+  taskTitle: string | null;
+  prompt: string;
+  promptFingerprint: string;
+  creationOptions: FocusSessionCreationOptions;
+  expectedSessionId: string;
+  sessionId: string | null;
+  promptStatus: "pending" | "sending" | "sent" | "unknown";
+  creationDispatchedAt: string | null;
+  linkedAt: string | null;
+  promptDispatchedAt: string | null;
+  error: string | null;
+  errorStage: FocusLaunchErrorStage | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FocusLaunchResult {
+  created: boolean;
+  sessionId: string;
+  receipt: FocusSessionLaunch;
+  error?: string;
+}
+
+export class FocusLaunchError extends ApiError {
+  constructor(message: string, status: number, readonly receipt: FocusSessionLaunch) {
+    super(message, status);
+    this.name = "FocusLaunchError";
+  }
+}
+
+export type FocusAttentionEventType =
+  | "create" | "meaningful_update" | "no_op" | "lifecycle_transition" | "reactivation"
+  | "promotion" | "classification" | "deleted" | "notification_eligibility"
+  | "notification_delivery" | "notification_suppression" | "muted_attention_excluded"
+  | "global_leakage_prevented" | "snapshot" | "digest_viewed" | "authority_changed"
+  | "coverage_changed" | "audit_changed" | "session_launch";
+
+export interface FocusAttentionEvent {
+  id: string;
+  eventType: FocusAttentionEventType;
+  objectId: string | null;
+  objectType: FocusHistoryObjectType | null;
+  activationId: string | null;
+  transitionId: string | null;
+  actor: FocusActor;
+  reason: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface FocusNotificationDelivery {
+  id: string;
+  objectId: string;
+  activationId: string;
+  transitionId: string | null;
+  reason: string;
+  status: "eligible" | "suppressed" | "sent" | "failed";
+  suppressionReason: string | null;
+  resolvedGrantId: string | null;
+  pendingUntil: string | null;
+  claimToken: string | null;
+  claimedAt: string | null;
+  sentAt: string | null;
+  error: string | null;
+  outcomeJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FocusAttentionMetrics {
+  since: string;
+  until: string;
+  days: number;
+  counts: Partial<Record<FocusAttentionEventType, number>>;
+  total: number;
+  noOpRate: number | null;
+  notifications: Array<Pick<FocusNotificationDelivery, "status" | "suppressionReason"> & { count: number }>;
+  audits: Array<Pick<FocusAttentionAudit, "category" | "status"> & { count: number }>;
+}
+
+export interface FocusSnapshot {
+  generatedAt: string;
+  alertTotal: number | null;
+  decisionTotal: number | null;
+  actionTotal: number | null;
+  attentionTotal: number | null;
+  handedOffTotal: number | null;
+  unresolvedHandoffTotal: number | null;
+  unresolvedHandoffs: FocusUnresolvedHandoffSummary[];
+  overdueHandoffTotal: number | null;
+  overdueHandoffs: FocusOverdueHandoffSummary[];
+  quietConcernTotal: number | null;
+  quietConcerns: FocusQuietConcernSummary[];
+  digests: FocusDigest[];
+  quietDigests: FocusDigest[];
+  domainHealth: Record<FocusDomain, FocusDomainHealth>;
+  allClear: boolean;
+  coverage: { summary: FocusCoverageSummary | null; assertions: FocusCoverageRead[] };
+  upcomingInterventions: FocusIntervention[];
+  authorityConstraints: Array<FocusAuthorityGrant & { currentlyActive: boolean }>;
+  auditExceptions: FocusAttentionAudit[];
+  compatibilityErrorCount: number | null;
+}
+
+export interface FocusObjectPage<T extends FocusObject = FocusObject> {
+  objects: T[];
+  total: number;
+  nextOffset: number | null;
+}
+
+export interface FocusActionPromotionResult {
+  created: boolean;
+  object: FocusObject;
+  action: ChecklistItem;
 }
 
 function buildFeedQuery(filters: FeedQueryFilters = {}): string {
@@ -1770,6 +2333,312 @@ function buildFeedQuery(filters: FeedQueryFilters = {}): string {
 
 export async function fetchFeedPage(filters: FeedQueryFilters = {}): Promise<FeedPage> {
   return apiFetch<FeedPage>(`/api/feed${buildFeedQuery(filters)}`);
+}
+
+export async function fetchFocusSnapshot(): Promise<FocusSnapshot> {
+  return apiFetch<FocusSnapshot>("/api/focus");
+}
+
+export async function fetchFocusProtectionCurrent(): Promise<FocusProtectionSnapshot> {
+  return apiFetch<FocusProtectionSnapshot>("/api/focus/protection/current");
+}
+
+export async function fetchFocusProtectionPage(offset = 0, limit = 50): Promise<FocusProtectionPage> {
+  return apiFetch<FocusProtectionPage>(`/api/focus/protection?${buildFocusPageQuery(offset, limit)}`);
+}
+
+export async function previewFocusProtection(input: FocusProtectionRequest): Promise<FocusProtectionPreview> {
+  return apiFetch<FocusProtectionPreview>("/api/focus/protection/preview", input);
+}
+
+export async function createFocusProtection(input: FocusProtectionCreateRequest): Promise<FocusProtectionWindow> {
+  return (await apiFetch<{ window: FocusProtectionWindow }>("/api/focus/protection", input)).window;
+}
+
+export async function cancelFocusProtection(id: string): Promise<FocusProtectionWindow> {
+  return (await apiFetch<{ window: FocusProtectionWindow }>(`/api/focus/protection/${encodeURIComponent(id)}/cancel`, {})).window;
+}
+
+function buildFocusPageQuery(offset: number, limit: number, status?: FeedCardStatus): string {
+  const search = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+  });
+  if (status) search.set("status", status);
+  return search.toString();
+}
+
+export interface FocusObjectFilter {
+  status?: FeedCardStatus;
+  lifecycle?: FocusLifecycle;
+  taskId?: string;
+  all?: boolean;
+}
+
+function focusObjectQuery(offset: number, limit: number, filter: FocusObjectFilter): string {
+  const search = new URLSearchParams(buildFocusPageQuery(offset, limit, filter.status));
+  if (filter.lifecycle) search.set("lifecycle", filter.lifecycle);
+  if (filter.taskId !== undefined) search.set("taskId", filter.taskId);
+  if (filter.all !== undefined) search.set("all", String(filter.all));
+  return search.toString();
+}
+
+export async function fetchFocusDecisionPage(
+  offset = 0,
+  limit = 20,
+  filter: FocusObjectFilter | FeedCardStatus = "active",
+): Promise<FocusObjectPage<FocusDecision>> {
+  return apiFetch<FocusObjectPage<FocusDecision>>(
+    `/api/focus/decisions?${focusObjectQuery(offset, limit, typeof filter === "string" ? { status: filter } : filter)}`,
+  );
+}
+
+export async function fetchFocusAlertPage(
+  offset = 0,
+  limit = 20,
+  filter: FocusObjectFilter | FeedCardStatus = "active",
+): Promise<FocusObjectPage<FocusAlert>> {
+  return apiFetch<FocusObjectPage<FocusAlert>>(
+    `/api/focus/alerts?${focusObjectQuery(offset, limit, typeof filter === "string" ? { status: filter } : filter)}`,
+  );
+}
+
+export function fetchFocusEventPage(offset = 0, limit = 20, filter: FocusObjectFilter = {}): Promise<FocusObjectPage<FocusEvent>> {
+  return apiFetch(`/api/focus/events?${focusObjectQuery(offset, limit, filter)}`);
+}
+
+export async function fetchFocusEventDigestPage(
+  filter: {
+    taskId: string | null;
+    keyPrefix?: string | null;
+    category?: string | null;
+    sourceFamily?: string | null;
+    orphanedTaskId?: string | null;
+  },
+  offset = 0,
+  limit = 20,
+): Promise<FocusObjectPage<FocusEvent>> {
+  const search = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  if (filter.taskId) search.set("taskId", filter.taskId);
+  if (filter.keyPrefix) search.set("keyPrefix", filter.keyPrefix);
+  if (filter.category) search.set("category", filter.category);
+  if (filter.sourceFamily) search.set("sourceFamily", filter.sourceFamily);
+  if (filter.orphanedTaskId) search.set("orphanedTaskId", filter.orphanedTaskId);
+  return apiFetch<FocusObjectPage<FocusEvent>>(`/api/focus/events/digest-items?${search.toString()}`);
+}
+
+export async function fetchFocusClearedPage(offset = 0, limit = 20): Promise<FocusObjectPage> {
+  return apiFetch<FocusObjectPage>(`/api/focus/cleared?${buildFocusPageQuery(offset, limit)}`);
+}
+
+function focusObjectPath(objectType: FocusObject["objectType"], id: string): string {
+  return `/api/focus/${objectType}s/${encodeURIComponent(id)}`;
+}
+
+export async function fetchFocusObject<T extends FocusObjectType>(
+  objectType: T,
+  id: string,
+): Promise<FocusObjectFor<T>> {
+  const data = await apiFetch<Record<T, FocusObjectFor<T>>>(focusObjectPath(objectType, id));
+  return data[objectType];
+}
+
+export async function saveFocusObject<T extends FocusObjectType>(
+  objectType: T,
+  input: FocusObjectMutation,
+): Promise<{ created: boolean; object: FocusObjectFor<T> }> {
+  const data = await apiFetch<{ created: boolean } & Record<T, FocusObjectFor<T>>>(`/api/focus/${objectType}s`, input);
+  return { created: data.created, object: data[objectType] };
+}
+
+export async function patchFocusObject<T extends FocusObjectType>(
+  objectType: T,
+  id: string,
+  updates: FocusObjectMutation,
+): Promise<FocusObjectFor<T>> {
+  const data = await apiFetch<Record<T, FocusObjectFor<T>>>(focusObjectPath(objectType, id), updates, { method: "PATCH" });
+  return data[objectType];
+}
+
+export function transitionFocusObject(objectType: FocusObjectType, id: string, input: FocusLifecycleMutation): Promise<FocusObject> {
+  return patchFocusObject(objectType, id, input);
+}
+
+export function reactivateFocusObject(
+  objectType: FocusObjectType,
+  id: string,
+  input: { episodeReason: string; expectedActivationId: string },
+): Promise<FocusObject> {
+  return patchFocusObject(objectType, id, { ...input, lifecycle: "active", newEpisode: true });
+}
+
+export async function deleteFocusObject(objectType: FocusObject["objectType"], id: string): Promise<void> {
+  await requestDelete(focusObjectPath(objectType, id));
+}
+
+export async function promoteFocusObjectToAction(
+  objectType: FocusObject["objectType"],
+  id: string,
+  input: FocusPromotionInput,
+): Promise<FocusActionPromotionResult> {
+  return apiFetch<FocusActionPromotionResult>(`${focusObjectPath(objectType, id)}/make-action`, input);
+}
+
+export async function linkFocusObjectSession(
+  objectType: FocusObjectType,
+  id: string,
+  input: { sessionId: string; expectedActivationId: string },
+): Promise<FocusObject> {
+  const data = await apiFetch<{ object: FocusObject }>(`${focusObjectPath(objectType, id)}/link-session`, input);
+  return data.object;
+}
+
+export async function markFocusDigestViewed(digestId: string, viewedAt: string): Promise<{ digestId: string; lastViewedAt: string }> {
+  const data = await apiFetch<{ view: { digestId: string; lastViewedAt: string } }>("/api/focus/digests/viewed", { digestId, viewedAt });
+  return data.view;
+}
+
+export async function fetchFocusAuthorityPage(offset = 0, limit = 50, status?: FocusAuthorityGrant["status"]): Promise<FocusAuthorityGrant[]> {
+  const query = new URLSearchParams(buildFocusPageQuery(offset, limit));
+  if (status) query.set("status", status);
+  return (await apiFetch<{ grants: FocusAuthorityGrant[] }>(`/api/focus/authority?${query}`)).grants;
+}
+
+export async function saveFocusAuthorityGrant(input: FocusAuthorityMutation): Promise<FocusAuthorityGrant> {
+  return (await apiFetch<{ grant: FocusAuthorityGrant }>("/api/focus/authority", input)).grant;
+}
+
+export async function patchFocusAuthorityGrant(id: string, input: Omit<FocusAuthorityMutation, "key">): Promise<FocusAuthorityGrant> {
+  return (await apiFetch<{ grant: FocusAuthorityGrant }>(`/api/focus/authority/${encodeURIComponent(id)}`, input, { method: "PATCH" })).grant;
+}
+
+export async function revokeFocusAuthorityGrant(id: string, reason: string): Promise<FocusAuthorityGrant> {
+  return (await apiFetch<{ grant: FocusAuthorityGrant }>(`/api/focus/authority/${encodeURIComponent(id)}/revoke`, { reason })).grant;
+}
+
+export function fetchFocusCoveragePage(offset = 0, limit = 50): Promise<{ assertions: FocusCoverageRead[]; summary: FocusCoverageSummary }> {
+  return apiFetch(`/api/focus/coverage?${buildFocusPageQuery(offset, limit)}`);
+}
+
+export async function saveFocusCoverageAssertion(input: FocusCoverageMutation): Promise<FocusCoverageRead> {
+  return (await apiFetch<{ assertion: FocusCoverageRead }>("/api/focus/coverage", input)).assertion;
+}
+
+export async function patchFocusCoverageAssertion(id: string, input: Omit<FocusCoverageMutation, "key">): Promise<FocusCoverageRead> {
+  return (await apiFetch<{ assertion: FocusCoverageRead }>(`/api/focus/coverage/${encodeURIComponent(id)}`, input, { method: "PATCH" })).assertion;
+}
+
+export function deleteFocusCoverageAssertion(id: string): Promise<void> {
+  return requestDelete(`/api/focus/coverage/${encodeURIComponent(id)}`);
+}
+
+export async function fetchFocusAuditPage(offset = 0, limit = 50, status?: FocusAttentionAudit["status"]): Promise<FocusAttentionAudit[]> {
+  const query = new URLSearchParams(buildFocusPageQuery(offset, limit));
+  if (status) query.set("status", status);
+  return (await apiFetch<{ audits: FocusAttentionAudit[] }>(`/api/focus/audits?${query}`)).audits;
+}
+
+export async function saveFocusAudit(input: FocusAuditMutation): Promise<FocusAttentionAudit> {
+  return (await apiFetch<{ audit: FocusAttentionAudit }>("/api/focus/audits", input)).audit;
+}
+
+export async function patchFocusAudit(id: string, input: FocusAuditMutation): Promise<FocusAttentionAudit> {
+  return (await apiFetch<{ audit: FocusAttentionAudit }>(`/api/focus/audits/${encodeURIComponent(id)}`, input, { method: "PATCH" })).audit;
+}
+
+export function fetchFocusHistoryPage(offset = 0, limit = 20, filter: FocusHistoryFilter = {}): Promise<FocusHistoryPage> {
+  const query = new URLSearchParams(buildFocusPageQuery(offset, limit));
+  for (const [key, value] of Object.entries(filter)) if (value?.trim()) query.set(key, value.trim());
+  return apiFetch(`/api/focus/history?${query}`);
+}
+
+export function fetchFocusQuietConcernPage(offset = 0, limit = 20, filter: FocusQuietConcernFilter = {}): Promise<FocusObjectPage<FocusQuietConcern>> {
+  const query = new URLSearchParams(buildFocusPageQuery(offset, limit));
+  for (const [key, value] of Object.entries(filter)) if (value?.trim()) query.set(key, value.trim());
+  return apiFetch(`/api/focus/quiet-concerns?${query}`);
+}
+
+export function fetchFocusEpisodePage(objectId: string, activationId: string, offset = 0, limit = 50): Promise<FocusEpisodeRead> {
+  return apiFetch(`/api/focus/objects/${encodeURIComponent(objectId)}/episodes/${encodeURIComponent(activationId)}?${buildFocusPageQuery(offset, limit)}`);
+}
+
+export async function fetchFocusLaunchReceipt(identity: FocusLaunchIdentity): Promise<FocusSessionLaunch | null> {
+  const query = new URLSearchParams({ objectId: identity.objectId, activationId: identity.activationId, source: identity.source });
+  return (await apiFetch<{ receipt: FocusSessionLaunch | null }>(`/api/focus/session-launches?${query}`)).receipt;
+}
+
+export async function fetchFocusLaunchReceipts(objectId: string, activationId: string): Promise<FocusSessionLaunch[]> {
+  const query = new URLSearchParams({ objectId, activationId });
+  return (await apiFetch<{ receipts: FocusSessionLaunch[] }>(`/api/focus/session-launches?${query}`)).receipts;
+}
+
+export async function fetchFocusLaunchReceiptById(id: string): Promise<FocusSessionLaunch> {
+  return (await apiFetch<{ receipt: FocusSessionLaunch }>(`/api/focus/session-launches/${encodeURIComponent(id)}`)).receipt;
+}
+
+function isFocusLaunchResult(value: unknown): value is FocusLaunchResult {
+  if (!isRecord(value) || typeof value.created !== "boolean" || typeof value.sessionId !== "string") return false;
+  const receipt = value.receipt;
+  if (!isRecord(receipt) || !isRecord(receipt.creationOptions)) return false;
+  const stringFields = ["id", "objectId", "activationId", "objectTitle", "prompt", "promptFingerprint", "expectedSessionId", "createdAt", "updatedAt"];
+  const nullableFields = ["taskId", "taskTitle", "sessionId", "creationDispatchedAt", "linkedAt", "promptDispatchedAt", "error"];
+  return stringFields.every((field) => typeof receipt[field] === "string")
+    && nullableFields.every((field) => receipt[field] === null || typeof receipt[field] === "string")
+    && (receipt.source === "launch_prompt" || receipt.source === "discussion")
+    && (receipt.objectType === "decision" || receipt.objectType === "alert" || receipt.objectType === "event")
+    && typeof receipt.status === "string"
+    && ["prepared", "creating", "created", "ready", "failed", "unknown", "superseded"].includes(receipt.status)
+    && typeof receipt.promptStatus === "string"
+    && ["pending", "sending", "sent", "unknown"].includes(receipt.promptStatus)
+    && (receipt.errorStage === null || receipt.errorStage === "creation" || receipt.errorStage === "link" || receipt.errorStage === "prompt")
+    && typeof receipt.version === "number" && Number.isInteger(receipt.version) && receipt.version >= 0;
+}
+
+async function requestFocusLaunch(path: string, input: FocusLaunchRequest | Record<string, never>): Promise<FocusLaunchResult> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+  const data: unknown = await response.json().catch(() => null);
+  if (isFocusLaunchResult(data)) {
+    if (!response.ok) throw new FocusLaunchError(data.error ?? data.receipt.error ?? "Focus launch needs recovery", response.status, data.receipt);
+    return data;
+  }
+  const message = data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : null;
+  throw new ApiError(message ?? "Focus launch response could not be verified. Recover the episode receipt before retrying.", response.status);
+}
+
+export function launchFocusSession(input: FocusLaunchRequest): Promise<FocusLaunchResult> {
+  return requestFocusLaunch("/api/focus/session-launches", input);
+}
+
+export function prepareFocusSessionLaunch(input: FocusLaunchRequest): Promise<FocusLaunchResult> {
+  return requestFocusLaunch("/api/focus/session-launches/prepare", input);
+}
+
+export function startFocusSessionLaunch(receiptId: string): Promise<FocusLaunchResult> {
+  return requestFocusLaunch(`/api/focus/session-launches/${encodeURIComponent(receiptId)}/start`, {});
+}
+
+export async function fetchFocusTransitionPage(id: string, offset = 0, limit = 100): Promise<FocusTransition[]> {
+  return (await apiFetch<{ transitions: FocusTransition[] }>(
+    `/api/focus/history/${encodeURIComponent(id)}/transitions?${buildFocusPageQuery(offset, limit)}`,
+  )).transitions;
+}
+
+export function fetchFocusAttentionMetrics(days = 7): Promise<FocusAttentionMetrics> {
+  return apiFetch(`/api/focus/metrics?${new URLSearchParams({ days: String(days) })}`);
+}
+
+export async function fetchFocusAttentionEvents(objectId?: string, limit = 50): Promise<FocusAttentionEvent[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (objectId) query.set("objectId", objectId);
+  return (await apiFetch<{ events: FocusAttentionEvent[] }>(`/api/focus/attention-events?${query}`)).events;
+}
+
+export async function fetchFocusNotificationDeliveries(limit = 50): Promise<FocusNotificationDelivery[]> {
+  return (await apiFetch<{ deliveries: FocusNotificationDelivery[] }>(
+    `/api/focus/notification-deliveries?${new URLSearchParams({ limit: String(limit) })}`,
+  )).deliveries;
 }
 
 export interface FeedKindStat {
@@ -1835,16 +2704,13 @@ export async function deleteFeedCard(id: string): Promise<void> {
   }
 }
 
+export async function promoteFeedCardToChecklist(id: string): Promise<FeedChecklistPromotionResult> {
+  return apiFetch<FeedChecklistPromotionResult>(`/api/feed/${encodeURIComponent(id)}/make-action`, {});
+}
+
 // ── Dashboard API ─────────────────────────────────────────────────
 
-export interface DashboardChecklistItem {
-  id: string;
-  taskId: string | null;
-  text: string;
-  done: boolean;
-  order: number;
-  createdAt: string;
-  deadline?: string;
+export interface DashboardChecklistItem extends ChecklistItem {
   taskTitle: string | null;
   taskGroupColor: string | null;
   taskOrder: number;
@@ -1859,7 +2725,7 @@ export interface DashboardChecklistData {
 }
 
 export async function fetchDashboard(): Promise<DashboardChecklistData> {
-  return apiFetch<DashboardChecklistData>("/api/dashboard/checklist");
+  return apiFetch<DashboardChecklistData>("/api/dashboard/focus");
 }
 
 export async function fetchWorkMap(options: {
@@ -2151,9 +3017,14 @@ export interface AppSettings {
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
+  focusNotifications?: FocusNotificationPolicy;
 }
 
-export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
+export type AppSettingsUpdates = Omit<Partial<AppSettings>, "focusNotifications"> & {
+  focusNotifications?: FocusNotificationPolicyUpdate | null;
+};
+
+export function serializeSettingsPatch(updates: AppSettingsUpdates): string {
   const normalized: Record<string, unknown> = { ...updates };
   if ("model" in updates && updates.model === undefined) {
     normalized.model = "";
@@ -2177,7 +3048,7 @@ export async function fetchSettings(): Promise<AppSettings> {
   return apiFetch<AppSettings>("/api/settings");
 }
 
-export async function patchSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
+export async function patchSettings(updates: AppSettingsUpdates): Promise<AppSettings> {
   const res = await fetch(`${API_BASE}/api/settings`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -2188,6 +3059,10 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
     throw new Error(err.error || res.statusText);
   }
   return res.json();
+}
+
+export function patchFocusNotificationPolicy(policy: FocusNotificationPolicyUpdate | null): Promise<AppSettings> {
+  return patchSettings({ focusNotifications: policy });
 }
 
 export type BrowserDiagnosticsTone = "success" | "warning" | "error";
@@ -2751,30 +3626,31 @@ export async function fetchScheduleSessions(
 // ── Checklist item API ────────────────────────────────────────────
 
 export async function fetchChecklistItems(taskId: string): Promise<ChecklistItem[]> {
-  const data = await apiFetch<{ checklistItems: ChecklistItem[] }>(`/api/tasks/${taskId}/checklist-items`);
-  return data.checklistItems;
+  const query = new URLSearchParams({ taskId }).toString();
+  const data = await apiFetch<{ actions: ChecklistItem[] }>(`/api/actions?${query}`);
+  return data.actions;
 }
 
 export async function fetchOpenChecklistItems(): Promise<ChecklistItem[]> {
-  const data = await apiFetch<{ checklistItems: ChecklistItem[] }>("/api/checklist-items/open");
-  return data.checklistItems;
+  const data = await apiFetch<{ actions: ChecklistItem[] }>("/api/actions/open");
+  return data.actions;
 }
 
 export async function createChecklistItem(taskId: string, text: string, deadline?: string): Promise<ChecklistItem> {
-  const data = await apiFetch<{ checklistItem: ChecklistItem }>(`/api/tasks/${taskId}/checklist-items`, { text, deadline });
-  return data.checklistItem;
+  const data = await apiFetch<{ action: ChecklistItem }>("/api/actions", { taskId, text, deadline });
+  return data.action;
 }
 
 export async function createGlobalChecklistItem(text: string, deadline?: string): Promise<ChecklistItem> {
-  const data = await apiFetch<{ checklistItem: ChecklistItem }>(`/api/checklist-items`, { text, deadline });
-  return data.checklistItem;
+  const data = await apiFetch<{ action: ChecklistItem }>("/api/actions", { text, deadline });
+  return data.action;
 }
 
 export async function patchChecklistItem(
   id: string,
   updates: Partial<Pick<ChecklistItem, "text" | "done">> & { deadline?: string | null },
 ): Promise<ChecklistItem> {
-  const res = await fetch(`${API_BASE}/api/checklist-items/${id}`, {
+  const res = await fetch(`${API_BASE}/api/actions/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -2784,25 +3660,25 @@ export async function patchChecklistItem(
     throw new Error(err.error || res.statusText);
   }
   const data = await res.json();
-  return data.checklistItem;
+  return data.action;
 }
 
 export async function deleteChecklistItem(id: string): Promise<void> {
-  await requestDelete(`/api/checklist-items/${id}`);
+  await requestDelete(`/api/actions/${id}`);
 }
 
 export async function reorderChecklistItems(taskId: string, checklistItemIds: string[]): Promise<ChecklistItem[]> {
-  const res = await fetch(`${API_BASE}/api/tasks/${taskId}/checklist-items/reorder`, {
+  const res = await fetch(`${API_BASE}/api/actions/reorder`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ checklistItemIds }),
+    body: JSON.stringify({ taskId, actionIds: checklistItemIds }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
   }
   const data = await res.json();
-  return data.checklistItems;
+  return data.actions;
 }
 
 // ── Docs API ──────────────────────────────────────────────────────

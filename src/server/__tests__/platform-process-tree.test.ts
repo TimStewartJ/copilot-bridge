@@ -17,6 +17,7 @@ import {
   captureProcessStartTimes,
   createDirectoryLink,
   getDeviceHibernateCommand,
+  getProcessIdentityStatus,
   removeDirectoryLink,
   sampleProcessTree,
   shouldSpawnDetachedProcessGroup,
@@ -127,6 +128,17 @@ describe("process tree platform helpers", () => {
       startMarker: "1000",
     });
     expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { expected: "alive", table: "100 1 1000", error: null },
+    { expected: "exited", table: "101 1 1001", error: null },
+    { expected: "replaced", table: "100 1 2000", error: null },
+    { expected: "unknown", table: "", error: new Error("Process table unavailable") },
+  ] as const)("reports $expected launch-owner identity without treating unknown as dead", async ({ expected, table, error }) => {
+    setPlatform("win32");
+    mockExec((_command, _args, _options, callback) => callback(error, table, ""));
+    await expect(getProcessIdentityStatus({ pid: 100, startMarker: "1000" }, createDeadline(5_000))).resolves.toBe(expected);
   });
 
   it("captures Windows process start times from .NET ticks with one bulk CIM call", async () => {

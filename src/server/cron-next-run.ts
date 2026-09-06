@@ -132,16 +132,71 @@ export function matchesCron(cronExpr: string, date: Date, timezone?: string): bo
   try {
     const parsed = parseCronExpression(cronExpr);
     if (!parsed) return false;
-
-    const { minute, hour, day, month, weekday } = getDatePartsInTz(date, timezone);
-    return fieldIncludes(parsed.minute, minute)
-      && fieldIncludes(parsed.hour, hour)
-      && fieldIncludes(parsed.day, day)
-      && fieldIncludes(parsed.month, month)
-      && fieldIncludes(parsed.weekday, weekday);
+    return matchesCronParts(parsed, getDatePartsInTz(date, timezone));
   } catch {
     return false;
   }
+}
+
+export type CronPreviewStep = { done: false; at: string } | { done: true; complete: boolean };
+
+export function createCronPreviewIterator(
+  cronExpr: string,
+  timezone: string | undefined,
+  startsAt: number,
+  endsAt: number,
+  consumeProbe: () => boolean,
+): { next(): CronPreviewStep } {
+  const parsed = parseCronExpression(cronExpr);
+  if (!parsed) throw new Error(`Cannot preview invalid cron expression: ${cronExpr}`);
+  const fields: ParsedCronExpression = parsed;
+  if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt)) throw new Error("Invalid cron preview bounds");
+  let cursor = Math.ceil(startsAt / 60_000) * 60_000;
+  const lastMinute = Math.ceil(endsAt / 60_000) * 60_000 - 60_000;
+  let jump: { from: number; expectedMinute: number } | undefined;
+  let scanUntil = 0;
+  let terminal: CronPreviewStep | undefined;
+
+  function next(): CronPreviewStep {
+    if (terminal) return terminal;
+    while (cursor <= lastMinute) {
+      if (!consumeProbe()) return terminal = { done: true, complete: false };
+      const at = cursor;
+      const parts = getDatePartsInTz(new Date(at), timezone);
+      if (jump && parts.minute !== jump.expectedMinute) {
+        // A non-hour timezone transition can introduce matches inside a skipped
+        // interval. Rescan only that hour or smaller interval, still budgeted.
+        scanUntil = at;
+        cursor = jump.from + 60_000;
+        jump = undefined;
+        continue;
+      }
+      jump = undefined;
+      if (at === lastMinute) {
+        cursor = endsAt;
+      } else if (at < scanUntil) {
+        cursor += 60_000;
+      } else {
+        scanUntil = 0;
+        const nextMinute = fields.minute.values.find((minute) => minute > parts.minute)
+          ?? fields.minute.values[0] + 60;
+        cursor = Math.min(at + (nextMinute - parts.minute) * 60_000, lastMinute);
+        jump = { from: at, expectedMinute: (parts.minute + (cursor - at) / 60_000) % 60 };
+      }
+      if (matchesCronParts(fields, parts)) return { done: false, at: new Date(at).toISOString() };
+    }
+    return terminal = { done: true, complete: true };
+  }
+
+  return { next };
+}
+
+function matchesCronParts(parsed: ParsedCronExpression, { minute, hour, day, month, weekday }: LocalDateParts): boolean {
+  return fieldIncludes(parsed.minute, minute)
+    && fieldIncludes(parsed.hour, hour)
+    && fieldIncludes(parsed.day, day)
+    && fieldIncludes(parsed.month, month)
+    && fieldIncludes(parsed.weekday, weekday);
 }
 
 export function matchesField(value: number, field: string): boolean {

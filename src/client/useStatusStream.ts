@@ -33,6 +33,8 @@ export type StatusEvent =
   | { type: "schedule:changed"; scheduleId?: string }
   | { type: "task:changed"; taskId?: string }
   | { type: "management-job:changed"; jobId?: string; jobType?: ManagementJobType; status?: ManagementJobStatus }
+  | { type: "focus:changed"; focusObjectId?: string; focusObjectType?: "decision" | "alert" | "event"; taskId?: string }
+  | { type: "focus:protection-changed" | "focus:protection-cleared"; protectionWindowId?: string; reason?: string }
   | { type: "feed:changed"; cardId?: string; dedupeKey?: string; taskId?: string; sessionId?: string }
   | { type: "readstate:changed"; readState?: Record<string, string> };
 

@@ -16,6 +16,11 @@ function createShutdownSpies() {
     usageReaderShutdown: vi.fn(async () => {}),
     sessionManagerShutdown: vi.fn(async (_deadline?: Deadline) => {}),
     voiceShutdown: vi.fn(async () => {}),
+    pushUnsubscribe: vi.fn(async () => {}),
+    focusDispose: vi.fn(async () => {}),
+    launchStop: vi.fn(),
+    launchDrain: vi.fn(async () => {}),
+    protectionStop: vi.fn(),
   };
 }
 
@@ -28,6 +33,10 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
     copilotUsageReader: { shutdown: spies.usageReaderShutdown },
     sessionManager: { gracefulShutdown: spies.sessionManagerShutdown },
     voiceJobManager: { shutdown: spies.voiceShutdown },
+    stopPushEventNotifications: spies.pushUnsubscribe,
+    focusNotifications: { dispose: spies.focusDispose },
+    focusSessionLaunchService: { stop: spies.launchStop, drain: spies.launchDrain },
+    focusProtectionStore: { stop: spies.protectionStop },
   } as unknown as AppContext;
 }
 
@@ -47,6 +56,14 @@ describe("shutdownAppContextServices", () => {
     expect(spies.sessionManagerShutdown).toHaveBeenCalledWith(deadline);
     expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
     expect(spies.schedulerShutdown).toHaveBeenCalledTimes(1);
+    expect(spies.pushUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(spies.focusDispose).toHaveBeenCalledTimes(1);
+    expect(spies.launchStop).toHaveBeenCalledTimes(1);
+    expect(spies.protectionStop).toHaveBeenCalledTimes(1);
+    expect(spies.protectionStop.mock.invocationCallOrder[0]).toBeLessThan(spies.sessionManagerShutdown.mock.invocationCallOrder[0]!);
+    expect(spies.launchDrain).toHaveBeenCalledTimes(1);
+    expect(spies.launchStop.mock.invocationCallOrder[0]).toBeLessThan(spies.sessionManagerShutdown.mock.invocationCallOrder[0]!);
+    expect(spies.launchDrain.mock.invocationCallOrder[0]).toBeGreaterThan(spies.sessionManagerShutdown.mock.invocationCallOrder[0]!);
   });
 
   it("defaults to the server shutdown budget when no deadline is supplied", async () => {
@@ -82,6 +99,8 @@ describe("shutdownAppContextServices", () => {
     spies.usageReaderShutdown.mockRejectedValueOnce(new Error("usage reader boom"));
     spies.sessionManagerShutdown.mockRejectedValueOnce(new Error("session manager boom"));
     spies.voiceShutdown.mockRejectedValueOnce(new Error("voice boom"));
+    spies.focusDispose.mockRejectedValueOnce(new Error("focus dispose boom"));
+    spies.launchDrain.mockRejectedValueOnce(new Error("launch drain boom"));
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const ctx = createFakeContext(spies);
 

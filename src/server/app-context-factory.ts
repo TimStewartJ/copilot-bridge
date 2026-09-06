@@ -14,7 +14,11 @@ import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createChecklistStore } from "./checklist-store.js";
-import { createFeedStore } from "./feed-store.js";
+import { createFocusDataLayer } from "./focus-data-layer.js";
+import { createFocusProjectionService } from "./focus-dashboard-projection.js";
+import { initFocusNotificationService } from "./focus-notification-service.js";
+import { createFocusSessionLaunchService } from "./focus-session-launch-service.js";
+import { createFocusProtectionService } from "./focus-protection-service.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
 import { createDocsSnapshotStore, STARTUP_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
@@ -88,7 +92,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
-  const feedStore = createFeedStore(db, globalBus, {
+  const focusData = createFocusDataLayer(db, globalBus, checklistStore, {
     onVisualUnreferenced: (visual, card) => {
       const result = deleteVisualArtifactForOwner(
         runtimePaths.copilotHome ?? join(homedir(), ".copilot"),
@@ -100,11 +104,25 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       }
     },
   });
+  if (focusData.reconciliation.quarantined > 0) {
+    console.warn(
+      `[focus] Quarantined ${focusData.reconciliation.quarantined} malformed legacy feed row(s) during reconciliation.`,
+    );
+  }
+  const telemetryStore = createTelemetryStore(db);
+  const focusProjection = createFocusProjectionService({
+    db,
+    taskStore,
+    decisionStore: focusData.decisionStore,
+    alertStore: focusData.alertStore,
+    eventStore: focusData.eventStore,
+    compatibilityErrorCount: focusData.reconciliationErrorStore.countErrors,
+    telemetryStore,
+  });
   const tagStore = createTagStore(db);
   const mcpServerStore = createMcpServerStore(db);
   const copilotModelPriceStore = createCopilotModelPriceStore(db);
   const copilotUsageStore = createCopilotUsageStore(db);
-  const telemetryStore = createTelemetryStore(db);
   const sessionContextStore = createSessionContextStore(db);
   // Durable fold cache: large session logs resume their stats scan after a restart.
   setEventLogStatsPersistence(createEventLogStatsFoldStore(db));
@@ -165,7 +183,23 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     cliSessionCatalog,
     readStateStore,
     checklistStore,
-    feedStore,
+    feedStore: focusData.feedStore,
+    decisionStore: focusData.decisionStore,
+    alertStore: focusData.alertStore,
+    focusEventStore: focusData.eventStore,
+    focusMutationCoordinator: focusData.mutations,
+    focusProjection,
+    focusReconciliationErrorStore: focusData.reconciliationErrorStore,
+    focusDetailsStore: focusData.detailsStore,
+    focusTransitionStore: focusData.transitionStore,
+    focusAttentionStore: focusData.attentionStore,
+    focusAuditStore: focusData.auditStore,
+    focusDigestViewStore: focusData.digestViewStore,
+    focusAuthorityStore: focusData.authorityStore,
+    focusCoverageStore: focusData.coverageStore,
+    focusNotificationDeliveryStore: focusData.notificationDeliveryStore,
+    focusSessionLaunchStore: focusData.sessionLaunchStore,
+    focusProtectionStore: focusData.protectionStore,
     docsStore,
     docsIndex,
     docsSnapshotStore,
@@ -208,6 +242,9 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     runtimePaths,
   });
   ctx.sessionManager = sessionManager;
+  ctx.focusSessionLaunchService = createFocusSessionLaunchService(ctx, focusData.sessionLaunchStore);
+  const protectionService = createFocusProtectionService(db, focusData.protectionStore, ctx);
+  ctx.focusProtectionService = protectionService;
   ctx.voiceJobManager = createVoiceJobManager({
     dataDir,
     store: voiceJobStore,
@@ -220,14 +257,24 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     subscriptionStore: pushSubscriptionStore,
     env: runtimePaths.env,
   });
-  initPushEventNotifications(ctx, ctx.pushNotificationService);
+  ctx.stopPushEventNotifications = initPushEventNotifications(ctx, ctx.pushNotificationService, {
+    protectionStore: focusData.protectionStore, getSessions: protectionService.getSessions,
+    deliveryStore: focusData.notificationDeliveryStore, settingsStore,
+    startImmediately: false,
+  });
+  ctx.focusNotifications = initFocusNotificationService({
+    globalBus, alertStore: focusData.alertStore, authorityStore: focusData.authorityStore,
+    deliveryStore: focusData.notificationDeliveryStore, settingsStore,
+    pushService: ctx.pushNotificationService, apiBasePath: options.apiBasePath,
+    protectionStore: focusData.protectionStore,
+  });
   ctx.deferredPromptRunner = createDeferredPromptRunner(
     deferredPromptStore,
     sessionManager,
     globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
-    { telemetryStore },
+    { telemetryStore, focusProtectionStore: focusData.protectionStore },
   );
   ctx.deferLoopRunner = createDeferLoopRunner(
     deferLoopStore,
@@ -237,6 +284,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     { deferredPromptStore, deferLoopStore },
     {
       telemetryStore,
+      focusProtectionStore: focusData.protectionStore,
       onParentMessageQueued: () => ctx.deferredPromptRunner?.poke(),
     },
   );
@@ -245,6 +293,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 }
 
 export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
+  ctx.focusProtectionStore.start();
+  void ctx.stopPushEventNotifications?.flush();
   ctx.scheduler?.initialize(ctx.sessionManager, {
     scheduleStore: ctx.scheduleStore,
     taskStore: ctx.taskStore,
@@ -252,7 +302,10 @@ export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
     globalBus: ctx.globalBus,
     deferredPromptStore: ctx.deferredPromptStore,
     deferLoopStore: ctx.deferLoopStore,
+    focusProtectionStore: ctx.focusProtectionStore,
   });
   ctx.deferredPromptRunner?.start();
   ctx.deferLoopRunner?.start();
+  // Shared production/staged SDK-ready hook; prompt delivery must not hold HTTP startup.
+  void ctx.focusSessionLaunchService?.reconcileStartup();
 }

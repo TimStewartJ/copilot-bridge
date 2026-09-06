@@ -7,6 +7,7 @@ import {
   sendCurrentSubscriptionTestNotification,
   type ClientPushState,
 } from "../../push-notifications";
+import { FocusNotificationPolicyForm } from "./FocusNotificationPolicyForm";
 import { SettingsSection } from "./SettingsSection";
 
 function statusToneClassName(tone: "success" | "warning" | "error" | "neutral"): string {
@@ -127,13 +128,13 @@ export function NotificationsSection() {
   return (
     <SettingsSection
       title="Notifications"
-      description="Enable standards-based Web Push alerts without app-shell caching. On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first."
+      description="Control Focus delivery policy separately from this browser's push subscription. Routine completions stay in their task and do not interrupt you. On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first."
       action={(
         <button
           type="button"
           onClick={() => void refresh()}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-wait disabled:text-text-faint"
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
@@ -148,6 +149,10 @@ export function NotificationsSection() {
               Browser push
             </div>
             <p className="mt-1 text-xs text-text-muted">{descriptor.detail}</p>
+            <p className="mt-1 text-xs text-text-muted">
+              Session notifications: needs-input alerts only. Focus alerts follow the delivery policy below.
+              Changing policy does not subscribe or unsubscribe this browser.
+            </p>
           </div>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusToneClassName(descriptor.tone)}`}>
             {descriptor.label}
@@ -184,7 +189,7 @@ export function NotificationsSection() {
             type="button"
             onClick={() => void runAction("enable", () => enablePushNotifications(state?.server ?? null), () => "Notifications enabled for this browser.")}
             disabled={busy || !canEnable}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-bg-surface disabled:text-text-faint"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:bg-bg-surface disabled:text-text-faint"
           >
             {action === "enable" ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />}
             Enable
@@ -193,7 +198,7 @@ export function NotificationsSection() {
             type="button"
             onClick={() => void runAction("disable", disablePushNotifications, () => "Notifications disabled for this browser.")}
             disabled={busy || !canDisable}
-            className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:text-text-faint"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:text-text-faint"
           >
             {action === "disable" ? <Loader2 size={12} className="animate-spin" /> : <BellOff size={12} />}
             Disable
@@ -209,7 +214,7 @@ export function NotificationsSection() {
                   : "No active subscription was available to notify.";
             })}
             disabled={busy || !canTest}
-            className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:text-text-faint"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:text-text-faint"
           >
             {action === "test" ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
             Send test
@@ -217,11 +222,12 @@ export function NotificationsSection() {
         </div>
 
         {message && (
-          <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+          <div role="status" className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
             {message}
           </div>
         )}
       </div>
+      <FocusNotificationPolicyForm />
     </SettingsSection>
   );
 }

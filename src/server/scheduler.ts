@@ -17,18 +17,25 @@ import {
   refreshRestartState,
   refreshRestartStateSync,
 } from "./session-manager.js";
-import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
+import { createMissedRunCatchUpController, protectedScheduleDisposition } from "./scheduler-missed-runs.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 import { computeNextRunAt, validateSupportedCronExpression } from "./cron-next-run.js";
 import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
+import { protectionRetryAt, type FocusProtectionStore } from "./focus-protection-store.js";
 
 export { computeNextRunAt, matchesCron, matchesField, validateSupportedCronExpression } from "./cron-next-run.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
 const cronJobs = new Map<string, ScheduledTask>();
-const oneShotTimers = new Map<string, LongTimeout>();
-const automaticRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+interface ScheduleTimer {
+  timer: LongTimeout;
+  scheduledFor: string;
+  retryAt: number;
+  protectionWindowId?: string;
+}
+const oneShotTimers = new Map<string, ScheduleTimer>();
+const automaticRetryTimers = new Map<string, ScheduleTimer & { scheduleId: string }>();
 let sessionMgr: SessionManager | null = null;
 let busUnsubscribe: (() => void) | undefined;
 
@@ -39,6 +46,7 @@ let sessionMetaStore: SessionMetaStore;
 let bus: GlobalBus;
 let deferredPromptStore: DeferredPromptStore | undefined;
 let deferLoopStore: DeferLoopStore | undefined;
+let focusProtectionStore: FocusProtectionStore | undefined;
 let initialized = false;
 
 // Safety: track in-flight schedule runs to prevent overlap
@@ -55,6 +63,7 @@ const MISSED_RUN_WATCHDOG_INTERVAL_MS = 60 * 1000;
 const CRON_TRIGGER_SLOT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const CRON_CURSOR_REWIND_WINDOW_MS = 60 * 60 * 1000;
 const CRON_CURSOR_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
+export const FOCUS_PROTECTION_MESSAGE = "Automatic scheduling is postponed by focus protection";
 let missedRunWatchdogTimer: ReturnType<typeof setInterval> | undefined;
 let lastCronCursorReconcileAt = 0;
 
@@ -66,6 +75,8 @@ const missedRunCatchUp = createMissedRunCatchUpController({
   isRestartPending,
   refreshRestartState,
   getRestartPendingMessage: () => RESTART_PENDING_MESSAGE,
+  focusProtectionStore: () => focusProtectionStore,
+  hasAutomaticRetry,
 });
 
 // ── Public API ────────────────────────────────────────────────────
@@ -77,6 +88,7 @@ export interface SchedulerDeps {
   globalBus: GlobalBus;
   deferredPromptStore?: DeferredPromptStore;
   deferLoopStore?: DeferLoopStore;
+  focusProtectionStore?: FocusProtectionStore;
 }
 
 export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
@@ -87,9 +99,17 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   bus = deps.globalBus;
   deferredPromptStore = deps.deferredPromptStore;
   deferLoopStore = deps.deferLoopStore;
+  focusProtectionStore = deps.focusProtectionStore;
   busUnsubscribe?.();
   busUnsubscribe = bus.subscribe((event) => {
-    if (event.type === "server:restart-cleared") {
+    if (event.type === "focus:protection-cleared") {
+      clearProtectedRetryTimers(event.protectionWindowId);
+      missedRunCatchUp.check();
+    } else if (
+      event.type === "server:restart-cleared"
+      || event.type === "focus:protection-changed"
+      || (event.type === "schedule:changed" && focusProtectionStore)
+    ) {
       missedRunCatchUp.check();
     }
   });
@@ -113,7 +133,7 @@ export function shutdown(): void {
     cronJobs.delete(id);
   }
   for (const [id, timer] of oneShotTimers) {
-    timer.cancel();
+    timer.timer.cancel();
     oneShotTimers.delete(id);
   }
   clearAutomaticRetryTimers();
@@ -123,6 +143,7 @@ export function shutdown(): void {
   busUnsubscribe = undefined;
   deferredPromptStore = undefined;
   deferLoopStore = undefined;
+  focusProtectionStore = undefined;
   activeRuns.clear();
   _globalPause = false;
   lastCronCursorReconcileAt = 0;
@@ -214,7 +235,9 @@ export function registerSchedule(scheduleId: string): void {
     });
   }, opts);
   job.on("execution:missed", () => {
-    console.warn(`[scheduler] Missed cron execution for "${schedule.name}" (${schedule.id}); checking catch-up`);
+    if (!focusProtectionStore?.current()) {
+      console.warn(`[scheduler] Missed cron execution for "${schedule.name}" (${schedule.id}); checking catch-up`);
+    }
     missedRunCatchUp.check();
   });
 
@@ -233,7 +256,11 @@ export function getCronTriggerScheduledFor(scheduleId: string, now = new Date())
     if (
       nextRunAt
       && nextRunAtTime <= now.getTime() + 60_000
-      && now.getTime() - nextRunAtTime <= CRON_TRIGGER_SLOT_LOOKBACK_MS
+      && (
+        now.getTime() - nextRunAtTime <= CRON_TRIGGER_SLOT_LOOKBACK_MS
+        || focusProtectionStore?.coveringSlot(nextRunAt, now.getTime())
+        || missedRunCatchUp.held(scheduleId, nextRunAt)
+      )
     ) {
       return nextRunAt;
     }
@@ -252,7 +279,7 @@ export function unregisterSchedule(scheduleId: string): void {
   }
   const timer = oneShotTimers.get(scheduleId);
   if (timer) {
-    timer.cancel();
+    timer.timer.cancel();
     oneShotTimers.delete(scheduleId);
   }
   clearAutomaticRetryTimers(scheduleId);
@@ -265,7 +292,8 @@ export function unregisterSchedule(scheduleId: string): void {
 export function armOneShot(scheduleId: string, runAt: string): void {
   // Clear existing timer
   const existing = oneShotTimers.get(scheduleId);
-  if (existing) existing.cancel();
+  if (existing) existing.timer.cancel();
+  oneShotTimers.delete(scheduleId);
 
   const scheduledFor = new Date(runAt).toISOString();
   scheduleStore.updateNextRunAt(scheduleId, scheduledFor);
@@ -279,33 +307,70 @@ export function armOneShot(scheduleId: string, runAt: string): void {
       console.error(`[scheduler] One-shot trigger failed for ${scheduleId}:`, err);
     });
   }, delay);
-  oneShotTimers.set(scheduleId, timer);
+  oneShotTimers.set(scheduleId, { timer, scheduledFor, retryAt: Date.parse(scheduledFor) });
 }
 
-function armOneShotRetry(scheduleId: string, scheduledFor: string): void {
+function armOneShotRetry(
+  scheduleId: string,
+  scheduledFor: string,
+  retryAt = Date.now() + ONE_SHOT_RETRY_DELAY_MS,
+  protectionWindowId?: string,
+): void {
   const schedule = scheduleStore.getSchedule(scheduleId);
   if (!schedule || !schedule.enabled || schedule.type !== "once") return;
+  if (normalizeIso(schedule.runAt) !== scheduledFor) return;
 
   const existing = oneShotTimers.get(scheduleId);
-  if (existing) existing.cancel();
+  if (
+    existing?.scheduledFor === scheduledFor
+    && existing.protectionWindowId === protectionWindowId
+    && existing.retryAt <= retryAt
+  ) return;
+  if (existing) existing.timer.cancel();
 
-  const retryAt = new Date(Date.now() + ONE_SHOT_RETRY_DELAY_MS).toISOString();
   const timer = safeSetTimeout(() => {
     oneShotTimers.delete(scheduleId);
     triggerSchedule(scheduleId, { source: "once", scheduledFor }).catch((err) => {
       console.error(`[scheduler] One-shot retry failed for ${scheduleId}:`, err);
     });
-  }, ONE_SHOT_RETRY_DELAY_MS);
-  oneShotTimers.set(scheduleId, timer);
-  scheduleStore.updateNextRunAt(scheduleId, retryAt);
+  }, retryAt - Date.now());
+  oneShotTimers.set(scheduleId, { timer, scheduledFor, retryAt, protectionWindowId });
+  scheduleStore.updateNextRunAt(scheduleId, new Date(retryAt).toISOString());
   bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
 }
 
 function clearAutomaticRetryTimers(scheduleId?: string): void {
   for (const [key, timer] of automaticRetryTimers) {
-    if (scheduleId && !key.startsWith(`${scheduleId}:`)) continue;
-    clearTimeout(timer);
+    if (scheduleId && timer.scheduleId !== scheduleId) continue;
+    timer.timer.cancel();
     automaticRetryTimers.delete(key);
+  }
+}
+
+function hasAutomaticRetry(scheduleId: string, scheduledFor: string): boolean {
+  return oneShotTimers.get(scheduleId)?.scheduledFor === scheduledFor
+    || automaticRetryTimers.has(`${scheduleId}:${scheduledFor}`);
+}
+
+function clearRetryForSlot(scheduleId: string, scheduledFor: string): void {
+  const key = `${scheduleId}:${scheduledFor}`;
+  automaticRetryTimers.get(key)?.timer.cancel();
+  automaticRetryTimers.delete(key);
+  const once = oneShotTimers.get(scheduleId);
+  if (once?.scheduledFor === scheduledFor) {
+    once.timer.cancel();
+    oneShotTimers.delete(scheduleId);
+  }
+}
+
+function clearProtectedRetryTimers(windowId?: string): void {
+  for (const timers of [oneShotTimers, automaticRetryTimers]) {
+    for (const [key, retry] of timers) {
+      if (!retry.protectionWindowId || (windowId && retry.protectionWindowId !== windowId)) continue;
+      if (focusProtectionStore?.get(retry.protectionWindowId)?.status === "completed" && retry.retryAt > Date.now()) continue;
+      retry.timer.cancel();
+      timers.delete(key);
+    }
   }
 }
 
@@ -313,25 +378,28 @@ function armAutomaticRetry(
   scheduleId: string,
   source: Exclude<ScheduleTriggerSource, "manual">,
   scheduledFor: string,
+  retryAt = Date.now() + ONE_SHOT_RETRY_DELAY_MS,
+  protectionWindowId?: string,
 ): void {
   if (source === "once") {
-    armOneShotRetry(scheduleId, scheduledFor);
+    armOneShotRetry(scheduleId, scheduledFor, retryAt, protectionWindowId);
     return;
   }
   const schedule = scheduleStore.getSchedule(scheduleId);
   if (!schedule || !schedule.enabled) return;
 
-  const retryKey = `${scheduleId}:${source}:${scheduledFor}`;
+  const retryKey = `${scheduleId}:${scheduledFor}`;
   const existing = automaticRetryTimers.get(retryKey);
-  if (existing) clearTimeout(existing);
+  if (existing && existing.protectionWindowId === protectionWindowId && existing.retryAt <= retryAt) return;
+  if (existing) existing.timer.cancel();
 
-  const timer = setTimeout(() => {
+  const timer = safeSetTimeout(() => {
     automaticRetryTimers.delete(retryKey);
     triggerSchedule(scheduleId, { source, scheduledFor }).catch((err) => {
       console.error(`[scheduler] ${source} retry failed for ${scheduleId}:`, err);
     });
-  }, ONE_SHOT_RETRY_DELAY_MS);
-  automaticRetryTimers.set(retryKey, timer);
+  }, retryAt - Date.now());
+  automaticRetryTimers.set(retryKey, { timer, scheduleId, scheduledFor, retryAt, protectionWindowId });
 }
 
 /**
@@ -357,10 +425,37 @@ export async function triggerSchedule(
   const triggerSource = options.source ?? "manual";
 
   const schedule = scheduleStore.getSchedule(scheduleId);
-  if (!schedule) throw new Error(`Schedule ${scheduleId} not found`);
+  if (!schedule) {
+    if (triggerSource === "manual") throw new Error(`Schedule ${scheduleId} not found`);
+    missedRunCatchUp.settle(scheduleId, "cancelled");
+    unregisterSchedule(scheduleId);
+    return { skipped: "Schedule no longer exists" };
+  }
+  const automaticRunKey = triggerSource === "manual"
+    ? undefined : getAutomaticRunKey(triggerSource, options.scheduledFor ?? schedule.runAt);
+  const protectionHold = automaticRunKey ? missedRunCatchUp.held(scheduleId, automaticRunKey) : undefined;
+  if (protectionHold) {
+    const disposition = protectedScheduleDisposition(schedule, protectionHold);
+    if (disposition) {
+      missedRunCatchUp.settle(scheduleId, disposition, automaticRunKey);
+      clearRetryForSlot(scheduleId, automaticRunKey!);
+      if (disposition === "expired" || (schedule.maxRuns && schedule.runCount >= schedule.maxRuns)) {
+        scheduleStore.updateSchedule(scheduleId, { enabled: false });
+        unregisterSchedule(scheduleId);
+        bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
+      } else if (
+        disposition === "superseded" && schedule.type === "cron" && schedule.cron
+        && normalizeIso(schedule.nextRunAt) === automaticRunKey
+      ) {
+        const nextRunAt = computeNextRunAt(schedule.cron, schedule.timezone);
+        if (nextRunAt) scheduleStore.updateNextRunAt(scheduleId, nextRunAt);
+      }
+      return { skipped: `Protected schedule is ${disposition}` };
+    }
+  }
   const retryWithoutClaim = (reason: string, retryAutomatic = false) => {
     if (retryAutomatic && triggerSource !== "manual") {
-      armAutomaticRetry(scheduleId, triggerSource, getAutomaticRunKey(triggerSource, options.scheduledFor ?? schedule.runAt));
+      armAutomaticRetry(scheduleId, triggerSource, automaticRunKey!);
     }
     return { skipped: reason };
   };
@@ -373,7 +468,49 @@ export async function triggerSchedule(
   }
 
   if (triggerSource !== "manual" && !schedule.enabled) {
+    missedRunCatchUp.settle(scheduleId, "cancelled");
     return { skipped: "Schedule is disabled" };
+  }
+
+  if (triggerSource !== "manual" && schedule.type === "once" && normalizeIso(schedule.runAt) !== automaticRunKey) {
+    missedRunCatchUp.settle(scheduleId, "superseded", automaticRunKey);
+    clearRetryForSlot(scheduleId, automaticRunKey!);
+    return { skipped: "Scheduled time has changed" };
+  }
+
+  // Check terminal limits before postponing work that can no longer run.
+  if (schedule.expiresAt && new Date() >= new Date(schedule.expiresAt)) {
+    scheduleStore.updateSchedule(scheduleId, { enabled: false });
+    missedRunCatchUp.settle(scheduleId, "expired");
+    unregisterSchedule(scheduleId);
+    bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
+    return { skipped: "Schedule expired" };
+  }
+  if (schedule.maxRuns && schedule.runCount >= schedule.maxRuns) {
+    scheduleStore.updateSchedule(scheduleId, { enabled: false });
+    missedRunCatchUp.settle(scheduleId, "no-longer-needed");
+    unregisterSchedule(scheduleId);
+    bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
+    return { skipped: "Max runs reached" };
+  }
+
+  // Admission is synchronous: no run lock, slot claim, or session exists yet.
+  const protection = triggerSource === "manual" ? null : focusProtectionStore?.current();
+  if (protection && triggerSource !== "manual") {
+    missedRunCatchUp.hold(schedule, automaticRunKey!, protection);
+    armAutomaticRetry(
+      scheduleId, triggerSource, automaticRunKey!,
+      protectionRetryAt(protection, `${scheduleId}:${automaticRunKey}`), protection.id,
+    );
+    return { skipped: FOCUS_PROTECTION_MESSAGE };
+  }
+  const completedProtection = protectionHold && focusProtectionStore?.get(protectionHold.windowId);
+  if (completedProtection?.status === "completed" && triggerSource !== "manual") {
+    const retryAt = protectionRetryAt(completedProtection, `${scheduleId}:${automaticRunKey}`);
+    if (Date.now() < retryAt) {
+      armAutomaticRetry(scheduleId, triggerSource, automaticRunKey!, retryAt, completedProtection.id);
+      return { skipped: FOCUS_PROTECTION_MESSAGE };
+    }
   }
 
   // Skip if this schedule is already running
@@ -385,10 +522,14 @@ export async function triggerSchedule(
   // Check rate limiting for automatic triggers only.
   if (triggerSource !== "manual" && schedule.lastRunAt) {
     const lastRunAtMs = new Date(schedule.lastRunAt).getTime();
-    const comparisonMs = options.scheduledFor ? new Date(options.scheduledFor).getTime() : Date.now();
+    const comparisonMs = protectionHold ? Date.now()
+      : options.scheduledFor ? new Date(options.scheduledFor).getTime() : Date.now();
     const elapsed = comparisonMs - lastRunAtMs;
     if (elapsed >= 0 && elapsed < MIN_INTERVAL_MS) {
       console.log(`[scheduler] Skipping "${schedule.name}" — too soon (${Math.round(elapsed / 1000)}s since last run)`);
+      if (protectionHold) {
+        armAutomaticRetry(scheduleId, triggerSource, automaticRunKey!, Date.now() + MIN_INTERVAL_MS - elapsed);
+      }
       return { skipped: `Too soon — ${Math.round((MIN_INTERVAL_MS - elapsed) / 1000)}s until next allowed run` };
     }
   }
@@ -399,22 +540,6 @@ export async function triggerSchedule(
     return retryWithoutClaim("Max concurrent scheduled sessions reached", triggerSource !== "manual");
   }
 
-  // Check expiration
-  if (schedule.expiresAt && new Date() >= new Date(schedule.expiresAt)) {
-    scheduleStore.updateSchedule(scheduleId, { enabled: false });
-    unregisterSchedule(scheduleId);
-    bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
-    return { skipped: "Schedule expired" };
-  }
-
-  // Check maxRuns
-  if (schedule.maxRuns && schedule.runCount >= schedule.maxRuns) {
-    scheduleStore.updateSchedule(scheduleId, { enabled: false });
-    unregisterSchedule(scheduleId);
-    bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
-    return { skipped: "Max runs reached" };
-  }
-
   const task = taskStore.getTask(schedule.taskId);
   if (!task) {
     // The parent task is gone but the schedule survived (schedules.taskId has no
@@ -422,6 +547,7 @@ export async function triggerSchedule(
     // logging forever; task deletion normally removes children up front.
     console.error(`[scheduler] Task ${schedule.taskId} not found for schedule "${schedule.name}" — disabling orphaned schedule`);
     scheduleStore.updateSchedule(scheduleId, { enabled: false });
+    missedRunCatchUp.settle(scheduleId, "cancelled");
     unregisterSchedule(scheduleId);
     bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
     return { skipped: "Parent task not found" };
@@ -481,11 +607,15 @@ export async function triggerSchedule(
     }, AUTOMATIC_CLAIM_RENEW_INTERVAL_MS);
 
     if (triggerSource !== "manual") {
-      const runKey = getAutomaticRunKey(triggerSource, options.scheduledFor);
+      const runKey = automaticRunKey!;
       const claim = scheduleStore.claimAutomaticRun(scheduleId, runKey, triggerSource);
       if (!claim.acquired) {
         releaseScheduleRunClaim();
         console.log(`[scheduler] Skipping "${schedule.name}" — ${claim.reason}`);
+        if (claim.reason === "This scheduled slot already ran") {
+          missedRunCatchUp.settle(scheduleId, "no-longer-needed", runKey);
+          clearRetryForSlot(scheduleId, runKey);
+        }
         return { skipped: claim.reason };
       }
       automaticSlotClaim = claim.claim;
@@ -600,6 +730,12 @@ export async function triggerSchedule(
     } else {
       scheduleStore.recordRun(scheduleId, sessionId, nextRunAt);
     }
+    if (automaticRunKey) {
+      missedRunCatchUp.settle(scheduleId, "started", automaticRunKey, { sessionId });
+      clearRetryForSlot(scheduleId, automaticRunKey);
+    } else if (schedule.type === "once") {
+      missedRunCatchUp.settle(scheduleId, "no-longer-needed", undefined, { sessionId });
+    }
     if (schedule.type === "once") {
       unregisterSchedule(scheduleId);
     }
@@ -684,7 +820,7 @@ function registerAllSchedules(): void {
   // Clear existing jobs
   for (const job of cronJobs.values()) job.stop();
   cronJobs.clear();
-  for (const timer of oneShotTimers.values()) timer.cancel();
+  for (const timer of oneShotTimers.values()) timer.timer.cancel();
   oneShotTimers.clear();
   clearAutomaticRetryTimers();
 

@@ -13,6 +13,23 @@ import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js"
 import type { ReadStateStore } from "./read-state-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { FeedStore } from "./feed-store.js";
+import type {
+  AlertStore,
+  DecisionStore,
+  FocusEventStore,
+  FocusReconciliationErrorStore,
+} from "./focus-domain-store.js";
+import type { FocusMutationCoordinator } from "./focus-mutation-coordinator.js";
+import type { FocusProjectionService } from "./focus-dashboard-projection.js";
+import type { FocusDetailsStore } from "./focus-details-store.js";
+import type { FocusAttentionStore, FocusAuditStore, FocusDigestViewStore, FocusTransitionStore } from "./focus-attention-store.js";
+import type { FocusAuthorityStore, FocusCoverageStore } from "./focus-governance-store.js";
+import type { FocusNotificationDeliveryStore } from "./focus-notification-delivery-store.js";
+import type { initFocusNotificationService } from "./focus-notification-service.js";
+import type { FocusSessionLaunchStore } from "./focus-session-launch-store.js";
+import type { FocusSessionLaunchService } from "./focus-session-launch-service.js";
+import type { FocusProtectionStore } from "./focus-protection-store.js";
+import type { FocusProtectionService } from "./focus-protection-service.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsSnapshotStore } from "./docs-snapshot-store.js";
@@ -35,7 +52,10 @@ import type { DeferLoopStore } from "./defer-loop-store.js";
 import type { DeferLoopRunner } from "./defer-loop-runner.js";
 import type * as SchedulerModule from "./scheduler.js";
 import type { PushSubscriptionStore } from "./push-subscription-store.js";
-import type { PushNotificationService } from "./push-notification-service.js";
+import type {
+  PushEventNotificationDisposer,
+  PushNotificationService,
+} from "./push-notification-service.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/index.js";
 import type { ManagementJobStore } from "./management-job-store.js";
 import type { StagingPreviewDiscoveryController } from "./staging-preview-discovery.js";
@@ -56,6 +76,26 @@ export interface AppContext {
   readStateStore: ReadStateStore;
   checklistStore: ChecklistStore;
   feedStore: FeedStore;
+  decisionStore: DecisionStore;
+  alertStore: AlertStore;
+  focusEventStore: FocusEventStore;
+  focusMutationCoordinator: FocusMutationCoordinator;
+  focusProjection: FocusProjectionService;
+  focusReconciliationErrorStore: FocusReconciliationErrorStore;
+  focusDetailsStore: FocusDetailsStore;
+  focusTransitionStore: FocusTransitionStore;
+  focusAttentionStore: FocusAttentionStore;
+  focusAuditStore: FocusAuditStore;
+  focusDigestViewStore: FocusDigestViewStore;
+  focusAuthorityStore: FocusAuthorityStore;
+  focusCoverageStore: FocusCoverageStore;
+  focusNotificationDeliveryStore: FocusNotificationDeliveryStore;
+  focusSessionLaunchStore: FocusSessionLaunchStore;
+  focusProtectionStore: FocusProtectionStore;
+  focusProtectionService?: FocusProtectionService;
+  focusSessionLaunchService?: FocusSessionLaunchService;
+  focusNotifications?: ReturnType<typeof initFocusNotificationService>;
+  stopPushEventNotifications?: PushEventNotificationDisposer;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
   docsSnapshotStore?: DocsSnapshotStore;

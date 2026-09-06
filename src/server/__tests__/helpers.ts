@@ -229,6 +229,7 @@ export function createMockSessionManager() {
     cancelSessionAgent: async () => ({ cancelled: false }),
     listSlashCommands: async () => ({ supported: false, commands: [] }),
     getPendingUserInputCount: () => 0,
+    getPendingInputSessionIds: () => [],
     hydratePendingInteractions: async () => ({
       pendingUserInputs: [],
       pendingElicitations: [],
@@ -238,7 +239,11 @@ export function createMockSessionManager() {
     getEffectiveSessionCwd: () => undefined,
     failAllActiveRuns: () => [],
     isSessionWarm: () => false,
-    createSession: async () => ({ sessionId: "test-session" }),
+    createSession: async (options?: { expectedSessionId?: string; onCreateStarting?: () => void }) => {
+      options?.onCreateStarting?.();
+      return { sessionId: options?.expectedSessionId ?? "test-session" };
+    },
+    getSessionCreationState: async () => "absent" as const,
     forkSession: async () => ({ sessionId: "fork-session" }),
     setSessionName: async () => {},
     startWork: () => {},
@@ -280,7 +285,11 @@ export function createMockSessionManager() {
     }),
     getLatestMcpStatus: () => [],
     hasPlan: () => true,
-    createTaskSession: async () => ({ sessionId: "task-session" }),
+    createTaskSession: async (...args: unknown[]) => {
+      const options = args[8] as { expectedSessionId?: string; onCreateStarting?: () => void } | undefined;
+      options?.onCreateStarting?.();
+      return { sessionId: options?.expectedSessionId ?? "task-session" };
+    },
     invalidateSessionListCache: () => {},
     setSessionWorkspace: (sessionId: string, cwd: string) => ({
       cwd,

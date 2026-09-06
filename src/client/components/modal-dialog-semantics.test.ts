@@ -9,6 +9,7 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
+import { installFocusDialogDom } from "../test-focus-harness";
 import {
   createKeyEventDom,
   findDialogElements,
@@ -17,7 +18,10 @@ import {
 import type { Schedule, Task, VisualArtifact } from "../api";
 import DocPreviewSheet from "./DocPreviewSheet";
 import DeferredWorkSheet from "./DeferredWorkSheet";
-import FeedActionDialog from "./FeedActionDialog";
+import FocusActionDialog from "./FocusActionDialog";
+import FocusLifecycleDialog from "./FocusLifecycleDialog";
+import FocusPromotionDialog from "./FocusPromotionDialog";
+import { focusDecision, focusTask } from "../test-focus-fixtures";
 import NotesSheet from "./NotesSheet";
 import PlanSheet from "./PlanSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
@@ -82,6 +86,22 @@ interface OverlayCase {
 }
 
 const overlayCases: OverlayCase[] = [
+  {
+    name: "FocusLifecycleDialog",
+    accessibleName: "Accept risk",
+    element: (onClose) => createElement(FocusLifecycleDialog, {
+      object: focusDecision(), intent: "accepted_risk", pending: false, error: null,
+      onClose, onReload: vi.fn(), onSubmit: vi.fn(),
+    }),
+  },
+  {
+    name: "FocusPromotionDialog",
+    accessibleName: "Hand off / Create Action",
+    element: (onClose) => createElement(FocusPromotionDialog, {
+      object: focusDecision(), tasks: [focusTask()], pending: false, error: null, result: null,
+      onClose, onReload: vi.fn(), onSubmit: vi.fn(), onSelectTask: vi.fn(), onInspectAction: vi.fn(),
+    }),
+  },
   {
     name: "PlanSheet",
     accessibleName: "Session Plan",
@@ -160,9 +180,9 @@ const overlayCases: OverlayCase[] = [
     }),
   },
   {
-    name: "FeedActionDialog",
+    name: "FocusActionDialog",
     accessibleName: "Run the audit",
-    element: (onClose) => createElement(FeedActionDialog, {
+    element: (onClose) => createElement(FocusActionDialog, {
       cardTitle: "Platform audit",
       actionLabel: "Run the audit",
       taskId: null,
@@ -196,7 +216,7 @@ function withProviders(children: ReactNode): ReactElement {
 }
 
 async function renderOverlay(element: ReactElement) {
-  const keyEventDom = createKeyEventDom({ baseInstall: installSelectAwareDomShim });
+  const keyEventDom = createKeyEventDom({ baseInstall: installFocusDialogDom });
   const harness = await createReactDomHarness({ installDom: keyEventDom.installDom });
   await harness.render(withProviders(element));
   return {
@@ -320,10 +340,10 @@ describe("ScheduleDetailSheet dismiss target", () => {
   });
 });
 
-describe("FeedActionDialog dismissal guard", () => {
+describe("FocusActionDialog dismissal guard", () => {
   it("ignores Escape while the prompt is submitting", async () => {
     const onClose = vi.fn();
-    const { harness, pressEscape } = await renderOverlay(createElement(FeedActionDialog, {
+    const { harness, pressEscape } = await renderOverlay(createElement(FocusActionDialog, {
       cardTitle: "Platform audit",
       actionLabel: "Run the audit",
       taskId: null,

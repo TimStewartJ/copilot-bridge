@@ -57,6 +57,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
+import { invalidateFocusMutationQueries, invalidateFocusProtectionQueries } from "./lib/focus-query-invalidation";
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
@@ -95,6 +96,7 @@ import ChatView from "./components/ChatView";
 import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
 import SessionModelSummary from "./components/SessionModelSummary";
 import Dashboard from "./components/Dashboard";
+import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
@@ -368,9 +370,7 @@ export default function App() {
   const invalidateTasks = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
   const invalidateDashboard = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }), [queryClient]);
-  const invalidateFeed = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.feed() }), [queryClient]);
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] }), [queryClient]);
   const invalidateOpenChecklistItems = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems }), [queryClient]);
   const invalidateTaskGroups = useCallback(() =>
@@ -559,8 +559,15 @@ export default function App() {
       case "management-job:changed":
         void queryClient.invalidateQueries({ queryKey: queryKeys.managementJobsRoot });
         break;
+      case "focus:changed":
+        void invalidateFocusMutationQueries(queryClient, true);
+        break;
+      case "focus:protection-changed":
+      case "focus:protection-cleared":
+        void invalidateFocusProtectionQueries(queryClient);
+        break;
       case "feed:changed":
-        invalidateFeed();
+        invalidateDashboard();
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
@@ -571,11 +578,10 @@ export default function App() {
         // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
         invalidateDashboard();
-        invalidateFeed();
         invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateFeed, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
     const timer = window.setTimeout(() => window.location.reload(), 1000);
@@ -897,8 +903,8 @@ export default function App() {
   }, [navigate]);
 
   const handleOpenDashboard = useCallback(() => {
-    navigate(getRememberedDashboardPath(location.pathname));
-  }, [location.pathname, navigate]);
+    navigate(getRememberedDashboardPath());
+  }, [navigate]);
 
   const handleOpenQuickChatsList = () => {
     navigate("/chats");
@@ -1919,6 +1925,10 @@ export default function App() {
             />
             <Route
               path="dashboard"
+              element={<FocusDashboardRedirect />}
+            />
+            <Route
+              path="dashboard/focus"
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
@@ -1933,31 +1943,11 @@ export default function App() {
             />
             <Route
               path="dashboard/checklist"
-              element={
-                <Dashboard
-                  onSelectTask={handleSelectTask}
-                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
-                  onSelectSession={navigateToSession}
-                  onStartPromptSession={handleStartPromptSession}
-                  tasks={tasks}
-                  taskGroups={taskGroups}
-                  scrollRestoration={mobileDashboardScrollRestoration}
-                />
-              }
+              element={<FocusDashboardRedirect />}
             />
             <Route
               path="dashboard/feed"
-              element={
-                <Dashboard
-                  onSelectTask={handleSelectTask}
-                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
-                  onSelectSession={navigateToSession}
-                  onStartPromptSession={handleStartPromptSession}
-                  tasks={tasks}
-                  taskGroups={taskGroups}
-                  scrollRestoration={mobileDashboardScrollRestoration}
-                />
-              }
+              element={<FocusDashboardRedirect />}
             />
             <Route
               path="dashboard/work-map"
