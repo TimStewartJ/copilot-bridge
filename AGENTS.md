@@ -11,6 +11,7 @@ These instructions apply to the whole repository. Keep changes small, typed, cro
 ## Editing and validation
 
 - Use the established staging workflow for deployable Bridge changes; do not edit a production deployment checkout directly.
+- Staging worktrees intentionally own their `node_modules`; run `npm install --no-audit --no-fund --include=dev` in a fresh worktree before direct checks, and never link it to production dependencies.
 - Run `npm run check:fast` during normal implementation loops.
 - Run the focused lane that matches the changed area: `check:client`, `check:server`, `check:launcher`, or `check:staging`.
 - Run `npm run check:pr` before asking for review, previewing, or preparing deployment.

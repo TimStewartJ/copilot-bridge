@@ -10,7 +10,6 @@ import {
   dependencySyncHash,
   DEPENDENCY_SYNC_GIT_PATHSPEC,
   preparePatchedPackagesForInstall,
-  readInstalledDependencyHash,
 } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartAlreadyInFlight } from "./restart-state.js";
@@ -21,10 +20,7 @@ import {
   type DefineBridgeToolOptions,
 } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
-import {
-  createDirectoryLink,
-  removeDirectoryLink,
-} from "./platform.js";
+import { removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./public-url.js";
 import {
   DEPLOY_CHECK_COMMAND,
@@ -149,6 +145,8 @@ type StagingCommandRunner = (
   options?: StagingRunOptions,
 ) => Promise<{ ok: boolean; output: string }>;
 
+const STAGING_DEPENDENCY_HASH_FILENAME = ".bridge-deps-hash";
+
 async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
   await cleanupPreviewTarget(stagingDir);
 }
@@ -183,56 +181,90 @@ export async function cleanupPreviewTarget(
   await cleanupPreviewResources(target.prefix, options);
 }
 
+function getFsErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
+}
+
+function readStagingDependencyHash(stagingModules: string): {
+  hash?: string;
+  warning?: string;
+} {
+  const markerPath = join(stagingModules, STAGING_DEPENDENCY_HASH_FILENAME);
+  try {
+    const value = readFileSync(markerPath, "utf8").trim();
+    return value ? { hash: value } : {};
+  } catch (error) {
+    if (getFsErrorCode(error) === "ENOENT") return {};
+    return {
+      warning: `Unable to read the staging dependency marker at ${markerPath}; reinstalling locally: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /**
- * Compare dependency inputs between staging and production.
- * If package files or patch-package files differ, replace the node_modules
- * symlink with a real npm install so builds use the correct dependency state.
- * The link is also unsafe when the production root itself has not been
- * re-installed for its current inputs (the launcher activates prepared release
- * slots without rebuilding the root), so the launcher's recorded install hash
- * wins over the production source hash when it is available.
+ * Keep each staging worktree's dependencies isolated from production. Legacy
+ * node_modules links are detached before npm runs, including dangling links.
+ * Exported for focused tests of the fresh-install guard.
  */
-/** Exported for focused tests of the fresh-install guard. */
 export async function ensureStagingDeps(
   stagingDir: string,
   options: { runCommand?: StagingCommandRunner; log?: (message: string) => void } = {},
 ): Promise<{ ok: boolean; command?: string; output?: string }> {
   const writeLog = options.log ?? log;
   const runCommand = options.runCommand ?? run;
+  const stagingModules = join(stagingDir, "node_modules");
   const stagingHash = dependencySyncHash(stagingDir);
-  const productionHash = dependencySyncHash(PRODUCTION_ROOT);
-  const installedHash = readInstalledDependencyHash(PRODUCTION_DATA_DIR);
-  if (stagingHash === productionHash) {
-    if (installedHash === undefined || installedHash === productionHash) {
-      return { ok: true };
+
+  let modulesKind: "missing" | "link" | "directory" | "other";
+  try {
+    const stat = lstatSync(stagingModules);
+    modulesKind = stat.isSymbolicLink()
+      ? "link"
+      : stat.isDirectory() ? "directory" : "other";
+  } catch (error) {
+    if (getFsErrorCode(error) !== "ENOENT") {
+      const output = `Unable to inspect staging dependencies at ${stagingModules}: ${error instanceof Error ? error.message : String(error)}`;
+      writeLog(output);
+      return { ok: false, command: "inspect staging node_modules", output };
     }
-    writeLog("Production node_modules lag the production dependency inputs — installing dependencies in staging...");
-  } else {
-    writeLog("Staging dependency inputs differ from production — installing dependencies in staging...");
+    modulesKind = "missing";
   }
 
-  // If node_modules is a symlink/junction, remove it so npm can create a real directory.
-  // If it's already a real directory, leave it — npm install is incremental.
-  const stagingModules = join(stagingDir, "node_modules");
-  if (existsSync(stagingModules)) {
-    try {
-      const stat = lstatSync(stagingModules);
-      if (stat.isSymbolicLink()) {
-        const removal = removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
-        if (!removal.ok) {
-          // The link still points at production's node_modules. Installing over
-          // it would resolve into the live install and can corrupt it.
-          const output = `Unable to remove staging node_modules symlink at ${stagingModules}: ${removal.output}`;
-          writeLog(output);
-          return { ok: false, command: "remove staging node_modules symlink", output };
-        }
-        writeLog("Removed node_modules symlink for fresh install");
-      } else {
-        writeLog("node_modules is a real directory — running incremental install");
-      }
-    } catch {
-      // lstat failed — try to proceed anyway
+  if (modulesKind === "other") {
+    const output = `Staging dependency path is not a directory or link: ${stagingModules}`;
+    writeLog(output);
+    return { ok: false, command: "inspect staging node_modules", output };
+  }
+
+  if (modulesKind === "directory") {
+    const localDependencyState = readStagingDependencyHash(stagingModules);
+    if (localDependencyState.warning) writeLog(localDependencyState.warning);
+    if (localDependencyState.hash === stagingHash) return { ok: true };
+  }
+
+  if (modulesKind === "link") {
+    const removal = removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
+    if (!removal.ok) {
+      const output = `Unable to remove legacy staging node_modules link at ${stagingModules}: ${removal.output}`;
+      writeLog(output);
+      return { ok: false, command: "remove staging node_modules link", output };
     }
+    writeLog("Removed legacy staging node_modules link before isolated install");
+  } else if (modulesKind === "directory") {
+    writeLog("Staging dependencies are stale or unverified — running an isolated incremental install...");
+  } else {
+    writeLog("Staging dependencies are missing — installing them locally...");
+  }
+
+  const stagingHashPath = join(stagingModules, STAGING_DEPENDENCY_HASH_FILENAME);
+  try {
+    rmSync(stagingHashPath, { force: true });
+  } catch (error) {
+    const output = `Unable to clear the staging dependency marker at ${stagingHashPath}: ${error instanceof Error ? error.message : String(error)}`;
+    writeLog(output);
+    return { ok: false, command: "clear staging dependency marker", output };
   }
 
   const prepared = preparePatchedPackagesForInstall(stagingDir);
@@ -245,6 +277,13 @@ export async function ensureStagingDeps(
   });
   if (installResult.ok) {
     prepared.discard();
+    try {
+      writeFileSync(stagingHashPath, `${dependencySyncHash(stagingDir)}\n`);
+    } catch (error) {
+      const output = `Staging dependencies installed, but their local marker could not be written: ${error instanceof Error ? error.message : String(error)}`;
+      writeLog(output);
+      return { ok: false, command: "write staging dependency marker", output };
+    }
     writeLog("Staging npm install succeeded");
     return { ok: true };
   }
@@ -622,16 +661,16 @@ function ensureNodeModulesIgnored(stagingDir: string): void {
 async function removeWorktree(stagingDir: string, branch: string): Promise<void> {
   // Remove node_modules first — git worktree remove can't handle symlinks or large dirs
   const junctionPath = join(stagingDir, "node_modules");
-  if (existsSync(junctionPath)) {
-    try {
-      const stat = lstatSync(junctionPath);
-      if (stat.isSymbolicLink()) {
-        rmSync(junctionPath);
-      } else if (stat.isDirectory()) {
-        rmSync(junctionPath, { recursive: true, force: true });
-      }
-    } catch (err: any) {
-      if (err.code !== "ENOENT") log(`Warning: failed to remove node_modules: ${err.message}`);
+  try {
+    const stat = lstatSync(junctionPath);
+    if (stat.isSymbolicLink()) {
+      rmSync(junctionPath);
+    } else if (stat.isDirectory()) {
+      rmSync(junctionPath, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (getFsErrorCode(error) !== "ENOENT") {
+      log(`Warning: failed to remove node_modules: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   await run(`git worktree remove "${stagingDir}" --force`, PRODUCTION_ROOT);
@@ -1887,7 +1926,8 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
   defineBridgeTool("staging_init", {
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
-      "Returns the staging directory path where you should make all edits. " +
+      "Returns the staging directory path where you should make all edits. Dependencies are isolated per worktree; " +
+      `run ${STAGING_INSTALL_COMMAND} in the worktree before direct checks. Preview and deploy also install them locally when needed. ` +
       "Use npm run check:fast plus the focused check lane that matches your edit while iterating. " +
       "Final validation is enforced by staging_preview by default, or by staging_deploy when preview validation was skipped or invalidated.",
     parameters: { type: "object", properties: {} },
@@ -1946,16 +1986,6 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       // Ensure node_modules is ignored in the staging worktree (prevents accidental git add)
       ensureNodeModulesIgnored(stagingDir);
 
-      // Share node_modules via junction (Windows) or symlink (Linux)
-      const prodModules = join(PRODUCTION_ROOT, "node_modules");
-      const stagingModules = join(stagingDir, "node_modules");
-      if (existsSync(prodModules) && !existsSync(stagingModules)) {
-        const jResult = createDirectoryLink(stagingModules, prodModules, PRODUCTION_ROOT);
-        if (!jResult.ok) {
-          log(`Warning: node_modules link failed: ${jResult.output}`);
-        }
-      }
-
       try {
         deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
       } catch (error) {
@@ -1969,6 +1999,8 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
         branch,
         message:
           `Staging worktree created at ${stagingDir}. ` +
+          `Dependencies are isolated per worktree; run ${STAGING_INSTALL_COMMAND} before direct checks. ` +
+          `Preview and deploy also install them locally when needed. ` +
           `Make your changes there, run quality checks, then call staging_deploy when ready.`,
       };
     },

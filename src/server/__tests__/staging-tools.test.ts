@@ -96,7 +96,6 @@ const triggerRestartPendingMock = vi.fn();
 const clearRestartPendingMock = vi.fn();
 const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
 const dependencySyncHashMock = vi.fn<(path: string) => string>(() => "same-hash");
-const readInstalledDependencyHashMock = vi.fn<(dataDir: string) => string | undefined>(() => undefined);
 const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
   dataDir: string;
   commitSha: string;
@@ -116,7 +115,9 @@ const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
   },
 })));
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
-const lstatSyncOverrideMock = vi.hoisted(() => vi.fn<(path: unknown) => { isSymbolicLink(): boolean } | undefined>());
+const lstatSyncOverrideMock = vi.hoisted(() => vi.fn<
+  (path: unknown) => { isSymbolicLink(): boolean; isDirectory(): boolean } | undefined
+>());
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
 const renameSyncCallMock = vi.hoisted(() => vi.fn<(...args: RenameSyncArgs) => void>());
 const readFileSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ReadFileSyncPath) => string | undefined>());
@@ -168,6 +169,10 @@ function isDeployValidationStampPath(path: string): boolean {
 
 function isStagingValidationStampPath(path: string): boolean {
   return path.split(/[/\\]/).includes("staging-validation-stamps");
+}
+
+function isStagingDependencyHashPath(path: string): boolean {
+  return basename(path) === ".bridge-deps-hash";
 }
 
 function mockDataFilePresence(
@@ -305,7 +310,6 @@ vi.mock("../dependency-sync.js", () => ({
   dependencySyncHash: dependencySyncHashMock,
   DEPENDENCY_SYNC_GIT_PATHSPEC: "package.json",
   preparePatchedPackagesForInstall: preparePatchedPackagesForInstallMock,
-  readInstalledDependencyHash: readInstalledDependencyHashMock,
 }));
 
 vi.mock("../release-slots.js", () => ({
@@ -569,6 +573,12 @@ beforeEach(() => {
     "BRIDGE_VALIDATION_LOG_DIR",
     join(createTempDir("bridge-staging-validation-"), "data", "validation-logs"),
   );
+  lstatSyncOverrideMock.mockImplementation((path) =>
+    basename(String(path)) === "node_modules"
+      ? { isSymbolicLink: () => false, isDirectory: () => true }
+      : undefined);
+  readFileSyncOverrideMock.mockImplementation((path) =>
+    isStagingDependencyHashPath(String(path)) ? "same-hash\n" : undefined);
   execSyncMock.mockImplementation(successfulCommandOutput);
 });
 
@@ -584,8 +594,6 @@ afterEach(() => {
   isRestartPendingMock.mockReturnValue(false);
   dependencySyncHashMock.mockReset();
   dependencySyncHashMock.mockReturnValue("same-hash");
-  readInstalledDependencyHashMock.mockReset();
-  readInstalledDependencyHashMock.mockReturnValue(undefined);
   prepareReleaseSlotMock.mockClear();
   existsSyncOverrideMock.mockReset();
   mockDataFilePresence();
@@ -635,6 +643,31 @@ describe("staging tools", () => {
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
     const mod3 = await loadStagingToolsModule();
     expect(mod3.shouldManageStagingArtifacts(), "source-managed release-slot").toBe(true);
+  });
+
+  it("creates staging worktrees without linking production dependencies", async () => {
+    execSyncMock.mockImplementation((command: string) => (
+      command === "git rev-parse --abbrev-ref HEAD"
+        ? "master\n"
+        : successfulCommandOutput(command)
+    ));
+    const tools = await loadStagingTools();
+
+    const result = await tools.staging_init.handler(
+      {},
+      {
+        sessionId: "session-init",
+        toolCallId: "tool-init",
+        toolName: "staging_init",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      success: true,
+      message: expect.stringContaining("Dependencies are isolated per worktree"),
+    });
+    expect(createDirectoryLinkMock).not.toHaveBeenCalled();
   });
 
   it("builds and parses staging preview prefixes", async () => {
@@ -1251,7 +1284,7 @@ describe("staging tools", () => {
     });
     expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
     expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
-    expect(dependencySyncHashMock).toHaveBeenCalledTimes(3);
+    expect(dependencySyncHashMock).toHaveBeenCalledTimes(2);
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("npm install --no-audit --no-fund --include=dev");
     expect(commands.some((cmd) => cmd.startsWith("git diff "))).toBe(true);
@@ -1327,7 +1360,9 @@ describe("staging tools", () => {
       return undefined;
     });
     readFileSyncOverrideMock.mockImplementation((path) =>
-      isStagingValidationStampPath(String(path))
+      isStagingDependencyHashPath(String(path))
+        ? "same-hash\n"
+        : isStagingValidationStampPath(String(path))
         ? stagingStampJson("preview-deploy", validatedSha)
         : undefined,
     );
@@ -2472,7 +2507,9 @@ describe("staging tools", () => {
     writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
     mockDataFilePresence({ preDeploySha: true });
     readFileSyncOverrideMock.mockImplementation((path) =>
-      isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
+      isStagingDependencyHashPath(String(path))
+        ? "same-hash\n"
+        : isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
     );
 
     execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
@@ -2560,7 +2597,9 @@ describe("staging tools", () => {
     unlinkSyncCallMock.mockClear();
     mockDataFilePresence({ preDeploySha: true });
     readFileSyncOverrideMock.mockImplementation((path) =>
-      isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
+      isStagingDependencyHashPath(String(path))
+        ? "same-hash\n"
+        : isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
     );
 
     await deployTool.handler(
@@ -3677,10 +3716,10 @@ describe("staging fresh-install node_modules link handling", () => {
     const stagingDir1 = createTempDir("bridge-stage-deps-fail-");
     // Different hashes force the fresh-install path.
     dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir1 ? "staged" : "production"));
-    existsSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir1, "node_modules") ? true : undefined);
     lstatSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir1, "node_modules") ? { isSymbolicLink: () => true } : undefined);
+      String(path) === join(stagingDir1, "node_modules")
+        ? { isSymbolicLink: () => true, isDirectory: () => false }
+        : undefined);
     removeDirectoryLinkMock.mockReturnValue({ ok: false, output: "EPERM: operation not permitted" });
 
     const runCommand1 = vi.fn(async () => ({ ok: true, output: "" }));
@@ -3698,59 +3737,138 @@ describe("staging fresh-install node_modules link handling", () => {
     // Proceed path: symlink is removed successfully
     const stagingDir2 = createTempDir("bridge-stage-deps-ok-");
     dependencySyncHashMock.mockImplementation((path: string) => (path === stagingDir2 ? "staged" : "production"));
-    existsSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir2, "node_modules") ? true : undefined);
+    let legacyLinkPresent = true;
     lstatSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir2, "node_modules") ? { isSymbolicLink: () => true } : undefined);
-    removeDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
+      legacyLinkPresent && String(path) === join(stagingDir2, "node_modules")
+        ? { isSymbolicLink: () => true, isDirectory: () => false }
+        : undefined);
+    removeDirectoryLinkMock.mockImplementation(() => {
+      legacyLinkPresent = false;
+      return { ok: true, output: "" };
+    });
 
-    const runCommand2 = vi.fn(async () => ({ ok: true, output: "installed" }));
+    const runCommand2 = vi.fn(async () => {
+      mkdirSync(join(stagingDir2, "node_modules"), { recursive: true });
+      return { ok: true, output: "installed" };
+    });
     const writeLog2 = vi.fn();
 
     const result2 = await mod.ensureStagingDeps(stagingDir2, { runCommand: runCommand2, log: writeLog2 });
 
     expect(result2, "proceed: should succeed").toMatchObject({ ok: true });
     expect(runCommand2, "proceed: npm should run once").toHaveBeenCalledTimes(1);
-    expect(writeLog2, "proceed: should log symlink removal").toHaveBeenCalledWith("Removed node_modules symlink for fresh install");
+    expect(writeLog2, "proceed: should log symlink removal").toHaveBeenCalledWith(
+      "Removed legacy staging node_modules link before isolated install",
+    );
+    expect(writeFileSyncCallMock).toHaveBeenCalledWith(
+      join(stagingDir2, "node_modules", ".bridge-deps-hash"),
+      "staged\n",
+    );
   });
 
-  it("keeps the production node_modules link when the launcher's recorded install matches production", async () => {
+  it("removes a dangling legacy node_modules link before installing locally", async () => {
     const mod = await loadStagingToolsModule();
-    const stagingDir = createTempDir("bridge-stage-deps-linked-");
-    dependencySyncHashMock.mockReturnValue("same-hash");
-    readInstalledDependencyHashMock.mockReturnValue("same-hash");
-    const runCommand = vi.fn(async () => ({ ok: true, output: "" }));
+    const stagingDir = createTempDir("bridge-stage-deps-dangling-");
+    let legacyLinkPresent = true;
+    dependencySyncHashMock.mockReturnValue("staged");
+    existsSyncOverrideMock.mockImplementation((path) =>
+      String(path) === join(stagingDir, "node_modules") ? false : undefined);
+    lstatSyncOverrideMock.mockImplementation((path) =>
+      legacyLinkPresent && String(path) === join(stagingDir, "node_modules")
+        ? { isSymbolicLink: () => true, isDirectory: () => false }
+        : undefined);
+    removeDirectoryLinkMock.mockImplementation(() => {
+      legacyLinkPresent = false;
+      return { ok: true, output: "" };
+    });
+    const runCommand = vi.fn(async () => {
+      mkdirSync(join(stagingDir, "node_modules"), { recursive: true });
+      return { ok: true, output: "installed" };
+    });
 
     const result = await mod.ensureStagingDeps(stagingDir, { runCommand, log: vi.fn() });
 
     expect(result).toEqual({ ok: true });
-    expect(runCommand).not.toHaveBeenCalled();
-    expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
+    expect(removeDirectoryLinkMock).toHaveBeenCalledWith(join(stagingDir, "node_modules"), expect.any(String));
+    expect(runCommand).toHaveBeenCalledOnce();
   });
 
-  it("installs in staging when production node_modules lag the production dependency inputs", async () => {
+  it("installs missing dependencies locally", async () => {
     const mod = await loadStagingToolsModule();
-    const stagingDir = createTempDir("bridge-stage-deps-lagging-");
-    // Staging matches production source, but the launcher last installed older inputs
-    // (it activated a prepared release slot without rebuilding the production root).
-    dependencySyncHashMock.mockReturnValue("same-hash");
-    readInstalledDependencyHashMock.mockReturnValue("older-hash");
-    existsSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir, "node_modules") ? true : undefined);
-    lstatSyncOverrideMock.mockImplementation((path) =>
-      String(path) === join(stagingDir, "node_modules") ? { isSymbolicLink: () => true } : undefined);
-    removeDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
+    const stagingDir = createTempDir("bridge-stage-deps-local-");
+    lstatSyncOverrideMock.mockImplementation(() => undefined);
+    const runCommand = vi.fn(async () => {
+      mkdirSync(join(stagingDir, "node_modules"), { recursive: true });
+      return { ok: true, output: "installed" };
+    });
+    const writeLog = vi.fn();
+
+    await expect(mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog })).resolves.toEqual({ ok: true });
+
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(removeDirectoryLinkMock).not.toHaveBeenCalled();
+    expect(writeLog).toHaveBeenCalledWith("Staging dependencies are missing — installing them locally...");
+  });
+
+  it("reuses an isolated dependency tree while its local hash matches", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-deps-existing-");
+    const stagingModules = join(stagingDir, "node_modules");
+    mkdirSync(stagingModules, { recursive: true });
+    writeFileSync(join(stagingModules, ".bridge-deps-hash"), "same-hash\n");
+    lstatSyncOverrideMock.mockImplementation(() => undefined);
+    readFileSyncOverrideMock.mockImplementation(() => undefined);
+    const runCommand = vi.fn(async () => ({ ok: true, output: "installed" }));
+
+    await expect(mod.ensureStagingDeps(stagingDir, { runCommand, log: vi.fn() })).resolves.toEqual({ ok: true });
+
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(removeDirectoryLinkMock).not.toHaveBeenCalled();
+  });
+
+  it("reinstalls an isolated dependency tree when its local hash is stale", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-deps-stale-");
+    const stagingModules = join(stagingDir, "node_modules");
+    mkdirSync(stagingModules, { recursive: true });
+    writeFileSync(join(stagingModules, ".bridge-deps-hash"), "old-hash\n");
+    lstatSyncOverrideMock.mockImplementation(() => undefined);
+    readFileSyncOverrideMock.mockImplementation(() => undefined);
+    dependencySyncHashMock.mockReturnValue("new-hash");
     const runCommand = vi.fn(async () => ({ ok: true, output: "installed" }));
     const writeLog = vi.fn();
 
-    const result = await mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+    await expect(mod.ensureStagingDeps(stagingDir, { runCommand, log: writeLog })).resolves.toEqual({ ok: true });
 
-    expect(result).toMatchObject({ ok: true });
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(removeDirectoryLinkMock).not.toHaveBeenCalled();
     expect(writeLog).toHaveBeenCalledWith(
-      "Production node_modules lag the production dependency inputs — installing dependencies in staging...",
+      "Staging dependencies are stale or unverified — running an isolated incremental install...",
     );
-    expect(removeDirectoryLinkMock).toHaveBeenCalledWith(join(stagingDir, "node_modules"), expect.any(String));
-    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(stagingModules, ".bridge-deps-hash"), "utf8")).toBe("new-hash\n");
+  });
+
+  it("removes a stale dependency marker before an install and retries after failure", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-deps-retry-");
+    const stagingModules = join(stagingDir, "node_modules");
+    const markerPath = join(stagingModules, ".bridge-deps-hash");
+    mkdirSync(stagingModules, { recursive: true });
+    writeFileSync(markerPath, "old-hash\n");
+    lstatSyncOverrideMock.mockImplementation(() => undefined);
+    readFileSyncOverrideMock.mockImplementation(() => undefined);
+    dependencySyncHashMock.mockReturnValue("new-hash");
+
+    const failedInstall = vi.fn(async () => ({ ok: false, output: "install failed" }));
+    await expect(mod.ensureStagingDeps(stagingDir, { runCommand: failedInstall, log: vi.fn() }))
+      .resolves.toMatchObject({ ok: false });
+    expect(existsSync(markerPath)).toBe(false);
+
+    const successfulInstall = vi.fn(async () => ({ ok: true, output: "installed" }));
+    await expect(mod.ensureStagingDeps(stagingDir, { runCommand: successfulInstall, log: vi.fn() }))
+      .resolves.toEqual({ ok: true });
+    expect(successfulInstall).toHaveBeenCalledOnce();
+    expect(readFileSync(markerPath, "utf8")).toBe("new-hash\n");
   });
 });
 
