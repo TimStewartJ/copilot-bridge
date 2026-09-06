@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { forceClearRestartPending, refreshRestartState, SessionManager } from "../session-manager.js";
+import { CopilotBackend } from "../agent-backend/copilot-backend.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, testPath } from "./helpers.js";
@@ -159,6 +160,22 @@ describe("SessionManager graceful shutdown", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("forces stop when the Copilot SDK reports cleanup errors", async () => {
+    const cleanupErrors = [new Error("runtime cleanup failed")];
+    const client = {
+      stop: vi.fn(async () => cleanupErrors),
+      forceStop: vi.fn(async () => undefined),
+    };
+    const manager = createManager() as any;
+    manager.backend = new CopilotBackend(client as any);
+
+    await manager.gracefulShutdown();
+
+    expect(client.stop).toHaveBeenCalledOnce();
+    expect(client.forceStop).toHaveBeenCalledOnce();
+    expect(manager.backend).toBeNull();
   });
 
   it("bounds a hung session abort and finalizes the run locally", async () => {

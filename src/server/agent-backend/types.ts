@@ -461,7 +461,7 @@ export interface AgentBackend {
   start(): Promise<unknown>;
 
   /** Graceful shutdown. */
-  stop(): Promise<unknown>;
+  stop(): Promise<void>;
 
   /** Force-stop. Optional because not every SDK exposes one. */
   forceStop?(): Promise<unknown>;
