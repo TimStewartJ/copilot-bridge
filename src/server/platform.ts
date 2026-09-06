@@ -316,6 +316,19 @@ export async function captureProcessIdentity(
   return entry?.startMarker ? { pid, startMarker: entry.startMarker } : null;
 }
 
+export async function getProcessIdentityStatus(
+  identity: ProcessIdentity,
+  deadline: Deadline,
+): Promise<"alive" | "exited" | "replaced" | "unknown"> {
+  if (!isValidPid(identity.pid) || !identity.startMarker || deadlineExpired(deadline)) return "unknown";
+  const result = await readProcessTable(deadline, PROCESS_IDENTITY_READ_TIMEOUT_MS);
+  if (!result.ok) return "unknown";
+  const entry = result.table.get(identity.pid);
+  if (!entry) return "exited";
+  if (!entry.startMarker) return "unknown";
+  return entry.startMarker === identity.startMarker ? "alive" : "replaced";
+}
+
 function parseProcessStartMarkerMs(
   startMarker: string,
   platform: NodeJS.Platform = process.platform,

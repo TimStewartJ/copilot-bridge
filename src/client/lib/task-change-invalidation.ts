@@ -6,7 +6,7 @@ export function invalidateSharedTaskChangeQueries(
 ): void {
   void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-  void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
+  void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   void queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems });
 }
 

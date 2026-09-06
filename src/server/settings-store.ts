@@ -17,6 +17,14 @@ import {
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
+import {
+  DEFAULT_FOCUS_NOTIFICATION_POLICY,
+  MAX_FOCUS_COALESCE_MINUTES,
+  MAX_FOCUS_REVIEW_TIMES,
+  isFocusClockTime,
+  type FocusNotificationPolicy,
+  type FocusNotificationPolicyUpdate,
+} from "../shared/focus-notification-policy.js";
 
 export type ThemePreference = "light" | "dark" | "system";
 // Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
@@ -68,7 +76,12 @@ export interface AppSettings {
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
+  focusNotifications?: FocusNotificationPolicy;
 }
+
+export type AppSettingsUpdates = Omit<Partial<AppSettings>, "focusNotifications"> & {
+  focusNotifications?: FocusNotificationPolicyUpdate | null;
+};
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -209,6 +222,68 @@ function normalizeDeferWorkerSettings(value: unknown): DeferWorkerSettings | und
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
+  };
+}
+
+function normalizeFocusNotifications(value: unknown): FocusNotificationPolicy | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("focusNotifications must be an object or null");
+  const defaults = DEFAULT_FOCUS_NOTIFICATION_POLICY;
+  for (const key of Object.keys(value)) {
+    if (!Object.prototype.hasOwnProperty.call(defaults, key)) {
+      validationError(`focusNotifications key "${key}" is not supported`);
+    }
+  }
+
+  const timezone = value.timezone ?? defaults.timezone;
+  if (typeof timezone !== "string" || timezone.length > 100 || !/^[A-Za-z][A-Za-z0-9_+/-]*$/.test(timezone)) {
+    validationError("focusNotifications.timezone must be an IANA timezone");
+  }
+  let normalizedTimezone: string;
+  try {
+    normalizedTimezone = new Intl.DateTimeFormat("en-US", { timeZone: timezone }).resolvedOptions().timeZone;
+  } catch {
+    validationError("focusNotifications.timezone must be an IANA timezone");
+  }
+
+  let quietHours = structuredClone(defaults.quietHours);
+  if (value.quietHours === null) {
+    quietHours = null;
+  } else if (value.quietHours !== undefined) {
+    if (!isRecord(value.quietHours)) validationError("focusNotifications.quietHours must be an object or null");
+    for (const key of Object.keys(value.quietHours)) {
+      if (key !== "start" && key !== "end") validationError(`focusNotifications.quietHours key "${key}" is not supported`);
+    }
+    const { start, end } = value.quietHours;
+    if (!isFocusClockTime(start) || !isFocusClockTime(end)) {
+      validationError("focusNotifications.quietHours.start and end must be HH:mm clock times");
+    }
+    if (start === end) validationError("focusNotifications.quietHours.start and end must differ");
+    quietHours = { start, end };
+  }
+
+  const reviewTimes = value.reviewTimes ?? defaults.reviewTimes;
+  if (!Array.isArray(reviewTimes) || reviewTimes.length < 1 || reviewTimes.length > MAX_FOCUS_REVIEW_TIMES
+    || !Array.from(reviewTimes).every(isFocusClockTime)) {
+    validationError(`focusNotifications.reviewTimes must contain 1 to ${MAX_FOCUS_REVIEW_TIMES} HH:mm clock times`);
+  }
+  if (new Set(reviewTimes).size !== reviewTimes.length) validationError("focusNotifications.reviewTimes must be unique");
+  const coalesceMinutes = value.coalesceMinutes ?? defaults.coalesceMinutes;
+  if (typeof coalesceMinutes !== "number" || !Number.isInteger(coalesceMinutes)
+    || coalesceMinutes < 0 || coalesceMinutes > MAX_FOCUS_COALESCE_MINUTES) {
+    validationError(`focusNotifications.coalesceMinutes must be an integer from 0 to ${MAX_FOCUS_COALESCE_MINUTES}`);
+  }
+  const enableAuthorizedImmediate = value.enableAuthorizedImmediate ?? defaults.enableAuthorizedImmediate;
+  const allowGrantQuietHoursOverride = value.allowGrantQuietHoursOverride ?? defaults.allowGrantQuietHoursOverride;
+  if (typeof enableAuthorizedImmediate !== "boolean") validationError("focusNotifications.enableAuthorizedImmediate must be a boolean");
+  if (typeof allowGrantQuietHoursOverride !== "boolean") validationError("focusNotifications.allowGrantQuietHoursOverride must be a boolean");
+  return {
+    timezone: normalizedTimezone,
+    quietHours,
+    reviewTimes: [...reviewTimes].sort(),
+    coalesceMinutes,
+    enableAuthorizedImmediate,
+    allowGrantQuietHoursOverride,
   };
 }
 
@@ -410,6 +485,9 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("deferWorker" in value) {
     normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
   }
+  if ("focusNotifications" in value) {
+    normalized.focusNotifications = normalizeFocusNotifications(value.focusNotifications);
+  }
   return normalized;
 }
 
@@ -472,7 +550,7 @@ export function createSettingsStore(db: DatabaseSync) {
     return { ...persisted, mcpServers: getDefaultMcpServers() };
   }
 
-  function updateSettings(updates: Partial<AppSettings>): AppSettings {
+  function updateSettings(updates: AppSettingsUpdates): AppSettings {
     const current = getSettings();
     const nextMcpServers = isRecord(updates) && "mcpServers" in updates
       ? normalizeMcpServers(updates.mcpServers)

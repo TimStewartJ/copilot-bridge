@@ -7,6 +7,7 @@
 // with the in-process Bridge MCP server retained as a fallback/export.
 
 import { randomUUID } from "node:crypto";
+import { isCanonicalSessionId } from "./outbound-attachments.js";
 import {
   CopilotBackend,
   createAgentBackend,
@@ -672,6 +673,7 @@ export class SessionManager {
   private creatingCapacityUnits = 0;
   private creatingLocalMcpInstances = 0;
   private readonly pendingSessionCreations = new Map<string, Promise<AgentSession>>();
+  private readonly requestedSessionCreations = new Set<string>();
   private readonly inFlightSessionCreations = new Set<Promise<void>>();
   private readonly deletingSessions = new Set<string>();
   private shuttingDown = false;
@@ -1371,6 +1373,18 @@ export class SessionManager {
     };
   }
 
+  private beginExpectedSessionCreationLifetime(expectedSessionId?: string): () => void {
+    if (expectedSessionId && this.requestedSessionCreations.has(expectedSessionId)) {
+      throw new Error(`Session ${expectedSessionId} is already being created`);
+    }
+    const complete = this.beginSessionCreationLifetime();
+    if (expectedSessionId) this.requestedSessionCreations.add(expectedSessionId);
+    return () => {
+      if (expectedSessionId) this.requestedSessionCreations.delete(expectedSessionId);
+      complete();
+    };
+  }
+
   private cleanupFailedPendingSessionCreation(sessionId: string): void {
     const tasks = typeof this.deps.taskStore.listTasks === "function"
       ? this.deps.taskStore.listTasks().filter((task) => task.sessionIds.includes(sessionId))
@@ -1391,6 +1405,7 @@ export class SessionManager {
   private trackPendingSessionCreation(
     sessionId: string,
     creation: Promise<AgentSession>,
+    cleanupOnFailure = true,
   ): void {
     const tracked = creation.finally(() => {
       if (this.pendingSessionCreations.get(sessionId) === tracked) {
@@ -1404,6 +1419,7 @@ export class SessionManager {
         `[sdk] Session ${sessionId} creation failed:`,
         error instanceof Error ? error.message : error,
       );
+      if (!cleanupOnFailure) return;
       const cleanupTimer = setTimeout(() => this.cleanupFailedPendingSessionCreation(sessionId), 0);
       cleanupTimer.unref?.();
     });
@@ -1422,6 +1438,7 @@ export class SessionManager {
     spanMetadata?: Record<string, unknown>;
     logMessage: (sessionId: string, duration: number) => string;
     cleanupLabel: string;
+    onCreateStarting?: () => void;
   }): Promise<AgentSession> {
     const {
       client,
@@ -1446,6 +1463,7 @@ export class SessionManager {
     };
     try {
       const settings = this.deps.settingsStore?.getSettings();
+      options.onCreateStarting?.();
       session = await client.createSession(sessionConfig);
       if (expectedSessionId && session.sessionId !== expectedSessionId) {
         await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
@@ -3990,11 +4008,16 @@ export class SessionManager {
     model?: string;
     reasoningEffort?: string;
     contextTier?: CopilotContextTier;
+    expectedSessionId?: string;
+    onCreateStarting?: () => void;
   } = {}): Promise<{ sessionId: string }> {
+    if (options.expectedSessionId !== undefined && !isCanonicalSessionId(options.expectedSessionId)) {
+      throw new Error("expectedSessionId must be a canonical session ID");
+    }
     if (this.shuttingDown) {
       throw new Error("Session manager is shutting down");
     }
-    const completeLifetime = this.beginSessionCreationLifetime();
+    const completeLifetime = this.beginExpectedSessionCreationLifetime(options.expectedSessionId);
     let backgroundOwnsLifetime = false;
     try {
       const client = this.getBackend();
@@ -4003,7 +4026,7 @@ export class SessionManager {
       }
 
       const t0 = Date.now();
-      const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
+      const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForContextTiers(client);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
@@ -4025,9 +4048,12 @@ export class SessionManager {
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
         cleanupLabel: "session",
+        onCreateStarting: options.onCreateStarting,
       });
+      if (bridgeSessionId && (options.background || options.expectedSessionId)) {
+        this.trackPendingSessionCreation(bridgeSessionId, creation, options.background === true);
+      }
       if (bridgeSessionId && options.background) {
-        this.trackPendingSessionCreation(bridgeSessionId, creation);
         backgroundOwnsLifetime = true;
         void creation.then(completeLifetime, completeLifetime);
         return { sessionId: bridgeSessionId };
@@ -4308,12 +4334,17 @@ export class SessionManager {
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
       agent?: string;
+      expectedSessionId?: string;
+      onCreateStarting?: () => void;
     } = {},
   ): Promise<{ sessionId: string }> {
+    if (options.expectedSessionId !== undefined && !isCanonicalSessionId(options.expectedSessionId)) {
+      throw new Error("expectedSessionId must be a canonical session ID");
+    }
     if (this.shuttingDown) {
       throw new Error("Session manager is shutting down");
     }
-    const completeLifetime = this.beginSessionCreationLifetime();
+    const completeLifetime = this.beginExpectedSessionCreationLifetime(options.expectedSessionId);
     let backgroundOwnsLifetime = false;
     try {
       const client = this.getBackend();
@@ -4349,7 +4380,7 @@ export class SessionManager {
       };
 
       const t0 = Date.now();
-      const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
+      const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForContextTiers(client);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
@@ -4381,9 +4412,12 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
+        onCreateStarting: options.onCreateStarting,
       });
+      if (bridgeSessionId && (options.background || options.expectedSessionId)) {
+        this.trackPendingSessionCreation(bridgeSessionId, creation, options.background === true);
+      }
       if (bridgeSessionId && options.background) {
-        this.trackPendingSessionCreation(bridgeSessionId, creation);
         backgroundOwnsLifetime = true;
         void creation.then(completeLifetime, completeLifetime);
         return { sessionId: bridgeSessionId };
@@ -4661,6 +4695,14 @@ export class SessionManager {
     return this.sessionObjects.has(sessionId);
   }
 
+  async getSessionCreationState(sessionId: string): Promise<"pending" | "present" | "absent"> {
+    if (!isCanonicalSessionId(sessionId)) throw new Error("A canonical session ID is required");
+    if (this.requestedSessionCreations.has(sessionId) || this.pendingSessionCreations.has(sessionId)) return "pending";
+    if (this.sessionObjects.has(sessionId) || this.hasKnownPersistedSession(sessionId)) return "present";
+    const sessions = await this.getBackend().listSessions();
+    return sessions.some((session) => session.sessionId === sessionId) ? "present" : "absent";
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     const client = this.getBackend();
     if (this.deletingSessions.has(sessionId)) {
@@ -4893,6 +4935,10 @@ export class SessionManager {
 
   getPendingUserInputCount(sessionId: string): number {
     return this.getPendingInteractionCount(sessionId);
+  }
+
+  getPendingInputSessionIds(): string[] {
+    return [...this.pendingInteractionCounts.keys()];
   }
 
   hasActiveTurns(): boolean {

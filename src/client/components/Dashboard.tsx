@@ -1,73 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { getDashboardTabPath, getExplicitDashboardTabFromPathname, getRememberedDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
-import { useDashboardQuery } from "../hooks/queries/useDashboard";
-import { useFeedKindStatsQuery, useFeedPagesQuery } from "../hooks/queries/useFeed";
+import { useQueryClient } from "@tanstack/react-query";
+import { getDashboardTabFromPathname, getDashboardTabPath } from "../lib/dashboard-routes";
+import {
+  useDashboardQuery,
+  useFocusAlertPagesQuery,
+  useFocusDecisionPagesQuery,
+  useFocusSnapshotQuery,
+} from "../hooks/queries/useDashboard";
 import { useSettingsQuery } from "../hooks/queries/useSettings";
 import { useWorkMapQuery } from "../hooks/queries/useWorkMap";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
-import DashboardChecklist from "./DashboardChecklist";
-import DashboardFeed, { type FeedFilterState } from "./DashboardFeed";
+import DashboardFocus, { getDashboardFocusCount, getDueFollowUpTasks } from "./DashboardFocus";
 import DashboardTabs from "./DashboardTabs";
 import DashboardWorkMap from "./DashboardWorkMap";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { dashboardChecklistCountClass } from "./dashboard-checklist-helpers";
-import type { FeedCard, Task, TaskGroup, WorkMapWorkItem } from "../api";
+import type { Task, TaskGroup, WorkMapWorkItem } from "../api";
 import { loadWorkMapFilters } from "../work-map-filter-state";
-
-const ACTIVE_FEED_PAGE_SIZE = 50;
-const RESOLVED_FEED_PAGE_SIZE = 50;
-
-function parseFeedTimestamp(value: string): number {
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function compareTimestampDesc(a: string, b: string): number {
-  return parseFeedTimestamp(b) - parseFeedTimestamp(a);
-}
-
-function compareIdDesc(a: string, b: string): number {
-  if (a === b) return 0;
-  return a < b ? 1 : -1;
-}
-
-function compareActiveFeedCards(a: FeedCard, b: FeedCard): number {
-  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-  return compareTimestampDesc(a.createdAt, b.createdAt) || b.id.localeCompare(a.id);
-}
-
-function compareResolvedFeedCards(a: FeedCard, b: FeedCard): number {
-  return compareTimestampDesc(a.statusChangedAt, b.statusChangedAt)
-    || compareTimestampDesc(a.updatedAt, b.updatedAt)
-    || compareIdDesc(a.id, b.id);
-}
-
-function feedCardFreshness(card: FeedCard): number {
-  return card.status === "active"
-    ? parseFeedTimestamp(card.updatedAt)
-    : Math.max(parseFeedTimestamp(card.statusChangedAt), parseFeedTimestamp(card.updatedAt));
-}
-
-export function mergeDashboardFeedCards(activeCards: FeedCard[], resolvedCards: FeedCard[]): FeedCard[] {
-  const latestById = new Map<string, FeedCard>();
-  for (const card of [...activeCards, ...resolvedCards]) {
-    const existing = latestById.get(card.id);
-    if (!existing || feedCardFreshness(card) >= feedCardFreshness(existing)) {
-      latestById.set(card.id, card);
-    }
-  }
-  const merged = Array.from(latestById.values());
-  return [
-    ...merged.filter((card) => card.status === "active").sort(compareActiveFeedCards),
-    ...merged.filter((card) => card.status !== "active").sort(compareResolvedFeedCards),
-  ];
-}
-
-function flattenFeedPages(data: { pages: Array<{ cards: FeedCard[] }> } | undefined): FeedCard[] {
-  return data?.pages.flatMap((page) => page.cards) ?? [];
-}
+import { queryKeys } from "../queryClient";
+import { readFocusSubjectLink, setFocusSubjectLink } from "../lib/focus-subject-links";
+import { focusDueHandoffCount } from "../focus-view-model";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
@@ -83,33 +37,33 @@ interface DashboardProps {
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
-function DashboardSkeleton() {
+function DashboardSkeleton({ widthClass }: { widthClass: string }) {
   return (
     <LoadingSkeletonRegion
       isLoading
       label="Loading dashboard"
       className="flex-1 min-h-0 overflow-y-auto"
     >
-      <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-3">
+      <div className={`${widthClass} mx-auto space-y-4 px-4 py-6 md:px-6 xl:px-8`}>
         <div className="flex items-center justify-between">
           <Skeleton height={12} width={132} shape="pill" />
           <Skeleton height={12} width={88} shape="pill" />
         </div>
-        <Skeleton height={38} className="w-full" />
-        <SkeletonCard className="divide-y divide-border p-0">
-          {Array.from({ length: 5 }, (_, index) => (
-            <div key={index} className="flex items-center gap-3 px-4 py-3">
-              <Skeleton shape="circle" width={18} height={18} className="shrink-0" />
-              <div className="min-w-0 flex-1">
-                <SkeletonText
-                  lines={2}
-                  widths={index % 2 === 0 ? ["76%", "42%"] : ["62%", "34%"]}
-                />
-              </div>
-              <Skeleton height={18} width={72} shape="pill" className="hidden sm:block" />
-            </div>
-          ))}
+        <SkeletonCard className="space-y-2 p-3">
+          <Skeleton height={18} width={90} />
+          <SkeletonText lines={1} widths={["65%"]} />
+          <div className="flex flex-wrap gap-2">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} height={32} width={85} shape="pill" />)}</div>
         </SkeletonCard>
+        <div className="grid gap-4 xl:grid-cols-12">
+          <SkeletonCard className="space-y-3 xl:col-span-7">
+            <Skeleton height={18} width={120} />
+            <SkeletonText lines={4} widths={["92%", "74%", "88%", "56%"]} />
+          </SkeletonCard>
+          <SkeletonCard className="space-y-3 xl:col-span-5">
+            <Skeleton height={18} width={112} />
+            <SkeletonText lines={4} widths={["84%", "68%", "90%", "52%"]} />
+          </SkeletonCard>
+        </div>
       </div>
     </LoadingSkeletonRegion>
   );
@@ -126,121 +80,95 @@ export default function Dashboard({
 }: DashboardProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
+  const notification = useMemo(() => readFocusSubjectLink(location.search), [location.search]);
+  const queryClient = useQueryClient();
+  const {
+    data,
+    isLoading: loading,
+    error: actionsError,
+    dataUpdatedAt: actionsUpdatedAt,
+    refetch: refetchDashboard,
+  } = useDashboardQuery();
   const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
+  const focusQuery = useFocusSnapshotQuery();
+  const alertQuery = useFocusAlertPagesQuery();
+  const decisionQuery = useFocusDecisionPagesQuery();
   const checklist = useDashboardChecklist(data);
-  const [showResolvedFeed, setShowResolvedFeed] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [includeArchivedWorkMap, setIncludeArchivedWorkMap] = useState(
     () => loadWorkMapFilters().includeArchived,
   );
   const [assignedToMeWorkMap, setAssignedToMeWorkMap] = useState(
     () => loadWorkMapFilters().assignedToMeOnly,
   );
-  const [feedFilter, setFeedFilter] = useState<FeedFilterState>({ kind: "", keyPrefix: "" });
-  const requestedActiveTab = getRememberedDashboardTabFromPathname(location.pathname);
-  const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
+  const requestedTab = getDashboardTabFromPathname(location.pathname);
   const workMapEnabled = Boolean(settings?.providers?.ado);
-  const activeTab = requestedActiveTab === "work-map" && !settingsLoading && !workMapEnabled
-    ? "checklist"
-    : requestedActiveTab;
+  const activeTab = requestedTab === "work-map" && !settingsLoading && !workMapEnabled
+    ? "focus"
+    : requestedTab;
   const workMapQuery = useWorkMapQuery(
     workMapEnabled && activeTab === "work-map",
     includeArchivedWorkMap,
     assignedToMeWorkMap,
   );
-  const handleFeedFilterChange = useCallback((patch: Partial<FeedFilterState>) => {
-    setFeedFilter((prev) => ({ ...prev, ...patch }));
-  }, []);
-  const feedFilterFragment = useMemo(() => {
-    const fragment: { kind?: string; keyPrefix?: string } = {};
-    const kind = feedFilter.kind.trim();
-    const keyPrefix = feedFilter.keyPrefix.trim();
-    if (kind) fragment.kind = kind;
-    if (keyPrefix) fragment.keyPrefix = keyPrefix;
-    return fragment;
-  }, [feedFilter]);
-  const activeFeedFilters = useMemo(
-    () => ({ ...feedFilterFragment, limit: ACTIVE_FEED_PAGE_SIZE }),
-    [feedFilterFragment],
+  const alerts = useMemo(
+    () => alertQuery.data?.pages.flatMap((page) => page.objects) ?? [],
+    [alertQuery.data],
   );
-  const doneFeedFilters = useMemo(
-    () => ({ ...feedFilterFragment, status: "done" as const, limit: RESOLVED_FEED_PAGE_SIZE }),
-    [feedFilterFragment],
+  const decisions = useMemo(
+    () => decisionQuery.data?.pages.flatMap((page) => page.objects) ?? [],
+    [decisionQuery.data],
   );
-  const dismissedFeedFilters = useMemo(
-    () => ({ ...feedFilterFragment, status: "dismissed" as const, limit: RESOLVED_FEED_PAGE_SIZE }),
-    [feedFilterFragment],
+  const alertTotal = alertQuery.data?.pages[0]?.total ?? focusQuery.data?.alertTotal ?? null;
+  const decisionTotal = decisionQuery.data?.pages[0]?.total ?? focusQuery.data?.decisionTotal ?? null;
+  const dueFollowUpCount = useMemo(
+    () => getDueFollowUpTasks(tasks, new Date(nowMs)).length,
+    [nowMs, tasks],
   );
-  const activeFeedQuery = useFeedPagesQuery(activeFeedFilters);
-  const doneFeedQuery = useFeedPagesQuery(doneFeedFilters, { enabled: showResolvedFeed });
-  const dismissedFeedQuery = useFeedPagesQuery(dismissedFeedFilters, { enabled: showResolvedFeed });
-  const kindStatsParams = useMemo(
-    () => ({ keyPrefix: feedFilterFragment.keyPrefix }),
-    [feedFilterFragment.keyPrefix],
+  const focusCount = getDashboardFocusCount(
+    checklist,
+    (alertTotal ?? 0) + (decisionTotal ?? 0),
+    dueFollowUpCount,
+    focusDueHandoffCount(focusQuery.data, nowMs) ?? 0,
   );
-  const kindStatsQuery = useFeedKindStatsQuery(kindStatsParams, { enabled: activeTab === "feed" });
-  const activeFeedCards = useMemo(() => flattenFeedPages(activeFeedQuery.data), [activeFeedQuery.data]);
-  const doneFeedCards = useMemo(() => flattenFeedPages(doneFeedQuery.data), [doneFeedQuery.data]);
-  const dismissedFeedCards = useMemo(() => flattenFeedPages(dismissedFeedQuery.data), [dismissedFeedQuery.data]);
-  const resolvedFeedCards = useMemo(
-    () => showResolvedFeed ? [...doneFeedCards, ...dismissedFeedCards] : [],
-    [dismissedFeedCards, doneFeedCards, showResolvedFeed],
-  );
-  const feedCards = useMemo(
-    () => mergeDashboardFeedCards(activeFeedCards, resolvedFeedCards),
-    [activeFeedCards, resolvedFeedCards],
-  );
-  const feedLoading = activeFeedQuery.isLoading || (showResolvedFeed && (doneFeedQuery.isLoading || dismissedFeedQuery.isLoading));
+  const focusIndicatorState = (focusDueHandoffCount(focusQuery.data, nowMs) ?? 0) > 0 || checklist.checklistIndicator.state === "overdue"
+    ? "overdue"
+    : focusCount > 0
+      ? "due-today"
+      : "none";
+  const dashboardWidthClass = activeTab === "work-map" ? "max-w-6xl" : "max-w-[1440px]";
 
-  const refetchFeed = async () => {
-    const refetches: Array<Promise<unknown>> = [activeFeedQuery.refetch()];
-    if (showResolvedFeed) {
-      refetches.push(doneFeedQuery.refetch(), dismissedFeedQuery.refetch());
-    }
-    return Promise.all(refetches);
-  };
-
-  const loadMoreActiveFeed = async () => {
-    if (!activeFeedQuery.hasNextPage || activeFeedQuery.isFetchingNextPage) return;
-    await activeFeedQuery.fetchNextPage();
-  };
-
-  const loadMoreResolvedFeed = async () => {
-    const refetches: Array<Promise<unknown>> = [];
-    if (doneFeedQuery.hasNextPage && !doneFeedQuery.isFetchingNextPage) {
-      refetches.push(doneFeedQuery.fetchNextPage());
-    }
-    if (dismissedFeedQuery.hasNextPage && !dismissedFeedQuery.isFetchingNextPage) {
-      refetches.push(dismissedFeedQuery.fetchNextPage());
-    }
-    await Promise.all(refetches);
+  const refreshFocus = async () => {
+    await Promise.all([
+      refetchDashboard(),
+      focusQuery.refetch(),
+      alertQuery.refetch(),
+      decisionQuery.refetch(),
+      queryClient.invalidateQueries({ queryKey: queryKeys.focusRoot }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems }),
+    ]);
   };
 
   const handleRefresh = async () => {
-    const refreshes: Array<Promise<unknown>> = [refetchDashboard(), refetchFeed()];
     if (workMapEnabled && activeTab === "work-map") {
-      refreshes.push(workMapQuery.refetch());
+      await Promise.all([refreshFocus(), workMapQuery.refetch()]);
+      return;
     }
-    await Promise.all(refreshes);
+    await refreshFocus();
   };
 
   useEffect(() => {
-    if (explicitActiveTab) setLastDashboardTab(explicitActiveTab);
-  }, [explicitActiveTab]);
+    const timer = window.setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
-    if (settingsLoading || workMapEnabled || explicitActiveTab !== "work-map") return;
-    navigate(getDashboardTabPath("checklist"), { replace: true });
-  }, [explicitActiveTab, navigate, settingsLoading, workMapEnabled]);
+    if (settingsLoading || workMapEnabled || requestedTab !== "work-map") return;
+    navigate(getDashboardTabPath("focus"), { replace: true });
+  }, [navigate, requestedTab, settingsLoading, workMapEnabled]);
 
-  if (loading && !data) return <DashboardSkeleton />;
-
-  if (!data) {
-    return (
-      <div className="flex-1 min-h-0 flex items-center justify-center text-text-muted text-sm">
-        Failed to load dashboard
-      </div>
-    );
+  if (loading && !data && !focusQuery.data && alerts.length === 0 && decisions.length === 0 && !notification.target && !notification.error) {
+    return <DashboardSkeleton widthClass={dashboardWidthClass} />;
   }
 
   return (
@@ -250,47 +178,59 @@ export default function Dashboard({
         className="absolute inset-0"
         scrollRestoration={scrollRestoration}
       >
-        <div className={`${activeTab === "work-map" ? "max-w-6xl" : "max-w-3xl"} mx-auto px-4 md:px-8 py-6 space-y-3`}>
+        <div className={`${dashboardWidthClass} mx-auto space-y-3 px-4 py-6 md:px-6 xl:px-8`}>
           <DashboardTabs
             activeTab={activeTab}
-            onTabChange={(tab) => {
-              setLastDashboardTab(tab);
-              navigate(getDashboardTabPath(tab));
-            }}
-            checklistCount={checklist.visibleOpenChecklistItems.length}
-            checklistCountClass={dashboardChecklistCountClass(checklist.checklistIndicator.state)}
-            checklistCountTitle={checklist.checklistIndicatorLabel ?? undefined}
-            feedCount={feedCards.length}
+            onTabChange={(tab) => navigate(getDashboardTabPath(tab))}
+            focusCount={focusCount}
+            focusCountClass={dashboardChecklistCountClass(focusIndicatorState)}
+            focusCountTitle={focusCount > 0 ? `${focusCount} item${focusCount === 1 ? "" : "s"} need attention` : undefined}
             showWorkMap={workMapEnabled}
             workMapCount={workMapQuery.data?.workItems.length}
           />
-          <DashboardFeed
-            active={activeTab === "feed"}
-            feedCards={feedCards}
+          <DashboardFocus
+            active={activeTab === "focus"}
+            tabbed={workMapEnabled}
+            checklist={checklist}
             tasks={tasks}
             taskGroups={taskGroups}
-            feedLoading={feedLoading}
-            showResolvedFeed={showResolvedFeed}
-            feedFilter={feedFilter}
-            onFeedFilterChange={handleFeedFilterChange}
-            kindStats={kindStatsQuery.data ?? null}
-            kindStatsLoading={kindStatsQuery.isLoading}
-            activeHasMore={Boolean(activeFeedQuery.hasNextPage)}
-            resolvedHasMore={showResolvedFeed && Boolean(doneFeedQuery.hasNextPage || dismissedFeedQuery.hasNextPage)}
-            activeLoadingMore={activeFeedQuery.isFetchingNextPage}
-            resolvedLoadingMore={doneFeedQuery.isFetchingNextPage || dismissedFeedQuery.isFetchingNextPage}
-            onToggleResolvedFeed={() => setShowResolvedFeed((value) => !value)}
-            onSelectTask={(taskId) => onSelectTask(taskId)}
+            focusSnapshot={focusQuery.data}
+            alertTotal={alertTotal}
+            decisionTotal={decisionTotal}
+            alerts={alerts}
+            decisions={decisions}
+            alertsLoading={alertQuery.isLoading}
+            alertsHasMore={Boolean(alertQuery.hasNextPage)}
+            alertsLoadingMore={alertQuery.isFetchingNextPage}
+            decisionsLoading={decisionQuery.isLoading}
+            decisionsHasMore={Boolean(decisionQuery.hasNextPage)}
+            decisionsLoadingMore={decisionQuery.isFetchingNextPage}
+            focusLoading={focusQuery.isLoading}
+            focusError={focusQuery.error}
+            actionsLoading={loading}
+            actionsError={actionsError}
+            actionsUpdatedAt={actionsUpdatedAt}
+            alertsUpdatedAt={alertQuery.dataUpdatedAt}
+            decisionsUpdatedAt={decisionQuery.dataUpdatedAt}
+            alertsError={alertQuery.error}
+            decisionsError={decisionQuery.error}
+            nowMs={nowMs}
+            onSelectTask={onSelectTask}
             onSelectSession={onSelectSession}
             onStartPromptSession={onStartPromptSession}
-            onRefetchFeed={refetchFeed}
-            onLoadMoreActive={loadMoreActiveFeed}
-            onLoadMoreResolved={loadMoreResolvedFeed}
-          />
-          <DashboardChecklist
-            active={activeTab === "checklist"}
-            checklist={checklist}
-            onSelectTask={onSelectTask}
+            onLoadMoreAlerts={() => alertQuery.fetchNextPage()}
+            onLoadMoreDecisions={() => decisionQuery.fetchNextPage()}
+            onRetryFocus={() => Promise.all([
+              refetchDashboard(),
+              focusQuery.refetch(),
+              alertQuery.refetch(),
+              decisionQuery.refetch(),
+            ])}
+            onRefresh={refreshFocus}
+            notificationTarget={notification.target}
+            notificationError={notification.error}
+            onCloseNotification={() => navigate({ pathname: location.pathname, search: setFocusSubjectLink(location.search, null).toString(), hash: location.hash }, { replace: true })}
+            onInspectSubject={(target) => navigate({ pathname: location.pathname, search: setFocusSubjectLink(location.search, target).toString(), hash: location.hash })}
           />
           <DashboardWorkMap
             active={activeTab === "work-map"}

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createFeedStore, FeedCardValidationError, type FeedCardPageFilters, type FeedStore } from "../feed-store.js";
+import { FeedCardValidationError, type FeedCardPageFilters, type FeedStore } from "../feed-store.js";
+import { createChecklistStore } from "../checklist-store.js";
+import { createFocusDataLayer } from "../focus-data-layer.js";
 import { createTaskStore } from "../task-store.js";
 import type { DatabaseSync } from "../db.js";
 import { createTestBus, setupTestDb } from "./helpers.js";
@@ -20,10 +22,17 @@ function makeVisual(cardId: string, artifactId: string) {
 let db: DatabaseSync;
 let store: FeedStore;
 
+function createStore(
+  bus = createTestBus(),
+  options: { onVisualUnreferenced?: (visual: any) => void } = {},
+): FeedStore {
+  const checklistStore = createChecklistStore(db, bus);
+  return createFocusDataLayer(db, bus, checklistStore, options).feedStore;
+}
+
 beforeEach(() => {
   db = setupTestDb();
-  const bus = createTestBus();
-  store = createFeedStore(db, bus);
+  store = createStore();
 });
 
 function listPageCards(filters: FeedCardPageFilters = {}) {
@@ -77,7 +86,7 @@ describe("feed-store", () => {
 
   it("rejects identifier-only keyed upserts without emitting events", () => {
     const bus = createTestBus();
-    store = createFeedStore(db, bus);
+    store = createStore(bus);
     const created = store.saveCard({ key: "preview:no-op", title: "Preview" }).card;
     const events: unknown[] = [];
     bus.subscribe((event) => {
@@ -88,6 +97,39 @@ describe("feed-store", () => {
 
     expect(events).toEqual([]);
     expect(store.getCard(created.id)).toEqual(created);
+  });
+
+  it.each(["decision", "alert", "note"])("returns the hydrated legacy shape for identical keyed %s saves and updates", (kind) => {
+    const input = {
+      key: `legacy:no-op:${kind}`,
+      kind,
+      title: "Unchanged concern",
+      body: "Existing evidence",
+      links: [{ label: "Source", url: "https://example.test/source" }],
+      metadata: { source: "legacy" },
+      action: { prompt: "Review this concern" },
+    };
+    const original = store.saveCard(input).card;
+    store.promoteCardToChecklist(original.id, { taskId: null });
+    const projection = store.getCard(original.id)!;
+    const saved = store.saveCard(input);
+    expect(saved.created).toBe(false);
+
+    const expectedKeys = [
+      "id", "dedupeKey", "title", "body", "kind", "priority", "status", "taskId", "sessionId",
+      "url", "links", "metadata", "visual", "action", "pinned", "statusChangedAt", "createdAt", "updatedAt",
+    ].sort();
+    for (const card of [
+      saved.card,
+      store.updateCardByKey(input.key, { title: input.title }),
+      store.updateCardById(original.id, { body: input.body }),
+    ]) {
+      expect(card).toEqual(projection);
+      expect(Object.keys(card).sort()).toEqual(expectedKeys);
+      for (const field of ["objectType", "category", "activationId", "lifecycle", "details", "linkedActions", "taskState", "taskTitle"]) {
+        expect(card).not.toHaveProperty(field);
+      }
+    }
   });
 
   it("updates only provided fields", () => {
@@ -112,6 +154,270 @@ describe("feed-store", () => {
       metadata: { source: "agent" },
     });
     expect(updated.links).toEqual([{ label: "Spec", url: "https://example.test/spec" }]);
+  });
+
+  it("builds a complete decision inbox and task-scoped source digests", () => {
+    const bus = createTestBus();
+    const taskStore = createTaskStore(db, bus);
+    store = createStore(bus);
+    const activeTask = taskStore.createTask("Active task");
+    const otherTask = taskStore.createTask("Other task");
+    const mutedTask = taskStore.createTask("Muted task");
+    taskStore.updateTask(mutedTask.id, { muted: true });
+
+    const activeDecision = store.saveCard({
+      key: "decision:active",
+      title: "Choose a path",
+      kind: "decision",
+      taskId: activeTask.id,
+    }).card;
+    const mutedDecision = store.saveCard({
+      key: "decision:muted",
+      title: "Muted decision",
+      kind: "decision",
+      taskId: mutedTask.id,
+    }).card;
+    const mutedAlert = store.saveCard({
+      key: "alerts:critical",
+      title: "Conservative alert",
+      kind: "alert",
+      taskId: mutedTask.id,
+    }).card;
+    for (let index = 0; index < 4; index += 1) {
+      store.saveCard({
+        key: `docs-maintenance:item-${index}`,
+        title: `Active docs ${index}`,
+        kind: "todo",
+        taskId: activeTask.id,
+        priority: index === 0 ? "high" : "normal",
+      });
+    }
+    store.saveCard({
+      key: "docs-maintenance:other",
+      title: "Other docs",
+      kind: "todo",
+      taskId: otherTask.id,
+    });
+    store.saveCard({ title: "Unkeyed one", kind: "note", taskId: activeTask.id });
+    store.saveCard({ title: "Unkeyed two", kind: "note", taskId: activeTask.id });
+
+    const attention = store.getDashboardAttention();
+    const inbox = store.listDashboardInbox();
+
+    expect(attention.inboxTotal).toBe(2);
+    expect(inbox.cards.map((card) => card.id)).toEqual(
+      expect.arrayContaining([activeDecision.id, mutedAlert.id]),
+    );
+    expect(inbox.cards.map((card) => card.id)).not.toContain(mutedDecision.id);
+
+    const activeDocs = attention.digests.find(
+      (digest) => digest.taskId === activeTask.id && digest.family === "docs-maintenance",
+    );
+    expect(activeDocs).toMatchObject({
+      keyPrefix: "docs-maintenance:",
+      quiet: false,
+      count: 4,
+      highPriorityCount: 1,
+    });
+    expect(activeDocs?.samples).toHaveLength(3);
+
+    const otherDocs = attention.digests.find(
+      (digest) => digest.taskId === otherTask.id && digest.family === "docs-maintenance",
+    );
+    expect(otherDocs).toMatchObject({ count: 1, quiet: false });
+
+    const mutedDecisions = attention.digests.find(
+      (digest) => digest.taskId === mutedTask.id && digest.family === "decision",
+    );
+    expect(mutedDecisions).toMatchObject({ count: 1, quiet: true });
+
+    const unkeyedNotes = attention.digests.find(
+      (digest) => digest.taskId === activeTask.id && digest.kind === "note",
+    );
+    expect(unkeyedNotes).toMatchObject({
+      family: "note",
+      keyPrefix: null,
+      count: 2,
+    });
+  });
+
+  it("atomically and idempotently promotes a feed card into a checklist action", () => {
+    const bus = createTestBus();
+    const events: unknown[] = [];
+    bus.subscribe((event) => events.push(event));
+    const taskStore = createTaskStore(db, bus);
+    store = createStore(bus);
+    const task = taskStore.createTask("Promotion task");
+    const card = store.saveCard({
+      title: "Review the finding",
+      kind: "decision",
+      taskId: task.id,
+    }).card;
+    events.length = 0;
+
+    const first = store.promoteCardToChecklist(card.id);
+    const second = store.promoteCardToChecklist(card.id);
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.checklistItem.id).toBe(first.checklistItem.id);
+    expect(first.checklistItem).toMatchObject({
+      taskId: task.id,
+      text: "Review the finding",
+      done: false,
+    });
+    expect(first.card.status).toBe("active");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM checklist_items").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM feed_card_checklist_promotions").get()).toEqual({ count: 1 });
+    expect(events.filter((event: any) => event.type === "feed:changed")).toHaveLength(1);
+    expect(events.filter((event: any) => event.type === "task:changed")).toHaveLength(1);
+  });
+
+  it("paginates decisions while preserving the complete inbox count", () => {
+    for (let index = 0; index < 22; index += 1) {
+      store.saveCard({
+        key: `decision:${index}`,
+        title: `Decision ${index}`,
+        kind: "decision",
+      });
+    }
+
+    const attention = store.getDashboardAttention();
+    const firstPage = store.listDashboardInbox();
+    const secondPage = store.listDashboardInbox({ offset: firstPage.nextOffset ?? 0 });
+    expect(attention.inboxTotal).toBe(22);
+    expect(firstPage).toMatchObject({ total: 22, nextOffset: 20 });
+    expect(firstPage.cards).toHaveLength(20);
+    expect(secondPage).toMatchObject({ total: 22, nextOffset: null });
+    expect(secondPage.cards).toHaveLength(2);
+  });
+
+  it("paginates one task-scoped digest without mixing matching families from other tasks", () => {
+    const bus = createTestBus();
+    const taskStore = createTaskStore(db, bus);
+    store = createStore(bus);
+    const firstTask = taskStore.createTask("First task");
+    const secondTask = taskStore.createTask("Second task");
+    for (let index = 0; index < 3; index += 1) {
+      store.saveCard({
+        key: `docs-maintenance:first:${index}`,
+        title: `First ${index}`,
+        kind: "note",
+        taskId: firstTask.id,
+      });
+    }
+    store.saveCard({
+      key: "docs-maintenance:second:0",
+      title: "Second",
+      kind: "note",
+      taskId: secondTask.id,
+    });
+
+    const firstPage = store.listDashboardDigestItems({
+      taskId: firstTask.id,
+      keyPrefix: "docs-maintenance:",
+      limit: 2,
+    });
+    const secondPage = store.listDashboardDigestItems({
+      taskId: firstTask.id,
+      keyPrefix: "docs-maintenance:",
+      offset: firstPage.nextOffset ?? 0,
+      limit: 2,
+    });
+
+    expect(firstPage).toMatchObject({ total: 3, nextOffset: 2 });
+    expect(firstPage.cards).toHaveLength(2);
+    expect(secondPage).toMatchObject({ total: 3, nextOffset: null });
+    expect(secondPage.cards).toHaveLength(1);
+    expect([...firstPage.cards, ...secondPage.cards].every((card) => card.taskId === firstTask.id)).toBe(true);
+  });
+
+  it("keeps inbox items out of digest details and exact-matches non-prefix keys", () => {
+    const exact = store.saveCard({
+      key: "source",
+      title: "Exact source",
+      kind: "note",
+    }).card;
+    store.saveCard({
+      key: "source-extra",
+      title: "Different source",
+      kind: "note",
+    });
+    const decision = store.saveCard({
+      key: "source:decision",
+      title: "Source decision",
+      kind: "decision",
+    }).card;
+    store.saveCard({
+      key: "source:note",
+      title: "Source note",
+      kind: "note",
+    });
+
+    const exactPage = store.listDashboardDigestItems({ taskId: null, keyPrefix: "source" });
+    expect(exactPage.cards.map((card) => card.id)).toEqual([exact.id]);
+
+    const prefixPage = store.listDashboardDigestItems({ taskId: null, keyPrefix: "source:" });
+    expect(prefixPage.cards.map((card) => card.id)).not.toContain(decision.id);
+    expect(prefixPage.cards.map((card) => card.title)).toEqual(["Source note"]);
+  });
+
+  it("paginates cleared items for recovery inside Focus", () => {
+    const done = store.saveCard({ title: "Done", status: "done" }).card;
+    const dismissed = store.saveCard({ title: "Dismissed", status: "dismissed" }).card;
+
+    const page = store.listDashboardCleared({ limit: 1 });
+
+    expect(page.total).toBe(2);
+    expect(page.cards).toHaveLength(1);
+    expect(page.nextOffset).toBe(1);
+    expect([done.id, dismissed.id]).toContain(page.cards[0].id);
+  });
+
+  it("reuses unfinished work when a legacy decision is explicitly reactivated", () => {
+    const card = store.saveCard({ title: "Stable action", kind: "decision" }).card;
+    const first = store.promoteCardToChecklist(card.id, { taskId: null });
+    store.updateCardById(card.id, { status: "done" });
+    store.updateCardById(card.id, { status: "active" });
+
+    const nextCycle = store.promoteCardToChecklist(card.id, { taskId: null });
+
+    expect(nextCycle.created).toBe(false);
+    expect(nextCycle.card.status).toBe("active");
+    expect(nextCycle.checklistItem.id).toBe(first.checklistItem.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM checklist_items").get()).toEqual({ count: 1 });
+  });
+
+  it("clears promotion identity when the promoted checklist action is deleted", () => {
+    const checklistStore = createChecklistStore(db, createTestBus());
+    const card = store.saveCard({ title: "Replace deleted action", kind: "decision" }).card;
+    const first = store.promoteCardToChecklist(card.id, { taskId: null });
+    checklistStore.deleteChecklistItem(first.checklistItem.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM feed_card_checklist_promotions").get()).toEqual({ count: 0 });
+    store.updateCardById(card.id, { status: "active" });
+
+    const replacement = store.promoteCardToChecklist(card.id, { taskId: null });
+
+    expect(replacement.created).toBe(true);
+    expect(replacement.checklistItem.id).not.toBe(first.checklistItem.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM checklist_items").get()).toEqual({ count: 1 });
+  });
+
+  it("rolls back checklist creation when the handoff cannot be projected", () => {
+    const card = store.saveCard({ title: "Rollback action", kind: "decision" }).card;
+    db.exec(`
+      CREATE TRIGGER block_feed_action_promotion
+      BEFORE UPDATE OF status ON feed_cards
+      WHEN NEW.id = '${card.id}' AND NEW.status = 'active'
+      BEGIN
+        SELECT RAISE(ABORT, 'blocked promotion');
+      END;
+    `);
+
+    expect(() => store.promoteCardToChecklist(card.id, { taskId: null })).toThrow("blocked promotion");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM checklist_items").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM feed_card_checklist_promotions").get()).toEqual({ count: 0 });
+    expect(store.getCard(card.id)?.status).toBe("active");
   });
 
   it("keeps default pages active-only and orders resolved filters by status change time", () => {
@@ -286,7 +592,7 @@ describe("feed-store", () => {
   it("preserves omitted action taskId separately from explicit standalone null", () => {
     const bus = createTestBus();
     const taskStore = createTaskStore(db, bus);
-    store = createFeedStore(db, bus);
+    store = createStore(bus);
     const task = taskStore.createTask("Card task");
 
     const omitted = store.saveCard({
@@ -388,7 +694,7 @@ describe("feed-store", () => {
   it("returns only summary fields when minimal is true", () => {
     const bus = createTestBus();
     const taskStore = createTaskStore(db, bus);
-    store = createFeedStore(db, bus);
+    store = createStore(bus);
     const task = taskStore.createTask("Feed task");
     const created = store.saveCard({
       key: "minimal:one",
@@ -499,7 +805,7 @@ describe("feed-store", () => {
   it("filters cards", () => {
     const bus = createTestBus();
     const taskStore = createTaskStore(db, bus);
-    store = createFeedStore(db, bus);
+    store = createStore(bus);
     const task = taskStore.createTask("Feed task");
     const taskCard = store.saveCard({ title: "Task card", taskId: task.id, kind: "todo" }).card;
     store.saveCard({ title: "Session card", sessionId: "session-1", kind: "note" });
@@ -518,7 +824,7 @@ describe("feed-store", () => {
     try {
       const bus = createTestBus();
       const taskStore = createTaskStore(db, bus);
-      store = createFeedStore(db, bus);
+      store = createStore(bus);
       const task = taskStore.createTask("Proposal task");
       vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
       const first = store.saveCard({ key: "proposal:bridge:one", title: "Proposal one", taskId: task.id }).card;
@@ -565,7 +871,7 @@ describe("feed-store", () => {
   it("stores feed-owned visuals and reports unreferenced visuals on replace, clear, and delete", () => {
     const bus = createTestBus();
     const removed: string[] = [];
-    store = createFeedStore(db, bus, {
+    store = createStore(bus, {
       onVisualUnreferenced: (visual) => removed.push(visual.artifactId),
     });
     const cardId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -595,7 +901,7 @@ describe("feed-store", () => {
   it("sets taskId to null when a linked task is deleted", () => {
     const bus = createTestBus();
     const taskStore = createTaskStore(db, bus);
-    store = createFeedStore(db, bus);
+    store = createStore(bus);
     const task = taskStore.createTask("Feed task");
     const { card } = store.saveCard({ title: "Task card", taskId: task.id });
 
@@ -608,17 +914,18 @@ describe("feed-store", () => {
     const bus = createTestBus();
     const events: unknown[] = [];
     bus.subscribe((event) => events.push(event));
-    store = createFeedStore(db, bus);
+    store = createStore(bus);
 
     const { card } = store.saveCard({ key: "event-key", title: "Event card", sessionId: "session-1" });
     store.updateCardById(card.id, { status: "done" });
     store.deleteCardByKey("event-key");
 
-    expect(events).toEqual([
+    expect(events.filter((event: any) => event.type === "feed:changed")).toEqual([
       expect.objectContaining({ type: "feed:changed", cardId: card.id, dedupeKey: "event-key", sessionId: "session-1" }),
       expect.objectContaining({ type: "feed:changed", cardId: card.id, dedupeKey: "event-key", sessionId: "session-1" }),
       expect.objectContaining({ type: "feed:changed", cardId: card.id, dedupeKey: "event-key", sessionId: "session-1" }),
     ]);
+    expect(events.filter((event: any) => event.type === "focus:changed")).toHaveLength(3);
   });
 
   it("rejects invalid and oversized input", () => {

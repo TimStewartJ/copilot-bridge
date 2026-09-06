@@ -443,6 +443,14 @@ export function createScheduleStore(db: DatabaseSync) {
     return [...new Set(automaticRunClaims.map((row) => row.sessionId))];
   }
 
+  function listInFlightRunClaims(now = new Date().toISOString()): Array<{ scheduleId: string; runKey: string }> {
+    return db.prepare(`SELECT c.scheduleId, c.runKey FROM schedule_run_claims c
+      WHERE c.status='claimed' AND (c.leaseExpiresAt>? OR EXISTS (
+        SELECT 1 FROM schedule_run_claims owner WHERE owner.scheduleId=c.scheduleId
+          AND owner.runKey=? AND owner.status='claimed' AND owner.leaseExpiresAt>?
+      ))`).all(now, SCHEDULE_LOCK_RUN_KEY, now) as Array<{ scheduleId: string; runKey: string }>;
+  }
+
   function listScheduleRunSessionIds(): string[] {
     const rows = db.prepare("SELECT DISTINCT sessionId FROM schedule_runs").all() as Array<{ sessionId: string }>;
     return rows.map((row) => row.sessionId);
@@ -524,7 +532,7 @@ export function createScheduleStore(db: DatabaseSync) {
     completeAutomaticRun, skipAutomaticRun,
     releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
     updateNextRunAt, getSchedulesForTask, getEnabledSchedules, listDueSchedules,
-    listClaimedSessionIds, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
+    listClaimedSessionIds, listInFlightRunClaims, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
     pruneFinishedRunClaims,
   };
 }

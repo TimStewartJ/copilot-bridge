@@ -2,7 +2,8 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
-import { createFeedStore } from "../feed-store.js";
+import { createChecklistStore } from "../checklist-store.js";
+import { createFocusDataLayer } from "../focus-data-layer.js";
 import type { DatabaseSync } from "../db.js";
 
 let db: DatabaseSync;
@@ -112,7 +113,8 @@ describe("store row hydration resilience", () => {
 
   describe("feed-store", () => {
     it("skips a card whose stored visual JSON is invalid and returns the rest", () => {
-      const store = createFeedStore(db, createTestBus());
+      const bus = createTestBus();
+      const store = createFocusDataLayer(db, bus, createChecklistStore(db, bus)).feedStore;
       store.saveCard({ title: "First" });
       const broken = store.saveCard({ title: "Broken" });
       store.saveCard({ title: "Third" });
@@ -126,7 +128,8 @@ describe("store row hydration resilience", () => {
     });
 
     it("keeps cursor paging correct across a skipped row", () => {
-      const store = createFeedStore(db, createTestBus());
+      const bus = createTestBus();
+      const store = createFocusDataLayer(db, bus, createChecklistStore(db, bus)).feedStore;
       for (let i = 0; i < 4; i++) store.saveCard({ title: `Card ${i}` });
       const rows = db.prepare("SELECT id FROM feed_cards ORDER BY updatedAt DESC, id DESC").all() as Array<{ id: string }>;
       db.prepare("UPDATE feed_cards SET actionJson = ? WHERE id = ?")
@@ -148,7 +151,8 @@ describe("store row hydration resilience", () => {
     });
 
     it("still surfaces an unreadable card on a direct single-card read", () => {
-      const store = createFeedStore(db, createTestBus());
+      const bus = createTestBus();
+      const store = createFocusDataLayer(db, bus, createChecklistStore(db, bus)).feedStore;
       const broken = store.saveCard({ title: "Broken" });
       db.prepare("UPDATE feed_cards SET visualJson = ? WHERE id = ?")
         .run(JSON.stringify({ kind: "image" }), broken.card.id);

@@ -229,7 +229,9 @@ export default function SettingsView() {
     if (!draft) return;
     setSaving(true);
     try {
-      const updated = await settingsMutation.mutateAsync(draft);
+      // Notification policy has its own save; a stale general draft must not undo it.
+      const { focusNotifications: _focusNotifications, ...updates } = draft;
+      const updated = await settingsMutation.mutateAsync(updates);
       setSettings(updated);
       setDraft(structuredClone(updated));
       showToast("Settings saved", "success");

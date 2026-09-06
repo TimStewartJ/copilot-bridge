@@ -89,25 +89,29 @@ web_search is a hosted agent that runs search queries and returns prose with cit
 
 export const FEED_GUIDANCE = `
 <feed_cards>
-The feed is a durable dashboard queue for user-relevant items that should remain visible after the chat scrolls away. It is not a transcript, progress log, or default place for assistant status updates.
+Bridge has one user-facing Focus surface backed by first-class Actions, Decisions, Alerts, and Events.
 
-Default to not creating feed cards. Use the feed save tool only when one of these is true:
-- The user explicitly asks to create, pin, track, or publish something to the feed.
-- A scheduled or recurring agent is curating a bounded set of cards for the user to review or act on.
-- The card represents durable state that would be easy to lose in chat: a pending decision, a waiting approval, a user-facing artifact, a curated alert, or a concrete follow-up action.
+- Chat is the default. Persist only a durable object with a clear user-facing purpose; never publish to manufacture activity.
+- Use action_add/action_update only for accepted executable work, not suggestions, questions, or unaccepted agent plans. Optional stable keys dedupe retries.
+- Use decision_save only for a genuine user choice with a title/question, at least two alternatives, a recommendation or fallback, and consequenceOfDelay whenever interventionBy is set.
+- Use alert_save only for a verified condition with concrete evidence, impact, observedAt, sourceFamily, producer, and interventionBy. Do not infer urgency from priority alone.
+- Use event_save for durable observations, links, source updates, and artifacts with category, sourceFamily, producer and observedAt. Producer/recurring Events require a stable concern key, not a new key on each run. Explicit sourceFamily controls digest grouping; identical upserts or an observation-clock-only refresh do not renew Event freshness. Use coverage assertions for unchanged recurring checks.
+- Do not duplicate the same concern as an Action, Decision, Alert and Event. Update its existing stable-key object or promote it with decision_promote/alert_promote/event_promote when work is accepted.
+- Truthful lifecycle: launching a session acknowledges only; accepting work hands off only. An unfinished linked Action is reused across episodes. Action completion does not resolve the source. Record the actual outcome/reason before resolved, accepted_risk or dismissed; these are not synonyms for starting work.
+- Dismissal is sticky. Reactivation requires newEpisode:true and a fresh, nonempty episodeReason describing changed evidence/circumstances. Do not nag by cycling lifecycle or keys. Use expectedActivationId to avoid acting on a stale episode.
+- Persistence is not a notification request. Events and routine completions never push. Immediate Alerts need a currently active, matching user-approved Reach grant, a deadline before the next review, and notification-policy eligibility; quiet-hour override needs explicit grant permission and policy opt-in. Never grant yourself new authority. Existing needs-input notifications remain separate.
+- Use focus_authority_* only to record explicit user-approved limits, never inferred permission. Use focus_coverage_* for bounded, evidenced Shelter assertions; missing/stale coverage means unknown, not all-clear. Record classification/notification/coverage mistakes with focus_audit_save. History retains cleared/aged objects and transitions.
 
-Do not create feed cards for routine narration, task progress, test/build results, staging previews, deployment summaries, or generic "work completed" updates unless the user explicitly asks. Share staging preview links in chat by default.
+Do not persist routine narration, test/build results, staging previews, deployment summaries, or generic completion messages. Share those in chat. Keep persisted objects concise, keyed when recurring, and linked to their task when useful.
 
-Before creating cards, inspect existing relevant feed cards when practical and update keyed cards instead of creating near-duplicates. Use stable keys for recurring sources, such as doc-check:<date>:<slug>, platform-audit:<slug>, anti-scroll:<date>:<slug>, or decision:<taskId>:<topic>.
-
-Keep cards finite and actionable. Prefer a short title, a concise body, a clear kind, and a task/url/action only when it helps the user act. Use Markdown to make cards easier to scan, but keep cards finite and concise; use visuals for rich artifacts instead of large Markdown bodies. Avoid long explanations that belong in chat or docs.
-
-Use statuses deliberately:
-- active: still needs attention or remains useful on the dashboard
-- done: completed but useful as history
-- dismissed: no longer relevant, not worth showing by default
-Delete only when the card is noise, duplicate, or mistaken.
-
-Use pinned sparingly for cards that should stay above normal feed flow. Add visuals only when the visual is the artifact or materially improves the card. Add prompt actions only when starting a follow-up session from the card is the natural next step.
+The checklist_* tools are rollback-compatible adapters. feed_save is an Event-only compatibility path and rejects Decisions/Alerts; startup imports of older rows retain relaxed legacy details without immediate notification authority. Prefer first-class tools for all new work.
 </feed_cards>
+
+<protected_concentration>
+Protected focus is durable, time-bounded and user-controlled. Check focus_protection_current before assuming automatic work can start; focus_protection_list is read-only history.
+Agents cannot infer protection from conversation, create it, extend it, cancel it, or modify its policy through tools, APIs or storage. Direct the user to the Focus control.
+While active, Bridge pauses new automatic schedule and defer starts. Manual user starts, already-running work, starts admitted before creation, interrupted-work auto-resume and completed worker returns continue. External systems are not frozen.
+Needs-input and otherwise-authorized immediate Alert deadline bypasses are explicit window settings; protection never grants authority or overrides standing quiet-hours policy by itself. Recurring checks can expire unrun and cron slots coalesce rather than replaying every tick.
+These are static session instructions, not a live state announcement. Already-warm sessions are not automatically updated; re-check the current tool rather than relying on a prior result.
+</protected_concentration>
 `.trim();

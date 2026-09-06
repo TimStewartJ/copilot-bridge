@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "../api";
+import { DEFAULT_FOCUS_NOTIFICATION_POLICY } from "../../shared/focus-notification-policy.js";
 import { LAST_SETTINGS_CATEGORY_KEY } from "../lib/settings-routes";
 import {
   createReactDomHarness,
@@ -229,6 +230,16 @@ describe("SettingsView category persistence", () => {
 });
 
 describe("SettingsView save controls", () => {
+  it("does not overwrite independently saved Focus delivery policy with a stale general draft", async () => {
+    const oldPolicy = { ...DEFAULT_FOCUS_NOTIFICATION_POLICY, timezone: "UTC" };
+    settingsMocks.useSettingsQuery.mockReturnValue({ data: { ...savedSettings, focusNotifications: oldPolicy }, isLoading: false });
+    const harness = await renderSettingsView();
+    await makeSettingsDirty(harness);
+    settingsMocks.useSettingsQuery.mockReturnValue({ data: { ...savedSettings, focusNotifications: { ...oldPolicy, timezone: "America/Los_Angeles" } }, isLoading: false });
+    await harness.act(async () => { getReactProps(buttonWithText(harness.dom.container, "Save"))?.onClick?.(); });
+    await waitUntilAct(harness.act, () => settingsMocks.mutateAsync.mock.calls.length > 0);
+    expect(settingsMocks.mutateAsync.mock.calls[0][0]).not.toHaveProperty("focusNotifications");
+  });
   it("shows one native action pair and discards the draft with the MCP reset signal", async () => {
     const harness = await renderSettingsView();
     await makeSettingsDirty(harness);

@@ -21,7 +21,10 @@ import { createBridgeSessionStateStore } from "../bridge-session-state-store.js"
 import { createCopilotCliSessionCatalog } from "../copilot-cli-session-catalog.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
-import { createFeedStore } from "../feed-store.js";
+import { createFocusDataLayer } from "../focus-data-layer.js";
+import { createFocusProjectionService } from "../focus-dashboard-projection.js";
+import { createFocusSessionLaunchService } from "../focus-session-launch-service.js";
+import { createFocusProtectionService } from "../focus-protection-service.js";
 import { createTagStore } from "../tag-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createCopilotModelPriceStore } from "../copilot-model-price-store.js";
@@ -95,6 +98,23 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   });
   const taskGroupStore = createTaskGroupStore(db, globalBus);
   const pushSubscriptionStore = createPushSubscriptionStore(db);
+  const checklistStore = createChecklistStore(db, globalBus);
+  const focusData = createFocusDataLayer(db, globalBus, checklistStore, {
+    onVisualUnreferenced: (visual, card) => {
+      const result = deleteVisualArtifactForOwner(copilotHome, feedCardVisualOwner(card.id), visual.artifactId);
+      if (!result.ok) console.warn(`[test-focus] Failed to delete unreferenced visual ${visual.artifactId}: ${result.error}`);
+    },
+  });
+  const telemetryStore = createTelemetryStore(db);
+  const focusProjection = createFocusProjectionService({
+    db,
+    taskStore,
+    decisionStore: focusData.decisionStore,
+    alertStore: focusData.alertStore,
+    eventStore: focusData.eventStore,
+    compatibilityErrorCount: focusData.reconciliationErrorStore.countErrors,
+    telemetryStore,
+  });
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
     taskStore,
@@ -108,18 +128,29 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     bridgeSessionStateStore: createBridgeSessionStateStore(db),
     cliSessionCatalog: createCopilotCliSessionCatalog({ copilotHome: runtimePaths.copilotHome }),
     readStateStore: createReadStateStore(db),
-    checklistStore: createChecklistStore(db, globalBus),
-    feedStore: createFeedStore(db, globalBus, {
-      onVisualUnreferenced: (visual, card) => {
-        const result = deleteVisualArtifactForOwner(copilotHome, feedCardVisualOwner(card.id), visual.artifactId);
-        if (!result.ok) console.warn(`[test-feed] Failed to delete unreferenced visual ${visual.artifactId}: ${result.error}`);
-      },
-    }),
+    checklistStore,
+    feedStore: focusData.feedStore,
+    decisionStore: focusData.decisionStore,
+    alertStore: focusData.alertStore,
+    focusEventStore: focusData.eventStore,
+    focusMutationCoordinator: focusData.mutations,
+    focusProjection,
+    focusReconciliationErrorStore: focusData.reconciliationErrorStore,
+    focusDetailsStore: focusData.detailsStore,
+    focusTransitionStore: focusData.transitionStore,
+    focusAttentionStore: focusData.attentionStore,
+    focusAuditStore: focusData.auditStore,
+    focusDigestViewStore: focusData.digestViewStore,
+    focusAuthorityStore: focusData.authorityStore,
+    focusCoverageStore: focusData.coverageStore,
+    focusNotificationDeliveryStore: focusData.notificationDeliveryStore,
+    focusSessionLaunchStore: focusData.sessionLaunchStore,
+    focusProtectionStore: focusData.protectionStore,
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
     copilotModelPriceStore: createCopilotModelPriceStore(db),
     copilotUsageStore: createCopilotUsageStore(db),
-    telemetryStore: createTelemetryStore(db),
+    telemetryStore,
     sessionContextStore: createSessionContextStore(db),
     docsStore,
     docsIndex,
@@ -141,7 +172,12 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     ...baseContext,
     ...overrides,
   } as AppContext;
+  ctx.focusSessionLaunchService ??= createFocusSessionLaunchService(ctx, ctx.focusSessionLaunchStore, {
+    getOwner: async () => ({ pid: process.pid, startMarker: "test-app" }),
+    getOwnerStatus: async (owner) => owner.startMarker === "test-app" ? "alive" : "exited",
+  });
   ctx.runtimePaths = runtimePaths;
+  ctx.focusProtectionService ??= createFocusProtectionService(db, ctx.focusProtectionStore, ctx);
   ctx.copilotHome ??= copilotHome;
   ctx.voiceJobManager ??= createVoiceJobManager({
     dataDir: runtimePaths.dataDir,
@@ -157,6 +193,10 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
 
   const cleanup = registerTestAppCleanup(async () => {
     const cleanupErrors: unknown[] = [];
+    ctx.focusSessionLaunchService?.stop();
+    ctx.focusProtectionStore.stop();
+    await ctx.stopPushEventNotifications?.();
+    await ctx.focusNotifications?.dispose();
     if (hasNoArgFunction(ctx.copilotUsageReader, "shutdown")) {
       try {
         await ctx.copilotUsageReader.shutdown();
@@ -174,6 +214,11 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     if (hasNoArgFunction(ctx.sessionManager, "gracefulShutdown")) {
       try {
         await ctx.sessionManager.gracefulShutdown();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await ctx.focusSessionLaunchService?.drain();
       } catch (error) {
         cleanupErrors.push(error);
       }
