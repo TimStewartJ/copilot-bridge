@@ -2051,7 +2051,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
   }),
 
   defineBridgeTool("staging_cleanup", {
-    description: "Abandon a staging worktree and discard all changes. Use ONLY when you want to completely discard your work and start over — NOT for merge/rebase conflicts (resolve those in-place and retry staging_deploy instead). RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
+    description: "Abandon a staging worktree and discard all changes. Before deleting the worktree, this removes its published preview and staged-backend artifacts. Use ONLY when you want to completely discard your work and start over — NOT for merge/rebase conflicts (resolve those in-place and retry staging_deploy instead). RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
       properties: {
