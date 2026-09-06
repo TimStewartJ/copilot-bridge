@@ -193,6 +193,12 @@ describe("defer-loop-runner", () => {
         prompt: expect.stringContaining("Deployment failed."),
       }),
     ]);
+    expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
+      "FINAL DEFER RESULT: Monitoring completed. This defer is no longer active.",
+    );
+    expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).not.toContain(
+      "without reaching a terminal result",
+    );
     expect(onParentMessageQueued).toHaveBeenCalledOnce();
     runner.shutdown();
   });
@@ -249,7 +255,7 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it("finishes a loop silently when the worker chooses finish", async () => {
+  it("returns a final result when the worker chooses finish", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
     const loop = store.create({
@@ -272,7 +278,15 @@ describe("defer-loop-runner", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1 });
-    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([]);
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
+      expect.objectContaining({
+        status: "pending",
+        sourceId: loop.deferId,
+        prompt: expect.stringContaining(
+          "FINAL DEFER RESULT: Monitoring completed. This defer is no longer active.",
+        ),
+      }),
+    ]);
     runner.shutdown();
   });
 
@@ -312,7 +326,7 @@ describe("defer-loop-runner", () => {
       expect.objectContaining({
         status: "pending",
         sourceId: loop.deferId,
-        prompt: expect.stringContaining("reaching its maximum of 1 runs"),
+        prompt: expect.stringContaining("FINAL DEFER RESULT: Monitoring stopped after 1 checks"),
       }),
     ]);
     expect(onParentMessageQueued).toHaveBeenCalledOnce();
@@ -591,7 +605,7 @@ describe("defer-loop-runner", () => {
       expect.objectContaining({
         sourceId: loop.deferId,
         prompt: expect.stringContaining(
-          `The recurring defer "Busy deployment monitor" (${loop.deferId}) stopped after 5 failed attempts.`,
+          `FINAL DEFER RESULT: The recurring defer "Busy deployment monitor" (${loop.deferId}) failed after 5 attempts.`,
         ),
       }),
     ]);

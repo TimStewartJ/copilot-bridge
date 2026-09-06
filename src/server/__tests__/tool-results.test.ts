@@ -110,8 +110,8 @@ describe("tool results", () => {
       retryable: false,
     });
 
-    expect(result.content[0].text).toContain("schedule one same-session defer with defer_create");
-    expect(result.content[0].text).toContain("do not synchronously poll");
+    expect(result.content[0].text).toContain("respond to the user, or use a same-session defer for later follow-up");
+    expect(result.content[0].text).not.toContain("intervalSeconds");
     expect(result.content[0].text).toContain('"nextAction":"respond_or_defer"');
   });
 

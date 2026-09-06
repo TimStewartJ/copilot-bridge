@@ -110,8 +110,12 @@ export function createDeferLoopRunner(
     status: Exclude<DeferLoopOccurrenceStatus, "active">,
   ): string {
     return status === "completed"
-      ? `Deferred work stopped after reaching its maximum of ${loop.maxRuns ?? loop.runCount} runs without returning a terminal result.`
-      : "Deferred work expired before another check could run without returning a terminal result.";
+      ? `FINAL DEFER RESULT: Monitoring stopped after ${loop.maxRuns ?? loop.runCount} checks without reaching a terminal result. This defer is no longer active.`
+      : "FINAL DEFER RESULT: Monitoring expired before another check could run without reaching a terminal result. This defer is no longer active.";
+  }
+
+  function workerCompletedMessage(): string {
+    return "FINAL DEFER RESULT: Monitoring completed. This defer is no longer active.";
   }
 
   function queuePreflightTerminalReturn(
@@ -291,17 +295,14 @@ export function createDeferLoopRunner(
           : action === "expired"
             ? "expired"
             : occurrenceStatus;
-        const message = action === "return"
-          ? result?.message ?? "Deferred work completed."
-          : action === "notify"
-            ? status === "active"
-              ? result?.message ?? "Deferred work update."
-              : `${result?.message ?? "Deferred work update."}\n\n${terminalMessage(loop, status)}`
-            : action === "finish"
-              ? undefined
-            : status === "active"
-              ? undefined
-              : terminalMessage(loop, status);
+        const message = status === "active"
+          ? action === "notify" ? result?.message ?? "Deferred work update." : undefined
+          : [
+              action === "return" || action === "notify" ? result?.message : undefined,
+              action === "return" || action === "finish"
+                ? workerCompletedMessage()
+                : terminalMessage(loop, status),
+            ].filter(Boolean).join("\n\n");
         const delivery = message
           ? createReturnedDeferDelivery(workerInput, message, {
               continues: status === "active",

@@ -54,6 +54,38 @@ describe("deferred-prompt-store", () => {
       expect(store.listDeliveriesForSession("session-A")).toEqual([]);
     });
 
+    it("does not discourage another check in returned defer guidance", () => {
+      const delivery = createReturnedDeferDelivery(
+        { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
+        "Still waiting.",
+        { deliveryId: "delivery-1" },
+      );
+
+      expect(delivery.prompt).toContain("Continue from it:");
+      expect(delivery.prompt).not.toContain("without repeating the completed check");
+      expect(parseReturnedDeferPrompt(delivery.prompt)).toMatchObject({
+        deferId: "interval_1",
+        deliveryId: "delivery-1",
+      });
+    });
+
+    it("continues to recognize legacy returned defer guidance", () => {
+      const delivery = createReturnedDeferDelivery(
+        { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
+        "Still waiting.",
+        { deliveryId: "delivery-1" },
+      );
+      const legacyPrompt = delivery.prompt.replace(
+        "Continue from it:",
+        "Continue from it without repeating the completed check:",
+      );
+
+      expect(parseReturnedDeferPrompt(legacyPrompt)).toMatchObject({
+        deferId: "interval_1",
+        deliveryId: "delivery-1",
+      });
+    });
+
     it("keeps parent deliveries out of defer summaries and cancellation", () => {
       const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
         { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },

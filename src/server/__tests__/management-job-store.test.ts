@@ -761,7 +761,7 @@ describe("management job status tool", () => {
   it("surfaces terminal and next-action contracts in tool text", async () => {
     const { db, store, dataDir } = createStore("status-tool");
     try {
-      const ctx = { managementJobStore: store } as any;
+      const ctx = { managementJobStore: store, runtimePaths: { dataDir } } as any;
       const server = new BridgeToolsMcpServer(ctx);
       registerManagementJobTools(server, ctx);
       const tool = (server as any).tools.get("management_job_status");
@@ -775,8 +775,9 @@ describe("management job status tool", () => {
       });
       expect(queued.content[0].text).toContain('"terminal":false');
       expect(queued.content[0].text).toContain('"nextAction":"wait"');
-      expect(queued.content[0].text).toContain("defer_create");
-      expect(queued.content[0].text).toContain("Do not call management_job_status synchronously just to poll.");
+      expect(queued.content[0].text).toContain("same-session defer");
+      expect(queued.content[0].text).not.toContain("intervalSeconds");
+      expect(queued.content[0].text).not.toContain("Do not call management_job_status synchronously just to poll.");
 
       store.succeed(job.id, { success: true, previewUrl: "https://bridge.example/staging/x/" });
       const succeeded = await tool.handler({ jobId: job.id }, {} as any);
@@ -861,8 +862,9 @@ describe("staging management tool enqueue", () => {
       const previewResult = await preview.handler({ stagingDir, validate: false }, {} as any) as any;
       expect(previewResult).toMatchObject({ success: true, status: "queued" });
       expect(previewResult).toMatchObject({ terminal: true, toolNextAction: "respond_or_defer" });
-      expect(previewResult.message).toContain("defer_create");
-      expect(previewResult.message).toContain("management_job_status");
+      expect(previewResult.message).toContain("same-session defer");
+      expect(previewResult.message).not.toContain("intervalSeconds");
+      expect(previewResult.message).not.toContain("management_job_status");
       expect(previewResult.content[0].text).toContain('"nextAction":"respond_or_defer"');
       expect(store.get(previewResult.jobId)).toMatchObject({
         type: "staging_preview",
@@ -872,9 +874,11 @@ describe("staging management tool enqueue", () => {
       const deployResult = await deploy.handler({ stagingDir, message: "Ship it" }, {} as any) as any;
       expect(deployResult).toMatchObject({ success: true, status: "queued" });
       expect(deployResult).toMatchObject({ terminal: true, toolNextAction: "respond_or_defer" });
-      expect(deployResult.message).toContain("defer_create");
-      expect(deployResult.message).toContain("Do not call management_job_status synchronously just to poll.");
-      expect(deployResult.message).toContain("restart cutover is not blocked");
+      expect(deployResult.message).toContain("same-session defer");
+      expect(deployResult.message).not.toContain("intervalSeconds");
+      expect(deployResult.message).not.toContain("management_job_status");
+      expect(deployResult.message).not.toContain("Do not call management_job_status synchronously just to poll.");
+      expect(deployResult.message).not.toContain("restart cutover is not blocked");
       expect(store.get(deployResult.jobId)).toMatchObject({
         type: "staging_deploy",
         input: { stagingDir, message: "Ship it" },

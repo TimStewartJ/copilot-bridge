@@ -890,7 +890,7 @@ describe("deferred-prompt-runner", () => {
         expect.objectContaining({
           sourceId: dp.deferId,
           prompt: expect.stringContaining(
-            `The one-shot defer ${dp.deferId} stopped after ${MAX_ATTEMPTS} failed attempts.`,
+            `FINAL DEFER RESULT: The one-shot defer ${dp.deferId} failed after ${MAX_ATTEMPTS} attempts.`,
           ),
         }),
       ]);
@@ -1401,7 +1401,7 @@ describe("deferred-prompt-runner", () => {
         { sessionId: "session-1", prompt: "Second" },
       ]);
       expect(started[2]?.prompt).toContain(
-        `The one-shot defer ${first.deferId} stopped after ${MAX_ATTEMPTS} failed attempts.`,
+        `FINAL DEFER RESULT: The one-shot defer ${first.deferId} failed after ${MAX_ATTEMPTS} attempts.`,
       );
       expect(store.get(first.id)?.status).toBe("failed");
       expect(store.get(second.id)?.status).toBe("completed");
