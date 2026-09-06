@@ -197,9 +197,11 @@ describe("self_update", () => {
     expect(result.status).toBe("queued");
     expect(result.jobId).toMatch(/^[0-9a-f-]{36}$/);
     expect(result.message).toContain("management job");
-    expect(result.message).toContain("defer_create");
-    expect(result.message).toContain("Do not call management_job_status synchronously just to poll.");
-    expect(result.message).toContain("restart cutover is not blocked");
+    expect(result.message).toContain("same-session defer");
+    expect(result.message).not.toContain("intervalSeconds");
+    expect(result.message).not.toContain("management_job_status");
+    expect(result.message).not.toContain("Do not call management_job_status synchronously just to poll.");
+    expect(result.message).not.toContain("restart cutover is not blocked");
     expect(result.terminal).toBe(true);
     expect(result.toolNextAction).toBe("respond_or_defer");
     expect(result.content[0].text).toContain('"nextAction":"respond_or_defer"');

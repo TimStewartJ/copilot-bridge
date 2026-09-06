@@ -63,10 +63,10 @@ function formatNextAction(nextAction: BridgeToolNextAction | undefined, pollAfte
     case "respond":
       return "respond to the user; do not call another tool for this status";
     case "respond_or_defer":
-      return "respond to the user, or first schedule one same-session defer with defer_create for follow-up and then respond; do not synchronously poll this status";
+      return "respond to the user, or use a same-session defer for later follow-up";
     case "wait":
       return pollAfterMs
-        ? `wait at least ${Math.ceil(pollAfterMs / 1000)}s before checking again, or use defer_create for unattended follow-up`
+        ? `wait at least ${Math.ceil(pollAfterMs / 1000)}s before checking again`
         : "wait; do not issue marker or no-op tools";
     case "retry":
       return "retry the intended operation directly";
