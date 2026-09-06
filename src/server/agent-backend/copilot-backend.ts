@@ -514,10 +514,16 @@ export class CopilotBackend implements AgentBackend {
     return result;
   }
 
-  stop(): Promise<unknown> {
+  async stop(): Promise<void> {
     this.stopping = true;
     this.detachTransportWatchers?.();
-    return this.client.stop();
+    const errors = await this.client.stop();
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `Copilot SDK stop reported ${errors.length} cleanup error${errors.length === 1 ? "" : "s"}`,
+      );
+    }
   }
 
   forceStop(): Promise<unknown> {

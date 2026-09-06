@@ -198,6 +198,30 @@ describe("SessionManager model refresh", () => {
     await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
   });
 
+  it("does not restore a previous client whose stop reported cleanup errors", async () => {
+    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    oldBackend.stop.mockRejectedValueOnce(
+      new AggregateError([new Error("runtime cleanup failed")], "Copilot SDK stop reported 1 cleanup error"),
+    );
+    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
+    const { manager } = createManager([oldBackend, freshBackend]);
+
+    await manager.initialize();
+
+    await expect(manager.refreshModels()).rejects.toThrow("Copilot SDK stop reported 1 cleanup error");
+    expect(oldBackend.stop).toHaveBeenCalledOnce();
+    expect(oldBackend.start).toHaveBeenCalledOnce();
+    expect(freshBackend.start).not.toHaveBeenCalled();
+    expect((manager as any).backendRotation).toBeNull();
+    expect(manager.getBackendCreatedAt()).toBeNull();
+    expect(manager.getBackendStatus()).toMatchObject({
+      state: "disconnected",
+      connection: null,
+      createdAt: null,
+    });
+    await expect(manager.listModels()).rejects.toThrow("Agent backend disconnected");
+  });
+
   it("times out a stalled previous client stop and clears the rotation", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     oldBackend.stop.mockImplementationOnce(neverResolves);
@@ -220,7 +244,7 @@ describe("SessionManager model refresh", () => {
     expect(oldBackend.forceStop).toHaveBeenCalledOnce();
     expect(freshBackend.start).not.toHaveBeenCalled();
     expect(manager.getBackendCreatedAt()).toBeNull();
-    await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
+    await expect(manager.listModels()).rejects.toThrow("Agent backend disconnected");
   });
 
   it("times out a stalled fresh client start and restores the previous client", async () => {

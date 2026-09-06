@@ -29,7 +29,7 @@ function createFakeClient(session: ReturnType<typeof createFakeSession> = create
   return {
     session,
     start: vi.fn(async () => undefined),
-    stop: vi.fn(async () => undefined),
+    stop: vi.fn(async () => [] as Error[]),
     forceStop: vi.fn(async () => undefined),
     listModels: vi.fn(async () => [{ id: "fake-model", name: "Fake" }]),
     listSessions: vi.fn(async () => [{ sessionId: "s1", title: "S1" }]),
@@ -71,6 +71,38 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.start).toHaveBeenCalledOnce();
     expect(client.stop).toHaveBeenCalledOnce();
     expect(client.forceStop).toHaveBeenCalledOnce();
+  });
+
+  it("treats an empty SDK cleanup error array as a successful stop", async () => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+
+    await expect(backend.stop()).resolves.toBeUndefined();
+    expect(client.stop).toHaveBeenCalledOnce();
+  });
+
+  it("throws an AggregateError containing non-empty SDK cleanup errors", async () => {
+    const cause = new Error("socket already closed");
+    const cleanupErrors = [
+      new Error("session cleanup failed", { cause }),
+      new Error("runtime cleanup failed"),
+    ];
+    const client = createFakeClient();
+    client.stop.mockResolvedValueOnce(cleanupErrors);
+    const backend = new CopilotBackend(client as any);
+
+    let thrown: unknown;
+    try {
+      await backend.stop();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    if (!(thrown instanceof AggregateError)) throw new Error("Expected AggregateError");
+    expect(thrown.message).toBe("Copilot SDK stop reported 2 cleanup errors");
+    expect(thrown.errors).toEqual(cleanupErrors);
+    expect((thrown.errors[0] as Error).cause).toBe(cause);
   });
 
   it("delegates model/session listing and adds HydraFusion to the model catalog", async () => {
