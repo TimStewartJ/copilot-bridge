@@ -1,4 +1,4 @@
-import { CheckSquare, Inbox, Workflow } from "lucide-react";
+import { ListTodo, Workflow } from "lucide-react";
 import {
   getDashboardPanelId,
   getDashboardTabId,
@@ -8,10 +8,9 @@ import {
 interface DashboardTabsProps {
   activeTab: DashboardTab;
   onTabChange: (tab: DashboardTab) => void;
-  checklistCount: number;
-  checklistCountClass: string;
-  checklistCountTitle?: string;
-  feedCount: number;
+  focusCount: number;
+  focusCountClass: string;
+  focusCountTitle?: string;
   showWorkMap?: boolean;
   workMapCount?: number;
 }
@@ -27,71 +26,53 @@ function tabClass(selected: boolean): string {
 export default function DashboardTabs({
   activeTab,
   onTabChange,
-  checklistCount,
-  checklistCountClass,
-  checklistCountTitle,
-  feedCount,
+  focusCount,
+  focusCountClass,
+  focusCountTitle,
   showWorkMap = false,
   workMapCount,
 }: DashboardTabsProps) {
+  if (!showWorkMap) return null;
+
   return (
     <div className="flex rounded-lg border border-border bg-bg-surface p-1" role="tablist" aria-label="Dashboard sections">
       <button
         type="button"
         role="tab"
-        id={getDashboardTabId("checklist")}
-        aria-controls={getDashboardPanelId("checklist")}
-        aria-selected={activeTab === "checklist"}
-        onClick={() => onTabChange("checklist")}
-        className={tabClass(activeTab === "checklist")}
+        id={getDashboardTabId("focus")}
+        aria-controls={getDashboardPanelId("focus")}
+        aria-selected={activeTab === "focus"}
+        onClick={() => onTabChange("focus")}
+        className={tabClass(activeTab === "focus")}
       >
-        <CheckSquare size={14} />
-        <span>Checklist</span>
-        {checklistCount > 0 && (
+        <ListTodo size={14} />
+        <span>Focus</span>
+        {focusCount > 0 && (
           <span
-            className={`rounded-full border px-1.5 py-0.5 text-[11px] font-semibold leading-none ${checklistCountClass}`}
-            title={checklistCountTitle}
+            className={`rounded-full border px-1.5 py-0.5 text-[11px] font-semibold leading-none ${focusCountClass}`}
+            title={focusCountTitle}
           >
-            {checklistCount}
+            {focusCount > 99 ? "99+" : focusCount}
           </span>
         )}
       </button>
       <button
         type="button"
         role="tab"
-        id={getDashboardTabId("feed")}
-        aria-controls={getDashboardPanelId("feed")}
-        aria-selected={activeTab === "feed"}
-        onClick={() => onTabChange("feed")}
-        className={tabClass(activeTab === "feed")}
+        id={getDashboardTabId("work-map")}
+        aria-controls={getDashboardPanelId("work-map")}
+        aria-selected={activeTab === "work-map"}
+        onClick={() => onTabChange("work-map")}
+        className={tabClass(activeTab === "work-map")}
       >
-        <Inbox size={14} />
-        <span>Feed</span>
-        {feedCount > 0 && (
+        <Workflow size={14} />
+        <span>Work map</span>
+        {workMapCount !== undefined && workMapCount > 0 && (
           <span className="rounded-full border border-border bg-bg-hover px-1.5 py-0.5 text-[11px] font-semibold leading-none text-text-faint">
-            {feedCount}
+            {workMapCount}
           </span>
         )}
       </button>
-      {showWorkMap && (
-        <button
-          type="button"
-          role="tab"
-          id={getDashboardTabId("work-map")}
-          aria-controls={getDashboardPanelId("work-map")}
-          aria-selected={activeTab === "work-map"}
-          onClick={() => onTabChange("work-map")}
-          className={tabClass(activeTab === "work-map")}
-        >
-          <Workflow size={14} />
-          <span>Work map</span>
-          {workMapCount !== undefined && workMapCount > 0 && (
-            <span className="rounded-full border border-border bg-bg-hover px-1.5 py-0.5 text-[11px] font-semibold leading-none text-text-faint">
-              {workMapCount}
-            </span>
-          )}
-        </button>
-      )}
     </div>
   );
 }

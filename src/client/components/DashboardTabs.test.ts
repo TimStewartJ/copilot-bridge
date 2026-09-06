@@ -7,8 +7,12 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import type { DashboardChecklistState } from "../hooks/useDashboardChecklist";
-import DashboardChecklist from "./DashboardChecklist";
-import DashboardFeed from "./DashboardFeed";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+vi.mock("./FocusHistorySection", () => ({
+  default: () => createElement("div", null, "History"),
+}));
+
+import DashboardFocus from "./DashboardFocus";
 import DashboardTabs from "./DashboardTabs";
 import DashboardWorkMap from "./DashboardWorkMap";
 
@@ -72,58 +76,65 @@ describe("DashboardTabs ARIA wiring", () => {
     harness = null;
   });
 
-  it("connects each active tab to its conditionally rendered tabpanel", async () => {
+  it("renders no tab bar when Focus is the only dashboard surface", async () => {
+    harness = await createReactDomHarness();
+    await harness.render(createElement(DashboardTabs, {
+      activeTab: "focus",
+      onTabChange: vi.fn(),
+      focusCount: 3,
+      focusCountClass: "attention",
+    }));
+
+    expect(findAllByTag(harness.dom.container, "BUTTON")).toHaveLength(0);
+  });
+
+  it("connects Focus and the optional Work Map to their tabpanels", async () => {
     harness = await createReactDomHarness();
     await harness.render(
-      createElement(Fragment, null,
+      createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } }) },
         createElement(DashboardTabs, {
-          activeTab: "checklist",
+          activeTab: "focus",
           onTabChange: vi.fn(),
-          checklistCount: 0,
-          checklistCountClass: "",
-          feedCount: 0,
+          focusCount: 3,
+          focusCountClass: "attention",
+          showWorkMap: true,
         }),
-        createElement(DashboardChecklist, {
+        createElement(DashboardFocus, {
           active: true,
+          tabbed: true,
           checklist: emptyChecklistState(),
+          tasks: [],
+          taskGroups: [],
+          alerts: [],
+          decisions: [],
+          alertsLoading: false,
+          alertsHasMore: false,
+          alertsLoadingMore: false,
+          decisionsLoading: false,
+          decisionsHasMore: false,
+          decisionsLoadingMore: false,
+          focusLoading: false,
+          alertTotal: 0,
+          decisionTotal: 0,
+          actionsLoading: false,
+          actionsUpdatedAt: 0,
+          alertsUpdatedAt: 0,
+          decisionsUpdatedAt: 0,
+          nowMs: Date.parse("2026-09-02T12:00:00.000Z"),
           onSelectTask: vi.fn(),
+          onSelectSession: vi.fn(),
+          onStartPromptSession: vi.fn(async () => "session-1"),
+          onLoadMoreAlerts: vi.fn(),
+          onLoadMoreDecisions: vi.fn(),
+          onRetryFocus: vi.fn(),
+          onRefresh: vi.fn(async () => undefined),
         }),
       ),
     );
 
     let tab = selectedTab(harness.dom.container);
     let panel = controlledPanel(harness.dom.container, tab);
-    expect(getReactProps(panel)).toMatchObject({
-      role: "tabpanel",
-      "aria-labelledby": getReactProps(tab)?.id,
-      tabIndex: 0,
-    });
-
-    await harness.render(
-      createElement(Fragment, null,
-        createElement(DashboardTabs, {
-          activeTab: "feed",
-          onTabChange: vi.fn(),
-          checklistCount: 0,
-          checklistCountClass: "",
-          feedCount: 0,
-        }),
-        createElement(DashboardFeed, {
-          active: true,
-          feedCards: [],
-          feedLoading: false,
-          showResolvedFeed: false,
-          onToggleResolvedFeed: vi.fn(),
-          onSelectTask: vi.fn(),
-          onSelectSession: vi.fn(),
-          onStartPromptSession: vi.fn(async () => "session-1"),
-          onRefetchFeed: vi.fn(async () => undefined),
-        }),
-      ),
-    );
-
-    tab = selectedTab(harness.dom.container);
-    panel = controlledPanel(harness.dom.container, tab);
+    expect(tab.textContent).toBe("Focus3");
     expect(getReactProps(panel)).toMatchObject({
       role: "tabpanel",
       "aria-labelledby": getReactProps(tab)?.id,
@@ -135,9 +146,8 @@ describe("DashboardTabs ARIA wiring", () => {
         createElement(DashboardTabs, {
           activeTab: "work-map",
           onTabChange: vi.fn(),
-          checklistCount: 0,
-          checklistCountClass: "",
-          feedCount: 0,
+          focusCount: 0,
+          focusCountClass: "",
           showWorkMap: true,
           workMapCount: 1,
         }),
@@ -172,6 +182,7 @@ describe("DashboardTabs ARIA wiring", () => {
 
     tab = selectedTab(harness.dom.container);
     panel = controlledPanel(harness.dom.container, tab);
+    expect(tab.textContent).toBe("Work map1");
     expect(getReactProps(panel)).toMatchObject({
       role: "tabpanel",
       "aria-labelledby": getReactProps(tab)?.id,

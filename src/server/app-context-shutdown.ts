@@ -25,10 +25,18 @@ export function shutdownAppContextServices(
 
   const operation = (async () => {
     ctx.scheduler?.setGlobalPause(true);
+    ctx.focusProtectionStore?.stop();
     ctx.sessionOverlayMaintenance?.stop();
     ctx.stagingPreviewDiscovery?.stop();
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
+    ctx.focusSessionLaunchService?.stop();
+    const notificationsOutcome = await settleByDeadline(async () => {
+      await Promise.all([ctx.stopPushEventNotifications?.(), ctx.focusNotifications?.dispose()]);
+    }, deadline);
+    if (notificationsOutcome.status !== "fulfilled") {
+      console.error(`[web] Notification shutdown ${notificationsOutcome.status}`);
+    }
 
     try {
       await ctx.copilotUsageReader?.shutdown();
@@ -41,6 +49,8 @@ export function shutdownAppContextServices(
     } catch (error) {
       console.error("[web] Session manager shutdown failed:", error);
     }
+    const launchesOutcome = await settleByDeadline(() => ctx.focusSessionLaunchService?.drain(), deadline);
+    if (launchesOutcome.status !== "fulfilled") console.error(`[web] Focus launch shutdown ${launchesOutcome.status}`);
 
     const voiceOutcome = await settleByDeadline(
       () => ctx.voiceJobManager.shutdown(),

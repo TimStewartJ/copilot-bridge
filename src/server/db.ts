@@ -7,6 +7,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReturnedDeferPrompt } from "./defer-result-message.js";
+import { initializeFocusSupplementalSchema } from "./focus-schema.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 
@@ -531,6 +532,117 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_feed_cards_kind ON feed_cards(kind);
     CREATE INDEX IF NOT EXISTS idx_feed_cards_updatedAt ON feed_cards(updatedAt, kind);
 
+    -- Idempotent promotion of decision cards into canonical checklist actions.
+    CREATE TABLE IF NOT EXISTS feed_card_checklist_promotions (
+      feedCardId TEXT PRIMARY KEY REFERENCES feed_cards(id) ON DELETE CASCADE,
+      checklistItemId TEXT NOT NULL UNIQUE REFERENCES checklist_items(id) ON DELETE CASCADE,
+      createdAt TEXT NOT NULL
+    );
+
+    -- Canonical Focus objects. feed_cards remains a rollback-compatible projection.
+    CREATE TABLE IF NOT EXISTS focus_object_identities (
+      id TEXT PRIMARY KEY,
+      objectType TEXT NOT NULL CHECK (objectType IN ('decision', 'alert', 'event')),
+      dedupeKey TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_object_identities_dedupeKey
+      ON focus_object_identities(dedupeKey) WHERE dedupeKey IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_focus_object_identities_type
+      ON focus_object_identities(objectType);
+
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY REFERENCES focus_object_identities(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'active',
+      taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      sessionId TEXT,
+      url TEXT,
+      linksJson TEXT NOT NULL DEFAULT '[]',
+      metadataJson TEXT,
+      visualJson TEXT,
+      launchPromptJson TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      activationId TEXT NOT NULL,
+      statusChangedAt TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_decisions_status_updated
+      ON decisions(status, pinned DESC, updatedAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_decisions_taskId ON decisions(taskId);
+
+    CREATE TABLE IF NOT EXISTS alerts (
+      id TEXT PRIMARY KEY REFERENCES focus_object_identities(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT,
+      priority TEXT NOT NULL DEFAULT 'high',
+      status TEXT NOT NULL DEFAULT 'active',
+      taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      sessionId TEXT,
+      url TEXT,
+      linksJson TEXT NOT NULL DEFAULT '[]',
+      metadataJson TEXT,
+      visualJson TEXT,
+      launchPromptJson TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      activationId TEXT NOT NULL,
+      statusChangedAt TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alerts_status_updated
+      ON alerts(status, pinned DESC, updatedAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_alerts_taskId ON alerts(taskId);
+
+    CREATE TABLE IF NOT EXISTS focus_events (
+      id TEXT PRIMARY KEY REFERENCES focus_object_identities(id) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'active',
+      taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      sessionId TEXT,
+      url TEXT,
+      linksJson TEXT NOT NULL DEFAULT '[]',
+      metadataJson TEXT,
+      visualJson TEXT,
+      launchPromptJson TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      activationId TEXT NOT NULL,
+      statusChangedAt TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_focus_events_status_updated
+      ON focus_events(status, pinned DESC, updatedAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_focus_events_taskId ON focus_events(taskId);
+    CREATE INDEX IF NOT EXISTS idx_focus_events_category ON focus_events(category);
+
+    CREATE TABLE IF NOT EXISTS focus_action_links (
+      sourceType TEXT NOT NULL CHECK (sourceType IN ('decision', 'alert', 'event')),
+      sourceId TEXT NOT NULL REFERENCES focus_object_identities(id) ON DELETE CASCADE,
+      activationId TEXT NOT NULL,
+      actionId TEXT NOT NULL REFERENCES checklist_items(id) ON DELETE CASCADE,
+      createdAt TEXT NOT NULL,
+      PRIMARY KEY (sourceType, sourceId, activationId, actionId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_focus_action_links_actionId
+      ON focus_action_links(actionId);
+
+    CREATE TABLE IF NOT EXISTS focus_legacy_reconciliation_issues (
+      id TEXT PRIMARY KEY,
+      feedCardId TEXT,
+      feedRowId INTEGER NOT NULL UNIQUE,
+      error TEXT NOT NULL,
+      rawRowJson TEXT NOT NULL,
+      detectedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_focus_legacy_reconciliation_issues_feedCardId
+      ON focus_legacy_reconciliation_issues(feedCardId);
+
     -- Voice jobs
     CREATE TABLE IF NOT EXISTS voice_jobs (
       id TEXT PRIMARY KEY,
@@ -924,6 +1036,8 @@ function initSchema(db: DatabaseSync): void {
       throw error;
     }
   }
+
+  initializeFocusSupplementalSchema(db);
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
   initializeDocsFts(db);

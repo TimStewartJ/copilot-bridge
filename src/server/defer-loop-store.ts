@@ -81,7 +81,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
   `);
   const selectDue = db.prepare(`
     SELECT * FROM defer_loops
-    WHERE status = 'active' AND nextRunAt <= ?
+    WHERE status = 'active' AND (nextRunAt <= ? OR expiresAt <= ?)
     ORDER BY nextRunAt ASC, createdAt ASC
   `);
   const selectNextActive = db.prepare(`
@@ -288,7 +288,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
   }
 
   function listDue(now = new Date().toISOString()): DeferLoop[] {
-    return (selectDue.all(now) as any[]).map(toRow);
+    return (selectDue.all(now, now) as any[]).map(toRow);
   }
 
   function getNextActive(): DeferLoop | undefined {
@@ -299,6 +299,14 @@ export function createDeferLoopStore(db: DatabaseSync) {
   function getNextFutureActive(now = new Date().toISOString()): DeferLoop | undefined {
     const row = selectNextFutureActive.get(now);
     return row ? toRow(row) : undefined;
+  }
+
+  function getNextFutureWakeAt(now = new Date().toISOString()): string | undefined {
+    const row = db.prepare(`SELECT MIN(wakeAt) AS wakeAt FROM (
+      SELECT nextRunAt AS wakeAt FROM defer_loops WHERE status='active' AND nextRunAt>?
+      UNION ALL SELECT expiresAt AS wakeAt FROM defer_loops WHERE status='active' AND expiresAt>?
+    )`).get(now, now) as { wakeAt: string | null };
+    return row.wakeAt ?? undefined;
   }
 
   function getNextRunningLeaseExpiry(): DeferLoop | undefined {
@@ -558,6 +566,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
     listDue,
     getNextActive,
     getNextFutureActive,
+    getNextFutureWakeAt,
     getNextRunningLeaseExpiry,
     getSummaryForSession,
     listSummariesBySession,

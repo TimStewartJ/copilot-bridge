@@ -52,6 +52,9 @@ describe("session manager feed tools", () => {
     const bodyDescription = getParameterDescription(ctx, "feed_save", "body");
 
     expect(saveTool.description).toContain("Optional body supports concise Markdown");
+    expect(saveTool.description).toContain("Event-only compatibility adapter");
+    expect(saveTool.description).toContain("rollback");
+    expect(saveTool.description).toContain("Decision/Alert kinds (and updates to those types) are rejected");
     expect(bodyDescription).toContain("Optional concise Markdown body text");
     expect(bodyDescription).toContain("Raw HTML is escaped");
   });
@@ -84,8 +87,15 @@ describe("session manager feed tools", () => {
     const metadataDescription = getParameterDescription(ctx, "feed_save", "metadata");
 
     expect(saveTool.description).toContain("dedupeKey");
+    expect(saveTool.description).toContain("Returns { card, created } alongside success: true");
+    expect(getParameterDescription(ctx, "feed_save", "id")).toContain("Mutually exclusive with key");
+    expect(keyDescription).toContain("Mutually exclusive with id");
     expect(keyDescription).toContain("Returned as the card's dedupeKey field");
     expect(metadataDescription).toContain("4096 bytes or less");
+    expect(getParameterDescription(ctx, "feed_save", "body")).toContain("Null clears it");
+    expect(getParameterDescription(ctx, "feed_save", "action")).toContain("Null clears the action");
+    expect(getParameterDescription(ctx, "feed_save", "visual")).toContain("Null clears the existing visual");
+    expect(getParameterDescription(ctx, "feed_save", "status")).toContain("omission preserves existing status");
   });
 
   it("feed_save creates and updates keyed cards", async () => {
@@ -109,6 +119,8 @@ describe("session manager feed tools", () => {
         priority: "high",
       }),
     }));
+    expect(Object.keys(created).sort()).toEqual(["card", "created", "success"]);
+    expect(created.card).toEqual(ctx.feedStore.getCardByKey("preview:one"));
 
     const updated = await saveTool.handler({
       key: "preview:one",
@@ -125,6 +137,49 @@ describe("session manager feed tools", () => {
         body: "Open it now",
       }),
     }));
+    expect(Object.keys(updated).sort()).toEqual(["card", "created", "success"]);
+    expect(updated.card).toEqual(ctx.feedStore.getCard(created.card.id));
+  });
+
+  it.each(["decision", "alert"])("rejects %s writes while retaining legacy minimal-list compatibility", async (kind) => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const listTool = getTool(ctx, "feed_list");
+    const rejection = toolFailure("feed_save is Event-only. Use decision_save or alert_save with the first-class admission contract.");
+    for (const requestedKind of [kind, ` ${kind} `]) {
+      await expect(saveTool.handler({
+        key: `forbidden:${kind}`, title: "Not an Event", kind: requestedKind,
+      }, createInvocation("feed_save"))).resolves.toEqual(rejection);
+    }
+    expect(ctx.feedStore.getCardByKey(`forbidden:${kind}`)).toBeUndefined();
+
+    const event = await saveTool.handler({
+      key: "event:retained", title: "Retained Event", kind: "note",
+    }, createInvocation("feed_save")) as any;
+    await expect(saveTool.handler({
+      id: event.card.id, kind,
+    }, createInvocation("feed_save"))).resolves.toEqual(rejection);
+    expect(ctx.feedStore.getCard(event.card.id)).toEqual(event.card);
+
+    const legacy = ctx.feedStore.saveCard({
+      key: `legacy:${kind}`, title: "Imported concern", kind, body: "Retained legacy details",
+      action: { prompt: "Review the imported concern" },
+    }).card;
+    for (const identifier of [{ id: legacy.id }, { key: legacy.dedupeKey }]) {
+      await expect(saveTool.handler({
+        ...identifier, body: "Attempted update",
+      }, createInvocation("feed_save"))).resolves.toEqual(rejection);
+    }
+    const minimal = await listTool.handler({ kind, minimal: true }, createInvocation("feed_list")) as any;
+    expect(minimal).toEqual({
+      cards: [{
+        id: legacy.id, dedupeKey: legacy.dedupeKey, title: legacy.title, kind,
+        status: legacy.status, priority: legacy.priority, taskId: legacy.taskId, updatedAt: legacy.updatedAt,
+      }],
+      nextCursor: null, returnedCount: 1, hasMore: false,
+    });
+    expect((await listTool.handler({ kind }, createInvocation("feed_list"))).cards).toEqual([legacy]);
+    expect(ctx.feedStore.getCard(legacy.id)).toEqual(legacy);
   });
 
   it("feed_save updates by id and preserves dismissed keyed cards unless explicit", async () => {
@@ -274,7 +329,7 @@ describe("session manager feed tools", () => {
       key: "minimal:one",
       title: "Minimal card",
       body: "A long body that should not be listed",
-      kind: "decision",
+      kind: "note",
       priority: "high",
       taskId: task.id,
       sessionId: "session-1",
@@ -284,6 +339,9 @@ describe("session manager feed tools", () => {
       action: { prompt: "Do the thing." },
       pinned: true,
     }, createInvocation("feed_save")) as any;
+    expect(created).toEqual({
+      success: true, created: true, card: ctx.feedStore.getCardByKey("minimal:one"),
+    });
 
     const minimal = await listTool.handler({ minimal: true }, createInvocation("feed_list")) as any;
 
@@ -291,7 +349,7 @@ describe("session manager feed tools", () => {
       id: created.card.id,
       dedupeKey: "minimal:one",
       title: "Minimal card",
-      kind: "decision",
+      kind: "note",
       status: "active",
       priority: "high",
       taskId: task.id,
@@ -310,6 +368,11 @@ describe("session manager feed tools", () => {
 
     const explicitFull = await listTool.handler({ minimal: false }, createInvocation("feed_list")) as any;
     expect(explicitFull.cards).toEqual([created.card]);
+
+    const unchanged = await saveTool.handler({
+      key: "minimal:one", title: "Minimal card",
+    }, createInvocation("feed_save"));
+    expect(unchanged).toEqual({ success: true, created: false, card: created.card });
   });
 
   it("feed_list reports hasMore for truncated pages and mixed status pages", async () => {

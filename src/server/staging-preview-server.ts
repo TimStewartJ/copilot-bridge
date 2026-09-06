@@ -3,6 +3,7 @@ import "./load-bridge-env.js";
 import express from "express";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
+import { closeHttpServer } from "./http-server-shutdown.js";
 
 const STAGING_EXCLUDED_TOOLS = new Set([
   "self_restart",
@@ -43,15 +44,6 @@ function parsePort(value: string | undefined): number {
     throw new Error(`Invalid BRIDGE_STAGING_BACKEND_PORT: ${value}`);
   }
   return port;
-}
-
-async function closeServer(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
 }
 
 async function main(): Promise<void> {
@@ -97,7 +89,7 @@ async function main(): Promise<void> {
     console.log(`[staging-preview] ${signal} received — shutting down...`);
     try {
       if (server) {
-        await closeServer(server);
+        await closeHttpServer(server);
       }
       await shutdownAppContextServices(ctx);
     } finally {

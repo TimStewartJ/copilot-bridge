@@ -189,4 +189,123 @@ describe("Feed routes", () => {
       expect(zeroBuckets.status).toBe(400);
     });
   });
+
+  it("returns dashboard attention and promotes inbox cards atomically", async () => {
+    const task = ctx.taskStore.createTask("Attention task");
+    const decision = ctx.feedStore.saveCard({
+      key: "decision:attention",
+      title: "Review attention contract",
+      kind: "decision",
+      taskId: task.id,
+    }).card;
+    ctx.feedStore.saveCard({
+      key: "docs-maintenance:one",
+      title: "Background observation",
+      kind: "note",
+      taskId: task.id,
+    });
+
+    const attention = await request(app).get("/api/dashboard/attention");
+    expect(attention.status).toBe(200);
+    expect(attention.body.inboxTotal).toBe(1);
+    const inbox = await request(app).get("/api/dashboard/attention/inbox");
+    expect(inbox.status).toBe(200);
+    expect(inbox.body.cards).toEqual([
+      expect.objectContaining({ id: decision.id, title: "Review attention contract" }),
+    ]);
+    expect(attention.body.digests).toEqual([
+      expect.objectContaining({
+        family: "docs-maintenance",
+        taskId: task.id,
+        count: 1,
+      }),
+    ]);
+
+    const first = await request(app).post(`/api/feed/${decision.id}/make-action`).send({});
+    expect(first.status).toBe(201);
+    expect(first.body).toMatchObject({
+      created: true,
+      card: { id: decision.id, status: "active" },
+      checklistItem: {
+        taskId: task.id,
+        text: "Review attention contract",
+        done: false,
+      },
+    });
+
+    const second = await request(app).post(`/api/feed/${decision.id}/make-action`).send({});
+    expect(second.status).toBe(200);
+    expect(second.body.created).toBe(false);
+    expect(second.body.checklistItem.id).toBe(first.body.checklistItem.id);
+  });
+
+  it("paginates the dashboard decision inbox and validates offsets", async () => {
+    for (let index = 0; index < 22; index += 1) {
+      ctx.feedStore.saveCard({
+        key: `decision:page:${index}`,
+        title: `Decision ${index}`,
+        kind: "decision",
+      });
+    }
+
+    const first = await request(app).get("/api/dashboard/attention/inbox?limit=20");
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ total: 22, nextOffset: 20 });
+    expect(first.body.cards).toHaveLength(20);
+
+    const second = await request(app).get("/api/dashboard/attention/inbox?limit=20&offset=20");
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ total: 22, nextOffset: null });
+    expect(second.body.cards).toHaveLength(2);
+
+    const invalid = await request(app).get("/api/dashboard/attention/inbox?offset=-1");
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("offset must be a non-negative integer");
+  });
+
+  it("lists rich digest items inside Focus", async () => {
+    const task = ctx.taskStore.createTask("Digest task");
+    const item = ctx.feedStore.saveCard({
+      key: "docs-maintenance:rich",
+      title: "Rich digest item",
+      body: "Full Markdown body",
+      kind: "artifact",
+      taskId: task.id,
+      url: "https://example.test/details",
+      action: { prompt: "Review this rich item." },
+    }).card;
+
+    const res = await request(app).get(
+      `/api/dashboard/attention/digest-items?taskId=${encodeURIComponent(task.id)}&keyPrefix=${encodeURIComponent("docs-maintenance:")}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ total: 1, nextOffset: null });
+    expect(res.body.cards).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        body: "Full Markdown body",
+        url: "https://example.test/details",
+        action: { prompt: "Review this rich item." },
+      }),
+    ]);
+  });
+
+  it("serves individual and cleared Focus items for recovery", async () => {
+    const card = ctx.feedStore.saveCard({
+      title: "Recoverable item",
+      kind: "decision",
+      status: "dismissed",
+    }).card;
+
+    const individual = await request(app).get(`/api/feed/${card.id}`);
+    expect(individual.status).toBe(200);
+    expect(individual.body.card).toMatchObject({ id: card.id, status: "dismissed" });
+
+    const cleared = await request(app).get("/api/dashboard/attention/cleared?limit=20");
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.cards).toEqual([
+      expect.objectContaining({ id: card.id, status: "dismissed" }),
+    ]);
+  });
 });

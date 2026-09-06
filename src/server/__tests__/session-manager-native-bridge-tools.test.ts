@@ -142,7 +142,7 @@ function createManager() {
     stop: vi.fn(async () => undefined),
     forceStop: vi.fn(async () => undefined),
     listModels: vi.fn(async () => []),
-    listSessions: vi.fn(async () => []),
+    listSessions: vi.fn<() => Promise<Array<{ sessionId: string }>>>().mockResolvedValue([]),
     createSession: vi.fn(async (config: any) => createFakeSession(config.sessionId ?? "created-session", config.tools ?? [])),
     resumeSession: vi.fn(async (sessionId: string, config: any) => createFakeSession(sessionId, config.tools ?? [])),
     forkSession: vi.fn(async () => ({ sessionId: "forked-session" })),
@@ -179,6 +179,62 @@ afterEach(async () => {
 });
 
 describe("SessionManager native Bridge tools", () => {
+  it.each(["global", "task"] as const)("uses the durable expected ID and pre-dispatch callback for %s Focus creation", async (scope) => {
+    const { manager, backend, db } = createManager();
+    const expectedSessionId = crypto.randomUUID();
+    const entered = createDeferred<void>();
+    const release = createDeferred<void>();
+    let recorded = false;
+    try {
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async (config: any) => {
+        expect(recorded).toBe(true);
+        expect(config.sessionId).toBe(expectedSessionId);
+        entered.resolve();
+        await release.promise;
+        return createFakeSession(expectedSessionId, config.tools ?? []);
+      });
+      const options = { expectedSessionId, onCreateStarting: () => { recorded = true; } };
+      const operation = scope === "global" ? manager.createSession(options)
+        : manager.createTaskSession("task-1", "Task", [], [], "", undefined, undefined, undefined, options);
+      await entered.promise;
+      expect(await manager.getSessionCreationState(expectedSessionId)).toBe("pending");
+      await expect(manager.createSession({ expectedSessionId })).rejects.toThrow("already being created");
+      release.resolve();
+      expect(await operation).toEqual({ sessionId: expectedSessionId });
+      expect(await manager.getSessionCreationState(expectedSessionId)).toBe("present");
+      expect(backend.createSession).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("does not call the backend if persisting the durable creation dispatch fails", async () => {
+    const { manager, backend, db } = createManager();
+    try {
+      await manager.initialize();
+      await expect(manager.createSession({
+        expectedSessionId: crypto.randomUUID(), onCreateStarting: () => { throw new Error("Receipt unavailable"); },
+      })).rejects.toThrow("Receipt unavailable");
+      expect(backend.createSession).not.toHaveBeenCalled();
+    } finally { await manager.gracefulShutdown(); db.close(); }
+  });
+
+  it("distinguishes persisted existence from readiness without creating a replacement session", async () => {
+    const { manager, backend, db } = createManager();
+    const persisted = crypto.randomUUID();
+    try {
+      await manager.initialize();
+      backend.listSessions.mockResolvedValue([{ sessionId: persisted }]);
+      expect(await manager.getSessionCreationState(persisted)).toBe("present");
+      expect(manager.isSessionWarm(persisted)).toBe(false);
+      expect(await manager.getSessionCreationState(crypto.randomUUID())).toBe("absent");
+      expect(backend.createSession).not.toHaveBeenCalled();
+    } finally { await manager.gracefulShutdown(); db.close(); }
+  });
+
   it("promotes Bridge tools as canonical native tools without starting a Bridge MCP transport", async () => {
     const { manager, backend, db } = createManager();
     try {

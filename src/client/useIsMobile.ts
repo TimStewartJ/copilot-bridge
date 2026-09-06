@@ -2,17 +2,25 @@ import { useState, useEffect } from "react";
 
 const MOBILE_QUERY = "(max-width: 767px)";
 
-export function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(
-    () => window.matchMedia(MOBILE_QUERY).matches,
-  );
+export function useMediaQuery(query: string, fallback = false): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia(query).matches : fallback);
 
   useEffect(() => {
-    const mql = window.matchMedia(MOBILE_QUERY);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      setMatches(fallback);
+      return;
+    }
+    const mql = window.matchMedia(query);
+    setMatches(mql.matches);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
-  }, []);
+  }, [query, fallback]);
 
-  return isMobile;
+  return matches;
+}
+
+export function useIsMobile(): boolean {
+  return useMediaQuery(MOBILE_QUERY);
 }

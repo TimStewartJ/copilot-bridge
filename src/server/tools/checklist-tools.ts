@@ -23,7 +23,7 @@ export interface RegisterChecklistToolsOptions {
 export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
   defineBridgeTool("checklist_add", {
-    description: "Add a checklist item to a task's checklist, or create a global checklist item if no taskId is provided",
+    description: "Compatibility alias for action_add. Prefer action_add for new work.",
     parameters: { type: "object", properties: { taskId: { type: ["string", "null"], description: "The task ID. Omit to create a global (unparented) checklist item." }, text: { type: "string", description: "The checklist item text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
     handler: async (args: any) => {
       if (args.taskId !== undefined && args.taskId !== null) {
@@ -43,7 +43,7 @@ export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefin
     },
   }),
   defineBridgeTool("checklist_list", {
-    description: "List checklist items for a task, or global checklist items if no taskId is provided",
+    description: "Compatibility alias for action_list. Prefer action_list for new work.",
     parameters: { type: "object", properties: { taskId: { type: ["string", "null"], description: "The task ID. Omit or pass null to list global checklist items." } } },
     handler: async (args: any) => {
       const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId ?? null);
@@ -56,7 +56,7 @@ export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefin
     },
   }),
   defineBridgeTool("checklist_update", {
-    description: "Update a checklist item's text, done status, or deadline",
+    description: "Compatibility alias for action_update. Prefer action_update for new work.",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: ["string", "null"], description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
       const updates: Record<string, any> = {};
@@ -75,7 +75,7 @@ export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefin
     },
   }),
   defineBridgeTool("checklist_remove", {
-    description: "Remove a checklist item from a task's checklist",
+    description: "Compatibility alias for action_remove. Prefer action_remove for new work.",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
       const checklistItem = ensureChecklistItem(ctx, args.checklistItemId);

@@ -6,11 +6,22 @@ import type { ManagementJobStatus, ManagementJobType } from "./management-job-st
 import type { RestartPhase } from "./restart-state.js";
 import type { BackgroundAgentsSummary } from "../shared/session-agents.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
+import type { FocusObjectType } from "./focus-domain-store.js";
+import type { FocusLifecycle } from "./focus-details-store.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "feed:changed" | "management-job:changed" | "backend:status";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "focus:changed" | "focus:protection-changed" | "focus:protection-cleared" | "feed:changed" | "management-job:changed" | "backend:status";
+  protectionWindowId?: string;
   sessionId?: string;
   cardId?: string;
+  focusObjectId?: string;
+  focusObjectType?: FocusObjectType;
+  activationId?: string;
+  transitionId?: string;
+  lifecycle?: FocusLifecycle;
+  previousLifecycle?: FocusLifecycle;
+  reason?: string;
+  meaningful?: boolean;
   dedupeKey?: string;
   jobId?: string;
   jobType?: ManagementJobType;

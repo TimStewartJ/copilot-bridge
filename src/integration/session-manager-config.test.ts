@@ -99,15 +99,16 @@ describe("SessionManager session config", () => {
     expect(clientEnv.COPILOT_CLI_ENABLED_FEATURE_FLAGS).toBe("OTHER_FLAG, HYDRAFUSION, ,OTHER_FLAG");
   });
 
-  it("frames feed cards as an opt-in durable queue instead of assistant status output", () => {
-    expect(FEED_GUIDANCE).toContain("Default to not creating feed cards");
-    expect(FEED_GUIDANCE).toContain("durable dashboard queue");
-    expect(FEED_GUIDANCE).toContain("It is not a transcript, progress log, or default place for assistant status updates");
-    expect(FEED_GUIDANCE).toContain("Do not create feed cards for routine narration, task progress, test/build results, staging previews");
-    expect(FEED_GUIDANCE).toContain("Share staging preview links in chat");
-    expect(FEED_GUIDANCE).toContain("Use Markdown to make cards easier to scan");
-    expect(FEED_GUIDANCE).toContain("use visuals for rich artifacts instead of large Markdown bodies");
-    expect(FEED_GUIDANCE).not.toContain("staging-preview:");
+  it("steers agents to first-class Focus objects and keeps legacy tools as adapters", () => {
+    expect(FEED_GUIDANCE).toContain("first-class Actions, Decisions, Alerts, and Events");
+    expect(FEED_GUIDANCE).toContain("Use action_add/action_update");
+    expect(FEED_GUIDANCE).toContain("Use decision_save only for a genuine user choice");
+    expect(FEED_GUIDANCE).toContain("Use alert_save only for a verified condition");
+    expect(FEED_GUIDANCE).toContain("Use event_save for durable observations");
+    expect(FEED_GUIDANCE).toContain("checklist_* tools are rollback-compatible adapters");
+    expect(FEED_GUIDANCE).toContain("feed_save is an Event-only compatibility path");
+    expect(FEED_GUIDANCE).toContain("Dismissal is sticky");
+    expect(FEED_GUIDANCE).toContain("Do not persist routine narration");
   });
 
   it("injects compact task momentum for linked tasks", () => {

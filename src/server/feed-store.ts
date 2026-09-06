@@ -1,7 +1,8 @@
 import type { DatabaseSync } from "./db.js";
-import type { GlobalBus } from "./global-bus.js";
 import { hydrateRowsSafely, type RowHydrationContext } from "./store-row-hydration.js";
 import { isRecord } from "../shared/is-record.js";
+import type { ChecklistItem, ChecklistStore } from "./checklist-store.js";
+import type { FocusMutationCoordinator } from "./focus-mutation-coordinator.js";
 
 const FEED_CARD_HYDRATION: RowHydrationContext<any> = {
   store: "feed-cards",
@@ -125,6 +126,58 @@ export interface FeedKindStatsOptions {
   keyPrefix?: string;
 }
 
+export interface DashboardFocusDigestSample {
+  id: string;
+  title: string;
+  kind: string;
+  priority: FeedCardPriority;
+  updatedAt: string;
+}
+
+export interface DashboardFocusDigest {
+  id: string;
+  family: string;
+  keyPrefix: string | null;
+  kind: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  quiet: boolean;
+  count: number;
+  highPriorityCount: number;
+  latestUpdatedAt: string;
+  samples: DashboardFocusDigestSample[];
+}
+
+export interface DashboardAttentionSnapshot {
+  generatedAt: string;
+  inboxTotal: number;
+  digests: DashboardFocusDigest[];
+}
+
+export interface DashboardInboxPage {
+  cards: FeedCard[];
+  total: number;
+  nextOffset: number | null;
+}
+
+export interface DashboardDigestPage {
+  cards: FeedCard[];
+  total: number;
+  nextOffset: number | null;
+}
+
+export interface DashboardClearedPage {
+  cards: FeedCard[];
+  total: number;
+  nextOffset: number | null;
+}
+
+export interface FeedChecklistPromotionResult {
+  created: boolean;
+  card: FeedCard;
+  checklistItem: ChecklistItem;
+}
+
 export interface FeedCardMutationInput {
   key?: unknown;
   dedupeKey?: unknown;
@@ -153,16 +206,13 @@ export interface FeedCardMutationOptions {
 }
 
 export interface FeedStoreOptions {
-  onVisualUnreferenced?: (visual: FeedCardVisual, card: FeedCard) => void;
-}
-
-interface VisualCleanup {
-  visual: FeedCardVisual;
-  card: FeedCard;
+  mutations: FocusMutationCoordinator;
+  checklistStore: ChecklistStore;
 }
 
 export class FeedCardValidationError extends Error {}
 export class FeedCardNotFoundError extends Error {}
+export class FeedCardPromotionError extends Error {}
 
 const DEFAULT_KIND = "note";
 const DEFAULT_PRIORITY: FeedCardPriority = "normal";
@@ -176,6 +226,19 @@ const MAX_STATS_DAYS = 365;
 const DEFAULT_STATS_BUCKETS = 14;
 const MAX_STATS_BUCKETS = 60;
 const FEED_CURSOR_VERSION = 1;
+const DASHBOARD_INBOX_LIMIT = 20;
+const DASHBOARD_INBOX_MAX_LIMIT = 50;
+const DASHBOARD_DIGEST_SAMPLE_LIMIT = 3;
+const DASHBOARD_INBOX_PREDICATE = `(
+  feed_cards.kind = 'alert'
+  OR (
+    feed_cards.kind = 'decision'
+    AND (
+      feed_cards.taskId IS NULL
+      OR (tasks.status = 'active' AND tasks.muted = 0)
+    )
+  )
+)`;
 const FEED_SUMMARY_COLUMNS = [
   "id",
   "dedupeKey",
@@ -190,6 +253,12 @@ const FEED_SUMMARY_COLUMNS = [
   "createdAt",
 ].join(", ");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function normalizeFeedCreateId(value: string | undefined): string {
+  if (value === undefined) return crypto.randomUUID();
+  if (!UUID_RE.test(value)) throw new FeedCardValidationError("createId must be a valid UUID");
+  return value;
+}
 
 const FIELD_LIMITS = {
   dedupeKey: 200,
@@ -227,7 +296,7 @@ const MUTATION_FIELDS = new Set([
 
 const IDENTITY_MUTATION_FIELDS = ["key", "dedupeKey"] as const;
 
-type MutableFeedCardField =
+export type MutableFeedCardField =
   | "title"
   | "body"
   | "kind"
@@ -242,7 +311,7 @@ type MutableFeedCardField =
   | "actionJson"
   | "pinned";
 
-type NormalizedCreateFields = {
+export type NormalizedFeedCreateFields = {
   dedupeKey: string | null;
   title: string;
   body: string | null;
@@ -259,7 +328,7 @@ type NormalizedCreateFields = {
   pinned: boolean;
 };
 
-type NormalizedUpdateFields = Partial<Record<MutableFeedCardField, string | number | null>>;
+export type NormalizedFeedUpdateFields = Partial<Record<MutableFeedCardField, string | number | null>>;
 
 type FeedListOrder = "active" | "resolved" | "mixed";
 
@@ -388,7 +457,7 @@ function normalizeOptionalUrl(field: "url", value: unknown): string | null {
   return normalized;
 }
 
-function normalizeDedupeKey(input: FeedCardMutationInput): string | null {
+export function normalizeFeedDedupeKey(input: FeedCardMutationInput): string | null {
   const raw = hasOwn(input as Record<string, unknown>, "key") ? input.key : input.dedupeKey;
   return normalizeString("dedupeKey", raw, { nullable: true }) ?? null;
 }
@@ -526,7 +595,7 @@ function assertExpectedFeedVisualUrl(field: string, value: string, cardId: strin
   }
 }
 
-function normalizeTrustedVisual(value: FeedCardVisual | null, cardId?: string): string | null {
+export function normalizeTrustedFeedVisual(value: FeedCardVisual | null, cardId?: string): string | null {
   if (value === null) return null;
   const visual: FeedCardVisual = {
     artifactId: normalizeVisualString("artifactId", value.artifactId),
@@ -619,10 +688,46 @@ function parseActionJson(value: string | null): FeedCardAction | null {
   return action;
 }
 
-function normalizeCreateInput(input: FeedCardMutationInput): NormalizedCreateFields {
+export function hydrateFeedCardRow(row: any): FeedCard {
+  return {
+    id: row.id,
+    dedupeKey: row.dedupeKey ?? null,
+    title: row.title,
+    body: row.body ?? null,
+    kind: row.kind,
+    priority: normalizePriority(row.priority),
+    status: normalizeStatus(row.status),
+    taskId: row.taskId ?? null,
+    sessionId: row.sessionId ?? null,
+    url: row.url ?? null,
+    links: parseLinksJson(row.linksJson),
+    metadata: parseMetadataJson(row.metadataJson ?? null),
+    visual: parseVisualJson(row.visualJson ?? null),
+    action: parseActionJson(row.actionJson ?? null),
+    pinned: row.pinned === 1,
+    statusChangedAt: row.statusChangedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function hydrateFeedCardSummaryRow(row: any): FeedCardSummary {
+  return {
+    id: row.id,
+    dedupeKey: row.dedupeKey ?? null,
+    title: row.title,
+    kind: row.kind,
+    status: normalizeStatus(row.status),
+    priority: normalizePriority(row.priority),
+    taskId: row.taskId ?? null,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function normalizeFeedCreateInput(input: FeedCardMutationInput): NormalizedFeedCreateFields {
   assertKnownMutationFields(input);
   return {
-    dedupeKey: normalizeDedupeKey(input),
+    dedupeKey: normalizeFeedDedupeKey(input),
     title: normalizeRequiredTitle(input.title),
     body: normalizeOptionalNullableString("body", input.body),
     kind: normalizeKind(input.kind),
@@ -639,13 +744,13 @@ function normalizeCreateInput(input: FeedCardMutationInput): NormalizedCreateFie
   };
 }
 
-function normalizeUpdateInput(
+export function normalizeFeedUpdateInput(
   input: FeedCardMutationInput,
   options: { allowIdentityFields?: boolean } = {},
-): NormalizedUpdateFields {
+): NormalizedFeedUpdateFields {
   assertKnownMutationFields(input);
   if (!options.allowIdentityFields) assertNoIdentityFieldUpdates(input);
-  const normalized: NormalizedUpdateFields = {};
+  const normalized: NormalizedFeedUpdateFields = {};
   const record = input as Record<string, unknown>;
   if (hasOwn(record, "title")) normalized.title = normalizeRequiredTitle(input.title);
   if (hasOwn(record, "body")) normalized.body = normalizeOptionalNullableString("body", input.body);
@@ -885,223 +990,36 @@ function appendCursorPredicate(
   }
 }
 
-export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedStoreOptions = {}) {
-  function hydrate(row: any): FeedCard {
-    return {
-      id: row.id,
-      dedupeKey: row.dedupeKey ?? null,
-      title: row.title,
-      body: row.body ?? null,
-      kind: row.kind,
-      priority: normalizePriority(row.priority),
-      status: normalizeStatus(row.status),
-      taskId: row.taskId ?? null,
-      sessionId: row.sessionId ?? null,
-      url: row.url ?? null,
-      links: parseLinksJson(row.linksJson),
-      metadata: parseMetadataJson(row.metadataJson ?? null),
-      visual: parseVisualJson(row.visualJson ?? null),
-      action: parseActionJson(row.actionJson ?? null),
-      pinned: row.pinned === 1,
-      statusChangedAt: row.statusChangedAt,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    };
-  }
-
-  function hydrateSummary(row: any): FeedCardSummary {
-    return {
-      id: row.id,
-      dedupeKey: row.dedupeKey ?? null,
-      title: row.title,
-      kind: row.kind,
-      status: normalizeStatus(row.status),
-      priority: normalizePriority(row.priority),
-      taskId: row.taskId ?? null,
-      updatedAt: row.updatedAt,
-    };
-  }
-
-  function emitChange(card: Pick<FeedCard, "id" | "dedupeKey" | "taskId" | "sessionId">): void {
-    bus.emit({
-      type: "feed:changed",
-      cardId: card.id,
-      dedupeKey: card.dedupeKey ?? undefined,
-      taskId: card.taskId ?? undefined,
-      sessionId: card.sessionId ?? undefined,
-    });
-  }
-
-  function emitVisualUnreferenced(cleanup: VisualCleanup | undefined): void {
-    if (cleanup) options.onVisualUnreferenced?.(cleanup.visual, cleanup.card);
-  }
-
-  function normalizeCreateId(value: string | undefined): string {
-    if (value === undefined) return crypto.randomUUID();
-    if (!UUID_RE.test(value)) throw new FeedCardValidationError("createId must be a valid UUID");
-    return value;
-  }
-
-  function hasVisualOption(mutationOptions: FeedCardMutationOptions): boolean {
-    return Object.prototype.hasOwnProperty.call(mutationOptions, "visual");
-  }
-
+export function createFeedStore(db: DatabaseSync, options: FeedStoreOptions) {
   function getCard(id: string): FeedCard | undefined {
     const row = db.prepare("SELECT * FROM feed_cards WHERE id = ?").get(id) as any;
-    return row ? hydrate(row) : undefined;
+    return row ? hydrateFeedCardRow(row) : undefined;
   }
 
   function getCardByKey(dedupeKey: string): FeedCard | undefined {
     const key = normalizeString("dedupeKey", dedupeKey, { required: true })!;
     const row = db.prepare("SELECT * FROM feed_cards WHERE dedupeKey = ?").get(key) as any;
-    return row ? hydrate(row) : undefined;
-  }
-
-  function insertCard(fields: NormalizedCreateFields, now = new Date().toISOString(), idOverride?: string): FeedCard {
-    const id = normalizeCreateId(idOverride);
-    db.prepare(`
-      INSERT INTO feed_cards (
-        id, dedupeKey, title, body, kind, priority, status, taskId, sessionId, url,
-        linksJson, metadataJson, visualJson, actionJson, pinned, statusChangedAt, createdAt, updatedAt
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      fields.dedupeKey,
-      fields.title,
-      fields.body,
-      fields.kind,
-      fields.priority,
-      fields.status,
-      fields.taskId,
-      fields.sessionId,
-      fields.url,
-      fields.linksJson,
-      fields.metadataJson,
-      fields.visualJson,
-      fields.actionJson,
-      fields.pinned ? 1 : 0,
-      now,
-      now,
-      now,
-    );
-    return getCard(id)!;
-  }
-
-  function applyUpdate(
-    existing: FeedCard,
-    updates: NormalizedUpdateFields,
-    mutationOptions: FeedCardMutationOptions = {},
-    now = new Date().toISOString(),
-  ): { card: FeedCard; cleanup?: VisualCleanup } {
-    const entries = Object.entries(updates) as Array<[MutableFeedCardField, string | number | null]>;
-    if (hasVisualOption(mutationOptions)) {
-      entries.push(["visualJson", normalizeTrustedVisual(mutationOptions.visual ?? null, existing.id)]);
-    }
-    if (entries.length === 0) return { card: existing };
-
-    const fields: string[] = ["updatedAt = ?"];
-    const values: Array<string | number | null> = [now];
-    for (const [field, value] of entries) {
-      fields.push(`${field} = ?`);
-      values.push(value);
-    }
-    if (updates.status !== undefined && updates.status !== existing.status) {
-      fields.push("statusChangedAt = ?");
-      values.push(now);
-    }
-    values.push(existing.id);
-    db.prepare(`UPDATE feed_cards SET ${fields.join(", ")} WHERE id = ?`).run(...values);
-    const card = getCard(existing.id)!;
-    const cleanup = hasVisualOption(mutationOptions)
-      && existing.visual
-      && existing.visual.artifactId !== mutationOptions.visual?.artifactId
-      ? { visual: existing.visual, card: existing }
-      : undefined;
-    return { card, cleanup };
+    return row ? hydrateFeedCardRow(row) : undefined;
   }
 
   function saveCard(input: FeedCardMutationInput, mutationOptions: FeedCardMutationOptions = {}): FeedCardSaveResult {
-    const dedupeKey = normalizeDedupeKey(input);
-    const visualJson = hasVisualOption(mutationOptions)
-      ? normalizeTrustedVisual(mutationOptions.visual ?? null, mutationOptions.createId)
-      : null;
-    if (!dedupeKey) {
-      const card = insertCard({ ...normalizeCreateInput(input), visualJson }, undefined, mutationOptions.createId);
-      emitChange(card);
-      return { card, created: true };
-    }
-
-    let inTransaction = false;
-    db.exec("BEGIN IMMEDIATE");
-    inTransaction = true;
-    try {
-      const existing = getCardByKey(dedupeKey);
-      if (existing) {
-        const updates = normalizeUpdateInput(input, { allowIdentityFields: true });
-        if (Object.keys(updates).length === 0 && !hasVisualOption(mutationOptions)) {
-          throw new FeedCardValidationError("No fields to update");
-        }
-        const update = applyUpdate(existing, updates, mutationOptions);
-        db.exec("COMMIT");
-        inTransaction = false;
-        emitChange(update.card);
-        emitVisualUnreferenced(update.cleanup);
-        return { card: update.card, created: false };
-      }
-      const card = insertCard({ ...normalizeCreateInput(input), dedupeKey, visualJson }, undefined, mutationOptions.createId);
-      db.exec("COMMIT");
-      inTransaction = false;
-      emitChange(card);
-      return { card, created: true };
-    } catch (error) {
-      if (inTransaction) db.exec("ROLLBACK");
-      throw error;
-    }
+    return options.mutations.saveLegacy(input, mutationOptions);
   }
 
   function updateCardById(id: string, input: FeedCardMutationInput, mutationOptions: FeedCardMutationOptions = {}): FeedCard {
-    const existing = getCard(id);
-    if (!existing) throw new FeedCardNotFoundError(`Feed card ${id} not found`);
-    const updates = normalizeUpdateInput(input);
-    if (Object.keys(updates).length === 0 && !hasVisualOption(mutationOptions)) {
-      throw new FeedCardValidationError("No fields to update");
-    }
-    const update = applyUpdate(existing, updates, mutationOptions);
-    emitChange(update.card);
-    emitVisualUnreferenced(update.cleanup);
-    return update.card;
+    return options.mutations.updateLegacyById(id, input, mutationOptions);
   }
 
   function updateCardByKey(dedupeKey: string, input: FeedCardMutationInput, mutationOptions: FeedCardMutationOptions = {}): FeedCard {
-    const existing = getCardByKey(dedupeKey);
-    if (!existing) throw new FeedCardNotFoundError(`Feed card with key ${dedupeKey} not found`);
-    const updates = normalizeUpdateInput(input);
-    if (Object.keys(updates).length === 0 && !hasVisualOption(mutationOptions)) {
-      throw new FeedCardValidationError("No fields to update");
-    }
-    const update = applyUpdate(existing, updates, mutationOptions);
-    emitChange(update.card);
-    emitVisualUnreferenced(update.cleanup);
-    return update.card;
+    return options.mutations.updateLegacyByKey(dedupeKey, input, mutationOptions);
   }
 
   function deleteCardById(id: string): boolean {
-    const existing = getCard(id);
-    if (!existing) return false;
-    db.prepare("DELETE FROM feed_cards WHERE id = ?").run(id);
-    emitChange(existing);
-    emitVisualUnreferenced(existing.visual ? { visual: existing.visual, card: existing } : undefined);
-    return true;
+    return options.mutations.deleteById(id);
   }
 
   function deleteCardByKey(dedupeKey: string): boolean {
-    const existing = getCardByKey(dedupeKey);
-    if (!existing) return false;
-    db.prepare("DELETE FROM feed_cards WHERE id = ?").run(existing.id);
-    emitChange(existing);
-    emitVisualUnreferenced(existing.visual ? { visual: existing.visual, card: existing } : undefined);
-    return true;
+    return options.mutations.deleteByKey(dedupeKey);
   }
 
   function getKindStats(statsOptions: FeedKindStatsOptions = {}): FeedKindStats {
@@ -1185,6 +1103,232 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     };
   }
 
+  function getDashboardAttention(): DashboardAttentionSnapshot {
+    const inboxTotalRow = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM feed_cards
+      LEFT JOIN tasks ON tasks.id = feed_cards.taskId
+      WHERE feed_cards.status = 'active'
+        AND ${DASHBOARD_INBOX_PREDICATE}
+    `).get() as { count?: number };
+    const rows = db.prepare(`
+      SELECT feed_cards.*,
+        tasks.title AS relatedTaskTitle,
+        tasks.muted AS relatedTaskMuted,
+        tasks.status AS relatedTaskStatus
+      FROM feed_cards
+      LEFT JOIN tasks ON tasks.id = feed_cards.taskId
+      WHERE feed_cards.status = 'active'
+        AND NOT ${DASHBOARD_INBOX_PREDICATE}
+      ORDER BY
+        feed_cards.pinned DESC,
+        CASE feed_cards.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+        feed_cards.updatedAt DESC,
+        feed_cards.id DESC
+    `).all() as any[];
+    const cards = hydrateRowsSafely(rows, hydrateFeedCardRow, FEED_CARD_HYDRATION);
+    const rowById = new Map(rows.map((row) => [String(row.id), row]));
+    const digestById = new Map<string, DashboardFocusDigest>();
+
+    for (const card of cards) {
+      const row = rowById.get(card.id);
+      const dedupeKey = card.dedupeKey?.trim() ?? "";
+      const separatorIndex = dedupeKey.indexOf(":");
+      const family = dedupeKey
+        ? (separatorIndex > 0 ? dedupeKey.slice(0, separatorIndex) : dedupeKey)
+        : card.kind;
+      const keyPrefix = dedupeKey
+        ? (separatorIndex > 0 ? `${family}:` : dedupeKey)
+        : null;
+      const kind = dedupeKey ? null : card.kind;
+      const taskKey = card.taskId ?? "__global__";
+      const sourceKey = keyPrefix ?? `kind:${kind}`;
+      const id = `${taskKey}\u0000${sourceKey}`;
+      let digest = digestById.get(id);
+      if (!digest) {
+        digest = {
+          id,
+          family,
+          keyPrefix,
+          kind,
+          taskId: card.taskId,
+          taskTitle: typeof row?.relatedTaskTitle === "string" ? row.relatedTaskTitle : null,
+          quiet: row?.relatedTaskMuted === 1 || row?.relatedTaskStatus === "archived",
+          count: 0,
+          highPriorityCount: 0,
+          latestUpdatedAt: card.updatedAt,
+          samples: [],
+        };
+        digestById.set(id, digest);
+      }
+      digest.count += 1;
+      if (card.priority === "high") digest.highPriorityCount += 1;
+      if (card.updatedAt > digest.latestUpdatedAt) digest.latestUpdatedAt = card.updatedAt;
+      if (digest.samples.length < DASHBOARD_DIGEST_SAMPLE_LIMIT) {
+        digest.samples.push({
+          id: card.id,
+          title: card.title,
+          kind: card.kind,
+          priority: card.priority,
+          updatedAt: card.updatedAt,
+        });
+      }
+    }
+
+    const digests = [...digestById.values()].sort((left, right) => {
+      if (left.quiet !== right.quiet) return left.quiet ? 1 : -1;
+      const latestCompare = right.latestUpdatedAt.localeCompare(left.latestUpdatedAt);
+      if (latestCompare !== 0) return latestCompare;
+      if (right.count !== left.count) return right.count - left.count;
+      return left.id.localeCompare(right.id);
+    });
+
+    return {
+      generatedAt: new Date().toISOString(),
+      inboxTotal: Number(inboxTotalRow.count) || 0,
+      digests,
+    };
+  }
+
+  function listDashboardInbox(
+    options: { offset?: number; limit?: number } = {},
+  ): DashboardInboxPage {
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? DASHBOARD_INBOX_LIMIT;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new FeedCardValidationError("offset must be a non-negative integer");
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > DASHBOARD_INBOX_MAX_LIMIT) {
+      throw new FeedCardValidationError(`limit must be an integer from 1 to ${DASHBOARD_INBOX_MAX_LIMIT}`);
+    }
+    const totalRow = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM feed_cards
+      LEFT JOIN tasks ON tasks.id = feed_cards.taskId
+      WHERE feed_cards.status = 'active'
+        AND ${DASHBOARD_INBOX_PREDICATE}
+    `).get() as { count?: number };
+    const rows = db.prepare(`
+      SELECT feed_cards.*
+      FROM feed_cards
+      LEFT JOIN tasks ON tasks.id = feed_cards.taskId
+      WHERE feed_cards.status = 'active'
+        AND ${DASHBOARD_INBOX_PREDICATE}
+      ORDER BY
+        feed_cards.pinned DESC,
+        CASE feed_cards.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+        feed_cards.updatedAt DESC,
+        feed_cards.id DESC
+      LIMIT ? OFFSET ?
+    `).all(limit, offset) as any[];
+    const cards = hydrateRowsSafely(rows, hydrateFeedCardRow, FEED_CARD_HYDRATION);
+    const total = Number(totalRow.count) || 0;
+    const nextOffset = offset + rows.length < total ? offset + rows.length : null;
+    return { cards, total, nextOffset };
+  }
+
+  function listDashboardDigestItems(options: {
+    taskId: string | null;
+    keyPrefix?: string;
+    kind?: string;
+    offset?: number;
+    limit?: number;
+  }): DashboardDigestPage {
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? DASHBOARD_INBOX_LIMIT;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new FeedCardValidationError("offset must be a non-negative integer");
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > DASHBOARD_INBOX_MAX_LIMIT) {
+      throw new FeedCardValidationError(`limit must be an integer from 1 to ${DASHBOARD_INBOX_MAX_LIMIT}`);
+    }
+    const keyPrefix = options.keyPrefix?.trim();
+    const kind = options.kind?.trim();
+    if (Boolean(keyPrefix) === Boolean(kind)) {
+      throw new FeedCardValidationError("Provide exactly one of keyPrefix or kind");
+    }
+
+    const where = ["feed_cards.status = 'active'", `NOT ${DASHBOARD_INBOX_PREDICATE}`];
+    const values: Array<string | number> = [];
+    if (options.taskId === null) {
+      where.push("feed_cards.taskId IS NULL");
+    } else {
+      where.push("feed_cards.taskId = ?");
+      values.push(options.taskId);
+    }
+    if (keyPrefix) {
+      where.push(keyPrefix.endsWith(":") ? "instr(feed_cards.dedupeKey, ?) = 1" : "feed_cards.dedupeKey = ?");
+      values.push(keyPrefix);
+    } else {
+      where.push("feed_cards.dedupeKey IS NULL", "feed_cards.kind = ?");
+      values.push(kind!);
+    }
+    const whereClause = where.join(" AND ");
+    const totalRow = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM feed_cards
+      LEFT JOIN tasks ON tasks.id = feed_cards.taskId
+      WHERE ${whereClause}
+    `)
+      .get(...values) as { count?: number };
+    const rows = db.prepare(`
+      SELECT feed_cards.*
+      FROM feed_cards
+      LEFT JOIN tasks ON tasks.id = feed_cards.taskId
+      WHERE ${whereClause}
+      ORDER BY
+        feed_cards.pinned DESC,
+        CASE feed_cards.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+        feed_cards.updatedAt DESC,
+        feed_cards.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...values, limit, offset) as any[];
+    const cards = hydrateRowsSafely(rows, hydrateFeedCardRow, FEED_CARD_HYDRATION);
+    const total = Number(totalRow.count) || 0;
+    const nextOffset = offset + rows.length < total ? offset + rows.length : null;
+    return { cards, total, nextOffset };
+  }
+
+  function listDashboardCleared(
+    options: { offset?: number; limit?: number } = {},
+  ): DashboardClearedPage {
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? DASHBOARD_INBOX_LIMIT;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new FeedCardValidationError("offset must be a non-negative integer");
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > DASHBOARD_INBOX_MAX_LIMIT) {
+      throw new FeedCardValidationError(`limit must be an integer from 1 to ${DASHBOARD_INBOX_MAX_LIMIT}`);
+    }
+    const totalRow = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM feed_cards
+      WHERE status IN ('done', 'dismissed')
+    `).get() as { count?: number };
+    const rows = db.prepare(`
+      SELECT *
+      FROM feed_cards
+      WHERE status IN ('done', 'dismissed')
+      ORDER BY statusChangedAt DESC, updatedAt DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(limit, offset) as any[];
+    const cards = hydrateRowsSafely(rows, hydrateFeedCardRow, FEED_CARD_HYDRATION);
+    const total = Number(totalRow.count) || 0;
+    const nextOffset = offset + rows.length < total ? offset + rows.length : null;
+    return { cards, total, nextOffset };
+  }
+
+  function promoteCardToChecklist(cardId: string, input: { text?: unknown; taskId?: unknown; expectedActivationId?: unknown } = {}): FeedChecklistPromotionResult {
+    const result = options.mutations.promoteToAction(cardId, options.checklistStore, input);
+    const card = getCard(result.object.id);
+    if (!card) throw new FeedCardNotFoundError(`Feed card ${result.object.id} not found`);
+    return {
+      created: result.created,
+      card,
+      checklistItem: result.action,
+    };
+  }
+
   function listCardPage(filters: FeedCardMinimalPageFilters): FeedCardSummaryListPage;
   function listCardPage(filters?: FeedCardPageFilters): FeedCardListPage;
   function listCardPage(
@@ -1218,8 +1362,8 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     // Paging math stays keyed to the raw page window: the cursor still advances
     // past the skipped row, so pagination can neither stall nor skip good cards.
     const cards = minimal
-      ? hydrateRowsSafely(pageRows, hydrateSummary, FEED_CARD_HYDRATION)
-      : hydrateRowsSafely(pageRows, hydrate, FEED_CARD_HYDRATION);
+      ? hydrateRowsSafely(pageRows, hydrateFeedCardSummaryRow, FEED_CARD_HYDRATION)
+      : hydrateRowsSafely(pageRows, hydrateFeedCardRow, FEED_CARD_HYDRATION);
     const meta: FeedCardPageMeta = {
       nextCursor: normalized.order !== "mixed" && hasMore && lastRow
         ? encodeFeedCursor(cursorPositionFromRow(lastRow), normalized)
@@ -1235,11 +1379,16 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
   return {
     listCardPage,
     getKindStats,
+    getDashboardAttention,
+    listDashboardInbox,
+    listDashboardDigestItems,
+    listDashboardCleared,
     getCard,
     getCardByKey,
     saveCard,
     updateCardById,
     updateCardByKey,
+    promoteCardToChecklist,
     deleteCardById,
     deleteCardByKey,
   };

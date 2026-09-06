@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { ManagementJobFilters } from "./management-job-api";
+import type { FocusHistoryFilter, FocusLaunchIdentity, FocusObjectType, FocusQuietConcernFilter } from "./api";
 
 const CHAT_CACHE_GC_TIME = 15 * 60 * 1000;
 
@@ -46,10 +47,31 @@ export const queryKeys = {
   taskSessionStorage: (id: string, sessionIds: readonly string[]) =>
     ["task", id, "session-storage", ...sessionIds] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
-  feed: (filters?: Record<string, unknown>) =>
-    filters ? ["feed", filters] as const : ["feed"] as const,
-  feedKindStats: (params?: Record<string, unknown>) =>
-    params ? ["feed", "kind-stats", params] as const : ["feed", "kind-stats"] as const,
+  focusSnapshot: ["dashboard", "focus", "snapshot"] as const,
+  focusRoot: ["dashboard", "focus"] as const,
+  focusDecisions: ["dashboard", "focus", "decisions"] as const,
+  focusAlerts: ["dashboard", "focus", "alerts"] as const,
+  focusDigests: ["dashboard", "focus", "digest"] as const,
+  focusDigest: (id: string) => ["dashboard", "focus", "digest", id] as const,
+  focusCleared: ["dashboard", "focus", "cleared"] as const,
+  focusObject: (type: FocusObjectType, id: string) => ["dashboard", "focus", "object", type, id] as const,
+  focusHistory: (filter: FocusHistoryFilter = {}) => ["dashboard", "focus", "history", filter] as const,
+  focusTransitions: (id: string) => ["dashboard", "focus", "transitions", id] as const,
+  focusAuthority: ["dashboard", "focus", "authority"] as const,
+  focusCoverage: ["dashboard", "focus", "coverage"] as const,
+  focusAudits: ["dashboard", "focus", "audits"] as const,
+  focusMetrics: (days = 7) => ["dashboard", "focus", "metrics", days] as const,
+  focusAttentionEvents: (id?: string) => ["dashboard", "focus", "attention-events", id ?? null] as const,
+  focusDeliveries: ["dashboard", "focus", "deliveries"] as const,
+  focusProtectionRoot: ["dashboard", "focus", "protection"] as const,
+  focusProtectionCurrent: ["dashboard", "focus", "protection", "current"] as const,
+  focusProtectionHistory: ["dashboard", "focus", "protection", "history"] as const,
+  focusMutation: (id: string) => ["focus-mutation", id] as const,
+  focusQuietConcerns: (filter: FocusQuietConcernFilter = {}) => ["dashboard", "focus", "quiet-concerns", filter] as const,
+  focusEpisode: (id: string, activationId: string) => ["dashboard", "focus", "episode", id, activationId] as const,
+  focusLaunchReceipt: (identity: FocusLaunchIdentity) => ["dashboard", "focus", "launch", "identity", identity.objectId, identity.activationId, identity.source] as const,
+  focusLaunchReceipts: (id: string, activationId: string) => ["dashboard", "focus", "launch", "episode", id, activationId] as const,
+  focusLaunchReceiptById: (id: string) => ["dashboard", "focus", "launch", "receipt", id] as const,
   scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,
   sessionWorkspace: (sessionId: string, taskId?: string) =>
     ["session-workspace", sessionId, taskId ?? null] as const,

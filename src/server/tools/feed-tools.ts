@@ -109,17 +109,17 @@ export interface RegisterFeedToolsOptions {
 export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineBridgeTool("feed_save", {
-      description: "Create or update a durable dashboard feed card. Use this sparingly for finite, user-relevant queue items that should remain visible after chat, not for narration, progress logs, routine status updates, staging previews, or generic completion summaries. Use key for recurring or ongoing cards you plan to update in place; omit key for distinct historical cards; the saved key is returned as the card's dedupeKey field and is what feed_list reports. Optional body supports concise Markdown for scannable text. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
+      description: "Event-only compatibility adapter for old producers and rollback. Returns { card, created } alongside success: true, preserving the legacy card shape. Saved keys are returned as dedupeKey. Use either id for an existing card or a stable key for upsert, not both; title is required when creating. Optional body supports concise Markdown; raw HTML is escaped and null clears it. Omitted fields are preserved on update; action and visual accept null to clear. Optional action defines a user-confirmed session prompt; optional visual publishes a feed-owned artifact. To revive a done or dismissed compatibility Event, explicitly pass status: 'active'. Prefer event_save for new durable observations with explicit provenance and stable keys. Decision/Alert kinds (and updates to those types) are rejected: use decision_save/alert_save and their strict admission/lifecycle contracts. Chat by default; never publish routine narration, progress, previews or completion messages. This rollback path does not authorize notifications.",
       parameters: {
         type: "object",
         properties: {
           id: { type: "string", description: "Existing card ID to update. Mutually exclusive with key." },
-          key: { type: "string", description: "Stable agent-chosen key for upsert/dedupe, e.g. 'platform-audit:slug' or 'decision:task-id:topic'. Returned as the card's dedupeKey field. Mutually exclusive with id." },
+          key: { type: "string", description: "Stable agent-chosen key for upsert/dedupe, e.g. 'source-watch:task-id:item' or 'release:version'. Returned as the card's dedupeKey field. Mutually exclusive with id." },
           title: { type: "string", description: "Short card title. Required when creating a new card." },
           body: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional concise Markdown body text. Supports GFM-style bullets, links, tables, task lists, and code. Raw HTML is escaped. Null clears it." },
-          kind: { type: "string", description: "Card kind. Recommended: note, status, todo, decision, artifact, link. Unknown kinds are allowed." },
+          kind: { type: "string", description: "Compatibility Event category; decision and alert are forbidden. Prefer note, link or artifact." },
           priority: { type: "string", enum: ["low", "normal", "high"], description: "Card priority. Defaults to normal." },
-          status: { type: "string", enum: ["active", "done", "dismissed"], description: "Card status. Defaults to active. Set done or dismissed when resolved." },
+          status: { type: "string", enum: ["active", "done", "dismissed"], description: "Card status. Defaults to active for new cards; omission preserves existing status. Set done or dismissed when resolved. Explicit active revives a done or dismissed compatibility Event." },
           taskId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional related task ID. Null clears it." },
           sessionId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional related session ID. Null clears it." },
           url: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional primary URL. Null clears it." },
@@ -191,6 +191,10 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
             : hasKey
               ? ctx.feedStore.getCardByKey(args.key)
               : undefined;
+          const requestedKind = typeof args.kind === "string" ? args.kind.trim() : undefined;
+          if (requestedKind === "decision" || requestedKind === "alert" || existing?.kind === "decision" || existing?.kind === "alert") {
+            return toolFailure("feed_save is Event-only. Use decision_save or alert_save with the first-class admission contract.");
+          }
           if (hasId && !existing) throw new FeedCardNotFoundError(`Feed card ${args.id} not found`);
 
           const cardArgs = stripToolOnlyFields(args);
@@ -230,7 +234,7 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
     }),
     defineBridgeTool("feed_list", {
-      description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor, returnedCount, hasMore }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. hasMore reports whether more rows matched beyond this page even when nextCursor is null. Full cards can be very large, so prefer minimal: true for scans, audits, and dedupe checks, then re-list a narrow filter for the few cards whose body or action you actually need. Saved card keys are returned as the dedupeKey field. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use keyPrefix to inspect a keyed proposal family without loading unrelated cards. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
+      description: "List durable Focus backing items from the legacy-compatible feed store. Defaults to active items only. Returns { cards, nextCursor, returnedCount, hasMore }; saved keys appear as dedupeKey. Pass a non-null nextCursor back with identical filters. For complete resolved scans, request each status separately. Prefer minimal: true for scans and dedupe checks. Use keyPrefix and taskId to inspect one Focus digest source before updating it.",
       parameters: {
         type: "object",
         properties: {
@@ -267,7 +271,7 @@ export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
     }),
     defineBridgeTool("feed_delete", {
-      description: "Delete a durable dashboard feed card by id or key. Prefer setting status to done or dismissed when the card remains useful as history.",
+      description: "Delete a durable Focus backing item by id or key. Prefer done or dismissed when the item remains useful as retained history.",
       parameters: {
         type: "object",
         properties: {
