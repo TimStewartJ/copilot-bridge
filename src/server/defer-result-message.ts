@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 export const DEFERRED_WORK_RESULT_PROMPT_PREFIX = "<deferred-work-result>";
 const RETURNED_RESULT_INTRO =
-  "A temporary deferred-work session returned this result. Continue from it without repeating the completed check:";
+  "A temporary deferred-work session returned this result. Continue from it:";
+const RETURNED_RESULT_INTRO_PATTERN =
+  "A temporary deferred-work session returned this result\\. Continue from it(?: without repeating the completed check)?:";
 const RETURNED_RESULT_PATTERN = new RegExp([
   `^${DEFERRED_WORK_RESULT_PROMPT_PREFIX}\\r?\\n`,
   "deferId: ((once|interval)_[^\\r\\n]+)\\r?\\n",
@@ -10,7 +12,7 @@ const RETURNED_RESULT_PATTERN = new RegExp([
   "(?:\\r?\\ndeliveryId: ([^\\r\\n]+))?",
   "(\\r?\\ncontinues: true)?",
   "\\r?\\n</deferred-work-result>\\r?\\n\\r?\\n",
-  RETURNED_RESULT_INTRO,
+  RETURNED_RESULT_INTRO_PATTERN,
 ].join(""));
 
 export interface DeferredWorkResultMessage {
@@ -66,7 +68,7 @@ export function createFailedDeferDelivery(
     : input.deferId;
   const workstream = input.kind === "interval" ? "Monitoring" : "Deferred work";
   return createReturnedDeferDelivery(input, [
-    `The ${input.kind === "interval" ? "recurring" : "one-shot"} defer ${label} stopped after ${attempts} failed attempts.`,
+    `FINAL DEFER RESULT: The ${input.kind === "interval" ? "recurring" : "one-shot"} defer ${label} failed after ${attempts} attempts.`,
     `Last error: ${lastError}`,
     "",
     `${workstream} is no longer active. Reactivate the defer after resolving the error.`,

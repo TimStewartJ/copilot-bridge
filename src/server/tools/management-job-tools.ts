@@ -6,8 +6,9 @@ import {
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { bridgeToolResult, getToolResultDisplayText, toolFailure, type BridgeToolNextAction } from "../tool-results.js";
 import type { ManagementJob } from "../management-job-store.js";
-import { formatManagementJobDeferGuidance } from "../management-job-tool-results.js";
+import { MANAGEMENT_JOB_DEFER_GUIDANCE } from "../management-job-tool-results.js";
 import { isRecord } from "../../shared/is-record.js";
+import { readActiveRelease } from "../release-slots.js";
 
 export interface RegisterManagementJobToolsOptions {
   hiddenTools?: ReadonlySet<string>;
@@ -24,10 +25,19 @@ function isStaleRunningJob(job: ManagementJob, now = Date.now()): boolean {
   return !Number.isFinite(heartbeatAt) || now - heartbeatAt >= MANAGEMENT_JOB_STALE_AFTER_MS;
 }
 
-function isAwaitingDeployActivation(job: ManagementJob): boolean {
+function isDeployReleaseActive(job: ManagementJob, dataDir: string | undefined): boolean {
+  if (job.type !== "staging_deploy" || !dataDir || !isRecord(job.result)) return false;
+  const candidate = job.result.releaseCandidate;
+  if (!isRecord(candidate) || typeof candidate.id !== "string" || typeof candidate.commitSha !== "string") return false;
+  const active = readActiveRelease(dataDir);
+  return active?.id === candidate.id && active.commitSha === candidate.commitSha;
+}
+
+function isAwaitingDeployActivation(job: ManagementJob, dataDir?: string): boolean {
   return job.type === "staging_deploy"
     && job.status === "succeeded"
     && isRecord(job.result)
+    && !isDeployReleaseActive(job, dataDir)
     && (
       job.result.restartDeferred === true
       || (job.result.restartQueued === true && job.result.restartActivated !== true)
@@ -46,7 +56,7 @@ function getJobResultSummary(job: ManagementJob): string | undefined {
   return undefined;
 }
 
-function getManagementJobContract(job: ManagementJob): {
+function getManagementJobContract(job: ManagementJob, dataDir?: string): {
   summary: string;
   terminal: boolean;
   toolNextAction: BridgeToolNextAction;
@@ -63,11 +73,17 @@ function getManagementJobContract(job: ManagementJob): {
       stalled: true,
     };
   }
-  if (isAwaitingDeployActivation(job)) {
+  if (isDeployReleaseActive(job, dataDir)) {
     return {
-      summary:
-        `Management job ${job.id} (${job.type}) is waiting for its shared batch restart to activate. `
-        + formatManagementJobDeferGuidance(job.id, "status"),
+      summary: `Management job ${job.id} (${job.type}) activated release ${String((job.result as any).commitSha ?? "")}. The restart is complete.`,
+      terminal: true,
+      toolNextAction: "respond",
+      retryable: false,
+    };
+  }
+  if (isAwaitingDeployActivation(job, dataDir)) {
+    return {
+      summary: `Management job ${job.id} (${job.type}) is waiting for its shared batch restart to activate. ${MANAGEMENT_JOB_DEFER_GUIDANCE}`,
       terminal: false,
       toolNextAction: "wait",
       retryable: false,
@@ -95,7 +111,7 @@ function getManagementJobContract(job: ManagementJob): {
   return {
     summary:
       `Management job ${job.id} (${job.type}) is ${job.status}. ` +
-      `Wait for the background runner; do not issue marker or no-op tools. ${formatManagementJobDeferGuidance(job.id, "status")}`,
+      `Wait for the background runner; do not issue marker or no-op tools. ${MANAGEMENT_JOB_DEFER_GUIDANCE}`,
     terminal: false,
     toolNextAction: "wait",
     retryable: false,
@@ -135,7 +151,7 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
         const maxBytes = Number.isInteger(args.logTailBytes) && args.logTailBytes > 0
           ? Math.min(Number(args.logTailBytes), 64 * 1024)
           : undefined;
-        const contract = getManagementJobContract(job);
+        const contract = getManagementJobContract(job, ctx.runtimePaths?.dataDir);
         return bridgeToolResult({
           success: true,
           ...contract,
