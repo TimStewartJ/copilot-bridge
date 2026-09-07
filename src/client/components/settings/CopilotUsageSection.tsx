@@ -439,6 +439,7 @@ function QuotaCard({
   const usedPercent = snapshot.remainingPercentage !== null
     ? Math.min(100, Math.max(0, 100 - snapshot.remainingPercentage))
     : null;
+  const monthElapsedPercent = getMonthElapsedPercent(new Date());
   const identity = status.identity;
   const identityLabel = [identity?.login, identity?.plan]
     .filter((part): part is string => Boolean(part))
@@ -487,8 +488,13 @@ function QuotaCard({
       </div>
 
       {usedPercent !== null && (
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-primary">
-          <div className="h-full rounded-full bg-accent" style={{ width: `${usedPercent}%` }} />
+        <div className="space-y-1.5">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-primary">
+            <div className="h-full rounded-full bg-accent" style={{ width: `${usedPercent}%` }} />
+          </div>
+          <div className="text-[11px] text-text-muted">
+            {formatPercent(usedPercent)} used · {formatPercent(monthElapsedPercent)} of month elapsed
+          </div>
         </div>
       )}
 
@@ -660,6 +666,21 @@ function formatQuotaAmount(value: number | null): string {
 
 function formatPercent(value: number): string {
   return `${AI_CREDIT_FORMATTER.format(value)}%`;
+}
+
+function getMonthElapsedPercent(now: Date): number {
+  const current = Date.UTC(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  );
+  const monthStart = Date.UTC(now.getFullYear(), now.getMonth(), 1);
+  const nextMonthStart = Date.UTC(now.getFullYear(), now.getMonth() + 1, 1);
+  return Math.min(100, Math.max(0, ((current - monthStart) / (nextMonthStart - monthStart)) * 100));
 }
 
 function formatRangeWindow(startAt: string | null): string {

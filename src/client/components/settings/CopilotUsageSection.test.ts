@@ -478,7 +478,24 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("Exact counter");
     expect(text).toContain("9,920,606.1");
     expect(text).toContain("99.2% left");
+    expect(text).toContain("0.8% used");
     expect(text).toContain("timstewart_microsoft · enterprise");
+  });
+
+  it("shows continuous progress through the viewer's local calendar month", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 4, 1, 0, 0));
+      expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("0% of month elapsed");
+
+      vi.setSystemTime(new Date(2026, 3, 16, 0, 0));
+      expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("50% of month elapsed");
+
+      vi.setSystemTime(new Date(2024, 1, 15, 12, 0));
+      expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("50% of month elapsed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders the quota reset on its UTC calendar date regardless of viewer timezone", () => {
