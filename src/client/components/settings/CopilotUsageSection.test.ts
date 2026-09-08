@@ -473,11 +473,13 @@ describe("CopilotUsageSection", () => {
     const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
 
     expect(text).toContain("Live account quota");
-    expect(text).toContain("Used AI credits");
+    expect(text).toContain("AI credits used");
     expect(text).toContain("79,393.9");
-    expect(text).toContain("Exact counter");
-    expect(text).toContain("9,920,606.1");
-    expect(text).toContain("99.2% left");
+    expect(text).toContain("of 10,000,000 this period");
+    expect(text).toContain("Current period · all clients");
+    expect(text).not.toContain("9,920,606.1");
+    expect(text).not.toContain("99.2% left");
+    expect(text).not.toContain("Exact counter");
     expect(text).toContain("0.8% used");
     expect(text).toContain("timstewart_microsoft · enterprise");
   });
@@ -489,7 +491,11 @@ describe("CopilotUsageSection", () => {
       expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("0% of month elapsed");
 
       vi.setSystemTime(new Date(2026, 3, 16, 0, 0));
-      expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("50% of month elapsed");
+      const midpoint = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
+      expect(midpoint).toContain("50% of month elapsed");
+      expect(midpoint).toContain('aria-label="0.8% quota used; 50% of calendar month elapsed"');
+      expect(midpoint).toContain('bg-sky-400" style="width:50%"');
+      expect(midpoint).toMatch(/bg-accent" style="width:0\.[78]\d*%"/);
 
       vi.setSystemTime(new Date(2024, 1, 15, 12, 0));
       expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("50% of month elapsed");
@@ -498,13 +504,35 @@ describe("CopilotUsageSection", () => {
     }
   });
 
-  it("renders the quota reset on its UTC calendar date regardless of viewer timezone", () => {
-    // 2026-09-01T00:00Z is still Aug 31 anywhere west of UTC, so a local-time
-    // formatter silently reports the reset a day early.
+  it("omits redundant quota tiles and billing implementation details", () => {
     const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
 
-    expect(text).toContain("Sep 1, 2026");
-    expect(text).not.toContain("Aug 31, 2026");
+    expect(text).not.toContain("Resets");
+    expect(text).not.toContain("Remaining");
+    expect(text).not.toContain("Entitlement");
+    expect(text).not.toContain("Bucket premium_interactions");
+    expect(text).not.toContain("overage permitted");
+  });
+
+  it("preserves unlimited, approximate, and overage quota states", () => {
+    const quota = createQuotaStatus();
+    if (!quota.primary) throw new Error("Expected quota fixture");
+    const text = renderSection(createUsageSummary(), createQuotaStatus({
+      primary: {
+        ...quota.primary,
+        unit: "premium_requests",
+        usedIsPrecise: false,
+        isUnlimitedEntitlement: true,
+        remainingPercentage: null,
+        overage: 12,
+      },
+    })).replace(/<!-- -->/g, "");
+
+    expect(text).toContain("Unlimited allowance");
+    expect(text).toContain('aria-label="Approximately"');
+    expect(text).toContain("premium requests used");
+    expect(text).toContain("12 overage");
+    expect(text).not.toContain('role="img"');
   });
 
   it("keeps the panel usable when the live quota is unavailable", () => {
