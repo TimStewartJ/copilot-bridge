@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { X } from "lucide-react";
 import { useModalDialog } from "./shared/useModalDialog";
 
@@ -8,6 +8,7 @@ interface FocusDialogProps {
   closeLabel?: string;
   pending: boolean;
   onClose: () => void;
+  initialFocusRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
 }
 
@@ -27,13 +28,13 @@ function focusTargets(root: HTMLElement): HTMLElement[] {
   });
 }
 
-export default function FocusDialog({ title, description, closeLabel = "Close dialog", pending, onClose, children }: FocusDialogProps) {
+export default function FocusDialog({ title, description, closeLabel = "Close dialog", pending, onClose, initialFocusRef, children }: FocusDialogProps) {
   const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose, dismissible: !pending });
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement;
     const field = ref.current && focusTargets(ref.current).find((element) => ["TEXTAREA", "INPUT", "SELECT"].includes(element.tagName));
-    (field ?? ref.current)?.focus();
+    (initialFocusRef?.current ?? field ?? ref.current)?.focus();
     return () => { if (previous && "focus" in previous && typeof previous.focus === "function") previous.focus(); };
   }, []);
   useEffect(() => {
