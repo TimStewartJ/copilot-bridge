@@ -317,6 +317,7 @@ function createSnapshotHash(event: NormalizedSessionContextEvent): string {
     usageRatio: normalizeUsageRatio(event.usageRatio ?? null),
     modelUsage: event.modelUsage ?? null,
     provenance: event.provenance ?? null,
+    cacheExpiresAt: event.metadata?.cacheExpiresAt ?? null,
   });
 }
 
@@ -510,6 +511,8 @@ export function createSessionContextStore(db: DatabaseSync) {
     snapshotHash: string | null,
   ): HydratedSummary {
     const summary = current ?? createInitialSummary(event);
+    // Child calls remain in the event/turn history, not the parent's context gauge.
+    if (event.attribution === "subagent_turn") return summary;
     const isSnapshot = event.type === "context_snapshot";
     return {
       ...summary,

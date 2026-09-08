@@ -33,6 +33,7 @@ import {
 } from "./session-instructions.js";
 import {
   formatPromptTagList,
+  formatLinkedPullRequest,
   formatRelatedDocManifestEntry,
 } from "./session-formatting.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
@@ -121,7 +122,7 @@ function renderDocsTree(nodes: DocTreeNode[], depth = 0): string {
       const label = n.isDb
         ? `${n.name}/ (collection)`
         : n.hasIndex ? `${n.name}/ (page: docs_read "${n.path}")` : `${n.name}/`;
-      const children = depth < 1 && n.children?.length
+      const children = n.isDb ? "" : depth < 1 && n.children?.length
         ? "\n" + renderDocsTree(n.children, depth + 1)
         : n.children?.length ? ` (${n.children.length} items)` : "";
       return `${indent}- 📁 ${label}${children}`;
@@ -136,9 +137,8 @@ function collectDocsDatabaseSummaries(docsStore: DocsStore, nodes: DocTreeNode[]
     if (n.isDb) {
       const schema = docsStore.readSchema(n.path);
       if (schema) {
-        const entries = docsStore.listDbEntries(n.path);
         const fields = schema.fields.map((f) => `${f.name} (${f.type})`).join(", ");
-        summaries.push(`- ${n.path}/ "${schema.name}" (${entries.length} entries): ${fields}`);
+        summaries.push(`- ${n.path}/ "${schema.name}": ${fields}`);
       }
     }
     if (n.children?.length) collectDocsDatabaseSummaries(docsStore, n.children, summaries);
@@ -326,7 +326,14 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     cfg.workingDirectory = workingDirectory;
   }
 
-  const contextParts: string[] = [];
+  // Keep stable guidance ahead of mutable task, tag, and docs context.
+  const contextParts: string[] = [
+    ...(settings?.customInstructions?.trim() ? [settings.customInstructions.trim()] : []),
+    RESEARCH_GUIDANCE,
+    FEED_GUIDANCE,
+    TOOL_NAMING_GUIDANCE,
+    WORK_REFERENCE_GUIDANCE,
+  ];
 
   if (task) {
     contextParts.push(
@@ -345,7 +352,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
     const prStrings = prDescriptions
       ?? (task.pullRequests.length > 0
-        ? task.pullRequests.map((pr) => `${pr.repoName || pr.repoId} #${pr.prId}`)
+        ? task.pullRequests.map(formatLinkedPullRequest)
         : []);
     if (prStrings.length > 0) {
       contextParts.push(`Currently linked PRs: ${prStrings.join(", ")}.`);
@@ -378,12 +385,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
     const checklistItems = deps.checklistStore?.listChecklistItems(task.id) ?? [];
     if (checklistItems.length > 0) {
-      const today = new Date().toISOString().slice(0, 10);
       const checklistItemLines = checklistItems.map((t) => {
         let line = `- [${t.done ? "x" : " "}] ${t.text} [id: ${t.id}]`;
         if (t.deadline) {
-          const overdue = !t.done && t.deadline < today;
-          line += ` (due ${t.deadline}${overdue ? " ⚠️ OVERDUE" : ""})`;
+          line += ` (due ${t.deadline})`;
         }
         return line;
       }).join("\n");
@@ -416,16 +421,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // broader per-tool guidance.
   sections.tool_instructions = { action: "append", content: AGENT_LIFECYCLE_GUIDANCE };
   sections.git_commit_trailer = { action: "remove" };
-
-  // Custom instructions — append user-defined instructions to context
-  if (settings?.customInstructions?.trim()) {
-    contextParts.push(settings.customInstructions.trim());
-  }
-
-  contextParts.push(RESEARCH_GUIDANCE);
-  contextParts.push(FEED_GUIDANCE);
-  contextParts.push(TOOL_NAMING_GUIDANCE);
-  contextParts.push(WORK_REFERENCE_GUIDANCE);
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
   if (task && deps.tagStore) {

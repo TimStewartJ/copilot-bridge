@@ -48,6 +48,8 @@ import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js"
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
+import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import {
   capDeadline,
@@ -687,6 +689,7 @@ export class SessionManager {
   private shuttingDown = false;
   private sessionOverlayBusyReasons = new Map<string, SessionOverlayBusyReason>();
   private sessionObjects = new Map<string, AgentSession>();
+  private readonly appliedPromptFingerprints = new AppliedPromptFingerprints();
   private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
   private readonly sessionToolInitialization = new WeakMap<AgentSession, Promise<void>>();
   private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
@@ -1446,6 +1449,7 @@ export class SessionManager {
     spanMetadata?: Record<string, unknown>;
     logMessage: (sessionId: string, duration: number) => string;
     cleanupLabel: string;
+    launchContext?: SessionLaunchContext;
     onCreateStarting?: () => void;
   }): Promise<AgentSession> {
     const {
@@ -1477,7 +1481,10 @@ export class SessionManager {
         await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
       }
       try {
-        await this.cacheSession(session.sessionId, session, sessionConfig);
+        if (options.launchContext) {
+          writeSessionLaunchContext(this.getSessionStateDir(session.sessionId), options.launchContext);
+        }
+        await this.cacheSession(session.sessionId, session, sessionConfig, "create");
       } catch (error) {
         try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
           console.warn(`[sdk] Failed to delete rejected ${cleanupLabel} ${session.sessionId}:`, cleanupError);
@@ -1962,7 +1969,8 @@ export class SessionManager {
   private cacheSession(
     sessionId: string,
     session: AgentSession,
-    sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
+    sessionConfig?: PromptFingerprintConfig,
+    application: "create" | "resume" = "resume",
   ): Promise<AgentSession> {
     const cached = this.enqueueCache("insert", sessionId, () => {
       const current = this.sessionObjects.get(sessionId);
@@ -1983,6 +1991,12 @@ export class SessionManager {
       }
 
       if (current !== session) {
+        if (sessionConfig) {
+          this.recordSpan("session.prompt.applied", 0, sessionId, {
+            ...this.appliedPromptFingerprints.record(sessionId, sessionConfig),
+            application,
+          });
+        }
         this.sessionObjects.delete(sessionId);
         this.sessionObjects.set(sessionId, session);
         this.slashCommandListCache.delete(sessionId);
@@ -2773,6 +2787,9 @@ export class SessionManager {
         permissionPolicy: this.backend?.permissionPolicy,
       },
       options: {
+        ...(opts.forResume && opts.sessionId
+          ? readSessionLaunchContext(this.getSessionStateDir(opts.sessionId))
+          : {}),
         ...opts,
         modelMetadata,
       },
@@ -3708,7 +3725,7 @@ export class SessionManager {
   private cacheResumedSession(
     sessionId: string,
     session: AgentSession,
-    sessionConfig?: { mcpServers?: Record<string, McpServerConfig> },
+    sessionConfig?: PromptFingerprintConfig,
   ): Promise<AgentSession> {
     return this.cacheSession(sessionId, session, sessionConfig).then((cachedSession) => {
       if (cachedSession === session) {
@@ -4384,7 +4401,7 @@ export class SessionManager {
         updatedAt: new Date().toISOString(),
         sessionIds: [] as string[],
         workItems,
-        pullRequests: [] as any[],
+        pullRequests: fullTask?.pullRequests ?? [],
       };
 
       const t0 = Date.now();
@@ -4394,7 +4411,7 @@ export class SessionManager {
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         task,
         isNewTask: isPlaceholder,
-        prDescriptions,
+        ...(!fullTask ? { prDescriptions } : {}),
         scheduleContext,
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
@@ -4420,6 +4437,7 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
+        launchContext: { isNewTask: isPlaceholder, scheduleContext },
         onCreateStarting: options.onCreateStarting,
       });
       if (bridgeSessionId && (options.background || options.expectedSessionId)) {

@@ -1,6 +1,7 @@
 // API route handlers — extracted from index.ts for modularity
 
 import express from "express";
+import { formatLinkedPullRequest } from "./session-formatting.js";
 import multer from "multer";
 import { randomUUID, createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
@@ -4428,9 +4429,7 @@ export function createApiRouter(
       if (creationResult.error) {
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
-      const prDescriptions = task.pullRequests.map(
-        (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
-      );
+      const prDescriptions = task.pullRequests.map(formatLinkedPullRequest);
       const group = task.groupId ? ctx.taskGroupStore.getGroup(task.groupId) : undefined;
       const groupNotes = group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null;
       const result = await ctx.sessionManager.createTaskSession(
