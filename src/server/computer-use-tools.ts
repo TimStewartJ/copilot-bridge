@@ -8,7 +8,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
-import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
+import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan } from "./agent-browser.js";
+import {
+  getOrCreateBrowserBroker,
+  type BrowserBrokerLease,
+  type BrowserContext,
+} from "./browser-broker.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { defineBridgeTool, defineSessionBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
@@ -419,16 +424,24 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
 
   eagerComputerUseCheck();
 
+  const browserBroker = getOrCreateBrowserBroker(ctx, {
+    copilotHome: ctx.copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
   const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
     copilotHome: ctx.copilotHome,
     telemetryStore: ctx.telemetryStore,
     getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+    browserBroker,
   });
 
   return [
     defineSessionBridgeTool("computer_open_browser", {
       description:
         "Open a URL in a visible browser window on the desktop for computer-use interaction. " +
+        "Uses a disposable unauthenticated public browser by default. Select authenticated only " +
+        "when the workflow explicitly requires the dedicated signed-in Bridge profile. " +
         "The browser window is visible in screenshots and can be controlled with computer_click, " +
         "computer_type, and computer_key. Use this for complex/heavy websites where browser_fetch " +
         "or browser_exec struggle (shopping sites, SPAs, etc.). Returns a browserSessionId — " +
@@ -438,6 +451,15 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
         type: "object" as const,
         properties: {
           url: { type: "string", description: "URL to open in the browser" },
+          context: {
+            type: "string",
+            enum: ["public", "authenticated"],
+            description: "Browser security context. Defaults to public.",
+          },
+          reason: {
+            type: "string",
+            description: "Required justification when context is authenticated.",
+          },
         },
         required: ["url"],
       },
@@ -452,12 +474,20 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
             });
           }
           const urlHost = safeUrlHost(args.url);
+          const browserContext: BrowserContext = args.context ?? "public";
+          if (browserContext !== "public" && browserContext !== "authenticated") {
+            return toolFailure("context must be public or authenticated");
+          }
+          const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+          if (browserContext === "authenticated" && !reason) {
+            return toolFailure("reason is required for authenticated browser access");
+          }
 
           let record;
           try {
             record = await browserSessionStore.createSession(
               invocation.sessionId,
-              "isolated",
+              browserContext,
               urlHost ? `computer-use: ${urlHost}` : "computer-use",
             );
           } catch (err: any) {
@@ -470,13 +500,33 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
 
           try {
             const headedTarget = { ...record.browserTarget, headed: true };
-            const openResult = await withBridgeBrowserSession(headedTarget, async () => {
+            const lease: BrowserBrokerLease = {
+              context: record.context,
+              browserTarget: headedTarget,
+              publicTargetId: record.publicTargetId,
+            };
+            const openResult = await browserBroker.withTarget(lease, {
+              toolName: "computer_open_browser",
+              browserOpId,
+              metadata: {
+                browserSessionId: record.id,
+                browserContext: record.context,
+                authenticatedReason: reason || undefined,
+                urlHost,
+              },
+            }, async () => {
               return ab(["open", args.url], 30_000, {
                 browserTarget: headedTarget,
                 telemetryStore: ctx.telemetryStore,
                 toolName: "computer_open_browser",
                 browserOpId,
-                metadata: { urlHost },
+                metadata: {
+                  browserSessionId: record.id,
+                  browserContext: record.context,
+                  publicTargetId: record.publicTargetId,
+                  authenticatedReason: reason || undefined,
+                  urlHost,
+                },
               });
             });
             if (!openResult.ok) {
@@ -501,6 +551,7 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.computer_open_browser", 0, {
             browserOpId,
             browserSessionId: record.id,
+            browserContext: record.context,
             urlHost,
           });
 
@@ -513,6 +564,7 @@ export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefini
 
           return {
             browserSessionId: record.id,
+            context: record.context,
             display,
             message: `Browser opened at ${args.url}. Use computer_screenshot to see the page, ` +
               `computer_click/computer_type/computer_key to interact. ` +

@@ -72,6 +72,7 @@ import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-m
 import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBrowserLaunchConfig } from "./agent-browser.js";
+import { getOrCreateBrowserBroker } from "./browser-broker.js";
 import { createBridgeBrowserLifecycle, noopBrowserLifecycle, type BrowserLifecycle } from "./browser-lifecycle.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type {
@@ -589,6 +590,11 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
   const clientEnv = opts.clientEnv
     ?? runtimePaths?.env
     ?? (copilotHome ? { ...process.env, COPILOT_HOME: copilotHome } : undefined);
+  const browserBroker = getOrCreateBrowserBroker(ctx, {
+    copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
   return new SessionManager({
     globalBus: ctx.globalBus,
     eventBusRegistry: ctx.eventBusRegistry,
@@ -609,11 +615,13 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
       copilotHome,
       telemetryStore: ctx.telemetryStore,
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+      browserBroker,
     }),
     browserLifecycle: createBridgeBrowserLifecycle({
       copilotHome,
       settingsStore: ctx.settingsStore,
       telemetryStore: ctx.telemetryStore,
+      browserBroker,
     }),
     telemetryStore: ctx.telemetryStore,
     sessionContextStore: ctx.sessionContextStore,

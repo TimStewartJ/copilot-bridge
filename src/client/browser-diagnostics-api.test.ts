@@ -1,8 +1,63 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, closeHeadedDiagnosticsBrowser } from "./api";
+import {
+  ApiError,
+  checkAdoBrowserAuthentication,
+  closeHeadedDiagnosticsBrowser,
+  probeBrowserContext,
+} from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("browser context diagnostics APIs", () => {
+  it("probes the selected browser context", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        context: "public",
+        state: "ready",
+      }),
+      input,
+      init,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(probeBrowserContext("public")).resolves.toMatchObject({
+      ok: true,
+      context: "public",
+      state: "ready",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/browser/diagnostics/probe",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ context: "public" }),
+      }),
+    );
+  });
+
+  it("requests an authenticated Azure DevOps check", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        service: "ado",
+        state: "verified",
+        checkedAt: "2026-09-08T16:00:00.000Z",
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(checkAdoBrowserAuthentication()).resolves.toMatchObject({
+      service: "ado",
+      state: "verified",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/browser/diagnostics/authenticated/check/ado",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });
 
 describe("closeHeadedDiagnosticsBrowser", () => {

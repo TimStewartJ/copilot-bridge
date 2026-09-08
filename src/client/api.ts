@@ -14,6 +14,19 @@ import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
 export type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
 import type {
+  AuthenticatedServiceCheck,
+  BrowserDiagnosticsResponse,
+  BrowserProbeResponse,
+} from "../shared/browser-diagnostics.js";
+export type {
+  AuthenticatedServiceCheck,
+  BrowserDiagnosticsIssue,
+  BrowserDiagnosticsResponse,
+  BrowserDiagnosticsSummary,
+  BrowserDiagnosticsTone,
+  BrowserProbeResponse,
+} from "../shared/browser-diagnostics.js";
+import type {
   FocusProtectionCreateRequest, FocusProtectionPage, FocusProtectionPreview,
   FocusProtectionRequest, FocusProtectionSnapshot, FocusProtectionWindow,
 } from "../shared/focus-protection.js";
@@ -3065,40 +3078,9 @@ export function patchFocusNotificationPolicy(policy: FocusNotificationPolicyUpda
   return patchSettings({ focusNotifications: policy });
 }
 
-export type BrowserDiagnosticsTone = "success" | "warning" | "error";
-
-export interface BrowserDiagnosticsIssue {
-  code: string;
-  label: string;
-  count: number;
-  latestAt?: string;
-}
-
-export interface BrowserDiagnosticsResponse {
-  checkedAt: string;
-  windowHours: number;
-  summary: {
-    tone: BrowserDiagnosticsTone;
-    label: string;
-    detail: string;
-  };
-  agentBrowserInstalled: boolean;
-  config: {
-    sessionName: string;
-    executablePath?: string;
-    executablePathSource: "settings" | "environment" | "auto-detect";
-    executablePathConfigured: boolean;
-    executablePathExists?: boolean;
-    masterProfileDirectory: string;
-    masterProfileDirectoryConfigured: boolean;
-    masterProfileDirectoryExists: boolean;
-    headed: boolean;
-  };
-  issues: BrowserDiagnosticsIssue[];
-}
-
 export interface BrowserHeadedLaunchResponse {
   ok: true;
+  context?: "authenticated";
   url: string;
   sessionName: string;
   masterProfileDirectory: string;
@@ -3108,6 +3090,7 @@ export interface BrowserHeadedLaunchResponse {
 
 export interface BrowserHeadedCloseResponse {
   ok: true;
+  context?: "authenticated";
   sessionName: string;
   masterProfileDirectory: string;
   executablePath?: string;
@@ -3135,6 +3118,16 @@ export async function launchHeadedDiagnosticsBrowser(): Promise<BrowserHeadedLau
 
 export async function closeHeadedDiagnosticsBrowser(): Promise<BrowserHeadedCloseResponse> {
   return apiFetch<BrowserHeadedCloseResponse>("/api/browser/diagnostics/close-headed", {});
+}
+
+export async function probeBrowserContext(
+  context: "public" | "authenticated",
+): Promise<BrowserProbeResponse> {
+  return apiFetch<BrowserProbeResponse>("/api/browser/diagnostics/probe", { context });
+}
+
+export async function checkAdoBrowserAuthentication(): Promise<AuthenticatedServiceCheck> {
+  return apiFetch<AuthenticatedServiceCheck>("/api/browser/diagnostics/authenticated/check/ado", {});
 }
 
 export interface DeviceHibernateOnIdleStatus {

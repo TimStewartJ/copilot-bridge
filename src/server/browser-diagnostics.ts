@@ -1,59 +1,46 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import type {
+  AuthenticatedServiceCheck,
+  BrowserContextRuntimeDiagnostics,
+  BrowserDiagnosticsIssue,
+  BrowserDiagnosticsResponse,
+  BrowserDiagnosticsSummary,
+  BrowserFunctionalProbe,
+  BrowserProbeResponse,
+  BrowserRuntimeState,
+} from "../shared/browser-diagnostics.js";
 import type { AppContext } from "./app-context.js";
 import {
   ab,
   getEffectiveBrowserExecutablePath,
-  getBridgeBrowserTarget,
   getBrowserLaunchConfig,
   isAgentBrowserInstalled,
   safeRecordBrowserSpan,
-  shutdownBridgeBrowser,
-  withBridgeBrowserSession,
   type BrowserShutdownResult,
 } from "./agent-browser.js";
+import {
+  getOrCreateBrowserBroker,
+  type BrowserBroker,
+  type BrowserBrokerLease,
+  type BrowserContext,
+  type BrowserContextHealth,
+} from "./browser-broker.js";
 import type { TelemetrySpan } from "./telemetry-store.js";
+
+export type {
+  BrowserDiagnosticsIssue,
+  BrowserDiagnosticsResponse,
+  BrowserDiagnosticsSummary,
+} from "../shared/browser-diagnostics.js";
 
 const DIAGNOSTICS_WINDOW_HOURS = 24;
 const DIAGNOSTICS_WINDOW_MS = DIAGNOSTICS_WINDOW_HOURS * 60 * 60 * 1000;
 const MAX_DIAGNOSTIC_SPANS = 2_000;
 
-export type BrowserDiagnosticsTone = "success" | "warning" | "error";
-
-export interface BrowserDiagnosticsIssue {
-  code: string;
-  label: string;
-  count: number;
-  latestAt?: string;
-}
-
-export interface BrowserDiagnosticsSummary {
-  tone: BrowserDiagnosticsTone;
-  label: string;
-  detail: string;
-}
-
-export interface BrowserDiagnosticsResponse {
-  checkedAt: string;
-  windowHours: number;
-  summary: BrowserDiagnosticsSummary;
-  agentBrowserInstalled: boolean;
-  config: {
-    sessionName: string;
-    executablePath?: string;
-    executablePathSource: "settings" | "environment" | "auto-detect";
-    executablePathConfigured: boolean;
-    executablePathExists?: boolean;
-    masterProfileDirectory: string;
-    masterProfileDirectoryConfigured: boolean;
-    masterProfileDirectoryExists: boolean;
-    headed: boolean;
-  };
-  issues: BrowserDiagnosticsIssue[];
-}
-
 export interface BrowserHeadedLaunchResponse {
   ok: true;
+  context?: "authenticated";
   url: string;
   sessionName: string;
   masterProfileDirectory: string;
@@ -63,6 +50,7 @@ export interface BrowserHeadedLaunchResponse {
 
 export interface BrowserHeadedCloseResponse {
   ok: true;
+  context?: "authenticated";
   sessionName: string;
   masterProfileDirectory: string;
   executablePath?: string;
@@ -123,6 +111,11 @@ function getMetadataString(span: TelemetrySpan, key: string): string | undefined
   return typeof value === "string" ? value : undefined;
 }
 
+function getMetadataBoolean(span: TelemetrySpan, key: string): boolean | undefined {
+  const value = span.metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function latestAt(spans: readonly TelemetrySpan[]): string | undefined {
   return spans[0]?.createdAt;
 }
@@ -154,6 +147,9 @@ function describeDiagnosticsSummary(input: {
   agentBrowserInstalled: boolean;
   executablePathConfigured: boolean;
   executablePathExists?: boolean;
+  runtimeState: BrowserRuntimeState;
+  signInRequired: boolean;
+  authCheckFailed: boolean;
   googleCaptchaCount: number;
   bingCaptchaCount: number;
   duckDuckGoChallengeCount: number;
@@ -173,6 +169,41 @@ function describeDiagnosticsSummary(input: {
       detail: "The configured browser executable path does not exist on this machine.",
     };
   }
+  if (input.runtimeState === "unavailable") {
+    return {
+      tone: "error",
+      label: "Browser unavailable",
+      detail: "A functional browser readiness check failed. Review the context details and retry the probe.",
+    };
+  }
+  if (input.runtimeState === "degraded") {
+    return {
+      tone: "warning",
+      label: "Browser degraded",
+      detail: "A recent browser operation failed after startup. Public and authenticated context details are shown below.",
+    };
+  }
+  if (input.runtimeState === "starting") {
+    return {
+      tone: "warning",
+      label: "Browser starting",
+      detail: "A browser context is still completing its functional readiness handshake.",
+    };
+  }
+  if (input.signInRequired) {
+    return {
+      tone: "warning",
+      label: "Sign-in required",
+      detail: "The authenticated browser is operational, but at least one configured service requires sign-in.",
+    };
+  }
+  if (input.authCheckFailed) {
+    return {
+      tone: "warning",
+      label: "Authentication check failed",
+      detail: "The browser is operational, but an authenticated service check returned an unexpected result.",
+    };
+  }
 
   const searchChallengeCount = input.googleCaptchaCount + input.bingCaptchaCount + input.duckDuckGoChallengeCount;
   if (searchChallengeCount > 0) {
@@ -189,18 +220,73 @@ function describeDiagnosticsSummary(input: {
       detail: `Bridge recovered browser launch state ${input.recoveryCount} time(s) in the last ${DIAGNOSTICS_WINDOW_HOURS} hours.`,
     };
   }
+  if (input.runtimeState === "stopped") {
+    return {
+      tone: "warning",
+      label: "Functional check required",
+      detail: "Browser configuration is present, but no successful functional context probe has been recorded.",
+    };
+  }
   return {
     tone: "success",
     label: "Ready",
-    detail: "No recent browser challenge or recovery events were observed.",
+    detail: "Public and authenticated browser contexts have passed functional readiness checks.",
   };
+}
+
+function getBrowserBroker(ctx: AppContext): BrowserBroker {
+  return getOrCreateBrowserBroker(ctx, {
+    copilotHome: ctx.copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
+}
+
+function toFunctionalProbe(health: BrowserContextHealth): BrowserFunctionalProbe {
+  if (health.lastProbeAt && health.status === "ready") {
+    return {
+      state: "passed",
+      checkedAt: health.lastProbeAt,
+    };
+  }
+  if (health.lastProbeAt && (health.status === "degraded" || health.status === "unavailable")) {
+    return {
+      state: "failed",
+      checkedAt: health.lastProbeAt,
+      ...(health.lastError ? { message: health.lastError } : {}),
+    };
+  }
+  return { state: "not_run" };
+}
+
+function toContextRuntime(health: BrowserContextHealth): BrowserContextRuntimeDiagnostics {
+  return {
+    state: health.status,
+    activeOperations: health.activeOperations,
+    queueDepth: health.queuedOperations,
+    functionalProbe: toFunctionalProbe(health),
+  };
+}
+
+function combineRuntimeState(
+  publicState: BrowserRuntimeState,
+  authenticatedState: BrowserRuntimeState,
+): BrowserRuntimeState {
+  const states = [publicState, authenticatedState];
+  if (states.includes("unavailable")) return "unavailable";
+  if (states.includes("degraded")) return "degraded";
+  if (states.includes("starting")) return "starting";
+  if (states.every((state) => state === "ready")) return "ready";
+  return "stopped";
 }
 
 export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDiagnosticsResponse> {
   const checkedAt = new Date().toISOString();
   const since = new Date(Date.now() - DIAGNOSTICS_WINDOW_MS).toISOString();
   const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
-  const target = getBridgeBrowserTarget(ctx.copilotHome, launchConfig);
+  const broker = getBrowserBroker(ctx);
+  const brokerSnapshot = broker.getSnapshot();
+  const target = broker.getAuthenticatedTarget();
   const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
   const executablePathConfigured = effectiveExecutablePath.source !== "auto-detect";
   const masterProfileDirectoryConfigured = !!launchConfig.masterProfileDirectory;
@@ -216,23 +302,40 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
   const duckDuckGoChallengeSpans = recentTelemetry(ctx, "browser.tool.browser_web_search.duckduckgo.failed", since)
     .filter((span) => getMetadataString(span, "failureCode") === "search.ddg_challenge");
   const recoverySpans = recentTelemetry(ctx, "browser.recovery.detected", since);
-  const cloneFallbackSpans = recentTelemetry(ctx, "browser.clone.fallback_to_primary", since);
+  const readinessFailureSpans = recentTelemetry(ctx, "browser.broker.readiness", since)
+    .filter((span) => getMetadataBoolean(span, "success") === false);
   const issues = [
     toIssue("search.google_captcha", "Google CAPTCHA during browser_web_search", googleCaptchaSpans),
     toIssue("search.bing_captcha", "Bing CAPTCHA during browser_web_search", bingCaptchaSpans),
     toIssue("search.ddg_challenge", "DuckDuckGo challenge during browser_web_search", duckDuckGoChallengeSpans),
     toIssue("browser.recovery.detected", "Browser recovery path invoked", recoverySpans),
-    toIssue("browser.clone.fallback_to_primary", "Clone lane fell back to primary", cloneFallbackSpans),
+    toIssue("browser.broker.readiness.failed", "Browser context readiness failed", readinessFailureSpans),
   ].filter((issue): issue is BrowserDiagnosticsIssue => issue !== null);
 
   const agentBrowserInstalled = await isAgentBrowserInstalled();
+  const runtimeState = agentBrowserInstalled
+    ? combineRuntimeState(brokerSnapshot.public.status, brokerSnapshot.authenticated.status)
+    : "unavailable";
+  const lastSuccessfulProbeAt = [
+    brokerSnapshot.public.lastSuccessAt,
+    brokerSnapshot.authenticated.lastSuccessAt,
+  ].filter((value): value is string => !!value).sort().at(-1);
+  const lastFailureAt = [
+    brokerSnapshot.public.lastFailureAt,
+    brokerSnapshot.authenticated.lastFailureAt,
+  ].filter((value): value is string => !!value).sort().at(-1);
+  const authenticatedServiceChecks = broker.getAuthenticatedServiceChecks();
   return {
+    schemaVersion: 2,
     checkedAt,
     windowHours: DIAGNOSTICS_WINDOW_HOURS,
     summary: describeDiagnosticsSummary({
       agentBrowserInstalled,
       executablePathConfigured,
       executablePathExists,
+      runtimeState,
+      signInRequired: authenticatedServiceChecks.some((check) => check.state === "sign_in_required"),
+      authCheckFailed: authenticatedServiceChecks.some((check) => check.state === "failed"),
       googleCaptchaCount: googleCaptchaSpans.length,
       bingCaptchaCount: bingCaptchaSpans.length,
       duckDuckGoChallengeCount: duckDuckGoChallengeSpans.length,
@@ -250,8 +353,157 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
       masterProfileDirectoryExists,
       headed: target.headed === true,
     },
+    runtime: {
+      agentBrowserInstalled,
+      transport: {
+        kind: "cli",
+        state: runtimeState,
+        namespace: brokerSnapshot.namespace,
+        ...(lastSuccessfulProbeAt ? { lastSuccessfulProbeAt } : {}),
+        ...(lastFailureAt ? { lastFailureAt } : {}),
+      },
+    },
+    contexts: {
+      public: {
+        context: "public",
+        ...toContextRuntime(brokerSnapshot.public),
+        disposableProfileRoot: brokerSnapshot.public.profileRoot,
+        concurrencyLimit: brokerSnapshot.public.maxConcurrency,
+      },
+      authenticated: {
+        context: "authenticated",
+        ...toContextRuntime(brokerSnapshot.authenticated),
+        profilePath: brokerSnapshot.authenticated.profileDirectory,
+        profileExists: masterProfileDirectoryExists,
+        headed: brokerSnapshot.authenticated.headed,
+        serviceChecks: authenticatedServiceChecks,
+      },
+    },
     issues,
   };
+}
+
+export async function probeBrowserContext(
+  ctx: AppContext,
+  contextValue: unknown,
+): Promise<BrowserProbeResponse> {
+  if (contextValue !== "public" && contextValue !== "authenticated") {
+    throw new Error("context must be public or authenticated");
+  }
+  if (!await isAgentBrowserInstalled()) {
+    throw new Error("agent-browser is not installed.");
+  }
+  const context: BrowserContext = contextValue;
+  const health = await getBrowserBroker(ctx).probe(context);
+  return {
+    ok: health.status === "ready",
+    context,
+    state: health.status,
+    ...(health.lastProbeAt ? { checkedAt: health.lastProbeAt } : {}),
+    ...(health.lastError ? { message: health.lastError } : {}),
+  };
+}
+
+export async function checkAdoBrowserAuthentication(
+  ctx: AppContext,
+): Promise<AuthenticatedServiceCheck> {
+  if (!await isAgentBrowserInstalled()) {
+    throw new Error("agent-browser is not installed.");
+  }
+  const ado = ctx.settingsStore.getSettings().providers?.ado;
+  if (!ado?.org || !ado.project) {
+    throw new Error("Azure DevOps provider settings are required before authentication can be checked.");
+  }
+
+  const expectedOrigin = `https://${ado.org}.visualstudio.com`;
+  const url = `${expectedOrigin}/${encodeURIComponent(ado.project)}/_workitems/assignedtome/`;
+  const broker = getBrowserBroker(ctx);
+  const browserOpId = randomUUID();
+  const result = await broker.withEphemeralContext("authenticated", {
+    toolName: "browser_diagnostics_check_ado_auth",
+    browserOpId,
+    metadata: {
+      browserContext: "authenticated",
+      service: "ado",
+    },
+  }, async (lease: BrowserBrokerLease) => {
+    const commandOptions = {
+      browserTarget: lease.browserTarget,
+      telemetryStore: ctx.telemetryStore,
+      toolName: "browser_diagnostics_check_ado_auth",
+      browserOpId,
+      metadata: {
+        browserContext: "authenticated",
+        service: "ado",
+      },
+    };
+    const open = await ab(["open", url], 45_000, commandOptions);
+    if (!open.ok) throw new Error(`Failed to open Azure DevOps: ${open.output.slice(0, 200)}`);
+    let finalUrl = "";
+    let title = "";
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const urlResult = await ab(["get", "url"], 30_000, commandOptions);
+      const titleResult = await ab(["get", "title"], 30_000, commandOptions);
+      if (!urlResult.ok) throw new Error(`Failed to read Azure DevOps URL: ${urlResult.output.slice(0, 200)}`);
+      if (!titleResult.ok) throw new Error(`Failed to read Azure DevOps title: ${titleResult.output.slice(0, 200)}`);
+      finalUrl = urlResult.output.trim();
+      title = titleResult.output.trim();
+      const parsed = new URL(finalUrl);
+      if (parsed.origin === expectedOrigin) {
+        if (/\bboards\b|\bwork items\b/i.test(title)) break;
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        continue;
+      }
+      if (
+        !parsed.hostname.toLowerCase().includes("login.microsoftonline.com")
+        && !/working|sign in|log in/i.test(title)
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    return { finalUrl, title };
+  });
+
+  const checkedAt = new Date().toISOString();
+  const parsedFinalUrl = new URL(result.finalUrl);
+  const expected = new URL(expectedOrigin);
+  const loginHost = parsedFinalUrl.hostname.toLowerCase().includes("login.microsoftonline.com");
+  const titleIndicatesLogin = /\bsign in\b|\blog in\b/i.test(result.title);
+  let check: AuthenticatedServiceCheck;
+  if (loginHost || titleIndicatesLogin) {
+    check = {
+      service: "ado",
+      state: "sign_in_required",
+      checkedAt,
+      url,
+      finalOrigin: parsedFinalUrl.origin,
+      expectedOrigin,
+      message: "Azure DevOps redirected to a sign-in experience.",
+    };
+  } else if (parsedFinalUrl.origin === expected.origin && /\bboards\b|\bwork items\b/i.test(result.title)) {
+    check = {
+      service: "ado",
+      state: "verified",
+      checkedAt,
+      url,
+      finalOrigin: parsedFinalUrl.origin,
+      expectedOrigin,
+      message: `Authenticated Azure DevOps page verified: ${result.title}`,
+    };
+  } else {
+    check = {
+      service: "ado",
+      state: "failed",
+      checkedAt,
+      url,
+      finalOrigin: parsedFinalUrl.origin,
+      expectedOrigin,
+      message: `Unexpected Azure DevOps result: ${result.title || result.finalUrl}`,
+    };
+  }
+  broker.recordAuthenticatedServiceCheck(check);
+  return check;
 }
 
 function normalizeHeadedLaunchUrl(value: unknown): string {
@@ -277,8 +529,9 @@ export async function launchHeadedDiagnosticsBrowser(
   const url = normalizeHeadedLaunchUrl(urlValue);
   const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
   const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
+  const broker = getBrowserBroker(ctx);
   const headedTarget = {
-    ...getBridgeBrowserTarget(ctx.copilotHome, launchConfig),
+    ...broker.getAuthenticatedTarget(),
     headed: true,
   };
   const browserOpId = randomUUID();
@@ -286,7 +539,18 @@ export async function launchHeadedDiagnosticsBrowser(
   let success = false;
 
   try {
-    const result = await withBridgeBrowserSession(headedTarget, async () => {
+    const result = await broker.withTarget({
+      context: "authenticated",
+      browserTarget: headedTarget,
+    }, {
+      toolName: "browser_diagnostics_launch_headed",
+      browserOpId,
+      skipReadiness: true,
+      metadata: {
+        browserContext: "authenticated",
+        headed: true,
+      },
+    }, async () => {
       return ab(["open", url], 30_000, {
         browserTarget: headedTarget,
         telemetryStore: ctx.telemetryStore,
@@ -303,6 +567,7 @@ export async function launchHeadedDiagnosticsBrowser(
     success = true;
     return {
       ok: true,
+      context: "authenticated",
       url,
       sessionName: headedTarget.sessionName,
       masterProfileDirectory: headedTarget.profileDir,
@@ -328,23 +593,22 @@ export async function closeHeadedDiagnosticsBrowser(
 
   const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
   const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
-  const headedTarget = {
-    ...getBridgeBrowserTarget(ctx.copilotHome, launchConfig),
-    headed: true,
-  };
+  const broker = getBrowserBroker(ctx);
+  const headedTarget = { ...broker.getAuthenticatedTarget(), headed: true };
   const browserOpId = randomUUID();
   const startedAt = Date.now();
   let success = false;
   let shutdownResult: BrowserShutdownResult | undefined;
 
   try {
-    shutdownResult = await shutdownBridgeBrowser(headedTarget, ctx.telemetryStore);
+    shutdownResult = await broker.shutdownAuthenticated(true);
     if (!shutdownResult.ok) {
       throw new BrowserHeadedCloseError(shutdownResult);
     }
     success = true;
     return {
       ok: true,
+      context: "authenticated",
       sessionName: headedTarget.sessionName,
       masterProfileDirectory: headedTarget.profileDir,
       executablePath: effectiveExecutablePath.path,

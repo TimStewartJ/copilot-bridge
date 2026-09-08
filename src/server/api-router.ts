@@ -165,7 +165,14 @@ import {
   UpdateInstallError,
   type UpdateChannel,
 } from "./update-service.js";
-import { BrowserHeadedCloseError, closeHeadedDiagnosticsBrowser, getBrowserDiagnostics, launchHeadedDiagnosticsBrowser } from "./browser-diagnostics.js";
+import {
+  BrowserHeadedCloseError,
+  checkAdoBrowserAuthentication,
+  closeHeadedDiagnosticsBrowser,
+  getBrowserDiagnostics,
+  launchHeadedDiagnosticsBrowser,
+  probeBrowserContext,
+} from "./browser-diagnostics.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
@@ -5912,6 +5919,15 @@ export function createApiRouter(
     }
   });
 
+  router.post("/browser/diagnostics/authenticated/launch-headed", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Authenticated browser launch")) return;
+    try {
+      res.json(await launchHeadedDiagnosticsBrowser(ctx, req.body?.url));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post("/browser/diagnostics/close-headed", async (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Headed browser close")) return;
     try {
@@ -5921,6 +5937,37 @@ export function createApiRouter(
         res.status(400).json({ error: err.message, details: err.details });
         return;
       }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/diagnostics/authenticated/close-headed", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Authenticated browser close")) return;
+    try {
+      res.json(await closeHeadedDiagnosticsBrowser(ctx));
+    } catch (err) {
+      if (err instanceof BrowserHeadedCloseError) {
+        res.status(400).json({ error: err.message, details: err.details });
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/diagnostics/probe", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Browser context probe")) return;
+    try {
+      res.json(await probeBrowserContext(ctx, req.body?.context));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/diagnostics/authenticated/check/ado", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Azure DevOps browser authentication check")) return;
+    try {
+      res.json(await checkAdoBrowserAuthentication(ctx));
+    } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

@@ -1,13 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { BrowserLaunchConfig, BrowserTarget } from "./agent-browser.js";
-import { createPersistentCloneBrowserTarget, destroyPersistentCloneBrowserTarget, getBridgeBrowserTarget, safeRecordBrowserSpan } from "./agent-browser.js";
+import { safeRecordBrowserSpan } from "./agent-browser.js";
+import {
+  BrowserBroker,
+  type BrowserBrokerLease,
+  type BrowserContext,
+} from "./browser-broker.js";
 import { err, ok, type ErrorResult, type OkResult } from "./tool-results.js";
 
+/** Legacy input retained during the browser-context migration. */
 export type BrowserSessionMode = "persistent" | "isolated";
 
 export interface BrowserSessionRecord {
   id: string;
+  context: BrowserContext;
   mode: BrowserSessionMode;
   ownerSessionId: string;
   purpose?: string;
@@ -15,7 +22,7 @@ export interface BrowserSessionRecord {
   createdAt: number;
   lastUsedAt: number;
   activeCount: number;
-  cloneId?: string;
+  publicTargetId?: string;
 }
 
 interface BrowserSessionStoreOptions {
@@ -23,24 +30,27 @@ interface BrowserSessionStoreOptions {
   telemetryStore?: TelemetryStore;
   idleTimeoutMs?: number;
   getBrowserLaunchConfig?: () => BrowserLaunchConfig;
+  browserBroker?: BrowserBroker;
 }
 
 type BrowserSessionUseResult<T> = (OkResult<T> & { record: BrowserSessionRecord }) | ErrorResult;
 
 export class BrowserSessionStore {
-  private readonly copilotHome?: string;
   private readonly telemetryStore?: TelemetryStore;
   private readonly idleTimeoutMs: number;
-  private readonly getBrowserLaunchConfig?: () => BrowserLaunchConfig;
+  private readonly browserBroker: BrowserBroker;
   private readonly sessions = new Map<string, BrowserSessionRecord>();
   private readonly disposalRuns = new Map<string, Promise<boolean>>();
   private readonly sweepHandle: NodeJS.Timeout;
 
   constructor(options: BrowserSessionStoreOptions = {}) {
-    this.copilotHome = options.copilotHome;
     this.telemetryStore = options.telemetryStore;
     this.idleTimeoutMs = options.idleTimeoutMs ?? (30 * 60_000);
-    this.getBrowserLaunchConfig = options.getBrowserLaunchConfig;
+    this.browserBroker = options.browserBroker ?? new BrowserBroker({
+      copilotHome: options.copilotHome,
+      telemetryStore: options.telemetryStore,
+      getBrowserLaunchConfig: options.getBrowserLaunchConfig,
+    });
     this.sweepHandle = setInterval(() => {
       void this.sweepIdleSessions().catch((error) => {
         console.error("[browser-session] Idle session sweep failed:", error);
@@ -49,43 +59,36 @@ export class BrowserSessionStore {
     this.sweepHandle.unref?.();
   }
 
-  async createSession(ownerSessionId: string, mode: BrowserSessionMode, purpose?: string): Promise<BrowserSessionRecord> {
+  async createSession(ownerSessionId: string, context: BrowserContext, purpose?: string): Promise<BrowserSessionRecord> {
     const createdAt = Date.now();
     const id = `bs_${randomUUID().slice(0, 8)}`;
+    const mode: BrowserSessionMode = context === "authenticated" ? "persistent" : "isolated";
     const metadata = {
       browserSessionId: id,
+      browserContext: context,
       browserSessionMode: mode,
       ownerSessionId,
       purpose,
     };
-    const launchConfig = this.getBrowserLaunchConfig?.() ?? {};
-
-    let browserTarget: BrowserTarget;
-    let cloneId: string | undefined;
-    if (mode === "isolated") {
-      const clone = await createPersistentCloneBrowserTarget(this.copilotHome, this.telemetryStore, metadata, launchConfig);
-      browserTarget = clone.browserTarget;
-      cloneId = clone.cloneId;
-    } else {
-      browserTarget = getBridgeBrowserTarget(this.copilotHome, launchConfig);
-    }
+    const lease = await this.browserBroker.createSessionTarget(context);
 
     const record: BrowserSessionRecord = {
       id,
+      context,
       mode,
       ownerSessionId,
       purpose,
-      browserTarget,
+      browserTarget: lease.browserTarget,
       createdAt,
       lastUsedAt: createdAt,
       activeCount: 0,
-      cloneId,
+      publicTargetId: lease.publicTargetId,
     };
     this.sessions.set(id, record);
     safeRecordBrowserSpan(this.telemetryStore, "browser.session.start", 0, {
       ...metadata,
-      browserSession: browserTarget.sessionName,
-      cloneId,
+      browserSession: lease.browserTarget.sessionName,
+      publicTargetId: lease.publicTargetId,
     });
     return { ...record };
   }
@@ -177,24 +180,35 @@ export class BrowserSessionStore {
     const current = this.sessions.get(record.id);
     if (!current) return false;
     if (reason === "idle_timeout" && current.activeCount > 0) return false;
-    if (current.mode === "isolated") {
-      await destroyPersistentCloneBrowserTarget(current.browserTarget, this.telemetryStore, {
-        browserSessionId: current.id,
-        browserSessionMode: current.mode,
-        ownerSessionId: current.ownerSessionId,
-        reason,
-        cloneId: current.cloneId,
+    if (current.context === "public") {
+      const lease: BrowserBrokerLease = {
+        context: current.context,
+        browserTarget: current.browserTarget,
+        publicTargetId: current.publicTargetId,
+      };
+      await this.browserBroker.disposeSessionTarget(lease, {
+        toolName: "browser_session_close",
+        browserOpId: current.id,
+        metadata: {
+          browserSessionId: current.id,
+          browserContext: current.context,
+          browserSessionMode: current.mode,
+          ownerSessionId: current.ownerSessionId,
+          reason,
+          publicTargetId: current.publicTargetId,
+        },
       });
     }
     if (this.sessions.get(current.id) !== current) return false;
     this.sessions.delete(current.id);
     safeRecordBrowserSpan(this.telemetryStore, "browser.session.close", 0, {
       browserSessionId: current.id,
+      browserContext: current.context,
       browserSessionMode: current.mode,
       browserSession: current.browserTarget.sessionName,
       ownerSessionId: current.ownerSessionId,
       reason,
-      cloneId: current.cloneId,
+      publicTargetId: current.publicTargetId,
     });
     return true;
   }

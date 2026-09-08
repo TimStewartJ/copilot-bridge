@@ -80,6 +80,28 @@ describe("browser diagnostics", () => {
     expect(result.config.executablePathSource).toBe("settings");
     expect(result.config.masterProfileDirectory).toBe(profileDir);
     expect(result.config.headed).toBe(true);
+    expect(result).toMatchObject({
+      schemaVersion: 2,
+      runtime: {
+        transport: {
+          kind: "cli",
+          namespace: "copilot-bridge",
+        },
+      },
+      contexts: {
+        public: {
+          context: "public",
+          functionalProbe: { state: "not_run" },
+        },
+        authenticated: {
+          context: "authenticated",
+          profilePath: profileDir,
+          headed: true,
+          functionalProbe: { state: "not_run" },
+        },
+      },
+    });
+    expect(result.contexts.public.disposableProfileRoot).not.toBe(profileDir);
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "search.google_captcha", count: 1 }),
       expect.objectContaining({ code: "search.bing_captcha", count: 1 }),
@@ -139,18 +161,115 @@ describe("browser diagnostics", () => {
 
     expect(result).toMatchObject({
       ok: true,
+      context: "authenticated",
       masterProfileDirectory: profileDir,
       executablePath,
     });
     expect(result.message).toContain("Headed browser close requested");
     expect(closeCalls).toHaveLength(1);
-    expect(closeCalls[0].args).toEqual(["close"]);
+    expect(closeCalls[0].args).toEqual(["close", "--json"]);
     expect(closeCalls[0].env).toMatchObject({
+      AGENT_BROWSER_NAMESPACE: "copilot-bridge",
       AGENT_BROWSER_PROFILE: profileDir,
       AGENT_BROWSER_EXECUTABLE_PATH: executablePath,
       AGENT_BROWSER_HEADED: "true",
     });
     expect(closeCalls[0].env?.AGENT_BROWSER_SESSION).toContain("copilot-bridge-");
+  });
+
+  it("probes public readiness without using the authenticated profile", async () => {
+    const seenProfiles: string[] = [];
+    execFileMock.mockImplementation((
+      _file: string,
+      args: string[],
+      options: any,
+      cb: (err: any, result?: { stdout: string; stderr: string }) => void,
+    ) => {
+      if (options?.env?.AGENT_BROWSER_PROFILE) {
+        seenProfiles.push(options.env.AGENT_BROWSER_PROFILE);
+      }
+      if (args[0] === "get" && args[1] === "url") {
+        cb(null, { stdout: "about:blank", stderr: "" });
+      } else if (args[0] === "get" && args[1] === "title") {
+        cb(null, { stdout: "New tab", stderr: "" });
+      } else {
+        cb(null, { stdout: "", stderr: "" });
+      }
+      return {} as any;
+    });
+    const db = setupTestDb();
+    const settingsStore = createSettingsStore(db);
+    const telemetryStore = createTelemetryStore(db);
+    const copilotHome = testPath(".copilot-public-probe");
+
+    const mod = await import("../browser-diagnostics.js");
+    const result = await mod.probeBrowserContext({
+      settingsStore,
+      telemetryStore,
+      copilotHome,
+    } as AppContext, "public");
+
+    expect(result).toMatchObject({
+      ok: true,
+      context: "public",
+      state: "ready",
+    });
+    expect(seenProfiles.length).toBeGreaterThan(0);
+    expect(seenProfiles.every((profile) => profile.includes("browser-public"))).toBe(true);
+  });
+
+  it("verifies authenticated Azure DevOps state through the broker", async () => {
+    const db = setupTestDb();
+    const settingsStore = createSettingsStore(db);
+    const telemetryStore = createTelemetryStore(db);
+    settingsStore.updateSettings({
+      providers: {
+        ado: {
+          org: "msazure",
+          project: "One",
+        },
+      },
+    });
+    let titleReads = 0;
+    execFileMock.mockImplementation((
+      _file: string,
+      args: string[],
+      _options: any,
+      cb: (err: any, result?: { stdout: string; stderr: string }) => void,
+    ) => {
+      if (args[0] === "get" && args[1] === "url") {
+        cb(null, {
+          stdout: args.includes("--json")
+            ? "https://msazure.visualstudio.com/One/_workitems/assignedtome/"
+            : "about:blank",
+          stderr: "",
+        });
+      } else if (args[0] === "get" && args[1] === "title") {
+        titleReads += 1;
+        cb(null, {
+          stdout: titleReads < 3 ? "" : "Work items - Boards",
+          stderr: "",
+        });
+      } else {
+        cb(null, { stdout: "opened", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../browser-diagnostics.js");
+    const result = await mod.checkAdoBrowserAuthentication({
+      settingsStore,
+      telemetryStore,
+      copilotHome: testPath(".copilot-ado-auth"),
+    } as AppContext);
+
+    expect(result).toMatchObject({
+      service: "ado",
+      state: "verified",
+      finalOrigin: "https://msazure.visualstudio.com",
+      expectedOrigin: "https://msazure.visualstudio.com",
+    });
+    expect(titleReads).toBeGreaterThanOrEqual(3);
   });
 
   it("fails headed diagnostics close when agent-browser close fails or profile-bound PIDs remain", async () => {
@@ -163,7 +282,7 @@ describe("browser diagnostics", () => {
       const telemetryStore = createTelemetryStore(db);
       settingsStore.updateSettings({ browser: { masterProfileDirectory: profileDir } });
       execFileMock.mockImplementation((file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-        if (file === "agent-browser" && args[0] === "close") {
+        if (args[0] === "close") {
           cb({ stderr: `timed out closing ${profileDir}` });
           return {} as any;
         }
@@ -204,7 +323,7 @@ describe("browser diagnostics", () => {
       const telemetryStore = createTelemetryStore(db);
       settingsStore.updateSettings({ browser: { masterProfileDirectory: profileDir } });
       execFileMock.mockImplementation((file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-        if (file === "agent-browser" && args[0] === "close") {
+        if (args[0] === "close") {
           cb(null, { stdout: "", stderr: "" });
           return {} as any;
         }
