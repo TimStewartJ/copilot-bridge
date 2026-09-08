@@ -4,19 +4,17 @@
 
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
-import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
-import { ab, browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
+import type { BrowserCommand } from "./agent-browser.js";
+import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan } from "./agent-browser.js";
+import {
+  getOrCreateBrowserBroker,
+  type BrowserBrokerLease,
+  type BrowserContext,
+} from "./browser-broker.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
-
-const CLONE_SAFE_BROWSER_FETCH_HOSTS = new Set([
-  "example.com",
-  "www.google.com",
-  "www.united.com",
-  "www.chase.com",
-]);
 
 function safeHost(url: string): string | undefined {
   try {
@@ -42,19 +40,22 @@ function browserFetchFailure(
   });
 }
 
-function isCloneSafeBrowserFetchHost(urlHost: string | undefined): boolean {
-  return !!urlHost && CLONE_SAFE_BROWSER_FETCH_HOSTS.has(urlHost);
-}
-
 export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[] {
+  const browserBroker = getOrCreateBrowserBroker(ctx, {
+    copilotHome: ctx.copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
   return [
     defineBridgeTool("browser_fetch", {
       description:
         "Fetch a web page using a real browser and return its content as an accessibility snapshot. " +
+        "Uses a disposable unauthenticated public browser by default. Set context=authenticated only " +
+        "when the page explicitly requires the dedicated signed-in Bridge profile. " +
         "Use this to confirm rendered or canonical pages after web_search or browser_web_search, or instead of web_fetch " +
         "when a site requires JavaScript rendering, blocks bots, returns empty/broken content via " +
-        "web_fetch, or is a single-page app (SPA). For multi-step interactive flows (login, form " +
-        "filling, pagination), use the browser skill instead.",
+        "web_fetch, or is a single-page app (SPA). For multi-step interactive flows, use browser_exec " +
+        "or browser_session_* with an explicit context. Use the browser skill only for unsupported low-level public workflows.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -67,28 +68,41 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             description:
               "Optional CSS selector to scope the snapshot to a specific part of the page (e.g., 'main', '#content', 'article')",
           },
+          context: {
+            type: "string",
+            enum: ["public", "authenticated"],
+            description: "Browser security context. Defaults to public.",
+          },
+          reason: {
+            type: "string",
+            description: "Required justification when context is authenticated.",
+          },
         },
         required: ["url"],
       },
       handler: async (args: any) => {
         const url: string = args.url;
         const selector: string | undefined = args.selector;
+        const context: BrowserContext = args.context ?? "public";
+        if (context !== "public" && context !== "authenticated") {
+          return toolFailure("context must be public or authenticated");
+        }
+        const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+        if (context === "authenticated" && !reason) {
+          return toolFailure("reason is required for authenticated browser access");
+        }
         const browserOpId = randomUUID();
-        const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
-        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome, launchConfig);
         const urlHost = safeHost(url);
         const toolStart = Date.now();
         let success = false;
-        let laneType: "primary" | "clone" = "primary";
-        let browserSession = primaryTarget.sessionName;
-        const laneFallback = createBrowserLaneFallbackState();
+        let browserSession: string | undefined;
 
         const check = await isAgentBrowserInstalled();
         if (!check) {
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
             browserOpId,
             toolName: "browser_fetch",
-            browserSession: primaryTarget.sessionName,
+            browserContext: context,
           });
           return toolFailure("agent-browser is not installed.", {
             detail: AGENT_BROWSER_INSTALL_GUIDANCE,
@@ -98,22 +112,22 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
           toolName: "browser_fetch",
-          browserSession: primaryTarget.sessionName,
+          browserContext: context,
         });
 
-        const runFlow = async (lane: BrowserLane) => {
-          laneType = lane.laneType;
-          browserSession = lane.browserTarget.sessionName;
+        const runFlow = async (lease: BrowserBrokerLease) => {
+          browserSession = lease.browserTarget.sessionName;
           const commandOptions = {
             telemetryStore: ctx.telemetryStore,
             toolName: "browser_fetch",
             browserOpId,
-            browserTarget: lane.browserTarget,
+            browserTarget: lease.browserTarget,
             metadata: {
               urlHost,
               selectorPresent: !!selector,
-              browserLane: lane.laneType,
-              cloneId: lane.cloneId,
+              browserContext: context,
+              publicTargetId: lease.publicTargetId,
+              authenticatedReason: reason || undefined,
             },
           };
 
@@ -129,9 +143,10 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
           const waitResult = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_fetch.wait", Date.now() - waitStart, {
             browserOpId,
-            browserSession: lane.browserTarget.sessionName,
-            browserLane: lane.laneType,
-            cloneId: lane.cloneId,
+            browserSession: lease.browserTarget.sessionName,
+            browserContext: context,
+            authenticatedReason: reason || undefined,
+            publicTargetId: lease.publicTargetId,
             success: waitResult.ok,
             urlHost,
           });
@@ -161,22 +176,20 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             url: urlResult.ok ? urlResult.output : url,
             title: titleResult.ok ? titleResult.output : undefined,
             snapshot: snapshot.output,
+            context,
           };
         };
 
         try {
-          return await withBrowserLaneFallback({
-            copilotHome: ctx.copilotHome,
-            telemetryStore: ctx.telemetryStore,
+          return await browserBroker.withEphemeralContext(context, {
+            browserOpId,
+            toolName: "browser_fetch",
             metadata: {
               browserOpId,
-              toolName: "browser_fetch",
+              browserContext: context,
+              authenticatedReason: reason || undefined,
               urlHost,
             },
-            launchConfig,
-            tryClone: isCloneSafeBrowserFetchHost(urlHost),
-            fallbackToPrimaryOnCloneException: true,
-            state: laneFallback,
           }, runFlow);
         } catch (err: any) {
           return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 200)}`, {
@@ -191,16 +204,15 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             success,
             urlHost,
             selectorPresent: !!selector,
-            browserLane: laneType,
-            ...browserLaneFallbackTelemetry(laneFallback),
+            browserContext: context,
+            authenticatedReason: reason || undefined,
           });
           if (!success) {
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_fetch.failed", duration, {
               browserOpId,
               browserSession,
               urlHost,
-              browserLane: laneType,
-              ...browserLaneFallbackTelemetry(laneFallback),
+              browserContext: context,
             });
           }
         }

@@ -2,9 +2,8 @@
 
 import { exec, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 import { promisify } from "node:util";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -14,7 +13,6 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
 const RUNTIME_FILES = [...LOCK_FILES, "DevToolsActivePort", "lockfile"];
-const RUNTIME_FILE_NAMES = new Set(RUNTIME_FILES.map((name) => name.toLowerCase()));
 
 export const BROWSER_RUNTIME_FILES: readonly string[] = RUNTIME_FILES;
 
@@ -34,10 +32,6 @@ export function hasBrowserRuntimeActivity(profileDir: string): boolean {
   }
   return false;
 }
-const LOCKED_COPY_ERROR_CODES = new Set(["EACCES", "EBUSY", "ENOENT", "EPERM"]);
-const RUNTIME_METRICS_FILE_RE = /^(?:CrashpadMetrics|BrowserMetrics).*\.pma$/i;
-const SQLITE_RUNTIME_FILE_RE = /(?:-journal|-shm|-wal)$/i;
-const COOKIE_STORE_RE = /(?:^|\/)Default\/Network\/Cookies$/i;
 const SHUTDOWN_OUTPUT_SUMMARY_MAX_LENGTH = 500;
 export const BROWSER_PROFILE_SIGTERM_GRACE_MS = 500;
 export const BROWSER_LOCK_OWNER_KILL_GRACE_MS = 250;
@@ -57,15 +51,13 @@ const WEDGE_SIGNATURES = [
   "Chrome exited early",
   "Broken pipe",
   "broken pipe",
+  "Failed to connect",
+  "actively refused",
+  "Connection refused",
 ];
-const CLONE_ROOT_DIR = "browser-clones";
-const STALE_CLONE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const MAX_CLONE_LANES = 5;
-
 const laneQueues = new Map<string, Promise<void>>();
 const laneDepths = new Map<string, number>();
-const clonePoolStates = new Map<string, { available: number; waiters: Array<() => void> }>();
-const persistentCloneProfiles = new Set<string>();
+let resolvedAgentBrowserCommand: { file: string; shell: boolean } | undefined;
 
 interface BrowserProcessInfo {
   pid: number;
@@ -73,17 +65,17 @@ interface BrowserProcessInfo {
   commandLine: string;
 }
 
+interface AgentBrowserJsonEnvelope {
+  success: boolean;
+  data?: Record<string, unknown> | null;
+  error?: unknown;
+}
+
 export interface BrowserTarget {
   sessionName: string;
   profileDir: string;
   executablePath?: string;
   headed?: boolean;
-}
-
-export interface BrowserLane {
-  laneType: "primary" | "clone";
-  browserTarget: BrowserTarget;
-  cloneId?: string;
 }
 
 export interface BrowserCommandOptions {
@@ -103,21 +95,6 @@ export interface BrowserLaunchConfig {
   headed?: boolean;
 }
 
-export interface BrowserLaneFallbackState {
-  attemptedClone: boolean;
-  fallbackToPrimary: boolean;
-}
-
-export interface BrowserLaneFallbackOptions {
-  copilotHome: string | undefined;
-  telemetryStore: TelemetryStore | undefined;
-  metadata: Record<string, unknown>;
-  launchConfig?: BrowserLaunchConfig;
-  tryClone: boolean;
-  fallbackToPrimaryOnCloneException: boolean;
-  state: BrowserLaneFallbackState;
-}
-
 export type BrowserExecutablePathSource = "settings" | "environment" | "auto-detect";
 
 export type BrowserCommand = readonly [string, ...string[]];
@@ -125,6 +102,7 @@ export type BrowserCommandFailureCode =
   | "binary_missing"
   | "launch.devtools_active_port"
   | "transport.broken_pipe"
+  | "transport.connection_refused"
   | "launch.chrome_exited_early"
   | "launch.timeout"
   | "unknown";
@@ -201,6 +179,7 @@ export function getBridgeBrowserTarget(
 function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    AGENT_BROWSER_NAMESPACE: "copilot-bridge",
     AGENT_BROWSER_SESSION: target.sessionName,
     AGENT_BROWSER_PROFILE: target.profileDir,
     ...(target.executablePath ? { AGENT_BROWSER_EXECUTABLE_PATH: target.executablePath } : {}),
@@ -213,12 +192,37 @@ function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
   return env;
 }
 
-function cloneRootDir(copilotHome = process.env.COPILOT_HOME ?? join(homedir(), ".copilot")): string {
-  return join(copilotHome, CLONE_ROOT_DIR);
-}
-
 function logBrowser(event: string, data: Record<string, unknown>): void {
   console.log(`[browser] ${JSON.stringify({ event, ...data })}`);
+}
+
+function getAgentBrowserCommand(): { file: string; shell: boolean } {
+  if (resolvedAgentBrowserCommand) return resolvedAgentBrowserCommand;
+  if (platform() !== "win32") {
+    resolvedAgentBrowserCommand = { file: "agent-browser", shell: false };
+    return resolvedAgentBrowserCommand;
+  }
+
+  for (const pathDirectory of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    const candidates = [
+      join(pathDirectory, "node_modules", "agent-browser", "bin", "agent-browser-win32-x64.exe"),
+      ...(basename(pathDirectory).toLowerCase() === ".bin"
+        ? [join(dirname(pathDirectory), "agent-browser", "bin", "agent-browser-win32-x64.exe")]
+        : []),
+    ];
+    for (const candidate of candidates) {
+      try {
+        lstatSync(candidate);
+        resolvedAgentBrowserCommand = { file: candidate, shell: false };
+        return resolvedAgentBrowserCommand;
+      } catch {
+        // Keep searching the executable PATH.
+      }
+    }
+  }
+
+  resolvedAgentBrowserCommand = { file: "agent-browser", shell: true };
+  return resolvedAgentBrowserCommand;
 }
 
 export function safeRecordBrowserSpan(
@@ -244,22 +248,6 @@ export function recordBrowserSpan(
   metadata?: Record<string, unknown>,
 ): void {
   telemetryStore?.recordSpan({ name, duration, metadata, source: "server" });
-}
-
-export function createBrowserLaneFallbackState(): BrowserLaneFallbackState {
-  return {
-    attemptedClone: false,
-    fallbackToPrimary: false,
-  };
-}
-
-export function browserLaneFallbackTelemetry(
-  state: BrowserLaneFallbackState,
-): BrowserLaneFallbackState {
-  return {
-    attemptedClone: state.attemptedClone,
-    fallbackToPrimary: state.fallbackToPrimary,
-  };
 }
 
 function hostFromCommand(command: BrowserCommand): string | undefined {
@@ -292,6 +280,13 @@ function failureCode(output: string): BrowserCommandFailureCode {
   if (output.includes("which:") || output.includes("not found")) return "binary_missing";
   if (output.includes("DevToolsActivePort")) return "launch.devtools_active_port";
   if (output.includes("Broken pipe") || output.includes("broken pipe")) return "transport.broken_pipe";
+  if (
+    output.includes("Failed to connect")
+    || output.includes("actively refused")
+    || output.includes("Connection refused")
+  ) {
+    return "transport.connection_refused";
+  }
   if (output.includes("Chrome exited early")) return "launch.chrome_exited_early";
   if (output.toLowerCase().includes("timed out")) return "launch.timeout";
   return "unknown";
@@ -337,47 +332,9 @@ function normalizeComparablePath(value: string): string {
   return platform() === "win32" || looksLikeWindowsPath(stripped) ? normalized.toLowerCase() : normalized;
 }
 
-function normalizedProfileRelativePath(sourceDir: string, sourcePath: string): string {
-  const root = normalizeComparablePath(sourceDir);
-  const source = normalizeComparablePath(sourcePath);
-  if (source === root) return "";
-  const prefix = `${root}/`;
-  if (source.startsWith(prefix)) return source.slice(prefix.length);
-  return relative(sourceDir, sourcePath).replaceAll("\\", "/");
-}
-
 function normalizedPathBasename(value: string): string {
   const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
   return normalized.split("/").pop() ?? normalized;
-}
-
-export function shouldExcludeBrowserProfileCopyPath(sourceDir: string, sourcePath: string): boolean {
-  const rel = normalizedProfileRelativePath(sourceDir, sourcePath);
-  if (!rel) return false;
-  const base = normalizedPathBasename(rel).toLowerCase();
-  const relLower = rel.toLowerCase();
-  if (RUNTIME_FILE_NAMES.has(base)) return true;
-  if (RUNTIME_METRICS_FILE_RE.test(base)) return true;
-  if (SQLITE_RUNTIME_FILE_RE.test(base)) return true;
-  return relLower === "crashpad" || relLower.startsWith("crashpad/");
-}
-
-function isKnownLockableBrowserProfilePath(sourceDir: string, sourcePath: string): boolean {
-  if (shouldExcludeBrowserProfileCopyPath(sourceDir, sourcePath)) return true;
-  return COOKIE_STORE_RE.test(normalizedProfileRelativePath(sourceDir, sourcePath));
-}
-
-function copyErrorPath(err: unknown): string | undefined {
-  if (!err || typeof err !== "object") return undefined;
-  const candidate = (err as { path?: unknown; dest?: unknown }).path ?? (err as { path?: unknown; dest?: unknown }).dest;
-  return typeof candidate === "string" ? candidate : undefined;
-}
-
-function isSkippableBrowserProfileCopyError(err: unknown, sourceDir: string): boolean {
-  const code = (err as NodeJS.ErrnoException | undefined)?.code;
-  if (!code || !LOCKED_COPY_ERROR_CODES.has(code)) return false;
-  const path = copyErrorPath(err);
-  return !!path && isKnownLockableBrowserProfilePath(sourceDir, path);
 }
 
 function splitCommandLine(commandLine: string): string[] {
@@ -525,7 +482,6 @@ async function delay(ms: number): Promise<void> {
 
 async function withQueuedLane<T>(
   laneKey: string,
-  laneType: "primary" | "clone",
   telemetryStore: TelemetryStore | undefined,
   metadata: Record<string, unknown>,
   fn: () => Promise<T>,
@@ -548,7 +504,7 @@ async function withQueuedLane<T>(
     const waitDuration = Date.now() - enqueuedAt;
     safeRecordBrowserSpan(
       telemetryStore,
-      laneType === "primary" ? "browser.queue.wait.primary" : "browser.queue.wait.clone",
+      "browser.queue.wait",
       waitDuration,
       {
         ...metadata,
@@ -566,287 +522,6 @@ async function withQueuedLane<T>(
       laneQueues.delete(laneKey);
     }
   }
-}
-
-async function withClonePoolSlot<T>(
-  poolKey: string,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const state = clonePoolStates.get(poolKey) ?? { available: MAX_CLONE_LANES, waiters: [] };
-  clonePoolStates.set(poolKey, state);
-
-  const queuedAhead = state.waiters.length;
-  const activeClonesAtEnqueue = MAX_CLONE_LANES - state.available;
-  const enqueuedAt = Date.now();
-
-  if (state.available > 0) {
-    state.available -= 1;
-  } else {
-    await new Promise<void>((resolve) => {
-      state.waiters.push(resolve);
-    });
-  }
-
-  try {
-    const waitDuration = Date.now() - enqueuedAt;
-    safeRecordBrowserSpan(telemetryStore, "browser.queue.wait.clone", waitDuration, {
-      ...metadata,
-      queueKey: poolKey,
-      queuedAhead,
-      activeClonesAtEnqueue,
-      clonePoolSize: MAX_CLONE_LANES,
-    });
-    return await fn();
-  } finally {
-    const next = state.waiters.shift();
-    if (next) {
-      next();
-    } else {
-      state.available = Math.min(MAX_CLONE_LANES, state.available + 1);
-    }
-    if (state.available === MAX_CLONE_LANES && state.waiters.length === 0) {
-      clonePoolStates.delete(poolKey);
-    }
-  }
-}
-
-async function cleanupStaleBrowserClones(copilotHome: string): Promise<void> {
-  const root = cloneRootDir(copilotHome);
-  try {
-    const entries = await readdir(root, { withFileTypes: true });
-    const now = Date.now();
-    await Promise.all(entries.map(async (entry) => {
-      if (!entry.isDirectory()) return;
-      const fullPath = join(root, entry.name);
-      if (persistentCloneProfiles.has(fullPath)) return;
-      try {
-        const stats = await stat(fullPath);
-        if ((now - stats.mtimeMs) > STALE_CLONE_MAX_AGE_MS) {
-          await rm(fullPath, { recursive: true, force: true });
-        }
-      } catch {
-        // ignore cleanup races
-      }
-    }));
-  } catch {
-    // no clone root yet
-  }
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function copySanitizedProfile(sourceDir: string, targetDir: string): Promise<void> {
-  await mkdir(dirname(targetDir), { recursive: true });
-  const skippedLockedPaths = new Set<string>();
-  const maxAttempts = 10;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await rm(targetDir, { recursive: true, force: true });
-    try {
-      await cp(sourceDir, targetDir, {
-        recursive: true,
-        force: false,
-        errorOnExist: true,
-        filter: (src) => {
-          const rel = normalizedProfileRelativePath(sourceDir, src);
-          return !skippedLockedPaths.has(rel) && !shouldExcludeBrowserProfileCopyPath(sourceDir, src);
-        },
-      });
-      return;
-    } catch (err) {
-      if (isSkippableBrowserProfileCopyError(err, sourceDir)) {
-        const path = copyErrorPath(err);
-        if (path) {
-          const rel = normalizedProfileRelativePath(sourceDir, path);
-          if (!skippedLockedPaths.has(rel)) {
-            skippedLockedPaths.add(rel);
-            logBrowser("clone.copy.skip_locked_file", {
-              source: rel,
-              code: (err as NodeJS.ErrnoException).code,
-            });
-            continue;
-          }
-        }
-      }
-      await rm(targetDir, { recursive: true, force: true });
-      throw err;
-    }
-  }
-  await rm(targetDir, { recursive: true, force: true });
-  throw new Error(`Failed to copy browser profile after skipping ${skippedLockedPaths.size} locked runtime files.`);
-}
-
-async function resolveCloneSourceProfile(primaryTarget: BrowserTarget): Promise<{ profileDir: string; sourceKind: string }> {
-  if (await pathExists(primaryTarget.profileDir)) {
-    return { profileDir: primaryTarget.profileDir, sourceKind: "context-primary" };
-  }
-
-  const defaultTarget = getBridgeBrowserTarget();
-  if (defaultTarget.profileDir !== primaryTarget.profileDir && await pathExists(defaultTarget.profileDir)) {
-    await withQueuedLane(`${primaryTarget.profileDir}:seed`, "clone", undefined, {}, async () => {
-      if (await pathExists(primaryTarget.profileDir)) return;
-      await copySanitizedProfile(defaultTarget.profileDir, primaryTarget.profileDir);
-    });
-    return { profileDir: primaryTarget.profileDir, sourceKind: "context-seeded-from-default" };
-  }
-
-  return { profileDir: primaryTarget.profileDir, sourceKind: "missing-primary" };
-}
-
-async function resolvePrimaryBrowserTarget(
-  copilotHome: string | undefined,
-  launchConfig: BrowserLaunchConfig,
-): Promise<{ browserTarget: BrowserTarget; sourceKind: string }> {
-  const primaryTarget = getBridgeBrowserTarget(copilotHome, launchConfig);
-  if (await pathExists(primaryTarget.profileDir)) {
-    return { browserTarget: primaryTarget, sourceKind: "context-primary" };
-  }
-  return { browserTarget: primaryTarget, sourceKind: "missing-primary" };
-}
-
-export async function createPersistentCloneBrowserTarget(
-  copilotHome: string | undefined,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-  launchConfig: BrowserLaunchConfig = {},
-): Promise<{ cloneId: string; browserTarget: BrowserTarget }> {
-  const resolvedHome = copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
-  const primaryTarget = getBridgeBrowserTarget(resolvedHome, launchConfig);
-  const clone = await createBrowserClone(primaryTarget, resolvedHome, telemetryStore, metadata);
-  persistentCloneProfiles.add(clone.browserTarget.profileDir);
-  return clone;
-}
-
-async function createBrowserClone(
-  primaryTarget: BrowserTarget,
-  copilotHome: string,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-): Promise<{ cloneId: string; browserTarget: BrowserTarget }> {
-  await cleanupStaleBrowserClones(copilotHome);
-  const cloneId = randomUUID().slice(0, 8);
-  const root = cloneRootDir(copilotHome);
-  const profileDir = join(root, `profile-${cloneId}`);
-  const source = await resolveCloneSourceProfile(primaryTarget);
-  const browserTarget = {
-    sessionName: `${primaryTarget.sessionName}-clone-${cloneId}`,
-    profileDir,
-    ...(primaryTarget.executablePath ? { executablePath: primaryTarget.executablePath } : {}),
-    ...(primaryTarget.headed ? { headed: true } : {}),
-  };
-
-  const startedAt = Date.now();
-  try {
-    await mkdir(root, { recursive: true });
-    if (source.sourceKind === "missing-primary") {
-      await mkdir(profileDir, { recursive: true });
-    } else {
-      await copySanitizedProfile(source.profileDir, profileDir);
-    }
-    safeRecordBrowserSpan(telemetryStore, "browser.clone.create", Date.now() - startedAt, {
-      ...metadata,
-      cloneId,
-      cloneSourceKind: source.sourceKind,
-      browserSession: browserTarget.sessionName,
-    });
-    logBrowser("clone.create", {
-      ...metadata,
-      cloneId,
-      cloneSourceKind: source.sourceKind,
-      browserSession: browserTarget.sessionName,
-      durationMs: Date.now() - startedAt,
-    });
-    return { cloneId, browserTarget };
-  } catch (err) {
-    safeRecordBrowserSpan(telemetryStore, "browser.clone.create.failed", Date.now() - startedAt, {
-      ...metadata,
-      cloneId,
-      cloneSourceKind: source.sourceKind,
-    });
-    throw err;
-  }
-}
-
-export async function destroyPersistentCloneBrowserTarget(
-  browserTarget: BrowserTarget,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-): Promise<void> {
-  persistentCloneProfiles.delete(browserTarget.profileDir);
-  await destroyBrowserClone(browserTarget, telemetryStore, metadata);
-}
-
-async function destroyBrowserClone(
-  browserTarget: BrowserTarget,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-): Promise<void> {
-  const startedAt = Date.now();
-  let closeErrored = false;
-  let removeErrored = false;
-  let closeFailure: string | undefined;
-  const closeResult = await runFile("agent-browser", ["close"], 10_000, { env: browserEnv(browserTarget) });
-  if (!closeResult.ok) {
-    closeErrored = true;
-    closeFailure = failureCode(closeResult.output);
-  }
-  const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
-    ...metadata,
-    browserSession: browserTarget.sessionName,
-    ...(closeFailure ? { closeFailureCode: closeFailure } : {}),
-    cleanupPhase: "clone_destroy",
-  });
-
-  try {
-    await rm(browserTarget.profileDir, { recursive: true, force: true });
-  } catch {
-    removeErrored = true;
-  }
-
-  const duration = Date.now() - startedAt;
-  if (closeErrored || removeErrored) {
-    safeRecordBrowserSpan(telemetryStore, "browser.clone.cleanup.failed", duration, {
-      ...metadata,
-      browserSession: browserTarget.sessionName,
-      closeErrored,
-      removeErrored,
-      closeFailureCode: closeFailure,
-      terminatedPids: forceCloseResult.terminatedPids,
-      killedPids: forceCloseResult.killedPids,
-      remainingPids: forceCloseResult.remainingPids,
-      clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
-    });
-    return;
-  }
-
-  safeRecordBrowserSpan(telemetryStore, "browser.clone.cleanup", duration, {
-    ...metadata,
-    browserSession: browserTarget.sessionName,
-    closeErrored,
-    terminatedPids: forceCloseResult.terminatedPids,
-    killedPids: forceCloseResult.killedPids,
-    remainingPids: forceCloseResult.remainingPids,
-    clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
-  });
-  logBrowser("clone.cleanup", {
-    ...metadata,
-    browserSession: browserTarget.sessionName,
-    durationMs: duration,
-    closeErrored,
-    terminatedPids: forceCloseResult.terminatedPids,
-    killedPids: forceCloseResult.killedPids,
-    remainingPids: forceCloseResult.remainingPids,
-    clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
-  });
 }
 
 async function runBrowserCommand(
@@ -869,7 +544,7 @@ async function runBrowserCommand(
 
   logBrowser("command.start", { commandName: spanName, ...metadata });
   const startedAt = Date.now();
-  const result = await runFile("agent-browser", [...command], timeout, { env: browserEnv(browserTarget) });
+  const result = await runAgentBrowserJsonCommand(command, timeout, browserEnv(browserTarget));
   const duration = Date.now() - startedAt;
 
   recordBrowserSpan(options.telemetryStore, spanName, duration, {
@@ -897,6 +572,132 @@ async function runBrowserCommand(
   return result;
 }
 
+function agentBrowserJsonOutput(command: BrowserCommand, envelope: AgentBrowserJsonEnvelope): string {
+  if (!envelope.success) {
+    if (typeof envelope.error === "string") return envelope.error;
+    return envelope.error ? JSON.stringify(envelope.error) : "agent-browser command failed";
+  }
+  const data = envelope.data;
+  if (!data) return "";
+  if (command[0] === "get" && command[1] === "url" && typeof data.url === "string") return data.url;
+  if (command[0] === "get" && command[1] === "title" && typeof data.title === "string") return data.title;
+  if (command[0] === "get" && command[1] === "text" && typeof data.text === "string") return data.text;
+  if (command[0] === "snapshot" && typeof data.snapshot === "string") return data.snapshot;
+  if (command[0] === "open") {
+    const title = typeof data.title === "string" ? data.title : "";
+    const url = typeof data.url === "string" ? data.url : "";
+    return [title, url].filter(Boolean).join("\n");
+  }
+  if (typeof data.message === "string") return data.message;
+  if (typeof data.state === "string") return data.state;
+  return "";
+}
+
+async function runAgentBrowserJsonCommand(
+  command: BrowserCommand,
+  timeout: number,
+  env: NodeJS.ProcessEnv,
+): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof execFile> | undefined;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (result: { ok: boolean; output: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        child?.kill();
+      } catch {
+        // The short-lived CLI client may already have exited.
+      }
+      resolve(result);
+    };
+
+    const parseCompleteJson = (): boolean => {
+      const trimmed = stdout.trim();
+      if (!trimmed) return false;
+      try {
+        const envelope = JSON.parse(trimmed) as AgentBrowserJsonEnvelope;
+        if (typeof envelope.success !== "boolean") return false;
+        finish({
+          ok: envelope.success,
+          output: agentBrowserJsonOutput(command, envelope),
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const timer = setTimeout(() => {
+      finish({
+        ok: false,
+        output: stderr.trim() || stdout.trim() || `agent-browser command timed out after ${timeout}ms`,
+      });
+    }, timeout);
+
+    try {
+      const agentBrowserCommand = getAgentBrowserCommand();
+      child = execFile(
+        agentBrowserCommand.file,
+        [...command, "--json"],
+        {
+          encoding: "utf-8",
+          maxBuffer: 10 * 1024 * 1024,
+          env,
+          shell: agentBrowserCommand.shell,
+        },
+        (error, stdoutValue, stderrValue) => {
+          if (settled) return;
+          const mockedResult = stdoutValue && typeof stdoutValue === "object"
+            ? stdoutValue as { stdout?: unknown; stderr?: unknown }
+            : undefined;
+          stdout ||= mockedResult?.stdout?.toString() ?? stdoutValue?.toString() ?? "";
+          stderr ||= mockedResult?.stderr?.toString() ?? stderrValue?.toString() ?? "";
+          if (parseCompleteJson()) return;
+          if (error) {
+            const commandError = error as Error & { stderr?: unknown; stdout?: unknown };
+            finish({
+              ok: false,
+              output: commandError.stderr?.toString().trim()
+                || commandError.stdout?.toString().trim()
+                || stderr.trim()
+                || stdout.trim()
+                || String(error),
+            });
+            return;
+          }
+          finish({
+            ok: true,
+            output: (stdout || stderr).trim(),
+          });
+        },
+      );
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
+        parseCompleteJson();
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => {
+        finish({
+          ok: false,
+          output: stderr.trim() || stdout.trim() || String(error),
+        });
+      });
+    } catch (error) {
+      finish({
+        ok: false,
+        output: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+}
+
 export async function run(
   cmd: string,
   timeout = DEFAULT_TIMEOUT,
@@ -922,13 +723,16 @@ export async function runFile(
   timeout = DEFAULT_TIMEOUT,
   execOptions: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ ok: boolean; output: string }> {
+  const command = file === "agent-browser"
+    ? getAgentBrowserCommand()
+    : { file, shell: platform() === "win32" };
   try {
-    const { stdout, stderr } = await execFileAsync(file, args, {
+    const { stdout, stderr } = await execFileAsync(command.file, args, {
       encoding: "utf-8",
       timeout,
       maxBuffer: 10 * 1024 * 1024,
       env: execOptions.env,
-      shell: platform() === "win32",
+      shell: command.shell,
     });
     const output = stdout || stderr;
     return { ok: true, output: output.trim() };
@@ -1102,6 +906,27 @@ export async function ab(
 
   const signature = failureSignature(result.output);
   if (!signature) return result;
+
+  if (failureCode(result.output) === "transport.connection_refused") {
+    await delay(BROWSER_LOCK_OWNER_KILL_GRACE_MS);
+    const retryStartedAt = Date.now();
+    const retry = await runBrowserCommand(command, timeout, {
+      ...options,
+      browserTarget,
+      browserOpId,
+      attempt: 2,
+      skipRecovery: true,
+    });
+    recordBrowserSpan(options.telemetryStore, "browser.recovery.retry", Date.now() - retryStartedAt, {
+      browserOpId,
+      toolName: options.toolName,
+      browserSession: browserTarget.sessionName,
+      commandName,
+      signature,
+      retryOutcome: retry.ok ? "succeeded" : "failed",
+    });
+    if (retry.ok) return retry;
+  }
 
   const lock = readLockOwner(browserTarget.profileDir);
   recordBrowserSpan(options.telemetryStore, "browser.recovery.detected", 0, {
@@ -1319,84 +1144,9 @@ export async function withBridgeBrowserSession<T>(
   browserTarget: BrowserTarget,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return withQueuedLane(browserTarget.sessionName, "primary", undefined, {
+  return withQueuedLane(browserTarget.sessionName, undefined, {
     browserSession: browserTarget.sessionName,
   }, fn);
-}
-
-export async function withPrimaryBrowserLane<T>(
-  copilotHome: string | undefined,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-  fn: (lane: BrowserLane) => Promise<T>,
-  launchConfig: BrowserLaunchConfig = {},
-): Promise<T> {
-  const { browserTarget, sourceKind } = await resolvePrimaryBrowserTarget(copilotHome, launchConfig);
-  return withQueuedLane(browserTarget.sessionName, "primary", telemetryStore, {
-    ...metadata,
-    browserSession: browserTarget.sessionName,
-    primarySourceKind: sourceKind,
-  }, async () => fn({ laneType: "primary", browserTarget }));
-}
-
-export async function withCloneBrowserLane<T>(
-  copilotHome: string | undefined,
-  telemetryStore: TelemetryStore | undefined,
-  metadata: Record<string, unknown>,
-  fn: (lane: BrowserLane) => Promise<T>,
-  launchConfig: BrowserLaunchConfig = {},
-): Promise<T> {
-  const resolvedHome = copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
-  const primaryTarget = getBridgeBrowserTarget(resolvedHome, launchConfig);
-  const clonePoolKey = `${primaryTarget.sessionName}:clone-pool`;
-  return withClonePoolSlot(clonePoolKey, telemetryStore, {
-    ...metadata,
-    browserSession: primaryTarget.sessionName,
-  }, async () => {
-    const { cloneId, browserTarget } = await createBrowserClone(primaryTarget, resolvedHome, telemetryStore, metadata);
-    try {
-      return await fn({ laneType: "clone", browserTarget, cloneId });
-    } finally {
-      await destroyBrowserClone(browserTarget, telemetryStore, {
-        ...metadata,
-        cloneId,
-      });
-    }
-  });
-}
-
-export async function withBrowserLaneFallback<T>(
-  options: BrowserLaneFallbackOptions,
-  fn: (lane: BrowserLane) => Promise<T>,
-): Promise<T> {
-  if (options.tryClone) {
-    options.state.attemptedClone = true;
-    try {
-      return await withCloneBrowserLane(
-        options.copilotHome,
-        options.telemetryStore,
-        options.metadata,
-        fn,
-        options.launchConfig,
-      );
-    } catch (err) {
-      if (!options.fallbackToPrimaryOnCloneException) throw err;
-      options.state.fallbackToPrimary = true;
-      safeRecordBrowserSpan(options.telemetryStore, "browser.clone.fallback_to_primary", 0, {
-        ...options.metadata,
-        reason: "exception",
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  return withPrimaryBrowserLane(
-    options.copilotHome,
-    options.telemetryStore,
-    options.metadata,
-    fn,
-    options.launchConfig,
-  );
 }
 
 export async function shutdownBridgeBrowser(
@@ -1405,7 +1155,7 @@ export async function shutdownBridgeBrowser(
 ): Promise<BrowserShutdownResult> {
   return withBridgeBrowserSession(browserTarget, async () => {
     const startedAt = Date.now();
-    const closeResult = await runFile("agent-browser", ["close"], 10_000, { env: browserEnv(browserTarget) });
+    const closeResult = await runAgentBrowserJsonCommand(["close"], 10_000, browserEnv(browserTarget));
     const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
       browserSession: browserTarget.sessionName,
       ...(!closeResult.ok ? { closeFailureCode: failureCode(closeResult.output) } : {}),

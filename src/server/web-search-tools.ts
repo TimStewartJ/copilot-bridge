@@ -4,8 +4,9 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
-import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
-import { ab, browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
+import type { BrowserCommand } from "./agent-browser.js";
+import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan } from "./agent-browser.js";
+import { getOrCreateBrowserBroker, type BrowserBrokerLease } from "./browser-broker.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
@@ -240,10 +241,15 @@ function webSearchFailure(
 }
 
 export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
+  const browserBroker = getOrCreateBrowserBroker(ctx, {
+    copilotHome: ctx.copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
   return [
     defineBridgeTool("browser_web_search", {
       description:
-        "Search the web using a real browser. Returns ranked search-engine results from Google with " +
+        "Search the web using a disposable unauthenticated public browser. Returns ranked search-engine results from Google with " +
         "automatic Bing and DuckDuckGo fallbacks. Use this when web_search is unavailable or failing, " +
         "or when direct browser-backed search-engine verification is specifically needed. " +
         "After identifying promising results, " +
@@ -262,23 +268,19 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
       handler: async (args: any) => {
         const query: string = args.query;
         const browserOpId = randomUUID();
-        const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
-        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome, launchConfig);
         const queryHash = queryFingerprint(query);
         const queryLength = query.length;
         const toolStart = Date.now();
         let success = false;
         let source: string | undefined;
-        let laneType: "primary" | "clone" = "primary";
-        let browserSession = primaryTarget.sessionName;
-        const laneFallback = createBrowserLaneFallbackState();
+        let browserSession: string | undefined;
 
         const check = await isAgentBrowserInstalled();
         if (!check) {
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
             browserOpId,
             toolName: "browser_web_search",
-            browserSession: primaryTarget.sessionName,
+            browserContext: "public",
             queryHash,
           });
           return toolFailure("agent-browser is not installed.", {
@@ -289,31 +291,30 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
           toolName: "browser_web_search",
-          browserSession: primaryTarget.sessionName,
+          browserContext: "public",
           queryHash,
         });
 
-        const runFlow = async (lane: BrowserLane) => {
-          laneType = lane.laneType;
-          browserSession = lane.browserTarget.sessionName;
+        const runFlow = async (lease: BrowserBrokerLease) => {
+          browserSession = lease.browserTarget.sessionName;
           const commandOptions = {
             telemetryStore: ctx.telemetryStore,
             toolName: "browser_web_search",
             browserOpId,
-            browserTarget: lane.browserTarget,
+            browserTarget: lease.browserTarget,
             metadata: {
               queryHash,
               queryLength,
-              browserLane: lane.laneType,
-              cloneId: lane.cloneId,
+              browserContext: "public",
+              publicTargetId: lease.publicTargetId,
             },
           };
 
           const providerTelemetry = (provider: SearchProvider, extra: Record<string, unknown> = {}) => ({
             browserOpId,
-            browserSession: lane.browserTarget.sessionName,
-            browserLane: lane.laneType,
-            cloneId: lane.cloneId,
+            browserSession: lease.browserTarget.sessionName,
+            browserContext: "public",
+            publicTargetId: lease.publicTargetId,
             queryHash,
             ...extra,
           });
@@ -322,9 +323,9 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
             console.log(`[browser] ${JSON.stringify({
               event: "browser_web_search.fallback",
               browserOpId,
-              browserSession: lane.browserTarget.sessionName,
-              browserLane: lane.laneType,
-              cloneId: lane.cloneId,
+              browserSession: lease.browserTarget.sessionName,
+              browserContext: "public",
+              publicTargetId: lease.publicTargetId,
               from: fromProvider.source,
               to: toProvider.source,
               queryHash,
@@ -332,9 +333,9 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
             })}`);
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.fallback", 0, {
               browserOpId,
-              browserSession: lane.browserTarget.sessionName,
-              browserLane: lane.laneType,
-              cloneId: lane.cloneId,
+              browserSession: lease.browserTarget.sessionName,
+              browserContext: "public",
+              publicTargetId: lease.publicTargetId,
               from: fromProvider.source,
               to: toProvider.source,
               queryHash,
@@ -503,18 +504,14 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
         };
 
         try {
-          return await withBrowserLaneFallback({
-            copilotHome: ctx.copilotHome,
-            telemetryStore: ctx.telemetryStore,
+          return await browserBroker.withEphemeralContext("public", {
+            browserOpId,
+            toolName: "browser_web_search",
             metadata: {
               browserOpId,
-              toolName: "browser_web_search",
+              browserContext: "public",
               queryHash,
             },
-            launchConfig,
-            tryClone: true,
-            fallbackToPrimaryOnCloneException: true,
-            state: laneFallback,
           }, runFlow);
         } catch (err: any) {
           return webSearchFailure(`Search failed: ${String(err).slice(0, 200)}`, { query });
@@ -527,16 +524,14 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
             source,
             queryHash,
             queryLength,
-            browserLane: laneType,
-            ...browserLaneFallbackTelemetry(laneFallback),
+            browserContext: "public",
           });
           if (!success) {
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.failed", duration, {
               browserOpId,
               browserSession,
               queryHash,
-              browserLane: laneType,
-              ...browserLaneFallbackTelemetry(laneFallback),
+              browserContext: "public",
             });
           }
         }

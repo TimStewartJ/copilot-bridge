@@ -99,7 +99,7 @@ describe("browser_web_search tool", () => {
     });
   });
 
-  it("keeps ordinary search failures on the clone lane", async () => {
+  it("keeps ordinary search failures in the public context", async () => {
     const telemetryStore = { recordSpan: vi.fn() };
     const commandSessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
@@ -131,17 +131,15 @@ describe("browser_web_search tool", () => {
       resultType: "failure",
       sessionLog: "Query: copilot bridge\n\nFailed to capture Google results: snapshot failed\n\nFailed to capture Bing results: snapshot failed\n\nFailed to capture DuckDuckGo results: snapshot failed\n\nAll browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
     });
-    expect(commandSessions.some((entry) => /:(?!.*-clone-).*copilot-bridge-/.test(entry))).toBe(false);
-    expect(commandSessions.some((entry) => entry.includes("-clone-"))).toBe(true);
+    expect(commandSessions.length).toBeGreaterThan(0);
+    expect(commandSessions.every((entry) => entry.includes("copilot-bridge-public-"))).toBe(true);
     expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
       name: "browser.clone.fallback_to_primary",
     }));
     expect(toolSpan).toMatchObject({
       name: "browser.tool.browser_web_search",
       metadata: {
-        browserLane: "clone",
-        attemptedClone: true,
-        fallbackToPrimary: false,
+        browserContext: "public",
       },
     });
   });

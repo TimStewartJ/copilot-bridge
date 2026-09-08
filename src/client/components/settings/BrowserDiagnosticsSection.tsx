@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Monitor, RotateCw, X } from "lucide-react";
+import { Activity, Globe2, Loader2, Monitor, RotateCw, ShieldCheck, X } from "lucide-react";
 import {
   ApiError,
+  checkAdoBrowserAuthentication,
   closeHeadedDiagnosticsBrowser,
   fetchBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
+  probeBrowserContext,
   type AppSettings,
   type BrowserHeadedCloseFailureDetails,
   type BrowserSettings,
@@ -71,6 +73,8 @@ export function BrowserDiagnosticsSection({
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [probing, setProbing] = useState<"public" | "authenticated" | null>(null);
+  const [checkingAdo, setCheckingAdo] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
@@ -149,6 +153,40 @@ export function BrowserDiagnosticsSection({
     }
   };
 
+  const probeContext = async (context: "public" | "authenticated") => {
+    setProbing(context);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await probeBrowserContext(context);
+      setMessage(
+        result.ok
+          ? `${context === "public" ? "Public" : "Authenticated"} browser readiness passed.`
+          : result.message ?? `${context} browser readiness failed.`,
+      );
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProbing(null);
+    }
+  };
+
+  const checkAdo = async () => {
+    setCheckingAdo(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await checkAdoBrowserAuthentication();
+      setMessage(result.message ?? `Azure DevOps authentication is ${result.state}.`);
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCheckingAdo(false);
+    }
+  };
+
   const config = diagnostics?.config;
   const summary = diagnostics?.summary;
   const executablePathValue = draft.browser?.executablePath ?? "";
@@ -170,7 +208,7 @@ export function BrowserDiagnosticsSection({
   return (
     <SettingsSection
       title="Browser Diagnostics"
-      description="Configure the Bridge-owned browser target, choose whether browser tools run headed, and review recent browser friction such as browser_web_search challenge pages."
+      description="Manage the disposable public browser and the dedicated authenticated browser as separate security contexts."
       action={(
         <button
           type="button"
@@ -201,6 +239,91 @@ export function BrowserDiagnosticsSection({
           )}
         </div>
 
+        {diagnostics && (
+          <div className="grid gap-3 xl:grid-cols-3">
+            <div className="rounded-md border border-border bg-bg-primary p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
+                <Activity size={14} />
+                Runtime
+              </div>
+              <div className="mt-3 space-y-1 text-[11px] text-text-muted">
+                <div>Transport: <code className="text-text-secondary">{diagnostics.runtime.transport.kind}</code></div>
+                <div>State: <code className="text-text-secondary">{diagnostics.runtime.transport.state}</code></div>
+                <div>Namespace: <code className="text-text-secondary">{diagnostics.runtime.transport.namespace}</code></div>
+                <div>Last probe: <code className="text-text-secondary">{formatTimestamp(diagnostics.runtime.transport.lastSuccessfulProbeAt)}</code></div>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border bg-bg-primary p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
+                <Globe2 size={14} />
+                Public browser
+              </div>
+              <p className="mt-1 text-[11px] text-text-faint">
+                Disposable and unauthenticated. Used by search and ordinary browser fetches.
+              </p>
+              <div className="mt-3 space-y-1 text-[11px] text-text-muted">
+                <div>State: <code className="text-text-secondary">{diagnostics.contexts.public.state}</code></div>
+                <div>Probe: <code className="text-text-secondary">{diagnostics.contexts.public.functionalProbe.state}</code></div>
+                <div>Active / queued: <code className="text-text-secondary">{diagnostics.contexts.public.activeOperations} / {diagnostics.contexts.public.queueDepth}</code></div>
+                <div>Concurrency: <code className="text-text-secondary">{diagnostics.contexts.public.concurrencyLimit}</code></div>
+                <div className="break-all">Root: <code className="text-text-secondary">{diagnostics.contexts.public.disposableProfileRoot}</code></div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void probeContext("public")}
+                disabled={probing !== null}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+              >
+                {probing === "public" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
+                Check public browser
+              </button>
+            </div>
+
+            <div className="rounded-md border border-border bg-bg-primary p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
+                <ShieldCheck size={14} />
+                Authenticated browser
+              </div>
+              <p className="mt-1 text-[11px] text-text-faint">
+                Dedicated signed-in profile. Authenticated operations are explicit and serialized.
+              </p>
+              <div className="mt-3 space-y-1 text-[11px] text-text-muted">
+                <div>State: <code className="text-text-secondary">{diagnostics.contexts.authenticated.state}</code></div>
+                <div>Probe: <code className="text-text-secondary">{diagnostics.contexts.authenticated.functionalProbe.state}</code></div>
+                <div>Active / queued: <code className="text-text-secondary">{diagnostics.contexts.authenticated.activeOperations} / {diagnostics.contexts.authenticated.queueDepth}</code></div>
+                <div className="break-all">Profile: <code className="text-text-secondary">{diagnostics.contexts.authenticated.profilePath}</code></div>
+                <div>
+                  ADO:{" "}
+                  <code className="text-text-secondary">
+                    {diagnostics.contexts.authenticated.serviceChecks.find((check) => check.service === "ado")?.state ?? "unknown"}
+                  </code>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void probeContext("authenticated")}
+                  disabled={probing !== null}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+                >
+                  {probing === "authenticated" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
+                  Check browser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void checkAdo()}
+                  disabled={checkingAdo || probing !== null}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+                >
+                  {checkingAdo ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
+                  Verify ADO
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-3 lg:grid-cols-2">
           <Field label="Browser executable path">
             <input
@@ -210,11 +333,11 @@ export function BrowserDiagnosticsSection({
               className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-faint focus:border-accent"
             />
           </Field>
-          <Field label="Browser master profile directory">
+          <Field label="Authenticated browser profile directory">
             <input
               value={masterProfileDirectoryValue}
               onChange={(event) => updateBrowserSetting("masterProfileDirectory", event.target.value)}
-              placeholder="Leave blank to use Bridge's default browser profile"
+              placeholder="Leave blank to use Bridge's dedicated authenticated profile"
               className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-faint focus:border-accent"
             />
           </Field>
@@ -229,10 +352,10 @@ export function BrowserDiagnosticsSection({
           />
           <span className="min-w-0">
             <span className="block text-xs font-medium text-text-secondary">
-              Run browser operations headed
+              Run authenticated browser headed
             </span>
             <span className="mt-0.5 block text-[11px] text-text-faint">
-              Applies to web_search, browser_fetch, browser_exec, and browser session tools after saving.
+              Public browser operations remain disposable and headless. This setting applies only to the dedicated authenticated profile.
             </span>
           </span>
         </label>
@@ -275,7 +398,7 @@ export function BrowserDiagnosticsSection({
               <code className="text-text-secondary">{config.executablePathSource}</code>
             </div>
             <div>
-              <span className="text-text-faint">effective profile:</span>{" "}
+              <span className="text-text-faint">authenticated profile:</span>{" "}
               <code className="break-all text-text-secondary">{config.masterProfileDirectory}</code>
             </div>
             <div>
@@ -293,7 +416,7 @@ export function BrowserDiagnosticsSection({
             className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-wait disabled:bg-bg-surface disabled:text-text-faint"
           >
             {launching ? <Loader2 size={12} className="animate-spin" /> : <Monitor size={12} />}
-            Launch headed browser
+            Launch authenticated browser
           </button>
           <button
             type="button"
@@ -302,7 +425,7 @@ export function BrowserDiagnosticsSection({
             className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
           >
             {closing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-            Close headed browser
+            Close authenticated browser
           </button>
           <span className="text-[11px] text-text-faint">
             Save browser edits first. These actions use the saved browser diagnostics settings.
@@ -334,7 +457,7 @@ export function BrowserDiagnosticsSection({
             </div>
           ) : (
             <p className="mt-2 text-xs text-text-muted">
-              No recent browser challenge, recovery, or clone fallback telemetry was observed.
+              No recent browser challenge, recovery, or readiness failure telemetry was observed.
             </p>
           )}
         </div>

@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
-import { getBrowserLaunchConfig, safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
+import { getBrowserLaunchConfig, safeRecordBrowserSpan, isAgentBrowserInstalled } from "./agent-browser.js";
+import {
+  getOrCreateBrowserBroker,
+  type BrowserBrokerLease,
+  type BrowserContext,
+} from "./browser-broker.js";
 import { captureFinalBrowserState, formatBrowserStepTimeline, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, truncateBrowserFailureText, type BrowserAutomationRunFailure } from "./browser-automation.js";
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
 import {
@@ -16,7 +21,7 @@ const AGENT_BROWSER_INSTALL_GUIDANCE =
 
 function browserSessionExecFailure(
   failure: BrowserAutomationRunFailure,
-  context: { browserSessionId: string; mode: BrowserSessionMode },
+  context: { browserSessionId: string; browserContext: BrowserContext; mode: BrowserSessionMode },
 ) {
   const stepOutput = truncateBrowserFailureText(failure.failedStep.output);
   const detail = joinFailureSections(
@@ -25,6 +30,7 @@ function browserSessionExecFailure(
   ) ?? failure.error;
   return toolFailureWithContext(failure.error, {
     browserSessionId: context.browserSessionId,
+    context: context.browserContext,
     mode: context.mode,
     failedStep: failure.failedStep,
     steps: failure.steps,
@@ -32,6 +38,7 @@ function browserSessionExecFailure(
     detail,
     sessionLog: joinFailureSections(
       `Browser session: ${context.browserSessionId}`,
+      `Browser context: ${context.browserContext}`,
       `Mode: ${context.mode}`,
       `Failed step: ${failure.failedStep.index + 1} ${failure.failedStep.command}`,
       formatBrowserStepTimeline(failure.steps),
@@ -43,38 +50,73 @@ export interface RegisterBrowserSessionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
+function normalizeBrowserSessionContext(args: any): { context: BrowserContext; legacyMode?: BrowserSessionMode } | { error: string } {
+  const context = args.context;
+  const mode = args.mode as BrowserSessionMode | undefined;
+  if (context !== undefined && context !== "public" && context !== "authenticated") {
+    return { error: "Browser session context must be public or authenticated." };
+  }
+  if (mode !== undefined && mode !== "persistent" && mode !== "isolated") {
+    return { error: "Browser session mode must be persistent or isolated." };
+  }
+  if (context !== undefined && mode !== undefined) {
+    return { error: "Provide browser session context or legacy mode, not both." };
+  }
+  if (context !== undefined) return { context };
+  if (mode !== undefined) {
+    return {
+      context: mode === "persistent" ? "authenticated" : "public",
+      legacyMode: mode,
+    };
+  }
+  return { error: "Browser session context is required." };
+}
+
 export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
+  const browserBroker = getOrCreateBrowserBroker(ctx, {
+    copilotHome: ctx.copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
   const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
     copilotHome: ctx.copilotHome,
     telemetryStore: ctx.telemetryStore,
     getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+    browserBroker,
   });
 
   return [
     defineSessionBridgeTool("browser_session_start", {
       description:
-        "Create an explicit browser session handle for multi-turn continuity. Use mode='persistent' " +
-        "to reuse the shared primary browser state across turns, or mode='isolated' for a disposable " +
-        "browser session that stays alive until closed.",
+        "Create an explicit browser session handle for multi-turn continuity. Public sessions are " +
+        "disposable and unauthenticated. Authenticated sessions reuse the dedicated signed-in Bridge " +
+        "profile and are serialized.",
       parameters: {
         type: "object" as const,
         properties: {
+          context: {
+            type: "string",
+            enum: ["public", "authenticated"],
+            description: "Browser security context",
+          },
           mode: {
             type: "string",
             enum: ["persistent", "isolated"],
-            description: "Browser session mode",
+            description:
+              "Deprecated compatibility input. persistent maps to authenticated; isolated maps to public.",
           },
           purpose: {
             type: "string",
             description: "Optional short note about what this browser session is for",
           },
         },
-        required: ["mode"],
       },
       handler: async (args: any, invocation) => {
-        const mode = args.mode as BrowserSessionMode;
-        if (mode !== "persistent" && mode !== "isolated") {
-          return toolFailure("Browser session mode must be persistent or isolated.");
+        const normalized = normalizeBrowserSessionContext(args);
+        if ("error" in normalized) return toolFailure(normalized.error);
+        const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
+        if (normalized.context === "authenticated" && !purpose && !normalized.legacyMode) {
+          return toolFailure("purpose is required for an authenticated browser session.");
         }
         const browserOpId = randomUUID();
         const check = await isAgentBrowserInstalled();
@@ -86,7 +128,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         }
         let record;
         try {
-          record = await browserSessionStore.createSession(invocation.sessionId, mode, args.purpose);
+          record = await browserSessionStore.createSession(invocation.sessionId, normalized.context, purpose || undefined);
         } catch (err: any) {
           return toolFailure("Failed to start browser session.", {
             detail: `Failed to start browser session: ${String(err).slice(0, 200)}`,
@@ -95,14 +137,17 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_session_start", 0, {
           browserOpId,
           browserSessionId: record.id,
+          browserContext: record.context,
           browserSessionMode: record.mode,
           ownerSessionId: invocation.sessionId,
           browserSession: record.browserTarget.sessionName,
         });
         return {
           browserSessionId: record.id,
+          context: record.context,
           mode: record.mode,
-          sharedPrimary: record.mode === "persistent",
+          sharedAuthenticated: record.context === "authenticated",
+          ...(normalized.legacyMode ? { deprecatedMode: normalized.legacyMode } : {}),
           createdAt: new Date(record.createdAt).toISOString(),
         };
       },
@@ -164,7 +209,23 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         let result;
         try {
           result = await browserSessionStore.useSession(args.browserSessionId, invocation.sessionId, async (record) => {
-            return withBridgeBrowserSession(record.browserTarget, async () => {
+            const lease: BrowserBrokerLease = {
+              context: record.context,
+              browserTarget: record.browserTarget,
+              publicTargetId: record.publicTargetId,
+            };
+            return browserBroker.withTarget(lease, {
+              toolName: "browser_session_exec",
+              browserOpId,
+              metadata: {
+                browserSessionId: record.id,
+                browserContext: record.context,
+                browserSessionMode: record.mode,
+                ownerSessionId: record.ownerSessionId,
+                publicTargetId: record.publicTargetId,
+                stepCount: normalizedCommands.length,
+              },
+            }, async () => {
               const commandOptions = {
                 telemetryStore: ctx.telemetryStore,
                 toolName: "browser_session_exec",
@@ -172,9 +233,10 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
                 browserTarget: record.browserTarget,
                 metadata: {
                   browserSessionId: record.id,
+                  browserContext: record.context,
                   browserSessionMode: record.mode,
                   ownerSessionId: record.ownerSessionId,
-                  cloneId: record.cloneId,
+                  publicTargetId: record.publicTargetId,
                   stepCount: normalizedCommands.length,
                 },
               };
@@ -182,12 +244,14 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
               if (!execution.ok) {
                 return browserSessionExecFailure(execution.error, {
                   browserSessionId: record.id,
+                  browserContext: record.context,
                   mode: record.mode,
                 });
               }
               const finalState = await captureFinalBrowserState(captureInput, commandOptions);
               return {
                 browserSessionId: record.id,
+                context: record.context,
                 mode: record.mode,
                 steps: execution.value.steps,
                 finalState,
@@ -234,7 +298,22 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         let result;
         try {
           result = await browserSessionStore.useSession(args.browserSessionId, invocation.sessionId, async (record) => {
-            return withBridgeBrowserSession(record.browserTarget, async () => {
+            const lease: BrowserBrokerLease = {
+              context: record.context,
+              browserTarget: record.browserTarget,
+              publicTargetId: record.publicTargetId,
+            };
+            return browserBroker.withTarget(lease, {
+              toolName: "browser_session_get_state",
+              browserOpId,
+              metadata: {
+                browserSessionId: record.id,
+                browserContext: record.context,
+                browserSessionMode: record.mode,
+                ownerSessionId: record.ownerSessionId,
+                publicTargetId: record.publicTargetId,
+              },
+            }, async () => {
               const commandOptions = {
                 telemetryStore: ctx.telemetryStore,
                 toolName: "browser_session_get_state",
@@ -242,13 +321,15 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
                 browserTarget: record.browserTarget,
                 metadata: {
                   browserSessionId: record.id,
+                  browserContext: record.context,
                   browserSessionMode: record.mode,
                   ownerSessionId: record.ownerSessionId,
-                  cloneId: record.cloneId,
+                  publicTargetId: record.publicTargetId,
                 },
               };
               return {
                 browserSessionId: record.id,
+                context: record.context,
                 mode: record.mode,
                 state: await captureFinalBrowserState(captureInput, commandOptions),
               };
@@ -264,7 +345,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
       },
     }),
     defineSessionBridgeTool("browser_session_close", {
-      description: "Close an explicit browser session handle and release any associated isolated browser resources.",
+      description: "Close an explicit browser session handle and release any associated public browser resources.",
       parameters: {
         type: "object" as const,
         properties: {
