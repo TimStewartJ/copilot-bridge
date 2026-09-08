@@ -4,7 +4,9 @@ import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createTestBus, makeAgentSessionStub, setupTestDb } from "./helpers.js";
+import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
+import { join } from "node:path";
+import { readSessionLaunchContext } from "../session-launch-context.js";
 
 type FakeSession = {
   sessionId?: string;
@@ -72,12 +74,68 @@ function createManager(options: { telemetry?: boolean } = {}): {
     config: { sessionMcpServers: {} },
     clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
   }) as any;
+  const stateRoot = makeTestDir("prompt-session-state");
+  manager.getSessionStateDir = (sessionId: string) => join(stateRoot, sessionId);
   return { manager, telemetryStore };
 }
 
 describe("SessionManager bounded session lifecycle", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.useRealTimers());
+
+  it("persists launch context and renders the same PR and schedule prompt on resume", async () => {
+    const { manager } = createManager();
+    const task = {
+      id: "task-1", title: "New Task", kind: "task", muted: false, status: "active",
+      notes: "", workItems: [], pullRequests: [{ repoId: "repo", repoName: "owner/repo", prId: 42, provider: "github" }],
+    };
+    manager.deps.taskStore.getTask.mockReturnValue(task);
+    const createSession = vi.fn(async (_config: unknown) => fakeSession("launch-test"));
+    manager.backend = { createSession };
+    await manager.createTaskSession("task-1", "New Task", [], ["owner/repo PR #42"], "", undefined,
+      { name: "Daily", type: "cron", runCount: 2 });
+    const initial = createSession.mock.calls[0]?.[0] as any;
+    const persisted = readSessionLaunchContext(manager.getSessionStateDir("launch-test"));
+    expect(persisted).toEqual({ isNewTask: true, scheduleContext: { name: "Daily", type: "cron", runCount: 2 } });
+    const resumed = manager.buildSessionConfig({ sessionId: "launch-test", task, forResume: true });
+    expect(resumed.systemMessage).toEqual(initial.systemMessage);
+    expect(resumed.systemMessage.content).toContain("Currently linked PRs: owner/repo #42.");
+    expect(resumed.systemMessage.content).toContain("run #3");
+    expect(resumed.systemMessage.content).toContain("use the task update tool");
+    await manager.evictAllCachedSessions();
+  });
+
+  it("records only accepted applied configs and retains comparison across handle eviction", async () => {
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const config = { systemMessage: { mode: "customize", content: "first" }, mcpServers: {} };
+    const spans = () => telemetryStore!.querySpans({ name: "session.prompt.applied", sessionId: "fingerprint" });
+    const session = fakeSession("fingerprint");
+    await manager.cacheSession("fingerprint", session, config, "create");
+    manager.buildSessionConfig({ sessionId: "fingerprint", forResume: true });
+    await manager.cacheSession("fingerprint", session, { ...config, systemMessage: { content: "not applied" } });
+    const backend = { resumeSession: vi.fn() };
+    await manager.withSessionResumeLifecycle({
+      backend, sessionId: "fingerprint", sessionConfig: config,
+      reuseCachedSession: true, cancellationMessage: "cancelled",
+    });
+    expect(backend.resumeSession).not.toHaveBeenCalled();
+    expect(spans()).toHaveLength(1);
+    await manager.evictAllCachedSessions();
+    await manager.cacheResumedSession("fingerprint", fakeSession("fingerprint"), config);
+    expect(spans()).toHaveLength(2);
+    expect(spans().map((span) => span.metadata)).toContainEqual(expect.objectContaining({
+      comparison: "previous_applied", cacheBreakCandidate: false, changedCategories: [],
+    }));
+    await manager.evictAllCachedSessions();
+    await manager.cacheResumedSession("fingerprint", fakeSession("fingerprint"), {
+      ...config, systemMessage: { mode: "customize", content: "changed" },
+    });
+    expect(spans().map((span) => span.metadata)).toContainEqual(expect.objectContaining({
+      cacheBreakCandidate: true, changedCategories: ["systemMessage", "content"],
+    }));
+    expect(JSON.stringify(spans())).not.toContain('"content":"changed"');
+    await manager.evictAllCachedSessions();
+  });
 
   it("awaits cleanup for explicit evict-all operations", async () => {
     const { manager } = createManager();

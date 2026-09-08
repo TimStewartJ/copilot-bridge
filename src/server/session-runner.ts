@@ -70,6 +70,7 @@ import {
 } from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
+import { normalizePromptCacheBreak } from "./session-prompt-fingerprint.js";
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
@@ -968,17 +969,29 @@ export class SessionRunner {
         ?? (toolCallId ? subAgentTurnIdMap.get(toolCallId) : undefined)
         ?? (parentToolCallId ? subAgentTurnIdMap.get(parentToolCallId) : undefined);
     };
-    const recordLiveContextTelemetry = (event: any): void => {
+    const recordLiveContextTelemetry = (event: any, live: boolean): void => {
       const store = this.deps.sessionContextStore;
-      if (!store) return;
       const data = event?.data;
       const subagentTurnId = getSubagentContextTurnId(event);
-      const bridgeTurnId = subagentTurnId ?? currentBridgeTurnId;
-      const attribution = subagentTurnId
+      const isSubagent = Boolean(subagentTurnId || getSdkAgentId(event) || data?.parentToolCallId
+        || data?.isSubAgent === true || data?.subagent === true || data?.initiator === "sub-agent"
+        || data?.interactionType === "conversation-subagent"
+        || (event?.type === "prompt_cache_break" && typeof data?.agentName === "string"));
+      const bridgeTurnId = isSubagent ? subagentTurnId : currentBridgeTurnId;
+      const attribution = isSubagent
         ? "subagent_turn"
         : bridgeTurnId
           ? "turn"
           : "session_overhead";
+      const cacheBreak = live ? normalizePromptCacheBreak(event) : undefined;
+      if (cacheBreak) {
+        this.recordSpan("session.prompt_cache_break", 0, sessionId, {
+          ...cacheBreak,
+          attribution,
+          ...(bridgeTurnId ? { bridgeTurnId } : {}),
+        });
+      }
+      if (!store) return;
       const normalized = normalizeLiveSessionContextEvent(event, {
         sessionId,
         provider: contextTelemetryProvider,
@@ -1219,7 +1232,7 @@ export class SessionRunner {
         this.touchSessionRun(sessionId, eventAt);
       }
       const data = (event as any).data;
-      recordLiveContextTelemetry(event);
+      recordLiveContextTelemetry(event, context.origin === "live");
       if (opts.attentionMode !== "quiet") {
         this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
       }

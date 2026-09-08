@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatLinkedPullRequest } from "./session-formatting.js";
 import { mkdirSync } from "node:fs";
 import { copyFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -414,7 +415,7 @@ export function createVoiceJobManager({
     }
 
     const prDescriptions = task.pullRequests.map(
-      (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
+      formatLinkedPullRequest,
     );
     const group = task.groupId ? taskGroupStore.getGroup(task.groupId) : undefined;
     const groupNotes = group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null;

@@ -1,5 +1,6 @@
 // Scheduler — in-process cron scheduler for scheduled sessions
 // Registers node-cron jobs, handles triggering, missed-run catch-up
+import { formatLinkedPullRequest } from "./session-formatting.js";
 
 import cron, { type ScheduledTask } from "node-cron";
 import type { AutomaticRunClaim, Schedule, ScheduleStore, ScheduleTriggerSource } from "./schedule-store.js";
@@ -626,7 +627,7 @@ export async function triggerSchedule(
     let createdSession = false;
 
     const prDescriptions = task.pullRequests.map(
-      (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
+      formatLinkedPullRequest,
     );
     let result: Awaited<ReturnType<SessionManager["createTaskSession"]>>;
     try {

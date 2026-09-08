@@ -140,7 +140,7 @@ describe("SessionManager session config", () => {
     expect(content).toContain("- Done when: Preview approved and deployed");
     expect(content).toContain("- Next action: Run staging preview");
     expect(content).toContain("- Waiting on: User approval");
-    expect(content).toContain("- Follow up: 9999-05-03T11:00:00.000Z (upcoming)");
+    expect(content).toContain("- Follow up: 9999-05-03T11:00:00.000Z");
   });
 
   it("omits done-when momentum for ongoing task context", () => {
@@ -338,7 +338,7 @@ describe("SessionManager session config", () => {
     expect(content).toContain("- Done when: Preview is approved");
     expect(content).toContain("- Next action: Open the preview");
     expect(content).toContain("- Waiting on: Design review");
-    expect(content).toContain("- Follow up: 9999-05-04T11:00:00.000Z (upcoming)");
+    expect(content).toContain("- Follow up: 9999-05-04T11:00:00.000Z");
   });
 
   it("selects the requested task agent before returning a new session", async () => {
