@@ -1,7 +1,7 @@
 import { createElement, Fragment, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, FocusLaunchError, type FocusLaunchIdentity, type FocusLaunchRequest, type FocusLifecycleMutation, type FocusObject, type FocusSessionLaunch } from "../api";
-import { focusAction, focusDecision, focusDetails, focusEvent, focusLaunchReceipt, focusTask, FOCUS_TEST_NOW, FOCUS_TEST_NOW_MS } from "../test-focus-fixtures";
+import { focusAction, focusAlert, focusDecision, focusDetails, focusEvent, focusLaunchReceipt, focusTask, FOCUS_TEST_NOW, FOCUS_TEST_NOW_MS } from "../test-focus-fixtures";
 import { changeFocusField, clickFocusButton, createFocusTestHarness, focusButton, submitFocusForm, type FocusTestHarness } from "../test-focus-harness";
 import { findAllByTag, getReactProps, waitUntilAct } from "../test-react-harness";
 import { queryKeys } from "../queryClient";
@@ -141,6 +141,50 @@ describe("Focus lifecycle, handoff and session interaction", () => {
       lifecycle, lifecycleReason: "The fallback was verified", expectedActivationId: "activation-1",
       ...(needsOutcome ? { outcome: "Serving the known-good release" } : {}),
     });
+  });
+
+  it.each([
+    "Not relevant to me",
+    "False positive",
+    "Duplicate alert",
+  ])("dismisses immediately with the preset reason %s", async (reason) => {
+    await render(focusAlert());
+    await clickFocusButton(harness, "Dismiss");
+    expect(harness.dom.container.textContent).toContain("Choosing a reason dismisses this episode immediately.");
+    expect(document.activeElement).toBe(focusButton(harness.dom.container, "Not relevant to me"));
+
+    await clickFocusButton(harness, reason);
+    await hasText("Linked work was not changed");
+
+    expect(api.transitionFocusObject).toHaveBeenCalledWith("alert", "alert-1", {
+      lifecycle: "dismissed",
+      lifecycleReason: reason,
+      expectedActivationId: "activation-1",
+    });
+  });
+
+  it("clears a failed preset before a deferred custom dismissal retry", async () => {
+    let finishCustomDismiss!: (value: FocusObject) => void;
+    api.transitionFocusObject
+      .mockRejectedValueOnce(new Error("Preset dismissal failed"))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishCustomDismiss = resolve; }));
+    await render(focusAlert());
+    await clickFocusButton(harness, "Dismiss");
+
+    await clickFocusButton(harness, "False positive");
+    await hasText("Preset dismissal failed");
+    await changeFocusField(harness, "Or enter a custom reason", "No action needed for this account");
+    await submitFocusForm(harness);
+
+    expect(harness.dom.container.textContent).not.toContain("Dismissing...");
+    expect(api.transitionFocusObject).toHaveBeenLastCalledWith("alert", "alert-1", {
+      lifecycle: "dismissed",
+      lifecycleReason: "No action needed for this account",
+      expectedActivationId: "activation-1",
+    });
+
+    finishCustomDismiss({ ...current, lifecycle: "dismissed" });
+    await hasText("Linked work was not changed");
   });
 
   it("reactivates only as a reasoned new episode bound to the inspected activation", async () => {

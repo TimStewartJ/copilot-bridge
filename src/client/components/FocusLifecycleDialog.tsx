@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { FocusObject } from "../api";
 import FocusDialog from "./FocusDialog";
 import FocusEvidenceValidity from "./FocusEvidenceValidity";
@@ -11,6 +11,11 @@ const INTENT_TEXT: Record<FocusLifecycleIntent, { title: string; explanation: st
   dismissed: { title: "Dismiss", explanation: "Remove this episode from attention, without approving a proposal or resolving linked work." },
   reactivate: { title: "Reactivate as a new episode", explanation: "Explain the new occurrence or material change. Previous history and open Actions remain linked." },
 };
+const DISMISS_REASONS = [
+  "Not relevant to me",
+  "False positive",
+  "Duplicate alert",
+] as const;
 
 interface FocusLifecycleDialogProps {
   object: FocusObject;
@@ -26,17 +31,52 @@ interface FocusLifecycleDialogProps {
 export default function FocusLifecycleDialog({ object, intent, pending, error, nowMs, onClose, onReload, onSubmit }: FocusLifecycleDialogProps) {
   const [reason, setReason] = useState("");
   const [outcome, setOutcome] = useState("");
+  const [selectedDismissReason, setSelectedDismissReason] = useState<string | null>(null);
+  const firstDismissReasonRef = useRef<HTMLButtonElement>(null);
+  const dismissReasonHelpId = useId();
   const copy = INTENT_TEXT[intent];
   const outcomeRequired = intent === "resolved" || intent === "accepted_risk";
+  const showDismissPresets = intent === "dismissed" && object.objectType === "alert";
   return (
-    <FocusDialog title={copy.title} description={copy.explanation} pending={pending} onClose={onClose}>
-      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (reason.trim() && (!outcomeRequired || outcome.trim())) onSubmit(reason.trim(), outcome.trim()); }}>
+    <FocusDialog title={copy.title} description={copy.explanation} pending={pending} onClose={onClose}
+      initialFocusRef={showDismissPresets ? firstDismissReasonRef : undefined}>
+      <form className="space-y-4" onSubmit={(event) => {
+        event.preventDefault();
+        if (reason.trim() && (!outcomeRequired || outcome.trim())) {
+          setSelectedDismissReason(null);
+          onSubmit(reason.trim(), outcome.trim());
+        }
+      }}>
         <p className="break-words text-sm font-medium text-text-primary">{object.title}</p>
         <p className="break-all text-xs text-text-faint">Episode: {object.activationId}</p>
         {object.objectType === "decision" && <FocusEvidenceValidity details={object.details} nowMs={nowMs} materialOnly />}
         {intent === "reactivate" && object.details.outcome && <p className="text-xs text-text-muted">Previous outcome retained in History: {object.details.outcome}</p>}
+        {showDismissPresets && (
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium text-text-secondary">Common reasons</legend>
+            <p id={dismissReasonHelpId} className="text-xs text-text-muted">Choosing a reason dismisses this episode immediately.</p>
+            <div className="flex flex-wrap gap-2">
+              {DISMISS_REASONS.map((preset, index) => (
+                <button
+                  key={preset}
+                  ref={index === 0 ? firstDismissReasonRef : undefined}
+                  type="button"
+                  disabled={pending}
+                  aria-describedby={dismissReasonHelpId}
+                  className={`${UI.button.secondary} min-h-11 text-sm disabled:opacity-50`}
+                  onClick={() => {
+                    setSelectedDismissReason(preset);
+                    onSubmit(preset, "");
+                  }}
+                >
+                  {pending && selectedDismissReason === preset ? "Dismissing..." : preset}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        )}
         <label className="block space-y-1.5 text-sm text-text-secondary">
-          <span>{intent === "reactivate" ? "Episode reason (required)" : "Reason (required)"}</span>
+          <span>{intent === "reactivate" ? "Episode reason (required)" : showDismissPresets ? "Or enter a custom reason (required)" : "Reason (required)"}</span>
           <textarea required value={reason} disabled={pending} onChange={(event) => setReason(event.target.value)}
             className="min-h-24 w-full rounded-lg border border-border bg-bg-surface p-3 focus-visible:outline-accent" />
         </label>
