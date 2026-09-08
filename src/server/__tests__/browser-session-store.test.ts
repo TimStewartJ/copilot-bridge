@@ -1,133 +1,101 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { testCopilotHome } from "./test-paths.js";
 
-const COPILOT_HOME = testCopilotHome();
+import type { BrowserContext } from "../browser-broker.js";
+import { BrowserSessionStore } from "../browser-session-store.js";
 
-const execMock = vi.fn();
-const execFileMock = vi.fn();
-const cpMock = vi.fn();
-const mkdirMock = vi.fn();
-const readdirMock = vi.fn();
-const rmMock = vi.fn();
-const statMock = vi.fn();
-const readlinkSyncMock = vi.fn();
-const readFileSyncMock = vi.fn();
-const unlinkSyncMock = vi.fn();
-const killMock = vi.spyOn(process, "kill");
-const destroyCloneOverride = vi.hoisted(() => ({
-  impl: undefined as undefined | ((...args: any[]) => Promise<void>),
-}));
-
-vi.mock("node:child_process", () => ({
-  exec: execMock,
-  execFile: execFileMock,
-}));
-
-vi.mock("node:fs/promises", () => ({
-  cp: cpMock,
-  mkdir: mkdirMock,
-  readdir: readdirMock,
-  rm: rmMock,
-  stat: statMock,
-}));
-
-vi.mock("node:fs", () => ({
-  readFileSync: readFileSyncMock,
-  readlinkSync: readlinkSyncMock,
-  unlinkSync: unlinkSyncMock,
-}));
-
-vi.mock("../agent-browser.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../agent-browser.js")>();
+function createFakeBroker() {
+  const createSessionTarget = vi.fn(async (context: BrowserContext) => ({
+    context,
+    browserTarget: {
+      sessionName: context === "authenticated" ? "bridge-authenticated" : "bridge-public-1234",
+      profileDir: context === "authenticated" ? "C:\\browser-authenticated" : "C:\\browser-public\\profile-1234",
+    },
+    ...(context === "public" ? { publicTargetId: "1234" } : {}),
+  }));
+  const disposeSessionTarget = vi.fn(async () => undefined);
   return {
-    ...actual,
-    destroyPersistentCloneBrowserTarget: (...args: Parameters<typeof actual.destroyPersistentCloneBrowserTarget>) =>
-      destroyCloneOverride.impl
-        ? destroyCloneOverride.impl(...args)
-        : actual.destroyPersistentCloneBrowserTarget(...args),
+    createSessionTarget,
+    disposeSessionTarget,
   };
-});
+}
 
 describe("browser session store", () => {
   beforeEach(() => {
-    vi.resetModules();
-    execMock.mockReset();
-    execFileMock.mockReset();
-    cpMock.mockReset();
-    mkdirMock.mockReset();
-    readdirMock.mockReset();
-    rmMock.mockReset();
-    statMock.mockReset();
-    readlinkSyncMock.mockReset();
-    readFileSyncMock.mockReset();
-    unlinkSyncMock.mockReset();
-    destroyCloneOverride.impl = undefined;
-    killMock.mockReset();
-    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-      if (signal === 0) return true as never;
-      return true as never;
-    }) as any);
-    cpMock.mockResolvedValue(undefined);
-    mkdirMock.mockResolvedValue(undefined);
-    readdirMock.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
-    rmMock.mockResolvedValue(undefined);
-    statMock.mockResolvedValue({ mtimeMs: Date.now() });
-    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      cb(null, { stdout: "ok", stderr: "" });
-      return {} as any;
-    });
-  });
-
-  afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("creates isolated sessions and cleans them up on close", async () => {
-    const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
 
-    const session = await store.createSession("copilot-a", "isolated", "test");
-    expect(session.mode).toBe("isolated");
-    expect(session.browserTarget.sessionName).toContain("-clone-");
+  it("creates public sessions and cleans them up on close", async () => {
+    const browserBroker = createFakeBroker();
+    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
 
-    const close = await store.closeSession(session.id, "copilot-a");
-    expect(close).toEqual({ ok: true });
-    expect(execFileMock).toHaveBeenCalledWith(
-      "agent-browser",
-      ["close"],
-      expect.objectContaining({
-        env: expect.objectContaining({
-          AGENT_BROWSER_SESSION: expect.stringContaining("-clone-"),
-          AGENT_BROWSER_PROFILE: expect.stringContaining("browser-clones"),
-        }),
-      }),
-      expect.any(Function),
-    );
-    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
-      recursive: true,
-      force: true,
+    const session = await store.createSession("copilot-a", "public", "test");
+
+    expect(session).toMatchObject({
+      context: "public",
+      mode: "isolated",
+      publicTargetId: "1234",
     });
+    expect(browserBroker.createSessionTarget).toHaveBeenCalledWith("public");
+
+    await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
+    expect(browserBroker.disposeSessionTarget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: "public",
+        publicTargetId: "1234",
+      }),
+      expect.objectContaining({
+        toolName: "browser_session_close",
+        browserOpId: session.id,
+      }),
+    );
     await store.closeAll();
   });
 
-  it("expires idle isolated sessions during sweep", async () => {
-    const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME, idleTimeoutMs: 1 });
+  it("reuses the authenticated target without disposing it", async () => {
+    const browserBroker = createFakeBroker();
+    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
 
-    const session = await store.createSession("copilot-a", "isolated");
+    const session = await store.createSession("copilot-a", "authenticated");
+
+    expect(session).toMatchObject({
+      context: "authenticated",
+      mode: "persistent",
+      publicTargetId: undefined,
+    });
+    await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
+    expect(browserBroker.disposeSessionTarget).not.toHaveBeenCalled();
+    await store.closeAll();
+  });
+
+  it("expires idle public sessions during sweep", async () => {
+    const browserBroker = createFakeBroker();
+    const store = new BrowserSessionStore({
+      browserBroker: browserBroker as any,
+      idleTimeoutMs: 1,
+    });
+    const session = await store.createSession("copilot-a", "public");
+
     const expired = await store.sweepIdleSessions(session.lastUsedAt + 10);
 
     expect(expired).toBe(1);
     expect(store.getSession(session.id)).toBeUndefined();
+    expect(browserBroker.disposeSessionTarget).toHaveBeenCalledTimes(1);
     await store.closeAll();
   });
 
   it("does not expire a session that becomes active during the same sweep", async () => {
-    const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME, idleTimeoutMs: 1 });
-
-    const first = await store.createSession("copilot-a", "persistent");
-    const second = await store.createSession("copilot-a", "persistent");
+    const browserBroker = createFakeBroker();
+    const store = new BrowserSessionStore({
+      browserBroker: browserBroker as any,
+      idleTimeoutMs: 1,
+    });
+    const first = await store.createSession("copilot-a", "authenticated");
+    const second = await store.createSession("copilot-a", "authenticated");
     const sessions = (store as any).sessions as Map<string, any>;
     const originalGet = sessions.get.bind(sessions);
     let activated = false;
@@ -149,16 +117,15 @@ describe("browser session store", () => {
     await store.closeAll();
   });
 
-  it("keeps an isolated session retryable when disposal fails", async () => {
-    const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME });
-    const session = await store.createSession("copilot-a", "isolated");
-    destroyCloneOverride.impl = vi.fn().mockRejectedValueOnce(new Error("clone close failed"));
+  it("keeps a public session retryable when disposal fails", async () => {
+    const browserBroker = createFakeBroker();
+    browserBroker.disposeSessionTarget.mockRejectedValueOnce(new Error("public close failed"));
+    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
+    const session = await store.createSession("copilot-a", "public");
 
-    await expect(store.closeSession(session.id, "copilot-a")).rejects.toThrow("clone close failed");
+    await expect(store.closeSession(session.id, "copilot-a")).rejects.toThrow("public close failed");
     expect(store.getSession(session.id)).toBeDefined();
 
-    destroyCloneOverride.impl = undefined;
     await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
     expect(store.getSession(session.id)).toBeUndefined();
     await store.closeAll();
@@ -167,10 +134,13 @@ describe("browser session store", () => {
   it("logs interval sweep failures instead of emitting an unhandled rejection", async () => {
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME, idleTimeoutMs: 1 });
-    const session = await store.createSession("copilot-a", "isolated");
-    destroyCloneOverride.impl = vi.fn().mockRejectedValueOnce(new Error("idle close failed"));
+    const browserBroker = createFakeBroker();
+    browserBroker.disposeSessionTarget.mockRejectedValueOnce(new Error("idle close failed"));
+    const store = new BrowserSessionStore({
+      browserBroker: browserBroker as any,
+      idleTimeoutMs: 1,
+    });
+    const session = await store.createSession("copilot-a", "public");
 
     await vi.advanceTimersByTimeAsync(1);
 
@@ -180,19 +150,19 @@ describe("browser session store", () => {
     );
     expect(store.getSession(session.id)).toBeDefined();
 
-    errorSpy.mockRestore();
-    destroyCloneOverride.impl = undefined;
     await store.closeAll();
   });
 
-  it("blocks concurrent use and duplicate close while disposal is active", async () => {
-    const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME });
-    const session = await store.createSession("copilot-a", "isolated");
-    let finishDispose!: () => void;
-    destroyCloneOverride.impl = () => new Promise<void>((resolve) => {
-      finishDispose = resolve;
-    });
+  it("blocks use and duplicate close while disposal is active", async () => {
+    const browserBroker = createFakeBroker();
+    let finishDispose!: (value?: undefined) => void;
+    browserBroker.disposeSessionTarget.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => {
+        finishDispose = resolve;
+      }),
+    );
+    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
+    const session = await store.createSession("copilot-a", "public");
 
     const closing = store.closeSession(session.id, "copilot-a");
     await Promise.resolve();
@@ -208,7 +178,23 @@ describe("browser session store", () => {
 
     finishDispose();
     await expect(closing).resolves.toEqual({ ok: true });
-    destroyCloneOverride.impl = undefined;
+    await store.closeAll();
+  });
+
+  it("rejects use and close from another Copilot session", async () => {
+    const browserBroker = createFakeBroker();
+    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
+    const session = await store.createSession("copilot-a", "authenticated");
+
+    await expect(store.useSession(session.id, "copilot-b", async () => "unused")).resolves.toMatchObject({
+      ok: false,
+      error: "Browser session belongs to a different Copilot session",
+    });
+    await expect(store.closeSession(session.id, "copilot-b")).resolves.toMatchObject({
+      ok: false,
+      error: "Browser session belongs to a different Copilot session",
+    });
+
     await store.closeAll();
   });
 });

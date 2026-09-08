@@ -70,7 +70,7 @@ describe("browser session tools", () => {
     });
   });
 
-  it("persists continuity on the shared primary browser session", async () => {
+  it("persists continuity on the shared authenticated browser session", async () => {
     const seenSessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       seenSessions.push(options.env.AGENT_BROWSER_SESSION);
@@ -86,7 +86,10 @@ describe("browser session tools", () => {
     const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
-    const started = await tools.browser_session_start.handler({ mode: "persistent" }, invocation) as any;
+    const started = await tools.browser_session_start.handler({
+      context: "authenticated",
+      purpose: "Continue an authenticated workflow",
+    }, invocation) as any;
     const first = await tools.browser_session_exec.handler({
       browserSessionId: started.browserSessionId,
       commands: [
@@ -100,14 +103,15 @@ describe("browser session tools", () => {
     }, invocation) as any;
 
     expect(first.mode).toBe("persistent");
+    expect(first.context).toBe("authenticated");
     expect(second.mode).toBe("persistent");
     expect(second.state.title).toEqual({ ok: true, output: "Example Domain" });
     expect(second.state.url).toEqual({ ok: true, output: "https://example.com/" });
-    expect(seenSessions.every((value) => !value.includes("-clone-"))).toBe(true);
+    expect(seenSessions.every((value) => !value.includes("copilot-bridge-public-"))).toBe(true);
     expect(new Set(seenSessions).size).toBe(1);
   });
 
-  it("keeps isolated sessions alive across exec calls until closed", async () => {
+  it("keeps public sessions alive across exec calls until closed", async () => {
     const seenSessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       seenSessions.push(options.env.AGENT_BROWSER_SESSION);
@@ -122,7 +126,7 @@ describe("browser session tools", () => {
     const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
-    const started = await tools.browser_session_start.handler({ mode: "isolated" }, invocation) as any;
+    const started = await tools.browser_session_start.handler({ context: "public" }, invocation) as any;
     const first = await tools.browser_session_exec.handler({
       browserSessionId: started.browserSessionId,
       commands: [{ command: "open", args: ["https://example.com"] }],
@@ -137,13 +141,14 @@ describe("browser session tools", () => {
     }, invocation) as any;
 
     expect(first.mode).toBe("isolated");
+    expect(first.context).toBe("public");
     expect(second.mode).toBe("isolated");
     expect(second.state.title).toEqual({ ok: true, output: "Example Domain" });
-    const cloneSessions = seenSessions.filter((value) => value.includes("-clone-"));
-    expect(cloneSessions.length).toBeGreaterThan(0);
-    expect(new Set(cloneSessions).size).toBe(1);
+    const publicSessions = seenSessions.filter((value) => value.includes("copilot-bridge-public-"));
+    expect(publicSessions.length).toBeGreaterThan(0);
+    expect(new Set(publicSessions).size).toBe(1);
     expect(closed).toEqual({ success: true, browserSessionId: started.browserSessionId });
-    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
+    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-public"), {
       recursive: true,
       force: true,
     });
@@ -173,16 +178,34 @@ describe("browser session tools", () => {
     });
   });
 
+  it("requires a purpose for new authenticated sessions", async () => {
+    const mod = await import("../browser-session-tools.js");
+    const tools = Object.fromEntries(
+      mod.createBrowserSessionToolDefinitions(createBrowserToolContext())
+        .map((tool: any) => [tool.name, tool]),
+    );
+
+    const result = await tools.browser_session_start.handler({
+      context: "authenticated",
+    }, { sessionId: "copilot-a" } as any);
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      textResultForLlm: "purpose is required for an authenticated browser session.",
+    });
+  });
+
   it("returns normalized browser session exec failures with step context", async () => {
-    execFileMock
-      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") {
         cb(null, { stdout: "opened", stderr: "" });
-        return {} as any;
-      })
-      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any) => void) => {
+      } else if (args[0] === "click") {
         cb({ stderr: "click failed" });
-        return {} as any;
-      });
+      } else {
+        cb(null, { stdout: "ready", stderr: "" });
+      }
+      return {} as any;
+    });
 
     const mod = await import("../browser-session-tools.js");
     const tools = Object.fromEntries(mod.createBrowserSessionToolDefinitions(createBrowserToolContext()).map((tool: any) => [tool.name, tool]));

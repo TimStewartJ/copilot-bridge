@@ -86,7 +86,28 @@ describe("browser_exec tool", () => {
     });
   });
 
-  it("uses clone lane for read-only auto flows and captures final state", async () => {
+  it("requires a reason and enforces allowed origins for authenticated access", async () => {
+    const mod = await import("../browser-exec-tools.js");
+
+    expect(mod.normalizeBrowserExecInput({
+      context: "authenticated",
+      commands: [{ command: "open", args: ["https://msazure.visualstudio.com/One/"] }],
+    })).toEqual({
+      ok: false,
+      error: "reason is required for authenticated browser access",
+    });
+    expect(mod.normalizeBrowserExecInput({
+      context: "authenticated",
+      reason: "Inspect ADO",
+      allowedOrigins: ["https://github.com"],
+      commands: [{ command: "open", args: ["https://msazure.visualstudio.com/One/"] }],
+    })).toEqual({
+      ok: false,
+      error: "authenticated browser URL origin is not allowed: https://msazure.visualstudio.com",
+    });
+  });
+
+  it("uses the disposable public context by default and captures final state", async () => {
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       const env = options.env;
       if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
@@ -95,7 +116,7 @@ describe("browser_exec tool", () => {
       else if (args[0] === "get" && args[1] === "url") cb(null, { stdout: "https://example.com", stderr: "" });
       else if (args[0] === "close") cb(null, { stdout: "closed", stderr: "" });
       else cb(null, { stdout: "ok", stderr: "" });
-      expect(env.AGENT_BROWSER_SESSION).toContain("-clone-");
+      expect(env.AGENT_BROWSER_SESSION).toContain("copilot-bridge-public-");
       return {} as any;
     });
 
@@ -109,17 +130,17 @@ describe("browser_exec tool", () => {
       capture: { snapshot: true, url: true },
     }, invocation) as any;
 
-    expect(result.lane).toBe("clone");
+    expect(result.context).toBe("public");
     expect(result.steps).toHaveLength(2);
     expect(result.finalState.url).toEqual({ ok: true, output: "https://example.com" });
     expect(result.finalState.snapshot).toEqual({ ok: true, output: "snapshot-output", selector: undefined });
-    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
+    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-public"), {
       recursive: true,
       force: true,
     });
   });
 
-  it("uses primary lane for stateful auto flows", async () => {
+  it("uses the authenticated context only when explicitly requested", async () => {
     const sessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       sessions.push(options.env.AGENT_BROWSER_SESSION);
@@ -132,16 +153,18 @@ describe("browser_exec tool", () => {
     const mod = await import("../browser-exec-tools.js");
     const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
+      context: "authenticated",
+      reason: "Update an authenticated form",
       commands: [{ command: "fill", args: ["@e1", "hello"] }],
       capture: { title: true },
     }, invocation) as any;
 
-    expect(result.lane).toBe("primary");
-    expect(sessions.every((session) => !session.includes("-clone-"))).toBe(true);
+    expect(result.context).toBe("authenticated");
+    expect(sessions.every((session) => !session.includes("copilot-bridge-public-"))).toBe(true);
     expect(result.finalState.title).toEqual({ ok: true, output: "Title" });
   });
 
-  it("keeps read-only auto flows on primary when they depend on existing browser state", async () => {
+  it("supports authenticated reads against existing browser state", async () => {
     const sessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       sessions.push(options.env.AGENT_BROWSER_SESSION);
@@ -153,18 +176,20 @@ describe("browser_exec tool", () => {
     const mod = await import("../browser-exec-tools.js");
     const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
+      context: "authenticated",
+      reason: "Inspect the existing authenticated page",
       commands: [{ command: "snapshot", args: ["-i"] }],
     }, invocation) as any;
 
-    expect(result.lane).toBe("primary");
+    expect(result.context).toBe("authenticated");
     expect(result.steps[0]).toMatchObject({ command: "snapshot", ok: true, output: "current-page" });
-    expect(sessions.every((session) => !session.includes("-clone-"))).toBe(true);
+    expect(sessions.every((session) => !session.includes("copilot-bridge-public-"))).toBe(true);
   });
 
-  it("does not fall back to primary when the clone lane is explicitly requested", async () => {
-    cpMock.mockRejectedValueOnce(Object.assign(new Error("clone setup failed"), { code: "EIO" }));
-    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (args[0] === "open") throw new Error("unexpected primary open");
+  it("maps the legacy clone lane to public without authenticated fallback", async () => {
+    const sessions: string[] = [];
+    execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      sessions.push(options.env.AGENT_BROWSER_SESSION);
       cb(null, { stdout: "ok", stderr: "" });
       return {} as any;
     });
@@ -181,49 +206,41 @@ describe("browser_exec tool", () => {
       .map(([span]: any[]) => span)
       .find((span: any) => span.name === "browser.tool.browser_exec");
     expect(result).toMatchObject({
-      textResultForLlm: "Browser exec failed: Error: clone setup failed",
-      resultType: "failure",
-      sessionLog: "Browser exec failed: Error: clone setup failed",
+      context: "public",
+      deprecatedLane: "clone",
     });
-    expect(execFileMock).not.toHaveBeenCalled();
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((session) => session.includes("copilot-bridge-public-"))).toBe(true);
     expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
       name: "browser.clone.fallback_to_primary",
     }));
     expect(toolSpan).toMatchObject({
       name: "browser.tool.browser_exec",
       metadata: {
-        requestedLane: "clone",
-        resolvedLane: "clone",
-        browserLane: "clone",
-        attemptedClone: true,
-        fallbackToPrimary: false,
+        browserContext: "public",
+        legacyLane: "clone",
       },
     });
   });
 
   it("returns a structured failure with prior step results", async () => {
-    execFileMock
-      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-        cb(null, { stdout: "opened", stderr: "" });
-        return {} as any;
-      })
-      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any) => void) => {
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "click") {
         cb({ stderr: "click failed" });
-        return {} as any;
-      })
-      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      } else if (args[0] === "open") {
+        cb(null, { stdout: "opened", stderr: "" });
+      } else if (args[0] === "close") {
         cb(null, { stdout: "closed", stderr: "" });
-        return {} as any;
-      })
-      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      } else {
         cb(null, { stdout: "", stderr: "" });
-        return {} as any;
-      });
+      }
+      return {} as any;
+    });
 
     const mod = await import("../browser-exec-tools.js");
     const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
-      lane: "clone",
+      context: "public",
       commands: [
         { command: "open", args: ["https://example.com"] },
         { command: "click", args: ["@e1"] },
@@ -233,7 +250,7 @@ describe("browser_exec tool", () => {
     expect(result).toMatchObject({
       textResultForLlm: "Command 2 failed: click\n\nclick failed",
       resultType: "failure",
-      lane: "clone",
+      context: "public",
     });
     expect(result).not.toHaveProperty("error");
     expect(result.failedStep).toMatchObject({

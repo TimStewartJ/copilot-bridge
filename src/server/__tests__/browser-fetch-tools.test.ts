@@ -94,7 +94,23 @@ describe("browser_fetch tool", () => {
     });
   });
 
-  it("keeps ordinary clone-lane failures off the shared primary browser", async () => {
+  it("requires a reason for authenticated fetches", async () => {
+    const mod = await import("../browser-fetch-tools.js");
+    const tools = mod.createBrowserFetchTools(createBrowserToolContext());
+
+    const result = await tools[0].handler({
+      url: "https://msazure.visualstudio.com/One/",
+      context: "authenticated",
+    }, {} as any);
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      textResultForLlm: "reason is required for authenticated browser access",
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary failures in the disposable public browser", async () => {
     const sessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       const session = options?.env?.AGENT_BROWSER_SESSION;
@@ -119,11 +135,11 @@ describe("browser_fetch tool", () => {
       resultType: "failure",
       sessionLog: "URL: https://example.com/failure\n\nSelector: #content\n\nFailed to capture page: snapshot failed",
     });
-    expect(sessions.some((entry) => /:(?!.*-clone-).*copilot-bridge-/.test(entry))).toBe(false);
-    expect(sessions.some((entry) => entry.includes("-clone-"))).toBe(true);
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((entry) => entry.includes("copilot-bridge-public-"))).toBe(true);
   });
 
-  it("uses primary without clone fallback metadata for clone-unsafe hosts", async () => {
+  it("uses public context for every ordinary host without authenticated fallback", async () => {
     const telemetryStore = { recordSpan: vi.fn() };
     const sessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
@@ -150,9 +166,10 @@ describe("browser_fetch tool", () => {
       url: "https://bridge.internal/example",
       title: "Example",
       snapshot: "snapshot",
+      context: "public",
     });
     expect(cpMock).not.toHaveBeenCalled();
-    expect(sessions.every((session) => !session.includes("-clone-"))).toBe(true);
+    expect(sessions.every((session) => session.includes("copilot-bridge-public-"))).toBe(true);
     expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
       name: "browser.clone.fallback_to_primary",
     }));
@@ -160,14 +177,12 @@ describe("browser_fetch tool", () => {
       name: "browser.tool.browser_fetch",
       metadata: {
         urlHost: "bridge.internal",
-        browserLane: "primary",
-        attemptedClone: false,
-        fallbackToPrimary: false,
+        browserContext: "public",
       },
     });
   });
 
-  it("applies the headed browser setting to browser operations", async () => {
+  it("applies the headed setting only to explicit authenticated fetches", async () => {
     const headedValues: Array<string | undefined> = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       headedValues.push(options.env.AGENT_BROWSER_HEADED);
@@ -186,12 +201,15 @@ describe("browser_fetch tool", () => {
     }));
     const result = await tools[0].handler({
       url: "https://bridge.internal/example",
+      context: "authenticated",
+      reason: "Read an authenticated page",
     }, {} as any) as any;
 
     expect(result).toMatchObject({
       url: "https://bridge.internal/example",
       title: "Example",
       snapshot: "snapshot",
+      context: "authenticated",
     });
     expect(headedValues.length).toBeGreaterThan(0);
     expect(headedValues.every((value) => value === "true")).toBe(true);
