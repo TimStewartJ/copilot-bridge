@@ -4,7 +4,8 @@ import { buildSessionConfig, type SessionConfigBuilderCallbacks, type SessionCon
 import type { Task } from "../task-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
-import { makeTestRuntimePaths, setupTestDb } from "./helpers.js";
+import { makeTestDir, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
+import { createDocsStore } from "../docs-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createTagStore } from "../tag-store.js";
 import { resolveBridgeControlRoot } from "../control-root.js";
@@ -98,6 +99,42 @@ function createGitHubCopilotMcpToolConfig() {
 }
 
 describe("session-config-builder", () => {
+  it("keeps deadline rendering stable as the clock crosses follow-up and checklist deadlines", () => {
+    vi.useFakeTimers();
+    try {
+      const checklistStore = { listChecklistItems: () => [
+        { id: "check", text: "Review", done: false, deadline: "2026-04-02" },
+      ] } as unknown as ChecklistStore;
+      const params = {
+        deps: createDeps({ checklistStore }),
+        callbacks: createCallbacks(),
+        options: { task: createTask({ nextTouchAt: "2026-04-02T12:00:00Z" }) },
+      };
+      vi.setSystemTime(new Date("2026-04-01T00:00:00Z"));
+      const before = buildSessionConfig(params).systemMessage;
+      vi.setSystemTime(new Date("2026-04-04T00:00:00Z"));
+      expect(buildSessionConfig(params).systemMessage).toEqual(before);
+      expect(before.content).toContain("2026-04-02T12:00:00Z");
+      expect(before.content).toContain("(due 2026-04-02)");
+      expect(before.content).not.toMatch(/OVERDUE|upcoming|\(due\)|\(overdue\)/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps database schema context stable when collection entries change without scanning entries", () => {
+    const docsStore = createDocsStore(makeTestDir("prompt-docs"));
+    docsStore.writeSchema("notes", { name: "Notes", fields: [{ name: "title", type: "text" }] });
+    const scan = vi.spyOn(docsStore, "listDbEntries");
+    const params = { deps: createDeps({ docsStore }), callbacks: createCallbacks() };
+    const before = buildSessionConfig(params).systemMessage;
+    docsStore.addDbEntry("notes", { title: "First note" });
+    docsStore.addDbEntry("notes", { title: "Second note" });
+    expect(buildSessionConfig(params).systemMessage).toEqual(before);
+    expect(before.content).toContain('notes/ "Notes": title (text)');
+    expect(scan).not.toHaveBeenCalled();
+  });
+
   it("injects task agent definitions into both create and resume configs", () => {
     const db = setupTestDb();
     const taskStore = createTaskStore(db, createTestBus());
@@ -1038,7 +1075,7 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content).toContain("Currently linked PRs: custom/repo #99.");
     expect(cfg.systemMessage.content).toContain("Task notes:\nTask note body");
     expect(cfg.systemMessage.content).toContain('Group notes (from task group "Backend" that this task belongs to):\nGroup note body');
-    expect(cfg.systemMessage.content).toContain("- [ ] Finish extraction [id: check-1] (due 2000-01-01 ⚠️ OVERDUE)");
+    expect(cfg.systemMessage.content).toContain("- [ ] Finish extraction [id: check-1] (due 2000-01-01)");
     expect(cfg.systemMessage.content).toContain('triggered by schedule "Daily check" (recurring, run #3)');
     expect(cfg.systemMessage.content).not.toContain("call `session_rename`");
   });

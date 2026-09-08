@@ -26,6 +26,31 @@ function createProjectScratchDir(): string {
 }
 
 describe("session context telemetry store", () => {
+  it("retains cache-expiry refreshes with identical token usage and keeps child calls out of the parent summary", () => {
+    const store = createSessionContextStore(setupTestDb());
+    const options = { sessionId: "cache-expiry", provider: "copilot", bridgeTurnId: "parent", attribution: "turn" as const };
+    const usage = { inputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 20 };
+    for (const [id, expiry] of [["first", "2026-05-01T10:05:00Z"], ["refresh", "2026-05-01T10:10:00Z"]]) {
+      const event = normalizeLiveSessionContextEvent({
+        type: "assistant.usage", id, data: { ...usage, cacheExpiresAt: expiry },
+      }, options);
+      expect(store.recordContextEvent(event!)).not.toBeNull();
+    }
+    const parentSummary = store.getSummary("cache-expiry");
+    const child = normalizeLiveSessionContextEvent({
+      type: "assistant.usage", id: "child", agentId: "child-agent", data: { inputTokens: 5 },
+    }, { ...options, bridgeTurnId: undefined, attribution: "subagent_turn" });
+    store.recordContextEvent(child!);
+    expect(store.getSummary("cache-expiry")).toEqual(parentSummary);
+    const events = store.getSessionContext("cache-expiry").events;
+    expect(events).toHaveLength(3);
+    expect(events[1].metadata?.cacheExpiresAt).toBe("2026-05-01T10:10:00Z");
+    const expiryOnly = normalizeLiveSessionContextEvent({
+      type: "assistant.usage", id: "expiry-only", data: { cacheExpiresAt: "2026-05-01T10:15:00Z" },
+    }, options);
+    expect(expiryOnly?.metadata).toEqual({ cacheExpiresAt: "2026-05-01T10:15:00Z" });
+  });
+
   it("normalizes and coalesces unchanged live usage snapshots", () => {
     const store = createSessionContextStore(setupTestDb());
     store.recordTurnStart({

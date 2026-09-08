@@ -1,4 +1,5 @@
 import type { AppContext } from "./app-context.js";
+import { formatLinkedPullRequest } from "./session-formatting.js";
 import { createDeadline } from "./deadline.js";
 import { captureProcessIdentity, getProcessIdentityStatus, type ProcessIdentity } from "./platform.js";
 import { isRestartCutoverInProgress, refreshRestartState } from "./restart-controller.js";
@@ -136,7 +137,7 @@ export function createFocusSessionLaunchService(
     if (!task) throw new FeedCardValidationError("Focus launch destination task was deleted");
     const group = task.groupId ? ctx.taskGroupStore.getGroup(task.groupId) : undefined;
     return ctx.sessionManager.createTaskSession(
-      task.id, task.title, task.workItems, task.pullRequests.map((pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`),
+      task.id, task.title, task.workItems, task.pullRequests.map(formatLinkedPullRequest),
       task.notes, task.cwd, undefined, group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null,
       sessionOptions,
     );

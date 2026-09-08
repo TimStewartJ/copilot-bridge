@@ -41,6 +41,7 @@ export interface SessionContextNormalizationOptions {
 }
 
 const USAGE_EVENT_TYPES = new Set([
+  "assistant.usage",
   "usage_info",
   "usage.info",
   "session.usage_info",
@@ -337,7 +338,11 @@ export function normalizeLiveSessionContextEvent(
   if (USAGE_EVENT_TYPES.has(eventType)) {
     const modelUsage = extractTokenUsage(data);
     const contextUsage = extractContextUsage(data, modelUsage);
-    if (!modelUsage && contextUsage.capability === "unavailable") return null;
+    const cacheExpiresAt = eventType === "assistant.usage" && typeof data?.cacheExpiresAt === "string"
+      && data.cacheExpiresAt.length <= 64 && Number.isFinite(Date.parse(data.cacheExpiresAt))
+      ? data.cacheExpiresAt : undefined;
+    if (!modelUsage && contextUsage.capability === "unavailable" && !cacheExpiresAt) return null;
+    const metadata = metadataFromKeys(data, ["requestId", "toolCallId", "parentToolCallId"]);
     const attribution = getUsageAttribution(data, options.attribution);
     return {
       sessionId: options.sessionId,
@@ -358,7 +363,7 @@ export function normalizeLiveSessionContextEvent(
         ...(modelUsage ? { modelUsage: { source: "live" as const, confidence: "exact" as const } } : {}),
       },
       modelUsageCapability: modelUsage ? "exact" : "unavailable",
-      metadata: metadataFromKeys(data, ["requestId", "toolCallId", "parentToolCallId"]),
+      metadata: cacheExpiresAt ? { ...metadata, cacheExpiresAt } : metadata,
     };
   }
 

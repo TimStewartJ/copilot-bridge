@@ -709,6 +709,7 @@ describe("SessionManager run state", () => {
       data: {},
       timestamp: "2026-05-01T10:00:00.000Z",
     });
+
     handler?.({
       type: "usage_info",
       id: "usage-in-turn",
@@ -752,7 +753,52 @@ describe("SessionManager run state", () => {
     });
   });
 
-  it("cleans subagent context attribution after subagent completion", async () => {
+  it("records live cache breaks safely and preserves usage expiry without attributing unknown subagents to the parent", async () => {
+    const { manager, sessionContextStore, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    manager.startWork("session-cache", "hello");
+    await flushMicrotasks();
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+    handler?.({ type: "assistant.turn_start", data: {}, timestamp: "2026-05-01T10:00:00Z" });
+    handler?.({
+      type: "prompt_cache_break", agentId: "unmapped-child", data: {
+        primaryReason: "changed", contributingReasons: ["changed"],
+        survivedTokens: 10, frontierTokens: 20, shortfallTokens: 10, retentionRatio: 0.5,
+        beforeRequest: { systemPrompt: "secret" }, toolsAddedRaw: ["private-tool"],
+      },
+    });
+    handler?.({
+      type: "assistant.usage", id: "child-cache-usage", agentId: "unmapped-child",
+      timestamp: "2026-05-01T10:00:01Z",
+      data: { cacheReadTokens: 10, cacheWriteTokens: 20, cacheExpiresAt: "2026-05-01T10:05:00Z" },
+    });
+    handler?.({
+      type: "assistant.usage", id: "parent-cache-usage",
+      timestamp: "2026-05-01T10:00:02Z",
+      data: { cacheReadTokens: 30, cacheWriteTokens: 40, cacheExpiresAt: "not a timestamp" },
+    });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    handler?.({ type: "session.idle", data: {} });
+    await flushMicrotasks();
+    const metadata = latestSpanMetadata(telemetryStore, "session.prompt_cache_break", "session-cache");
+    expect(metadata).toMatchObject({ attribution: "subagent_turn", shortfallTokens: 10 });
+    expect(metadata.bridgeTurnId).toBeUndefined();
+    expect(JSON.stringify(metadata)).not.toMatch(/secret|private-tool|systemPrompt/);
+    const events = sessionContextStore.getSessionContext("session-cache").events;
+    expect(events.find((event) => event.providerEventId === "child-cache-usage")).toMatchObject({
+      attribution: "subagent_turn", bridgeTurnId: null,
+      modelUsage: { cacheReadTokens: 10, cacheWriteTokens: 20 },
+      metadata: { cacheExpiresAt: "2026-05-01T10:05:00Z" },
+    });
+    const parent = events.find((event) => event.providerEventId === "parent-cache-usage");
+    expect(parent).toMatchObject({ attribution: "turn", modelUsage: { cacheReadTokens: 30, cacheWriteTokens: 40 } });
+    expect(parent?.metadata?.cacheExpiresAt).toBeUndefined();
+  });
+
+  it("cleans the subagent turn mapping without attributing late child usage to the parent", async () => {
     const { manager, sessionContextStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
@@ -808,7 +854,8 @@ describe("SessionManager run state", () => {
     });
     expect(snapshots[1]).toMatchObject({
       providerEventId: "usage-after-subagent",
-      attribution: "turn",
+      attribution: "subagent_turn",
+      bridgeTurnId: null,
       tokensUsed: 21,
     });
   });

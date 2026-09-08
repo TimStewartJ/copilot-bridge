@@ -2,6 +2,11 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
+import type { Task } from "./task-store.js";
+
+export function formatLinkedPullRequest(pr: Task["pullRequests"][number]): string {
+  return `${pr.repoName || pr.repoId} #${pr.prId}`;
+}
 
 const SESSION_FORMATTING_REPO_ROOT = resolveBridgeControlRoot(
   join(dirname(fileURLToPath(import.meta.url)), "..", ".."),
