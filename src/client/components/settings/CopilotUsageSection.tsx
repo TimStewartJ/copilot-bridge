@@ -47,17 +47,6 @@ const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
 });
-/**
- * Quota reset lands on a UTC calendar boundary. Rendering it in local time
- * shifts it a day backwards for anyone west of UTC, so it gets its own
- * UTC-pinned formatter rather than the ambient-timezone one.
- */
-const UTC_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-  timeZone: "UTC",
-});
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
@@ -446,61 +435,63 @@ function QuotaCard({
     .join(" · ");
 
   return (
-    <div className="rounded-md border border-accent/30 bg-accent/5 p-4 space-y-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <Gauge size={15} />
-            Live account quota
-          </div>
-          <p className="mt-1 text-xs text-text-muted">
-            Billed {unitLabel} for {identityLabel || "the identity this bridge signs in as"}, read from the Copilot backend. Covers every client on that account, not just the bridge, and resets on the quota period rather than the range picked above.
-          </p>
+    <div className="rounded-lg border border-border bg-bg-elevated p-4 sm:p-5 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+          <Gauge size={15} className="text-accent" />
+          Live account quota
         </div>
-        <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] font-medium text-text-secondary">
-          {snapshot.usedIsPrecise ? "Exact counter" : "Rounded counter"}
+        <span className="text-[11px] text-text-muted">
+          Current period · all clients
         </span>
       </div>
 
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard
-          label={`Used ${unitLabel}`}
-          value={formatQuotaAmount(snapshot.used)}
-          sub={snapshot.unit === "ai_credits" && snapshot.used !== null
-            ? `${formatCurrencyUsd(snapshot.used * 0.01)} at $0.01 per credit`
-            : undefined}
-        />
-        <SummaryCard
-          label="Entitlement"
-          value={snapshot.isUnlimitedEntitlement ? "Unlimited" : formatQuotaAmount(snapshot.entitlement)}
-          sub={snapshot.overage ? `${formatQuotaAmount(snapshot.overage)} overage` : undefined}
-        />
-        <SummaryCard
-          label="Remaining"
-          value={formatQuotaAmount(snapshot.remaining)}
-          sub={snapshot.remainingPercentage !== null ? `${formatPercent(snapshot.remainingPercentage)} left` : undefined}
-        />
-        <SummaryCard
-          label="Resets"
-          value={snapshot.resetAt ? formatUtcDate(snapshot.resetAt) ?? snapshot.resetAt : "Unknown"}
-          sub={`Bucket ${snapshot.bucket}`}
-        />
+      <div>
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-3xl font-semibold tracking-tight tabular-nums text-text-primary">
+            {!snapshot.usedIsPrecise && snapshot.used !== null && <span aria-label="Approximately">~</span>}
+            {formatQuotaAmount(snapshot.used)}
+          </span>
+          <span className="text-sm text-text-muted">
+            {unitLabel} used
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-text-muted">
+          {snapshot.isUnlimitedEntitlement
+            ? "Unlimited allowance"
+            : `of ${formatQuotaAmount(snapshot.entitlement)} this period`}
+        </p>
+        {Boolean(snapshot.overage) && (
+          <p className="mt-1 text-xs text-warning">{formatQuotaAmount(snapshot.overage)} overage</p>
+        )}
       </div>
 
       {usedPercent !== null && (
         <div className="space-y-1.5">
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-primary">
-            <div className="h-full rounded-full bg-accent" style={{ width: `${usedPercent}%` }} />
+          <div
+            className="w-full overflow-hidden rounded-full bg-bg-primary"
+            role="img"
+            aria-label={`${formatPercent(usedPercent)} quota used; ${formatPercent(monthElapsedPercent)} of calendar month elapsed`}
+          >
+            <div className="h-1 rounded-r-full bg-accent" style={{ width: `${usedPercent}%` }} />
+            <div className="h-1 rounded-r-full bg-sky-400" style={{ width: `${monthElapsedPercent}%` }} />
           </div>
-          <div className="text-[11px] text-text-muted">
-            {formatPercent(usedPercent)} used · {formatPercent(monthElapsedPercent)} of month elapsed
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[11px] text-text-muted">
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
+              {formatPercent(usedPercent)} used
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+              {formatPercent(monthElapsedPercent)} of month elapsed
+            </span>
           </div>
         </div>
       )}
 
-      <div className="text-[11px] text-text-faint">
-        Updated {formatDateTime(status.fetchedAt)}
-        {snapshot.overagePermitted === true && " · overage permitted"}
+      <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 border-t border-border pt-3 text-[11px] text-text-faint">
+        <span className="min-w-0 break-all">{identityLabel || "Signed-in account"}</span>
+        <span>Updated {formatDateTime(status.fetchedAt)}</span>
       </div>
     </div>
   );
@@ -720,11 +711,6 @@ function formatSkipReasonSummary(coverage: CopilotUsageCoverage): string {
 
 function formatDate(value: string): string | null {
   return formatTimestamp(value, DATE_FORMATTER);
-}
-
-/** Formats a UTC calendar date without shifting it into the viewer's timezone. */
-function formatUtcDate(value: string): string | null {
-  return formatTimestamp(value, UTC_DATE_FORMATTER);
 }
 
 /**
