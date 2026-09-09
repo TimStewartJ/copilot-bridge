@@ -7,18 +7,21 @@ import { BRIDGE_COPILOT_GITHUB_TOKEN_ENV, buildCopilotClientOptions } from "../c
 import { makeTestDir } from "./helpers.js";
 import { testExecutablePath } from "./test-paths.js";
 
-const EXPECTED_RUNTIME_VERSION = "1.0.83";
+const EXPECTED_CLI_VERSION = "1.0.84-3";
 const EXPECTED_SDK_VERSION = "1.0.13";
 
 describe("installed Copilot runtime contract", () => {
-  it("starts the SDK's bundled runtime without a CLI wrapper or external CLI installation", async () => {
+  it("starts the pinned Copilot CLI loader", async () => {
     const options = buildCopilotClientOptions({
       ...process.env,
       COPILOT_HOME: makeTestDir("copilot-native-runtime"),
       COPILOT_CLI_PATH: testExecutablePath("missing-copilot-cli"),
       [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "",
     });
-    expect(options.connection).toEqual({ kind: "stdio" });
+    expect(options.connection).toEqual(expect.objectContaining({
+      kind: "stdio",
+      path: expect.stringContaining(join("node_modules", "@github", "copilot", "npm-loader.js")),
+    }));
     expect(options.env).not.toHaveProperty("COPILOT_CLI_PATH");
 
     const client = new CopilotClient({ ...options, useLoggedInUser: false });
@@ -31,20 +34,25 @@ describe("installed Copilot runtime contract", () => {
   }, 30_000);
 });
 
-describe("installed Copilot SDK contract", () => {
+describe("installed Copilot package contract", () => {
   const sdkPackageJsonPath = findInstalledSdkFile("package.json");
+  const cliPackageJsonPath = findInstalledCliFile("package.json");
   const rpcTypesPath = findInstalledSdkFile(join("dist", "generated", "rpc.d.ts"));
 
-  it("pins matching SDK platform runtimes without a separate CLI dependency", () => {
+  it("pins the stable SDK and latest CLI package", () => {
     expect(sdkPackageJsonPath, "No installed @github/copilot-sdk package.json found.").toBeTruthy();
+    expect(cliPackageJsonPath, "No installed @github/copilot package.json found.").toBeTruthy();
     const packageJson = JSON.parse(readFileSync(sdkPackageJsonPath!, "utf-8")) as {
       version?: string;
       copilotCliVersion?: string;
       dependencies?: Record<string, string>;
       optionalDependencies?: Record<string, string>;
     };
+    const cliPackageJson = JSON.parse(readFileSync(cliPackageJsonPath!, "utf-8")) as {
+      version?: string;
+    };
     expect(packageJson.version).toBe(EXPECTED_SDK_VERSION);
-    expect(packageJson.copilotCliVersion).toBe(EXPECTED_RUNTIME_VERSION);
+    expect(cliPackageJson.version).toBe(EXPECTED_CLI_VERSION);
     expect(packageJson.dependencies).not.toHaveProperty("@github/copilot");
     expect(packageJson.optionalDependencies).toMatchObject({
       "@github/copilot-sdk-linux-x64": EXPECTED_SDK_VERSION,
@@ -80,5 +88,12 @@ function findInstalledSdkFile(relativePath: string): string | undefined {
   const scopeDir = findGithubScopeDir();
   if (!scopeDir) return undefined;
   const candidate = join(scopeDir, "copilot-sdk", relativePath);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function findInstalledCliFile(relativePath: string): string | undefined {
+  const scopeDir = findGithubScopeDir();
+  if (!scopeDir) return undefined;
+  const candidate = join(scopeDir, "copilot", relativePath);
   return existsSync(candidate) ? candidate : undefined;
 }

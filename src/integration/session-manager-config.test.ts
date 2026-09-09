@@ -32,7 +32,10 @@ describe("SessionManager session config", () => {
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: undefined }, () => {
       expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual(expect.objectContaining({
-        connection: { kind: "stdio" },
+        connection: expect.objectContaining({
+          kind: "stdio",
+          path: expect.stringContaining(join("node_modules", "@github", "copilot", "npm-loader.js")),
+        }),
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
@@ -47,7 +50,10 @@ describe("SessionManager session config", () => {
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
       expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
-        connection: { kind: "stdio" },
+        connection: expect.objectContaining({
+          kind: "stdio",
+          path: expect.stringContaining(join("node_modules", "@github", "copilot", "npm-loader.js")),
+        }),
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
@@ -67,7 +73,10 @@ describe("SessionManager session config", () => {
         COPILOT_HOME: copilotHome,
         [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
       })).toEqual({
-        connection: { kind: "stdio" },
+        connection: expect.objectContaining({
+          kind: "stdio",
+          path: expect.stringContaining(join("node_modules", "@github", "copilot", "npm-loader.js")),
+        }),
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
@@ -89,7 +98,10 @@ describe("SessionManager session config", () => {
 
     const options = buildCopilotClientOptions(clientEnv);
 
-    expect(options.connection).toEqual({ kind: "stdio" });
+    expect(options.connection).toEqual(expect.objectContaining({
+      kind: "stdio",
+      path: expect.stringContaining(join("node_modules", "@github", "copilot", "npm-loader.js")),
+    }));
     expect(options.env).toEqual({
       COPILOT_HOME: clientEnv.COPILOT_HOME,
       COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG,HYDRAFUSION,HYDRAFUSION_ROLLOUT",

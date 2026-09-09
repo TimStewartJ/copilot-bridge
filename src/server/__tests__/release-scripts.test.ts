@@ -28,7 +28,7 @@ describe("release scripts", () => {
     expect(responseTransportSource).toMatch(/from\s+"compression"/);
     expect(allowlist).toContain("compression");
     expect(allowlist).toContain("@github/copilot-sdk");
-    expect(allowlist).not.toContain("@github/copilot");
+    expect(allowlist).toContain("@github/copilot");
   });
 
   it("includes and starts the SDK's platform-specific native runtime", () => {
@@ -37,13 +37,14 @@ describe("release scripts", () => {
 
     expect(packageScript).toContain("npm install --omit=dev --include=optional --no-audit --no-fund");
     expect(smokeScript).toContain("@github\\copilot-sdk-win32-x64");
+    expect(smokeScript).toContain("@github\\copilot\\npm-loader.js");
+    expect(smokeScript).toContain("@github\\copilot-win32-x64");
     expect(smokeScript).toContain("copilot-runtime.exe");
     expect(smokeScript).toContain("runtime.node");
     expect(smokeScript).toContain("copilot-sdk\\index.js");
     expect(smokeScript).toContain("buildCopilotClientOptions");
     expect(smokeScript).toContain("await client.start(); await client.ping();");
     expect(smokeScript).toContain("await client.stop();");
-    expect(smokeScript).not.toContain("@github\\copilot-win32-x64");
   });
 
   it("packages the native SDK without patch-package compatibility shims", () => {
