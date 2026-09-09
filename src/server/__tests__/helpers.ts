@@ -253,7 +253,7 @@ export function createMockSessionManager() {
     abortSession: async () => true,
     readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false, coverage: {} }),
     undoSessionTurn: async () => ({ eventsRemoved: 1 }),
-    warmSession: async () => {},
+    warmSession: vi.fn(async () => {}),
     reloadSession: async () => [],
     submitUserInputResponse: async (_sessionId: string, requestId: string, payload: any) => ({
       requestId,

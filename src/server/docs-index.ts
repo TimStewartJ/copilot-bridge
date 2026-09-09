@@ -1,6 +1,7 @@
 import { getDocsFtsHealth, initializeDocsFts, type DatabaseSync, type DocsFtsHealth } from "./db.js";
 import { normalizeDocsPublicPath, validateDocsPathSegments, type DocsStore, type DocPage } from "./docs-store.js";
 import { tagNamesMatch } from "./tag-name.js";
+import { parseSearchQuery } from "./search-query.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -272,13 +273,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     if (!query.trim()) return { results: [], total: 0 };
     ensureFtsAvailable("search docs");
 
-    // Sanitize query for FTS5 — wrap terms in quotes to avoid syntax errors
-    const sanitized = query
-      .replace(/['"]/g, "")
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((term) => `"${term}"`)
-      .join(" ");
+    const sanitized = parseSearchQuery(query).fts;
 
     if (!sanitized) return { results: [], total: 0 };
 

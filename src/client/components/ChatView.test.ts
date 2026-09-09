@@ -1,10 +1,12 @@
-import { createElement, type ReactNode } from "react";
+import { createElement, Fragment, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView, SessionRunState } from "../api";
+import { ApiError } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
+import type { BridgeSearchResponse } from "../../shared/search.js";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -25,6 +27,7 @@ const useSessionStreamMock = vi.hoisted(() => vi.fn());
 const submitUserInputResponseMock = vi.hoisted(() => vi.fn());
 const fetchOlderMessagesFastMock = vi.hoisted(() => vi.fn());
 const fetchMessagesFastMock = vi.hoisted(() => vi.fn());
+const searchBridgeMock = vi.hoisted(() => vi.fn());
 const fetchMcpStatusMock = vi.hoisted(() => vi.fn());
 const fetchSessionContextMock = vi.hoisted(() => vi.fn());
 const warmSessionMock = vi.hoisted(() => vi.fn());
@@ -43,6 +46,7 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     fetchMessagesFast: (...args: unknown[]) => fetchMessagesFastMock(...args),
+    searchBridge: (...args: unknown[]) => searchBridgeMock(...args),
     fetchMcpStatus: (...args: unknown[]) => fetchMcpStatusMock(...args),
     fetchSessionContext: (...args: unknown[]) => fetchSessionContextMock(...args),
     warmSession: (...args: unknown[]) => warmSessionMock(...args),
@@ -141,6 +145,8 @@ type FetchMessagesFastResult = {
   total: number;
   warm: boolean;
   hasMore?: boolean;
+  startOffset?: number;
+  hasNewer?: boolean;
   lastVisibleActivityAt?: string;
   coverage?: SessionHistoryCoverage;
 };
@@ -168,6 +174,9 @@ type RenderChatViewOptions = {
   sessionId?: string | null;
   newWorkDisabled?: boolean;
   newWorkDisabledHint?: string;
+  routeEntry?: string;
+  searchBridgeResult?: BridgeSearchResponse;
+  prepareDom?: () => void;
 };
 
 function createMessage(id: string, content = id): ChatEntry {
@@ -187,6 +196,14 @@ function createEmptyContext(): SessionContextResponse {
       truncation: "unavailable",
     },
   };
+}
+
+function RouteLocationProbe() {
+  const location = useLocation();
+  return createElement("span", {
+    "data-testid": "route-location",
+    "data-location": `${location.pathname}${location.search}`,
+  });
 }
 
 function getMessageContent(entry: ChatEntry | undefined): string | undefined {
@@ -338,6 +355,7 @@ async function renderChatView(
   const pendingUserInputs = options.pendingUserInputs ?? [];
   const harness = await createReactDomHarness();
   const { dom, act } = harness;
+  options.prepareDom?.();
   const sendMessageMock = vi.fn();
   const abortSessionMock = vi.fn();
   const reconnectMock = vi.fn();
@@ -357,11 +375,37 @@ async function renderChatView(
   // fetchMessagesFast serves both the initial/background load (no `before`) and
   // older-page pagination (`before` set). Route older pages to a dedicated mock so
   // tests can assert and stub older-page reads independently of the initial load.
-  fetchMessagesFastMock.mockImplementation((sessionId: string, opts?: { before?: number }) => {
-    if (opts?.before != null) return fetchOlderMessagesFastMock(sessionId, opts);
+  fetchMessagesFastMock.mockImplementation((sessionId: string, opts?: { before?: number; aroundEventId?: string }) => {
+    if (opts?.before != null && !opts.aroundEventId) return fetchOlderMessagesFastMock(sessionId, opts);
     return initialMessagesFastResult;
   });
   fetchOlderMessagesFastMock.mockResolvedValue({ messages: [], hasMore: false, total: 0 });
+  const initialSearchMessages = fetchMessagesFastResult instanceof Promise
+    ? []
+    : fetchMessagesFastResult.messages.flatMap((entry) => {
+        if (entry.type === "tool" || entry.type === "visual" || entry.type === "completion" || entry.type === "skill") return [];
+        const sourceEventId = entry.sourceEventId ?? entry.id;
+        return sourceEventId ? [{
+          sourceEventId,
+          role: entry.role,
+          snippet: entry.content,
+        }] : [];
+      });
+  searchBridgeMock.mockResolvedValue(options.searchBridgeResult ?? {
+    chats: {
+      total: initialSearchMessages.length > 0 ? 1 : 0,
+      items: initialSearchMessages.length > 0 ? [{
+        sessionId: options.sessionId ?? "session-1",
+        title: "Session",
+        archived: false,
+        matches: initialSearchMessages,
+        matchCount: initialSearchMessages.length,
+      }] : [],
+    },
+    tasks: { items: [], total: 0 },
+    docs: { items: [], total: 0 },
+    coverage: { state: "ready", indexedSessions: 1, totalSessions: 1, errors: [] },
+  });
   fetchMcpStatusMock.mockResolvedValue([]);
   if (options.fetchSessionContextError) {
     fetchSessionContextMock.mockRejectedValue(options.fetchSessionContextError);
@@ -427,21 +471,24 @@ async function renderChatView(
         { client: queryClient },
         createElement(
           MemoryRouter,
-          null,
-          createElement(ChatView, {
-            composerKey: nextOptions.composerKey ?? "composer-1",
-            sessionId: nextOptions.sessionId === undefined ? "session-1" : nextOptions.sessionId,
-            onMessageSent: vi.fn(),
-            onCreateAndSend: nextOptions.onCreateAndSend,
-            onSubmitVoiceCapture: vi.fn(),
-            busySignal: nextOptions.busySignal,
-            activeSessionActivityAt: nextOptions.activeSessionActivityAt,
-            externallyInUse: nextOptions.externallyInUse,
-            onForkSession: nextOptions.onForkSession,
-            onRenderedReadThrough: nextOptions.onRenderedReadThrough,
-            newWorkDisabled: nextOptions.newWorkDisabled,
-            newWorkDisabledHint: nextOptions.newWorkDisabledHint,
-          }),
+          { initialEntries: [nextOptions.routeEntry ?? "/sessions/session-1"] },
+          createElement(Fragment, null,
+            createElement(ChatView, {
+              composerKey: nextOptions.composerKey ?? "composer-1",
+              sessionId: nextOptions.sessionId === undefined ? "session-1" : nextOptions.sessionId,
+              onMessageSent: vi.fn(),
+              onCreateAndSend: nextOptions.onCreateAndSend,
+              onSubmitVoiceCapture: vi.fn(),
+              busySignal: nextOptions.busySignal,
+              activeSessionActivityAt: nextOptions.activeSessionActivityAt,
+              externallyInUse: nextOptions.externallyInUse,
+              onForkSession: nextOptions.onForkSession,
+              onRenderedReadThrough: nextOptions.onRenderedReadThrough,
+              newWorkDisabled: nextOptions.newWorkDisabled,
+              newWorkDisabledHint: nextOptions.newWorkDisabledHint,
+            }),
+            createElement(RouteLocationProbe),
+          ),
         ),
       ),
     );
@@ -471,6 +518,272 @@ afterEach(() => {
   delete (window as unknown as { confirm?: typeof window.confirm }).confirm;
   vi.clearAllMocks();
   resetCachedChatSnapshotState();
+});
+
+describe("ChatView exact-message history", () => {
+  it("opens a title-only conversation as read-only saved suffix history without warm or resume", async () => {
+    warmSessionMock.mockClear();
+    useSessionStreamMock.mockClear();
+    chatInputMock.mockClear();
+    const { act, dom, cleanup, reconnectMock } = await renderChatView({
+      routeEntry: "/sessions/session-1?history=1&from=%2Fsearch",
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: {
+        messages: [{ id: "saved-1", sourceEventId: "event-1", role: "assistant", content: "Saved conversation history" }],
+        runState: "idle",
+        total: 75,
+        hasMore: true,
+        warm: false,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Saved conversation history") ?? false);
+      expect(fetchMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 50 });
+      expect(useSessionStreamMock.mock.calls.at(-1)?.[0]).toBeNull();
+      expect(warmSessionMock).not.toHaveBeenCalled();
+      expect(reconnectMock).not.toHaveBeenCalled();
+      expect(chatInputMock).not.toHaveBeenCalled();
+      expect(dom.container.textContent).toContain("latest saved history for this conversation");
+      expect(dom.container.textContent).not.toContain("Copy link");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("loads a bounded around-message window without warming or resuming the session", async () => {
+    warmSessionMock.mockClear();
+    useSessionStreamMock.mockClear();
+    fetchSessionContextMock.mockClear();
+    chatInputMock.mockClear();
+    const { act, dom, cleanup, reconnectMock } = await renderChatView({
+      routeEntry: "/sessions/session-1?message=event-77&search=needle&from=%2Fsearch%3Fq%3Dneedle",
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-1", sourceEventId: "event-76", role: "user", content: "another needle" },
+          { id: "entry-2", sourceEventId: "event-77", role: "assistant", content: "target needle" },
+        ],
+        runState: "idle",
+        total: 120,
+        startOffset: 40,
+        hasMore: true,
+        hasNewer: true,
+        warm: false,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("target needle") ?? false);
+      expect(fetchMessagesFastMock).toHaveBeenCalledWith("session-1", {
+        before: 50,
+        after: 50,
+        aroundEventId: "event-77",
+      });
+      expect(useSessionStreamMock.mock.calls.at(-1)?.[0]).toBeNull();
+      expect(warmSessionMock).not.toHaveBeenCalled();
+      expect(reconnectMock).not.toHaveBeenCalled();
+      expect(fetchSessionContextMock).not.toHaveBeenCalled();
+      expect(chatInputMock).not.toHaveBeenCalled();
+      expect(dom.container.textContent).toContain("does not resume the chat");
+      expect(dom.container.textContent).toContain("Back to results");
+      expect(dom.container.textContent).toContain("Previous match");
+      expect(dom.container.textContent).toContain("Next match");
+      expect(dom.container.textContent).toContain("Jump to latest");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("does not substitute the latest window when the exact event is missing", async () => {
+    warmSessionMock.mockClear();
+    const { act, dom, cleanup } = await renderChatView({
+      routeEntry: "/sessions/session-1?message=removed-event&from=%2Fsearch",
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: {
+        messages: [{ id: "latest", sourceEventId: "latest-event", role: "assistant", content: "latest reply" }],
+        runState: "idle",
+        total: 1,
+        startOffset: 0,
+        hasMore: false,
+        hasNewer: false,
+        warm: false,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("saved message is unavailable") ?? false);
+      expect(dom.container.textContent).not.toContain("latest reply");
+      expect(warmSessionMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("maps a missing-target 404 to the explicit unavailable state without fallback or warm", async () => {
+    warmSessionMock.mockClear();
+    const { act, dom, cleanup } = await renderChatView({
+      routeEntry: "/sessions/session-1?message=removed-event&from=%2Fsearch",
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: Promise.reject(new ApiError("Message not found", 404)),
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("saved message is unavailable") ?? false);
+      expect(dom.container.textContent).not.toContain("Error loading history");
+      expect(warmSessionMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("pages whole-chat matches when next navigation crosses a search page boundary", async () => {
+    const firstPageMatches = Array.from({ length: 20 }, (_, index) => ({
+      sourceEventId: `event-${index}`,
+      role: "assistant" as const,
+      snippet: `needle ${index}`,
+    }));
+    const { act, dom, cleanup } = await renderChatView({
+      routeEntry: "/sessions/session-1?message=event-18&search=needle&matchOffset=0",
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: {
+        messages: [{ id: "entry-18", sourceEventId: "event-18", role: "assistant", content: "needle 18" }],
+        runState: "idle",
+        total: 100,
+        startOffset: 50,
+        hasMore: true,
+        hasNewer: true,
+        warm: true,
+      },
+      searchBridgeResult: {
+        chats: {
+          total: 1,
+          items: [{
+            sessionId: "session-1",
+            title: "Session",
+            archived: false,
+            matches: firstPageMatches,
+            matchCount: 21,
+          }],
+        },
+        tasks: { items: [], total: 0 },
+        docs: { items: [], total: 0 },
+        coverage: { state: "ready", indexedSessions: 1, totalSessions: 1, errors: [] },
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("19 of 21") ?? false);
+      searchBridgeMock.mockImplementation((request: { offset?: number }) => Promise.resolve({
+        chats: {
+          total: 1,
+          items: [{
+            sessionId: "session-1",
+            title: "Session",
+            archived: false,
+            matches: request.offset === 20
+              ? [{ sourceEventId: "event-20", role: "assistant", snippet: "needle 20" }]
+              : firstPageMatches,
+            matchCount: 21,
+          }],
+        },
+        tasks: { items: [], total: 0 },
+        docs: { items: [], total: 0 },
+        coverage: { state: "ready", indexedSessions: 1, totalSessions: 1, errors: [] },
+      }));
+      fetchMessagesFastMock.mockImplementation((_sessionId: string, opts?: { aroundEventId?: string }) => Promise.resolve({
+        messages: opts?.aroundEventId === "event-20"
+          ? [{ id: "entry-20", sourceEventId: "event-20", role: "assistant", content: "needle 20" }]
+          : opts?.aroundEventId === "event-18"
+            ? [{ id: "entry-18", sourceEventId: "event-18", role: "assistant", content: "needle 18" }]
+            : [{ id: "entry-19", sourceEventId: "event-19", role: "assistant", content: "needle 19" }],
+        runState: "idle",
+        total: 100,
+        startOffset: opts?.aroundEventId === "event-20" ? 52 : opts?.aroundEventId === "event-19" ? 51 : 50,
+        hasMore: true,
+        hasNewer: true,
+        warm: true,
+      }));
+
+      await act(async () => {
+        getReactProps(findButtonByText(dom.container, "Next match"))?.onClick?.();
+      });
+      await waitUntilAct(act, () => findAllByTag(dom.container, "SPAN").some((span) => (
+        getReactProps(span)?.["data-location"]?.includes("message=event-19")
+      )));
+      expect(dom.container.textContent).toContain("20 of 21");
+
+      await act(async () => {
+        getReactProps(findButtonByText(dom.container, "Next match"))?.onClick?.();
+      });
+      await waitUntilAct(act, () => searchBridgeMock.mock.calls.some((call) => (
+        (call[0] as { offset?: number } | undefined)?.offset === 20
+      )));
+      await waitUntilAct(act, () => findAllByTag(dom.container, "SPAN").some((span) => (
+        getReactProps(span)?.["data-location"]?.includes("message=event-20")
+      )));
+      expect(searchBridgeMock).toHaveBeenCalledWith(expect.objectContaining({
+        scope: "session",
+        offset: 20,
+        limit: 20,
+      }));
+
+      await act(async () => {
+        getReactProps(findButtonByText(dom.container, "Previous match"))?.onClick?.();
+      });
+      await waitUntilAct(act, () => findAllByTag(dom.container, "SPAN").some((span) => (
+        getReactProps(span)?.["data-location"]?.includes("message=event-19")
+        && getReactProps(span)?.["data-location"]?.includes("matchOffset=0")
+      )));
+      expect(dom.container.textContent).toContain("20 of 21");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps historical reading inert across busy and visibility refresh signals", async () => {
+    let visibilityHandler: (() => void) | undefined;
+    const { act, cleanup, render, reconnectMock } = await renderChatView({
+      routeEntry: "/sessions/session-1?message=event-1",
+      busySignal: 0,
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: {
+        messages: [{ id: "entry-1", sourceEventId: "event-1", role: "assistant", content: "target" }],
+        runState: "idle",
+        total: 1,
+        startOffset: 0,
+        hasMore: false,
+        hasNewer: false,
+        warm: false,
+      },
+      prepareDom: () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "visible",
+        });
+        document.addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+          if (type === "visibilitychange" && typeof listener === "function") {
+            visibilityHandler = listener as () => void;
+          }
+        });
+        document.removeEventListener = vi.fn();
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
+      await render({ busySignal: 1 });
+      await act(async () => {
+        visibilityHandler?.();
+        await waitTick();
+      });
+      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(1);
+      expect(warmSessionMock).not.toHaveBeenCalled();
+      expect(reconnectMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("ChatView external session use", () => {

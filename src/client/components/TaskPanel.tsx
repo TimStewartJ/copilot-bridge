@@ -25,6 +25,7 @@ import {
   CheckCircle2,
   Clock,
   RotateCcw,
+  Search,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
@@ -103,6 +104,7 @@ interface TaskPanelProps {
   archivedLoading?: boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   scrollRestoration?: PullToRefreshScrollRestoration;
+  onSearchTask?: (taskId: string) => void;
 }
 
 export function TaskPanelRouteSkeleton() {
@@ -189,6 +191,7 @@ export default function TaskPanel({
   archivedLoading,
   onSetTaskTags,
   scrollRestoration,
+  onSearchTask,
 }: TaskPanelProps) {
   const queryClient = useQueryClient();
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
@@ -446,6 +449,11 @@ export default function TaskPanel({
             </button>
           ) : <span />}
           <div className="flex shrink-0 items-center gap-1.5">
+            {onSearchTask && (
+              <button type="button" onClick={() => onSearchTask(task.id)} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs text-text-muted hover:bg-bg-hover hover:text-text-primary" aria-label={`Search ${task.title}`}>
+                <Search size={13} /> Search
+              </button>
+            )}
             <TaskKindSwitcher kind={currentTask.kind} onChange={handleKindChange} />
           </div>
         </div>

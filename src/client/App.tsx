@@ -99,6 +99,7 @@ import Dashboard from "./components/Dashboard";
 import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
+import SearchView from "./components/SearchView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import BackendStatusBanner from "./components/BackendStatusBanner";
@@ -280,6 +281,21 @@ export default function App() {
       persistQuickChatsExpanded(true);
     }
   }, [quickChatsMode, isMobile]);
+
+  useEffect(() => {
+    const openSearch = (event: KeyboardEvent) => {
+      if (event.key.toLocaleLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
+      event.preventDefault();
+      if (location.pathname === "/search") {
+        document.getElementById("bridge-global-search-input")?.focus();
+        return;
+      }
+      const from = `${location.pathname}${location.search}`;
+      navigate(`/search?from=${encodeURIComponent(from)}`);
+    };
+    window.addEventListener("keydown", openSearch);
+    return () => window.removeEventListener("keydown", openSearch);
+  }, [location.pathname, location.search, navigate]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
   const renderedReadThroughRef = useRef<Record<string, string>>({});
@@ -1710,6 +1726,7 @@ export default function App() {
     chat: mobileRouteMeta.route === "task-session" || mobileRouteMeta.route === "quick-chat",
     settings: mobileRouteMeta.route === "settings",
     docs: mobileRouteMeta.route === "docs-root" || mobileRouteMeta.route === "docs-detail",
+    search: location.pathname === "/search",
   };
   const newWorkDisabledByRestart = restartBanner.phase === "pending" && !restartBanner.canAcceptNewWork;
   const newWorkDisabledByRestartHint = newWorkDisabledByRestart
@@ -1752,6 +1769,7 @@ export default function App() {
         onGoHome={handleOpenDashboard}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
+        onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
         isDocsActive={isDocsActive}
         isDashboardActive={isDashboardActive}
         homeChecklistIndicator={homeChecklistIndicator}
@@ -1841,6 +1859,7 @@ export default function App() {
                   onReloadSession={handleReloadSession}
                   markUnread={markUnread}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
+                  onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
                   hasDraft={hasDraft}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
@@ -1885,6 +1904,7 @@ export default function App() {
                   archivedLoaded={archivedLoaded}
                   archivedLoading={archivedLoading}
                   onSetTaskTags={handleSetTaskTags}
+                  onSearchTask={(taskId) => navigate(`/search?scope=task&taskId=${encodeURIComponent(taskId)}&from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
                 />
               </div>
             )}
@@ -1897,7 +1917,7 @@ export default function App() {
         flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
         ${/* Desktop: always visible */""}
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
-        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs ? "flex" : "hidden md:flex"}
+        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs || isMobileRoute.search ? "flex" : "hidden md:flex"}
       `.trim()}>
         {mobileRouteMeta.showSharedHeader && (
           <MobileDetailHeader
@@ -2005,6 +2025,7 @@ export default function App() {
                     archivedLoaded={archivedLoaded}
                     archivedLoading={archivedLoading}
                     onSetTaskTags={handleSetTaskTags}
+                    onSearchTask={(taskId) => navigate(`/search?scope=task&taskId=${encodeURIComponent(taskId)}&from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
                     scrollRestoration={mobileTaskCockpitScrollRestoration}
                   />
                 ) : taskNotFound ? (
@@ -2140,6 +2161,7 @@ export default function App() {
               }
             />
             <Route path="docs/*" element={<DocsView onDocTitleChange={setDocTitle} />} />
+            <Route path="search" element={<SearchView />} />
             <Route path="settings" element={<SettingsView />} />
           </Routes>
         </main>
@@ -2228,6 +2250,7 @@ function MobileTaskListView({
   archivedLoaded,
   archivedLoading,
   scrollRestoration,
+  onOpenSearch,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -2275,14 +2298,18 @@ function MobileTaskListView({
   archivedLoaded?: boolean;
   archivedLoading?: boolean;
   scrollRestoration?: PullToRefreshScrollRestoration;
+  onOpenSearch: () => void;
 }){
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-border flex items-center justify-between">
+      <div className="p-4 border-b border-border flex items-center justify-between gap-3">
         <span className="text-sm font-semibold text-text-primary">
           {quickChatsMode ? "Quick Chats" : "Tasks"}
         </span>
+        <button type="button" onClick={onOpenSearch} className="min-h-9 rounded-lg border border-border bg-bg-surface px-3 text-xs font-medium text-text-secondary">
+          Search
+        </button>
       </div>
 
       {/* Content — pull-to-refresh wraps both tabs */}

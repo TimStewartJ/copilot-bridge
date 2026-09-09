@@ -14,6 +14,7 @@ export type MobileRouteKind =
   | "settings"
   | "docs-root"
   | "docs-detail"
+  | "search"
   | "unknown";
 
 export interface MobileUpTarget {
@@ -104,6 +105,15 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
       route: "settings",
       activeTab: "settings",
       showBottomNav: true,
+      isRoot: true,
+      isDetail: false,
+    });
+  }
+
+  if (normalizedPath === "/search") {
+    return buildMeta({
+      route: "search",
+      activeTab: "tasks",
       isRoot: true,
       isDetail: false,
     });

@@ -14,6 +14,7 @@ function createShutdownSpies() {
     deferredPromptShutdown: vi.fn(),
     deferLoopShutdown: vi.fn(),
     usageReaderShutdown: vi.fn(async () => {}),
+    searchShutdown: vi.fn(async () => {}),
     sessionManagerShutdown: vi.fn(async (_deadline?: Deadline) => {}),
     voiceShutdown: vi.fn(async () => {}),
     pushUnsubscribe: vi.fn(async () => {}),
@@ -31,6 +32,7 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
     deferredPromptRunner: { shutdown: spies.deferredPromptShutdown },
     deferLoopRunner: { shutdown: spies.deferLoopShutdown },
     copilotUsageReader: { shutdown: spies.usageReaderShutdown },
+    searchIndex: { shutdown: spies.searchShutdown },
     sessionManager: { gracefulShutdown: spies.sessionManagerShutdown },
     voiceJobManager: { shutdown: spies.voiceShutdown },
     stopPushEventNotifications: spies.pushUnsubscribe,
@@ -53,6 +55,7 @@ describe("shutdownAppContextServices", () => {
     expect(spies.deferredPromptShutdown).toHaveBeenCalledTimes(1);
     expect(spies.deferLoopShutdown).toHaveBeenCalledTimes(1);
     expect(spies.usageReaderShutdown).toHaveBeenCalledTimes(1);
+    expect(spies.searchShutdown).toHaveBeenCalledTimes(1);
     expect(spies.sessionManagerShutdown).toHaveBeenCalledWith(deadline);
     expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
     expect(spies.schedulerShutdown).toHaveBeenCalledTimes(1);
@@ -97,6 +100,7 @@ describe("shutdownAppContextServices", () => {
   it("keeps shutting services down when one of them rejects", async () => {
     const spies = createShutdownSpies();
     spies.usageReaderShutdown.mockRejectedValueOnce(new Error("usage reader boom"));
+    spies.searchShutdown.mockRejectedValueOnce(new Error("search index boom"));
     spies.sessionManagerShutdown.mockRejectedValueOnce(new Error("session manager boom"));
     spies.voiceShutdown.mockRejectedValueOnce(new Error("voice boom"));
     spies.focusDispose.mockRejectedValueOnce(new Error("focus dispose boom"));

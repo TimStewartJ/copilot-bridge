@@ -3,7 +3,7 @@ import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api"
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -37,6 +37,7 @@ interface TaskRailProps {
   onGoHome: () => void;
   onOpenSettings: () => void;
   onOpenDocs: () => void;
+  onOpenSearch?: () => void;
   isDocsActive: boolean;
   isDashboardActive: boolean;
   homeChecklistIndicator?: HomeChecklistIndicator;
@@ -109,6 +110,7 @@ export default function TaskRail({
   onGoHome,
   onOpenSettings,
   onOpenDocs,
+  onOpenSearch,
   isDocsActive,
   isDashboardActive,
   homeChecklistIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
@@ -376,6 +378,16 @@ export default function TaskRail({
 
         {/* Dashboard + Chats + Docs + New Task */}
         <div className="flex flex-col items-center gap-2 py-2">
+          <button
+            type="button"
+            onClick={onOpenSearch}
+            disabled={!onOpenSearch}
+            title="Search (Ctrl/Cmd+K)"
+            aria-label="Search Bridge"
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-text-muted hover:bg-bg-hover hover:text-text-primary"
+          >
+            <Search size={18} />
+          </button>
           <button
             type="button"
             onClick={onGoHome}
@@ -723,6 +735,20 @@ export default function TaskRail({
             archivedLoading={archivedLoading}
           />
         )}
+      </div>
+
+      {/* Dashboard */}
+      <div className="px-2 pb-1">
+        <button
+          type="button"
+          onClick={onOpenSearch}
+          disabled={!onOpenSearch}
+          className="w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+        >
+          <Search size={14} />
+          Search
+          <kbd className="ml-auto text-[10px] text-text-faint">Ctrl/⌘ K</kbd>
+        </button>
       </div>
 
       {/* Dashboard */}

@@ -109,7 +109,7 @@ app.use("/staging/:prefix", (req, res, next) => {
   }
   express.static(distDir, { setHeaders: setClientStaticHeaders })(req, res, () => {
     // SPA fallback — serve index.html for unmatched routes within this staging preview
-    res.sendFile(join(distDir, "index.html"));
+    res.sendFile("index.html", { root: distDir });
   });
 });
 
@@ -123,7 +123,7 @@ app.use(
 );
 app.get("/{*splat}", (_req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  res.sendFile(join(distPath, "index.html"));
+  res.sendFile("index.html", { root: distPath });
 });
 
 // ── Start ─────────────────────────────────────────────────────────
