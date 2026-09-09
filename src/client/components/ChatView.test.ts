@@ -541,6 +541,7 @@ describe("ChatView exact-message history", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Saved conversation history") ?? false);
       expect(fetchMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 50 });
       expect(useSessionStreamMock.mock.calls.at(-1)?.[0]).toBeNull();
+      expect(useSessionUsageMetricsQueryMock.mock.calls.at(-1)?.[0]).toBeNull();
       expect(warmSessionMock).not.toHaveBeenCalled();
       expect(reconnectMock).not.toHaveBeenCalled();
       expect(chatInputMock).not.toHaveBeenCalled();
@@ -581,6 +582,7 @@ describe("ChatView exact-message history", () => {
         aroundEventId: "event-77",
       });
       expect(useSessionStreamMock.mock.calls.at(-1)?.[0]).toBeNull();
+      expect(useSessionUsageMetricsQueryMock.mock.calls.at(-1)?.[0]).toBeNull();
       expect(warmSessionMock).not.toHaveBeenCalled();
       expect(reconnectMock).not.toHaveBeenCalled();
       expect(fetchSessionContextMock).not.toHaveBeenCalled();
@@ -816,6 +818,7 @@ describe("ChatView cached resume loading state", () => {
       await waitUntilAct(act, () => mcpStatusBarMock.mock.calls.some((call) => (
         (call[0] as { servers?: Array<{ name: string; status: string }> }).servers?.[0]?.name === "demo"
       )));
+      expect(useSessionUsageMetricsQueryMock.mock.calls.at(-1)?.[0]).toBe("session-1");
     } finally {
       await cleanup();
     }
