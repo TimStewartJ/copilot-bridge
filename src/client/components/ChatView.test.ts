@@ -32,6 +32,7 @@ const reportTimingMock = vi.hoisted(() => vi.fn());
 const undoSessionTurnMock = vi.hoisted(() => vi.fn());
 const chatInputMock = vi.hoisted(() => vi.fn());
 const mcpStatusBarMock = vi.hoisted(() => vi.fn());
+const useSessionUsageMetricsQueryMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../useSessionStream", () => ({
   useSessionStream: (...args: unknown[]) => useSessionStreamMock(...args),
@@ -63,6 +64,10 @@ vi.mock("./McpStatusBar", () => ({
     mcpStatusBarMock(props);
     return null;
   },
+}));
+
+vi.mock("../hooks/queries/useSessionUsageMetrics", () => ({
+  useSessionUsageMetricsQuery: (...args: unknown[]) => useSessionUsageMetricsQueryMock(...args),
 }));
 
 vi.mock("./MessageBubble", () => ({
@@ -371,6 +376,10 @@ async function renderChatView(
   warmSessionMock.mockResolvedValue(undefined);
   reportTimingMock.mockResolvedValue(undefined);
   undoSessionTurnMock.mockResolvedValue({ eventsRemoved: 1 });
+  useSessionUsageMetricsQueryMock.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+  });
   submitUserInputResponseMock.mockResolvedValue({
     requestId: pendingUserInputs[0]?.requestId ?? "request-1",
     answer: "ok",

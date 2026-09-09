@@ -555,6 +555,26 @@ describe("CopilotAgentSession wrap fidelity", () => {
     }
   });
 
+  it("delegates live usage metrics and tolerates an older SDK without the RPC", async () => {
+    const getMetrics = vi.fn(async () => ({
+      totalNanoAiu: 2_500_000_000,
+      totalPremiumRequestCost: 1.5,
+      totalUserRequests: 2,
+    }));
+    const session = createFakeSession({ usage: { getMetrics } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.getUsageMetrics!()).resolves.toEqual({
+      totalNanoAiu: 2_500_000_000,
+      totalPremiumRequestCost: 1.5,
+      totalUserRequests: 2,
+    });
+    expect(getMetrics).toHaveBeenCalledOnce();
+
+    const olderSdk = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(olderSdk.getUsageMetrics!()).resolves.toBeUndefined();
+  });
+
   it("listTasks maps SDK TaskInfo into backend-neutral tasks", async () => {
     const list = vi.fn(async () => ({
       tasks: [

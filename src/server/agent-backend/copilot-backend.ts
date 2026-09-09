@@ -48,6 +48,7 @@ import type {
   AgentSessionEventHandler,
   AgentSessionSummary,
   AgentSetModelOptions,
+  AgentUsageMetrics,
   AgentUserInputResponse,
 } from "./types.js";
 
@@ -91,6 +92,10 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const values = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
   return values.length > 0 ? values : undefined;
+}
+
+function normalizeNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 /**
@@ -352,6 +357,24 @@ class CopilotAgentSession implements AgentSession {
     const get = this.session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
     return this.rpc("session.getCurrentModel", () => get.call(this.session.rpc.model));
+  }
+
+  async getUsageMetrics(): Promise<AgentUsageMetrics | undefined> {
+    const getMetrics = this.session?.rpc?.usage?.getMetrics;
+    if (typeof getMetrics !== "function") return undefined;
+    const result = await this.rpc(
+      "session.getUsageMetrics",
+      () => getMetrics.call(this.session.rpc.usage),
+    ) as {
+      totalNanoAiu?: unknown;
+      totalPremiumRequestCost?: unknown;
+      totalUserRequests?: unknown;
+    };
+    return {
+      totalNanoAiu: normalizeNonNegativeNumber(result?.totalNanoAiu),
+      totalPremiumRequestCost: normalizeNonNegativeNumber(result?.totalPremiumRequestCost) ?? 0,
+      totalUserRequests: normalizeNonNegativeNumber(result?.totalUserRequests) ?? 0,
+    };
   }
 
   async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {

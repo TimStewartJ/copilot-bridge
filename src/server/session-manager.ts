@@ -16,6 +16,7 @@ import {
   type AgentBackgroundTask,
   type AgentModelInfo,
   type AgentSession,
+  type AgentUsageMetrics,
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
 import { existsSync } from "node:fs";
@@ -83,6 +84,7 @@ import type {
 } from "./user-input-types.js";
 import { validateExternalSessionUse } from "./external-session-use.js";
 import type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
+import { COPILOT_AI_CREDIT_USD } from "../shared/copilot-pricing.js";
 import type {
   ElicitationRequestId,
   PendingElicitationRequestView,
@@ -553,6 +555,15 @@ export interface McpLoginResult {
   serverName: string;
   authorizationUrl?: string;
   servers: McpServerStatus[];
+}
+
+export interface SessionUsageMetrics {
+  available: boolean;
+  totalNanoAiu: number | null;
+  aiCredits: number | null;
+  costUsd: number | null;
+  totalPremiumRequestCost: number | null;
+  totalUserRequests: number | null;
 }
 
 export type SessionHistoryUndoErrorCode = "busy" | "stale-boundary" | "unsupported";
@@ -3759,6 +3770,42 @@ export class SessionManager {
     const commands = result.commands;
     this.slashCommandListCache.set(sessionId, commands);
     return { supported: true, commands };
+  }
+
+  async getSessionUsageMetrics(sessionId: string): Promise<SessionUsageMetrics> {
+    const unavailable: SessionUsageMetrics = {
+      available: false,
+      totalNanoAiu: null,
+      aiCredits: null,
+      costUsd: null,
+      totalPremiumRequestCost: null,
+      totalUserRequests: null,
+    };
+    const session = this.sessionObjects.get(sessionId);
+    if (!session) return unavailable;
+
+    const outcome = await settleByDeadline(
+      () => session.getUsageMetrics(),
+      createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
+    );
+    if (outcome.status === "rejected") throw outcome.error;
+    if (outcome.status === "timed-out") {
+      this.recordSpan("session.detail.rpcTimeout", SESSION_DETAIL_RPC_TIMEOUT_MS, sessionId, { rpc: "getUsageMetrics" });
+      return unavailable;
+    }
+    const metrics = outcome.value;
+    if (!metrics) return unavailable;
+    const aiCredits = metrics.totalNanoAiu === undefined
+      ? null
+      : metrics.totalNanoAiu / 1_000_000_000;
+    return {
+      available: true,
+      totalNanoAiu: metrics.totalNanoAiu ?? null,
+      aiCredits,
+      costUsd: aiCredits === null ? null : aiCredits * COPILOT_AI_CREDIT_USD,
+      totalPremiumRequestCost: metrics.totalPremiumRequestCost,
+      totalUserRequests: metrics.totalUserRequests,
+    };
   }
 
   /** Get the latest complete MCP snapshot, probing only until one is available. */

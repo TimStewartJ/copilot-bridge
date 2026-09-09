@@ -2973,6 +2973,20 @@ export function createApiRouter(
     }
   });
 
+  // GET /sessions/:id/usage-metrics — live SDK usage for an active session
+  router.get("/sessions/:id/usage-metrics", async (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    try {
+      const result = await ctx.sessionManager.getSessionUsageMetrics(sessionId);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // GET /sessions/:id/slash-commands — list slash commands available on the live session.
   router.get("/sessions/:id/slash-commands", async (req, res) => {
     try {

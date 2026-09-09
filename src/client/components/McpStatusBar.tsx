@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ChatEntry, McpLoginResponse, McpServerStatus } from "../api";
 import type { SessionContextResponse, SessionContextSummary } from "../../shared/session-context.js";
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, Plug, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, DollarSign, Loader2, Plug, XCircle } from "lucide-react";
 import { buildChatTurnPreviews, summarizeContext } from "./SessionContextHelpers";
 import SessionContextPanel from "./SessionContextPanel";
 
@@ -11,6 +11,8 @@ interface McpStatusBarProps {
   contextError?: string | null;
   contextLoading?: boolean;
   liveContextSummary?: SessionContextSummary | null;
+  sessionCostLoading?: boolean;
+  sessionCostUsd?: number;
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
   servers: McpServerStatus[];
@@ -54,6 +56,8 @@ export default function McpStatusBar({
   contextError,
   contextLoading,
   liveContextSummary,
+  sessionCostLoading,
+  sessionCostUsd,
   onAuthenticate,
   onRefresh,
   servers,
@@ -72,7 +76,8 @@ export default function McpStatusBar({
   const capabilities = context?.capabilities;
   const hasContextSignal = Boolean(contextLoading || contextError || summary || (context?.turns?.length ?? 0) > 0 || (context?.events?.length ?? 0) > 0);
   const hasMcpSignal = statusState !== "ready" || servers.length > 0;
-  if (!hasMcpSignal && !hasContextSignal) return null;
+  const hasSessionCostSignal = Boolean(sessionCostLoading || sessionCostUsd !== undefined);
+  if (!hasMcpSignal && !hasContextSignal && !hasSessionCostSignal) return null;
 
   const connected = servers.filter((s) => s.status === "connected").length;
   const needsAuth = servers.filter((s) => s.status === "needs-auth").length;
@@ -80,6 +85,7 @@ export default function McpStatusBar({
   const pending = servers.filter((s) => s.status === "pending").length;
   const hasProblem = failed > 0 || needsAuth > 0;
   const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError);
+  const sessionCostLabel = sessionCostLoading ? "..." : formatSessionCost(sessionCostUsd);
   const statusSummary = statusState === "loading"
     ? "MCP: Loading status..."
     : statusState === "error"
@@ -140,6 +146,15 @@ export default function McpStatusBar({
             <Activity size={12} />
             Context: {contextSummary}
           </span>
+          {hasSessionCostSignal && (
+            <span
+              className="flex items-center gap-1 text-text-muted"
+              title="Live SDK-reported Copilot cost for this session"
+            >
+              <DollarSign size={12} />
+              Session: {sessionCostLabel}
+            </span>
+          )}
         </span>
         {expanded ? <ChevronUp size={12} className="text-text-muted" /> : <ChevronDown size={12} className="text-text-muted" />}
       </button>
@@ -242,4 +257,14 @@ export default function McpStatusBar({
       )}
     </div>
   );
+}
+
+function formatSessionCost(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return "$0.00";
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: value < 0.01 ? 4 : 2,
+  });
 }

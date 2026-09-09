@@ -1091,6 +1091,26 @@ export async function fetchSessionContext(
   );
 }
 
+export interface SessionUsageMetrics {
+  available: boolean;
+  totalNanoAiu: number | null;
+  aiCredits: number | null;
+  costUsd: number | null;
+  totalPremiumRequestCost: number | null;
+  totalUserRequests: number | null;
+}
+
+export async function fetchSessionUsageMetrics(
+  sessionId: string,
+  options?: { signal?: AbortSignal },
+): Promise<SessionUsageMetrics> {
+  return apiFetch<SessionUsageMetrics>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/usage-metrics`,
+    undefined,
+    options,
+  );
+}
+
 /** Warm a session — triggers SDK resume, returns when ready */
 export async function warmSession(sessionId: string): Promise<void> {
   await apiFetch<{ ready: boolean }>(`/api/sessions/${sessionId}/warm`, {});
