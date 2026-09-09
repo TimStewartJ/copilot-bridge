@@ -37,13 +37,13 @@ export function normalizePercent(value: number | null | undefined): number | und
   return Math.max(0, Math.min(100, percent));
 }
 
-export function getSummaryMetrics(summary: SessionContextSummary | null | undefined): SummaryMetrics {
+export function getSummaryMetrics(summary: Pick<SessionContextSummary, "tokensUsed" | "contextWindow" | "tokensRemaining" | "usageRatio"> | null | undefined): SummaryMetrics {
   const used = optionalNumber(summary?.tokensUsed);
   const limit = optionalNumber(summary?.contextWindow);
   const remaining = optionalNumber(summary?.tokensRemaining);
   const ratioPercent = normalizePercent(summary?.usageRatio);
   const derivedPercent = used !== undefined && limit !== undefined && limit > 0
-    ? normalizePercent((used / limit) * 100)
+    ? Math.max(0, Math.min(100, (used / limit) * 100))
     : undefined;
   return {
     used,
@@ -71,16 +71,13 @@ export function summarizeContext(
   loading: boolean | undefined,
   error: string | null | undefined,
 ): string {
-  if (error) return "context unavailable";
+  if (error) return "unavailable";
   const metrics = getSummaryMetrics(summary);
-  if (metrics.used !== undefined && metrics.limit !== undefined) {
-    const percent = metrics.percent !== undefined ? `${formatPercent(metrics.percent)} · ` : "";
-    return `${percent}${formatNumber(metrics.used)}/${formatNumber(metrics.limit)} tokens`;
-  }
+  if (metrics.percent !== undefined) return formatPercent(metrics.percent);
   if (metrics.used !== undefined) return formatTokenValue(metrics.used);
-  if (capabilities?.modelUsage === "unavailable") return "usage unavailable";
-  if (loading) return "waiting for usage";
-  return "waiting for usage";
+  if (capabilities?.modelUsage === "unavailable") return "unavailable";
+  if (loading) return "loading";
+  return "pending";
 }
 
 function trimPreview(content: string): string {
@@ -251,13 +248,13 @@ export function ContextMeter({ metrics }: { metrics: SummaryMetrics }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[11px] text-text-muted">
-        <span>{metrics.percent !== undefined ? `${formatPercent(metrics.percent)} of context window` : "Context window usage"}</span>
+        <span>{metrics.percent !== undefined ? `${formatPercent(metrics.percent)} used` : "Usage"}</span>
         <span>{formatNumber(metrics.used)} / {formatNumber(metrics.limit)} tokens</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-bg">
+      <div className="h-1 overflow-hidden rounded-full bg-bg" role="progressbar" aria-label="Context used" aria-valuenow={metrics.percent} aria-valuemin={0} aria-valuemax={100}>
         <div
           className={`h-full rounded-full ${tone}`}
-          style={{ width: `${Math.max(2, Math.min(100, percent))}%` }}
+          style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
         />
       </div>
     </div>
