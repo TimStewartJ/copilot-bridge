@@ -253,6 +253,12 @@ export interface AgentCurrentModel {
   contextTier?: string;
 }
 
+export interface AgentUsageMetrics {
+  totalNanoAiu?: number;
+  totalPremiumRequestCost: number;
+  totalUserRequests: number;
+}
+
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
  * through typed methods.
@@ -312,6 +318,9 @@ export interface AgentSession {
 
   /** Fetch the session's current model settings snapshot. Resolves `undefined` when unsupported. */
   getCurrentModel(): Promise<AgentCurrentModel | undefined>;
+
+  /** Fetch accumulated live usage metrics. Resolves `undefined` when unsupported. */
+  getUsageMetrics(): Promise<AgentUsageMetrics | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;

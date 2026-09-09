@@ -77,4 +77,18 @@ describe("McpStatusBar status ownership", () => {
       await harness.cleanup();
     }
   });
+
+  it("shows the live session cost alongside MCP and context status", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(McpStatusBar, {
+        servers: [],
+        statusState: "ready",
+        sessionCostUsd: 0.025,
+      }));
+      expect(harness.dom.container.textContent).toContain("Session: $0.03");
+    } finally {
+      await harness.cleanup();
+    }
+  });
 });
