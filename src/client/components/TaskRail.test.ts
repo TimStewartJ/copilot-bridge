@@ -9,6 +9,10 @@ import {
 } from "../test-react-harness";
 import TaskRail from "./TaskRail";
 
+vi.mock("./CopilotQuotaMenu", () => ({
+  default: () => null,
+}));
+
 const NOW = "2026-08-07T16:00:00.000Z";
 
 function createSession(overrides: Partial<Session> = {}): Session {
