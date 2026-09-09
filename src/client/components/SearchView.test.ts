@@ -13,6 +13,7 @@ import {
 } from "../test-react-harness";
 import SearchView from "./SearchView";
 import { getSearchHighlightTerms } from "../lib/search-text";
+import { installFocusDialogDom } from "../test-focus-harness";
 
 const searchBridgeMock = vi.hoisted(() => vi.fn());
 
@@ -65,7 +66,7 @@ describe("SearchView", () => {
   });
 
   async function render(entry: string) {
-    harness = await createReactDomHarness();
+    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
     await harness.render(createElement(
       MemoryRouter,
       { initialEntries: [entry] },
@@ -116,7 +117,7 @@ describe("SearchView", () => {
       taskId: "task-1",
       kind: "all",
     }), expect.any(Object));
-    expect(rendered.dom.container.textContent).toContain("This task");
+    expect(rendered.dom.container.textContent).toContain("task:task-1");
     expect(rendered.dom.container.textContent).toContain("Archived");
     expect(rendered.dom.container.textContent).toContain("Assistant");
     expect(rendered.dom.container.textContent).toContain("Showing 1 of 7 matching messages");
@@ -138,6 +139,42 @@ describe("SearchView", () => {
 
   it("parses quoted phrases and separate terms for safe highlighting", () => {
     expect(getSearchHighlightTerms(`"exact phrase" other`)).toEqual(["exact phrase", "other"]);
+  });
+
+  it("keeps incomplete scope syntax out of requests and commits inline type chips atomically", async () => {
+    vi.useFakeTimers();
+    searchBridgeMock.mockResolvedValue(response());
+    const rendered = await render("/search");
+    const input = findAllByTag(rendered.dom.container, "INPUT")[0];
+    await rendered.act(async () => {
+      getReactProps(input)?.onChange?.({ target: { value: "needle task:" } });
+    });
+    await advanceTimersByTimeAct(rendered.act, 500);
+    expect(searchBridgeMock).not.toHaveBeenCalled();
+    await rendered.act(async () => {
+      getReactProps(input)?.onChange?.({ target: { value: "type:task needle" } });
+    });
+    await advanceTimersByTimeAct(rendered.act, 500);
+    expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "needle", kind: "task" }), expect.any(Object));
+    expect(rendered.dom.container.textContent).toContain("type:task");
+    const chip = findAllByTag(rendered.dom.container, "BUTTON").find((node) => getReactProps(node)?.["aria-label"] === "Remove type filter");
+    await rendered.act(async () => { getReactProps(chip)?.onClick?.(); });
+    expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "needle", kind: "all" }), expect.any(Object));
+  });
+
+  it("is a named floating dialog with initial focus and Tab containment", async () => {
+    const rendered = await render("/search");
+    const input = findAllByTag(rendered.dom.container, "INPUT")[0];
+    const dialog = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.role === "dialog");
+    expect(getReactProps(dialog)?.["aria-modal"]).toBe(true);
+    expect(document.activeElement).toBe(input);
+    const close = findAllByTag(dialog, "BUTTON")[0];
+    const last = findAllByTag(dialog, "SUMMARY").at(-1);
+    await rendered.act(async () => {
+      last.focus();
+      getReactProps(dialog)?.onKeyDown?.({ key: "Tab", preventDefault: vi.fn() });
+    });
+    expect(document.activeElement).toBe(close);
   });
 
   it("debounces search into a URL replace and hides stale results while the new request loads", async () => {
@@ -198,7 +235,7 @@ describe("SearchView", () => {
         items: [{ taskId: "task-1", title: "Result task", snippet: "match", archived: false }],
       },
     }));
-    harness = await createReactDomHarness();
+    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
     await harness.render(createElement(
       MemoryRouter,
       { initialEntries: ["/search?q=match"] },
@@ -240,7 +277,7 @@ describe("SearchView", () => {
       },
     });
     searchBridgeMock.mockResolvedValue(searchResponse);
-    harness = await createReactDomHarness();
+    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
     await harness.render(createElement(
       MemoryRouter,
       { initialEntries: ["/search?q=match"] },

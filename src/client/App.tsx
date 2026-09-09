@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Routes, Route, useNavigate, useParams, useLocation, useNavigationType } from "react-router-dom";
+import { Routes, Route, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryClient";
 import {
@@ -100,6 +100,7 @@ import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
 import SearchView from "./components/SearchView";
+import { useSearchBackground } from "./hooks/useSearchBackground";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import BackendStatusBanner from "./components/BackendStatusBanner";
@@ -133,10 +134,12 @@ function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<strin
 
 export default function App() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const navigationType = useNavigationType();
+  const { location, navigationType, open: searchOpen, close: closeSearch } = useSearchBackground();
   const isMobile = useIsMobile();
-  const { hasAttention: pageHasAttention, hasAttentionRef: pageHasAttentionRef } = usePageAttention();
+  const { hasAttention, hasAttentionRef } = usePageAttention();
+  const pageHasAttention = hasAttention && !searchOpen;
+  const searchOpenRef = useRef(searchOpen);
+  searchOpenRef.current = searchOpen;
   const queryClient = useQueryClient();
   const { showToast, dismissToast } = useToast();
   const monitoredForkJobIdsRef = useRef(new Set<string>());
@@ -286,16 +289,16 @@ export default function App() {
     const openSearch = (event: KeyboardEvent) => {
       if (event.key.toLocaleLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
       event.preventDefault();
-      if (location.pathname === "/search") {
+      if (searchOpen) {
         document.getElementById("bridge-global-search-input")?.focus();
         return;
       }
-      const from = `${location.pathname}${location.search}`;
+      const from = `${location.pathname}${location.search}${location.hash}`;
       navigate(`/search?from=${encodeURIComponent(from)}`);
     };
     window.addEventListener("keydown", openSearch);
     return () => window.removeEventListener("keydown", openSearch);
-  }, [location.pathname, location.search, navigate]);
+  }, [location.pathname, location.search, location.hash, searchOpen, navigate]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
   const renderedReadThroughRef = useRef<Record<string, string>>({});
@@ -678,7 +681,7 @@ export default function App() {
 
     dwelledSessionIdRef.current = null;
     const timer = window.setTimeout(() => {
-      if (!pageHasAttentionRef.current) return;
+      if (!hasAttentionRef.current || searchOpenRef.current) return;
       dwelledSessionIdRef.current = activeSessionId;
       markReadThroughRendered(activeSessionId);
     }, 2000);
@@ -692,7 +695,7 @@ export default function App() {
     if (!activeSessionId) return;
 
     const onPageHide = () => {
-      if (!pageHasAttentionRef.current) return;
+      if (!hasAttentionRef.current || searchOpenRef.current) return;
       if (dwelledSessionIdRef.current !== activeSessionId) return;
       const session = sessions.find((candidate) => candidate.sessionId === activeSessionId);
       const readThroughActivityAt = getSessionReadThroughActivityTime(
@@ -1734,7 +1737,9 @@ export default function App() {
     : undefined;
 
   return (
+    <>
     <div
+      inert={searchOpen || undefined}
       className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
@@ -1904,7 +1909,6 @@ export default function App() {
                   archivedLoaded={archivedLoaded}
                   archivedLoading={archivedLoading}
                   onSetTaskTags={handleSetTaskTags}
-                  onSearchTask={(taskId) => navigate(`/search?scope=task&taskId=${encodeURIComponent(taskId)}&from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
                 />
               </div>
             )}
@@ -1929,7 +1933,7 @@ export default function App() {
         )}
 
         <main className="flex-1 flex flex-col min-h-0">
-          <Routes>
+          <Routes location={location}>
             <Route
               index
               element={
@@ -2025,7 +2029,6 @@ export default function App() {
                     archivedLoaded={archivedLoaded}
                     archivedLoading={archivedLoading}
                     onSetTaskTags={handleSetTaskTags}
-                    onSearchTask={(taskId) => navigate(`/search?scope=task&taskId=${encodeURIComponent(taskId)}&from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
                     scrollRestoration={mobileTaskCockpitScrollRestoration}
                   />
                 ) : taskNotFound ? (
@@ -2161,7 +2164,6 @@ export default function App() {
               }
             />
             <Route path="docs/*" element={<DocsView onDocTitleChange={setDocTitle} />} />
-            <Route path="search" element={<SearchView />} />
             <Route path="settings" element={<SettingsView />} />
           </Routes>
         </main>
@@ -2192,6 +2194,12 @@ export default function App() {
         />
       )}
     </div>
+    {searchOpen && <SearchView
+      tasks={tasks}
+      sessions={sessions}
+      onClose={closeSearch}
+    />}
+    </>
   );
 }
 

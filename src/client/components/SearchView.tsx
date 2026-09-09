@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, BookOpen, Clipboard, FileText, MessageSquare, Search, X } from "lucide-react";
+import { BookOpen, Clipboard, FileText, MessageSquare } from "lucide-react";
 import type {
   BridgeSearchResponse,
   SearchChatHit,
   SearchKind,
   SearchScope,
 } from "../../shared/search.js";
-import { searchBridge } from "../api";
+import { searchBridge, type Task, type Session } from "../api";
+import FocusDialog from "./FocusDialog";
+import SearchQueryInput, { getSearchFilterToken } from "./SearchQueryInput";
 import { writeClipboardText } from "../lib/clipboard";
 import { getAppAbsoluteUrl } from "../lib/app-url";
 import { getSessionPath } from "../lib/session-path";
@@ -17,12 +19,6 @@ import { getSearchHighlightTerms } from "../lib/search-text";
 const PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 300;
 const INDEXING_REFRESH_MS = 2_000;
-const KINDS: Array<{ value: SearchKind; label: string }> = [
-  { value: "all", label: "All sources" },
-  { value: "chat", label: "Chats" },
-  { value: "task", label: "Tasks" },
-  { value: "doc", label: "Docs" },
-];
 
 function parseScope(value: string | null): SearchScope {
   return value === "task" || value === "session" ? value : "global";
@@ -112,7 +108,11 @@ function chatHistoryPath(hit: SearchChatHit, returnTo: string): string {
   return `${path}?${params.toString()}`;
 }
 
-export default function SearchView() {
+export default function SearchView({ tasks = [], sessions = [], onClose }: {
+  tasks?: Task[];
+  sessions?: Session[];
+  onClose?: () => void;
+}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
@@ -132,7 +132,6 @@ export default function SearchView() {
   const [retryRevision, setRetryRevision] = useState(0);
   const [pollRevision, setPollRevision] = useState(0);
   const [responseKey, setResponseKey] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSearchUrl = `${location.pathname}${location.search}`;
@@ -145,10 +144,11 @@ export default function SearchView() {
   });
 
   useEffect(() => {
-    setDraft(query);
+    setDraft((current) => current.trim() === query.trim() ? current : query);
   }, [query]);
 
   useEffect(() => {
+    if (getSearchFilterToken(draft)) return;
     if (draft.trim() === query.trim()) return;
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     debounceTimerRef.current = setTimeout(() => {
@@ -165,10 +165,6 @@ export default function SearchView() {
       debounceTimerRef.current = null;
     };
   }, [currentParams, draft, query, setParams]);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
 
   useEffect(() => {
     const normalized = query.trim();
@@ -218,11 +214,6 @@ export default function SearchView() {
     return () => clearTimeout(timer);
   }, [visibleResponse]);
 
-  const scopeLabel = scope === "task"
-    ? "This task"
-    : scope === "session"
-      ? "This whole chat"
-      : "Everywhere";
   const total = resultCount(visibleResponse);
   const visibleCount = visibleResponse
     ? visibleResponse.chats.items.length + visibleResponse.tasks.items.length + visibleResponse.docs.items.length
@@ -249,70 +240,50 @@ export default function SearchView() {
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
-    if (!Object.hasOwn(updates, "q")) setDraft(query);
     const next = new URLSearchParams(params);
+    if (!Object.hasOwn(updates, "q")) {
+      if (draft.trim()) next.set("q", draft.trim());
+      else next.delete("q");
+    }
     for (const [key, value] of Object.entries(updates)) {
       if (value) next.set(key, value);
       else next.delete(key);
     }
-    setParams(next);
+    setDraft(next.get("q") ?? "");
+    setParams(next, { replace: true });
   };
 
   const goBack = () => {
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    navigate(returnTo);
+    if (onClose) onClose();
+    else navigate(returnTo, { replace: true });
   };
 
   return (
-    <div ref={scrollRef} data-testid="search-scroll" className="flex-1 min-h-0 overflow-y-auto bg-bg-primary" onKeyDown={(event) => {
+    <FocusDialog title="Search Bridge" closeLabel="Close search" pending={false} onClose={goBack}>
+    <div ref={scrollRef} data-testid="search-scroll" className="max-h-[70dvh] min-h-[min(55dvh,24rem)] overflow-y-auto bg-bg-primary text-text-primary" onKeyDown={(event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       goBack();
     }}>
-      <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-5 md:px-8 md:py-8">
-        <header className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <button type="button" onClick={goBack} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-sm text-text-muted hover:bg-bg-hover hover:text-text-primary">
-              <ArrowLeft size={16} /> Back
-            </button>
-            <span className="text-xs text-text-muted">Search retrieves saved text only. It does not ask AI.</span>
-          </div>
-          <h1 className="text-2xl font-semibold text-text-primary">Search Bridge</h1>
-          <form className="flex flex-col gap-2 sm:flex-row" onSubmit={(event) => {
+      <div className="space-y-4">
+        <header className="sticky top-0 z-10 space-y-2 bg-bg-primary pb-2">
+          <form onSubmit={(event) => {
             event.preventDefault();
+            if (getSearchFilterToken(draft)) return;
             updateParams({ q: draft.trim() || null, offset: null });
           }}>
-            <label className="relative min-w-0 flex-1">
-              <span className="sr-only">Search chats, tasks, and docs</span>
-              <Search size={17} className="pointer-events-none absolute left-3 top-3.5 text-text-muted" />
-              <input
-                ref={inputRef}
-                id="bridge-global-search-input"
-                type="search"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="Find remembered text"
-                className="min-h-11 w-full rounded-xl border border-border bg-bg-surface pl-10 pr-10 text-sm text-text-primary outline-none focus:border-accent"
-              />
-              {draft && <button type="button" aria-label="Clear search" onClick={() => setDraft("")} className="absolute right-2 top-2 min-h-7 min-w-7 rounded-md text-text-muted hover:bg-bg-hover"><X size={15} className="mx-auto" /></button>}
-            </label>
-            <button type="submit" className="min-h-11 rounded-xl bg-accent px-5 text-sm font-medium text-white hover:bg-accent-hover">Search</button>
+            <SearchQueryInput draft={draft} kind={kind} scope={scope} taskId={taskId} sessionId={sessionId}
+              tasks={tasks.map((task) => ({ id: task.id, title: task.title }))}
+              sessions={sessions.map((session) => ({ id: session.sessionId, title: session.summary || session.sessionId }))}
+              onChange={setDraft}
+              onCommit={(text, filters) => {
+                updateParams({ ...filters, q: text.trim() || null, offset: null });
+                setDraft(text.trim() ? `${text.trim()} ` : "");
+              }}
+            />
           </form>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-accent-border bg-accent-surface px-3 py-1.5 text-xs font-medium text-accent">{scopeLabel}</span>
-            {scope !== "global" && <button type="button" onClick={() => updateParams({ scope: null, taskId: null, sessionId: null, offset: null })} className="min-h-9 rounded-full px-3 text-xs text-text-muted hover:bg-bg-hover">Remove scope</button>}
-            <div role="group" aria-label="Source filter" className="flex flex-wrap gap-1">
-              {KINDS.map((option) => <button
-                key={option.value}
-                type="button"
-                aria-pressed={kind === option.value}
-                onClick={() => updateParams({ kind: option.value === "all" ? null : option.value, offset: null })}
-                className={`min-h-9 rounded-lg border px-3 text-xs ${kind === option.value ? "border-accent-border bg-accent-surface text-accent" : "border-border bg-bg-surface text-text-muted hover:bg-bg-hover"}`}
-              >
-                {option.label}
-              </button>)}
-            </div>
-          </div>
+          <p className="text-xs text-text-muted">Filter with type:chat, type:task, type:doc, task: or chat:. Use arrows and Enter to choose.</p>
         </header>
 
         {loading && <p role="status" className="text-sm text-text-muted">Searching saved Bridge content…</p>}
@@ -320,7 +291,7 @@ export default function SearchView() {
           Search could not load: {error}
           <button type="button" onClick={() => setRetryRevision((current) => current + 1)} className="ml-2 underline">Retry</button>
         </div>}
-        <p className="text-xs text-text-muted">Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched.</p>
+        <details className="text-xs text-text-muted"><summary className="cursor-pointer">About saved-text search</summary><p className="mt-2">Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched. Search retrieves saved text only; it does not ask AI.</p></details>
         {visibleResponse && <div className="space-y-3">
           {visibleResponse.coverage.state !== "ready" && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
             {visibleResponse.coverage.state === "indexing" ? "Search indexing is still in progress." : "Search coverage is partial."}
@@ -359,7 +330,7 @@ export default function SearchView() {
                 </h3>
                 <p className="text-xs text-text-muted">{hit.taskTitle ? `Task: ${hit.taskTitle}` : "Quick chat"}{hit.archived ? " · Archived" : ""} · {hit.matches.length === 0 ? "Title match · no matching message text" : `${hit.matchCount} message match${hit.matchCount === 1 ? "" : "es"}`}</p>
               </div>
-              <button type="button" onClick={() => navigate(`/search?scope=session&sessionId=${encodeURIComponent(hit.sessionId)}&q=${encodeURIComponent(query)}&from=${encodeURIComponent(currentSearchUrl)}`)} className="min-h-9 rounded-lg px-3 text-xs text-accent hover:bg-accent-surface">Search whole chat</button>
+              <button type="button" onClick={() => updateParams({ scope: "session", sessionId: hit.sessionId, taskId: null, kind: null, offset: null })} className="min-h-9 rounded-lg px-3 text-xs text-accent hover:bg-accent-surface">Search whole chat</button>
             </div>
             <div className="mt-3 divide-y divide-border/60">
               {hit.matches.map((match) => {
@@ -399,7 +370,7 @@ export default function SearchView() {
 
         {visibleResponse && visibleResponse.tasks.items.length > 0 && <section aria-labelledby="search-tasks" className="space-y-3">
           <h2 id="search-tasks" className="flex items-center gap-2 text-lg font-semibold"><FileText size={18} /> Tasks <span className="text-sm font-normal text-text-muted">({visibleResponse.tasks.total})</span></h2>
-          <div className="grid gap-3 md:grid-cols-2">{visibleResponse.tasks.items.map((hit) => <button key={hit.taskId} type="button" onClick={() => navigate(`/tasks/${hit.taskId}`)} className="rounded-xl border border-border bg-bg-secondary p-4 text-left hover:bg-bg-hover">
+          <div className="grid gap-3">{visibleResponse.tasks.items.map((hit) => <button key={hit.taskId} type="button" onClick={() => navigate(`/tasks/${hit.taskId}`)} className="rounded-xl border border-border bg-bg-secondary p-4 text-left hover:bg-bg-hover">
             <h3 className="font-semibold"><Highlight text={hit.title} query={query} /></h3>
             <p className="mt-1 text-xs text-text-muted">{hit.archived ? "Archived task" : "Task"}</p>
             <p className="mt-2 text-sm text-text-secondary"><Highlight text={hit.snippet} query={query} /></p>
@@ -408,7 +379,7 @@ export default function SearchView() {
 
         {visibleResponse && visibleResponse.docs.items.length > 0 && <section aria-labelledby="search-docs" className="space-y-3">
           <h2 id="search-docs" className="flex items-center gap-2 text-lg font-semibold"><BookOpen size={18} /> Docs <span className="text-sm font-normal text-text-muted">({visibleResponse.docs.total})</span></h2>
-          <div className="grid gap-3 md:grid-cols-2">{visibleResponse.docs.items.map((hit) => <button key={hit.path} type="button" onClick={() => navigate(`/docs/${hit.path}`)} className="rounded-xl border border-border bg-bg-secondary p-4 text-left hover:bg-bg-hover">
+          <div className="grid gap-3">{visibleResponse.docs.items.map((hit) => <button key={hit.path} type="button" onClick={() => navigate(`/docs/${hit.path}`)} className="rounded-xl border border-border bg-bg-secondary p-4 text-left hover:bg-bg-hover">
             <h3 className="font-semibold"><Highlight text={hit.title} query={query} /></h3>
             <p className="mt-1 text-xs text-text-muted">{hit.path}</p>
             <p className="mt-2 text-sm text-text-secondary"><Highlight text={hit.snippet} query={query} /></p>
@@ -428,5 +399,6 @@ export default function SearchView() {
         </nav>}
       </div>
     </div>
+    </FocusDialog>
   );
 }

@@ -76,7 +76,7 @@ import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
-import { ArrowLeft, ArrowUpCircle, Check, ClipboardList, Copy, Loader2, Search, Terminal } from "lucide-react";
+import { ArrowLeft, ArrowUpCircle, Check, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const INITIAL_PAGE_SIZE = 50;
@@ -2866,13 +2866,6 @@ export default function ChatView({
           {!activeSearchMatchPage && searchQuery && !searchMatchPageLoading && !searchMatchPageError && <p role="status" className="mx-auto mt-1 w-full max-w-4xl text-xs text-warning">
             Full-chat match paging is unavailable for this message; Previous and Next cover only the loaded history window.
           </p>}
-        </div>
-      )}
-      {!historicalMode && sessionId && (
-        <div className="shrink-0 border-b border-border/70 bg-bg-primary px-3 py-1.5 text-right">
-          <button type="button" onClick={() => navigate(`/search?scope=session&sessionId=${encodeURIComponent(sessionId)}&from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-3 text-xs text-text-muted hover:bg-bg-hover hover:text-text-primary">
-            <Search size={13} /> Search this chat
-          </button>
         </div>
       )}
       {/* Plan header bar */}
