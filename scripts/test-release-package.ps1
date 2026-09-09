@@ -159,6 +159,10 @@ try {
 
   $nodeModulesRoot = Join-Path $appRoot "node_modules"
   if (Test-Path $nodeModulesRoot) {
+    Assert-PathExists "Copilot CLI loader" (Join-Path $nodeModulesRoot "@github\copilot\npm-loader.js")
+    $copilotCliPlatformRoot = Join-Path $nodeModulesRoot "@github\copilot-win32-x64"
+    Assert-PathExists "Copilot CLI Windows x64 package" $copilotCliPlatformRoot
+    Assert-PathExists "Copilot CLI Windows x64 executable" (Join-Path $copilotCliPlatformRoot "copilot.exe")
     Assert-PathExists "Copilot SDK runtime" (Join-Path $nodeModulesRoot "@github\copilot-sdk\dist\index.js")
     $copilotPlatformRoot = Join-Path $nodeModulesRoot "@github\copilot-sdk\node_modules\@github\copilot-sdk-win32-x64"
     if (-not (Test-Path (Join-Path $copilotPlatformRoot "package.json"))) {
