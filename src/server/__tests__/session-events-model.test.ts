@@ -374,6 +374,40 @@ describe("SessionManager.getSessionModelState", () => {
   });
 });
 
+describe("SessionManager.getSessionUsageMetrics", () => {
+  it("returns unavailable when the session is not live", async () => {
+    const manager = createManager(makeTestDir("usage-metrics-unavailable"));
+    await expect(manager.getSessionUsageMetrics("missing-session")).resolves.toEqual({
+      available: false,
+      totalNanoAiu: null,
+      aiCredits: null,
+      costUsd: null,
+      totalPremiumRequestCost: null,
+      totalUserRequests: null,
+    });
+  });
+
+  it("converts live nano-AIU metrics to AI credits and USD", async () => {
+    const manager = createManager(makeTestDir("usage-metrics-live"));
+    manager.sessionObjects.set("live-session", {
+      getUsageMetrics: vi.fn().mockResolvedValue({
+        totalNanoAiu: 2_500_000_000,
+        totalPremiumRequestCost: 1.5,
+        totalUserRequests: 2,
+      }),
+    });
+
+    await expect(manager.getSessionUsageMetrics("live-session")).resolves.toEqual({
+      available: true,
+      totalNanoAiu: 2_500_000_000,
+      aiCredits: 2.5,
+      costUsd: 0.025,
+      totalPremiumRequestCost: 1.5,
+      totalUserRequests: 2,
+    });
+  });
+});
+
 // ── Bounded async derivation ─────────────────────────────────────────────────
 
 describe("deriveModelStateFromEventsFileAsync", () => {

@@ -16,6 +16,7 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   "session.invokeSlashCommand": 120_000,
   "session.listSlashCommands": 60_000,
   "session.getCurrentModel": 60_000,
+  "session.getUsageMetrics": 60_000,
   "session.truncateHistory": 60_000,
   "session.listMcpServers": 60_000,
   "session.initializeTools": 5 * 60_000,

@@ -47,6 +47,7 @@ import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import { useMcpStatusQuery } from "../hooks/queries/useMcpStatus";
+import { useSessionUsageMetricsQuery } from "../hooks/queries/useSessionUsageMetrics";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { queryKeys } from "../queryClient";
 import type { Draft } from "../useDrafts";
@@ -629,6 +630,12 @@ export default function ChatView({
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
   const mcpStatusQuery = useMcpStatusQuery(sessionId);
+  const sessionUsageMetricsQuery = useSessionUsageMetricsQuery(sessionId);
+  const sessionCostLoading = Boolean(
+    sessionId
+    && sessionUsageMetricsQuery.isLoading
+    && !sessionUsageMetricsQuery.data,
+  );
   const [sessionContext, setSessionContext] = useState<SessionContextResponse | null>(null);
   const [sessionContextError, setSessionContextError] = useState<string | null>(null);
   const [sessionContextLoading, setSessionContextLoading] = useState(false);
@@ -979,8 +986,12 @@ export default function ChatView({
     contextRefreshStreamingRef.current = isStreaming;
     if (!sessionId || !wasStreaming || isStreaming) return;
     void refreshSessionContext(sessionId, { background: true });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.sessionUsageMetrics(sessionId),
+      exact: true,
+    });
     loadAndReconnectRef.current({ background: true, silent: true });
-  }, [isStreaming, refreshSessionContext, sessionId]);
+  }, [isStreaming, queryClient, refreshSessionContext, sessionId]);
 
   const cancelFollowScroll = useCallback(() => {
     if (followScrollFrameRef.current != null) {
@@ -1280,7 +1291,12 @@ export default function ChatView({
             setWarming(true);
             warmSession(sessionId)
               .then(() => {
-                if (!controller.signal.aborted) setWarming(false);
+                if (controller.signal.aborted) return;
+                setWarming(false);
+                void queryClient.invalidateQueries({
+                  queryKey: queryKeys.sessionUsageMetrics(sessionId),
+                  exact: true,
+                });
               })
               .catch(() => {
                 if (!controller.signal.aborted) setWarming(false);
@@ -2582,6 +2598,8 @@ export default function ChatView({
         contextError={sessionContextError}
         contextLoading={sessionContextLoading}
         liveContextSummary={streamContextSummary}
+        sessionCostLoading={sessionCostLoading}
+        sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd ?? undefined}
         servers={mcpStatusQuery.data ?? []}
         statusState={!sessionId
           ? "ready"

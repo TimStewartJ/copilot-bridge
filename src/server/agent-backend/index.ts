@@ -36,6 +36,7 @@ export type {
   AgentSessionEventHandler,
   AgentSessionSummary,
   AgentSetModelOptions,
+  AgentUsageMetrics,
   AgentUserInputRequest,
   AgentUserInputResponse,
 } from "./types.js";
