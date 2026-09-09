@@ -39,6 +39,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 - **Provider enrichment** - optional Azure DevOps, GitHub, and Linear integrations for richer work item and pull request cards.
 - **Tool-rich automation** - built-in task/doc/schedule tools, web search, browser fetch/exec/session tools, and optional computer-use tools.
 - **Workspace customization** - model, reasoning effort, agent identity, custom instructions, theme, favicon, and MCP server registry from the UI.
+- **Session details** - a compact chat bar shows MCP connections, context usage, and session cost. Expand it for context headroom and a selectable line history (last 30 turns or all turns). Token breakdowns and provider capabilities stay under Usage details; MCP failures and sign-in actions open automatically. Gaps in the line mean usage was not reported, not zero usage.
 - **Remote-friendly local deployment** - dev tunnels or your own ingress, optional startup webhooks, and canonical public URL support for previews.
 
 ## Architecture

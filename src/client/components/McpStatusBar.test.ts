@@ -28,12 +28,12 @@ describe("McpStatusBar status ownership", () => {
         servers: [],
         statusState: "loading",
       }));
-      expect(harness.dom.container.textContent).toContain("MCP: Loading status");
+      expect(harness.dom.container.textContent).toContain("MCP loading");
       const button = findAllByTag(harness.dom.container, "BUTTON")[0];
       await harness.act(async () => getReactProps(button)?.onClick?.());
       const status = findAllByTag(harness.dom.container, "P")
         .find((element) => getReactProps(element)?.role === "status");
-      expect(status?.textContent).toContain("Loading MCP server status");
+      expect(status?.textContent).toContain("Loading servers");
     } finally {
       await harness.cleanup();
     }
@@ -71,8 +71,8 @@ describe("McpStatusBar status ownership", () => {
         statusState: "stale",
         statusError: "Refresh failed",
       }));
-      expect(harness.dom.container.textContent).toContain("1/1 connected");
-      expect(harness.dom.container.textContent).toContain("status may be stale");
+      expect(harness.dom.container.textContent).toContain("MCP 1/1");
+      expect(harness.dom.container.textContent).toContain("stale");
     } finally {
       await harness.cleanup();
     }
@@ -86,9 +86,31 @@ describe("McpStatusBar status ownership", () => {
         statusState: "ready",
         sessionCostUsd: 0.025,
       }));
-      expect(harness.dom.container.textContent).toContain("Session: $0.03");
+      expect(harness.dom.container.textContent).toBe("Cost $0.03");
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("tucks healthy servers away but opens failures and keeps sign-in actionable", async () => {
+    const harness = await createReactDomHarness();
+    const onAuthenticate = vi.fn().mockResolvedValue({ authorizationUrl: "https://example.com/login" });
+    await harness.render(createElement(McpStatusBar, {
+      servers: [{ name: "demo", status: "connected" }],
+      statusState: "ready",
+    }));
+    await harness.act(async () => getReactProps(findAllByTag(harness.dom.container, "BUTTON")[0])?.onClick());
+    expect(getReactProps(findAllByTag(harness.dom.container, "DETAILS")[0])?.open).toBe(false);
+    await harness.render(createElement(McpStatusBar, {
+      servers: [{ name: "demo", status: "needs-auth" }, { name: "offline", status: "failed", error: "Connection refused" }],
+      statusState: "ready",
+      onAuthenticate,
+    }));
+    expect(harness.dom.container.textContent).toContain("1 failed, 1 sign-in");
+    expect(getReactProps(findAllByTag(harness.dom.container, "DETAILS")[0])?.open).toBe(true);
+    const signIn = findAllByTag(harness.dom.container, "BUTTON").find((button) => button.textContent === "Start sign-in");
+    await harness.act(async () => getReactProps(signIn)?.onClick());
+    expect(onAuthenticate).toHaveBeenCalledWith("demo", { forceReauth: false });
+    expect(getReactProps(findAllByTag(harness.dom.container, "A")[0])?.href).toBe("https://example.com/login");
   });
 });
