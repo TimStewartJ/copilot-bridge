@@ -3,7 +3,7 @@ import type {
   SessionContextEvent,
   SessionContextTurn,
 } from "../../shared/session-context.js";
-import { History } from "lucide-react";
+import { useState } from "react";
 import {
   type ChatTurnPreview,
   type ChatTurnPreviews,
@@ -15,7 +15,7 @@ import {
   getTurnId,
   getTurnNumber,
   getTurnPreview,
-  normalizePercent,
+  getSummaryMetrics,
   optionalNumber,
   provenanceLabel,
   ProvenanceChip,
@@ -48,7 +48,7 @@ function buildTurnGraphPoints(
       label: `T${getTurnNumber(index)}`,
       preview: getTurnPreview(turn, index, previews),
       event: latestEvent,
-      percent: normalizePercent(latestEvent?.usageRatio),
+      percent: getSummaryMetrics(latestEvent).percent,
       tokens: optionalNumber(latestEvent?.tokensUsed),
     };
   });
@@ -67,101 +67,115 @@ export default function SessionContextGraph({
   previews: ChatTurnPreviews;
   turns: SessionContextTurn[];
 }) {
+  const [selectedTurnId, setSelectedTurnId] = useState<string>();
+  const [showAll, setShowAll] = useState(false);
   const points = buildTurnGraphPoints(turns, eventsByTurnId, previews);
-  const unscopedEvents = events.filter((event) => !event.bridgeTurnId || !eventsByTurnId.has(event.bridgeTurnId));
-  const maxTokens = Math.max(
-    1,
-    ...points.map((point) => point.tokens ?? 0),
-    ...events.map((event) => event.tokensUsed ?? 0),
-  );
-  const ariaLabel = points.length > 0
-    ? `Context usage graph across ${points.length} turns. Latest ${points.at(-1)?.percent !== undefined ? formatPercent(points.at(-1)!.percent!) : "usage unknown"}.`
-    : "Context usage graph unavailable.";
-
-  if (points.length === 0 && events.length === 0) {
-    return (
-      <div className="rounded border border-border bg-bg-secondary px-3 py-3 text-xs text-text-muted">
-        Context graph is unavailable until the provider reports context events.
-      </div>
-    );
-  }
-
-  if (points.length === 0) {
-    return (
-      <div className="rounded border border-border bg-bg-secondary px-3 py-3">
-        <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-muted">Session event markers</div>
-        <div className="flex flex-wrap gap-1.5">
-          {events.map((event, index) => (
-            <span key={index} className="rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-[11px] text-warning">
-              {eventTitle(event)}{eventUsageText(event) ? ` · ${eventUsageText(event)}` : ""}
-            </span>
-          ))}
-        </div>
-      </div>
-    );
-  }
+  const visiblePoints = showAll ? points : points.slice(-30);
+  const selected = visiblePoints.find((point) => point.turn.bridgeTurnId === selectedTurnId) ?? visiblePoints.at(-1);
+  const markers = events.filter((event) => event.type !== "context_snapshot" || !event.bridgeTurnId || !eventsByTurnId.has(event.bridgeTurnId));
+  const useTokens = visiblePoints.some((point) => point.tokens !== undefined);
+  const valueOf = (point: TurnGraphPoint) => useTokens ? point.tokens : point.percent;
+  const maxValue = useTokens ? Math.max(1, ...visiblePoints.map((point) => point.tokens ?? 0)) : 100;
+  const plotted = visiblePoints.map((point, index) => ({
+    ...point,
+    x: 48 + (index / Math.max(1, visiblePoints.length - 1)) * 536,
+    y: valueOf(point) === undefined ? undefined : 100 - Math.max(0, valueOf(point)!) / maxValue * 88,
+  }));
+  let previousKnown = false;
+  const path = plotted.map((point) => {
+    if (point.y === undefined) {
+      previousKnown = false;
+      return "";
+    }
+    const command = previousKnown ? "L" : "M";
+    previousKnown = true;
+    return `${command}${point.x},${point.y}`;
+  }).join(" ");
+  const hasValues = plotted.some((point) => point.y !== undefined);
+  const pointTitle = (point: TurnGraphPoint) => [
+    `Turn ${getTurnNumber(point.index)}`,
+    point.tokens !== undefined ? formatTokenValue(point.tokens) : undefined,
+    point.percent !== undefined ? formatPercent(point.percent) : undefined,
+    valueOf(point) === undefined ? "Usage unavailable" : undefined,
+    provenanceLabel(point.event?.provenance?.tokensUsed),
+    point.preview?.preview,
+  ].filter(Boolean).join(" · ");
 
   return (
-    <div className="rounded-lg border border-border bg-bg-secondary p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-text-muted">
-          <History size={11} /> Context graph
-        </div>
-        {capabilities?.contextWindow && <ProvenanceChip provenance={points.at(-1)?.event?.provenance?.tokensUsed} />}
+    <div className="rounded-lg border border-border px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted">
+        <span>Context history</span>
+        {points.length > 30 && (
+          <select aria-label="History range" value={showAll ? "all" : "recent"} onChange={(event) => setShowAll(event.target.value === "all")} className="rounded bg-bg-secondary px-1 py-0.5">
+            <option value="recent">Last 30 turns</option>
+            <option value="all">All {points.length} turns</option>
+          </select>
+        )}
       </div>
-      <div role="img" aria-label={ariaLabel} className="overflow-x-auto pb-1">
-        <div
-          className="grid min-w-full items-end gap-1.5"
-          style={{ gridTemplateColumns: `repeat(${points.length}, minmax(34px, 1fr))` }}
-        >
-          {points.map((point) => {
-            const height = Math.max(10, Math.round(((point.tokens ?? 0) / maxTokens) * 72));
-            const percent = point.percent;
-            const tone = percent !== undefined && percent >= 90
-              ? "bg-error"
-              : percent !== undefined && percent >= 75
-                ? "bg-warning"
-                : "bg-accent";
-            const title = [
-              `Turn ${getTurnNumber(point.index)}`,
-              point.preview?.preview,
-              point.tokens !== undefined ? formatTokenValue(point.tokens) : "usage unavailable",
-              percent !== undefined ? formatPercent(percent) : undefined,
-              provenanceLabel(point.event?.provenance?.tokensUsed),
-            ].filter(Boolean).join(" · ");
-            return (
-              <button
-                key={point.turn.bridgeTurnId}
-                type="button"
-                title={title}
-                aria-label={title}
-                className="group flex min-w-[34px] flex-col items-center gap-1 rounded-md px-1 py-1 text-[10px] text-text-muted outline-none transition-colors hover:bg-bg focus:bg-bg focus:ring-1 focus:ring-accent"
-              >
-                <span className="flex h-20 w-full items-end justify-center rounded bg-bg/80 px-1">
-                  <span
-                    className={`w-full max-w-5 rounded-t ${tone} transition-all group-hover:opacity-90`}
-                    style={{ height: `${height}px` }}
-                  />
-                </span>
-                <span className="font-medium text-text-primary">{point.label}</span>
-                <span>{percent !== undefined ? formatPercent(percent) : "--"}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      {unscopedEvents.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {unscopedEvents.map((event, index) => (
-            <span
-              key={index}
-              title={eventUsageText(event)}
-              className="rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-[11px] text-warning"
-            >
-              {eventTitle(event)}
-            </span>
+      {hasValues ? (
+        <svg viewBox="0 0 600 120" className="mt-1 w-full h-28" role="group" aria-label={`Context usage line graph, ${visiblePoints.length} turns, ${useTokens ? "tokens" : "percent"}`}>
+          {[12, 56, 100].map((y, index) => (
+            <g key={y}>
+              <line x1="48" x2="584" y1={y} y2={y} className="stroke-border" strokeDasharray="3 4" />
+              <text x="42" y={y + 3} textAnchor="end" className="fill-text-muted text-[9px]">
+                {useTokens ? new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(maxValue * (1 - index / 2)) : `${100 - index * 50}%`}
+              </text>
+            </g>
           ))}
+          <path d={path} fill="none" className="stroke-accent" strokeWidth="2" strokeLinejoin="round" />
+          {plotted.filter((point) => point.y !== undefined).map((point) => (
+            <circle
+              key={point.turn.bridgeTurnId}
+              cx={point.x}
+              cy={point.y}
+              r={point.turn.bridgeTurnId === selected?.turn.bridgeTurnId ? 5 : 3}
+              className={`cursor-pointer stroke-bg focus:stroke-text-primary ${point.percent !== undefined && point.percent >= 90 ? "fill-error" : point.percent !== undefined && point.percent >= 75 ? "fill-warning" : "fill-accent"}`}
+              strokeWidth="2"
+              role="button"
+              tabIndex={0}
+              aria-label={pointTitle(point)}
+              aria-pressed={point.turn.bridgeTurnId === selected?.turn.bridgeTurnId}
+              onClick={() => setSelectedTurnId(point.turn.bridgeTurnId)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSelectedTurnId(point.turn.bridgeTurnId);
+                }
+              }}
+            ><title>{pointTitle(point)}</title></circle>
+          ))}
+          <text x="48" y="116" className="fill-text-muted text-[9px]">{visiblePoints[0]?.label}</text>
+          {visiblePoints.length > 1 && <text x="584" y="116" textAnchor="end" className="fill-text-muted text-[9px]">{visiblePoints.at(-1)?.label}</text>}
+        </svg>
+      ) : <p className="py-2 text-xs text-text-muted">No context history yet</p>}
+      {selected && (
+        <div className="space-y-1 text-[11px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <select aria-label="Inspect turn" value={selected.turn.bridgeTurnId} onChange={(event) => setSelectedTurnId(event.target.value)} className="rounded bg-bg-secondary px-1 py-0.5 text-text-primary">
+              {visiblePoints.map((point) => <option key={point.turn.bridgeTurnId} value={point.turn.bridgeTurnId}>Turn {getTurnNumber(point.index)}</option>)}
+            </select>
+            <span className="text-text-muted">
+              {selected.tokens !== undefined ? formatTokenValue(selected.tokens) : "Tokens unavailable"}
+              {selected.percent !== undefined && ` · ${formatPercent(selected.percent)}`}
+            </span>
+            {capabilities?.contextWindow && <ProvenanceChip provenance={selected.event?.provenance?.tokensUsed} />}
+          </div>
+          {selected.preview && <p className="truncate text-text-muted" title={selected.preview.preview}>{selected.preview.preview}</p>}
         </div>
+      )}
+      {markers.length > 0 && (
+        <details className="mt-2 text-[11px] text-text-muted">
+          <summary className="cursor-pointer">Events ({markers.length})</summary>
+          <ul className="mt-1 space-y-1">
+            {markers.map((event) => (
+              <li key={event.id}>
+                <span className="text-warning">{eventTitle(event)}</span>
+                {event.bridgeTurnId && ` · ${points.find((point) => point.turn.bridgeTurnId === event.bridgeTurnId)?.label ?? "Session"}`}
+                {eventUsageText(event) && ` · ${eventUsageText(event)}`}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       <table className="sr-only">
         <caption>Context usage by turn</caption>

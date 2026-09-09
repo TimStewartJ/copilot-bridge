@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ChatEntry, McpLoginResponse, McpServerStatus } from "../api";
 import type { SessionContextResponse, SessionContextSummary } from "../../shared/session-context.js";
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, DollarSign, Loader2, Plug, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, Plug, XCircle } from "lucide-react";
 import { buildChatTurnPreviews, summarizeContext } from "./SessionContextHelpers";
 import SessionContextPanel from "./SessionContextPanel";
 
@@ -87,10 +87,10 @@ export default function McpStatusBar({
   const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError);
   const sessionCostLabel = sessionCostLoading ? "..." : formatSessionCost(sessionCostUsd);
   const statusSummary = statusState === "loading"
-    ? "MCP: Loading status..."
+    ? "MCP loading"
     : statusState === "error"
-      ? "MCP status unavailable"
-      : `MCP: ${connected}/${servers.length} connected`;
+      ? "MCP unavailable"
+      : `MCP ${connected}/${servers.length}`;
 
   const startAuth = async (serverName: string, forceReauth = false) => {
     if (!onAuthenticate) return;
@@ -123,36 +123,37 @@ export default function McpStatusBar({
   return (
     <div className="shrink-0 border-b border-border bg-bg-secondary">
       <button
+        type="button"
+        aria-label="Session details"
         aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-4 py-1.5 text-xs hover:bg-bg-elevated transition-colors"
       >
-        <span className="flex flex-wrap items-center gap-2 text-text-muted">
-          <span className="flex items-center gap-1.5">
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-text-muted">
+          {hasMcpSignal && <span className="flex items-center gap-1.5" title={`${connected} of ${servers.length} MCP servers connected`}>
             <Plug size={12} />
             <span>
               {statusSummary}
-              {pending > 0 && <span className="text-warning ml-1">({pending} connecting)</span>}
-              {statusState === "stale" && <span className="text-warning ml-1">(status may be stale)</span>}
+              {pending > 0 && <Loader2 size={10} className="ml-1 inline animate-spin" aria-label={`${pending} connecting`} />}
+              {statusState === "stale" && <span className="text-warning ml-1">stale</span>}
             </span>
-          </span>
+          </span>}
           {hasProblem && (
             <span className={`flex items-center gap-0.5 ${failed > 0 ? "text-error" : "text-warning"}`}>
               <AlertTriangle size={10} />
-              {failed > 0 ? `${failed} failed` : `${needsAuth} needs auth`}
+              {[failed > 0 && `${failed} failed`, needsAuth > 0 && `${needsAuth} sign-in`].filter(Boolean).join(", ")}
             </span>
           )}
-          <span className="flex items-center gap-1 text-text-muted">
+          {hasContextSignal && <span className="flex items-center gap-1 text-text-muted">
             <Activity size={12} />
-            Context: {contextSummary}
-          </span>
+            Context {contextSummary}
+          </span>}
           {hasSessionCostSignal && (
             <span
               className="flex items-center gap-1 text-text-muted"
               title="Live SDK-reported Copilot cost for this session"
             >
-              <DollarSign size={12} />
-              Session: {sessionCostLabel}
+              Cost {sessionCostLabel}
             </span>
           )}
         </span>
@@ -160,15 +161,32 @@ export default function McpStatusBar({
       </button>
 
       {expanded && (
-        <div className="px-4 pb-3 pt-1 space-y-3">
-          <section className="rounded-lg border border-border bg-bg/60 p-3">
-            <div className="mb-2 flex items-center gap-1 text-xs font-medium text-text-primary">
-              <Plug size={12} /> MCP servers
+        <div className="max-h-[min(50vh,440px)] overflow-y-auto px-4 pb-3 pt-1 space-y-2">
+          {hasSessionCostSignal && (
+            <div className="flex items-center justify-between text-xs text-text-muted">
+              <span title="Cumulative cost reported by the Copilot SDK, not an invoice">Session cost</span>
+              <span className="font-medium tabular-nums text-text-primary">{sessionCostLabel}</span>
             </div>
+          )}
+          {hasContextSignal && (
+            <SessionContextPanel
+              capabilities={capabilities}
+              context={context}
+              error={contextError}
+              loading={contextLoading}
+              previews={previews}
+              summary={summary}
+            />
+          )}
+          {hasMcpSignal && <details key={hasProblem || statusState !== "ready" ? "attention" : "healthy"} open={hasProblem || statusState !== "ready"} className="rounded-lg border border-border px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-text-primary">
+              MCP servers <span className="ml-1 font-normal text-text-muted">{connected}/{servers.length} connected</span>
+            </summary>
+            <div className="pt-2">
             {statusState === "loading" ? (
               <p className="flex items-center gap-1.5 text-xs text-text-muted" role="status">
                 <Loader2 size={12} className="animate-spin" />
-                Loading MCP server status...
+                Loading servers...
               </p>
             ) : statusState === "error" || statusState === "stale" ? (
               <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-error" role="alert">
@@ -226,7 +244,7 @@ export default function McpStatusBar({
                       </>
                     )}
                     {server.error && (
-                      <span className="text-error truncate ml-auto max-w-[50%]" title={server.error}>
+                      <span className="basis-full break-words pl-5 text-error" title={server.error}>
                         {server.error}
                       </span>
                     )}
@@ -239,20 +257,10 @@ export default function McpStatusBar({
                 ))}
               </div>
             ) : statusState === "ready" ? (
-              <p className="text-xs text-text-muted">No MCP servers reported for this session.</p>
+              <p className="text-xs text-text-muted">No servers</p>
             ) : null}
-          </section>
-
-          {hasContextSignal && (
-            <SessionContextPanel
-              capabilities={capabilities}
-              context={context}
-              error={contextError}
-              loading={contextLoading}
-              previews={previews}
-              summary={summary}
-            />
-          )}
+            </div>
+          </details>}
         </div>
       )}
     </div>

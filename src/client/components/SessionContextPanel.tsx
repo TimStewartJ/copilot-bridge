@@ -9,6 +9,7 @@ import {
   type ChatTurnPreviews,
   CapabilityPill,
   ContextMeter,
+  formatTokenValue,
   getSummaryMetrics,
   getTurnId,
   MetricChip,
@@ -53,48 +54,27 @@ export default function SessionContextPanel({
   }
 
   return (
-    <section className="rounded-lg border border-border bg-bg/60 p-3">
+    <section className="space-y-2">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="flex items-center gap-1 text-xs font-medium text-text-primary">
           <Gauge size={12} /> Context
         </span>
-        {provider && <span className="text-[11px] text-text-muted">{provider}</span>}
-        {model && <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-text-muted">{model}</span>}
-        <div className="flex flex-wrap gap-1">
-          <CapabilityPill label="window" value={capabilities?.contextWindow} />
-          <CapabilityPill label="usage" value={capabilities?.modelUsage} />
-          <CapabilityPill label="compaction" value={capabilities?.compaction} />
-          <CapabilityPill label="truncation" value={capabilities?.truncation} />
-        </div>
+        {model && <span className="truncate text-[11px] text-text-muted" title={model}>{model}</span>}
+        {metrics.remaining !== undefined && <span className="ml-auto text-[11px] text-text-muted">{formatTokenValue(metrics.remaining)} left</span>}
       </div>
 
       {error ? (
-        <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
-          Context details unavailable. Chat remains usable.
+        <div role="alert" className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
+          Context unavailable
+          <details><summary className="cursor-pointer">Details</summary>{error}</details>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <ContextMeter metrics={metrics} />
-          <div className="flex flex-wrap gap-1">
-            <MetricChip label="total" value={metrics.used} />
-            <MetricChip label="input" value={inputTokens} />
-            <MetricChip label="output" value={outputTokens} />
-            <MetricChip label="cached" value={cachedTokens} />
-            <MetricChip label="reasoning" value={reasoningTokens} />
-            <MetricChip label="remaining" value={metrics.remaining} />
-            <MetricChip label="requests" value={requests} />
-          </div>
-          {metrics.used === undefined && !loading && capabilities?.modelUsage === "unavailable" && (
-            <p className="text-xs text-text-muted">Model usage is unavailable for this provider.</p>
-          )}
-          {metrics.limit === undefined && !loading && capabilities?.contextWindow === "unavailable" && (
-            <p className="text-xs text-text-muted">Context window size is unavailable for this provider.</p>
-          )}
-          {metrics.used === undefined && loading && (
-            <p className="text-xs text-text-muted">Waiting for usage from the provider…</p>
-          )}
-          {metrics.used === undefined && !loading && capabilities?.modelUsage !== "unavailable" && (
-            <p className="text-xs text-text-muted">Waiting for usage from the provider…</p>
+          {(metrics.used === undefined || metrics.limit === undefined) && (
+            <p className="text-xs text-text-muted">
+              {metrics.used !== undefined ? `${formatTokenValue(metrics.used)} used · Window size unavailable` : loading ? "Loading usage..." : "Context usage unavailable"}
+            </p>
           )}
           <SessionContextGraph
             capabilities={capabilities}
@@ -103,6 +83,23 @@ export default function SessionContextPanel({
             previews={previews}
             turns={turns}
           />
+          <details className="text-xs text-text-muted">
+            <summary className="cursor-pointer hover:text-text-primary">Usage details</summary>
+            <div className="mt-2 flex flex-wrap gap-1">
+              <MetricChip label="input" value={inputTokens} />
+              <MetricChip label="output" value={outputTokens} />
+              <MetricChip label="cached" value={cachedTokens} />
+              <MetricChip label="reasoning" value={reasoningTokens} />
+              <MetricChip label="requests" value={requests} />
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-1">
+              {provider && <span>{provider}</span>}
+              <CapabilityPill label="window" value={capabilities?.contextWindow} />
+              <CapabilityPill label="usage" value={capabilities?.modelUsage} />
+              <CapabilityPill label="compaction" value={capabilities?.compaction} />
+              <CapabilityPill label="truncation" value={capabilities?.truncation} />
+            </div>
+          </details>
         </div>
       )}
     </section>
