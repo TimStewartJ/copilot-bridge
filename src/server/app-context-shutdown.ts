@@ -31,6 +31,11 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.focusSessionLaunchService?.stop();
+    try {
+      await ctx.searchIndex?.shutdown();
+    } catch (error) {
+      console.error("[web] Search index shutdown failed:", error);
+    }
     const notificationsOutcome = await settleByDeadline(async () => {
       await Promise.all([ctx.stopPushEventNotifications?.(), ctx.focusNotifications?.dispose()]);
     }, deadline);

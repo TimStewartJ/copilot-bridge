@@ -37,6 +37,7 @@ export type {
   FocusProtectionScheduleImpact, FocusProtectionSession, FocusProtectionSnapshot, FocusProtectionWindow,
 } from "../shared/focus-protection.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { BridgeSearchRequest, BridgeSearchResponse } from "../shared/search.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../shared/session-stream.js";
@@ -1062,6 +1063,10 @@ export interface MessagesFastResponse {
   runState: SessionRunState;
   total: number;
   hasMore: boolean;
+  startOffset?: number;
+  targetOffset?: number;
+  endOffset?: number;
+  hasNewer?: boolean;
   warm: boolean;
   lastVisibleActivityAt?: string;
   coverage: SessionHistoryCoverage;
@@ -1069,15 +1074,32 @@ export interface MessagesFastResponse {
 
 export async function fetchMessagesFast(
   sessionId: string,
-  opts?: { limit?: number; before?: number },
+  opts?: { limit?: number; before?: number; after?: number; aroundEventId?: string },
 ): Promise<MessagesFastResponse> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
+  if (opts?.after != null) params.set("after", String(opts.after));
+  if (opts?.aroundEventId) params.set("aroundEventId", opts.aroundEventId);
   const qs = params.toString();
   return apiFetch<MessagesFastResponse>(
-    `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages-fast${qs ? `?${qs}` : ""}`,
   );
+}
+
+export async function searchBridge(
+  request: BridgeSearchRequest,
+  options?: { signal?: AbortSignal },
+): Promise<BridgeSearchResponse> {
+  const params = new URLSearchParams();
+  params.set("q", request.q);
+  if (request.scope) params.set("scope", request.scope);
+  if (request.taskId) params.set("taskId", request.taskId);
+  if (request.sessionId) params.set("sessionId", request.sessionId);
+  if (request.kind) params.set("kind", request.kind);
+  if (request.limit != null) params.set("limit", String(request.limit));
+  if (request.offset != null) params.set("offset", String(request.offset));
+  return apiFetch<BridgeSearchResponse>(`/api/search?${params.toString()}`, undefined, options);
 }
 
 export async function fetchSessionContext(

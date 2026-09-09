@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { readdir, readFile } from "node:fs/promises";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./db.js";
 import { createTaskStore } from "./task-store.js";
@@ -9,6 +10,7 @@ import { createSessionMetaStore } from "./session-meta-store.js";
 import { createSessionWorkspaceStore } from "./session-workspace-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
+import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createScheduleStore } from "./schedule-store.js";
@@ -21,6 +23,7 @@ import { createFocusSessionLaunchService } from "./focus-session-launch-service.
 import { createFocusProtectionService } from "./focus-protection-service.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
+import { createSearchIndex } from "./search-index.js";
 import { createDocsSnapshotStore, STARTUP_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { createTagStore } from "./tag-store.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
@@ -242,6 +245,50 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     runtimePaths,
   });
   ctx.sessionManager = sessionManager;
+  ctx.searchIndex = createSearchIndex(db, {
+    copilotHome: copilotHome ?? join(homedir(), ".copilot"),
+    taskStore,
+    sessionMetaStore,
+    sessionTitles,
+    docsIndex,
+    listSessions: async () => {
+      const sessionStateDir = join(copilotHome ?? join(homedir(), ".copilot"), "session-state");
+      try {
+        return (await readdir(sessionStateDir, { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => ({ sessionId: entry.name }));
+      } catch (error) {
+        if (
+          typeof error === "object"
+          && error !== null
+          && "code" in error
+          && (error as { code?: unknown }).code === "ENOENT"
+        ) {
+          return [];
+        }
+        throw error;
+      }
+    },
+    readSessionTitle: async (sessionId) => {
+      try {
+        const content = await readFile(
+          join(copilotHome ?? join(homedir(), ".copilot"), "session-state", sessionId, "workspace.yaml"),
+          "utf8",
+        );
+        return parseWorkspaceYamlSessionName(content);
+      } catch (error) {
+        if (
+          typeof error === "object"
+          && error !== null
+          && "code" in error
+          && ((error as { code?: unknown }).code === "ENOENT" || (error as { code?: unknown }).code === "ENOTDIR")
+        ) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+  });
   ctx.focusSessionLaunchService = createFocusSessionLaunchService(ctx, focusData.sessionLaunchStore);
   const protectionService = createFocusProtectionService(db, focusData.protectionStore, ctx);
   ctx.focusProtectionService = protectionService;

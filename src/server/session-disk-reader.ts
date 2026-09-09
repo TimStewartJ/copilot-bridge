@@ -1,7 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import {
   createVisibleActivityTracker,
   getLastVisibleActivityAt,
@@ -28,6 +30,7 @@ import {
   isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
+import { projectSearchableMessage, type SearchableMessage } from "./search-message-projection.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
@@ -85,6 +88,23 @@ export interface ReadMessagesFromDiskResult {
   hasMore: boolean;
   lastVisibleActivityAt?: string;
   coverage: SessionHistoryCoverage;
+}
+
+export interface ReadMessagesAroundEventResult extends ReadMessagesFromDiskResult {
+  targetOffset: number;
+  startOffset: number;
+  endOffset: number;
+  hasNewer: boolean;
+}
+
+export class SessionMessageNotFoundError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly sourceEventId: string,
+  ) {
+    super(`Message event ${sourceEventId} was not found in session ${sessionId}`);
+    this.name = "SessionMessageNotFoundError";
+  }
 }
 
 interface WorkspaceSessionRead {
@@ -1151,6 +1171,91 @@ export async function readMessagesFromDisk(
     hasMore: start > 0,
     lastVisibleActivityAt: stats.lastVisibleActivityAt,
     coverage: stats.coverage,
+  };
+}
+
+export async function readMessagesAroundEventFromDisk(
+  deps: SessionDiskReaderDeps,
+  sessionId: string,
+  sourceEventId: string,
+  options: { before: number; after: number },
+): Promise<ReadMessagesAroundEventResult> {
+  const startedAt = Date.now();
+  const copilotHome = deps.copilotHome ?? join(homedir(), ".copilot");
+  const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+  const beforeMessages: SearchableMessage[] = [];
+  const windowMessages: SearchableMessage[] = [];
+  let targetOffset = -1;
+  let total = 0;
+  let lineNumber = 0;
+  let lastVisibleActivityAt: string | undefined;
+  const stream = createReadStream(eventsPath, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      lineNumber += 1;
+      if (!line.trim()) continue;
+      let event: unknown;
+      try {
+        event = JSON.parse(line);
+      } catch (error) {
+        throw new Error(
+          `Cannot read exact message context because events.jsonl contains malformed JSON at line ${lineNumber}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      const message = projectSearchableMessage(event);
+      if (!message) continue;
+      const messageOffset = total;
+      total += 1;
+      if (message.timestamp) lastVisibleActivityAt = message.timestamp;
+
+      if (targetOffset < 0) {
+        if (message.sourceEventId === sourceEventId) {
+          targetOffset = messageOffset;
+          windowMessages.push(...beforeMessages, message);
+        } else {
+          beforeMessages.push(message);
+          if (beforeMessages.length > options.before) beforeMessages.shift();
+        }
+      } else if (messageOffset <= targetOffset + options.after) {
+        windowMessages.push(message);
+      }
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  if (targetOffset < 0) throw new SessionMessageNotFoundError(sessionId, sourceEventId);
+
+  const startOffset = Math.max(0, targetOffset - beforeMessages.length);
+  const endOffset = startOffset + windowMessages.length;
+  deps.recordSpan("session.readFromDisk.aroundEvent", Date.now() - startedAt, sessionId, {
+    sourceEventId,
+    targetOffset,
+    startOffset,
+    endOffset,
+    totalMessages: total,
+    mode: "stream",
+  });
+  return {
+    messages: windowMessages.map((message) => ({
+      id: message.sourceEventId,
+      type: "message",
+      sourceEventId: message.sourceEventId,
+      role: message.role,
+      content: message.content,
+      ...(message.timestamp ? { timestamp: message.timestamp } : {}),
+    })),
+    total,
+    targetOffset,
+    startOffset,
+    endOffset,
+    hasMore: startOffset > 0,
+    hasNewer: endOffset < total,
+    lastVisibleActivityAt,
+    coverage: {},
   };
 }
 

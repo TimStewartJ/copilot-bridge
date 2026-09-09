@@ -37,6 +37,7 @@ import { createPushSubscriptionStore } from "../push-subscription-store.js";
 import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
+import { createSearchIndex } from "../search-index.js";
 import { createDocsSnapshotStore } from "../docs-snapshot-store.js";
 import { createApiRouter, type ApiRouterOptions } from "../api-router.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
@@ -172,6 +173,14 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     ...baseContext,
     ...overrides,
   } as AppContext;
+  ctx.searchIndex ??= createSearchIndex(db, {
+    copilotHome,
+    taskStore: ctx.taskStore,
+    sessionMetaStore: ctx.sessionMetaStore,
+    sessionTitles: ctx.sessionTitles,
+    docsIndex: ctx.docsIndex,
+    listSessions: () => ctx.sessionManager.listSessionsFromDisk({ includeArchived: true }),
+  });
   ctx.focusSessionLaunchService ??= createFocusSessionLaunchService(ctx, ctx.focusSessionLaunchStore, {
     getOwner: async () => ({ pid: process.pid, startMarker: "test-app" }),
     getOwnerStatus: async (owner) => owner.startMarker === "test-app" ? "alive" : "exited",
@@ -219,6 +228,13 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
       }
       try {
         await ctx.focusSessionLaunchService?.drain();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (hasNoArgFunction(ctx.searchIndex, "shutdown")) {
+      try {
+        await ctx.searchIndex.shutdown();
       } catch (error) {
         cleanupErrors.push(error);
       }

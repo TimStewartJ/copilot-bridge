@@ -206,11 +206,70 @@ import { createSessionStorageReader, type SessionStorageReader } from "./session
 import { isLocalStagingModule } from "./path-utils.js";
 import { createSessionForkJobManager } from "./session-fork-job-manager.js";
 import { queueRestartRecoveryPrompts } from "./restart-resume.js";
+import type { BridgeSearchRequest, SearchKind, SearchScope } from "../shared/search.js";
+import {
+  readMessagesAroundEventFromDisk,
+  SessionMessageNotFoundError,
+} from "./session-disk-reader.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 /** Idle grace windows (minutes) accepted by the hibernate-on-idle watcher. */
 const HIBERNATE_IDLE_GRACE_MINUTES = [0, 1, 2, 5, 15, 30, 60] as const;
 const DEFAULT_HIBERNATE_IDLE_GRACE_MINUTES = 2;
+const SEARCH_SCOPES = new Set<SearchScope>(["global", "task", "session"]);
+const SEARCH_KINDS = new Set<SearchKind>(["all", "chat", "task", "doc"]);
+const DEFAULT_SEARCH_LIMIT = 20;
+const MAX_SEARCH_LIMIT = 50;
+
+function parseStrictBoundedInteger(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined) return defaultValue;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return parsed;
+}
+
+function parseSearchRequest(query: express.Request["query"]): Required<BridgeSearchRequest> {
+  if (typeof query.q !== "string") throw new Error("q is required");
+  const q = query.q.trim();
+  if (!q || q.length > 500) throw new Error("q must be between 1 and 500 characters");
+
+  const scope = query.scope === undefined ? "global" : String(query.scope);
+  if (!SEARCH_SCOPES.has(scope as SearchScope)) {
+    throw new Error("scope must be one of: global, task, session");
+  }
+  const kind = query.kind === undefined ? "all" : String(query.kind);
+  if (!SEARCH_KINDS.has(kind as SearchKind)) {
+    throw new Error("kind must be one of: all, chat, task, doc");
+  }
+  const taskId = typeof query.taskId === "string" ? query.taskId.trim() : "";
+  const sessionId = typeof query.sessionId === "string" ? query.sessionId.trim() : "";
+  if (scope === "task" && !taskId) throw new Error("taskId is required for task scope");
+  if (scope === "session" && !sessionId) throw new Error("sessionId is required for session scope");
+  if (scope !== "task" && taskId) throw new Error("taskId is only valid for task scope");
+  if (scope !== "session" && sessionId) throw new Error("sessionId is only valid for session scope");
+  if (sessionId && !isCanonicalSessionId(sessionId)) throw new Error("Valid sessionId is required");
+
+  return {
+    q,
+    scope: scope as SearchScope,
+    taskId,
+    sessionId,
+    kind: kind as SearchKind,
+    limit: parseStrictBoundedInteger(query.limit, "limit", DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
+    offset: parseStrictBoundedInteger(query.offset, "offset", 0, 0, 10_000),
+  };
+}
 
 function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
   if (!isDocsFtsUnavailableError(error)) return null;
@@ -2510,6 +2569,47 @@ export function createApiRouter(
   // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
   router.get("/sessions/:id/messages-fast", async (req, res) => {
     try {
+      const aroundEventId = typeof req.query.aroundEventId === "string"
+        ? req.query.aroundEventId.trim()
+        : "";
+      if (req.query.aroundEventId !== undefined && !aroundEventId) {
+        return res.status(400).json({ error: "aroundEventId must be a non-empty source event ID" });
+      }
+      if (aroundEventId) {
+        if (req.query.limit !== undefined) {
+          return res.status(400).json({ error: "limit is not valid with aroundEventId; use before and after" });
+        }
+        const before = parseStrictBoundedInteger(req.query.before, "before", 50, 0, 100);
+        const after = parseStrictBoundedInteger(req.query.after, "after", 50, 0, 100);
+        const result = await timeRequestOperation(
+          res,
+          "sessions.messagesFast.aroundEvent",
+          () => readMessagesAroundEventFromDisk(
+            {
+              copilotHome: getCopilotHome(ctx),
+              sessionMetaStore: ctx.sessionMetaStore,
+              eventBusRegistry: ctx.eventBusRegistry,
+              resolveEffectiveSessionCwdFromWorkspaceYaml: () => undefined,
+              recordSpan: () => {},
+              persistLastVisibleActivityAt: (sessionId, lastVisibleActivityAt) => {
+                if (lastVisibleActivityAt) {
+                  ctx.sessionMetaStore.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
+                }
+              },
+            },
+            req.params.id,
+            aroundEventId,
+            { before, after },
+          ),
+          { sessionId: req.params.id, aroundEventId, before, after },
+        );
+        const status = getSessionStatus(ctx, req.params.id);
+        const warm = ctx.sessionManager.isSessionWarm(req.params.id);
+        return res.json({ ...result, ...status, warm, aroundEventId });
+      }
+      if (req.query.after !== undefined) {
+        return res.status(400).json({ error: "after is only valid with aroundEventId" });
+      }
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
       const { messages, total, hasMore, lastVisibleActivityAt, coverage } = await timeRequestOperation(
@@ -2525,7 +2625,48 @@ export function createApiRouter(
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
       res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, coverage, warm });
     } catch (err) {
+      if (err instanceof SessionMessageNotFoundError || getErrorCode(err) === "ENOENT") {
+        return res.status(404).json({
+          error: err instanceof Error ? err.message : String(err),
+          code: "message_not_found",
+        });
+      }
+      if (err instanceof Error && /must be an integer/.test(err.message)) {
+        return res.status(400).json({ error: err.message });
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/search", async (req, res) => {
+    if (!ctx.searchIndex) return res.status(503).json({ error: "Search index is unavailable" });
+    let request: Required<BridgeSearchRequest>;
+    try {
+      request = parseSearchRequest(req.query);
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+
+    if (request.scope === "task" && !ctx.taskStore.getTask(request.taskId)) {
+      return res.status(404).json({ error: `Task ${request.taskId} not found` });
+    }
+    if (request.scope === "session") {
+      try {
+        await statAsync(join(getCopilotHome(ctx), "session-state", request.sessionId));
+      } catch (error) {
+        if (getErrorCode(error) === "ENOENT" || getErrorCode(error) === "ENOTDIR") {
+          return res.status(404).json({ error: `Session ${request.sessionId} not found` });
+        }
+        return res.status(503).json({
+          error: `Cannot validate session search scope: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+
+    try {
+      return res.json(await ctx.searchIndex.search(request));
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
