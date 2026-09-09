@@ -25,6 +25,7 @@ import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
 import { getTaskActivityDot } from "../task-row-signals";
 import { UI } from "./shared/design-system";
+import CopilotQuotaMenu from "./CopilotQuotaMenu";
 
 interface TaskRailProps {
   tasks: Task[];
@@ -432,7 +433,7 @@ export default function TaskRail({
           </button>
         </div>
 
-        {/* Bottom: expand + settings */}
+        {/* Bottom: expand + quota + settings */}
         <div className="flex flex-col items-center gap-1 py-3 mt-auto">
           <button
             type="button"
@@ -443,6 +444,7 @@ export default function TaskRail({
           >
             <PanelLeftOpen size={16} />
           </button>
+          <CopilotQuotaMenu collapsed />
           <button
             type="button"
             onClick={onOpenSettings}
@@ -753,8 +755,9 @@ export default function TaskRail({
         </button>
       </div>
 
-      {/* Settings */}
-      <div className="px-2 py-2 border-t border-border">
+      {/* Settings and quota */}
+      <div className="space-y-1 border-t border-border px-2 py-2">
+        <CopilotQuotaMenu />
         <button
           onClick={onOpenSettings}
           className="w-full text-left px-3 py-1.5 rounded-md text-xs text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors flex items-center gap-2"

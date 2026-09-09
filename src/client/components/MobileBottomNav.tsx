@@ -5,6 +5,7 @@ import {
   describeTabAttention,
   type TabAttentionSummary,
 } from "../hooks/useTaskIndicators";
+import CopilotQuotaMenu from "./CopilotQuotaMenu";
 
 type Tab = "home" | "tasks" | "chats" | "docs" | "settings";
 
@@ -98,6 +99,10 @@ export function MobileBottomNav({
             </button>
           );
         })}
+        <div className="flex h-full flex-1 flex-col items-center justify-center gap-0.5 text-text-muted">
+          <CopilotQuotaMenu collapsed mobile />
+          <span className="text-[10px] font-medium leading-tight">Quota</span>
+        </div>
       </div>
     </nav>
   );

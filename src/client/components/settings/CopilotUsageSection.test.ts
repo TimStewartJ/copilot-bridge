@@ -1,9 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CopilotQuotaStatus, CopilotUsageCostEstimate, CopilotUsageSummary } from "../../api";
+import type { CopilotUsageCostEstimate, CopilotUsageSummary } from "../../api";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../../shared/copilot-usage";
-import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import {
   createReactDomHarness,
@@ -15,10 +14,6 @@ import { CopilotUsageSection } from "./CopilotUsageSection";
 
 vi.mock("../../hooks/queries/useCopilotUsage", () => ({
   useCopilotUsageQuery: vi.fn(),
-}));
-
-vi.mock("../../hooks/queries/useCopilotQuota", () => ({
-  useCopilotQuotaQuery: vi.fn(),
 }));
 
 const NOW = "2026-05-01T12:00:00.000Z";
@@ -117,60 +112,18 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
   };
 }
 
-function createQuotaStatus(overrides: Partial<CopilotQuotaStatus> = {}): CopilotQuotaStatus {
-  const primary = overrides.primary ?? {
-    bucket: "premium_interactions",
-    unit: "ai_credits" as const,
-    tokenBasedBilling: true,
-    isUnlimitedEntitlement: false,
-    entitlement: 10_000_000,
-    used: 79_393.9,
-    usedIsPrecise: true,
-    remaining: 9_920_606.1,
-    remainingPercentage: 99.2,
-    overage: 0,
-    overagePermitted: true,
-    resetAt: "2026-09-01T00:00:00.000Z",
-  };
-  return {
-    available: true,
-    fetchedAt: NOW,
-    identity: {
-      login: "timstewart_microsoft",
-      plan: "enterprise",
-      sku: "copilot_enterprise_seat_quota",
-      organizations: ["ms-copilot"],
-    },
-    primary,
-    snapshots: primary ? [primary] : [],
-    error: null,
-    ...overrides,
-  };
-}
-
-function renderSection(
-  summary: CopilotUsageSummary,
-  quota: CopilotQuotaStatus | null = createQuotaStatus(),
-): string {
+function renderSection(summary: CopilotUsageSummary): string {
   vi.mocked(useCopilotUsageQuery).mockReturnValue({
     data: summary,
     error: null,
     isLoading: false,
     refresh: vi.fn(),
   } as any);
-  vi.mocked(useCopilotQuotaQuery).mockReturnValue({
-    data: quota,
-    error: null,
-    isLoading: false,
-    refresh: vi.fn(),
-  } as any);
-
   return renderToStaticMarkup(createElement(CopilotUsageSection));
 }
 
 beforeEach(() => {
   vi.mocked(useCopilotUsageQuery).mockReset();
-  vi.mocked(useCopilotQuotaQuery).mockReset();
 });
 
 describe("CopilotUsageSection", () => {
@@ -469,87 +422,11 @@ describe("CopilotUsageSection", () => {
     expect(html.replace(/<!-- -->/g, "")).toContain("Counts are limited to sessions with recorded usage inside the selected window.");
   });
 
-  it("renders the live quota counter with the precise used value and credit units", () => {
+  it("keeps the live account quota out of local usage settings", () => {
     const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
 
-    expect(text).toContain("Live account quota");
-    expect(text).toContain("AI credits used");
-    expect(text).toContain("79,393.9");
-    expect(text).toContain("of 10,000,000 this period");
-    expect(text).toContain("Current period · all clients");
-    expect(text).not.toContain("9,920,606.1");
-    expect(text).not.toContain("99.2% left");
-    expect(text).not.toContain("Exact counter");
-    expect(text).toContain("0.8% used");
-    expect(text).toContain("timstewart_microsoft · enterprise");
-  });
-
-  it("shows continuous progress through the viewer's local calendar month", () => {
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date(2026, 4, 1, 0, 0));
-      expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("0% of month elapsed");
-
-      vi.setSystemTime(new Date(2026, 3, 16, 0, 0));
-      const midpoint = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
-      expect(midpoint).toContain("50% of month elapsed");
-      expect(midpoint).toContain('aria-label="0.8% quota used; 50% of calendar month elapsed"');
-      expect(midpoint).toContain('bg-sky-400" style="width:50%"');
-      expect(midpoint).toMatch(/bg-accent" style="width:0\.[78]\d*%"/);
-
-      vi.setSystemTime(new Date(2024, 1, 15, 12, 0));
-      expect(renderSection(createUsageSummary()).replace(/<!-- -->/g, "")).toContain("50% of month elapsed");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("omits redundant quota tiles and billing implementation details", () => {
-    const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
-
-    expect(text).not.toContain("Resets");
-    expect(text).not.toContain("Remaining");
-    expect(text).not.toContain("Entitlement");
-    expect(text).not.toContain("Bucket premium_interactions");
-    expect(text).not.toContain("overage permitted");
-  });
-
-  it("preserves unlimited, approximate, and overage quota states", () => {
-    const quota = createQuotaStatus();
-    if (!quota.primary) throw new Error("Expected quota fixture");
-    const text = renderSection(createUsageSummary(), createQuotaStatus({
-      primary: {
-        ...quota.primary,
-        unit: "premium_requests",
-        usedIsPrecise: false,
-        isUnlimitedEntitlement: true,
-        remainingPercentage: null,
-        overage: 12,
-      },
-    })).replace(/<!-- -->/g, "");
-
-    expect(text).toContain("Unlimited allowance");
-    expect(text).toContain('aria-label="Approximately"');
-    expect(text).toContain("premium requests used");
-    expect(text).toContain("12 overage");
-    expect(text).not.toContain('role="img"');
-  });
-
-  it("keeps the panel usable when the live quota is unavailable", () => {
-    const text = renderSection(
-      createUsageSummary(),
-      {
-        available: false,
-        fetchedAt: NOW,
-        identity: null,
-        primary: null,
-        snapshots: [],
-        error: "Account quota lookup is not available in this Copilot SDK build",
-      },
-    ).replace(/<!-- -->/g, "");
-
-    expect(text).toContain("Account quota lookup is not available in this Copilot SDK build");
     expect(text).toContain("Local Copilot Usage");
+    expect(text).not.toContain("Live account quota");
   });
 });
 
@@ -563,15 +440,8 @@ describe("CopilotUsageSection range buttons", () => {
 
   beforeEach(async () => {
     vi.mocked(useCopilotUsageQuery).mockReset();
-    vi.mocked(useCopilotQuotaQuery).mockReset();
     vi.mocked(useCopilotUsageQuery).mockReturnValue({
       data: createUsageSummary(),
-      error: null,
-      isLoading: false,
-      refresh: vi.fn(),
-    } as any);
-    vi.mocked(useCopilotQuotaQuery).mockReturnValue({
-      data: createQuotaStatus(),
       error: null,
       isLoading: false,
       refresh: vi.fn(),
