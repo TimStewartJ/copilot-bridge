@@ -94,7 +94,7 @@ function createSmokeApp(stagingTools: StagingToolsModule) {
       return res.status(404).send("Staging preview not found.");
     }
     express.static(distDir)(req, res, () => {
-      res.sendFile(join(distDir, "index.html"));
+      res.sendFile("index.html", { root: distDir });
     });
   });
 
@@ -315,6 +315,12 @@ async function main(): Promise<void> {
     assert.equal(previewRes.status, 200, "preview root did not return 200");
     assert.match(previewRes.headers["content-type"] ?? "", /text\/html/, "preview root did not serve HTML");
     assert.match(previewRes.text, /<!doctype html>/i, "preview root did not serve the Vite index");
+
+    for (const route of ["search?q=needle", "sessions/11111111-2222-4333-8444-555555555555?message=source-event"]) {
+      const deepLink = await request(app).get(`${result.previewPath}${route}`);
+      assert.equal(deepLink.status, 200, `preview deep link ${route} did not return 200`);
+      assert.match(deepLink.text, /<!doctype html>/i, "preview deep link did not serve the Vite index");
+    }
 
     const tasksRes = await requestWithBackendRetry(app, `${result.previewPath}api/tasks`);
     assert.equal(tasksRes.status, 200, "tasks API did not return 200");

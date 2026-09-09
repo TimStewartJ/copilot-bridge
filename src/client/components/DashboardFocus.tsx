@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Clock3, Inbox, Layers3 } from "lucide-react";
 import type { FocusAlert, FocusDecision, FocusDigest, FocusHistoryFilter, FocusSnapshot, Task, TaskGroup } from "../api";
 import { assessFocusOverview, focusDueHandoffCount, focusQueryProblem, focusTime, isFocusReadFresh, type FocusQueryHealth } from "../focus-view-model";
@@ -59,6 +59,7 @@ interface DashboardFocusProps {
   notificationError?: string | null;
   onCloseNotification?: () => void;
   onInspectSubject?: (target: FocusSubjectTarget) => void;
+  initialHistoryQuery?: string;
 }
 
 export function getDueFollowUpTasks(tasks: Task[], now = new Date()): Task[] {
@@ -125,10 +126,17 @@ export default function DashboardFocus({
   focusLoading, focusError, actionsLoading, actionsError, alertsError, decisionsError,
   actionsUpdatedAt, alertsUpdatedAt, decisionsUpdatedAt, nowMs,
   onSelectTask, onSelectSession, onStartPromptSession, onLoadMoreAlerts, onLoadMoreDecisions, onRetryFocus, onRefresh,
-  notificationTarget, notificationError, onCloseNotification, onInspectSubject,
+  notificationTarget, notificationError, onCloseNotification, onInspectSubject, initialHistoryQuery,
 }: DashboardFocusProps) {
   const [historyTarget, setHistoryTarget] = useState<{ filter: FocusHistoryFilter; revision: number } | null>(null);
   const [localSubject, setLocalSubject] = useState<FocusSubjectTarget | null>(null);
+  useEffect(() => {
+    if (!initialHistoryQuery) return;
+    setHistoryTarget((current) => ({
+      filter: { query: initialHistoryQuery },
+      revision: (current?.revision ?? 0) + 1,
+    }));
+  }, [initialHistoryQuery]);
   const dueFollowUps = useMemo(() => getDueFollowUpTasks(tasks, new Date(nowMs)), [nowMs, tasks]);
   const health = {
     Actions: { loading: actionsLoading, error: actionsError, updatedAt: actionsUpdatedAt },

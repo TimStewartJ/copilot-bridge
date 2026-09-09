@@ -81,6 +81,7 @@ export default function Dashboard({
   const location = useLocation();
   const navigate = useNavigate();
   const notification = useMemo(() => readFocusSubjectLink(location.search), [location.search]);
+  const historyQuery = useMemo(() => new URLSearchParams(location.search).get("historyQuery")?.trim() || undefined, [location.search]);
   const queryClient = useQueryClient();
   const {
     data,
@@ -191,6 +192,7 @@ export default function Dashboard({
           <DashboardFocus
             active={activeTab === "focus"}
             tabbed={workMapEnabled}
+            initialHistoryQuery={historyQuery}
             checklist={checklist}
             tasks={tasks}
             taskGroups={taskGroups}

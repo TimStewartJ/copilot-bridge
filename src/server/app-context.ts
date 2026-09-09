@@ -32,6 +32,7 @@ import type { FocusProtectionStore } from "./focus-protection-store.js";
 import type { FocusProtectionService } from "./focus-protection-service.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
+import type { SearchIndex } from "./search-index.js";
 import type { DocsSnapshotStore } from "./docs-snapshot-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { McpServerStore } from "./mcp-server-store.js";
@@ -98,6 +99,7 @@ export interface AppContext {
   stopPushEventNotifications?: PushEventNotificationDisposer;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
+  searchIndex?: SearchIndex;
   docsSnapshotStore?: DocsSnapshotStore;
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;

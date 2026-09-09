@@ -10,10 +10,13 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   fetchSlashCommands,
   fetchMessagesFast,
+  searchBridge,
   warmSession,
+  ApiError,
   loginMcpServer,
   fetchSessionContext,
   reportTiming,
@@ -40,6 +43,8 @@ import { getCachedChatSnapshot, replaceHistoryWindow, setCachedChatSnapshot } fr
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
+import { getAppAbsoluteUrl } from "../lib/app-url";
+import { textMatchesSearchQuery } from "../lib/search-text";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
@@ -54,6 +59,7 @@ import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { RunNotice } from "../../shared/session-stream.js";
+import type { BridgeSearchResponse } from "../../shared/search.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
 import ElicitationCard from "./ElicitationCard";
@@ -70,7 +76,7 @@ import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
-import { ArrowUpCircle, ClipboardList, Loader2, Terminal } from "lucide-react";
+import { ArrowLeft, ArrowUpCircle, Check, ClipboardList, Copy, Loader2, Search, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const INITIAL_PAGE_SIZE = 50;
@@ -97,6 +103,7 @@ const FOLLOW_SCROLL_EASE = 0.35;
 const FOLLOW_SCROLL_SETTLE_PX = 1.5;
 const LATEST_MESSAGE_TOP_THRESHOLD_PX = 8;
 const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
+const SEARCH_MATCH_PAGE_SIZE = 20;
 
 type PendingStatusTone = "sending" | "thinking" | "creating";
 
@@ -298,6 +305,15 @@ function prefersReducedMotion(): boolean {
   return typeof window !== "undefined"
     && typeof window.matchMedia === "function"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function safeInternalPath(value: string | null): string | null {
+  return value?.startsWith("/") && !value.startsWith("//") ? value : null;
+}
+
+function parseNonNegativeInteger(value: string | null): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function renderLiveStatusPill(
@@ -617,6 +633,15 @@ export default function ChatView({
   onRenderedReadThrough, newWorkDisabled = false, newWorkDisabledHint,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [routeSearchParams] = useSearchParams();
+  const targetSourceEventId = routeSearchParams.get("message");
+  const historyOnlyMode = routeSearchParams.get("history") === "1";
+  const searchQuery = routeSearchParams.get("search")?.trim() ?? "";
+  const requestedMatchOffset = parseNonNegativeInteger(routeSearchParams.get("matchOffset"));
+  const returnToSearch = safeInternalPath(routeSearchParams.get("from"));
+  const historicalMode = Boolean(sessionId && (targetSourceEventId || historyOnlyMode));
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   /**
    * Client-owned optimistic sends (in flight or failed). They live outside `entries` so the
@@ -629,10 +654,11 @@ export default function ChatView({
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
-  const mcpStatusQuery = useMcpStatusQuery(sessionId);
-  const sessionUsageMetricsQuery = useSessionUsageMetricsQuery(sessionId);
+  const mcpStatusQuery = useMcpStatusQuery(historicalMode ? null : sessionId);
+  const sessionUsageMetricsQuery = useSessionUsageMetricsQuery(historicalMode ? null : sessionId);
   const sessionCostLoading = Boolean(
     sessionId
+    && !historicalMode
     && sessionUsageMetricsQuery.isLoading
     && !sessionUsageMetricsQuery.data,
   );
@@ -650,6 +676,19 @@ export default function ChatView({
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [historicalUnavailable, setHistoricalUnavailable] = useState(false);
+  const [historicalLoadError, setHistoricalLoadError] = useState<string | null>(null);
+  const [historicalHasNewer, setHistoricalHasNewer] = useState(false);
+  const [copiedMessageLink, setCopiedMessageLink] = useState(false);
+  const [messageLinkCopyError, setMessageLinkCopyError] = useState<string | null>(null);
+  const [searchMatchPage, setSearchMatchPage] = useState<{
+    ids: string[];
+    offset: number;
+    total: number;
+    coverage: BridgeSearchResponse["coverage"];
+  } | null>(null);
+  const [searchMatchPageLoading, setSearchMatchPageLoading] = useState(false);
+  const [searchMatchPageError, setSearchMatchPageError] = useState<string | null>(null);
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsSupported, setSlashCommandsSupported] = useState(false);
   const slashCommandFetchKeyRef = useRef<string | null>(null);
@@ -690,11 +729,13 @@ export default function ChatView({
   const resetProgrammaticScrollFrameRef = useRef<number | null>(null);
   const programmaticScrollRef = useRef(false);
   const messageElementRefs = useRef(new Map<string, HTMLDivElement>());
+  const sourceMessageElementRefs = useRef(new Map<string, HTMLDivElement>());
   const latestMessageAnchorKeyRef = useRef<string | null>(null);
   const anchoredMessageKeyRef = useRef<string | null>(null);
   const pendingLiveAnchorCarryRef = useRef(false);
   /** Armed on session navigation so the first painted history lands on the newest reply's top. */
   const pendingInitialAnchorRef = useRef(false);
+  const pendingHistoricalAnchorRef = useRef<string | null>(null);
   /** Anchor applied by the navigation landing, released when a new run needs the live tail. */
   const loadAnchoredMessageKeyRef = useRef<string | null>(null);
   const contextRefreshStreamingRef = useRef(false);
@@ -719,6 +760,57 @@ export default function ChatView({
     if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
   }, []);
 
+  useEffect(() => {
+    setHistoricalUnavailable(false);
+    setHistoricalLoadError(null);
+    setHistoricalHasNewer(false);
+    setCopiedMessageLink(false);
+    setMessageLinkCopyError(null);
+    pendingHistoricalAnchorRef.current = targetSourceEventId;
+  }, [sessionId, targetSourceEventId]);
+
+  useEffect(() => {
+    if (!historicalMode || !targetSourceEventId || !sessionId || !searchQuery) {
+      setSearchMatchPage(null);
+      setSearchMatchPageLoading(false);
+      setSearchMatchPageError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setSearchMatchPageLoading(true);
+    setSearchMatchPageError(null);
+    void searchBridge({
+      q: searchQuery,
+      scope: "session",
+      sessionId,
+      kind: "chat",
+      limit: SEARCH_MATCH_PAGE_SIZE,
+      offset: requestedMatchOffset,
+    }, { signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted) return;
+      const hit = result.chats.items[0];
+      setSearchMatchPage({
+        ids: hit?.matches.map((match) => match.sourceEventId) ?? [],
+        offset: requestedMatchOffset,
+        total: hit?.matchCount ?? 0,
+        coverage: result.coverage,
+      });
+    }, (reason: unknown) => {
+      if (!controller.signal.aborted) {
+        setSearchMatchPage(null);
+        setSearchMatchPageError(reason instanceof Error ? reason.message : String(reason));
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setSearchMatchPageLoading(false);
+    });
+    return () => controller.abort();
+  }, [historicalMode, requestedMatchOffset, searchQuery, sessionId]);
+
+  useEffect(() => {
+    setSearchMatchPage(null);
+    setSearchMatchPageError(null);
+  }, [historicalMode, requestedMatchOffset, searchQuery, sessionId]);
+
   const applyHistory = useCallback((
     nextEntries: ChatEntry[],
     opts: {
@@ -729,6 +821,8 @@ export default function ChatView({
       lastVisibleActivityAt?: string | null;
       /** Disk read time of `nextEntries`; defaults to now. Cached resumes pass the snapshot's. */
       fetchedAt?: number;
+      persistSnapshot?: boolean;
+      reportReadThrough?: boolean;
     } = {},
   ) => {
     const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
@@ -750,7 +844,7 @@ export default function ChatView({
       nextLastVisibleActivityAt,
       getLatestEntryActivityTimestamp(nextEntries),
     );
-    pendingRenderedReadThroughRef.current = ownerSessionId && nextReadThrough
+    pendingRenderedReadThroughRef.current = ownerSessionId && opts.reportReadThrough !== false && nextReadThrough
       ? { sessionId: ownerSessionId, readThroughActivityAt: nextReadThrough }
       : null;
 
@@ -760,6 +854,7 @@ export default function ChatView({
     }
     const fetchedAt = opts.fetchedAt ?? Date.now();
     historyFetchedAtRef.current = fetchedAt;
+    if (opts.persistSnapshot === false) return;
     setCachedChatSnapshot(queryClient, {
       sessionId: ownerSessionId,
       entries: nextEntries,
@@ -818,7 +913,7 @@ export default function ChatView({
     reconnect,
     activeTurnId,
     activeTurnInstanceId,
-  } = useSessionStream(sessionId, handleStreamSettled, onMessageSent, updateMcpStatus);
+  } = useSessionStream(historicalMode ? null : sessionId, handleStreamSettled, onMessageSent, updateMcpStatus);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
   // disappears from the overlay the moment its persisted entry is present in the loaded window.
@@ -907,7 +1002,7 @@ export default function ChatView({
   }, [onRenderedReadThrough, sessionId, uncommittedAssistantSegments, uncommittedUserMessages]);
 
   useEffect(() => {
-    if (!sessionId || loading || creating) {
+    if (!sessionId || historicalMode || loading || creating) {
       setSlashCommands([]);
       setSlashCommandsSupported(false);
       slashCommandFetchKeyRef.current = null;
@@ -931,10 +1026,10 @@ export default function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [creating, isStreaming, loading, sessionId]);
+  }, [creating, historicalMode, isStreaming, loading, sessionId]);
 
   const refreshMcpStatus = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sessionId || historicalMode) return;
     await mcpStatusQuery.refetch();
   }, [mcpStatusQuery.refetch, sessionId]);
 
@@ -967,7 +1062,7 @@ export default function ChatView({
   }, []);
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId || historicalMode) {
       contextRefreshStreamingRef.current = false;
       setSessionContext(null);
       setSessionContextError(null);
@@ -979,19 +1074,19 @@ export default function ChatView({
     setSessionContextError(null);
     void refreshSessionContext(sessionId, { signal: controller.signal });
     return () => controller.abort();
-  }, [historySignal, refreshSessionContext, reloadToken, sessionId]);
+  }, [historicalMode, historySignal, refreshSessionContext, reloadToken, sessionId]);
 
   useEffect(() => {
     const wasStreaming = contextRefreshStreamingRef.current;
     contextRefreshStreamingRef.current = isStreaming;
-    if (!sessionId || !wasStreaming || isStreaming) return;
+    if (!sessionId || historicalMode || !wasStreaming || isStreaming) return;
     void refreshSessionContext(sessionId, { background: true });
     void queryClient.invalidateQueries({
       queryKey: queryKeys.sessionUsageMetrics(sessionId),
       exact: true,
     });
     loadAndReconnectRef.current({ background: true, silent: true });
-  }, [isStreaming, queryClient, refreshSessionContext, sessionId]);
+  }, [historicalMode, isStreaming, queryClient, refreshSessionContext, sessionId]);
 
   const cancelFollowScroll = useCallback(() => {
     if (followScrollFrameRef.current != null) {
@@ -1117,6 +1212,21 @@ export default function ChatView({
     scrollToLatest({ force: true });
   }, [scrollToLatest]);
 
+  const handleExitHistoricalMode = useCallback(() => {
+    navigate(location.pathname, { replace: true });
+  }, [location.pathname, navigate]);
+
+  const handleCopyMessageLink = useCallback(() => {
+    if (!targetSourceEventId) return;
+    const url = getAppAbsoluteUrl(location.pathname);
+    url.searchParams.set("message", targetSourceEventId);
+    setMessageLinkCopyError(null);
+    void writeClipboardText(url.toString()).then(
+      () => setCopiedMessageLink(true),
+      (reason: unknown) => setMessageLinkCopyError(reason instanceof Error ? reason.message : String(reason)),
+    );
+  }, [location.pathname, targetSourceEventId]);
+
   useEffect(() => () => {
     cancelFollowScroll();
     clearProgrammaticScroll();
@@ -1193,7 +1303,7 @@ export default function ChatView({
     if (prevSession !== sessionId) {
       // Arm the landing anchor per navigation only. Re-running this effect for the same session
       // (composer or callback identity churn) must not yank an established reading position.
-      pendingInitialAnchorRef.current = true;
+      pendingInitialAnchorRef.current = !historicalMode;
       loadAnchoredMessageKeyRef.current = null;
     }
     messageElementRefs.current.clear();
@@ -1221,6 +1331,10 @@ export default function ChatView({
         setLoading(true);
         setRefreshingHistory(false);
         setWarming(false);
+        if (historicalMode) {
+          setHistoricalUnavailable(false);
+          setHistoricalLoadError(null);
+        }
       }
       const pageLoadStart = performance.now();
 
@@ -1234,14 +1348,33 @@ export default function ChatView({
             Math.max(INITIAL_PAGE_SIZE, entriesRef.current.length),
           )
         : INITIAL_PAGE_SIZE;
-      return fetchMessagesFast(sessionId, { limit: requestLimit })
-        .then(({ messages: msgs, runState, total, warm, lastVisibleActivityAt }) => {
+      const historicalRequest = targetSourceEventId
+        ? { before: 50, after: 50, aroundEventId: targetSourceEventId }
+        : { limit: requestLimit };
+      return fetchMessagesFast(sessionId, historicalRequest)
+        .then(({ messages: msgs, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer }) => {
           const busy = runState !== "idle";
           if (controller.signal.aborted) return;
           if (requestId !== loadRequestIdRef.current) {
             return;
           }
-          if (background && !replace) {
+          if (historicalMode) {
+            const found = !targetSourceEventId || msgs.some((entry) => isChatMessageEntry(entry)
+              && (entry.sourceEventId === targetSourceEventId || entry.id === targetSourceEventId));
+            const historicalStartOffset = startOffset ?? Math.max(0, total - msgs.length);
+            setHistoricalUnavailable(!found);
+            setHistoricalHasNewer(Boolean(hasNewer));
+            stickToBottomRef.current = false;
+            applyHistory(found ? msgs : [], {
+              ownerSessionId: sessionId,
+              firstItemIndex: historicalStartOffset,
+              total,
+              hasMore: historicalStartOffset > 0,
+              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
+              persistSnapshot: false,
+              reportReadThrough: false,
+            });
+          } else if (background && !replace) {
             const merged = replaceHistoryWindow(
               entriesRef.current,
               firstItemIndex.current,
@@ -1273,6 +1406,8 @@ export default function ChatView({
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
+
+          if (historicalMode) return;
 
           // Report time from navigation to messages rendered
           const loadDuration = Math.round(performance.now() - pageLoadStart);
@@ -1308,7 +1443,21 @@ export default function ChatView({
           if (requestId !== loadRequestIdRef.current) {
             return;
           }
-          if (!background) {
+          if (historicalMode) {
+            applyHistory([], {
+              ownerSessionId: null,
+              firstItemIndex: 0,
+              total: 0,
+              hasMore: false,
+              persistSnapshot: false,
+              reportReadThrough: false,
+            });
+            if (targetSourceEventId && err instanceof ApiError && err.status === 404) {
+              setHistoricalUnavailable(true);
+            } else {
+              setHistoricalLoadError(`Could not load this saved message: ${getErrorMessage(err)}`);
+            }
+          } else if (!background) {
             applyHistory([
               { role: "assistant", content: `Error loading history: ${err.message}` },
             ], {
@@ -1336,7 +1485,7 @@ export default function ChatView({
     suppressAutoLoadRef.current = false;
     topAutoFillConsumedRef.current = false;
     clearPendingAutoLoad();
-    const cachedSnapshot = getCachedChatSnapshot(queryClient, sessionId);
+    const cachedSnapshot = historicalMode ? null : getCachedChatSnapshot(queryClient, sessionId);
     if (cachedSnapshot && cachedSnapshot.entries.length > 0) {
       // Cached windows are always disk-derived, so they can be shown immediately and then
       // replaced by the background read.
@@ -1367,7 +1516,7 @@ export default function ChatView({
 
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
+      if (historicalMode || document.visibilityState !== "visible") return;
       loadAndReconnect({ background: true, silent: true });
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -1378,14 +1527,29 @@ export default function ChatView({
       clearPendingAutoLoad();
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [cancelFollowScroll, clearPendingAutoLoad, clearProgrammaticScroll, composerKey, reconnect, sessionId, applyHistory, queryClient]);
+  }, [
+    applyHistory,
+    cancelFollowScroll,
+    clearPendingAutoLoad,
+    clearProgrammaticScroll,
+    composerKey,
+    historicalMode,
+    queryClient,
+    reconnect,
+    sessionId,
+    targetSourceEventId,
+  ]);
 
   // Reconnect when an external source starts work on this session
   const prevBusySignalRef = useRef(busySignal);
   useEffect(() => {
     prevBusySignalRef.current = busySignal;
-  }, [sessionId]);
+  }, [historicalMode, sessionId, targetSourceEventId]);
   useEffect(() => {
+    if (historicalMode) {
+      prevBusySignalRef.current = busySignal;
+      return;
+    }
     const prev = prevBusySignalRef.current;
     const action = resolveExternalSessionWorkAction({
       sessionId,
@@ -1405,7 +1569,7 @@ export default function ChatView({
     if (action === "reconnect") {
       loadAndReconnectRef.current({ background: true });
     }
-  }, [busySignal, creating, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
+  }, [busySignal, creating, historicalMode, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
 
   const prevHistorySignalRef = useRef(historySignal);
   useEffect(() => {
@@ -1413,10 +1577,10 @@ export default function ChatView({
   }, [sessionId]);
   useEffect(() => {
     const prev = prevHistorySignalRef.current;
-    if (!sessionId || historySignal === prev) return;
+    if (!sessionId || historicalMode || historySignal === prev) return;
     prevHistorySignalRef.current = historySignal;
     loadAndReconnectRef.current({ background: true, replace: true });
-  }, [historySignal, sessionId]);
+  }, [historicalMode, historySignal, sessionId]);
 
   /**
    * Committed history advanced on the server: re-read the disk window.
@@ -1472,10 +1636,10 @@ export default function ChatView({
   }, []);
 
   useEffect(() => {
-    if (!sessionId || historyEpoch === 0) return;
+    if (!sessionId || historicalMode || historyEpoch === 0) return;
     requestedHistoryEpochRef.current = historyEpoch;
     runHistoryRefresh();
-  }, [historyEpoch, runHistoryRefresh, sessionId]);
+  }, [historicalMode, historyEpoch, runHistoryRefresh, sessionId]);
 
   useEffect(() => {
     requestedHistoryEpochRef.current = 0;
@@ -1544,7 +1708,7 @@ export default function ChatView({
     limit?: number;
     preserveScrollPosition?: boolean;
   } = {}) => {
-    if (!sessionId || !hasMore || loadingMoreRef.current) return;
+    if (!sessionId || historicalMode || !hasMore || loadingMoreRef.current) return;
     const { limit = INITIAL_PAGE_SIZE, preserveScrollPosition = true } = opts;
     loadingMoreRef.current = true;
     setLoadingMore(true);
@@ -1586,7 +1750,7 @@ export default function ChatView({
         loadingMoreRef.current = false;
         setLoadingMore(false);
       });
-  }, [sessionId, hasMore, applyHistory]);
+  }, [sessionId, historicalMode, hasMore, applyHistory]);
 
   const handleLoadMoreClick = useCallback(() => {
     clearPendingAutoLoad();
@@ -1607,7 +1771,7 @@ export default function ChatView({
   }, [clearPendingAutoLoad]);
 
   const scheduleAutoLoad = useCallback((opts: { consumeTopAutoFill?: boolean } = {}) => {
-    if (!sessionId || !hasMore || loadingMoreRef.current || autoLoadTimeoutRef.current != null) return;
+    if (!sessionId || historicalMode || !hasMore || loadingMoreRef.current || autoLoadTimeoutRef.current != null) return;
     autoLoadTimeoutRef.current = setTimeout(() => {
       autoLoadTimeoutRef.current = null;
       if (!loadingMoreRef.current) {
@@ -1618,7 +1782,7 @@ export default function ChatView({
         loadOlderMessages();
       }
     }, AUTO_LOAD_DELAY_MS);
-  }, [hasMore, loadOlderMessages, sessionId]);
+  }, [hasMore, historicalMode, loadOlderMessages, sessionId]);
 
   // Detect stick-to-bottom and schedule an auto-load after the user reaches the top.
   const handleScroll = useCallback(() => {
@@ -1650,13 +1814,13 @@ export default function ChatView({
   // If the first page doesn't overflow, schedule the same delayed auto-load from the top.
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (!el || !sessionId || !hasMore || loading || loadingMore) return;
+    if (!el || !sessionId || historicalMode || !hasMore || loading || loadingMore) return;
     if (suppressAutoLoadRef.current || topAutoFillConsumedRef.current) return;
     const nearTop = el.scrollTop <= AUTO_LOAD_TOP_THRESHOLD;
     const overflowing = el.scrollHeight > el.clientHeight + AUTO_LOAD_TOP_THRESHOLD;
     if (!nearTop || overflowing) return;
     scheduleAutoLoad({ consumeTopAutoFill: true });
-  }, [entries, hasMore, loading, loadingMore, scheduleAutoLoad, sessionId]);
+  }, [entries, hasMore, historicalMode, loading, loadingMore, scheduleAutoLoad, sessionId]);
 
   /**
    * Keep the ref and state in lockstep so synchronous callers (for example a double-clicked retry)
@@ -2403,6 +2567,106 @@ export default function ChatView({
     void handleUndoFromHere(target.message);
   }, [closeMessageMenu, handleUndoFromHere, messageMenuTarget]);
 
+  const historicalMatchIds = useMemo(() => {
+    if (!historicalMode || !searchQuery) return [];
+    return displayEntries.flatMap((entry) => {
+      if (!isChatMessageEntry(entry) || !textMatchesSearchQuery(entry.content, searchQuery)) return [];
+      const sourceId = entry.sourceEventId ?? entry.id;
+      return sourceId ? [sourceId] : [];
+    });
+  }, [displayEntries, historicalMode, searchQuery]);
+  const activeSearchMatchPage = searchMatchPage?.ids.includes(targetSourceEventId ?? "")
+    ? searchMatchPage
+    : null;
+  const navigableMatchIds = activeSearchMatchPage
+    ? activeSearchMatchPage.ids
+    : historicalMatchIds;
+  const navigableMatchOffset = activeSearchMatchPage
+    ? activeSearchMatchPage.offset
+    : 0;
+  const navigableMatchTotal = activeSearchMatchPage
+    ? activeSearchMatchPage.total
+    : navigableMatchIds.length;
+  const matchCoveragePartial = activeSearchMatchPage && (
+    activeSearchMatchPage.coverage.state !== "ready"
+    || activeSearchMatchPage.coverage.errors.length > 0
+  );
+  const historicalMatchIndex = targetSourceEventId
+    ? navigableMatchIds.indexOf(targetSourceEventId)
+    : -1;
+  const scrollToSourceMessage = useCallback((sourceEventId: string) => {
+    const node = sourceMessageElementRefs.current.get(sourceEventId);
+    node?.scrollIntoView?.({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, []);
+  const moveHistoricalMatch = useCallback(async (direction: -1 | 1) => {
+    if (!sessionId || navigableMatchIds.length === 0) return;
+    const currentIndex = Math.max(0, historicalMatchIndex);
+    const nextIndex = currentIndex + direction;
+    let nextId = navigableMatchIds[nextIndex];
+    let nextOffset = navigableMatchOffset;
+    if (!nextId && searchMatchPage && searchQuery) {
+      const adjacentOffset = direction > 0
+        ? searchMatchPage.offset + searchMatchPage.ids.length
+        : Math.max(0, searchMatchPage.offset - SEARCH_MATCH_PAGE_SIZE);
+      const hasAdjacentPage = direction > 0
+        ? adjacentOffset < searchMatchPage.total
+        : searchMatchPage.offset > 0;
+      if (!hasAdjacentPage) return;
+      setSearchMatchPageLoading(true);
+      setSearchMatchPageError(null);
+      try {
+        const result = await searchBridge({
+          q: searchQuery,
+          scope: "session",
+          sessionId,
+          kind: "chat",
+          limit: SEARCH_MATCH_PAGE_SIZE,
+          offset: adjacentOffset,
+        });
+        const hit = result.chats.items[0];
+        const ids = hit?.matches.map((match) => match.sourceEventId) ?? [];
+        if (ids.length === 0) return;
+        const adjacentId = direction > 0 ? ids[0] : ids.at(-1);
+        if (!adjacentId) return;
+        nextId = adjacentId;
+        nextOffset = adjacentOffset;
+        setSearchMatchPage({
+          ids,
+          offset: adjacentOffset,
+          total: hit?.matchCount ?? 0,
+          coverage: result.coverage,
+        });
+      } catch (reason) {
+        setSearchMatchPageError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      } finally {
+        setSearchMatchPageLoading(false);
+      }
+    }
+    if (!nextId) return;
+    const next = new URLSearchParams(routeSearchParams);
+    next.set("message", nextId);
+    next.set("matchOffset", String(nextOffset));
+    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+  }, [
+    historicalMatchIndex,
+    location.pathname,
+    navigate,
+    navigableMatchIds,
+    navigableMatchOffset,
+    routeSearchParams,
+    searchMatchPage,
+    searchQuery,
+    sessionId,
+  ]);
+
+  useLayoutEffect(() => {
+    if (!historicalMode || loading || !targetSourceEventId || historicalUnavailable) return;
+    if (pendingHistoricalAnchorRef.current !== targetSourceEventId) return;
+    pendingHistoricalAnchorRef.current = null;
+    scrollToSourceMessage(targetSourceEventId);
+  }, [entries, historicalMode, historicalUnavailable, loading, scrollToSourceMessage, targetSourceEventId]);
+
   if (!sessionId && !isDraft) {
     return (
       <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
@@ -2468,6 +2732,7 @@ export default function ChatView({
       const msg = segment.entry as ChatMessage;
       const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
       const messageAnchorKey = messageAnchorKeys.get(msg) ?? getMessageAnchorKey(msg, index);
+      const messageSourceId = msg.sourceEventId ?? msg.id;
       const isLiveStreamingMessage = msg.id === LIVE_STREAMING_MESSAGE_ID;
       const isSelectingText = isSameMessageTarget(selectingMessageTarget, msg, messageAnchorKey);
       const failedOptimisticMessage = isFailedOptimisticChatMessage(msg) ? msg : null;
@@ -2493,17 +2758,20 @@ export default function ChatView({
           ref={(node) => {
             if (node) {
               messageElementRefs.current.set(messageAnchorKey, node);
+              if (messageSourceId) sourceMessageElementRefs.current.set(messageSourceId, node);
             } else {
               messageElementRefs.current.delete(messageAnchorKey);
+              if (messageSourceId) sourceMessageElementRefs.current.delete(messageSourceId);
             }
           }}
           data-chat-message-key={messageAnchorKey}
           data-latest-chat-message={messageAnchorKey === latestMessageAnchorKey ? "true" : undefined}
           data-message-actions-trigger={menuBindings ? "true" : undefined}
           data-message-text-selection={isSelectingText ? "true" : undefined}
+          data-source-event-id={messageSourceId}
           className={`${CHAT_RAIL_CLASS} relative pt-4 transition-colors ${
             isLongPressTarget ? "bg-accent/5" : ""
-          }`}
+          } ${historicalMode && messageSourceId === targetSourceEventId ? "bg-warning/10 ring-1 ring-inset ring-warning/30" : ""}`}
           onClick={menuBindings?.onClick}
           onContextMenu={menuBindings ? (event: ReactMouseEvent<HTMLDivElement>) => {
             if (shouldUseNativeMessageContextMenu(event.currentTarget, event.target)) return;
@@ -2550,6 +2818,8 @@ export default function ChatView({
     openMessageActionsMenu,
     selectingMessageTarget,
     sessionId,
+    historicalMode,
+    targetSourceEventId,
     toolForest,
   ]);
 
@@ -2566,6 +2836,45 @@ export default function ChatView({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {historicalMode && (
+        <div className="shrink-0 border-b border-border bg-bg-secondary px-3 py-2">
+          <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 text-xs">
+            {returnToSearch && <button type="button" onClick={() => navigate(returnToSearch)} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-text-secondary hover:bg-bg-hover"><ArrowLeft size={14} /> Back to results</button>}
+            <span className="text-text-muted">{targetSourceEventId ? "Viewing saved history around an exact message." : "Viewing the latest saved history for this conversation."} This does not resume the chat.{historicalHasNewer ? " Newer messages are available." : ""}</span>
+            <div className="ml-auto flex flex-wrap items-center gap-1">
+              {navigableMatchTotal > 1 && <>
+                <button type="button" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex <= 0} onClick={() => { void moveHistoricalMatch(-1); }} className="min-h-9 rounded-lg px-2 text-text-secondary hover:bg-bg-hover disabled:opacity-40">Previous match</button>
+                <span className="text-text-muted">{activeSearchMatchPage
+                  ? `${Math.max(1, navigableMatchOffset + historicalMatchIndex + 1)} of ${navigableMatchTotal}${matchCoveragePartial ? " indexed" : ""}`
+                  : `${Math.max(1, historicalMatchIndex + 1)} of ${navigableMatchTotal} in loaded context`}</span>
+                <button type="button" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex + 1 >= navigableMatchTotal} onClick={() => { void moveHistoricalMatch(1); }} className="min-h-9 rounded-lg px-2 text-text-secondary hover:bg-bg-hover disabled:opacity-40">Next match</button>
+              </>}
+              {targetSourceEventId && <button type="button" onClick={handleCopyMessageLink} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-text-secondary hover:bg-bg-hover">
+                {copiedMessageLink ? <Check size={13} /> : <Copy size={13} />} {copiedMessageLink ? "Copied" : "Copy link"}
+              </button>}
+              <button type="button" onClick={handleExitHistoricalMode} className="min-h-9 rounded-lg bg-accent px-3 font-medium text-white hover:bg-accent-hover">
+                Jump to latest
+              </button>
+            </div>
+          </div>
+          {messageLinkCopyError && <p role="alert" className="mx-auto mt-1 w-full max-w-4xl text-xs text-error">Could not copy the message link: {messageLinkCopyError}</p>}
+          {searchMatchPageError && <p role="alert" className="mx-auto mt-1 w-full max-w-4xl text-xs text-error">Could not load full-chat match navigation: {searchMatchPageError}</p>}
+          {activeSearchMatchPage && matchCoveragePartial && <p role="status" className="mx-auto mt-1 w-full max-w-4xl text-xs text-warning">
+            Full-chat navigation reflects partial search coverage ({activeSearchMatchPage.coverage.state}).
+            {activeSearchMatchPage.coverage.errors.length > 0 ? ` ${activeSearchMatchPage.coverage.errors.join(" ")}` : ""}
+          </p>}
+          {!activeSearchMatchPage && searchQuery && !searchMatchPageLoading && !searchMatchPageError && <p role="status" className="mx-auto mt-1 w-full max-w-4xl text-xs text-warning">
+            Full-chat match paging is unavailable for this message; Previous and Next cover only the loaded history window.
+          </p>}
+        </div>
+      )}
+      {!historicalMode && sessionId && (
+        <div className="shrink-0 border-b border-border/70 bg-bg-primary px-3 py-1.5 text-right">
+          <button type="button" onClick={() => navigate(`/search?scope=session&sessionId=${encodeURIComponent(sessionId)}&from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-3 text-xs text-text-muted hover:bg-bg-hover hover:text-text-primary">
+            <Search size={13} /> Search this chat
+          </button>
+        </div>
+      )}
       {/* Plan header bar */}
       {hasPlan && (
         <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-bg-secondary">
@@ -2590,9 +2899,9 @@ export default function ChatView({
           <span>This session is open in another Copilot client. Sending here is still allowed.</span>
         </div>
       )}
-      {sessionModelSummary}
+      {!historicalMode && sessionModelSummary}
       {/* MCP server status */}
-      <McpStatusBar
+      {!historicalMode && <McpStatusBar
         chatEntries={displayEntries}
         context={sessionContext}
         contextError={sessionContextError}
@@ -2611,8 +2920,8 @@ export default function ChatView({
           : mcpStatusQuery.error ? String(mcpStatusQuery.error) : undefined}
         onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
         onRefresh={sessionId ? refreshMcpStatus : undefined}
-      />
-      <SessionAgentsBar sessionId={sessionId} backgroundAgents={backgroundAgents} />
+      />}
+      {!historicalMode && <SessionAgentsBar sessionId={sessionId} backgroundAgents={backgroundAgents} />}
       {loading && displayEntries.length === 0 ? (
         <LoadingSkeletonRegion
           isLoading
@@ -2635,6 +2944,19 @@ export default function ChatView({
             </div>
           </div>
         </LoadingSkeletonRegion>
+      ) : historicalUnavailable ? (
+        <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+          <p className="text-base font-medium text-text-primary">This saved message is unavailable.</p>
+          <p className="max-w-lg text-sm text-text-muted">It may have been removed or the readable history window could not be retrieved. Bridge did not substitute the latest messages.</p>
+          {returnToSearch && <button type="button" onClick={() => navigate(returnToSearch)} className="min-h-11 rounded-lg border border-border px-4 text-sm">Back to results</button>}
+        </div>
+      ) : historicalLoadError ? (
+        <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+          <p className="text-base font-medium text-error">{historicalLoadError}</p>
+          <p className="max-w-lg text-sm text-text-muted">Bridge did not resume the session or substitute another history window.</p>
+          <button type="button" onClick={() => loadAndReconnectRef.current()} className="min-h-11 rounded-lg border border-border px-4 text-sm">Retry</button>
+          {returnToSearch && <button type="button" onClick={() => navigate(returnToSearch)} className="min-h-11 rounded-lg px-4 text-sm text-accent">Back to results</button>}
+        </div>
       ) : displayEntries.length === 0 && !runNotice && !isStreaming && !creating && !hasPendingInteractions ? (
         emptyState ?? (
           <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
@@ -2675,7 +2997,7 @@ export default function ChatView({
               <Loader2 size={14} className="inline animate-spin mr-1" />
               Loading older messages...
             </div>
-          ) : hasMore ? (
+          ) : hasMore && !historicalMode ? (
             <div className="text-center py-2 text-xs">
               <button
                 type="button"
@@ -2696,12 +3018,12 @@ export default function ChatView({
             {renderedEntries}
           </div>
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
-          {showJumpToLatest && (
+          {!historicalMode && showJumpToLatest && (
             <div className="sticky bottom-3 z-20 flex justify-center px-3 pointer-events-none">
               <button
                 type="button"
                 aria-label="Jump to latest"
-                onClick={handleJumpToLatest}
+                onClick={historicalMode ? handleExitHistoricalMode : handleJumpToLatest}
                 className="pointer-events-auto rounded-full border border-border bg-bg-secondary/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm backdrop-blur transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
               >
                 Jump to latest
@@ -2747,7 +3069,7 @@ export default function ChatView({
           </div>
         </div>
       )}
-      <ChatInput
+      {!historicalMode && <ChatInput
         onSend={handleSend}
         onAbort={isStreaming ? abortSession : undefined}
         composerKey={composerKey}
@@ -2766,7 +3088,7 @@ export default function ChatView({
         slashCommands={slashCommands}
         slashCommandsSupported={slashCommandsSupported}
         defaultSendMode={defaultSendMode}
-      />
+      />}
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
         <PlanSheet
