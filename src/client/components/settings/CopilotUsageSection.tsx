@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BarChart3, Gauge, Loader2, RotateCw } from "lucide-react";
+import { AlertTriangle, BarChart3, Loader2, RotateCw } from "lucide-react";
 import type {
-  CopilotQuotaStatus,
   CopilotUsageCoverage,
   CopilotUsageModelRow,
   CopilotUsageSkipReason,
@@ -17,7 +16,6 @@ import {
 } from "../../../shared/copilot-usage-range";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../../shared/copilot-usage";
 import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing";
-import { useCopilotQuotaQuery } from "../../hooks/queries/useCopilotQuota";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import EmptyState from "../shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
@@ -71,7 +69,6 @@ const PRICING_STATUS_LABELS: Record<CopilotUsageModelRow["pricingStatus"], strin
 export function CopilotUsageSection() {
   const [range, setRange] = useState<CopilotUsageRangeKey>(DEFAULT_COPILOT_USAGE_RANGE);
   const { data, error, isLoading, refresh } = useCopilotUsageQuery({ includeSessions: false, range });
-  const quota = useCopilotQuotaQuery();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -85,13 +82,13 @@ export function CopilotUsageSection() {
     setRefreshError(null);
     setRefreshing(true);
     try {
-      await Promise.all([refresh(), quota.refresh().catch(() => undefined)]);
+      await refresh();
     } catch (refreshErr) {
       setRefreshError(formatError(refreshErr));
     } finally {
       setRefreshing(false);
     }
-  }, [refresh, quota.refresh]);
+  }, [refresh]);
 
   const indexing = data?.index.state === "scanning";
   const busy = refreshing || indexing || (isLoading && !data);
@@ -157,12 +154,6 @@ export function CopilotUsageSection() {
             {data ? formatRangeWindow(data.range.startAt) : COPILOT_USAGE_RANGE_DESCRIPTIONS[range]}
           </div>
         </div>
-
-        <QuotaCard
-          status={quota.data ?? null}
-          isLoading={quota.isLoading && !quota.data}
-          error={quota.error}
-        />
 
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
           Metered cost is what GitHub actually billed, read from session shutdown data, and only covers work recent enough to carry that field. Disposable defer-worker usage is retained before its temporary session is deleted. Cost that GitHub did not assign to a named model appears as Unattributed. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Active work before shutdown, other unpersisted sessions, and other devices are excluded.
@@ -382,121 +373,6 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
   );
 }
 
-/**
- * Live counter straight from the backend's `account.getQuota`. Unlike the local
- * estimate below it is real billing state, but it covers only the identity the
- * bridge authenticates as and resets on the quota period, not the picked range.
- */
-function QuotaCard({
-  status,
-  isLoading,
-  error,
-}: {
-  status: CopilotQuotaStatus | null;
-  isLoading: boolean;
-  error: unknown;
-}) {
-  if (isLoading) {
-    return (
-      <LoadingSkeletonRegion
-        isLoading
-        label="Reading live Copilot quota"
-        className="rounded-md border border-border bg-bg-elevated p-4"
-      >
-        <Skeleton height={12} width="32%" shape="pill" />
-        <Skeleton height={18} width="52%" shape="pill" className="mt-2" />
-      </LoadingSkeletonRegion>
-    );
-  }
-
-  const snapshot = status?.primary ?? null;
-  if (!status?.available || !snapshot) {
-    return (
-      <div className="rounded-md border border-border bg-bg-elevated px-4 py-3 text-xs text-text-muted">
-        <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-          <Gauge size={15} />
-          Live account quota
-        </div>
-        <p className="mt-1">
-          {status?.error ?? (error ? formatError(error) : "Live quota is unavailable right now. Local estimates below still apply.")}
-        </p>
-      </div>
-    );
-  }
-
-  const unitLabel = snapshot.unit === "ai_credits" ? "AI credits" : "premium requests";
-  const usedPercent = snapshot.remainingPercentage !== null
-    ? Math.min(100, Math.max(0, 100 - snapshot.remainingPercentage))
-    : null;
-  const monthElapsedPercent = getMonthElapsedPercent(new Date());
-  const identity = status.identity;
-  const identityLabel = [identity?.login, identity?.plan]
-    .filter((part): part is string => Boolean(part))
-    .join(" · ");
-
-  return (
-    <div className="rounded-lg border border-border bg-bg-elevated p-4 sm:p-5 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-          <Gauge size={15} className="text-accent" />
-          Live account quota
-        </div>
-        <span className="text-[11px] text-text-muted">
-          Current period · all clients
-        </span>
-      </div>
-
-      <div>
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <span className="text-3xl font-semibold tracking-tight tabular-nums text-text-primary">
-            {!snapshot.usedIsPrecise && snapshot.used !== null && <span aria-label="Approximately">~</span>}
-            {formatQuotaAmount(snapshot.used)}
-          </span>
-          <span className="text-sm text-text-muted">
-            {unitLabel} used
-          </span>
-        </div>
-        <p className="mt-1 text-xs text-text-muted">
-          {snapshot.isUnlimitedEntitlement
-            ? "Unlimited allowance"
-            : `of ${formatQuotaAmount(snapshot.entitlement)} this period`}
-        </p>
-        {Boolean(snapshot.overage) && (
-          <p className="mt-1 text-xs text-warning">{formatQuotaAmount(snapshot.overage)} overage</p>
-        )}
-      </div>
-
-      {usedPercent !== null && (
-        <div className="space-y-1.5">
-          <div
-            className="w-full overflow-hidden rounded-full bg-bg-primary"
-            role="img"
-            aria-label={`${formatPercent(usedPercent)} quota used; ${formatPercent(monthElapsedPercent)} of calendar month elapsed`}
-          >
-            <div className="h-1 rounded-r-full bg-accent" style={{ width: `${usedPercent}%` }} />
-            <div className="h-1 rounded-r-full bg-sky-400" style={{ width: `${monthElapsedPercent}%` }} />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[11px] text-text-muted">
-            <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
-              {formatPercent(usedPercent)} used
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sky-400" />
-              {formatPercent(monthElapsedPercent)} of month elapsed
-            </span>
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 border-t border-border pt-3 text-[11px] text-text-faint">
-        <span className="min-w-0 break-all">{identityLabel || "Signed-in account"}</span>
-        <span>Updated {formatDateTime(status.fetchedAt)}</span>
-      </div>
-    </div>
-  );
-}
-
 function CoverageStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-warning/20 bg-bg-primary px-3 py-2">
@@ -648,30 +524,6 @@ function formatAiCredits(value: number): string {
     return SMALL_AI_CREDIT_FORMATTER.format(value);
   }
   return AI_CREDIT_FORMATTER.format(value);
-}
-
-function formatQuotaAmount(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "Unknown";
-  return AI_CREDIT_FORMATTER.format(value);
-}
-
-function formatPercent(value: number): string {
-  return `${AI_CREDIT_FORMATTER.format(value)}%`;
-}
-
-function getMonthElapsedPercent(now: Date): number {
-  const current = Date.UTC(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-    now.getSeconds(),
-    now.getMilliseconds(),
-  );
-  const monthStart = Date.UTC(now.getFullYear(), now.getMonth(), 1);
-  const nextMonthStart = Date.UTC(now.getFullYear(), now.getMonth() + 1, 1);
-  return Math.min(100, Math.max(0, ((current - monthStart) / (nextMonthStart - monthStart)) * 100));
 }
 
 function formatRangeWindow(startAt: string | null): string {

@@ -8,6 +8,10 @@ import {
 } from "../test-react-harness";
 import { MobileBottomNav } from "./MobileBottomNav";
 
+vi.mock("./CopilotQuotaMenu", () => ({
+  default: () => null,
+}));
+
 function findButtonByLabel(root: any, label: string): any {
   const button = findAllByTag(root, "BUTTON").find(
     (candidate) => getReactProps(candidate)?.["aria-label"] === label,
@@ -62,4 +66,3 @@ describe("MobileBottomNav attention", () => {
     expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-warning");
   });
 });
-
