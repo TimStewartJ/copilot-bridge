@@ -58,6 +58,7 @@ export interface SessionContextSummary {
 }
 
 export interface SessionContextTurn {
+  turnNumber?: number;
   sessionId: string;
   bridgeTurnId: string;
   provider: string;
@@ -96,5 +97,7 @@ export interface SessionContextResponse {
   summary: SessionContextSummary | null;
   turns: SessionContextTurn[];
   events: SessionContextEvent[];
+  turnMeasurements?: SessionContextEvent[];
+  totalTurns?: number;
   capabilities: SessionContextCapabilities;
 }

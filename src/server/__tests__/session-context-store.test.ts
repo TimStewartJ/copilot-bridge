@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { setupTestDb } from "./helpers.js";
+import { makeTestDir, setupTestDb } from "./helpers.js";
+import { openDatabase } from "../db.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { normalizeLiveSessionContextEvent } from "../session-context-normalizer.js";
 
@@ -26,6 +27,45 @@ function createProjectScratchDir(): string {
 }
 
 describe("session context telemetry store", () => {
+  it("returns per-turn measurements beyond the raw event cap identically after database reopen", () => {
+    const dir = makeTestDir("context-reopen-");
+    let db = openDatabase(dir);
+    try {
+      let store = createSessionContextStore(db);
+      const record = (turn: number, id: string, tokensUsed?: number) => store.recordContextEvent({
+        sessionId: "history", provider: "copilot", bridgeTurnId: `turn-${turn}`,
+        providerEventId: id, attribution: "turn", type: "context_snapshot",
+        occurredAt: `2026-09-09T00:00:0${turn}.000Z`, tokensUsed,
+        contextWindow: 1000, modelUsage: tokensUsed === undefined ? { inputTokens: id.length + Number(id.split("-").at(-1) || 0) } : undefined,
+      });
+      for (let turn = 1; turn <= 4; turn++) {
+        store.recordTurnStart({
+          sessionId: "history", provider: "copilot", bridgeTurnId: `turn-${turn}`,
+          startedAt: `2026-09-09T00:00:0${turn}.000Z`,
+        });
+        record(turn, `measurement-${turn}`, turn === 3 ? 0 : 400);
+        record(turn, `empty-${turn}`);
+      }
+      record(4, "tie-newer", 600);
+      for (let index = 0; index < 210; index++) record(4, `usage-${index}`);
+      const before = store.getSessionContext("history", { limit: 2 });
+      expect(before.totalTurns).toBe(4);
+      expect(before.turns.map((turn) => turn.turnNumber)).toEqual([3, 4]);
+      expect(before.events).toHaveLength(2);
+      expect(before.events.every((event) => event.tokensUsed === null)).toBe(true);
+      expect(before.turnMeasurements?.map((event) => event.tokensUsed)).toEqual([0, 600]);
+      db.close();
+      db = openDatabase(dir);
+      store = createSessionContextStore(db);
+      expect(store.getSessionContext("history", { limit: 2 })).toEqual(before);
+      record(4, "tie-newer", 600);
+      expect(store.getSessionContext("history", { limit: 2 })).toEqual(before);
+      expect(store.getSessionContext("history", { limit: 3 }).turns.map((turn) => turn.turnNumber)).toEqual([2, 3, 4]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("retains cache-expiry refreshes with identical token usage and keeps child calls out of the parent summary", () => {
     const store = createSessionContextStore(setupTestDb());
     const options = { sessionId: "cache-expiry", provider: "copilot", bridgeTurnId: "parent", attribution: "turn" as const };
