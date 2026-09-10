@@ -123,7 +123,7 @@ describe("SessionManager.setSessionModel", () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.6-sol");
     manager.backend = {};
-    manager.modelMetadataForContextTiers = [ADAPTIVE_MODEL];
+    manager.modelMetadata = [ADAPTIVE_MODEL];
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "adaptive-model", "high");
@@ -143,7 +143,7 @@ describe("SessionManager.setSessionModel", () => {
       })
       .mockResolvedValueOnce({ modelId: "hydrafusion" });
     manager.backend = {};
-    manager.modelMetadataForContextTiers = [{
+    manager.modelMetadata = [{
       id: "hydrafusion",
       name: "HydraFusion",
       selectionMode: "dynamic",
@@ -169,7 +169,7 @@ describe("SessionManager.setSessionModel", () => {
       .mockResolvedValueOnce({ modelId: "gpt-5.5", contextTier: "default" })
       .mockResolvedValueOnce({ modelId: "gpt-5.5", contextTier: "default" });
     manager.backend = {};
-    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    manager.modelMetadata = [GPT_55_TIERED_MODEL];
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "default");
@@ -193,7 +193,7 @@ describe("SessionManager.setSessionModel", () => {
       .mockResolvedValueOnce({ modelId: "gpt-5.5" })
       .mockResolvedValueOnce({ modelId: "gpt-5.5" });
     manager.backend = {};
-    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    manager.modelMetadata = [GPT_55_TIERED_MODEL];
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "long_context");
@@ -264,7 +264,7 @@ describe("SessionManager.setSessionModel", () => {
     const session = createMockSession("previous-model");
     const resumeSession = vi.fn().mockResolvedValue(session);
     manager.backend = { resumeSession };
-    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    manager.modelMetadata = [GPT_55_TIERED_MODEL];
     mkdirSync(join(copilotHome, "session-state", "cold-session"), { recursive: true });
     writeFileSync(
       join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),

@@ -83,6 +83,12 @@ export type AppSettingsUpdates = Omit<Partial<AppSettings>, "focusNotifications"
   focusNotifications?: FocusNotificationPolicyUpdate | null;
 };
 
+export interface PreparedSettingsUpdate {
+  current: AppSettings;
+  next: AppSettings;
+  nextMcpServers?: Record<string, McpServerConfig>;
+}
+
 export class SettingsValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -550,13 +556,21 @@ export function createSettingsStore(db: DatabaseSync) {
     return { ...persisted, mcpServers: getDefaultMcpServers() };
   }
 
-  function updateSettings(updates: AppSettingsUpdates): AppSettings {
+  function prepareSettingsUpdate(updates: AppSettingsUpdates): PreparedSettingsUpdate {
     const current = getSettings();
     const nextMcpServers = isRecord(updates) && "mcpServers" in updates
       ? normalizeMcpServers(updates.mcpServers)
       : undefined;
     const next = normalizeAppSettings(current, updates);
+    return {
+      current,
+      next,
+      ...(nextMcpServers ? { nextMcpServers } : {}),
+    };
+  }
 
+  function commitPreparedSettingsUpdate(prepared: PreparedSettingsUpdate): AppSettings {
+    const { next, nextMcpServers } = prepared;
     runTransaction(db, () => {
       if (nextMcpServers) syncDefaultMcpServers(nextMcpServers);
       persistSettings(next);
@@ -564,6 +578,10 @@ export function createSettingsStore(db: DatabaseSync) {
 
     if (nextMcpServers) next.mcpServers = getDefaultMcpServers();
     return next;
+  }
+
+  function updateSettings(updates: AppSettingsUpdates): AppSettings {
+    return commitPreparedSettingsUpdate(prepareSettingsUpdate(updates));
   }
 
   /** Get MCP servers config for session creation/resume */
@@ -575,7 +593,14 @@ export function createSettingsStore(db: DatabaseSync) {
     return mcpServerStore;
   }
 
-  return { getSettings, updateSettings, getMcpServers, getMcpServerStore };
+  return {
+    getSettings,
+    prepareSettingsUpdate,
+    commitPreparedSettingsUpdate,
+    updateSettings,
+    getMcpServers,
+    getMcpServerStore,
+  };
 }
 
 export type SettingsStore = ReturnType<typeof createSettingsStore>;

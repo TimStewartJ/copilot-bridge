@@ -9,7 +9,10 @@ import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
-import { SettingsValidationError } from "./settings-store.js";
+import {
+  SettingsValidationError,
+  type AppSettings,
+} from "./settings-store.js";
 import {
   createServerShutdownCoordinator,
   type ServerShutdownCoordinator,
@@ -95,9 +98,9 @@ import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
 import {
   isCopilotContextTier,
-  modelSupportsLongContext,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { isSendMode } from "../shared/send-mode.js";
 import {
   type BackgroundAgentsSummary,
@@ -3046,22 +3049,6 @@ export function createApiRouter(
       return { options: agent ? { agent } : {} };
     }
 
-    let models: Array<{
-      id: string;
-      policy?: { state?: string };
-      supportedReasoningEfforts?: readonly string[];
-      billing?: {
-        tokenPrices?: {
-          contextMax?: number;
-          longContext?: { contextMax?: number };
-        };
-      };
-    }>;
-    try {
-      models = (await ctx.sessionManager.listModels()) ?? [];
-    } catch {
-      return { error: "Unable to validate the requested model", status: 503 };
-    }
     const targetModelId = model || ctx.settingsStore.getSettings().model;
     if (!targetModelId) {
       return {
@@ -3069,30 +3056,13 @@ export function createApiRouter(
         status: 400,
       };
     }
-    const selected = models.find((candidate) => candidate.id === targetModelId);
-    if (!selected) {
-      return { error: `Model is not available: ${targetModelId}`, status: 400 };
-    }
-    if (selected.policy?.state === "disabled") {
-      return { error: `Model is disabled by policy: ${targetModelId}`, status: 400 };
-    }
-    if (
-      reasoningEffort
-      && !selected.supportedReasoningEfforts?.includes(reasoningEffort)
-    ) {
-      const available = selected.supportedReasoningEfforts ?? [];
-      return {
-        error: available.length > 0
-          ? `reasoningEffort must be one of: ${available.join(", ")}`
-          : `Model does not expose configurable reasoning effort: ${targetModelId}`,
-        status: 400,
-      };
-    }
-    if (contextTier === "long_context" && !modelSupportsLongContext(selected)) {
-      return {
-        error: `Model does not support long context: ${targetModelId}`,
-        status: 400,
-      };
+    const validation = await ctx.sessionManager.validateModelSelection({
+      model: targetModelId,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(contextTier ? { contextTier } : {}),
+    });
+    if (!validation.ok) {
+      return { error: validation.error, status: 400 };
     }
     return {
       options: {
@@ -3102,6 +3072,27 @@ export function createApiRouter(
         ...(agent ? { agent } : {}),
       },
     };
+  }
+
+  function settingsModelSnapshot(settings: AppSettings): string {
+    return JSON.stringify({
+      model: settings.model,
+      modelPresets: MODEL_PRESET_SLOTS.map((slot) => settings.modelPresets?.[slot]?.model),
+    });
+  }
+
+  function changedSettingsModels(
+    current: AppSettings,
+    next: AppSettings,
+  ): string[] {
+    const models = new Set<string>();
+    if (next.model && current.model !== next.model) models.add(next.model);
+    for (const slot of MODEL_PRESET_SLOTS) {
+      const currentModel = current.modelPresets?.[slot]?.model;
+      const nextModel = next.modelPresets?.[slot]?.model;
+      if (nextModel && currentModel !== nextModel) models.add(nextModel);
+    }
+    return [...models];
   }
 
   // GET /sessions/:id/model — derive current model/reasoning for a session on demand
@@ -6142,8 +6133,28 @@ export function createApiRouter(
 
   router.patch("/settings", async (req, res) => {
     try {
-      const prev = ctx.settingsStore.getSettings();
-      const updated = ctx.settingsStore.updateSettings(req.body);
+      let prepared = ctx.settingsStore.prepareSettingsUpdate(req.body);
+      const models = changedSettingsModels(prepared.current, prepared.next);
+      if (models.length > 0) {
+        for (const model of models) {
+          const validation = await ctx.sessionManager.validateModelSelection({ model });
+          if (!validation.ok) {
+            return res.status(400).json({ error: validation.error });
+          }
+        }
+
+        const latest = ctx.settingsStore.prepareSettingsUpdate(req.body);
+        if (
+          settingsModelSnapshot(prepared.current) !== settingsModelSnapshot(latest.current)
+          || settingsModelSnapshot(prepared.next) !== settingsModelSnapshot(latest.next)
+        ) {
+          return res.status(409).json({ error: "Settings changed concurrently; retry the update." });
+        }
+        prepared = latest;
+      }
+
+      const prev = prepared.current;
+      const updated = ctx.settingsStore.commitPreparedSettingsUpdate(prepared);
       clearProviderCache();
 
       const mcpChanged = JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers);
