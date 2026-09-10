@@ -261,7 +261,12 @@ describe("canonical Focus domain model", () => {
 
   it("serves Focus entirely from canonical stores after reconciliation", () => {
     insertLegacyCard({ kind: "decision", title: "Canonical after migration" });
-    insertLegacyCard({ kind: "note", dedupeKey: "source:event", title: "Event source" });
+    // This migration test needs a fresh digest item, not an aging date fixture.
+    const now = new Date().toISOString();
+    insertLegacyCard({
+      kind: "note", dedupeKey: "source:event", title: "Event source",
+      createdAt: now, updatedAt: now, statusChangedAt: now,
+    });
     const layer = createLayer();
 
     db.exec("ALTER TABLE feed_cards RENAME TO unavailable_feed_cards");

@@ -5,8 +5,8 @@
 // SessionManager and SessionRunner so future backends (Claude Code, Codex,
 // ACP) can slot in without rewriting the core run loop.
 //
-// **Step 1 scope: structural wrap only — zero behavior change.**
-// The CopilotBackend implementation delegates 1:1 to the SDK. Event payload
+// The Copilot adapter retains raw task-operation ownership across timeouts and
+// exposes handle-release acknowledgements and verified runtime fencing. Event payload
 // shapes, session-object semantics, and raw `rpc` escape-hatch access all stay
 // Copilot-flavoured until Step 3 forces normalization when a second backend
 // lands.
@@ -259,19 +259,26 @@ export interface AgentUsageMetrics {
   totalUserRequests: number;
 }
 
+export interface AgentSessionRelease {
+  /** Handle-release acknowledgement, not proof that background processes have exited. */
+  status: "released" | "unsupported" | "uncertain";
+  detail?: string;
+}
+
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
  * through typed methods.
  *
  * This is a **required facade**, not a capability map: an implementation must
- * define every method, and method presence says nothing about whether the
+ * define every required method, and method presence says nothing about whether the
  * underlying runtime can actually serve the call. A backend that cannot serve a
- * capability reports it in one of two ways, decided by the return type:
+ * capability reports it through the return contract:
  *
  * - methods whose result includes `| undefined` resolve `undefined`;
+ * - release reports an unsupported or uncertain outcome;
  * - every other method throws.
  *
- * Callers must therefore branch on the result, never on `typeof session.x`.
+ * Callers must therefore branch on the result of required operations, not their presence.
  * A `typeof` probe against this interface is always true and detects nothing —
  * the wrapper method exists even when the RPC behind it does not.
  *
@@ -291,7 +298,13 @@ export interface AgentSession {
   sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown>;
   abort(): Promise<unknown>;
   setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown>;
+  /** Optional compatibility facade; lifecycle owners use release(). */
   disconnect?(): Promise<unknown> | void;
+  /**
+   * Raw, single-flight handle-release acknowledgement after outstanding task RPCs
+   * settle. Never deletes history and does not establish process quiescence.
+   */
+  release(): Promise<AgentSessionRelease>;
 
   /** Subscribe to live session events. Returns an unsubscribe function. */
   on(handler: AgentSessionEventHandler): () => void;
@@ -345,7 +358,8 @@ export interface AgentSession {
 
   /**
    * List background tasks (agents + shells) the backend is tracking for this
-   * session. Resolves `undefined` when the backend has no task RPC.
+   * session. Legacy backends may return `undefined` when unsupported; the
+   * Copilot adapter rejects unsupported and malformed task lifecycle responses.
    */
   listTasks(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined>;
 
@@ -431,6 +445,7 @@ export type AgentBackendDisconnectReason =
   | "process-exit"
   | "stdin-error"
   | "rpc-timeout"
+  | "cleanup-stalled"
   | "health-probe-failed";
 
 export interface AgentBackendDisconnect {
@@ -474,6 +489,8 @@ export interface AgentBackend {
 
   /** Force-stop. Optional because not every SDK exposes one. */
   forceStop?(): Promise<unknown>;
+  /** Authoritative runtime-ownership boundary. Rejects when ownership cannot be proved. */
+  fence(): Promise<void>;
 
   /**
    * Subscribe to the loss of the backend RPC channel (connection closed,

@@ -31,6 +31,7 @@ export type {
   AgentSlashCommandList,
   AgentSlashCommandResult,
   AgentSession,
+  AgentSessionRelease,
   AgentSessionConfig,
   AgentSessionEvent,
   AgentSessionEventHandler,
@@ -65,7 +66,9 @@ export function createAgentBackend(opts: CreateAgentBackendOptions): AgentBacken
   switch (opts.kind) {
     case "copilot": {
       const options = buildCopilotClientOptions(opts.clientEnv);
-      return new CopilotBackend(new CopilotClient(options));
+      // The pinned CLI's headless stdio mode owns its local session manager.
+      // npm-loader.js forwards to a native child, so fencing must verify both.
+      return new CopilotBackend(new CopilotClient(options), { localStdioOwnership: true });
     }
     default: {
       const _exhaustive: never = opts.kind;

@@ -201,6 +201,29 @@ describe("process tree platform helpers", () => {
     expect(execFileMock.mock.calls.some(([command]) => command === "wmic")).toBe(false);
   });
 
+  it("leaves time for both taskkill and verification within a short retirement fence budget", async () => {
+    setPlatform("win32");
+    let snapshots = 0;
+    mockExec((command, args, options, callback) => {
+      if (command === "powershell.exe") {
+        snapshots++;
+        callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "", "");
+        return;
+      }
+      expect(command).toBe("taskkill");
+      expect(args).toEqual(["/T", "/F", "/PID", "100"]);
+      expect(options.timeout).toBeGreaterThan(0);
+      expect(options.timeout).toBeLessThanOrEqual(1_500);
+      callback(null, "", "");
+    });
+
+    await expect(terminateProcessTree(
+      { pid: 100, startMarker: "1000" }, createDeadline(3_000),
+    )).resolves.toMatchObject({ ok: true, status: "terminated" });
+    expect(snapshots).toBe(2);
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+  });
+
   it("drops child-before-parent PID reuse edges and never runs destructive commands when root PID is reused", async () => {
     // Child-before-parent edge dropping
     setPlatform("win32");

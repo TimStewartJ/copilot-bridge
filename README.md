@@ -250,6 +250,37 @@ npm run build:client # Vite build only
 npm run build:server # TypeScript compile only
 ```
 
+### Runtime session retirement
+
+Each evicted handle has one retirement episode, identified by a lease and backend
+generation. Bridge calls the adapter's required, single-flight `release()`; the
+runtime owns task teardown. Retirement does not enumerate/cancel/remove tasks or
+delete transcripts. Live task monitoring, user cancellation, and active-parent
+capacity reaping remain separate.
+
+Release waits for already-running raw task operations, not their timeout wrappers.
+After five seconds without confirmed release, the handle is quarantined. New work
+is held; existing runs get the remainder of a fixed 60-second retirement budget.
+Late release can clear quarantine before recycling, but timeout never clears ownership.
+
+At the deadline, `cleanup-stalled` uses the same replacement mechanism as transport
+recovery and model refresh: retain owner, confirm its `fence()`, discard old handles
+and reservations, then own/start the replacement. Unknown fencing blocks recovery.
+Only failed candidate startup followed by confirmed candidate fencing permits a retry
+(recovery only, at most three attempts). Shutdown can always reach the current owner.
+Accepted interactive work uses the existing continuation/cooldown policy; quiet
+defer turns are not automatically continued. Expiring a resume barrier also requires
+fenced recovery rather than admitting another handle.
+
+**Contract limit:** release acknowledges SDK handle ownership, not zero remaining OS
+processes. Pinned SDK 1.0.13 / CLI 1.0.84-3 Linux experiments found attached children
+draining for about five seconds after release, even with the former reaper or an
+additional native close call. Do not infer process exit from an empty task list,
+successful resume, or healthy ping.
+
+Release/quarantine spans carry lease, generation, timing and outcome; backend recovery
+spans record replacement reasons and failures. No failed retirement episode is retried.
+
 ### Public URL Configuration
 
 If you expose the bridge through something other than dev tunnels (for example Cloudflare Tunnel, ngrok, or a reverse proxy), set a canonical public base URL so staging previews can return shareable absolute links:
