@@ -10,6 +10,8 @@ export interface BridgeSearchRequest {
   limit?: number;
   /** Pages matching messages in session scope; grouped results in other scopes. */
   offset?: number;
+  /** Refresh results/progress without starting another full reconciliation sweep. */
+  refreshOnly?: boolean;
 }
 
 export interface SearchMessageMatch {
@@ -53,6 +55,8 @@ export interface BridgeSearchResponse {
   docs: SearchSection<SearchDocHit>;
   coverage: {
     state: "ready" | "indexing" | "partial";
+    /** Independent of errors or incomplete coverage; absent on older servers. */
+    reconciling?: boolean;
     indexedSessions: number;
     totalSessions: number;
     errors: string[];

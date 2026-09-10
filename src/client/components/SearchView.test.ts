@@ -454,4 +454,29 @@ describe("SearchView", () => {
     await advanceTimersByTimeAct(rendered.act, 4_000);
     expect(searchBridgeMock).toHaveBeenCalledTimes(2);
   });
+
+  it("refreshes partial coverage while reconciling, then stops even when failures remain", async () => {
+    vi.useFakeTimers();
+    const partial = response({
+      coverage: { state: "partial", reconciling: true, indexedSessions: 2, totalSessions: 5, errors: ["Malformed log"] },
+    });
+    searchBridgeMock.mockResolvedValueOnce(partial).mockResolvedValueOnce(response({
+      coverage: { ...partial.coverage, reconciling: false, indexedSessions: 4 },
+    }));
+    const rendered = await render("/search?q=needle");
+    await waitUntilAct(rendered.act, () => rendered.dom.container.textContent?.includes("2 of 5") ?? false);
+    expect(rendered.dom.container.textContent).toContain("indexing is still in progress");
+    await advanceTimersByTimeAct(rendered.act, 2_000);
+    expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ refreshOnly: true }), expect.any(Object));
+    expect(rendered.dom.container.textContent).toContain("4 of 5");
+    expect(rendered.dom.container.textContent).toContain("Malformed log");
+    expect(rendered.dom.container.textContent).not.toContain("indexing is still in progress");
+    await advanceTimersByTimeAct(rendered.act, 6_000);
+    expect(searchBridgeMock).toHaveBeenCalledTimes(2);
+    const input = findAllByTag(rendered.dom.container, "INPUT")[0];
+    await rendered.act(async () => { getReactProps(input)?.onChange?.({ target: { value: "new query" } }); });
+    searchBridgeMock.mockResolvedValue(response());
+    await advanceTimersByTimeAct(rendered.act, 300);
+    expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "new query", refreshOnly: false }), expect.any(Object));
+  });
 });

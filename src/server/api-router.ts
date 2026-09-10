@@ -259,9 +259,13 @@ function parseSearchRequest(query: express.Request["query"]): Required<BridgeSea
   if (scope !== "task" && taskId) throw new Error("taskId is only valid for task scope");
   if (scope !== "session" && sessionId) throw new Error("sessionId is only valid for session scope");
   if (sessionId && !isCanonicalSessionId(sessionId)) throw new Error("Valid sessionId is required");
+  if (query.refreshOnly !== undefined && query.refreshOnly !== "true" && query.refreshOnly !== "false") {
+    throw new Error("refreshOnly must be true or false");
+  }
 
   return {
     q,
+    refreshOnly: query.refreshOnly === "true",
     scope: scope as SearchScope,
     taskId,
     sessionId,
