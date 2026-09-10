@@ -318,7 +318,7 @@ function save(state: DraftState): void {
   }
 }
 
-export function useDrafts(sessions: Session[]) {
+export function useDrafts(sessions: Session[], activeComposerKey?: string | null) {
   const [initialLoad] = useState(load);
   const [state, setState] = useState<DraftState>(initialLoad.state);
   const stateRef = useRef(state);
@@ -339,6 +339,8 @@ export function useDrafts(sessions: Session[]) {
   useEffect(() => {
     if (sessions.length === 0) return;
     const validIds = new Set(sessions.map((s) => s.sessionId));
+    // Deep links can open an archived session before the full inventory is loaded.
+    if (activeComposerKey) validIds.add(activeComposerKey);
     setState((prev) => {
       let changed = false;
       const pruned: DraftState = {};
@@ -353,7 +355,7 @@ export function useDrafts(sessions: Session[]) {
       save(pruned);
       return pruned;
     });
-  }, [sessions]);
+  }, [activeComposerKey, sessions]);
 
   const scheduleSave = useCallback((composerKey: string) => {
     const existingTimer = timersRef.current[composerKey];
