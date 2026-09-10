@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
+import { readJsonlLines } from "./jsonl-lines.js";
 import type {
   BridgeSearchRequest,
   BridgeSearchResponse,
@@ -185,11 +184,9 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     db.exec("DELETE FROM search_pending_messages");
     const hash = createHash("sha256");
     const pending: SearchableMessage[] = [];
-    const stream = createReadStream(eventsPath, { encoding: "utf8" });
-    const lines = createInterface({ input: stream, crlfDelay: Infinity });
     let lineNumber = 0;
     try {
-      for await (const line of lines) {
+      for await (const line of readJsonlLines(eventsPath)) {
         if (stopped) throw new Error("Search indexing stopped");
         lineNumber += 1;
         hash.update(line);
@@ -215,9 +212,6 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     } catch (error) {
       db.exec("DELETE FROM search_pending_messages");
       throw error;
-    } finally {
-      lines.close();
-      stream.destroy();
     }
 
     const after = await stat(eventsPath);
@@ -740,10 +734,10 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       "SELECT count(*) AS total FROM search_indexed_sessions",
     ).get() as { total?: number }).total ?? 0;
     const foregroundAvailable = activeWrite === null;
-    const reconciliation = reconcile(request);
+    const reconciliation = request.refreshOnly ? Promise.resolve([]) : reconcile(request);
     const includesChat = request.kind === "all" || request.kind === "chat";
     if (foregroundAvailable && includesChat && indexedBefore === 0) {
-      errors.push(...await reconciliation);
+      await reconciliation;
     } else {
       void reconciliation.catch((error) => {
         sweepErrors.push(`search reconciliation: ${error instanceof Error ? error.message : String(error)}`);
@@ -794,11 +788,13 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     const indexedSessions = (db.prepare(
       "SELECT count(*) AS total FROM search_indexed_sessions",
     ).get() as { total?: number }).total ?? 0;
+    errors.push(...sweepErrors);
     return {
       chats: chatSearch.result,
       tasks: taskResults,
       docs,
       coverage: {
+        reconciling: activeWrite !== null || backgroundScheduled || pendingSessionIds.length > 0,
         state: errors.length > 0
           ? "partial"
           : indexedSessions < sessions.length || deferredChangedSessionIds.size > 0
@@ -806,7 +802,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
             : "ready",
         indexedSessions,
         totalSessions: sessions.length,
-        errors,
+        errors: [...new Set(errors)],
       },
     };
   }

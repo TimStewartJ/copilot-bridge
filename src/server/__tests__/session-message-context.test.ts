@@ -18,6 +18,22 @@ function deps(copilotHome: string) {
 }
 
 describe("exact message context", () => {
+  it("preserves embedded Unicode separators and still rejects malformed physical records", async () => {
+    const copilotHome = makeTestDir("message-context-unicode");
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const dir = join(copilotHome, "session-state", sessionId);
+    mkdirSync(dir, { recursive: true });
+    const content = "needle\u2028separator\u2029tail";
+    const record = JSON.stringify({ type: "assistant.message", id: "unicode", data: { content } });
+    const path = join(dir, "events.jsonl");
+    writeFileSync(path, `${record}\r\n`);
+    const result = await readMessagesAroundEventFromDisk(deps(copilotHome), sessionId, "unicode", { before: 1, after: 1 });
+    expect(result.messages).toMatchObject([{ sourceEventId: "unicode", content }]);
+    writeFileSync(path, `${record}\r\n{"broken":`);
+    await expect(readMessagesAroundEventFromDisk(deps(copilotHome), sessionId, "unicode", { before: 1, after: 1 }))
+      .rejects.toThrow("malformed JSON at line 2");
+  });
+
   it("returns a bounded window around the durable source event without warming", async () => {
     const copilotHome = makeTestDir("message-context");
     const sessionId = "11111111-1111-4111-8111-111111111111";

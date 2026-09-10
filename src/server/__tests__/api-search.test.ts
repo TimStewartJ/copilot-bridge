@@ -9,7 +9,9 @@ const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("search API", () => {
   it("strictly validates query, scope, identifiers, and pagination", async () => {
-    const { app } = createTestApp();
+    const { app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), listSessionsFromDisk: vi.fn(async () => []) },
+    });
 
     await request(app).get("/api/search").expect(400, { error: "q is required" });
     await request(app).get("/api/search?q=needle&scope=task").expect(400, {
@@ -24,6 +26,10 @@ describe("search API", () => {
     await request(app).get("/api/search?q=needle&scope=global&taskId=extra").expect(400, {
       error: "taskId is only valid for task scope",
     });
+    await request(app).get("/api/search?q=needle&refreshOnly=invalid").expect(400, {
+      error: "refreshOnly must be true or false",
+    });
+    await request(app).get("/api/search?q=needle&refreshOnly=true").expect(200);
   });
 
   it("searches an archived session from disk without warming it", async () => {

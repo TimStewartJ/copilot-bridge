@@ -58,6 +58,67 @@ const request = {
 };
 
 describe("global search index", () => {
+  it("indexes literal Unicode separators without treating them as record boundaries", async () => {
+    const { copilotHome, index, sessions } = fixture();
+    writeEvents(copilotHome, sessions[0]!.sessionId, [
+      event("assistant.message", "unicode", "needle\u2028separator\u2029tail", "2026-09-01T10:00:00.000Z"),
+    ]);
+    const result = await index.search(request);
+    expect(result.coverage.errors).toEqual([]);
+    expect(result.chats.items[0]?.matches).toMatchObject([{ sourceEventId: "unicode", snippet: "needle separator tail" }]);
+    await index.shutdown();
+  });
+
+  it("stops refreshing without restarting failed sweeps", async () => {
+    const { db, copilotHome, index, sessions } = fixture();
+    const dir = join(copilotHome, "session-state", sessions[0]!.sessionId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "events.jsonl"), '{"broken":');
+    await index.search(request);
+    await index.waitForIdle();
+    const cursor = db.prepare("SELECT value FROM search_index_state WHERE key = 'sessionCursor'").get();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await index.search({ ...request, refreshOnly: true });
+      expect(result.coverage).toMatchObject({ state: "partial", reconciling: false, indexedSessions: 1 });
+      expect(result.coverage.errors).toHaveLength(1);
+      expect(result.coverage.errors[0]).toContain("malformed event JSON at line 1");
+      expect(db.prepare("SELECT value FROM search_index_state WHERE key = 'sessionCursor'").get()).toEqual(cursor);
+    }
+    await index.shutdown();
+  });
+
+  it("reports partial coverage as reconciling while the last batch is still writing", async () => {
+    const { db, copilotHome, index: unusedIndex, sessions, taskStore, sessionMetaStore } = fixture();
+    await unusedIndex.shutdown();
+    writeEvents(copilotHome, sessions[0]!.sessionId, []);
+    writeFileSync(join(copilotHome, "session-state", sessions[0]!.sessionId, "events.jsonl"), '{"broken":');
+    writeEvents(copilotHome, sessions[1]!.sessionId, Array.from({ length: 600 }, (_, i) =>
+      event("user.message", `message-${i}`, "needle", "2026-09-01T10:00:00.000Z")));
+    let release!: () => void;
+    let reached!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    const reachedPause = new Promise<void>((resolve) => { reached = resolve; });
+    const index = createSearchIndex(db, {
+      copilotHome, taskStore, sessionMetaStore, sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => sessions,
+      yieldControl: async () => { reached(); await paused; },
+    });
+    const write = index.reconcile(request);
+    await reachedPause;
+    try {
+      const result = await index.search({ ...request, kind: "task", refreshOnly: true });
+      expect(result.coverage).toMatchObject({ state: "partial", reconciling: true });
+      expect(result.coverage.errors).toHaveLength(1);
+    } finally {
+      release();
+      await write;
+      await index.waitForIdle();
+    }
+    const complete = await index.search({ ...request, refreshOnly: true });
+    expect(complete.coverage).toMatchObject({ state: "partial", reconciling: false });
+    await index.shutdown();
+  });
+
   it("searches archived chats and tasks, groups visible messages, and preserves exact event IDs", async () => {
     const { copilotHome, index, sessionMetaStore, sessions, taskStore } = fixture();
     writeEvents(copilotHome, sessions[0]!.sessionId, [
