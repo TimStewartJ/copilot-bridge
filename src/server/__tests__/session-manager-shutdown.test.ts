@@ -69,10 +69,6 @@ describe("SessionManager graceful shutdown", () => {
     return session;
   }
 
-  async function flushMicrotasks() {
-    for (let i = 0; i < 10; i++) await Promise.resolve();
-  }
-
   it("closes browser sessions and the primary bridge browser during graceful shutdown", async () => {
     const closeAll = vi.fn().mockResolvedValue(undefined);
     const stop = vi.fn().mockResolvedValue(undefined);
@@ -132,7 +128,7 @@ describe("SessionManager graceful shutdown", () => {
     };
 
     manager.startWork("session-1", "hello");
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
 
     await manager.gracefulShutdown();
 
@@ -165,6 +161,7 @@ describe("SessionManager graceful shutdown", () => {
   it("forces stop when the Copilot SDK reports cleanup errors", async () => {
     const cleanupErrors = [new Error("runtime cleanup failed")];
     const client = {
+      start: vi.fn(async () => undefined),
       stop: vi.fn(async () => cleanupErrors),
       forceStop: vi.fn(async () => undefined),
     };
@@ -191,7 +188,7 @@ describe("SessionManager graceful shutdown", () => {
       };
 
       manager.startWork("session-hung-abort", "hello");
-      await flushMicrotasks();
+      await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
       const shutdownPromise = manager.gracefulShutdown();
       await vi.advanceTimersByTimeAsync(5_000);
       await shutdownPromise;

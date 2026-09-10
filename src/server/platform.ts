@@ -389,7 +389,11 @@ async function requestWindowsTreeKill(
   identity: ProcessIdentity,
   deadline: Deadline,
 ): Promise<string | undefined> {
-  const killDeadline = deadlineBefore(deadline, PROCESS_TABLE_VERIFICATION_RESERVE_MS);
+  const budgetMs = remainingMs(deadline);
+  const verificationReserveMs = budgetMs > PROCESS_TABLE_VERIFICATION_RESERVE_MS
+    ? PROCESS_TABLE_VERIFICATION_RESERVE_MS
+    : Math.floor(budgetMs / 2);
+  const killDeadline = deadlineBefore(deadline, verificationReserveMs);
   const timeoutMs = remainingMs(killDeadline, TASKKILL_TIMEOUT_MS);
   if (timeoutMs <= 0) return "deadline exceeded before taskkill";
   try {

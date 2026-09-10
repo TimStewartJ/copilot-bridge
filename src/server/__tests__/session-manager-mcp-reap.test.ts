@@ -7,6 +7,7 @@ import { createTelemetryStore } from "../telemetry-store.js";
 import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
 import { join } from "node:path";
 import { readSessionLaunchContext } from "../session-launch-context.js";
+import type { AgentBackendDisconnect } from "../agent-backend/types.js";
 
 type FakeSession = {
   sessionId?: string;
@@ -79,6 +80,277 @@ function createManager(options: { telemetry?: boolean } = {}): {
   return { manager, telemetryStore };
 }
 
+describe("SessionManager retirement fencing", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  function runtime(manager: any, fence = vi.fn(async () => {})) {
+    const backend = { fence, deleteSession: vi.fn(), resumeSession: vi.fn(), createSession: vi.fn(), stop: vi.fn(async () => {}) };
+    const next = { start: vi.fn(async () => {}), fence: vi.fn(async () => {}), stop: vi.fn(async () => {}) };
+    manager.backend = backend;
+    manager.attachBackendLifecycle(backend);
+    manager.deps.createBackend = vi.fn(() => next);
+    return { backend, next };
+  }
+
+  it("fences a stuck idle lease by 60s, with no repeated cleanup or transcript deletion", async () => {
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { backend, next } = runtime(manager);
+    const stuck = makeAgentSessionStub({
+      listTasks: vi.fn(() => new Promise(() => {})),
+      release: vi.fn(() => new Promise(() => {})),
+      disconnect: vi.fn(),
+    });
+    await manager.cacheResumedSession("stuck", stuck);
+    const cleanup = manager.evictAllCachedSessions();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await cleanup;
+    expect(stuck.listTasks).not.toHaveBeenCalled();
+    expect(stuck.release).toHaveBeenCalledOnce();
+    expect(stuck.disconnect).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({ phase: "quarantined" });
+    await expect(manager.awaitSessionCleanup("stuck")).rejects.toThrow("could not complete");
+    await vi.advanceTimersByTimeAsync(54_999);
+    expect(backend.fence).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(backend.fence).toHaveBeenCalledOnce();
+    expect(next.start).toHaveBeenCalledOnce();
+    expect(manager.cleanupOwnership.size).toBe(0);
+    expect(manager.getBackendStatus().lastDisconnect.reason).toBe("cleanup-stalled");
+    expect(backend.deleteSession).not.toHaveBeenCalled();
+    expect(telemetryStore!.querySpans({ name: "session.cache.disconnect" })[0].metadata)
+      .toMatchObject({ outcome: "timed-out", generation: 1 });
+  });
+
+  it("keeps all barriers until fencing resolves and coalesces concurrent retirement deadlines", async () => {
+    const { manager } = createManager();
+    let finishFence!: () => void;
+    const { backend, next } = runtime(manager, vi.fn(() => new Promise<void>((resolve) => { finishFence = resolve; })));
+    let finishRelease!: () => void;
+    const first = makeAgentSessionStub({
+      disconnect: vi.fn(() => new Promise<void>((resolve) => { finishRelease = resolve; })),
+    });
+    const second = makeAgentSessionStub({ disconnect: vi.fn(() => new Promise(() => {})) });
+    await manager.cacheResumedSession("one", first);
+    await manager.cacheResumedSession("two", second);
+    const cleanup = manager.evictAllCachedSessions();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await cleanup;
+    expect(backend.fence).toHaveBeenCalledOnce();
+    expect(next.start).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.size).toBe(2);
+    await expect(manager.awaitSessionCleanup("one")).rejects.toThrow();
+    finishRelease();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(manager.cleanupOwnership.size).toBe(2);
+    finishFence();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(manager.cleanupOwnership.size).toBe(0);
+    expect(next.start).toHaveBeenCalledOnce();
+    expect(first.disconnect).toHaveBeenCalledOnce();
+    expect(second.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed without retrying when process fencing is uncertain", async () => {
+    const { manager } = createManager();
+    const { backend, next } = runtime(manager, vi.fn(async () => { throw new Error("process still alive"); }));
+    const stuck = makeAgentSessionStub({ disconnect: vi.fn().mockRejectedValue(new Error("detach failed")) });
+    await manager.cacheResumedSession("stuck", stuck);
+    await manager.evictAllCachedSessions();
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(backend.fence).toHaveBeenCalledOnce();
+    expect(next.start).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({ phase: "operator-blocked" });
+    expect(manager.getBackendStatus().lastRecoveryError).toContain("fencing rejected");
+    expect(manager.backendRecoveryRetryTimer).toBeNull();
+  });
+
+  it("accepts late release before the deadline without retrying detach or recycling", async () => {
+    const { manager } = createManager();
+    const { backend } = runtime(manager);
+    let finish!: () => void;
+    const stuck = makeAgentSessionStub({
+      disconnect: vi.fn(() => new Promise<void>((resolve) => { finish = resolve; })),
+    });
+    await manager.cacheResumedSession("stuck", stuck);
+    const cleanup = manager.evictAllCachedSessions();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await cleanup;
+    expect(manager.cleanupOwnership.get(stuck).phase).toBe("quarantined");
+    finish();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(manager.cleanupOwnership.size).toBe(0);
+    expect(backend.fence).not.toHaveBeenCalled();
+    expect(stuck.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { kind: "agent", status: "running" },
+    { kind: "agent", status: "idle" },
+    { kind: "shell", status: "running" },
+    { kind: "shell", status: "completed" },
+  ] as const)("leaves $kind task $status cleanup to the runtime during retirement", async (task) => {
+    const { manager } = createManager();
+    runtime(manager);
+    const stuck = makeAgentSessionStub({
+      listTasks: vi.fn(async () => ({ tasks: [{ ...task, id: "child" }] })),
+      cancelTask: vi.fn(async () => ({ cancelled: false })),
+      removeTask: vi.fn(async () => ({ removed: false })),
+      disconnect: vi.fn(async () => {}),
+    });
+    await manager.cacheResumedSession("stuck", stuck);
+    await manager.evictAllCachedSessions();
+    expect(stuck.listTasks).not.toHaveBeenCalled();
+    expect(stuck.cancelTask).not.toHaveBeenCalled();
+    expect(stuck.removeTask).not.toHaveBeenCalled();
+    expect(stuck.disconnect).toHaveBeenCalledOnce();
+    expect(manager.cleanupOwnership.size).toBe(0);
+  });
+
+  it("rejects a late no-timeout resume from a fenced generation before cache admission", async () => {
+    const { manager } = createManager();
+    const { backend } = runtime(manager);
+    let finish!: (session: ReturnType<typeof makeAgentSessionStub>) => void;
+    backend.resumeSession.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const resume = manager.withSessionResumeLifecycle({
+      backend, sessionId: "late", sessionConfig: {}, cancellationMessage: "cancelled",
+    });
+    const rejected = expect(resume).rejects.toThrow("backend disconnected");
+    await vi.advanceTimersByTimeAsync(0);
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(0);
+    finish(makeAgentSessionStub({ sessionId: "late" }));
+    await rejected;
+    expect(manager.sessionObjects.has("late")).toBe(false);
+    expect(backend.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("fences a failed replacement before attempting another and bounds recovery attempts", async () => {
+    const { manager } = createManager();
+    const { backend, next } = runtime(manager);
+    const candidates = [next, ...Array.from({ length: 2 }, () => ({
+      start: vi.fn(async () => {}), fence: vi.fn(async () => {}),
+    }))];
+    for (const candidate of candidates) candidate.start.mockRejectedValue(new Error("startup failed"));
+    const queued = [...candidates];
+    manager.deps.createBackend = vi.fn(() => queued.shift());
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(backend.fence).toHaveBeenCalledOnce();
+    expect(next.fence).toHaveBeenCalledOnce();
+    expect(next.fence.mock.invocationCallOrder[0]).toBeLessThan(candidates[1].start.mock.invocationCallOrder[0]);
+    for (const candidate of candidates) {
+      expect(candidate.start).toHaveBeenCalledOnce();
+      expect(candidate.fence).toHaveBeenCalledOnce();
+    }
+    expect(manager.backendRecoveryRetryTimer).toBeNull();
+  });
+
+  it("does not recreate cleanup ownership from a late finally after acknowledged fencing", async () => {
+    const { manager } = createManager();
+    const { backend } = runtime(manager);
+    const old = makeAgentSessionStub({ disconnect: vi.fn().mockRejectedValue(new Error("old transport closed")) });
+    await manager.cacheResumedSession("old", old);
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(0);
+    await manager.disposeSession("old", old, "late temporary name RPC finally");
+    expect(old.disconnect).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.size).toBe(0);
+    expect(manager.getBackendUnavailableReason()).toBeUndefined();
+    expect(manager.getSessionCacheState().retainedContextWeight).toBe(0);
+  });
+
+  it("releases create and resume reservations after fencing even when raw RPCs never settle", async () => {
+    const { manager } = createManager();
+    const { backend } = runtime(manager);
+    backend.resumeSession.mockImplementation(() => new Promise(() => {}));
+    backend.createSession.mockImplementation(() => new Promise(() => {}));
+    const resume = manager.withSessionResumeLifecycle({
+      backend, sessionId: "never-resumed", sessionConfig: {}, cancellationMessage: "cancelled",
+    });
+    const resumeRejected = expect(resume).rejects.toThrow("backend disconnected");
+    const reservation = await manager.beginSessionCreation({});
+    const creation = manager.finishSessionCreation({
+      client: backend, sessionConfig: {}, creationReservation: reservation, startedAt: Date.now(),
+      cacheReason: "test", spanName: "test", logMessage: () => "created", cleanupLabel: "test",
+    });
+    const creationRejected = expect(creation).rejects.toThrow("backend disconnected");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(manager.creatingSessions).toBe(1);
+    expect(manager.resumingCapacityReservations.size).toBe(1);
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.all([resumeRejected, creationRejected]);
+    expect(manager.creatingSessions).toBe(0);
+    expect(manager.resumingCapacityReservations.size).toBe(0);
+    expect(manager.isSessionBusy("never-resumed")).toBe(false);
+    expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+    expect(backend.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("retains an unfenced failed replacement for operator shutdown", async () => {
+    const { manager } = createManager();
+    const { backend, next } = runtime(manager);
+    next.start.mockRejectedValue(new Error("startup failed"));
+    next.fence.mockRejectedValue(new Error("candidate still alive"));
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(manager.backendTransition).toEqual({ owner: next, phase: "blocked" });
+    await manager.gracefulShutdown();
+    expect(next.stop).toHaveBeenCalledOnce();
+    expect(backend.stop).not.toHaveBeenCalled();
+  });
+
+  it("does not lose a candidate disconnect reported during lifecycle publication", async () => {
+    const { manager } = createManager();
+    const { backend, next } = runtime(manager);
+    const disconnected = {
+      ...next,
+      onDisconnect: vi.fn((handler: (info: AgentBackendDisconnect) => void) => {
+        handler({ at: new Date().toISOString(), reason: "connection-closed" });
+        expect(manager.getBackendUnavailableReason()).toBeDefined();
+        return () => {};
+      }),
+    };
+    const healthy = { start: vi.fn(async () => {}), fence: vi.fn(async () => {}) };
+    manager.deps.createBackend = vi.fn().mockReturnValueOnce(disconnected).mockReturnValueOnce(healthy);
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(disconnected.fence).toHaveBeenCalledOnce();
+    expect(healthy.start).toHaveBeenCalledOnce();
+    expect(manager.backend).toBe(healthy);
+    expect(manager.getBackendStatus().disconnectCount).toBe(2);
+    expect(manager.getBackendUnavailableReason()).toBeUndefined();
+  });
+
+  it("keeps candidate ownership when lifecycle registration itself throws", async () => {
+    const { manager } = createManager();
+    const { backend, next } = runtime(manager);
+    const candidate = { ...next, onDisconnect: vi.fn(() => { throw new Error("registration failed"); }) };
+    manager.deps.createBackend = vi.fn(() => candidate);
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(candidate.fence).toHaveBeenCalledOnce();
+    expect(manager.backendTransition).toMatchObject({ owner: candidate, phase: "blocked" });
+    expect(manager.deps.createBackend).toHaveBeenCalledOnce();
+    expect(manager.getBackendUnavailableReason()).toContain("blocked");
+  });
+
+  it.each(["uncertain", "unsupported"] as const)("quarantines a typed %s release without falling back to disconnect", async (status) => {
+    const { manager } = createManager();
+    runtime(manager);
+    const session = makeAgentSessionStub({
+      release: vi.fn(async () => ({ status })),
+      disconnect: vi.fn(),
+    });
+    await manager.cacheResumedSession("typed", session);
+    await manager.evictAllCachedSessions();
+    expect(session.release).toHaveBeenCalledOnce();
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(manager.cleanupOwnership.get(session)).toMatchObject({ phase: "quarantined" });
+  });
+});
+
 describe("SessionManager bounded session lifecycle", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.useRealTimers());
@@ -114,6 +386,7 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.buildSessionConfig({ sessionId: "fingerprint", forResume: true });
     await manager.cacheSession("fingerprint", session, { ...config, systemMessage: { content: "not applied" } });
     const backend = { resumeSession: vi.fn() };
+    manager.backend = backend;
     await manager.withSessionResumeLifecycle({
       backend, sessionId: "fingerprint", sessionConfig: config,
       reuseCachedSession: true, cancellationMessage: "cancelled",
@@ -171,19 +444,19 @@ describe("SessionManager bounded session lifecycle", () => {
     expect([...manager.sessionObjects.keys()]).toEqual(["active", "running"]);
   });
 
-  it("cancels and removes owned agents before disconnecting the parent", async () => {
+  it("forgets tracked agents only after releasing the parent handle", async () => {
     const { manager } = createManager();
     const session = fakeSessionWithAgent("s1");
     manager.sessionObjects.set("s1", session);
+    await manager.agentRegistry.refresh("s1", "test");
+    session.listTasks.mockClear();
 
     await manager.evictAllCachedSessions();
 
-    expect(session.cancelTask).toHaveBeenCalledWith("s1-agent");
-    expect(session.removeTask).toHaveBeenCalledWith("s1-agent");
+    expect(session.listTasks).not.toHaveBeenCalled();
+    expect(session.cancelTask).not.toHaveBeenCalled();
+    expect(session.removeTask).not.toHaveBeenCalled();
     expect(session.disconnect).toHaveBeenCalledTimes(1);
-    expect(session.removeTask.mock.invocationCallOrder[0]).toBeLessThan(
-      session.disconnect.mock.invocationCallOrder[0],
-    );
     expect(manager.agentRegistry.getTrackedAgentCount("s1")).toBe(0);
   });
 
@@ -300,22 +573,6 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(completed.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it("retains cleanup ownership when task removal fails", async () => {
-    const { manager } = createManager();
-    const session = fakeSessionWithAgent("stuck", "completed");
-    session.removeTask.mockRejectedValue(new Error("remove failed"));
-    await manager.cacheResumedSession("stuck", session);
-
-    await manager.evictAllCachedSessions();
-
-    expect(session.disconnect).not.toHaveBeenCalled();
-    expect(manager.cleanupOwnership.get(session)).toMatchObject({
-      sessionId: "stuck",
-      state: "failed",
-      lastOutcome: "rejected",
-    });
-  });
-
   it("keeps fresh scheduled-session creation responsive while cleanup runs independently", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 2;
@@ -365,12 +622,8 @@ describe("SessionManager bounded session lifecycle", () => {
 
     expect([...manager.sessionObjects.keys()]).toEqual(["third"]);
     expect(manager.cleanupOwnership.has(first)).toBe(true);
-    expect(manager.cleanupOwnership.has(second)).toBe(true);
-    expect(second.disconnect).not.toHaveBeenCalled();
-
-    // The cleanup worker reaps background tasks before disconnecting, so wait
-    // for the hung disconnect to actually start before releasing it.
     await vi.waitFor(() => expect(first.disconnect).toHaveBeenCalled());
+    await vi.waitFor(() => expect(second.disconnect).toHaveBeenCalledOnce());
     releaseFirst();
     await manager._drainCacheQueue();
     expect(second.disconnect).toHaveBeenCalledTimes(1);
@@ -392,7 +645,7 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.sessionObjects.get("same")).toBe(existing);
   });
 
-  it("retries a rejected disconnect in the cleanup worker", async () => {
+  it("never retries a rejected disconnect during later cache sweeps", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const first = makeAgentSessionStub({
@@ -405,20 +658,19 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager.cacheResumedSession("second", fakeSession());
     await manager._drainCacheQueue();
 
-    expect(first.disconnect).toHaveBeenCalledTimes(2);
-    expect(manager.cleanupOwnership.size).toBe(0);
-    expect(manager.cumulativeCleanupFailures).toBe(0);
+    await manager.trimSessionCache("later sweep");
+    await manager._drainCacheQueue();
+    expect(first.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.cleanupOwnership.get(first)).toMatchObject({ phase: "quarantined" });
+    expect(manager.cumulativeCleanupFailures).toBe(1);
   });
 
-  it("preserves the full disconnect retry budget after task cleanup becomes stale", async () => {
+  it("retains agent capacity until a pending release completes without polling tasks", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const vanished = fakeSessionWithAgent("vanished");
-    let disconnectAttempt = 0;
     let releaseDisconnect!: () => void;
     vanished.disconnect.mockImplementation(() => {
-      disconnectAttempt++;
-      if (disconnectAttempt === 1) return Promise.reject(new Error("transient"));
       return new Promise<void>((resolve) => {
         releaseDisconnect = resolve;
       });
@@ -426,14 +678,12 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager.cacheResumedSession("vanished", vanished);
     await manager.agentRegistry.refresh("vanished", "test");
     expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
-    vanished.listTasks.mockReset()
-      .mockRejectedValueOnce(new Error("transient task cleanup failure"))
-      .mockRejectedValue(new Error("Session not found: vanished"));
+    vanished.listTasks.mockClear();
 
     await manager.cacheResumedSession("next", fakeSession());
-    await vi.waitFor(() => expect(vanished.disconnect).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(vanished.disconnect).toHaveBeenCalledTimes(1));
 
-    expect(vanished.listTasks).toHaveBeenCalledTimes(2);
+    expect(vanished.listTasks).not.toHaveBeenCalled();
     expect(vanished.cancelTask).not.toHaveBeenCalled();
     expect(vanished.removeTask).not.toHaveBeenCalled();
     expect(manager.cleanupOwnership.has(vanished)).toBe(true);
@@ -451,39 +701,7 @@ describe("SessionManager bounded session lifecycle", () => {
     })).not.toThrow();
   });
 
-  it("self-heals when an upstream session disappears during background task cancellation", async () => {
-    const { manager } = createManager();
-    manager.maxCachedSessions = 1;
-    const vanished = fakeSessionWithAgent("vanished", "idle");
-    let rejectDisconnect!: (error: Error) => void;
-    vanished.disconnect.mockImplementation(() => new Promise<void>((_resolve, reject) => {
-      rejectDisconnect = reject;
-    }));
-    await manager.cacheResumedSession("vanished", vanished);
-    await manager.agentRegistry.refresh("vanished", "test");
-    vanished.listTasks.mockClear();
-    vanished.cancelTask.mockRejectedValue(
-      new Error("Request session.mode.set failed: Session not found: vanished"),
-    );
-
-    await manager.cacheResumedSession("next", fakeSession());
-    await vi.waitFor(() => expect(vanished.disconnect).toHaveBeenCalledTimes(1));
-
-    expect(vanished.listTasks).toHaveBeenCalledTimes(1);
-    expect(vanished.cancelTask).toHaveBeenCalledWith("vanished-agent");
-    expect(vanished.removeTask).not.toHaveBeenCalled();
-    expect(manager.cleanupOwnership.has(vanished)).toBe(true);
-    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(1);
-
-    rejectDisconnect(new Error("Session not found: vanished"));
-    await manager._drainCacheQueue();
-
-    expect(manager.cleanupOwnership.has(vanished)).toBe(false);
-    expect(manager.agentRegistry.getTrackedAgentCount("vanished")).toBe(0);
-    expect(manager.cumulativeCleanupFailures).toBe(0);
-  });
-
-  it("self-heals when disconnect reports that the upstream session is already absent", async () => {
+  it("does not mistake an untyped missing-session error for release acknowledgement", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const vanished = makeAgentSessionStub({
@@ -494,18 +712,18 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager._drainCacheQueue();
 
     expect(vanished.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.cleanupOwnership.has(vanished)).toBe(false);
-    expect(manager.cumulativeCleanupFailures).toBe(0);
+    expect(manager.cleanupOwnership.has(vanished)).toBe(true);
+    expect(manager.cumulativeCleanupFailures).toBe(1);
 
     const createSession = vi.fn().mockResolvedValue(fakeSession("created"));
     manager.maxCachedSessions = 16;
     manager.backend = { createSession };
     await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
-      .resolves.toEqual({ sessionId: "created" });
-    expect(createSession).toHaveBeenCalledTimes(1);
+      .rejects.toThrow("reconnecting");
+    expect(createSession).not.toHaveBeenCalled();
   });
 
-  it("self-heals cleanup after the SDK connection is closed", async () => {
+  it("retains cleanup after the SDK connection closes without process fencing", async () => {
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const disconnected = makeAgentSessionStub({
@@ -518,12 +736,12 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager._drainCacheQueue();
 
     expect(disconnected.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.cleanupOwnership.has(disconnected)).toBe(false);
-    expect(manager.cumulativeCleanupFailures).toBe(0);
+    expect(manager.cleanupOwnership.has(disconnected)).toBe(true);
+    expect(manager.cumulativeCleanupFailures).toBe(1);
     expect(() => manager.assertSessionCapacityAvailable({
       capacityUnits: 1,
       localMcpInstances: 0,
-    })).not.toThrow();
+    })).toThrow();
   });
 
   it("retains failed cleanup ownership and blocks new SDK session creation", async () => {
@@ -537,13 +755,12 @@ describe("SessionManager bounded session lifecycle", () => {
 
     expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
       sessionId: "stuck",
-      state: "failed",
-      lastOutcome: "rejected",
+      phase: "quarantined",
     });
     const createSession = vi.fn();
     manager.backend = { createSession };
     await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
-      .rejects.toMatchObject({ reason: "cleanup-failed" });
+      .rejects.toThrow("reconnecting");
     expect(createSession).not.toHaveBeenCalled();
   });
 
@@ -560,11 +777,10 @@ describe("SessionManager bounded session lifecycle", () => {
     const drain = manager._drainCacheQueue();
     await vi.advanceTimersByTimeAsync(10_500);
     await drain;
-    expect(stuck.disconnect).toHaveBeenCalledTimes(2);
+    expect(stuck.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
       sessionId: "stuck",
-      state: "failed",
-      lastOutcome: "timed-out",
+      phase: "quarantined",
     });
   });
 
@@ -768,7 +984,6 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.rejectMismatchedCreatedSession(
       "bridge-requested-this",
       rejected,
-      { deleteSession: vi.fn().mockResolvedValue(undefined) },
       sessionConfig,
     ).catch(() => {});
 

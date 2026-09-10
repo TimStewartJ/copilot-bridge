@@ -1,13 +1,16 @@
 // Backend disconnect recovery: when the agent backend's RPC channel is lost
 // the manager must fail in-flight runs immediately (nothing will answer),
-// drop cached handles owned by the dead runtime without talking to it, kill
-// the orphan, start a replacement, and re-send a continue prompt to the
+// fence the orphan, drop cached handles only after confirmed fencing,
+// start a replacement, and re-send a continue prompt to the
 // interactive turns it interrupted.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createEventBusRegistry } from "../server/event-bus.js";
 import { SessionManager, type SessionManagerDeps } from "../server/session-manager.js";
 import { createSessionTitlesStore } from "../server/session-titles.js";
+import { createSessionMetaStore } from "../server/session-meta-store.js";
 import { createTaskStore } from "../server/task-store.js";
 import { createTelemetryStore } from "../server/telemetry-store.js";
 import {
@@ -61,6 +64,7 @@ function createFakeBackend(name: string, sessions: Record<string, ReturnType<typ
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     forceStop: vi.fn(async () => {}),
+    fence: vi.fn(async () => {}),
     listModels: vi.fn(async () => []),
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => { throw new Error("not implemented in test"); }),
@@ -101,6 +105,7 @@ function createManager(backends: unknown[]) {
     globalBus,
     eventBusRegistry: createEventBusRegistry(),
     sessionTitles: createSessionTitlesStore(db),
+    sessionMetaStore: createSessionMetaStore(db),
     taskStore: createTaskStore(db, globalBus),
     config: { sessionMcpServers: {} },
     copilotHome,
@@ -119,16 +124,26 @@ describe("SessionManager backend disconnect recovery", () => {
     vi.useRealTimers();
   });
 
-  it("fails in-flight runs, drops cached handles, replaces the backend, and resumes interrupted interactive turns", async () => {
+  it.each(["connection-closed", "cleanup-stalled"] as const)(
+    "fences %s recovery before resuming accepted interactive turns exactly once", async (reason) => {
     vi.useFakeTimers();
     const interactive = makeSession("session-interactive");
     const quiet = makeSession("session-quiet");
     const idleCached = makeSession("session-idle");
     const resumedInteractive = makeSession("session-interactive");
     const dead = createFakeBackend("dead", { "session-interactive": interactive, "session-quiet": quiet });
+    let finishFence!: () => void;
+    dead.fence.mockImplementation(() => new Promise<void>((resolve) => { finishFence = resolve; }));
     const fresh = createFakeBackend("fresh", { "session-interactive": resumedInteractive });
     const { manager, statusEvents, telemetryStore } = createManager([dead, fresh]);
     await manager.initialize();
+    const transcriptPath = manager.getSessionEventsPath("session-interactive");
+    const transcript = JSON.stringify({
+      id: "persisted-user-message", type: "user.message",
+      timestamp: new Date().toISOString(), data: { content: "durable original request" },
+    }) + "\n";
+    mkdirSync(dirname(transcriptPath), { recursive: true });
+    writeFileSync(transcriptPath, transcript);
     expect(dead.hasDisconnectHandler()).toBe(true);
     expect(manager.getBackendStatus()).toMatchObject({ state: "ready", connection: "connected", pid: 100, disconnectCount: 0 });
 
@@ -145,34 +160,52 @@ describe("SessionManager backend disconnect recovery", () => {
     expect(manager.getSessionRunState("session-interactive")).toBe("busy");
     expect(manager.sessionObjects.size).toBe(3);
 
-    dead.simulateDisconnect({ reason: "connection-closed", detail: "JSON-RPC connection closed" });
+    if (reason === "cleanup-stalled") {
+      idleCached.session.disconnect.mockImplementation(() => new Promise(() => {}));
+      await manager.evictCachedSession("session-idle");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(manager.getSessionRunState("session-interactive")).toBe("busy");
+      expect(dead.fence).not.toHaveBeenCalled();
+      expect(() => manager.startWork("new-session", "hello")).toThrow(BACKEND_RECONNECTING_MESSAGE);
+      await vi.advanceTimersByTimeAsync(55_000);
+    } else {
+      dead.simulateDisconnect({ reason, detail: "JSON-RPC connection closed" });
+    }
 
     // In-flight runs fail immediately with the retryable disconnect message.
     const interactiveBus = manager.deps.eventBusRegistry.getBus("session-interactive");
     expect(interactiveBus.getTerminalState()).toMatchObject({ complete: true, terminalType: "error", errorMessage: BACKEND_DISCONNECTED_MESSAGE });
+    expect(manager.deps.sessionMetaStore.getTerminalOverlay("session-interactive")).toMatchObject({ type: "error" });
     expect(manager.getBackendStatus()).toMatchObject({
-      state: expect.stringMatching(/disconnected|reconnecting/),
       disconnectCount: 1,
-      lastDisconnect: expect.objectContaining({ reason: "connection-closed", detail: "JSON-RPC connection closed" }),
+      lastDisconnect: expect.objectContaining({ reason }),
       lastInterruptedSessionCount: 2,
     });
     expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECONNECTING_MESSAGE);
     expect(() => manager.startWork("session-idle", "hello")).toThrow(BACKEND_RECONNECTING_MESSAGE);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fresh.start).not.toHaveBeenCalled();
+    finishFence();
 
     // Cached handles are dropped without any RPC to the dead runtime; the orphan is force-stopped; a replacement starts.
     await vi.waitFor(() => expect(manager.sessionObjects.has("session-idle")).toBe(false));
-    expect(manager.sessionObjects.get("session-interactive")).not.toBe(interactive.session);
+    await vi.waitFor(() => expect(manager.sessionObjects.get("session-interactive")).not.toBe(interactive.session));
     expect(manager.sessionObjects.has("session-quiet")).toBe(false);
-    expect(idleCached.session.disconnect).not.toHaveBeenCalled();
+    expect(idleCached.session.disconnect).toHaveBeenCalledTimes(reason === "cleanup-stalled" ? 1 : 0);
     expect(interactive.session.disconnect).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(fresh.start).toHaveBeenCalledOnce());
-    expect(dead.forceStop).toHaveBeenCalledOnce();
+    expect(dead.fence).toHaveBeenCalledOnce();
+    expect(dead.fence.mock.invocationCallOrder[0]).toBeLessThan(fresh.start.mock.invocationCallOrder[0]);
+    expect(dead.deleteSession).not.toHaveBeenCalled();
+    expect(fresh.deleteSession).not.toHaveBeenCalled();
+    expect(readFileSync(transcriptPath, "utf8")).toBe(transcript);
     await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
     expect(fresh.hasDisconnectHandler()).toBe(true);
     expect(manager.getBackendUnavailableReason()).toBeUndefined();
 
     // The interactive turn gets a continue prompt on the new backend; the quiet defer turn does not.
     await vi.waitFor(() => expect(resumedInteractive.session.send).toHaveBeenCalledWith({ prompt: BACKEND_RECOVERY_CONTINUE_PROMPT }));
+    expect(resumedInteractive.session.send).toHaveBeenCalledOnce();
     expect(fresh.resumeSession).toHaveBeenCalledWith("session-interactive", expect.anything());
     expect(fresh.resumeSession).not.toHaveBeenCalledWith("session-quiet", expect.anything());
     await vi.waitFor(() => expect(manager.getBackendStatus().lastAutoResumedSessionCount).toBe(1));
@@ -235,7 +268,7 @@ describe("SessionManager backend disconnect recovery", () => {
     dead.simulateDisconnect({ reason: "stdin-error", detail: "EPIPE" });
     await vi.waitFor(() => expect(broken.start).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "disconnected", lastRecoveryError: "CLI failed to start" }));
-    expect(manager.getBackendUnavailableReason()).toBe(BACKEND_DISCONNECTED_MESSAGE);
+    expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECONNECTING_MESSAGE);
     expect(fresh.start).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(5_000);

@@ -13,9 +13,9 @@ import {
   createAgentBackend,
   type AgentBackend,
   type AgentBackendFactory,
-  type AgentBackgroundTask,
   type AgentModelInfo,
   type AgentSession,
+  type AgentSessionConfig,
   type AgentUsageMetrics,
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
@@ -168,6 +168,7 @@ import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_NOT_INITIALIZED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
+  BACKEND_RECOVERY_BLOCKED_MESSAGE,
   BACKEND_RECOVERY_CONTINUE_PROMPT,
   BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
   SESSION_RESUME_SETTLING_MESSAGE,
@@ -292,10 +293,8 @@ const DISCONNECT_TIMEOUT_MS = 5_000;
  * an HTTP request is never parked behind a resume or a long turn.
  */
 const SESSION_DETAIL_RPC_TIMEOUT_MS = 5_000;
-const DISCONNECT_MAX_ATTEMPTS = 2;
+const SESSION_RETIREMENT_BUDGET_MS = 60_000;
 const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = 30_000;
-const SESSION_TASK_CLEANUP_TIMEOUT_MS = 10_000;
-const SESSION_TASK_CLEANUP_POLL_MS = 100;
 const TIMED_OUT_SESSION_RESUME_SETTLE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_SESSION_CACHE_IDLE_TTL_MS = 60 * 60_000;
 const SESSION_CACHE_SWEEP_INTERVAL_MS = 60_000;
@@ -394,26 +393,37 @@ export class SessionCapacityError extends Error {
 
 type SessionCleanupRecord = {
   sessionId: string;
-  state: "pending" | "failed";
-  attempts: number;
+  phase: "release-pending" | "quarantined" | "backend-recycling" | "operator-blocked";
+  owner: SessionRuntimeOwner;
+  startedAt: number;
+  timer?: ReturnType<typeof setTimeout>;
   contextWeight: number;
   localMcpInstances: number;
   capacityUnits: number;
-  lastOutcome?: "rejected" | "timed-out";
   promise?: Promise<boolean>;
 };
 
-class SessionTaskCleanupTimeoutError extends Error {
-  constructor() {
-    super("Background task cleanup timed out");
-    this.name = "SessionTaskCleanupTimeoutError";
-  }
-}
+type SessionRuntimeOwner = {
+  backend: AgentBackend | null;
+  generation: number;
+  lease: string;
+};
+
+type BackendFence = {
+  waiters: Set<() => void>;
+  confirmed: boolean;
+  operation?: Promise<void>;
+  observation?: ReturnType<typeof settleByDeadline<void>>;
+};
+
+type BackendTransition = {
+  owner: AgentBackend;
+  phase: "retiring" | "starting" | "retrying" | "blocked";
+};
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
   stopPrevious: "stopping the previous client",
   startNext: "starting the refreshed client",
-  restorePrevious: "restoring the previous client",
 } as const;
 
 type ModelRefreshClientRotationOperation =
@@ -461,10 +471,6 @@ type SessionOverlayBusyReason = "model-switching" | "history-undo";
 function isMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /not found|does not exist|no such (file|session)|ENOENT/i.test(message);
-}
-
-function isModelRefreshClientRotationTimeoutError(error: unknown): error is ModelRefreshClientRotationTimeoutError {
-  return error instanceof ModelRefreshClientRotationTimeoutError;
 }
 
 function withModelRefreshClientRotationTimeout<T>(
@@ -677,6 +683,9 @@ export class SessionManager {
   private lastInterruptedSessionCount = 0;
   private lastAutoResumedSessionCount = 0;
   private backendRecoveryRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private backendTransition: BackendTransition | null = null;
+  private readonly backendFences = new WeakMap<AgentBackend, BackendFence>();
+  private readonly sessionRuntimeOwners = new WeakMap<AgentSession, SessionRuntimeOwner>();
   private readonly backendAutoResumeAt = new Map<string, number>();
   private deferStartupHoldMs = SessionManager.resolveNonNegativeIntegerEnv(
     "BRIDGE_DEFER_STARTUP_HOLD_MS",
@@ -720,7 +729,6 @@ export class SessionManager {
   private readonly sessionTreeLastActivityAt = new Map<string, number>();
   private sessionCacheSweepHandle?: ReturnType<typeof setInterval>;
   private cumulativeCleanupFailures = 0;
-  private failedCleanupRetryScheduled = false;
   private processTreeBaselineCount: number | null = null;
   private lastProcessTreeSampleAt = 0;
   private sessionCapacityWaitTimeoutMs = SessionManager.resolvePositiveNumberEnv(
@@ -756,7 +764,7 @@ export class SessionManager {
   // Parent sessions and their tracked background agents form one cache tree.
   // Parent count, total context weight, and a shared idle TTL bound the MCP
   // subprocess footprint. Active/resuming parents and running agents protect
-  // their tree; eviction cancels/removes child tasks before disconnecting it.
+  // their tree; eviction releases the handle and the runtime owns task teardown.
   private maxCachedSessions = SessionManager.resolveMaxCachedSessions();
   private maxCachedContexts = SessionManager.resolvePositiveIntegerEnv(
     "BRIDGE_MAX_CACHED_CONTEXTS",
@@ -852,7 +860,7 @@ export class SessionManager {
       listModels: () => this.listModels(),
       createSession: async (sessionConfig) => {
         const client = await this.getBackendAfterRotation();
-        return client.createSession(sessionConfig);
+        return this.createOwnedSession(client, sessionConfig);
       },
       deleteSession: async (sessionId) => {
         const client = await this.getBackendAfterRotation();
@@ -883,7 +891,7 @@ export class SessionManager {
       },
       createSession: async (sessionConfig) => {
         const client = await this.getBackendAfterRotation();
-        return client.createSession(sessionConfig);
+        return this.createOwnedSession(client, sessionConfig);
       },
       deleteSession: async (sessionId) => {
         const client = await this.getBackendAfterRotation();
@@ -987,7 +995,7 @@ export class SessionManager {
     let cleanupLocalMcpInstances = 0;
     let cleanupCapacityUnits = 0;
     for (const record of this.cleanupOwnership.values()) {
-      if (record.state === "pending") pendingCleanup++;
+      if (record.phase === "release-pending") pendingCleanup++;
       else failedCleanup++;
       cleanupContextWeight += record.contextWeight;
       cleanupLocalMcpInstances += record.localMcpInstances;
@@ -1158,15 +1166,6 @@ export class SessionManager {
     const pressure = this.getSessionCapacityPressure();
     const { state } = pressure;
     if (state.failedCleanup > 0) {
-      if (!this.failedCleanupRetryScheduled) {
-        this.failedCleanupRetryScheduled = true;
-        const retry = this.enqueueCache("retry-cleanup", undefined, () => this.retryFailedCleanupsUnsafe());
-        void retry.then(
-          () => { this.failedCleanupRetryScheduled = false; },
-          () => { this.failedCleanupRetryScheduled = false; },
-        );
-        this.scheduleCacheOperation(retry, "retrying failed session cleanup");
-      }
       throw new SessionCapacityError(
         "cleanup-failed",
         this.getCapacitySnapshot(
@@ -1478,6 +1477,7 @@ export class SessionManager {
       cleanupLabel,
     } = options;
     let session: AgentSession | undefined;
+    const owner = this.captureRuntimeOwner(client);
     let reservationReleased = false;
     const releaseReservation = () => {
       if (reservationReleased) return;
@@ -1487,9 +1487,12 @@ export class SessionManager {
     try {
       const settings = this.deps.settingsStore?.getSettings();
       options.onCreateStarting?.();
-      session = await client.createSession(sessionConfig);
+      this.assertRuntimeOwner(owner);
+      session = await this.awaitOwnedSession(owner, client.createSession(sessionConfig));
+      this.sessionRuntimeOwners.set(session, owner);
+      this.assertRuntimeOwner(owner);
       if (expectedSessionId && session.sessionId !== expectedSessionId) {
-        await this.rejectMismatchedCreatedSession(expectedSessionId, session, client, sessionConfig);
+        await this.rejectMismatchedCreatedSession(expectedSessionId, session, sessionConfig);
       }
       try {
         if (options.launchContext) {
@@ -1497,8 +1500,8 @@ export class SessionManager {
         }
         await this.cacheSession(session.sessionId, session, sessionConfig, "create");
       } catch (error) {
-        try { await client.deleteSession(session.sessionId); } catch (cleanupError) {
-          console.warn(`[sdk] Failed to delete rejected ${cleanupLabel} ${session.sessionId}:`, cleanupError);
+        try { await this.disposeSession(session.sessionId, session, `retiring rejected ${cleanupLabel}`); } catch (cleanupError) {
+          console.warn(`[sdk] Failed to retire rejected ${cleanupLabel} ${session.sessionId}:`, cleanupError);
         }
         throw error;
       }
@@ -1510,7 +1513,6 @@ export class SessionManager {
           session,
           "discarding session created during shutdown",
         );
-        try { await client.deleteSession(session.sessionId); } catch { /* backend shutdown may already own cleanup */ }
         throw new Error("Session manager shut down before session creation completed");
       }
       const model = sessionConfig.model;
@@ -1594,56 +1596,6 @@ export class SessionManager {
     });
   }
 
-  private isTerminalBackgroundTask(task: AgentBackgroundTask): boolean {
-    return task.status === "completed" || task.status === "failed" || task.status === "cancelled";
-  }
-
-  private async runTaskRpcBeforeDeadline<T>(
-    operation: () => Promise<T>,
-    deadline: Deadline,
-  ): Promise<T> {
-    const outcome = await settleByDeadline(operation, deadline);
-    if (outcome.status === "timed-out") throw new SessionTaskCleanupTimeoutError();
-    if (outcome.status === "rejected") throw outcome.error;
-    return outcome.value;
-  }
-
-  private async reapSessionTasks(sessionId: string, session: AgentSession): Promise<void> {
-    const deadline = createDeadline(SESSION_TASK_CLEANUP_TIMEOUT_MS);
-
-    while (remainingMs(deadline) > 0) {
-      const result = await this.runTaskRpcBeforeDeadline(
-        () => Promise.resolve(session.listTasks()),
-        deadline,
-      );
-      const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
-      if (tasks.length === 0) {
-        return;
-      }
-
-      for (const task of tasks) {
-        if (this.isTerminalBackgroundTask(task)) {
-          await this.runTaskRpcBeforeDeadline(
-            () => Promise.resolve(session.removeTask(task.id)),
-            deadline,
-          );
-        } else {
-          await this.runTaskRpcBeforeDeadline(
-            () => Promise.resolve(session.cancelTask(task.id)),
-            deadline,
-          );
-        }
-      }
-
-      const waitMs = Math.min(SESSION_TASK_CLEANUP_POLL_MS, remainingMs(deadline));
-      if (waitMs > 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
-      }
-    }
-
-    throw new SessionTaskCleanupTimeoutError();
-  }
-
   private async runSessionCleanup(
     sessionId: string,
     session: AgentSession,
@@ -1652,96 +1604,34 @@ export class SessionManager {
     const record = this.cleanupOwnership.get(session);
     if (!record) return true;
 
-    let lastOutcome: "rejected" | "timed-out" = "rejected";
-    let staleTaskCleanup = false;
-    let disconnectAttempts = 0;
-    for (
-      let cycleAttempt = 1;
-      cycleAttempt <= DISCONNECT_MAX_ATTEMPTS
-        || (staleTaskCleanup && disconnectAttempts < DISCONNECT_MAX_ATTEMPTS);
-      cycleAttempt++
-    ) {
-      const startedAt = Date.now();
-      record.attempts++;
-      let taskOutcome: "fulfilled" | "rejected" | "timed-out" = "fulfilled";
-      try {
-        if (!staleTaskCleanup) {
-          await this.reapSessionTasks(sessionId, session);
-        }
-      } catch (error) {
-        if (isStaleAgentSessionError(error)) {
-          staleTaskCleanup = true;
-          this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
-            reason,
-            attempt: record.attempts,
-            cycleAttempt,
-            outcome: "stale-session",
-            error: error instanceof Error ? error.message : String(error),
-            ...this.getSessionCacheState(),
-          });
-        } else {
-          taskOutcome = error instanceof SessionTaskCleanupTimeoutError ? "timed-out" : "rejected";
-          lastOutcome = taskOutcome;
-          this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
-            reason,
-            attempt: record.attempts,
-            cycleAttempt,
-            outcome: taskOutcome,
-            error: error instanceof Error ? error.message : String(error),
-            ...this.getSessionCacheState(),
-          });
-          continue;
-        }
-      }
-      if (!staleTaskCleanup) {
-        this.recordSpan("session.cache.tasks", Date.now() - startedAt, sessionId, {
-          reason,
-          attempt: record.attempts,
-          cycleAttempt,
-          outcome: taskOutcome,
-          ...this.getSessionCacheState(),
-        });
-      }
-      disconnectAttempts++;
-      const result = await settleByDeadline<void>(
-        () => Promise.resolve(session.disconnect?.()).then(() => undefined),
-        createDeadline(DISCONNECT_TIMEOUT_MS),
-      );
-      const staleSession = result.status === "rejected" && isStaleAgentSessionError(result.error);
-      this.recordSpan("session.cache.disconnect", Date.now() - startedAt, sessionId, {
-        reason,
-        attempt: record.attempts,
-        cycleAttempt,
-        disconnectAttempt: disconnectAttempts,
-        outcome: staleSession ? "stale-session" : result.status,
-        ...(result.status === "rejected"
-          ? { error: result.error instanceof Error ? result.error.message : String(result.error) }
-          : {}),
-        ...this.getSessionCacheState(),
-      });
-      if (result.status === "fulfilled" || staleSession) {
-        this.completeSessionCleanup(
-          sessionId,
-          session,
-          reason,
-          staleSession
-            ? "disconnect found the session no longer addressable"
-            : staleTaskCleanup
-              ? "task cleanup found the session no longer addressable"
-              : undefined,
-        );
-        return true;
-      }
-      lastOutcome = result.status;
-    }
-
+    if (this.backendTransition?.owner === record.owner.backend) return false;
+    const release = Promise.resolve().then(() => session.release());
+    const completion = release.then((result) => {
+      if (result.status !== "released") throw new Error(`Session release ${result.status}`);
+      if (this.cleanupOwnership.get(session) !== record) return true;
+      // Once fencing starts only its acknowledgement may release ownership.
+      if (this.backendTransition?.owner === record.owner.backend) return false;
+      this.completeSessionCleanup(sessionId, session, reason);
+      return true;
+    });
+    const result = await settleByDeadline(() => completion, createDeadline(DISCONNECT_TIMEOUT_MS));
+    this.recordSpan("session.cache.disconnect", Date.now() - record.startedAt, sessionId, {
+      reason, outcome: result.status,
+      lease: record.owner.lease, generation: record.owner.generation,
+      ...(result.status === "rejected" ? { error: String(result.error) } : {}),
+      ...this.getSessionCacheState(),
+    });
+    if (result.status === "fulfilled" && result.value) return true;
+    if (this.cleanupOwnership.get(session) !== record) return true;
     this.cumulativeCleanupFailures++;
-    record.state = "failed";
-    record.lastOutcome = lastOutcome;
-    delete record.promise;
+    if (record.phase === "release-pending") record.phase = "quarantined";
     this.notifySessionCapacityChanged();
+    this.recordSpan("session.retirement.quarantined", Date.now() - record.startedAt, sessionId, {
+      lease: record.owner.lease, generation: record.owner.generation,
+      outcome: result.status,
+    });
     console.warn(
-      `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup ${lastOutcome} after ${DISCONNECT_MAX_ATTEMPTS} attempts; retained for retry (${reason})`,
+      `[sdk] [${sessionId.slice(0, 8)}] Runtime lease ${record.phase} (${result.status}); fencing due within ${SESSION_RETIREMENT_BUDGET_MS}ms of retirement (${reason})`,
     );
     return false;
   }
@@ -1750,16 +1640,18 @@ export class SessionManager {
     sessionId: string,
     session: AgentSession,
     reason: string,
-    staleOutcome?: string,
   ): void {
+    const record = this.cleanupOwnership.get(session);
+    if (record?.timer) clearTimeout(record.timer);
+    if (record) {
+      this.recordSpan("session.retirement.released", Date.now() - record.startedAt, sessionId, {
+        reason, lease: record.owner.lease, generation: record.owner.generation,
+        previousPhase: record.phase,
+      });
+    }
     this.cleanupOwnership.delete(session);
     this.agentRegistry.forgetIfOwnedBy(sessionId, session);
     this.notifySessionCapacityChanged();
-    if (staleOutcome) {
-      console.warn(
-        `[sdk] [${sessionId.slice(0, 8)}] Session-tree cleanup self-healed: ${staleOutcome} (${reason})`,
-      );
-    }
   }
 
   private queueSessionCleanupUnsafe(
@@ -1768,42 +1660,43 @@ export class SessionManager {
     reason: string,
   ): Promise<boolean> {
     const existing = this.cleanupOwnership.get(session);
-    if (existing?.state === "pending" && existing.promise) return existing.promise;
+    if (existing) return existing.promise ?? Promise.resolve(false);
+    const owner = this.sessionRuntimeOwners.get(session) ?? this.captureRuntimeOwner();
+    if (owner.backend && this.backendFences.get(owner.backend)?.confirmed) return Promise.resolve(true);
 
     const contextWeight = 1 + this.agentRegistry.getTrackedAgentCount(sessionId);
     const localMcpCount = this.sessionCapacityProfiles.get(session)?.localMcpCount ?? 0;
     const localMcpInstances = contextWeight * localMcpCount;
     const capacityUnits = contextWeight + localMcpInstances * this.localMcpCapacityWeight;
-    const record = existing ?? {
+    const record: SessionCleanupRecord = {
       sessionId,
-      state: "pending" as const,
-      attempts: 0,
+      phase: "release-pending",
+      owner,
+      startedAt: Date.now(),
       contextWeight,
       localMcpInstances,
       capacityUnits,
     };
-    record.sessionId = sessionId;
-    record.state = "pending";
-    record.contextWeight = Math.max(
-      record.contextWeight,
-      contextWeight,
-    );
-    record.localMcpInstances = Math.max(record.localMcpInstances, localMcpInstances);
-    record.capacityUnits = Math.max(record.capacityUnits, capacityUnits);
-    delete record.lastOutcome;
     this.cleanupOwnership.set(session, record);
-
-    const cleanup = this.cleanupQueue.then(() => this.runSessionCleanup(sessionId, session, reason));
+    record.timer = setTimeout(() => {
+      if (this.cleanupOwnership.get(session) !== record) return;
+      const backend = record.owner.backend;
+      if (!backend || backend !== this.backend || record.owner.generation !== this.backendGeneration) {
+        record.phase = "operator-blocked";
+        console.error(`[sdk] Cannot fence unowned runtime lease ${record.owner.lease} for ${sessionId}`);
+        return;
+      }
+      record.phase = "backend-recycling";
+      this.handleBackendDisconnect(backend, {
+        at: new Date().toISOString(), reason: "cleanup-stalled",
+        detail: `session ${sessionId}, lease ${record.owner.lease}, generation ${record.owner.generation}`,
+      });
+    }, SESSION_RETIREMENT_BUDGET_MS);
+    record.timer.unref?.();
+    const cleanup = Promise.resolve().then(() => this.runSessionCleanup(sessionId, session, reason));
     record.promise = cleanup;
-    this.cleanupQueue = cleanup.then(() => undefined, () => undefined);
+    this.cleanupQueue = Promise.all([this.cleanupQueue, cleanup]).then(() => undefined, () => undefined);
     return cleanup;
-  }
-
-  private retryFailedCleanupsUnsafe(): void {
-    for (const [session, record] of this.cleanupOwnership) {
-      if (record.state !== "failed") continue;
-      this.queueSessionCleanupUnsafe(record.sessionId, session, "retrying failed cleanup");
-    }
   }
 
   private removeReadySessionUnsafe(sessionId: string, expectedSession?: AgentSession): AgentSession | undefined {
@@ -1895,7 +1788,6 @@ export class SessionManager {
       reason,
       `[sdk] Session-tree cache remains above parent/context/capacity limits ${this.maxCachedSessions}/${this.maxCachedContexts}/${formatCapacityUnits(this.maxSessionCapacityUnits)}; remaining trees are protected`,
     );
-    this.retryFailedCleanupsUnsafe();
   }
 
   private trimSessionCache(reason: string): Promise<void> {
@@ -1984,6 +1876,13 @@ export class SessionManager {
     application: "create" | "resume" = "resume",
   ): Promise<AgentSession> {
     const cached = this.enqueueCache("insert", sessionId, () => {
+      const owner = this.sessionRuntimeOwners.get(session) ?? this.captureRuntimeOwner();
+      this.sessionRuntimeOwners.set(session, owner);
+      this.assertRuntimeOwner(owner);
+      if (this.cleanupOwnership.has(session)
+        || [...this.cleanupOwnership.values()].some((record) => record.sessionId === sessionId)) {
+        throw new Error(`Session ${sessionId} still has an unreleased runtime lease`);
+      }
       const current = this.sessionObjects.get(sessionId);
       const capacityProfile = sessionConfig
         ? this.getCapacityProfile(sessionConfig)
@@ -2278,7 +2177,7 @@ export class SessionManager {
       const cleanups = await this.enqueueCache("await-cleanup", sessionId, () => {
         const matching = [...this.cleanupOwnership.values()]
           .filter((record) => record.sessionId === sessionId);
-        if (matching.some((record) => record.state === "failed" || !record.promise)) {
+        if (matching.some((record) => record.phase !== "release-pending" || !record.promise)) {
           throw new Error(`Session ${sessionId} has cleanup that could not complete`);
         }
         return matching.map((record) => record.promise!);
@@ -2303,6 +2202,9 @@ export class SessionManager {
       throw new Error(SESSION_RESUME_SETTLING_MESSAGE);
     }
     await this.awaitSessionCleanup(sessionId);
+    if (this.settlingTimedOutSessionResumes.has(sessionId)) {
+      throw new Error(SESSION_RESUME_SETTLING_MESSAGE);
+    }
     const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
     if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
       this.touchSessionTree(sessionId);
@@ -2327,7 +2229,11 @@ export class SessionManager {
           this.syncRestartWaitingIfPending();
         },
       });
+      await this.awaitSessionCleanup(sessionId);
       return admitted ? lease : null;
+    } catch (error) {
+      if (this.resumingCapacityReservations.has(lease.token)) this.endSessionResume(lease);
+      throw error;
     } finally {
       this.pendingSessionResumeAdmissions.delete(sessionId);
     }
@@ -2357,7 +2263,8 @@ export class SessionManager {
     timeoutMessage: string,
   ): Promise<AgentSession> {
     const sid = sessionId.slice(0, 8);
-    const owningBackendGeneration = this.backendGeneration;
+    const owner = this.captureRuntimeOwner(owningBackend);
+    const owningBackendGeneration = owner.generation;
     const token = Symbol(sessionId);
     let releaseAfterLateSettlement = true;
     const releaseBarrier = (): boolean => {
@@ -2368,17 +2275,18 @@ export class SessionManager {
       this.notifySessionCapacityChanged();
       return true;
     };
-    return resumeSessionWithTimeout(resume, timeoutMessage, undefined, {
+    return resumeSessionWithTimeout(this.awaitOwnedSession(owner, resume), timeoutMessage, undefined, {
       onTimeout: () => {
         if (
           this.backend !== owningBackend
           || this.backendGeneration !== owningBackendGeneration
         ) return;
         const timer = setTimeout(() => {
-          if (releaseBarrier()) {
-            console.warn(
-              `[sdk] [${sid}] Timed-out session resume did not settle; allowing a fresh resume without cleaning up the stale handle`,
-            );
+          if (this.settlingTimedOutSessionResumes.get(sessionId)?.token === token) {
+            this.handleBackendDisconnect(owningBackend, {
+              at: new Date().toISOString(), reason: "cleanup-stalled",
+              detail: `timed-out resume never settled for session ${sessionId}`,
+            });
           }
         }, this.timedOutSessionResumeSettleTimeoutMs);
         timer.unref?.();
@@ -2387,13 +2295,15 @@ export class SessionManager {
         this.settlingTimedOutSessionResumes.set(sessionId, { token, timer });
       },
       disconnectLateSession: async (session) => {
+        this.sessionRuntimeOwners.set(session, owner);
         const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
         if (barrier?.token !== token) return;
         if (
           this.backend !== owningBackend
           || this.backendGeneration !== owningBackendGeneration
         ) {
-          releaseBarrier();
+          if (this.backendTransition?.owner !== owningBackend) releaseBarrier();
+          else releaseAfterLateSettlement = false;
           return;
         }
         if (barrier.timer) {
@@ -2421,9 +2331,10 @@ export class SessionManager {
         console.warn(`[sdk] [${sid}] Timed-out session resume cleanup failed:`, error);
       },
       onLateSettled: () => {
-        if (releaseAfterLateSettlement) releaseBarrier();
+        if (releaseAfterLateSettlement && this.backendTransition?.owner !== owningBackend) releaseBarrier();
       },
     }).then((session) => {
+      this.sessionRuntimeOwners.set(session, owner);
       if (
         this.backend !== owningBackend
         || this.backendGeneration !== owningBackendGeneration
@@ -2465,6 +2376,7 @@ export class SessionManager {
       beforeResume,
       flushPendingEviction = true,
     } = options;
+    const owner = this.captureRuntimeOwner(backend);
     const resumeLease = await this.beginSessionResume(
       sessionId,
       sessionConfig,
@@ -2473,13 +2385,17 @@ export class SessionManager {
     if (!resumeLease) throw new Error(cancellationMessage);
 
     try {
+      this.assertRuntimeOwner(owner);
       let session = reuseCachedSession ? this.sessionObjects.get(sessionId) : undefined;
       if (!session) {
         await beforeResume?.();
+        this.assertRuntimeOwner(owner);
         const resume = backend.resumeSession(sessionId, sessionConfig);
         const resumedSession = timeoutMessage
           ? await this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage)
-          : await resume;
+          : await this.awaitOwnedSession(owner, resume);
+        this.sessionRuntimeOwners.set(resumedSession, owner);
+        this.assertRuntimeOwner(owner);
         session = await this.cacheResumedSession(sessionId, resumedSession, sessionConfig);
       }
 
@@ -2983,13 +2899,12 @@ export class SessionManager {
   private async rejectMismatchedCreatedSession(
     expectedSessionId: string,
     session: AgentSession,
-    backend: AgentBackend,
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<never> {
     // The rejected session was never cached, so it has no capacity profile and
     // cleanup ownership would otherwise account for it with zero local MCPs —
     // under-counting retained capacity while its disconnect is still in flight
-    // (and permanently, if that cleanup fails and is retained for retry).
+    // (and until fencing, if its release is uncertain).
     // Record the profile the creation reservation was sized from before
     // disposal so cleanup carries the same weight the reservation did.
     this.trackSessionCapacityProfile(session, sessionConfig);
@@ -2998,7 +2913,6 @@ export class SessionManager {
     } catch (error) {
       console.warn("[sdk] Failed to reap mismatched created session:", error);
     }
-    try { await backend.deleteSession(session.sessionId); } catch { /* best-effort */ }
     throw new Error(
       `Agent backend returned session ${session.sessionId} instead of requested Bridge session ${expectedSessionId}`,
     );
@@ -3009,19 +2923,80 @@ export class SessionManager {
     return this.deps.createBackend?.() ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
   }
 
-  private forceStopTimedOutBackend(backend: AgentBackend, context: string): void {
-    if (typeof backend.forceStop !== "function") return;
-    try {
-      void backend.forceStop().catch((error) => {
-        console.error(`[sdk] Model refresh backend rotation timed out while ${context}; force stop failed:`, error);
-      });
-    } catch (error) {
-      console.error(`[sdk] Model refresh backend rotation timed out while ${context}; force stop failed:`, error);
+  private captureRuntimeOwner(backend: AgentBackend | null = this.backend): SessionRuntimeOwner {
+    return { backend, generation: this.backendGeneration, lease: randomUUID() };
+  }
+
+  private async createOwnedSession(backend: AgentBackend, config: AgentSessionConfig): Promise<AgentSession> {
+    const owner = this.captureRuntimeOwner(backend);
+    this.assertRuntimeOwner(owner);
+    const session = await this.awaitOwnedSession(owner, backend.createSession(config));
+    this.sessionRuntimeOwners.set(session, owner);
+    this.assertRuntimeOwner(owner);
+    return session;
+  }
+
+  private assertRuntimeOwner(owner: SessionRuntimeOwner): void {
+    if (owner.backend !== this.backend || owner.generation !== this.backendGeneration
+      || (owner.backend !== null && owner.backend === this.backendTransition?.owner)) {
+      throw new Error(BACKEND_DISCONNECTED_MESSAGE);
     }
+  }
+
+  private getBackendFence(backend: AgentBackend): BackendFence {
+    let fence = this.backendFences.get(backend);
+    if (!fence) {
+      fence = { waiters: new Set(), confirmed: false };
+      this.backendFences.set(backend, fence);
+    }
+    return fence;
+  }
+
+  private async awaitOwnedSession(owner: SessionRuntimeOwner, work: Promise<AgentSession>): Promise<AgentSession> {
+    if (!owner.backend) return work;
+    const fence = this.getBackendFence(owner.backend);
+    let onFence!: () => void;
+    const fenced = new Promise<never>((_resolve, reject) => {
+      onFence = () => reject(new Error(BACKEND_DISCONNECTED_MESSAGE));
+      if (fence.confirmed) onFence();
+      else fence.waiters.add(onFence);
+    });
+    try {
+      const session = await Promise.race([work, fenced]);
+      this.sessionRuntimeOwners.set(session, owner);
+      this.assertRuntimeOwner(owner);
+      return session;
+    } finally {
+      fence.waiters.delete(onFence);
+    }
+  }
+
+  private fenceBackend(backend: AgentBackend): Promise<void> {
+    const fence = this.getBackendFence(backend);
+    if (fence.operation) return fence.operation;
+    fence.operation = Promise.resolve().then(async () => {
+      await backend.fence();
+      fence.confirmed = true;
+      for (const waiter of fence.waiters) waiter();
+      fence.waiters.clear();
+    });
+    return fence.operation;
+  }
+
+  private observeBackendFence(backend: AgentBackend): ReturnType<typeof settleByDeadline<void>> {
+    const fence = this.getBackendFence(backend);
+    fence.observation ??= settleByDeadline(
+      () => this.fenceBackend(backend), createDeadline(BACKEND_RECOVERY_FORCE_STOP_TIMEOUT_MS),
+    );
+    return fence.observation;
   }
 
   /** Why new work cannot reach the backend right now, or undefined when it can. */
   getBackendUnavailableReason(): string | undefined {
+    if (this.backendTransition?.phase === "blocked") return BACKEND_RECOVERY_BLOCKED_MESSAGE;
+    if (this.backendTransition || [...this.cleanupOwnership.values()].some((record) => record.phase !== "release-pending")) {
+      return BACKEND_RECONNECTING_MESSAGE;
+    }
     if (this.backendRotation) {
       return this.backendLifecycleState === "reconnecting"
         ? BACKEND_RECONNECTING_MESSAGE
@@ -3045,8 +3020,7 @@ export class SessionManager {
     if (this.backendRotation) {
       await this.backendRotation;
     }
-    if (!this.backend) throw new Error(this.getBackendUnavailableReason() ?? BACKEND_NOT_INITIALIZED_MESSAGE);
-    return this.backend;
+    return this.getBackend();
   }
 
   // ── Backend connection lifecycle ──────────────────────────────────
@@ -3166,12 +3140,13 @@ export class SessionManager {
 
   private handleBackendDisconnect(backend: AgentBackend, info: AgentBackendDisconnect): void {
     if (this.shuttingDown) return;
+    if (this.backendTransition) return;
     if (this.backend !== backend) {
       console.warn(`[sdk] Ignoring disconnect from a superseded agent backend (${info.reason})`);
       return;
     }
+    this.backendTransition = { owner: backend, phase: "retiring" };
     this.backendDisconnectCount += 1;
-    this.releaseTimedOutSessionResumeBarriers();
     this.lastBackendDisconnect = info;
     this.backendLifecycleState = "disconnected";
     const cachedSessions = this.sessionObjects.size;
@@ -3191,32 +3166,32 @@ export class SessionManager {
     });
     this.emitBackendStatus();
 
-    this.scheduleCacheOperation(
-      this.dropCachedSessionsForLostBackend(),
-      "dropping cached sessions after a backend disconnect",
-    );
     void this.recoverBackendAfterDisconnect(backend, interrupted, 0);
   }
 
   /**
    * Forget every cached session handle without talking to the backend: the
-   * runtime that owned them is gone (or about to be killed), so disconnect
-   * RPCs would only hang. Cleanup ownership records are released the same
-   * way so they do not count against capacity forever.
+   * runtime that owned them has been fenced. Never call this on transport
+   * loss alone: an RPC channel closing says nothing about remote ownership.
    */
   private dropCachedSessionsForLostBackend(): Promise<void> {
     return this.enqueueCache("backend-lost", undefined, () => {
       let dropped = 0;
-      for (const [id] of [...this.sessionObjects]) {
-        if (this.removeReadySessionUnsafe(id)) dropped += 1;
+      for (const [id, session] of [...this.sessionObjects]) {
+        if (this.removeReadySessionUnsafe(id)) {
+          this.agentRegistry.forgetIfOwnedBy(id, session);
+          dropped += 1;
+        }
       }
       let releasedCleanups = 0;
       for (const [session, record] of [...this.cleanupOwnership]) {
+        if (record.timer) clearTimeout(record.timer);
         this.cleanupOwnership.delete(session);
         this.agentRegistry.forgetIfOwnedBy(record.sessionId, session);
         releasedCleanups += 1;
       }
       this.pendingSessionEvictions.clear();
+      this.releaseTimedOutSessionResumeBarriers();
       this.slashCommandListCache.clear();
       this.notifySessionCapacityChanged();
       this.invalidateSessionListCache("backend:disconnected");
@@ -3234,74 +3209,46 @@ export class SessionManager {
       try {
         await this.backendRotation;
       } catch { /* the rotation owner reports its own failure */ }
-      if (this.backend && this.backend !== deadBackend) return;
+      if (this.backendTransition?.phase === "blocked") return;
+      if (this.backend && this.backend !== deadBackend) {
+        return;
+      }
     }
 
     this.backendLifecycleState = "reconnecting";
     this.emitBackendStatus();
     const startedAt = Date.now();
-    const rotation = (async (): Promise<AgentBackend> => {
-      if (this.backend === deadBackend) this.backend = null;
-      this.backendCreatedAtMs = null;
-      console.warn(`[sdk] Recovering agent backend after disconnect (attempt ${attempt + 1})...`);
-      const stopOutcome = await settleByDeadline(
-        () => Promise.resolve(typeof deadBackend.forceStop === "function" ? deadBackend.forceStop() : deadBackend.stop()),
-        createDeadline(BACKEND_RECOVERY_FORCE_STOP_TIMEOUT_MS),
-      );
-      if (stopOutcome.status !== "fulfilled") {
-        console.error(
-          `[sdk] Force-stopping the lost agent backend ${stopOutcome.status === "timed-out" ? "timed out" : "failed"}`
-          + `${stopOutcome.status === "rejected" ? `: ${stopOutcome.error instanceof Error ? stopOutcome.error.message : String(stopOutcome.error)}` : ""}`,
-        );
-      }
-      if (this.shuttingDown) throw new Error("shutting down");
-
-      const nextBackend = this.createBackend();
-      try {
-        await withModelRefreshClientRotationTimeout(
-          MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.startNext,
-          nextBackend.start(),
-        );
-      } catch (error) {
-        this.forceStopTimedOutBackend(nextBackend, "starting the replacement client");
-        throw error;
-      }
-      this.backend = nextBackend;
-      this.backendCreatedAtMs = Date.now();
-      this.backendRecoveryCount += 1;
-      this.lastBackendRecoveryAtMs = this.backendCreatedAtMs;
-      this.lastBackendRecoveryError = null;
-      this.attachBackendLifecycle(nextBackend);
-      console.warn(`[sdk] ✅ Agent backend recovered after disconnect (${Date.now() - startedAt}ms, attempt ${attempt + 1})`);
-      this.recordSpan("backend.recover", Date.now() - startedAt, undefined, {
-        outcome: "recovered",
-        attempt: attempt + 1,
-        reason: this.lastBackendDisconnect?.reason,
-      });
-      return nextBackend;
-    })();
-
-    this.backendRotation = rotation;
     let recovered: AgentBackend | undefined;
     try {
-      recovered = await rotation;
+      recovered = await this.replaceBackend(deadBackend, "recovery");
+      this.backendRecoveryCount++;
+      this.lastBackendRecoveryAtMs = this.backendCreatedAtMs;
+      this.recordSpan("backend.recover", Date.now() - startedAt, undefined, {
+        outcome: "recovered", attempt: attempt + 1, reason: this.lastBackendDisconnect?.reason,
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.lastBackendRecoveryError = message;
-      this.backendLifecycleState = "disconnected";
+      const message = this.lastBackendRecoveryError ?? String(error);
       console.error(`[sdk] Agent backend recovery attempt ${attempt + 1} failed: ${message}`);
       this.recordSpan("backend.recover", Date.now() - startedAt, undefined, {
         outcome: "failed",
         attempt: attempt + 1,
         error: message,
       });
-    } finally {
-      if (this.backendRotation === rotation) this.backendRotation = null;
     }
     this.emitBackendStatus();
 
     if (!recovered) {
       if (this.shuttingDown) return;
+      if (this.backendTransition?.phase !== "retrying" || attempt >= 2) {
+        if (this.backendTransition) this.backendTransition.phase = "blocked";
+        for (const record of this.cleanupOwnership.values()) {
+          record.phase = "operator-blocked";
+          if (record.timer) clearTimeout(record.timer);
+        }
+        console.error("[sdk] Runtime recovery blocked; ownership retained. An operator restart is required.");
+        this.notifySessionCapacityChanged();
+        return;
+      }
       const delayMs = Math.min(
         BACKEND_RECOVERY_RETRY_INITIAL_MS * Math.pow(2, attempt),
         BACKEND_RECOVERY_RETRY_MAX_MS,
@@ -3381,67 +3328,89 @@ export class SessionManager {
 
     const previousBackend = this.backend;
     if (!previousBackend) throw new Error("SessionManager not initialized");
+    return this.replaceBackend(previousBackend, "model-refresh");
+  }
 
-    // Set backendRotation synchronously before the first await so concurrent
-    // callers (e.g. listModels) join this rotation rather than starting a new one.
-    // Eviction is moved inside the rotation body to preserve ordering: sessions
-    // are drained before the backend stops.
+  private async replaceBackend(
+    previousBackend: AgentBackend,
+    reason: "recovery" | "model-refresh",
+  ): Promise<AgentBackend> {
+    if (this.backendRotation) return this.backendRotation;
+    // Publish the join promise before eviction, but let those handles release
+    // normally until the backend fence takes ownership.
     const rotation = Promise.resolve().then(async () => {
-      await this.evictAllCachedSessions();
-      console.log("[sdk] Rotating agent backend for model refresh...");
+      if (reason === "model-refresh") await this.evictAllCachedSessions();
       this.backendDisconnectUnsubscribe?.();
       this.backendDisconnectUnsubscribe = null;
+      const transition: BackendTransition = { owner: previousBackend, phase: "retiring" };
+      this.backendTransition = transition;
       this.backend = null;
+      this.backendCreatedAtMs = null;
+      let retryable = false;
+      let fencingError: string | undefined;
       try {
-        await withModelRefreshClientRotationTimeout(
-          MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.stopPrevious,
-          previousBackend.stop(),
-        );
-      } catch (error) {
-        this.backend = null;
-        this.backendCreatedAtMs = null;
-        this.backendLifecycleState = "disconnected";
-        this.emitBackendStatus();
-        if (isModelRefreshClientRotationTimeoutError(error)) {
-          this.forceStopTimedOutBackend(previousBackend, "stopping the previous client");
-        }
-        throw error;
-      }
-
-      const nextClient = this.createBackend();
-      try {
-        await withModelRefreshClientRotationTimeout(
-          MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.startNext,
-          nextClient.start(),
-        );
-      } catch (error) {
-        if (isModelRefreshClientRotationTimeoutError(error)) {
-          this.forceStopTimedOutBackend(nextClient, "starting the refreshed client");
-        }
-        try {
-          await withModelRefreshClientRotationTimeout(
-            MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.restorePrevious,
-            previousBackend.start(),
-          );
-          this.backend = previousBackend;
-          this.attachBackendLifecycle(previousBackend);
-          console.warn("[sdk] Model refresh backend rotation failed; restored previous agent backend");
-        } catch (restoreError) {
-          this.backend = null;
-          this.backendCreatedAtMs = null;
-          console.error("[sdk] Model refresh backend rotation failed and previous agent backend could not be restored:", restoreError);
-          if (isModelRefreshClientRotationTimeoutError(restoreError)) {
-            this.forceStopTimedOutBackend(previousBackend, "restoring the previous client");
-            throw restoreError;
+        let stopFailure: { error: unknown } | undefined;
+        if (reason === "model-refresh" && this.cleanupOwnership.size === 0) {
+          try {
+            await withModelRefreshClientRotationTimeout(
+              MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.stopPrevious, previousBackend.stop(),
+            );
+          } catch (error) {
+            stopFailure = { error };
           }
         }
+        const fenced = await this.observeBackendFence(previousBackend);
+        if (fenced.status !== "fulfilled") {
+          fencingError = `Runtime fencing ${fenced.status}`
+            + (fenced.status === "rejected" ? `: ${String(fenced.error)}` : "");
+        }
+        if (stopFailure) throw stopFailure.error;
+        if (fencingError) throw new Error(fencingError);
+        await this.dropCachedSessionsForLostBackend();
+        if (this.shuttingDown) throw new Error("shutting down");
+        if (this.backendTransition !== transition) throw new Error(BACKEND_DISCONNECTED_MESSAGE);
+        const nextBackend = this.createBackend();
+        transition.owner = nextBackend;
+        transition.phase = "starting";
+        let started = false;
+        try {
+          await withModelRefreshClientRotationTimeout(
+            MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.startNext, nextBackend.start(),
+          );
+          started = true;
+          if (this.shuttingDown) throw new Error("shutting down");
+          if (this.backendTransition !== transition) throw new Error(BACKEND_DISCONNECTED_MESSAGE);
+          this.backend = nextBackend;
+          this.backendCreatedAtMs = Date.now();
+          this.lastBackendRecoveryError = null;
+          this.backendTransition = null;
+          this.attachBackendLifecycle(nextBackend);
+        } catch (error) {
+          if (!this.backendTransition) this.backendTransition = transition;
+          const cleanup = await this.observeBackendFence(nextBackend);
+          if (cleanup.status !== "fulfilled") {
+            fencingError = `Candidate fencing ${cleanup.status}`
+              + (cleanup.status === "rejected" ? `: ${String(cleanup.error)}` : "");
+          }
+          retryable = !started && !this.shuttingDown && reason === "recovery" && cleanup.status === "fulfilled";
+          throw error;
+        }
+        if (this.backendTransition === transition) this.backendTransition = null;
+        console.log(`[sdk] Agent backend replaced (${reason})`);
+        return nextBackend;
+      } catch (error) {
+        if (this.backendTransition === transition) {
+          transition.phase = retryable ? "retrying" : "blocked";
+          this.backend = null;
+          this.backendCreatedAtMs = null;
+          this.backendLifecycleState = this.shuttingDown ? "stopped" : "disconnected";
+          const message = error instanceof Error ? error.message : String(error);
+          this.lastBackendRecoveryError = fencingError && fencingError !== message
+            ? `${message}; ${fencingError}` : message;
+          this.emitBackendStatus();
+        }
         throw error;
       }
-      this.backend = nextClient;
-      this.backendCreatedAtMs = Date.now();
-      this.attachBackendLifecycle(nextClient);
-      console.log("[sdk] Agent backend rotated for model refresh");
-      return nextClient;
     });
 
     this.backendRotation = rotation;
@@ -3673,6 +3642,7 @@ export class SessionManager {
 
   private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
     const client = this.getBackend();
+    const owner = this.captureRuntimeOwner(client);
 
     const cachedSession = this.sessionObjects.get(sessionId);
     if (cachedSession) return operation(cachedSession);
@@ -3686,6 +3656,7 @@ export class SessionManager {
     if (!resumeLease) throw new Error("Session name resume cancelled before admission");
     let session: any | undefined;
     try {
+      this.assertRuntimeOwner(owner);
       session = await this.resumeAgentSessionWithTimeout(
         client,
         sessionId,
@@ -5104,6 +5075,7 @@ export class SessionManager {
     contextTier?: string,
   ): Promise<{ model: string; reasoningEffort?: string; contextTier?: CopilotContextTier; modelId?: string }> {
     const client = this.getBackend();
+    const owner = this.captureRuntimeOwner(client);
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
 
     const sid = sessionId.slice(0, 8);
@@ -5125,6 +5097,7 @@ export class SessionManager {
         const resumeLease = await this.beginSessionResume(sessionId, resumeConfig);
         if (!resumeLease) throw new Error("Model switch resume cancelled before admission");
         try {
+          this.assertRuntimeOwner(owner);
           session = await this.resumeAgentSessionWithTimeout(
             client,
             sessionId,
@@ -5362,15 +5335,25 @@ export class SessionManager {
 
     // Reserve time for forceStop. Both calls consume the same overall deadline.
     this.releaseTimedOutSessionResumeBarriers();
-    if (this.backend) {
+    const shutdownBackend = this.backendTransition?.owner ?? this.backend;
+    if (shutdownBackend) {
       console.log("[sdk] Stopping Copilot SDK client...");
-      const backend = this.backend;
+      const backend = shutdownBackend;
       const stopDeadline = capDeadline(
         deadlineBefore(deadline, BACKEND_FORCE_STOP_RESERVE_MS),
         BACKEND_STOP_TIMEOUT_MS,
       );
       const stopOutcome = await settleByDeadline(
-        () => Promise.resolve(backend.stop()),
+        () => {
+          if (this.backendTransition?.owner === backend && this.backendRotation) {
+            return this.fenceBackend(backend);
+          }
+          if (this.cleanupOwnership.size > 0 && backend.forceStop) {
+            console.warn("[sdk] Bypassing graceful SDK detach while runtime leases are uncertain");
+            return Promise.resolve(backend.forceStop());
+          }
+          return Promise.resolve(backend.stop());
+        },
         stopDeadline,
       );
       if (stopOutcome.status !== "fulfilled" && typeof backend.forceStop === "function") {
@@ -5385,6 +5368,9 @@ export class SessionManager {
           console.error("[sdk] Backend force stop timed out during graceful shutdown");
         } else if (forceOutcome.status === "rejected") {
           console.error("[sdk] Backend force stop failed during graceful shutdown:", forceOutcome.error);
+        }
+        for (const record of this.cleanupOwnership.values()) {
+          if (record.timer) clearTimeout(record.timer);
         }
       }
       this.backend = null;
