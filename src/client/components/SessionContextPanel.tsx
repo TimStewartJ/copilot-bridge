@@ -45,7 +45,7 @@ export default function SessionContextPanel({
   const events = context?.events ?? [];
   const eventsByTurnId = new Map<string, SessionContextEvent[]>();
   const knownTurnIds = new Set(turns.map((turn) => getTurnId(turn)).filter((turnId): turnId is string => Boolean(turnId)));
-  for (const event of events) {
+  for (const event of [...events, ...(context?.turnMeasurements ?? [])]) {
     const turnId = event.bridgeTurnId ?? undefined;
     if (!turnId || !knownTurnIds.has(turnId)) continue;
     const existing = eventsByTurnId.get(turnId) ?? [];
@@ -82,6 +82,7 @@ export default function SessionContextPanel({
             eventsByTurnId={eventsByTurnId}
             previews={previews}
             turns={turns}
+            totalTurns={context?.totalTurns}
           />
           <details className="text-xs text-text-muted">
             <summary className="cursor-pointer hover:text-text-primary">Usage details</summary>

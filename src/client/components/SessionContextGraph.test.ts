@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionContextEvent, SessionContextTurn } from "../../shared/session-context.js";
 import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
-import SessionContextGraph from "./SessionContextGraph";
+import SessionContextGraph, { buildTurnGraphPoints } from "./SessionContextGraph";
 import { getSummaryMetrics } from "./SessionContextHelpers";
+import SessionContextPanel from "./SessionContextPanel";
 
 function fixture(values: Array<number | null>) {
   const turns: SessionContextTurn[] = values.map((_, index) => ({
@@ -27,6 +28,46 @@ function fixture(values: Array<number | null>) {
 }
 
 describe("Context history", () => {
+  it("plots the API's per-turn measurements even when raw events contain only usage-only snapshots", async () => {
+    const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    const props = fixture([400]);
+    await harness.render(createElement(SessionContextPanel, {
+      previews: props.previews,
+      context: {
+        provider: "copilot", summary: null, turns: props.turns,
+        events: [{ ...props.events[0], id: 2, tokensUsed: null }],
+        turnMeasurements: props.events, totalTurns: 1,
+        capabilities: { contextWindow: "exact", modelUsage: "exact", compaction: "unavailable", truncation: "unavailable" },
+      },
+    }));
+    expect(findAllByTag(harness.dom.container, "CIRCLE")).toHaveLength(1);
+    expect(harness.dom.container.textContent).toContain("400 tokens");
+  });
+
+  it("keeps the latest valid measurement despite empty snapshots, replay order and timestamp ties", () => {
+    const props = fixture([400]);
+    const first = props.events[0];
+    const latest = { ...first, id: 2, tokensUsed: 600 };
+    const empty = { ...first, id: 3, tokensUsed: null, modelUsage: { inputTokens: 900 } };
+    const marker = { ...first, id: 4, type: "compaction" as const, tokensUsed: 100 };
+    const previews = props.previews;
+    for (const events of [[first, latest, empty, marker], [marker, empty, latest, first]]) {
+      expect(buildTurnGraphPoints(props.turns, new Map([["turn-0", events]]), previews)[0]).toMatchObject({
+        tokens: 600, percent: 60, event: { id: 2 },
+      });
+    }
+  });
+
+  it("preserves global turn labels and discloses a bounded history window", async () => {
+    const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    const props = fixture([400, 600]);
+    props.turns.forEach((turn, index) => { turn.turnNumber = index + 201; });
+    await harness.render(createElement(SessionContextGraph, { ...props, totalTurns: 202 }));
+    expect(harness.dom.container.textContent).toContain("Latest 2 of 202 turns");
+    expect(harness.dom.container.textContent).toContain("Turn 201");
+    expect(harness.dom.container.textContent).toContain("Turn 202");
+  });
+
   it("draws a line with gaps for missing usage and zero at the baseline", async () => {
     const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     await harness.render(createElement(SessionContextGraph, fixture([0, 500, null, 200])));

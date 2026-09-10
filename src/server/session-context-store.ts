@@ -113,6 +113,7 @@ interface EventRow {
 }
 
 interface TurnRow {
+  turnNumber?: number;
   sessionId: string;
   bridgeTurnId: string;
   provider: string;
@@ -293,6 +294,7 @@ function mergeProvenance(
 
 function hydrateTurn(row: TurnRow): SessionContextTurn {
   return {
+    turnNumber: row.turnNumber,
     sessionId: row.sessionId,
     bridgeTurnId: row.bridgeTurnId,
     provider: row.provider,
@@ -419,13 +421,30 @@ export function createSessionContextStore(db: DatabaseSync) {
   const selectTurns = db.prepare(`
     SELECT *
     FROM (
-      SELECT *
+      SELECT *, ROW_NUMBER() OVER (
+        ORDER BY COALESCE(startedAt, createdAt) ASC, bridgeTurnId ASC
+      ) AS turnNumber
       FROM session_context_turns
       WHERE sessionId = ?
-      ORDER BY COALESCE(startedAt, latestEventAt, updatedAt) DESC, bridgeTurnId DESC
+      ORDER BY COALESCE(startedAt, createdAt) DESC, bridgeTurnId DESC
       LIMIT ?
     )
-    ORDER BY COALESCE(startedAt, latestEventAt, updatedAt) ASC, bridgeTurnId ASC
+    ORDER BY turnNumber ASC
+  `);
+  const countTurns = db.prepare("SELECT COUNT(*) AS total FROM session_context_turns WHERE sessionId = ?");
+  const selectTurnMeasurements = db.prepare(`
+    SELECT * FROM (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY bridgeTurnId ORDER BY occurredAt DESC, id DESC
+      ) AS measurementRank
+      FROM session_context_events
+      WHERE sessionId = ?
+        AND bridgeTurnId IN (SELECT value FROM json_each(?))
+        AND type = 'context_snapshot'
+        AND (tokensUsed >= 0 OR usageRatio >= 0)
+    )
+    WHERE measurementRank = 1
+    ORDER BY occurredAt ASC, id ASC
   `);
   const selectBackfill = db.prepare("SELECT * FROM session_context_backfills WHERE sessionId = ?");
   const deleteSummaryForSession = db.prepare("DELETE FROM session_context_summary WHERE sessionId = ?");
@@ -649,11 +668,17 @@ export function createSessionContextStore(db: DatabaseSync) {
     const provider = summary?.provider ?? "copilot";
     const turns = (selectTurns.all(sessionId, limit) as unknown as TurnRow[]).map(hydrateTurn);
     const events = (selectEvents.all(sessionId, limit) as unknown as EventRow[]).map(hydrateEvent);
+    const turnMeasurements = (selectTurnMeasurements.all(
+      sessionId, JSON.stringify(turns.map((turn) => turn.bridgeTurnId)),
+    ) as unknown as EventRow[]).map(hydrateEvent);
+    const totalTurns = (countTurns.get(sessionId) as { total: number }).total;
     return {
       provider,
       summary,
       turns,
       events,
+      turnMeasurements,
+      totalTurns,
       capabilities: deriveCapabilities(summaryInternal),
     };
   }
