@@ -7,6 +7,8 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import ChatInput from "./ChatInput";
+import { useDrafts } from "../useDrafts";
+import type { Session } from "../api";
 
 const useVoiceInputMock = vi.hoisted(() => vi.fn());
 
@@ -102,6 +104,38 @@ describe("ChatInput voice retry", () => {
       ...props,
     }));
   }
+
+  it("keeps typed text for a session omitted from the loaded session list", async () => {
+    function DraftOwner() {
+      const otherSession: Session = {
+        sessionId: "other-session",
+        deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      };
+      const draftApi = useDrafts([otherSession], "archived-session");
+      return createElement(ChatInput, {
+        onSend: vi.fn(),
+        composerKey: "archived-session",
+        sessionId: "archived-session",
+        draft: draftApi.getDraft("archived-session"),
+        onDraftChange: (text, attachments) => draftApi.setDraft("archived-session", text, attachments),
+        onSubmitVoiceCapture: vi.fn(),
+      });
+    }
+
+    await getHarness().render(createElement(DraftOwner));
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "hello",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    expect(textarea.value).toBe("hello");
+  });
 
   it("keeps the composer visible in constrained chat layouts", async () => {
     await renderChatInput();

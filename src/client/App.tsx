@@ -340,7 +340,7 @@ export default function App() {
     setDraftLaunchOptions,
     clearDraft,
     hasDraft,
-  } = useDrafts(sessions);
+  } = useDrafts(sessions, activeComposerKey);
   const [draftSessionMap, setDraftSessionMap] = useState<Record<string, string>>({});
 
   const getDraftSession = useCallback((composerKey: string) => {
