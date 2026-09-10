@@ -311,12 +311,12 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       }
     }
 
-    const contextTier = resolveContextTierForModel(
-      selectedModelMetadata,
-      contextTierOverride
-        ?? scheduleContext?.contextTier
-        ?? normalizeCopilotContextTier(settings?.contextTier),
-    );
+    const requestedContextTier = contextTierOverride
+      ?? scheduleContext?.contextTier
+      ?? normalizeCopilotContextTier(settings?.contextTier);
+    const contextTier = selectedModelMetadata
+      ? resolveContextTierForModel(selectedModelMetadata, requestedContextTier)
+      : requestedContextTier;
     if (contextTier) cfg.contextTier = contextTier;
     const modelCapabilities = getModelCapabilitiesOverride(selectedModelMetadata, contextTier);
     if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;

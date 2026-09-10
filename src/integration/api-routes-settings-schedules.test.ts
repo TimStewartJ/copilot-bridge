@@ -41,7 +41,9 @@ describe("Settings routes", () => {
   it("PATCH /api/settings model change does NOT evict cached sessions", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
+    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
     sessionManager.evictAllCachedSessions = evictSpy;
+    sessionManager.validateModelSelection = validateModelSelection;
     const local = createTestApp({ sessionManager });
 
     const res = await request(local.app)
@@ -51,6 +53,214 @@ describe("Settings routes", () => {
     expect(res.status).toBe(200);
     // Model changes are future-only — no eviction, no setModel on cached sessions.
     expect(evictSpy).not.toHaveBeenCalled();
+    expect(validateModelSelection).toHaveBeenCalledWith({ model: "claude-opus-4.7" });
+  });
+
+  it("PATCH /api/settings rejects known-invalid global models without persisting mixed changes", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "Model is not available: invented-model",
+    });
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "invented-model", theme: "dark" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Model is not available: invented-model");
+    expect(local.ctx.settingsStore.getSettings()).not.toMatchObject({
+      model: "invented-model",
+      theme: "dark",
+    });
+  });
+
+  it("PATCH /api/settings proceeds when the metadata owner defers validation", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "future-model" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.model).toBe("future-model");
+  });
+
+  it("PATCH /api/settings skips unchanged stale presets during sticky writes", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn(async ({ model }: { model: string }) => (
+      model === "retired-gpt"
+        ? { ok: false as const, error: "Model is not available: retired-gpt" }
+        : { ok: true as const }
+    ));
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      modelPresets: {
+        preset1: { model: "retired-gpt" },
+        preset2: { model: "claude-opus-4.7" },
+      },
+    });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({
+        modelPresets: {
+          preset1: { model: "retired-gpt" },
+          preset2: { model: "claude-opus-5", reasoningEffort: "high" },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.modelPresets).toEqual({
+      preset1: { model: "retired-gpt" },
+      preset2: { model: "claude-opus-5", reasoningEffort: "high" },
+    });
+    expect(validateModelSelection).toHaveBeenCalledOnce();
+    expect(validateModelSelection).toHaveBeenCalledWith({ model: "claude-opus-5" });
+  });
+
+  it("PATCH /api/settings validates changed preset and legacy family-default models", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "Model is disabled by policy: disabled-model",
+    });
+    const local = createTestApp({ sessionManager });
+
+    const preset = await request(local.app)
+      .patch("/api/settings")
+      .send({ modelPresets: { preset2: { model: "disabled-model" } } });
+    const legacy = await request(local.app)
+      .patch("/api/settings")
+      .send({ familyDefaults: { claude: { model: "disabled-model" } } });
+
+    expect(preset.status).toBe(400);
+    expect(legacy.status).toBe(400);
+    expect(local.ctx.settingsStore.getSettings().modelPresets).toBeUndefined();
+  });
+
+  it("PATCH /api/settings allows effort and context changes when no global model exists", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ reasoningEffort: "high", contextTier: "long_context" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+    expect(validateModelSelection).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings allows effort changes on an unchanged unavailable global model", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({ model: "retired-model", reasoningEffort: "low" });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ reasoningEffort: "high" });
+
+    expect(res.status).toBe(200);
+    expect(validateModelSelection).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings does not revalidate unchanged effort when only context changes", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      model: "small-model",
+      reasoningEffort: "stale-effort",
+      contextTier: "default",
+    });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ contextTier: "long_context" });
+
+    expect(res.status).toBe(200);
+    expect(validateModelSelection).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings does not revalidate preserved effort when the global model changes", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+    });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "grok-4.5", reasoningEffort: "xhigh" });
+
+    expect(res.status).toBe(200);
+    expect(validateModelSelection).toHaveBeenCalledWith({ model: "grok-4.5" });
+  });
+
+  it("PATCH /api/settings allows effort changes on an unchanged unavailable preset model", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({
+      modelPresets: {
+        preset1: { model: "retired-model", reasoningEffort: "low" },
+      },
+    });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({
+        modelPresets: {
+          preset1: { model: "retired-model", reasoningEffort: "high" },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(validateModelSelection).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings returns 409 when model settings change during validation", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    const local = createTestApp({ sessionManager });
+    const prepare = local.ctx.settingsStore.prepareSettingsUpdate.bind(local.ctx.settingsStore);
+    let callCount = 0;
+    vi.spyOn(local.ctx.settingsStore, "prepareSettingsUpdate").mockImplementation((updates) => {
+      const prepared = prepare(updates);
+      callCount += 1;
+      return {
+        ...prepared,
+        current: {
+          ...prepared.current,
+          model: callCount % 2 === 0 ? "concurrent-a" : "concurrent-b",
+        },
+      };
+    });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "new-model" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("changed concurrently");
+    expect(local.ctx.settingsStore.getSettings().model).toBeUndefined();
   });
 
   it("PATCH /api/settings MCP change still evicts cached sessions", async () => {
@@ -72,7 +282,12 @@ describe("Settings routes", () => {
   it("PATCH /api/settings persists deferred worker model settings without evicting sessions", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
+    const validateModelSelection = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "Model is not available: gpt-5-mini",
+    });
     sessionManager.evictAllCachedSessions = evictSpy;
+    sessionManager.validateModelSelection = validateModelSelection;
     const local = createTestApp({ sessionManager });
 
     const res = await request(local.app)
@@ -92,6 +307,7 @@ describe("Settings routes", () => {
       contextTier: "default",
     });
     expect(evictSpy).not.toHaveBeenCalled();
+    expect(validateModelSelection).not.toHaveBeenCalled();
   });
 
   it("PATCH /api/settings rejects mixed invalid updates without runtime side effects", async () => {

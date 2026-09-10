@@ -178,6 +178,7 @@ import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { AgentBackendDisconnect } from "./agent-backend/types.js";
 import {
   getModelCapabilitiesOverride,
+  modelSupportsLongContext,
   modelUsesDynamicSelection,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
@@ -254,6 +255,7 @@ export {
 
 type CopilotModelList = AgentModelInfo[];
 export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
+export const MODEL_METADATA_VALIDATION_TIMEOUT_MS = 3_000;
 const PENDING_INTERACTION_SNAPSHOT_TIMEOUT_MS = 5_000;
 /** Successive terminal cleanups a reconnect will wait out before reading pending state. */
 const PENDING_INTERACTION_CLEANUP_DRAIN_PASSES = 4;
@@ -465,6 +467,26 @@ export interface ModelRefreshResult {
   refreshedAt: string;
   clientCreatedAt: string | null;
 }
+
+export interface ModelSelection {
+  model: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}
+
+export type ModelSelectionValidationResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+type ModelMetadataFetchResult = {
+  models: AgentModelInfo[];
+  superseded: boolean;
+};
+
+type ModelMetadataRequest = {
+  generation: number;
+  promise: Promise<ModelMetadataFetchResult>;
+};
 
 type SessionOverlayBusyReason = "model-switching" | "history-undo";
 
@@ -715,7 +737,9 @@ export class SessionManager {
   private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
   private sessionToolInitializationWaitTimeoutMs = SESSION_TOOL_INITIALIZATION_TIMEOUT_MS;
   private mcpStatus = new Map<string, McpStatusSnapshot>();
-  private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
+  private modelMetadata: AgentModelInfo[] | undefined;
+  private modelMetadataLoad: ModelMetadataRequest | null = null;
+  private modelMetadataGeneration = 0;
   private pendingSessionEvictions = new Set<string>();
   private readonly pendingInteractionCounts = new Map<string, {
     userInput: number;
@@ -2706,7 +2730,7 @@ export class SessionManager {
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const nativeBridgeTools = this.resolveNativeBridgeTools();
-    const modelMetadata = opts.modelMetadata ?? this.modelMetadataForContextTiers;
+    const modelMetadata = opts.modelMetadata ?? this.modelMetadata;
     const cfg = buildSessionConfigWithDeps({
       deps: {
         ...this.deps,
@@ -2759,37 +2783,141 @@ export class SessionManager {
     return createNativeBridgeTools(definitions);
   }
 
-  private async loadModelMetadataForContextTiers(
-    client = this.getBackend(),
-    options: { refresh?: boolean } = {},
-  ): Promise<readonly CopilotModelContextMetadata[] | undefined> {
-    if (!options.refresh && this.modelMetadataForContextTiers) {
-      return this.modelMetadataForContextTiers;
+  private invalidateModelMetadata(): void {
+    this.modelMetadata = undefined;
+    this.modelMetadataLoad = null;
+    this.modelMetadataGeneration += 1;
+  }
+
+  private loadModelMetadata(
+    client: AgentBackend,
+    options: { useCache: boolean },
+  ): Promise<ModelMetadataFetchResult> {
+    if (options.useCache && this.modelMetadata) {
+      return Promise.resolve({ models: this.modelMetadata, superseded: false });
     }
-    const listModels = (client as { listModels?: unknown }).listModels;
-    if (typeof listModels !== "function") {
-      return this.modelMetadataForContextTiers;
+
+    const generation = this.modelMetadataGeneration;
+    if (this.modelMetadataLoad?.generation === generation) {
+      return this.modelMetadataLoad.promise;
     }
+
+    const promise = client.listModels().then((models) => {
+      const superseded = generation !== this.modelMetadataGeneration;
+      if (!superseded && models.length > 0) {
+        this.modelMetadata = models;
+      }
+      return { models, superseded };
+    });
+    const request = { generation, promise };
+    this.modelMetadataLoad = request;
+    void promise.then(
+      () => {
+        if (this.modelMetadataLoad === request) this.modelMetadataLoad = null;
+      },
+      () => {
+        if (this.modelMetadataLoad === request) this.modelMetadataLoad = null;
+      },
+    );
+    return promise;
+  }
+
+  private async loadModelMetadataForValidation(
+    useCache: boolean,
+  ): Promise<ModelMetadataFetchResult | undefined> {
+    const outcome = await settleByDeadline(
+      () => this.loadModelMetadata(this.getBackend(), { useCache }),
+      createDeadline(MODEL_METADATA_VALIDATION_TIMEOUT_MS),
+    );
+    if (outcome.status === "fulfilled") {
+      return !outcome.value.superseded && outcome.value.models.length > 0
+        ? outcome.value
+        : undefined;
+    }
+    console.warn(
+      "[sdk] Failed to load model metadata:",
+      outcome.status === "timed-out"
+        ? `timed out after ${MODEL_METADATA_VALIDATION_TIMEOUT_MS}ms`
+        : outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+    );
+    return undefined;
+  }
+
+  private async loadModelMetadataForRuntime(client: AgentBackend): Promise<AgentModelInfo[] | undefined> {
     try {
-      const models = await listModels.call(client);
-      this.modelMetadataForContextTiers = models as readonly CopilotModelContextMetadata[];
-      return this.modelMetadataForContextTiers;
+      const loaded = await this.loadModelMetadata(client, { useCache: true });
+      if (loaded.superseded) return this.modelMetadata;
+      return loaded.models.length > 0 ? loaded.models : this.modelMetadata;
     } catch (error) {
       console.warn(
-        "[sdk] Failed to load model metadata for context-tier configuration:",
+        "[sdk] Failed to load model metadata for session configuration:",
         error instanceof Error ? error.message : String(error),
       );
-      return this.modelMetadataForContextTiers;
+      return this.modelMetadata;
     }
+  }
+
+  private validateModelSelectionAgainstMetadata(
+    selection: ModelSelection,
+    models: readonly AgentModelInfo[],
+  ): string | undefined {
+    const selected = models.find((candidate) => candidate.id === selection.model);
+    if (!selected) {
+      return `Model is not available: ${selection.model}`;
+    }
+    if (selected.policy?.state === "disabled") {
+      return `Model is disabled by policy: ${selection.model}`;
+    }
+    if (
+      selection.reasoningEffort
+      && !selected.supportedReasoningEfforts?.some((effort) => effort === selection.reasoningEffort)
+    ) {
+      const available = selected.supportedReasoningEfforts ?? [];
+      return available.length > 0
+        ? `reasoningEffort must be one of: ${available.join(", ")}`
+        : `Model does not expose configurable reasoning effort: ${selection.model}`;
+    }
+    if (selection.contextTier === "long_context" && !modelSupportsLongContext(selected)) {
+      return `Model does not support long context: ${selection.model}`;
+    }
+    return undefined;
+  }
+
+  async validateModelSelection(
+    selection: ModelSelection,
+  ): Promise<ModelSelectionValidationResult> {
+    const normalized: ModelSelection = {
+      model: selection.model.trim(),
+      ...(selection.reasoningEffort?.trim() ? { reasoningEffort: selection.reasoningEffort.trim() } : {}),
+      ...(selection.contextTier ? { contextTier: selection.contextTier } : {}),
+    };
+    const cached = this.modelMetadata;
+    if (!cached) {
+      const loaded = await this.loadModelMetadataForValidation(true);
+      if (!loaded) return { ok: true };
+      const error = this.validateModelSelectionAgainstMetadata(normalized, loaded.models);
+      return error ? { ok: false, error } : { ok: true };
+    }
+
+    const cachedError = this.validateModelSelectionAgainstMetadata(normalized, cached);
+    if (!cachedError) return { ok: true };
+
+    const refreshed = await this.loadModelMetadataForValidation(false);
+    if (!refreshed) return { ok: true };
+    const refreshedError = this.validateModelSelectionAgainstMetadata(normalized, refreshed.models);
+    return refreshedError ? { ok: false, error: refreshedError } : { ok: true };
   }
 
   private resolveModelRuntimeOptions(
     modelId: string,
     requestedContextTier?: string,
-    modelMetadata = this.modelMetadataForContextTiers,
+    modelMetadata: readonly CopilotModelContextMetadata[] | undefined = this.modelMetadata,
   ): { contextTier?: CopilotContextTier; modelCapabilities?: Record<string, unknown> } {
     const model = modelMetadata?.find((candidate) => candidate.id === modelId);
-    const contextTier = resolveContextTierForModel(model, normalizeCopilotContextTier(requestedContextTier));
+    const normalizedContextTier = normalizeCopilotContextTier(requestedContextTier);
+    const contextTier = model
+      ? resolveContextTierForModel(model, normalizedContextTier)
+      : normalizedContextTier;
     const modelCapabilities = getModelCapabilitiesOverride(model, contextTier);
     return {
       ...(contextTier ? { contextTier } : {}),
@@ -2804,7 +2932,7 @@ export class SessionManager {
    */
   private resolvePersistedModelCapabilities(
     state: PersistedSessionModelState,
-    modelMetadata = this.modelMetadataForContextTiers,
+    modelMetadata: readonly CopilotModelContextMetadata[] | undefined = this.modelMetadata,
   ): Record<string, unknown> | undefined {
     if (!state.model) return state.modelCapabilities;
     const model = modelMetadata?.find((candidate) => candidate.id === state.model);
@@ -3380,6 +3508,7 @@ export class SessionManager {
           started = true;
           if (this.shuttingDown) throw new Error("shutting down");
           if (this.backendTransition !== transition) throw new Error(BACKEND_DISCONNECTED_MESSAGE);
+          this.invalidateModelMetadata();
           this.backend = nextBackend;
           this.backendCreatedAtMs = Date.now();
           this.lastBackendRecoveryError = null;
@@ -3493,8 +3622,7 @@ export class SessionManager {
   async listModels() {
     const client = await this.getBackendAfterRotation();
     const t0 = Date.now();
-    const models = await client.listModels();
-    this.modelMetadataForContextTiers = models as readonly CopilotModelContextMetadata[];
+    const { models } = await this.loadModelMetadata(client, { useCache: false });
     this.recordSpan("session.listModels", Date.now() - t0);
     return models;
   }
@@ -3537,8 +3665,7 @@ export class SessionManager {
   async refreshModels(): Promise<ModelRefreshResult> {
     const t0 = Date.now();
     const client = await this.rotateBackendForModelRefresh();
-    const models = await client.listModels();
-    this.modelMetadataForContextTiers = models as readonly CopilotModelContextMetadata[];
+    const { models } = await this.loadModelMetadata(client, { useCache: false });
     this.recordSpan("session.refreshModels", Date.now() - t0, undefined, {
       count: Array.isArray(models) ? models.length : undefined,
     });
@@ -4070,7 +4197,7 @@ export class SessionManager {
 
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
-      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
+      const modelMetadata = await this.loadModelMetadataForRuntime(client);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         ...(options.model ? { modelOverride: options.model } : {}),
@@ -4424,7 +4551,7 @@ export class SessionManager {
 
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
-      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
+      const modelMetadata = await this.loadModelMetadataForRuntime(client);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         task,
@@ -5083,7 +5210,7 @@ export class SessionManager {
     this.syncRestartWaitingIfPending();
 
     try {
-      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
+      const modelMetadata = await this.loadModelMetadataForRuntime(client);
       let session = this.sessionObjects.get(sessionId);
       if (!session) {
         const linkedTask = this.findLinkedTask(sessionId);

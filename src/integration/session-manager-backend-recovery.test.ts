@@ -65,7 +65,7 @@ function createFakeBackend(name: string, sessions: Record<string, ReturnType<typ
     stop: vi.fn(async () => {}),
     forceStop: vi.fn(async () => {}),
     fence: vi.fn(async () => {}),
-    listModels: vi.fn(async () => []),
+    listModels: vi.fn(async (): Promise<Array<{ id: string; name: string }>> => []),
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => { throw new Error("not implemented in test"); }),
     resumeSession: vi.fn(async (sessionId: string) => {
@@ -135,6 +135,8 @@ describe("SessionManager backend disconnect recovery", () => {
     let finishFence!: () => void;
     dead.fence.mockImplementation(() => new Promise<void>((resolve) => { finishFence = resolve; }));
     const fresh = createFakeBackend("fresh", { "session-interactive": resumedInteractive });
+    dead.listModels.mockResolvedValue([{ id: "old-model", name: "Old Model" }]);
+    fresh.listModels.mockResolvedValue([{ id: "new-model", name: "New Model" }]);
     const { manager, statusEvents, telemetryStore } = createManager([dead, fresh]);
     await manager.initialize();
     const transcriptPath = manager.getSessionEventsPath("session-interactive");
@@ -144,6 +146,7 @@ describe("SessionManager backend disconnect recovery", () => {
     }) + "\n";
     mkdirSync(dirname(transcriptPath), { recursive: true });
     writeFileSync(transcriptPath, transcript);
+    await expect(manager.validateModelSelection({ model: "old-model" })).resolves.toEqual({ ok: true });
     expect(dead.hasDisconnectHandler()).toBe(true);
     expect(manager.getBackendStatus()).toMatchObject({ state: "ready", connection: "connected", pid: 100, disconnectCount: 0 });
 
@@ -202,6 +205,8 @@ describe("SessionManager backend disconnect recovery", () => {
     await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
     expect(fresh.hasDisconnectHandler()).toBe(true);
     expect(manager.getBackendUnavailableReason()).toBeUndefined();
+    await expect(manager.validateModelSelection({ model: "new-model" })).resolves.toEqual({ ok: true });
+    expect(fresh.listModels).toHaveBeenCalledOnce();
 
     // The interactive turn gets a continue prompt on the new backend; the quiet defer turn does not.
     await vi.waitFor(() => expect(resumedInteractive.session.send).toHaveBeenCalledWith({ prompt: BACKEND_RECOVERY_CONTINUE_PROMPT }));
