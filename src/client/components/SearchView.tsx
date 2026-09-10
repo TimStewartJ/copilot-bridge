@@ -190,6 +190,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
       kind,
       limit: PAGE_SIZE,
       offset,
+      refreshOnly: preserveCurrentResponse,
     }, { signal: controller.signal }).then((next) => {
       if (!controller.signal.aborted) {
         setResponse(next);
@@ -207,7 +208,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
   }, [kind, offset, pollRevision, query, requestKey, retryRevision, scope, sessionId, taskId]);
 
   useEffect(() => {
-    if (visibleResponse?.coverage.state !== "indexing") return;
+    if (!(visibleResponse?.coverage.reconciling ?? (visibleResponse?.coverage.state === "indexing"))) return;
     const timer = setTimeout(() => {
       setPollRevision((current) => current + 1);
     }, INDEXING_REFRESH_MS);
@@ -294,7 +295,8 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
         <details className="text-xs text-text-muted"><summary className="cursor-pointer">About saved-text search</summary><p className="mt-2">Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched. Search retrieves saved text only; it does not ask AI.</p></details>
         {visibleResponse && <div className="space-y-3">
           {visibleResponse.coverage.state !== "ready" && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
-            {visibleResponse.coverage.state === "indexing" ? "Search indexing is still in progress." : "Search coverage is partial."}
+            {visibleResponse.coverage.state === "partial" ? "Search coverage is partial." : ""}
+            {(visibleResponse.coverage.reconciling ?? (visibleResponse.coverage.state === "indexing")) ? " Search indexing is still in progress." : ""}
             {" "}{visibleResponse.coverage.indexedSessions} of {visibleResponse.coverage.totalSessions} chats indexed.
           </div>}
           {visibleResponse.coverage.errors.length > 0 && <div role="alert" className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">

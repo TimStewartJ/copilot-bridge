@@ -1099,6 +1099,7 @@ export async function searchBridge(
   if (request.kind) params.set("kind", request.kind);
   if (request.limit != null) params.set("limit", String(request.limit));
   if (request.offset != null) params.set("offset", String(request.offset));
+  if (request.refreshOnly) params.set("refreshOnly", "true");
   return apiFetch<BridgeSearchResponse>(`/api/search?${params.toString()}`, undefined, options);
 }
 

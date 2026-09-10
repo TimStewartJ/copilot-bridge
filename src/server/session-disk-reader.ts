@@ -1,9 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
+import { readJsonlLines } from "./jsonl-lines.js";
 import {
   createVisibleActivityTracker,
   getLastVisibleActivityAt,
@@ -1189,43 +1188,36 @@ export async function readMessagesAroundEventFromDisk(
   let total = 0;
   let lineNumber = 0;
   let lastVisibleActivityAt: string | undefined;
-  const stream = createReadStream(eventsPath, { encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of lines) {
-      lineNumber += 1;
-      if (!line.trim()) continue;
-      let event: unknown;
-      try {
-        event = JSON.parse(line);
-      } catch (error) {
-        throw new Error(
-          `Cannot read exact message context because events.jsonl contains malformed JSON at line ${lineNumber}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      const message = projectSearchableMessage(event);
-      if (!message) continue;
-      const messageOffset = total;
-      total += 1;
-      if (message.timestamp) lastVisibleActivityAt = message.timestamp;
-
-      if (targetOffset < 0) {
-        if (message.sourceEventId === sourceEventId) {
-          targetOffset = messageOffset;
-          windowMessages.push(...beforeMessages, message);
-        } else {
-          beforeMessages.push(message);
-          if (beforeMessages.length > options.before) beforeMessages.shift();
-        }
-      } else if (messageOffset <= targetOffset + options.after) {
-        windowMessages.push(message);
-      }
+  for await (const line of readJsonlLines(eventsPath)) {
+    lineNumber += 1;
+    if (!line.trim()) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch (error) {
+      throw new Error(
+        `Cannot read exact message context because events.jsonl contains malformed JSON at line ${lineNumber}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
-  } finally {
-    lines.close();
-    stream.destroy();
+    const message = projectSearchableMessage(event);
+    if (!message) continue;
+    const messageOffset = total;
+    total += 1;
+    if (message.timestamp) lastVisibleActivityAt = message.timestamp;
+
+    if (targetOffset < 0) {
+      if (message.sourceEventId === sourceEventId) {
+        targetOffset = messageOffset;
+        windowMessages.push(...beforeMessages, message);
+      } else {
+        beforeMessages.push(message);
+        if (beforeMessages.length > options.before) beforeMessages.shift();
+      }
+    } else if (messageOffset <= targetOffset + options.after) {
+      windowMessages.push(message);
+    }
   }
   if (targetOffset < 0) throw new SessionMessageNotFoundError(sessionId, sourceEventId);
 
