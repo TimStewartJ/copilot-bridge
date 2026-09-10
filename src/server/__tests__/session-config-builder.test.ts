@@ -992,6 +992,22 @@ describe("session-config-builder", () => {
     expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
   });
 
+  it("preserves requested context tiers when model metadata is unavailable", () => {
+    const settingsStore = {
+      getSettings: () => ({ model: "future-model", contextTier: "long_context" }),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("future-model");
+    expect(cfg.contextTier).toBe("long_context");
+    expect(cfg.modelCapabilities).toBeUndefined();
+  });
+
   it("falls back to config.model when settings.model is unset for new-session paths", () => {
     const settingsStore = {
       getSettings: () => ({ model: undefined, reasoningEffort: undefined }),

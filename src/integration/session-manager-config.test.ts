@@ -227,7 +227,7 @@ describe("SessionManager session config", () => {
       createSession: vi.fn(async () => ({ sessionId: "new-session", disconnect: vi.fn() })),
     };
 
-    manager.modelMetadataForContextTiers = [{
+    manager.modelMetadata = [{
       id: "launch-model",
       supportedReasoningEfforts: ["high"],
       capabilities: {
@@ -295,7 +295,7 @@ describe("SessionManager session config", () => {
       config: { sessionMcpServers: {} },
       copilotHome,
     }) as any;
-    manager.modelMetadataForContextTiers = [{
+    manager.modelMetadata = [{
       id: "adaptive-model",
       supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
       capabilities: {

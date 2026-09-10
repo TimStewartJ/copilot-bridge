@@ -580,20 +580,7 @@ describe("Session routes (mocked)", () => {
 
   it("POST /api/sessions validates and forwards one-session launch options", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listModels = vi.fn().mockResolvedValue([
-      {
-        id: "gpt-5.6",
-        name: "GPT-5.6",
-        policy: { state: "enabled" },
-        supportedReasoningEfforts: ["low", "high"],
-        billing: {
-          tokenPrices: {
-            contextMax: 272_000,
-            longContext: { contextMax: 922_000 },
-          },
-        },
-      },
-    ]);
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
     ({ app, ctx } = createTestApp({ sessionManager }));
 
@@ -612,15 +599,25 @@ describe("Session routes (mocked)", () => {
       reasoningEffort: "high",
       contextTier: "long_context",
     });
+    expect(sessionManager.validateModelSelection).toHaveBeenCalledWith({
+      model: "gpt-5.6",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
   });
 
   it("POST /api/sessions rejects unavailable and disabled models before creation", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listModels = vi.fn().mockResolvedValue([
-      { id: "disabled-model", name: "Disabled", policy: { state: "disabled" } },
-    ]);
+    sessionManager.validateModelSelection = vi.fn(async ({ model }: { model: string }) => ({
+      ok: false as const,
+      error: model === "disabled-model"
+        ? "Model is disabled by policy: disabled-model"
+        : `Model is not available: ${model}`,
+    }));
     sessionManager.createSession = vi.fn();
+    sessionManager.createTaskSession = vi.fn();
     ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = ctx.taskStore.createTask("Invalid model task");
 
     const unavailable = await request(app)
       .post("/api/sessions")
@@ -628,29 +625,30 @@ describe("Session routes (mocked)", () => {
     const disabled = await request(app)
       .post("/api/sessions")
       .send({ model: "disabled-model" });
+    const taskUnavailable = await request(app)
+      .post(`/api/tasks/${task.id}/session`)
+      .send({ model: "missing-model" });
 
     expect(unavailable.status).toBe(400);
     expect(unavailable.body.error).toContain("not available");
     expect(disabled.status).toBe(400);
     expect(disabled.body.error).toContain("disabled by policy");
+    expect(taskUnavailable.status).toBe(400);
+    expect(taskUnavailable.body.error).toContain("not available");
     expect(sessionManager.createSession).not.toHaveBeenCalled();
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
   });
 
   it("POST /api/sessions rejects unsupported effort and long context before creation", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listModels = vi.fn().mockResolvedValue([
-      {
-        id: "small-model",
-        name: "Small Model",
-        policy: { state: "enabled" },
-        supportedReasoningEfforts: ["low"],
-        billing: {
-          tokenPrices: {
-            contextMax: 128_000,
-          },
-        },
-      },
-    ]);
+    sessionManager.validateModelSelection = vi.fn(async (
+      selection: { reasoningEffort?: string; contextTier?: string },
+    ) => ({
+      ok: false as const,
+      error: selection.contextTier === "long_context"
+        ? "Model does not support long context: small-model"
+        : "reasoningEffort must be one of: low",
+    }));
     sessionManager.createSession = vi.fn();
     ({ app, ctx } = createTestApp({ sessionManager }));
 
@@ -670,19 +668,7 @@ describe("Session routes (mocked)", () => {
 
   it("POST /api/sessions validates effort and context against the configured default model", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listModels = vi.fn().mockResolvedValue([
-      {
-        id: "default-model",
-        name: "Default Model",
-        supportedReasoningEfforts: ["medium"],
-        billing: {
-          tokenPrices: {
-            contextMax: 200_000,
-            longContext: { contextMax: 800_000 },
-          },
-        },
-      },
-    ]);
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
     ({ app, ctx } = createTestApp({ sessionManager }));
     ctx.settingsStore.updateSettings({ model: "default-model" });
@@ -697,6 +683,39 @@ describe("Session routes (mocked)", () => {
       reasoningEffort: "medium",
       contextTier: "long_context",
     });
+    expect(sessionManager.validateModelSelection).toHaveBeenCalledWith({
+      model: "default-model",
+      reasoningEffort: "medium",
+      contextTier: "long_context",
+    });
+  });
+
+  it("session creation routes proceed when model metadata validation is deferred", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
+    sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = ctx.taskStore.createTask("Metadata-independent task");
+
+    const general = await request(app)
+      .post("/api/sessions")
+      .send({ model: "future-model" });
+    const taskLinked = await request(app)
+      .post(`/api/tasks/${task.id}/session`)
+      .send({ model: "future-model" });
+
+    expect(general.status).toBe(200);
+    expect(taskLinked.status).toBe(200);
+    expect(sessionManager.createSession).toHaveBeenCalledWith({
+      background: true,
+      model: "future-model",
+    });
+    expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({
+      background: true,
+      model: "future-model",
+    });
+    expect(sessionManager.validateModelSelection).toHaveBeenCalledTimes(2);
   });
 
   it("POST /api/sessions rejects session creation while launcher restart cutover is in progress", async () => {

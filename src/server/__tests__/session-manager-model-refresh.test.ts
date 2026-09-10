@@ -1,17 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBusRegistry } from "../event-bus.js";
 import {
+  MODEL_METADATA_VALIDATION_TIMEOUT_MS,
   MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS,
   ModelRefreshBlockedError,
   ModelRefreshClientRotationTimeoutError,
   SessionManager,
   type SessionManagerDeps,
 } from "../session-manager.js";
+import type { AgentModelInfo } from "../agent-backend/index.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
 import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
 
-function createBackend(models: Array<{ id: string; name: string }>) {
+type TestModel = Pick<AgentModelInfo, "id" | "name">
+  & Partial<Omit<AgentModelInfo, "id" | "name">>;
+
+function createBackend(models: TestModel[]) {
   return {
     id: "copilot" as const,
     capabilities: {
@@ -361,5 +366,230 @@ describe("SessionManager model refresh", () => {
     expect(freshBackend.start).toHaveBeenCalledOnce();
     expect(createBackendSpy).toHaveBeenCalledTimes(2);
     expect(manager.getBackendUnavailableReason()).toBeUndefined();
+  });
+
+  it("coalesces cold metadata loads and reuses known-good cached selections", async () => {
+    const backend = createBackend([]);
+    let resolveModels: ((models: TestModel[]) => void) | undefined;
+    backend.listModels.mockImplementation(() => new Promise((resolve) => {
+      resolveModels = resolve;
+    }));
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+
+    const first = manager.validateModelSelection({ model: "gpt-5.6", reasoningEffort: "high" });
+    const second = manager.validateModelSelection({ model: "gpt-5.6" });
+    await vi.waitFor(() => expect(backend.listModels).toHaveBeenCalledOnce());
+    resolveModels?.([{
+      id: "gpt-5.6",
+      name: "GPT-5.6",
+      supportedReasoningEfforts: ["low", "high"],
+    }]);
+
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ ok: true });
+    await expect(manager.validateModelSelection({ model: "gpt-5.6" })).resolves.toEqual({ ok: true });
+    expect(backend.listModels).toHaveBeenCalledOnce();
+  });
+
+  it("does not let an older metadata request overwrite a newer catalog result", async () => {
+    const backend = createBackend([]);
+    let resolveOlder: ((models: TestModel[]) => void) | undefined;
+    let resolveNewer: ((models: TestModel[]) => void) | undefined;
+    backend.listModels
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveOlder = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveNewer = resolve;
+      }));
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+
+    const olderValidation = manager.validateModelSelection({ model: "new-model" });
+    await vi.waitFor(() => expect(backend.listModels).toHaveBeenCalledTimes(1));
+    const olderList = manager.listModels();
+    await Promise.resolve();
+    (manager as any).invalidateModelMetadata();
+    const newerList = manager.listModels();
+    await vi.waitFor(() => expect(backend.listModels).toHaveBeenCalledTimes(2));
+
+    resolveNewer?.([{ id: "new-model", name: "New Model" }]);
+    await expect(newerList).resolves.toEqual([{ id: "new-model", name: "New Model" }]);
+    resolveOlder?.([{ id: "old-model", name: "Old Model" }]);
+    await expect(olderList).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
+    await expect(olderValidation).resolves.toEqual({ ok: true });
+    await expect(manager.validateModelSelection({ model: "new-model" })).resolves.toEqual({ ok: true });
+    expect(backend.listModels).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes cached metadata before rejecting a newly available model", async () => {
+    const backend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+    await expect(manager.validateModelSelection({ model: "old-model" })).resolves.toEqual({ ok: true });
+    backend.listModels.mockResolvedValueOnce([{ id: "new-model", name: "New Model" }]);
+
+    await expect(manager.validateModelSelection({ model: "new-model" })).resolves.toEqual({ ok: true });
+    expect(backend.listModels).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces concurrent refreshes for cached would-be rejections", async () => {
+    const backend = createBackend([{ id: "old-model", name: "Old Model" }]);
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+    await expect(manager.validateModelSelection({ model: "old-model" })).resolves.toEqual({ ok: true });
+
+    let resolveRefresh: ((models: TestModel[]) => void) | undefined;
+    backend.listModels.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    const first = manager.validateModelSelection({ model: "new-model" });
+    const second = manager.validateModelSelection({ model: "new-model" });
+    await vi.waitFor(() => expect(backend.listModels).toHaveBeenCalledTimes(2));
+    resolveRefresh?.([{ id: "new-model", name: "New Model" }]);
+
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ ok: true });
+    expect(backend.listModels).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects selections known invalid from fresh metadata", async () => {
+    const backend = createBackend([
+      {
+        id: "disabled-model",
+        name: "Disabled",
+        policy: { state: "disabled", terms: "" },
+      },
+      {
+        id: "small-model",
+        name: "Small",
+        supportedReasoningEfforts: ["low"],
+        billing: { tokenPrices: { contextMax: 128_000 } },
+      },
+      {
+        id: "auto",
+        name: "Auto",
+        selectionMode: "dynamic",
+        supportedReasoningEfforts: [],
+      },
+    ]);
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+
+    await expect(manager.validateModelSelection({ model: "missing-model" })).resolves.toEqual({
+      ok: false,
+      error: "Model is not available: missing-model",
+    });
+    await expect(manager.validateModelSelection({ model: "disabled-model" })).resolves.toEqual({
+      ok: false,
+      error: "Model is disabled by policy: disabled-model",
+    });
+    await expect(manager.validateModelSelection({
+      model: "small-model",
+      reasoningEffort: "high",
+    })).resolves.toEqual({
+      ok: false,
+      error: "reasoningEffort must be one of: low",
+    });
+    await expect(manager.validateModelSelection({
+      model: "small-model",
+      contextTier: "long_context",
+    })).resolves.toEqual({
+      ok: false,
+      error: "Model does not support long context: small-model",
+    });
+    await expect(manager.validateModelSelection({ model: "auto" })).resolves.toEqual({ ok: true });
+    await expect(manager.validateModelSelection({
+      model: "auto",
+      reasoningEffort: "high",
+    })).resolves.toEqual({
+      ok: false,
+      error: "Model does not expose configurable reasoning effort: auto",
+    });
+  });
+
+  it("fails soft for empty catalogs, load failures, and failed cached refreshes", async () => {
+    const emptyBackend = createBackend([]);
+    const { manager: emptyManager } = createManager([emptyBackend]);
+    await emptyManager.initialize();
+    await expect(emptyManager.validateModelSelection({ model: "future-model" })).resolves.toEqual({ ok: true });
+
+    const failedBackend = createBackend([]);
+    failedBackend.listModels.mockRejectedValue(new Error("catalog unavailable"));
+    const { manager: failedManager } = createManager([failedBackend]);
+    await failedManager.initialize();
+    await expect(failedManager.validateModelSelection({ model: "future-model" })).resolves.toEqual({ ok: true });
+
+    const cachedBackend = createBackend([{
+      id: "small-model",
+      name: "Small",
+      supportedReasoningEfforts: ["low"],
+    }]);
+    const { manager: cachedManager } = createManager([cachedBackend]);
+    await cachedManager.initialize();
+    await expect(cachedManager.validateModelSelection({ model: "small-model" })).resolves.toEqual({ ok: true });
+    cachedBackend.listModels.mockRejectedValueOnce(new Error("catalog unavailable"));
+    await expect(cachedManager.validateModelSelection({
+      model: "small-model",
+      reasoningEffort: "high",
+    })).resolves.toEqual({ ok: true });
+  });
+
+  it("does not let an empty response clear a populated metadata cache", async () => {
+    const backend = createBackend([{ id: "cached-model", name: "Cached Model" }]);
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+    await expect(manager.validateModelSelection({ model: "cached-model" })).resolves.toEqual({ ok: true });
+    backend.listModels.mockResolvedValueOnce([]);
+
+    await expect(manager.listModels()).resolves.toEqual([]);
+    await expect(manager.validateModelSelection({ model: "cached-model" })).resolves.toEqual({ ok: true });
+    expect(backend.listModels).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails soft when backend metadata is unavailable during rotation", async () => {
+    const backend = createBackend([]);
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+    (manager as any).backendRotation = Promise.resolve(backend);
+
+    await expect(manager.validateModelSelection({ model: "future-model" })).resolves.toEqual({ ok: true });
+    expect(backend.listModels).not.toHaveBeenCalled();
+    (manager as any).backendRotation = null;
+  });
+
+  it("bounds slow metadata validation and fails soft on timeout", async () => {
+    vi.useFakeTimers();
+    const backend = createBackend([]);
+    backend.listModels.mockImplementation(() => new Promise(() => {}));
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+
+    const validation = manager.validateModelSelection({ model: "future-model" });
+    await vi.advanceTimersByTimeAsync(MODEL_METADATA_VALIDATION_TIMEOUT_MS);
+
+    await expect(validation).resolves.toEqual({ ok: true });
+  });
+
+  it("lets runtime configuration join a metadata request after validation times out", async () => {
+    vi.useFakeTimers();
+    const backend = createBackend([]);
+    let resolveModels: ((models: TestModel[]) => void) | undefined;
+    backend.listModels.mockImplementation(() => new Promise((resolve) => {
+      resolveModels = resolve;
+    }));
+    const { manager } = createManager([backend]);
+    await manager.initialize();
+
+    const validation = manager.validateModelSelection({ model: "future-model" });
+    await vi.advanceTimersByTimeAsync(MODEL_METADATA_VALIDATION_TIMEOUT_MS);
+    await expect(validation).resolves.toEqual({ ok: true });
+
+    const runtimeMetadata = (manager as any).loadModelMetadataForRuntime(backend);
+    resolveModels?.([{ id: "future-model", name: "Future Model" }]);
+
+    await expect(runtimeMetadata).resolves.toEqual([{ id: "future-model", name: "Future Model" }]);
+    expect(backend.listModels).toHaveBeenCalledOnce();
   });
 });

@@ -44,6 +44,38 @@ describe("settings-store", () => {
     expect(raw.mcpServers).toBeUndefined();
   });
 
+  it("prepareSettingsUpdate normalizes without persisting or changing MCP rows", () => {
+    store.updateSettings({
+      theme: "dark",
+      mcpServers: { before: { command: "before", args: [] } },
+    });
+
+    const prepared = store.prepareSettingsUpdate({
+      model: " gpt-5.6-sol ",
+      modelPresets: {
+        preset2: { model: " claude-opus-5 ", reasoningEffort: " high " },
+      },
+      mcpServers: { after: { command: "after", args: [] } },
+    });
+
+    expect(prepared.current.theme).toBe("dark");
+    expect(prepared.next).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelPresets: {
+        preset2: { model: "claude-opus-5", reasoningEffort: "high" },
+      },
+    });
+    expect(prepared.nextMcpServers).toEqual({
+      after: { command: "after", args: [] },
+    });
+    expect(store.getSettings()).toMatchObject({
+      theme: "dark",
+      mcpServers: { before: { command: "before", args: [] } },
+    });
+    expect(store.getSettings().model).toBeUndefined();
+    expect(store.getSettings().modelPresets).toBeUndefined();
+  });
+
   it("getMcpServers returns current config", () => {
     store.updateSettings({ mcpServers: { test: { command: "echo", args: [] } } });
     const servers = store.getMcpServers();

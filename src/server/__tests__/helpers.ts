@@ -178,6 +178,7 @@ export function createMockSessionManager() {
   const manager = {
     listSessions: async () => [],
     listModels: async () => [],
+    validateModelSelection: async () => ({ ok: true as const }),
     getBackendCreatedAt: () => "2026-01-01T00:00:00.000Z",
     getBackendStatus: () => ({
       state: "ready" as const,
