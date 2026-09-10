@@ -225,7 +225,7 @@ describe("SessionManager reloadSession", () => {
     }
   });
 
-  it("allows recovery after the settling bound without disconnecting a stale late handle", async () => {
+  it("keeps the settling barrier past its deadline when backend fencing is unavailable", async () => {
     vi.useFakeTimers();
     const manager = createManager();
     manager.timedOutSessionResumeSettleTimeoutMs = 1_000;
@@ -248,15 +248,17 @@ describe("SessionManager reloadSession", () => {
       await firstRejection;
 
       await vi.advanceTimersByTimeAsync(1_000);
-      await expect(manager.reloadSession("session-timeout-expiry")).resolves.toEqual([]);
-      expect(manager.sessionObjects.get("session-timeout-expiry")).toBe(recoveredSession);
+      await expect(manager.reloadSession("session-timeout-expiry")).rejects.toThrow("recovery is blocked");
+      expect(manager.sessionObjects.has("session-timeout-expiry")).toBe(false);
+      expect(manager.settlingTimedOutSessionResumes.has("session-timeout-expiry")).toBe(true);
+      expect(resumeSession).toHaveBeenCalledOnce();
 
       resolveFirstResume(staleLateSession);
       await vi.advanceTimersByTimeAsync(0);
       await manager._drainCacheQueue();
 
       expect(staleLateSession.disconnect).not.toHaveBeenCalled();
-      expect(manager.sessionObjects.get("session-timeout-expiry")).toBe(recoveredSession);
+      expect(manager.sessionObjects.has("session-timeout-expiry")).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -282,6 +284,7 @@ describe("SessionManager reloadSession", () => {
 
     try {
       const firstReload = manager.reloadSession("session-backend-replaced");
+      await vi.advanceTimersByTimeAsync(0);
       manager.backend = recoveredBackend;
 
       const firstRejection = expect(firstReload).rejects.toThrow("reloadSession timed out after 60s");
@@ -334,7 +337,7 @@ describe("SessionManager reloadSession", () => {
         }),
       );
       await expect(manager.reloadSession("session-cleanup-timeout"))
-        .rejects.toThrow("Session resume timed out and is still settling");
+        .rejects.toThrow("reconnecting");
     } finally {
       vi.useRealTimers();
     }

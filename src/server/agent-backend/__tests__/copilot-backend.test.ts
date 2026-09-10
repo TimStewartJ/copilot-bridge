@@ -341,7 +341,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const session = createFakeSession();
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
     expect(wrapped.sessionId).toBe("fake-session-id");
-    wrapped.disconnect?.();
+    await wrapped.disconnect?.();
     expect(session.disconnect).toHaveBeenCalledOnce();
   });
 
@@ -504,7 +504,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
   });
 
 
-  it("returns undefined when rpc.model.getCurrent, history.truncate, mcp.list, or tasks.list is missing", async () => {
+  it("returns undefined for missing optional metadata RPCs but rejects missing task listing", async () => {
     // getCurrentModel returns undefined when rpc.model.getCurrent is missing
     {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
@@ -548,10 +548,10 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped2.listMcpServers!()).resolves.toEqual({ servers: [{ name: "a", status: "connected" }] });
     }
 
-    // listTasks returns undefined when rpc.tasks.list is missing
+    // Task cleanup cannot treat an unsupported list as an empty result.
     {
     const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
-    await expect(wrapped.listTasks!()).resolves.toBeUndefined();
+    await expect(wrapped.listTasks!()).rejects.toThrow("unavailable");
     }
   });
 
@@ -619,7 +619,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
     // cancelTask delegates to rpc.tasks.cancel and normalizes the result
     {
     const missing = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
-    await expect(missing.cancelTask!("x")).resolves.toBeUndefined();
+    await expect(missing.cancelTask!("x")).rejects.toThrow("unavailable");
 
     const cancel = vi.fn(async () => ({ cancelled: true }));
     const session = createFakeSession({ tasks: { cancel } });
@@ -631,7 +631,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
     // removeTask delegates to rpc.tasks.remove and normalizes the result
     {
     const missing = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
-    await expect(missing.removeTask!("x")).resolves.toBeUndefined();
+    await expect(missing.removeTask!("x")).rejects.toThrow("unavailable");
 
     const remove = vi.fn(async () => ({ removed: true }));
     const session = createFakeSession({ tasks: { remove } });

@@ -28,6 +28,7 @@ function createBackend(models: Array<{ id: string; name: string }>) {
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     forceStop: vi.fn(async () => {}),
+    fence: vi.fn(async () => {}),
     listModels: vi.fn(async () => models),
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => { throw new Error("not implemented in test"); }),
@@ -184,7 +185,7 @@ describe("SessionManager model refresh", () => {
     }
   });
 
-  it("restores the previous client when the fresh client fails to start", async () => {
+  it("fences the failed fresh client instead of restoring a retired client", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
     freshBackend.start.mockRejectedValueOnce(new Error("start failed"));
@@ -194,8 +195,9 @@ describe("SessionManager model refresh", () => {
 
     await expect(manager.refreshModels()).rejects.toThrow("start failed");
     expect(oldBackend.stop).toHaveBeenCalledOnce();
-    expect(oldBackend.start).toHaveBeenCalledTimes(2);
-    await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
+    expect(oldBackend.start).toHaveBeenCalledTimes(1);
+    expect(freshBackend.fence).toHaveBeenCalledOnce();
+    await expect(manager.listModels()).rejects.toThrow("recovery is blocked");
   });
 
   it("does not restore a previous client whose stop reported cleanup errors", async () => {
@@ -219,7 +221,7 @@ describe("SessionManager model refresh", () => {
       connection: null,
       createdAt: null,
     });
-    await expect(manager.listModels()).rejects.toThrow("Agent backend disconnected");
+    await expect(manager.listModels()).rejects.toThrow("recovery is blocked");
   });
 
   it("times out a stalled previous client stop and clears the rotation", async () => {
@@ -241,13 +243,13 @@ describe("SessionManager model refresh", () => {
     await refreshExpectation;
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
-    expect(oldBackend.forceStop).toHaveBeenCalledOnce();
+    expect(oldBackend.fence).toHaveBeenCalledOnce();
     expect(freshBackend.start).not.toHaveBeenCalled();
     expect(manager.getBackendCreatedAt()).toBeNull();
-    await expect(manager.listModels()).rejects.toThrow("Agent backend disconnected");
+    await expect(manager.listModels()).rejects.toThrow("recovery is blocked");
   });
 
-  it("times out a stalled fresh client start and restores the previous client", async () => {
+  it("fences a stalled fresh client without resurrecting the retired previous client", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
     freshBackend.start.mockImplementationOnce(neverResolves);
@@ -266,13 +268,13 @@ describe("SessionManager model refresh", () => {
     await refreshExpectation;
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
-    expect(freshBackend.forceStop).toHaveBeenCalledOnce();
-    expect(oldBackend.start).toHaveBeenCalledTimes(2);
-    expect(manager.getBackendCreatedAt()).not.toBeNull();
-    await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
+    expect(freshBackend.fence).toHaveBeenCalledOnce();
+    expect(oldBackend.start).toHaveBeenCalledTimes(1);
+    expect(manager.getBackendCreatedAt()).toBeNull();
+    await expect(manager.listModels()).rejects.toThrow("recovery is blocked");
   });
 
-  it("times out a stalled previous client restore and leaves later SDK calls unblocked", async () => {
+  it("does not restore a fenced previous client after replacement startup fails", async () => {
     const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
     oldBackend.start
       .mockImplementationOnce(async () => {})
@@ -286,16 +288,78 @@ describe("SessionManager model refresh", () => {
 
     const refreshPromise = manager.refreshModels();
     const listDuringRotationPromise = manager.listModels();
-    const refreshExpectation = expectRotationTimeout(refreshPromise, "restoring the previous client");
-    const listDuringRotationExpectation = expectRotationTimeout(listDuringRotationPromise, "restoring the previous client");
+    const refreshExpectation = expect(refreshPromise).rejects.toThrow("start failed");
+    const listDuringRotationExpectation = expect(listDuringRotationPromise).rejects.toThrow("start failed");
 
     await advancePastRotationTimeout();
 
     await refreshExpectation;
     await listDuringRotationExpectation;
     expect((manager as any).backendRotation).toBeNull();
-    expect(oldBackend.forceStop).toHaveBeenCalledOnce();
+    expect(oldBackend.fence).toHaveBeenCalledOnce();
+    expect(freshBackend.fence).toHaveBeenCalledOnce();
+    expect(oldBackend.start).toHaveBeenCalledOnce();
     expect(manager.getBackendCreatedAt()).toBeNull();
-    await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
+    await expect(manager.listModels()).rejects.toThrow("recovery is blocked");
+  });
+
+  it("fences a replacement that finishes starting after shutdown instead of installing it", async () => {
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    let finishStart!: () => void;
+    freshBackend.start.mockImplementation(() => new Promise<void>((resolve) => { finishStart = resolve; }));
+    const { manager } = createManager([oldBackend, freshBackend]);
+    await manager.initialize();
+    const refresh = manager.refreshModels();
+    const rejected = expect(refresh).rejects.toThrow("shutting down");
+    await vi.waitFor(() => expect(freshBackend.start).toHaveBeenCalledOnce());
+    await manager.gracefulShutdown();
+    expect(freshBackend.fence).toHaveBeenCalledOnce();
+    finishStart();
+    await rejected;
+    expect(manager.getBackendStatus().state).toBe("stopped");
+    expect((manager as any).backend).toBeNull();
+  });
+
+  it("keeps the previous runtime reachable while its graceful stop overlaps shutdown", async () => {
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    let failStop!: (error: Error) => void;
+    oldBackend.stop.mockImplementation(() => new Promise<void>((_resolve, reject) => { failStop = reject; }));
+    const { manager } = createManager([oldBackend, freshBackend]);
+    await manager.initialize();
+    const refresh = manager.refreshModels();
+    const rejected = expect(refresh).rejects.toThrow("late stop failed");
+    await vi.waitFor(() => expect(oldBackend.stop).toHaveBeenCalledOnce());
+    await manager.gracefulShutdown();
+    expect(oldBackend.fence).toHaveBeenCalledOnce();
+    expect(oldBackend.stop).toHaveBeenCalledOnce();
+    failStop(new Error("late stop failed"));
+    await rejected;
+    expect(manager.getBackendStatus().state).toBe("stopped");
+    expect(freshBackend.start).not.toHaveBeenCalled();
+  });
+
+  it("coalesces transport loss during model-refresh retirement into that rotation", async () => {
+    const oldBackend = createBackend([]);
+    const freshBackend = createBackend([]);
+    const { manager, createBackendSpy } = createManager([oldBackend, freshBackend]);
+    await manager.initialize();
+    let finishRelease!: () => void;
+    const session = makeAgentSessionStub({
+      disconnect: vi.fn(() => new Promise<void>((resolve) => { finishRelease = resolve; })),
+    });
+    (manager as any).sessionObjects.set("idle", session);
+    const refresh = manager.refreshModels();
+    await vi.waitFor(() => expect(session.disconnect).toHaveBeenCalledOnce());
+    (manager as any).handleBackendDisconnect(oldBackend, {
+      at: new Date().toISOString(), reason: "connection-closed",
+    });
+    finishRelease();
+    await refresh;
+    expect(oldBackend.fence).toHaveBeenCalledOnce();
+    expect(freshBackend.start).toHaveBeenCalledOnce();
+    expect(createBackendSpy).toHaveBeenCalledTimes(2);
+    expect(manager.getBackendUnavailableReason()).toBeUndefined();
   });
 });

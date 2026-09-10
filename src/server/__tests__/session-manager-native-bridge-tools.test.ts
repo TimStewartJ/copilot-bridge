@@ -412,6 +412,7 @@ describe("SessionManager native Bridge tools", () => {
         firstSession,
         "test replacement",
       );
+      await manager._drainCacheQueue();
       await sessionCache.cacheResumedSession(secondSession.sessionId, secondSession, { mcpServers: {} });
       expect(secondSession.initializeTools).not.toHaveBeenCalled();
       await expect(
@@ -458,6 +459,7 @@ describe("SessionManager native Bridge tools", () => {
         firstSession,
         "test replacement",
       );
+      await manager._drainCacheQueue();
       await sessionCache.cacheResumedSession(secondSession.sessionId, secondSession, { mcpServers: {} });
       await expect(manager.getMcpStatus(secondSession.sessionId)).resolves.toEqual([
         { name: "current", status: "connected" },
@@ -879,7 +881,7 @@ describe("SessionManager native Bridge tools", () => {
 
       expect(manager.isSessionWarm(sessionId)).toBe(false);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-      expect(backend.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(backend.deleteSession).not.toHaveBeenCalled();
     } finally {
       creationGate.resolve();
       if (!shutdownCompleted) await manager.gracefulShutdown();

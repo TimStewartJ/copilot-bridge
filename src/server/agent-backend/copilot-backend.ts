@@ -16,6 +16,7 @@ import {
   approveAll,
   CopilotClient,
 } from "@github/copilot-sdk";
+import { ChildProcess } from "node:child_process";
 
 import {
   HYDRAFUSION_MODEL_ID,
@@ -23,6 +24,8 @@ import {
   isHydraFusionModel,
 } from "../../shared/hydrafusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
+import { createDeadline, settleByDeadline, sleepUntilDeadline } from "../deadline.js";
+import { getProcessIdentityStatus, sampleProcessTree, terminateProcessTree, type ProcessTreeSnapshot } from "../platform.js";
 import { boundRpc, type AgentRpcName } from "./rpc-timeouts.js";
 import type {
   AgentBackend,
@@ -44,6 +47,7 @@ import type {
   AgentSlashCommandList,
   AgentSlashCommandResult,
   AgentSession,
+  AgentSessionRelease,
   AgentSessionConfig,
   AgentSessionEventHandler,
   AgentSessionSummary,
@@ -207,11 +211,15 @@ interface CopilotRpcGuard {
  * Wraps a CopilotSession so the rest of the Bridge talks to AgentSession.
  * Method signatures intentionally mirror the SDK 1:1 — every typed method
  * delegates to the underlying rpc namespace, returning `undefined` when
- * the namespace is missing on older SDK builds. Every RPC the Bridge waits
- * on is bounded by {@link boundRpc}; a timeout feeds the backend's liveness
- * probe so a dead channel is detected instead of hanging callers forever.
+ * the namespace is missing on older SDK builds, except task lifecycle RPCs
+ * which reject unsupported or malformed results. RPC timeouts bound callers,
+ * not task ownership: raw task operations stay serialized until settlement.
+ * Release deliberately has no timeout and joins one SDK detach forever. Its
+ * acknowledgement does not prove that background processes have exited.
  */
 class CopilotAgentSession implements AgentSession {
+  private taskTail: Promise<void> = Promise.resolve();
+  private releasePromise: Promise<AgentSessionRelease> | undefined;
   constructor(
     private readonly session: any,
     private readonly rpc: CopilotRpcGuard,
@@ -289,9 +297,27 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.setModel", () => this.session.setModel(model, opts));
   }
 
-  disconnect(): Promise<unknown> | void {
-    if (typeof this.session.disconnect !== "function") return undefined;
-    return this.rpc("session.destroy", () => Promise.resolve(this.session.disconnect()));
+  disconnect(): Promise<AgentSessionRelease> {
+    return this.release();
+  }
+
+  release(): Promise<AgentSessionRelease> {
+    this.releasePromise ??= this.taskTail.then(async () => {
+      if (typeof this.session.disconnect !== "function") {
+        return { status: "unsupported", detail: "SDK session disconnect is unavailable" };
+      }
+      await this.session.disconnect();
+      return { status: "released" };
+    });
+    return this.releasePromise;
+  }
+
+  private taskRpc<T>(name: AgentRpcName, operation: () => Promise<T>): Promise<T> {
+    if (this.releasePromise) return Promise.reject(new Error("Session task intake is closed for release"));
+    const raw = this.taskTail.then(operation);
+    // The caller's RPC timeout does not relinquish the underlying task-operation slot.
+    this.taskTail = raw.then(() => undefined, () => undefined);
+    return this.rpc(name, () => raw);
   }
 
   on(handler: AgentSessionEventHandler): () => void {
@@ -425,24 +451,34 @@ class CopilotAgentSession implements AgentSession {
 
   async listTasks(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined> {
     const list = this.session?.rpc?.tasks?.list;
-    if (typeof list !== "function") return undefined;
-    const result = await this.rpc("session.listTasks", () => list.call(this.session.rpc.tasks));
-    const rawTasks = Array.isArray((result as any)?.tasks) ? (result as any).tasks : [];
+    if (typeof list !== "function") throw new Error("Session task listing is unavailable in this Copilot SDK build");
+    const result = await this.taskRpc("session.listTasks", () => list.call(this.session.rpc.tasks));
+    if (typeof result !== "object" || result === null || !("tasks" in result)
+      || !Array.isArray(result.tasks) || result.tasks.some((task: unknown) =>
+      typeof task !== "object" || task === null || !("id" in task)
+      || typeof task.id !== "string" || !task.id.trim())) {
+      throw new Error("Malformed Copilot task list response");
+    }
+    const rawTasks = result.tasks;
     return { tasks: rawTasks.map(mapCopilotTaskInfo) };
   }
 
   async cancelTask(id: string): Promise<{ cancelled: boolean } | undefined> {
     const cancel = this.session?.rpc?.tasks?.cancel;
-    if (typeof cancel !== "function") return undefined;
-    const result = await this.rpc("session.cancelTask", () => cancel.call(this.session.rpc.tasks, { id }));
-    return { cancelled: Boolean((result as any)?.cancelled) };
+    if (typeof cancel !== "function") throw new Error("Session task cancellation is unavailable in this Copilot SDK build");
+    const result = await this.taskRpc("session.cancelTask", () => cancel.call(this.session.rpc.tasks, { id }));
+    if (typeof result !== "object" || result === null || !("cancelled" in result)
+      || typeof result.cancelled !== "boolean") throw new Error("Malformed Copilot task cancellation response");
+    return { cancelled: result.cancelled };
   }
 
   async removeTask(id: string): Promise<{ removed: boolean } | undefined> {
     const remove = this.session?.rpc?.tasks?.remove;
-    if (typeof remove !== "function") return undefined;
-    const result = await this.rpc("session.removeTask", () => remove.call(this.session.rpc.tasks, { id }));
-    return { removed: Boolean((result as any)?.removed) };
+    if (typeof remove !== "function") throw new Error("Session task removal is unavailable in this Copilot SDK build");
+    const result = await this.taskRpc("session.removeTask", () => remove.call(this.session.rpc.tasks, { id }));
+    if (typeof result !== "object" || result === null || !("removed" in result)
+      || typeof result.removed !== "boolean") throw new Error("Malformed Copilot task removal response");
+    return { removed: result.removed };
   }
 
 }
@@ -519,9 +555,44 @@ export class CopilotBackend implements AgentBackend {
   private detachTransportWatchers: (() => void) | undefined;
   private healthProbe: Promise<boolean> | undefined;
   private readonly logger: Pick<Console, "warn" | "error">;
+  private startPromise: Promise<unknown> | undefined;
+  private fencePromise: Promise<void> | undefined;
+  private ownedChild: ChildProcess | undefined;
+  private ownedTree: ProcessTreeSnapshot | null = null;
+  private readonly localStdioOwnership: boolean;
+  private readonly startClient: () => Promise<void>;
 
-  constructor(private readonly client: CopilotClient, options: { logger?: Pick<Console, "warn" | "error"> } = {}) {
+  constructor(private readonly client: CopilotClient, options: {
+    logger?: Pick<Console, "warn" | "error">;
+    /** Set only by the factory for the pinned, locally owning stdio runtime. */
+    localStdioOwnership?: boolean;
+  } = {}) {
     this.logger = options.logger ?? console;
+    this.startClient = client.start.bind(client);
+    this.localStdioOwnership = options.localStdioOwnership === true;
+    if (this.localStdioOwnership) {
+      // SDK create/resume can implicitly start a client; route those through the same fence guard.
+      client.start = () => this.start().then(() => undefined);
+      const forceStop = client.forceStop.bind(client);
+      client.forceStop = async () => {
+        await this.captureOwnedTree();
+        return forceStop();
+      };
+      const descriptor = Object.getOwnPropertyDescriptor(client, "cliProcess");
+      if (descriptor?.configurable && "value" in descriptor) {
+        let child: unknown = descriptor.value;
+        Object.defineProperty(client, "cliProcess", {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          get: () => child,
+          set: (value: unknown) => {
+            child = value;
+            if (value instanceof ChildProcess) this.ownedChild = value;
+          },
+        });
+        if (child instanceof ChildProcess) this.ownedChild = child;
+      }
+    }
   }
 
   private readonly rpc: CopilotRpcGuard = (name, operation) => boundRpc(name, operation, {
@@ -531,15 +602,103 @@ export class CopilotBackend implements AgentBackend {
     },
   });
 
-  async start(): Promise<unknown> {
-    const result = await this.client.start();
-    this.attachTransportWatchers();
-    return result;
+  start(): Promise<unknown> {
+    if (this.fencePromise) return Promise.reject(new Error("Cannot start a fenced backend"));
+    this.startPromise ??= (async () => {
+      const result = await this.startClient();
+      await this.captureOwnedTree();
+      if (!this.stopping) this.attachTransportWatchers();
+      return result;
+    })();
+    return this.startPromise;
+  }
+
+  fence(): Promise<void> {
+    this.fencePromise ??= this.fenceOwnedRuntime();
+    return this.fencePromise;
+  }
+
+  private async captureOwnedTree(): Promise<void> {
+    if (this.localStdioOwnership && this.ownedChild?.pid) {
+      const tree = await sampleProcessTree(this.ownedChild.pid, createDeadline(2_000));
+      if (tree) {
+        const previous = this.ownedTree;
+        if (previous?.root.pid === tree.root.pid && previous.root.startMarker === tree.root.startMarker) {
+          for (const identity of previous.descendants) {
+            if (!tree.descendants.some((entry) => entry.pid === identity.pid && entry.startMarker === identity.startMarker)) {
+              tree.descendants.push(identity);
+            }
+          }
+        }
+        this.ownedTree = tree;
+      }
+    }
+  }
+
+  private async fenceOwnedRuntime(): Promise<void> {
+    this.stopping = true;
+    this.detachTransportWatchers?.();
+    const connection = Reflect.get(this.client, "connectionConfig");
+    if (!this.localStdioOwnership || Reflect.get(this.client, "isExternalServer") !== false
+      || Reflect.get(this.client, "ffiHost") || connection?.kind !== "stdio") {
+      throw new Error("Cannot fence an external, FFI, or unknown runtime owner");
+    }
+    const deadline = createDeadline(3_000);
+    const starting = this.startPromise;
+    if (starting) {
+      const startup = await settleByDeadline(() => starting, deadline);
+      if (startup.status === "timed-out") throw new Error("Cannot fence while SDK startup is still pending");
+    } else {
+      return;
+    }
+    const child = this.ownedChild;
+    // The loader's exit alone is not proof that its native runtime child exited.
+    if (!child || !this.ownedTree || this.ownedTree.descendants.length === 0) {
+      throw new Error("Cannot prove ownership of the native stdio runtime process tree");
+    }
+    // Keep the loader alive to reap its native runtime instead of orphaning it.
+    const identities = [...this.ownedTree.descendants].reverse().concat(this.ownedTree.root);
+    const verified = new Set<string>();
+    for (const identity of identities) {
+      const key = `${identity.pid}:${identity.startMarker}`;
+      if (verified.has(key)) continue;
+      const result = await terminateProcessTree(identity, deadline);
+      if (!result.ok) {
+        if (result.status !== "survivors" || !result.survivors?.length) {
+          throw new Error(`Runtime fencing failed: ${result.status}${result.error ? `: ${result.error}` : ""}`);
+        }
+        for (const survivor of result.survivors) {
+          let status = await getProcessIdentityStatus(survivor, deadline);
+          while (status === "alive" && await sleepUntilDeadline(25, deadline)) {
+            status = await getProcessIdentityStatus(survivor, deadline);
+          }
+          if (status !== "exited" && status !== "replaced") {
+            throw new Error(`Runtime fencing failed: survivors (${survivor.pid}, ${status})`);
+          }
+        }
+      }
+      for (const entry of result.snapshot?.descendants ?? []) {
+        verified.add(`${entry.pid}:${entry.startMarker}`);
+      }
+    }
+    if (child.exitCode === null && child.signalCode === null) {
+      let onExit = () => {};
+      try {
+        const exited = await settleByDeadline(() => new Promise<void>((resolve) => {
+          onExit = resolve;
+          child.once("exit", onExit);
+        }), deadline);
+        if (exited.status !== "fulfilled") throw new Error("Runtime process tree terminated but SDK child exit is unconfirmed");
+      } finally {
+        child.off("exit", onExit);
+      }
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
     this.detachTransportWatchers?.();
+    await this.captureOwnedTree();
     const errors = await this.client.stop();
     if (errors.length > 0) {
       throw new AggregateError(
@@ -717,6 +876,7 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+    if (this.fencePromise) throw new Error("Cannot create a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);
     return wrapCopilotSession(
@@ -728,6 +888,7 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
+    if (this.fencePromise) throw new Error("Cannot resume a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
     return wrapCopilotSession(

@@ -16,7 +16,7 @@ import { createGlobalBus } from "../global-bus.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
-import type { AgentSession } from "../agent-backend/index.js";
+import type { AgentSession, AgentSessionRelease } from "../agent-backend/index.js";
 
 const TEST_RUNTIME_ENV_KEYS = [
   "BRIDGE_DATA_DIR",
@@ -345,7 +345,7 @@ export {
 /**
  * Fills a partial session double out to the full `AgentSession` facade.
  *
- * `AgentSession` requires every method: the Copilot wrapper defines them all
+ * `AgentSession` requires its operational methods: the Copilot wrapper defines them all
  * unconditionally and reports capability absence through the *result* (either
  * `undefined` or a thrown error), never through method presence. Callers
  * therefore no longer guard with `typeof session.x === "function"`, so a mock
@@ -354,8 +354,11 @@ export {
  *
  * Build session doubles through this helper and override only what the test
  * asserts on. The returned object keeps the caller's concrete mock types.
+ * The default release joins one simulated raw SDK disconnect, preserving its
+ * failures and pending state. An explicit release override takes precedence.
  */
 export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentSession {
+  let releasePromise: Promise<AgentSessionRelease> | undefined;
   const defaults: AgentSession = {
     sessionId: "session-1",
     send: async () => undefined,
@@ -363,6 +366,16 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     abort: async () => undefined,
     setModel: async () => undefined,
     disconnect: () => undefined,
+    release: () => {
+      releasePromise ??= Promise.resolve().then(async () => {
+        if (typeof defaults.disconnect !== "function") {
+          return { status: "unsupported", detail: "Simulated SDK disconnect is unavailable" };
+        }
+        await defaults.disconnect();
+        return { status: "released" };
+      });
+      return releasePromise;
+    },
     on: () => () => {},
     respondToUserInput: async () => true,
     tryRespondToElicitation: async () => true,
