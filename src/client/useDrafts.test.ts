@@ -7,6 +7,7 @@ import {
   type ReactDomHarness,
 } from "./test-react-harness";
 import { useDrafts } from "./useDrafts";
+import type { Session } from "./api";
 
 function createStorage() {
   const values = new Map<string, string>();
@@ -227,6 +228,25 @@ describe("useDrafts launch persistence", () => {
       reasoningEffort: { modelId: "gpt-5.6", value: "high" },
       contextTier: { modelId: "gpt-5.6", value: "long_context" },
     });
+  });
+
+  it("preserves the active composer draft while the session inventory is incomplete", async () => {
+    const otherSession: Session = {
+      sessionId: "other-session",
+      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    };
+    function ActiveDraftProbe() {
+      drafts = useDrafts([otherSession], "archived-session");
+      return null;
+    }
+
+    harness = await createReactDomHarness();
+    await harness.render(createElement(ActiveDraftProbe));
+    await harness.act(async () => {
+      drafts!.setDraft("archived-session", "hello");
+    });
+
+    expect(drafts!.getDraft("archived-session")).toEqual({ text: "hello" });
   });
 
   it("keeps a launch-only draft when its message is empty", async () => {
