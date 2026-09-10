@@ -31,7 +31,7 @@ interface TurnGraphPoint {
   turn: SessionContextTurn;
 }
 
-function buildTurnGraphPoints(
+export function buildTurnGraphPoints(
   turns: SessionContextTurn[],
   eventsByTurnId: Map<string, SessionContextEvent[]>,
   previews: ChatTurnPreviews,
@@ -40,13 +40,18 @@ function buildTurnGraphPoints(
     const turnId = getTurnId(turn);
     const turnEvents = turnId ? eventsByTurnId.get(turnId) ?? [] : [];
     const latestEvent = turnEvents
-      .filter((event) => event.type === "context_snapshot")
-      .at(-1) ?? turnEvents.at(-1);
+      .filter((event) => event.type === "context_snapshot" && (
+        (optionalNumber(event.tokensUsed) !== undefined && event.tokensUsed! >= 0)
+        || (optionalNumber(event.usageRatio) !== undefined && event.usageRatio! >= 0)
+      ))
+      .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt) || a.id - b.id)
+      .at(-1);
+    const turnIndex = (turn.turnNumber ?? getTurnNumber(index)) - 1;
     return {
       turn,
-      index,
-      label: `T${getTurnNumber(index)}`,
-      preview: getTurnPreview(turn, index, previews),
+      index: turnIndex,
+      label: `T${getTurnNumber(turnIndex)}`,
+      preview: getTurnPreview(turn, turnIndex, previews),
       event: latestEvent,
       percent: getSummaryMetrics(latestEvent).percent,
       tokens: optionalNumber(latestEvent?.tokensUsed),
@@ -60,12 +65,14 @@ export default function SessionContextGraph({
   eventsByTurnId,
   previews,
   turns,
+  totalTurns,
 }: {
   capabilities?: SessionContextCapabilities;
   events: SessionContextEvent[];
   eventsByTurnId: Map<string, SessionContextEvent[]>;
   previews: ChatTurnPreviews;
   turns: SessionContextTurn[];
+  totalTurns?: number;
 }) {
   const [selectedTurnId, setSelectedTurnId] = useState<string>();
   const [showAll, setShowAll] = useState(false);
@@ -108,10 +115,15 @@ export default function SessionContextGraph({
         {points.length > 30 && (
           <select aria-label="History range" value={showAll ? "all" : "recent"} onChange={(event) => setShowAll(event.target.value === "all")} className="rounded bg-bg-secondary px-1 py-0.5">
             <option value="recent">Last 30 turns</option>
-            <option value="all">All {points.length} turns</option>
+            <option value="all">{points.length} loaded turns</option>
           </select>
         )}
       </div>
+      {totalTurns !== undefined && totalTurns > points.length && (
+        <p className="mt-1 text-[11px] text-text-muted">
+          Latest {points.length} of {totalTurns} turns
+        </p>
+      )}
       {hasValues ? (
         <svg viewBox="0 0 600 120" className="mt-1 w-full h-28" role="group" aria-label={`Context usage line graph, ${visiblePoints.length} turns, ${useTokens ? "tokens" : "percent"}`}>
           {[12, 56, 100].map((y, index) => (
