@@ -919,6 +919,22 @@ describe("Session routes (mocked)", () => {
     expect(res.body.error).toContain("reconnecting");
   });
 
+  it("POST /api/chat reports a reconnecting backend without exposing resume-settling internals", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.startWork = vi.fn(() => {
+      throw new Error("Agent backend is reconnecting; try again shortly.");
+    });
+    ({ app } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("reconnecting");
+    expect(res.body.error).not.toContain("Session resume timed out and is still settling");
+  });
+
   it("POST /api/chat rejects invalid client message ids", async () => {
     ctx.sessionManager.startWork = vi.fn();
 

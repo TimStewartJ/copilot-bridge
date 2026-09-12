@@ -456,7 +456,7 @@ function truncateAgentTaskText(task: SessionAgentTask): SessionAgentTask {
 
 function getChatDeliveryErrorStatus(error: unknown): number {
   const message = error instanceof Error ? error.message : String(error);
-  if (/stalled|not accepting steering|still reconnecting|not busy|ended before steering/i.test(message)) return 409;
+  if (/stalled|not accepting steering|\breconnecting\b|not busy|ended before steering/i.test(message)) return 409;
   return 500;
 }
 
