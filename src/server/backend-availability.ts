@@ -12,7 +12,7 @@ export const BACKEND_DISCONNECTED_MESSAGE =
 export const BACKEND_RECONNECTING_MESSAGE = "Agent backend is reconnecting; try again shortly.";
 export const BACKEND_RECOVERY_BLOCKED_MESSAGE =
   "Agent backend recovery is blocked; restart Bridge after checking the runtime recovery error.";
-/** An uncancellable timed-out resume is still settling; retry without consuming a delivery attempt. */
+/** Legacy timeout text kept transient so persisted delivery failures remain retryable. */
 export const SESSION_RESUME_SETTLING_MESSAGE = "Session resume timed out and is still settling; try again shortly.";
 /** The backend has not finished starting yet. */
 export const BACKEND_NOT_READY_MESSAGE = "Agent backend is not ready yet; try again shortly.";

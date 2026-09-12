@@ -153,7 +153,7 @@ import type {
   BackgroundAgentsSummary,
   SessionAgentTask,
 } from "../shared/session-agents.js";
-import { resumeSessionWithTimeout } from "./session-resume-timeout.js";
+import { resumeSessionWithTimeout, SESSION_RESUME_TIMEOUT_MS } from "./session-resume-timeout.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
   deriveModelStateFromEventsFileAsync,
@@ -171,7 +171,6 @@ import {
   BACKEND_RECOVERY_BLOCKED_MESSAGE,
   BACKEND_RECOVERY_CONTINUE_PROMPT,
   BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
-  SESSION_RESUME_SETTLING_MESSAGE,
   isTransientBackendError,
 } from "./backend-availability.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
@@ -297,7 +296,6 @@ const DISCONNECT_TIMEOUT_MS = 5_000;
 const SESSION_DETAIL_RPC_TIMEOUT_MS = 5_000;
 const SESSION_RETIREMENT_BUDGET_MS = 60_000;
 const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = 30_000;
-const TIMED_OUT_SESSION_RESUME_SETTLE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_SESSION_CACHE_IDLE_TTL_MS = 60 * 60_000;
 const SESSION_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const PROCESS_TREE_SAMPLE_THROTTLE_MS = 60_000;
@@ -321,7 +319,6 @@ type SessionCapacityReservation = {
 
 type TimedOutSessionResume = {
   token: symbol;
-  timer?: ReturnType<typeof setTimeout>;
 };
 
 export type SessionCapacityReason =
@@ -719,7 +716,6 @@ export class SessionManager {
   private resumingSessions = new Map<string, number>();
   private readonly pendingSessionResumeAdmissions = new Set<string>();
   private readonly settlingTimedOutSessionResumes = new Map<string, TimedOutSessionResume>();
-  private timedOutSessionResumeSettleTimeoutMs = TIMED_OUT_SESSION_RESUME_SETTLE_TIMEOUT_MS;
   private readonly resumingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
   private creatingSessions = 0;
   private creatingCapacityUnits = 0;
@@ -2223,11 +2219,11 @@ export class SessionManager {
     } = {},
   ): Promise<SessionResumeLease | null> {
     if (this.settlingTimedOutSessionResumes.has(sessionId)) {
-      throw new Error(SESSION_RESUME_SETTLING_MESSAGE);
+      throw new Error(BACKEND_RECONNECTING_MESSAGE);
     }
     await this.awaitSessionCleanup(sessionId);
     if (this.settlingTimedOutSessionResumes.has(sessionId)) {
-      throw new Error(SESSION_RESUME_SETTLING_MESSAGE);
+      throw new Error(BACKEND_RECONNECTING_MESSAGE);
     }
     const lease: SessionResumeLease = { sessionId, token: Symbol(sessionId) };
     if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
@@ -2294,7 +2290,6 @@ export class SessionManager {
     const releaseBarrier = (): boolean => {
       const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
       if (barrier?.token !== token) return false;
-      if (barrier.timer) clearTimeout(barrier.timer);
       this.settlingTimedOutSessionResumes.delete(sessionId);
       this.notifySessionCapacityChanged();
       return true;
@@ -2305,18 +2300,13 @@ export class SessionManager {
           this.backend !== owningBackend
           || this.backendGeneration !== owningBackendGeneration
         ) return;
-        const timer = setTimeout(() => {
-          if (this.settlingTimedOutSessionResumes.get(sessionId)?.token === token) {
-            this.handleBackendDisconnect(owningBackend, {
-              at: new Date().toISOString(), reason: "cleanup-stalled",
-              detail: `timed-out resume never settled for session ${sessionId}`,
-            });
-          }
-        }, this.timedOutSessionResumeSettleTimeoutMs);
-        timer.unref?.();
-        const existing = this.settlingTimedOutSessionResumes.get(sessionId);
-        if (existing?.timer) clearTimeout(existing.timer);
-        this.settlingTimedOutSessionResumes.set(sessionId, { token, timer });
+        this.settlingTimedOutSessionResumes.set(sessionId, { token });
+        this.notifySessionCapacityChanged();
+        this.handleBackendDisconnect(owningBackend, {
+          at: new Date().toISOString(),
+          reason: "rpc-timeout",
+          detail: `session resume exceeded ${SESSION_RESUME_TIMEOUT_MS / 1_000}s for session ${sessionId}`,
+        });
       },
       disconnectLateSession: async (session) => {
         this.sessionRuntimeOwners.set(session, owner);
@@ -2329,10 +2319,6 @@ export class SessionManager {
           if (this.backendTransition?.owner !== owningBackend) releaseBarrier();
           else releaseAfterLateSettlement = false;
           return;
-        }
-        if (barrier.timer) {
-          clearTimeout(barrier.timer);
-          delete barrier.timer;
         }
         try {
           await this.disposeSession(sessionId, session, "cleaning up timed-out session resume");
@@ -2373,9 +2359,6 @@ export class SessionManager {
   private releaseTimedOutSessionResumeBarriers(): number {
     const barriers = [...this.settlingTimedOutSessionResumes.values()];
     this.settlingTimedOutSessionResumes.clear();
-    for (const barrier of barriers) {
-      if (barrier.timer) clearTimeout(barrier.timer);
-    }
     if (barriers.length > 0) this.notifySessionCapacityChanged();
     return barriers.length;
   }
@@ -3122,7 +3105,11 @@ export class SessionManager {
   /** Why new work cannot reach the backend right now, or undefined when it can. */
   getBackendUnavailableReason(): string | undefined {
     if (this.backendTransition?.phase === "blocked") return BACKEND_RECOVERY_BLOCKED_MESSAGE;
-    if (this.backendTransition || [...this.cleanupOwnership.values()].some((record) => record.phase !== "release-pending")) {
+    if (
+      this.backendTransition
+      || this.settlingTimedOutSessionResumes.size > 0
+      || [...this.cleanupOwnership.values()].some((record) => record.phase !== "release-pending")
+    ) {
       return BACKEND_RECONNECTING_MESSAGE;
     }
     if (this.backendRotation) {
