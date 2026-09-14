@@ -1,9 +1,68 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AppliedPromptFingerprints, fingerprintPromptConfig, normalizePromptCacheBreak } from "../session-prompt-fingerprint.js";
 import { readSessionLaunchContext, writeSessionLaunchContext } from "../session-launch-context.js";
-import { makeTestDir } from "./helpers.js";
+import { makeTestDir, setupTestDb } from "./helpers.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 
 describe("Bridge prompt fingerprints", () => {
+  it("compares across tracker restart using the newest indexed retained applied span", () => {
+    const db = setupTestDb();
+    const store = createTelemetryStore(db);
+    const config = { systemMessage: { content: "old" } };
+    store.recordSpan({
+      name: "session.prompt.applied", sessionId: "restart", source: "server", duration: 0,
+      metadata: { scope: "bridge_config_only", hashes: fingerprintPromptConfig(config) },
+    });
+    const querySpans = vi.fn(store.querySpans);
+    const restarted = new AppliedPromptFingerprints({ querySpans });
+    expect(restarted.record("restart", { systemMessage: { content: "new" } })).toMatchObject({
+      comparison: "previous_applied", previousRead: "persisted",
+      cacheBreakCandidate: true, changedCategories: ["systemMessage", "content"],
+    });
+    restarted.record("restart", config);
+    expect(querySpans).toHaveBeenCalledTimes(1);
+    expect(querySpans).toHaveBeenCalledWith({ sessionId: "restart", name: "session.prompt.applied", source: "server", limit: 1 });
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT * FROM telemetry_spans WHERE sessionId = ? AND name = ? AND source = 'server' ORDER BY createdAt DESC, id DESC LIMIT 1")
+      .all("restart", "session.prompt.applied");
+    expect(JSON.stringify(plan)).toContain("idx_telemetry_session_name_latest");
+    expect(JSON.stringify(plan)).not.toContain("TEMP B-TREE");
+  });
+
+  it("accepts legacy hashes but rejects malformed metadata and reports read failures without failing", () => {
+    const store = createTelemetryStore(setupTestDb());
+    for (const metadata of [
+      { scope: "bridge_config_only", hashes: { ...fingerprintPromptConfig({}), tools: "secret" } },
+      { hashes: fingerprintPromptConfig({}) },
+    ]) {
+      store.recordSpan({ name: "session.prompt.applied", sessionId: "bad", source: "server", duration: 0, metadata });
+      expect(new AppliedPromptFingerprints(store).record("bad", {})).toMatchObject({
+        comparison: "baseline", previousRead: "invalid_metadata",
+      });
+    }
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const tracker = new AppliedPromptFingerprints({ querySpans: () => { throw new Error("private detail"); } });
+      expect(tracker.record("bad", {})).toMatchObject({ comparison: "baseline", previousRead: "unavailable" });
+      expect(warning).toHaveBeenCalledWith("[telemetry] Failed to read previous applied prompt fingerprint");
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("only exposes verified envelope correlation and hashes open-ended reasons and model names", () => {
+    const result = normalizePromptCacheBreak({ type: "prompt_cache_break", id: "event-1", agentId: "child-1", data: {
+      primaryReason: "sensitive arbitrary text", modelTo: "private model", agentName: "private agent",
+      apiCallId: "not-in-break-schema", requestId: "not-in-break-schema",
+      cacheConfigChangedFields: ["sensitive field"], beforeRequest: "secret",
+    } });
+    expect(result).toMatchObject({
+      providerEventId: "event-1", agentId: "child-1", primaryReasonCategory: "unknown",
+      cacheConfigChangedFieldsCount: 1, modelToHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(result)).not.toMatch(/sensitive|private|secret|not-in-break-schema/);
+    expect(normalizePromptCacheBreak({ type: "prompt_cache_break", agentId: "a".repeat(129), data: {} })).toEqual({});
+  });
+
   it("hashes tool names descriptions and schemas, but not handlers or MCP transport/auth", () => {
     const config = {
       systemMessage: { mode: "customize", content: "private prompt", sections: { identity: { content: "identity" } } },

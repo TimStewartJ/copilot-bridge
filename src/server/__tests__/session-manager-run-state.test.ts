@@ -762,6 +762,11 @@ describe("SessionManager run state", () => {
     const handler = getHandler();
     expect(handler).toBeDefined();
     handler?.({ type: "assistant.turn_start", data: {}, timestamp: "2026-05-01T10:00:00Z" });
+    handler?.({ type: "prompt_cache_break", id: "root-break", data: { primaryReason: "unknown" } });
+    const rootBreak = latestSpanMetadata(telemetryStore, "session.prompt_cache_break", "session-cache");
+    expect(rootBreak).toMatchObject({
+      attribution: "turn", providerEventId: "root-break", bridgeTurnId: expect.any(String),
+    });
     handler?.({
       type: "prompt_cache_break", agentId: "unmapped-child", data: {
         primaryReason: "changed", contributingReasons: ["changed"],
@@ -784,7 +789,10 @@ describe("SessionManager run state", () => {
     handler?.({ type: "session.idle", data: {} });
     await flushMicrotasks();
     const metadata = latestSpanMetadata(telemetryStore, "session.prompt_cache_break", "session-cache");
-    expect(metadata).toMatchObject({ attribution: "subagent_turn", shortfallTokens: 10 });
+    expect(metadata).toMatchObject({
+      attribution: "subagent_turn", shortfallTokens: 10, agentId: "unmapped-child",
+      processStartedAt: expect.any(String), processId: process.pid,
+    });
     expect(metadata.bridgeTurnId).toBeUndefined();
     expect(JSON.stringify(metadata)).not.toMatch(/secret|private-tool|systemPrompt/);
     const events = sessionContextStore.getSessionContext("session-cache").events;
