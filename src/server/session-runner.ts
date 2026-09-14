@@ -289,7 +289,12 @@ export function isStaleAgentSessionError(error: unknown): boolean {
   // `Pending response rejected since connection got disposed` is what every RPC
   // still in flight gets when a lost backend is force-stopped: the session is
   // no longer addressable, not merely slow.
-  return /\bSession not found\b/i.test(message) || /Pending response rejected since connection got disposed/i.test(message);
+  // The provider can also retain an input-item reference from the previous
+  // session connection. It reports that as a 400 instead of a transport error,
+  // but the cached SDK wrapper is stale and must take the same recovery path.
+  return /\bSession not found\b/i.test(message)
+    || /Pending response rejected since connection got disposed/i.test(message)
+    || /input item ID does not belong to this connection/i.test(message);
 }
 
 export interface SessionResumeLease {
@@ -921,6 +926,11 @@ export class SessionRunner {
     let postTurnAgentRefreshPromise: Promise<void> | undefined;
     let staleCacheRetryCount = 0;
     let acceptingSessionEvents = false;
+    let sendOperationInFlight = false;
+    let pendingStaleSessionError: unknown;
+    let staleCacheRecoveryPromise: Promise<void> | undefined;
+    let retryStaleCachedSession: ((reason: unknown, source: "event" | "send") => Promise<void>) | undefined;
+    let turnHadSideEffects = false;
     const resetRunTelemetryState = () => {
       lastDiskMtime = undefined;
       lastDiskSize = undefined;
@@ -935,6 +945,18 @@ export class SessionRunner {
       activeEventsAfterLastLiveTurnEnd = 0;
       persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
       postTurnAgentRefreshPromise = undefined;
+      turnHadSideEffects = false;
+    };
+    const runSendStep = async <T>(
+      stepName: string,
+      step: () => Promise<T>,
+    ): Promise<{ completed: true } | { completed: false; value: T }> => {
+      sendOperationInFlight = true;
+      try {
+        return await runStepOrCompletion(stepName, step);
+      } finally {
+        sendOperationInFlight = false;
+      }
     };
     const beginSend = () => {
       sendStart = Date.now();
@@ -1238,6 +1260,7 @@ export class SessionRunner {
       }
       switch (event.type) {
         case "user_input.requested": {
+          turnHadSideEffects = true;
           try {
             const request = normalizePendingUserInputRequest(data, getEventTimestampIso(event));
             bus.emitUserInputRequested(request, getEventTimestampIso(event));
@@ -1282,6 +1305,7 @@ export class SessionRunner {
           break;
         }
         case "elicitation.requested": {
+          turnHadSideEffects = true;
           try {
             const request = normalizePendingElicitationRequest(data, getEventTimestampIso(event));
             bus.emitElicitationRequested(request, getEventTimestampIso(event));
@@ -1405,6 +1429,7 @@ export class SessionRunner {
         case "assistant.message_delta":
           if (data?.parentToolCallId) break;
           if (data?.deltaContent) {
+            turnHadSideEffects = true;
             bus.emit({
               type: "delta",
               content: data.deltaContent,
@@ -1422,6 +1447,9 @@ export class SessionRunner {
           this.deps.globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
+          if (data?.content || data?.toolRequests?.length) {
+            turnHadSideEffects = true;
+          }
           if (data?.parentToolCallId && data?.content) {
             correlator.recordResponse(data.parentToolCallId, data.content);
             const resolution = correlator.resolve(data.parentToolCallId);
@@ -1456,6 +1484,7 @@ export class SessionRunner {
           }
           break;
         case "external_tool.requested": {
+          turnHadSideEffects = true;
           rememberExternalToolRequest(data, eventAt);
           const toolName = getTrackedToolDisplayName(
             data?.toolCallId,
@@ -1468,6 +1497,7 @@ export class SessionRunner {
           clearExternalToolRequest(data?.requestId, eventAt);
           break;
         case "tool.execution_start": {
+          turnHadSideEffects = true;
           const toolName = data?.toolName ?? data?.name ?? "unknown";
           const loopCandidate = toolLoopGuard.detectCandidate(toolName, data?.arguments);
           if (loopCandidate) {
@@ -1614,6 +1644,7 @@ export class SessionRunner {
           break;
         }
         case "subagent.started": {
+          turnHadSideEffects = true;
           const displayName = formatSubagentDisplayName(data);
           console.log(`[sdk] [${sid}] ${displayName}`);
           if (data?.toolCallId) {
@@ -1717,6 +1748,7 @@ export class SessionRunner {
           break;
         }
         case "assistant.turn_end": {
+          turnHadSideEffects = true;
           endCurrentContextTurn(event);
           break;
         }
@@ -1733,6 +1765,30 @@ export class SessionRunner {
               errorMessagePresent: typeof data?.message === "string",
               errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
             }, eventAt);
+            break;
+          }
+          if (
+            usedCache
+            && isStaleAgentSessionError(data?.message)
+            && !turnHadSideEffects
+            && !runController.isCompleted()
+          ) {
+            // Some provider failures arrive as a terminal SDK event after
+            // session.send has already accepted the prompt, so the RPC catch
+            // path cannot see them. Hold the run open and refresh the cached
+            // wrapper before allowing the error to reach the user.
+            acceptingSessionEvents = false;
+            pendingStaleSessionError ??= data?.message;
+            if (!sendOperationInFlight && retryStaleCachedSession) {
+              const reason = pendingStaleSessionError;
+              pendingStaleSessionError = undefined;
+              void retryStaleCachedSession(reason, "event").catch((error) => {
+                if (runController.isCompleted()) return;
+                const message = getErrorMessage(error);
+                console.error(`[sdk] [${sid}] Stale cached session recovery failed: ${message}`);
+                runController.completeError(message);
+              });
+            }
             break;
           }
           completeSessionError(event, context);
@@ -1899,6 +1955,54 @@ export class SessionRunner {
       });
       clearEventLogStatsCache(sessionId);
       this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
+    };
+
+    retryStaleCachedSession = async (reason, source) => {
+      if (!usedCache || runController.isCompleted()) return;
+      if (staleCacheRecoveryPromise) return staleCacheRecoveryPromise;
+
+      const recovery = (async () => {
+        const message = getErrorMessage(reason);
+        console.warn(
+          `[sdk] [${sid}] Stale cached session from ${source} (${message}) — evicting and re-resuming...`,
+        );
+        acceptingSessionEvents = false;
+        unsub?.();
+        unsub = undefined;
+        await abandonSession(session);
+        session = await resumeSession();
+        staleCacheRetryCount += 1;
+        if (!session) {
+          if (!runController.isCompleted()) {
+            throw new Error("Stale cached session recovery could not resume the session");
+          }
+          return;
+        }
+        lastEventTime = Date.now();
+        sendStart = lastEventTime;
+        resetRunTelemetryState();
+        if (runController.isCompleted()) {
+          await abandonSession(session);
+          return;
+        }
+        if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session))).completed) return;
+        if (runController.isCompleted()) return;
+        unsub = subscribeToSession(session);
+        beginSend();
+        if (runController.isCompleted()) return;
+        if (!opts.execute) throw new Error("Session run is missing an execute step");
+        if ((await runSendStep("retry send prompt", () => opts.execute!(session))).completed) return;
+        runController.markPromptAccepted();
+      })();
+
+      staleCacheRecoveryPromise = recovery;
+      try {
+        await recovery;
+      } finally {
+        if (staleCacheRecoveryPromise === recovery) {
+          staleCacheRecoveryPromise = undefined;
+        }
+      }
     };
 
     const cachedMcp = this.deps.mcpStatus.get(sessionId);
@@ -2082,32 +2186,23 @@ export class SessionRunner {
         unsub = subscribeToSession(session);
         beginSend();
         if (runController.isCompleted()) return;
-        if ((await runStepOrCompletion("send prompt", () => opts.execute!(session))).completed) return;
-        runController.markPromptAccepted();
+        if ((await runSendStep("send prompt", () => opts.execute!(session))).completed) return;
+        const staleError = pendingStaleSessionError;
+        pendingStaleSessionError = undefined;
+        if (staleError !== undefined) {
+          if (!retryStaleCachedSession) throw new Error("Stale cached session recovery is unavailable");
+          await retryStaleCachedSession(staleError, "event");
+        } else if (!staleCacheRecoveryPromise) {
+          runController.markPromptAccepted();
+        } else {
+          await staleCacheRecoveryPromise;
+        }
       } catch (operationErr) {
         if (usedCache && isStaleAgentSessionError(operationErr)) {
-          console.warn(`[sdk] [${sid}] Stale cached session (${getErrorMessage(operationErr)}) — evicting and re-resuming...`);
-          unsub?.();
-          unsub = undefined;
-          await abandonSession(session);
-          session = await resumeSession();
-          staleCacheRetryCount += 1;
-          lastEventTime = Date.now();
-          sendStart = lastEventTime;
-          resetRunTelemetryState();
-          if (runController.isCompleted()) {
-            await abandonSession(session);
-            return;
-          }
-          if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session))).completed) return;
-          if (runController.isCompleted()) return;
-          unsub = subscribeToSession(session);
-          beginSend();
-          if (runController.isCompleted()) return;
-          if (!opts.execute) throw new Error("Session run is missing an execute step");
-          const retryExecute = opts.execute;
-          if ((await runStepOrCompletion("retry send prompt", () => retryExecute(session))).completed) return;
-          runController.markPromptAccepted();
+          if (!retryStaleCachedSession) throw new Error("Stale cached session recovery is unavailable");
+          const staleError = pendingStaleSessionError ?? operationErr;
+          pendingStaleSessionError = undefined;
+          await retryStaleCachedSession(staleError, "send");
         } else {
           throw operationErr;
         }
