@@ -38,6 +38,7 @@ import type {
   AgentElicitationResponse,
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
+  AgentModelSwitchResult,
   AgentToolMetadata,
   AgentModelInfo,
   AgentPermissionPolicy,
@@ -293,8 +294,14 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.abort", () => this.session.abort());
   }
 
-  setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown> {
-    return this.rpc("session.setModel", () => this.session.setModel(model, opts));
+  async setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined> {
+    // SDK session.setModel() awaits model.switchTo but discards the result, which hides the compaction preflight.
+    const switchTo = this.session?.rpc?.model?.switchTo;
+    if (typeof switchTo !== "function") {
+      await this.rpc("session.setModel", () => this.session.setModel(model, opts));
+      return undefined;
+    }
+    return this.rpc("session.setModel", () => switchTo.call(this.session.rpc.model, { ...opts, modelId: model }));
   }
 
   disconnect(): Promise<AgentSessionRelease> {

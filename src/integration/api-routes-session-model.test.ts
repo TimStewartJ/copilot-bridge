@@ -196,6 +196,45 @@ describe("PATCH /api/sessions/:id/model route", () => {
     expect(res.status).toBe(409);
   });
 
+  it("returns the compaction confirmation and forwards the follow-up compaction decision", async () => {
+    const confirmation = { targetModelDisplayName: "GPT-5 mini", currentTokens: 156_169, targetLimit: 128_000 };
+    const setSessionModel = vi.fn()
+      .mockResolvedValueOnce({ status: "confirmation_required", model: "gpt-5-mini", confirmation })
+      .mockResolvedValueOnce({ status: "applied", model: "gpt-5-mini", modelId: "gpt-5-mini" });
+    const { app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), setSessionModel } as any,
+    });
+
+    const probe = await request(app)
+      .patch(`/api/sessions/${sessionId}/model`)
+      .send({ model: "gpt-5-mini" });
+    expect(probe.status).toBe(200);
+    expect(probe.body).toEqual({ status: "confirmation_required", model: "gpt-5-mini", confirmation });
+    expect(setSessionModel).toHaveBeenNthCalledWith(1, sessionId, "gpt-5-mini", undefined, undefined);
+
+    const compact = await request(app)
+      .patch(`/api/sessions/${sessionId}/model`)
+      .send({ model: "gpt-5-mini", compactionDecision: "compact" });
+    expect(compact.status).toBe(200);
+    expect(compact.body).toEqual({ status: "applied", model: "gpt-5-mini", modelId: "gpt-5-mini" });
+    expect(setSessionModel).toHaveBeenNthCalledWith(2, sessionId, "gpt-5-mini", undefined, undefined, {
+      compactionDecision: "compact",
+    });
+  });
+
+  it("returns 400 when compactionDecision is invalid", async () => {
+    const setSessionModel = vi.fn();
+    const { app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), setSessionModel } as any,
+    });
+    const res = await request(app)
+      .patch(`/api/sessions/${sessionId}/model`)
+      .send({ model: "gpt-5-mini", compactionDecision: "maybe" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/compactionDecision/);
+    expect(setSessionModel).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for invalid session IDs", async () => {
     const { app } = createTestApp();
     const res = await request(app)

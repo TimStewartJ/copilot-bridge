@@ -13,7 +13,9 @@ import {
   createAgentBackend,
   type AgentBackend,
   type AgentBackendFactory,
+  type AgentModelCompactionDecision,
   type AgentModelInfo,
+  type AgentModelSwitchConfirmation,
   type AgentSession,
   type AgentSessionConfig,
   type AgentUsageMetrics,
@@ -486,6 +488,22 @@ type ModelMetadataRequest = {
 };
 
 type SessionOverlayBusyReason = "model-switching" | "history-undo";
+
+/**
+ * Outcome of an explicit session model switch. Mirrors the Copilot CLI's model
+ * picker: `confirmation_required` means the conversation exceeds the target
+ * model's prompt limit and the caller must retry with a compaction decision.
+ */
+export type SessionModelSwitchResult =
+  | {
+      status: "applied";
+      model: string;
+      reasoningEffort?: string;
+      contextTier?: CopilotContextTier;
+      modelId?: string;
+    }
+  | { status: "confirmation_required"; model: string; confirmation: AgentModelSwitchConfirmation }
+  | { status: "cancelled"; model: string; warning?: string };
 
 function isMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -5183,13 +5201,19 @@ export class SessionManager {
    * forResume:true (no model/reasoningEffort in config) so the SDK loads
    * the session's own persisted model state before we apply the new model.
    * Rejects busy sessions to avoid racing with an in-progress turn.
+   *
+   * Follows the Copilot CLI handshake: without a compaction decision the runtime
+   * reports `confirmation_required` for a conversation that exceeds the target
+   * model's prompt limit, and nothing changes. Retrying with `compact` compacts
+   * the conversation on the current model and then switches.
    */
   async setSessionModel(
     sessionId: string,
     model: string,
     reasoningEffort?: string,
     contextTier?: string,
-  ): Promise<{ model: string; reasoningEffort?: string; contextTier?: CopilotContextTier; modelId?: string }> {
+    options: { compactionDecision?: AgentModelCompactionDecision } = {},
+  ): Promise<SessionModelSwitchResult> {
     const client = this.getBackend();
     const owner = this.captureRuntimeOwner(client);
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
@@ -5258,14 +5282,33 @@ export class SessionManager {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
         ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
         ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
+        ...(options.compactionDecision ? { compactionDecision: options.compactionDecision } : {}),
       };
       const opts = Object.keys(setModelOptions).length > 0 ? setModelOptions : undefined;
-      await session.setModel(model, opts);
-      console.log(
-        `[sdk] [${sid}] setSessionModel(${model}${effectiveReasoningEffort ? `, ${effectiveReasoningEffort}` : ""}${
-          resolvedContext.contextTier ? `, ${resolvedContext.contextTier}` : ""
-        })`,
-      );
+      const switchResult = await session.setModel(model, opts);
+      const switchLabel = `${model}${effectiveReasoningEffort ? `, ${effectiveReasoningEffort}` : ""}${
+        resolvedContext.contextTier ? `, ${resolvedContext.contextTier}` : ""
+      }${options.compactionDecision ? `, ${options.compactionDecision}` : ""}`;
+      if (
+        switchResult?.status === "confirmation_required"
+        && switchResult.confirmation
+        && !options.compactionDecision
+      ) {
+        const { currentTokens, targetLimit } = switchResult.confirmation;
+        console.log(
+          `[sdk] [${sid}] setSessionModel(${switchLabel}) needs compaction: ${currentTokens} tokens exceeds ${targetLimit}`,
+        );
+        return { status: "confirmation_required", model, confirmation: switchResult.confirmation };
+      }
+      if (switchResult?.status === "cancelled" || switchResult?.status === "confirmation_required") {
+        console.log(`[sdk] [${sid}] setSessionModel(${switchLabel}) not applied: ${switchResult.status}`);
+        return {
+          status: "cancelled",
+          model,
+          ...(switchResult.warning ? { warning: switchResult.warning } : {}),
+        };
+      }
+      console.log(`[sdk] [${sid}] setSessionModel(${switchLabel})`);
 
       let currentAfterSwitch: Awaited<ReturnType<AgentSession["getCurrentModel"]>>;
       try {
@@ -5287,6 +5330,7 @@ export class SessionManager {
       });
 
       return {
+        status: "applied",
         model,
         ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),
         ...(liveContextTier ? { contextTier: liveContextTier } : {}),
