@@ -31,6 +31,7 @@
 // backend forces the shape question.
 
 import type {
+  CopilotSession,
   ModelInfo,
   PermissionHandler,
   PermissionRequest,
@@ -118,15 +119,30 @@ export interface AgentSendArgs {
 }
 
 /**
+ * Response to the runtime's model-switch compaction preflight. Omitting it asks
+ * the runtime to report `confirmation_required` when the conversation does not
+ * fit the target model's prompt limit.
+ */
+export type AgentModelCompactionDecision = "compact" | "cancel";
+
+/**
  * Options for `AgentSession.setModel(...)`. Copilot SDK accepts an optional
- * `{ reasoningEffort, contextTier, modelCapabilities }` second argument.
+ * `{ reasoningEffort, contextTier, modelCapabilities, compactionDecision }` second argument.
  */
 export interface AgentSetModelOptions {
   reasoningEffort?: string;
   contextTier?: string;
   modelCapabilities?: unknown;
+  compactionDecision?: AgentModelCompactionDecision;
   [extra: string]: unknown;
 }
+
+type CopilotModelSwitchTo = CopilotSession["rpc"]["model"]["switchTo"];
+
+/** Copilot runtime `session.model.switchTo` result, including the compaction preflight projection. */
+export type AgentModelSwitchResult = Awaited<ReturnType<CopilotModelSwitchTo>>;
+
+export type AgentModelSwitchConfirmation = NonNullable<AgentModelSwitchResult["confirmation"]>;
 
 export interface AgentSlashCommandInvocation {
   name: string;
@@ -297,7 +313,8 @@ export interface AgentSession {
    */
   sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown>;
   abort(): Promise<unknown>;
-  setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown>;
+  /** Returns the runtime switch result when the backend exposes it. */
+  setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined>;
   /** Optional compatibility facade; lifecycle owners use release(). */
   disconnect?(): Promise<unknown> | void;
   /**

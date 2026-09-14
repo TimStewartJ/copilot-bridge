@@ -11,7 +11,9 @@ import {
   type ModelInfo,
   type ReasoningEffort,
   type Session,
+  type SessionModelCompactionDecision,
   type SessionModelState,
+  type SessionModelSwitchConfirmation,
   type Task,
 } from "../api";
 import { queryClient, queryKeys } from "../queryClient";
@@ -41,6 +43,18 @@ import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
 import DeferredWorkSheet from "./DeferredWorkSheet";
+import ModelSwitchCompactionPrompt, { MODEL_SWITCH_COMPACTION_TITLE } from "./ModelSwitchCompactionPrompt";
+
+interface ModelSwitchRequest {
+  model: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}
+
+interface PendingModelSwitchConfirmation {
+  request: ModelSwitchRequest;
+  confirmation: SessionModelSwitchConfirmation;
+}
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -298,6 +312,7 @@ export default function SessionList({
   const [contextTierDraft, setContextTierDraft] = useState<"" | CopilotContextTier>("");
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
+  const [modelSwitchConfirmation, setModelSwitchConfirmation] = useState<PendingModelSwitchConfirmation | null>(null);
   const [deferredWorkSessionId, setDeferredWorkSessionId] = useState<string | null>(null);
   const [deferredWorkRestoreFocus, setDeferredWorkRestoreFocus] = useState<HTMLElement | null>(null);
   const sessionButtonRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -513,6 +528,7 @@ export default function SessionList({
     setReasoningDraft("");
     setContextTierDraft(currentState?.contextTier ?? "");
     setModelSwitchError(null);
+    setModelSwitchConfirmation(null);
     setModelOptionsError(null);
     closeMenu();
   }, [closeMenu]);
@@ -521,42 +537,47 @@ export default function SessionList({
     if (modelSwitchSaving) return;
     setModelDialogSessionId(null);
     setModelSwitchError(null);
+    setModelSwitchConfirmation(null);
   }, [modelSwitchSaving]);
 
   const { dialogProps: modelDialogProps } = useModalDialog({
     onDismiss: closeModelDialog,
     open: !!modelDialogSessionId,
     dismissible: !modelSwitchSaving,
-    label: "Change session model",
+    label: modelSwitchConfirmation ? MODEL_SWITCH_COMPACTION_TITLE : "Change session model",
   });
 
-  const handleSaveModelSwitch = useCallback(async () => {
-    if (!modelDialogSessionId) return;
-    const model = modelDraft.trim();
-    if (!model) return;
-
+  const submitModelSwitch = useCallback(async (
+    sessionId: string,
+    request: ModelSwitchRequest,
+    compactionDecision?: SessionModelCompactionDecision,
+  ) => {
     setModelSwitchSaving(true);
     setModelSwitchError(null);
     try {
-      const submittedReasoningEffort = reasoningDraftCanBeSubmitted
-        ? reasoningDraft
-        : !canKeepCurrentReasoningEffort
-          ? preferredReasoningEffort
-        : undefined;
-      const submittedContextTier = selectedDialogModelSupportsLongContext
-        ? (contextTierDraft || "default")
-        : undefined;
-      const result = await patchSessionModel(
-        modelDialogSessionId,
-        model,
-        submittedReasoningEffort,
-        submittedContextTier,
-      );
+      const result = compactionDecision
+        ? await patchSessionModel(sessionId, request.model, request.reasoningEffort, request.contextTier, {
+            compactionDecision,
+          })
+        : await patchSessionModel(sessionId, request.model, request.reasoningEffort, request.contextTier);
+      if (result.status === "confirmation_required") {
+        setModelSwitchConfirmation({ request, confirmation: result.confirmation });
+        return;
+      }
+      if (result.status === "cancelled") {
+        setModelSwitchConfirmation(null);
+        setModelSwitchError(result.warning ?? (
+          compactionDecision === "compact"
+            ? "The conversation still doesn't fit after compacting, so the model wasn't changed."
+            : "The model wasn't changed."
+        ));
+        return;
+      }
       const nextReasoningEffort = selectedDialogDisablesReasoning
         ? undefined
         : result.reasoningEffort
-          ?? (submittedReasoningEffort || modelDialogQuery.data?.reasoningEffort);
-      const nextContextTier = result.contextTier ?? submittedContextTier;
+          ?? (request.reasoningEffort || modelDialogQuery.data?.reasoningEffort);
+      const nextContextTier = result.contextTier ?? request.contextTier;
       const savedModelId = result.modelId ?? result.model;
       const nextState: SessionModelState = {
         model: savedModelId,
@@ -564,7 +585,7 @@ export default function SessionList({
         ...(nextContextTier ? { contextTier: nextContextTier } : {}),
         source: "live",
       };
-      queryClient.setQueryData(queryKeys.sessionModel(modelDialogSessionId), nextState);
+      queryClient.setQueryData(queryKeys.sessionModel(sessionId), nextState);
       // A saved switch is a committed choice, so it feeds the same memory the
       // new-chat picker reads.
       if (dialogPresetSlot) {
@@ -575,27 +596,56 @@ export default function SessionList({
           contextTier: nextContextTier,
         });
       }
+      setModelSwitchConfirmation(null);
       setModelDialogSessionId(null);
     } catch (error) {
       setModelSwitchError(getErrorMessage(error));
+      // A long compaction can outlive the request, so re-read what the session is actually on.
+      if (compactionDecision) void queryClient.invalidateQueries({ queryKey: queryKeys.sessionModel(sessionId) });
     } finally {
       setModelSwitchSaving(false);
     }
   }, [
     modelDialogQuery.data?.reasoningEffort,
-    contextTierDraft,
     dialogPresetSlot,
+    modelPresetMemory,
+    selectedDialogDisablesReasoning,
+  ]);
+
+  const handleSaveModelSwitch = useCallback(async () => {
+    if (!modelDialogSessionId) return;
+    const model = modelDraft.trim();
+    if (!model) return;
+
+    const submittedReasoningEffort = reasoningDraftCanBeSubmitted
+      ? reasoningDraft
+      : !canKeepCurrentReasoningEffort
+        ? preferredReasoningEffort
+      : undefined;
+    const submittedContextTier = selectedDialogModelSupportsLongContext
+      ? (contextTierDraft || "default")
+      : undefined;
+    await submitModelSwitch(modelDialogSessionId, {
+      model,
+      reasoningEffort: submittedReasoningEffort,
+      contextTier: submittedContextTier,
+    });
+  }, [
+    contextTierDraft,
     modelDialogSessionId,
     modelDraft,
-    modelPresetMemory,
     reasoningDraft,
     reasoningDraftCanBeSubmitted,
     canKeepCurrentReasoningEffort,
     preferredReasoningEffort,
     selectedDialogModelSupportsLongContext,
-    selectedDialogDisablesReasoning,
-    supportedReasoningEfforts,
+    submitModelSwitch,
   ]);
+
+  const handleCompactAndSwitch = useCallback(async () => {
+    if (!modelDialogSessionId || !modelSwitchConfirmation) return;
+    await submitModelSwitch(modelDialogSessionId, modelSwitchConfirmation.request, "compact");
+  }, [modelDialogSessionId, modelSwitchConfirmation, submitModelSwitch]);
 
   const handleBulkAction = useCallback((action: BatchAction, ids: string[]) => {
     onBulkAction?.(action, ids);
@@ -1089,7 +1139,25 @@ export default function SessionList({
         </ContextMenu>
       )}
 
-      {modelDialogSessionId && (
+      {modelDialogSessionId && modelSwitchConfirmation && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          {...modelDialogProps}
+          onClick={closeModelDialog}
+        >
+          <ModelSwitchCompactionPrompt
+            confirmation={modelSwitchConfirmation.confirmation}
+            compacting={modelSwitchSaving}
+            error={modelSwitchError}
+            onCompact={() => {
+              void handleCompactAndSwitch();
+            }}
+            onKeepCurrentModel={closeModelDialog}
+          />
+        </div>
+      )}
+
+      {modelDialogSessionId && !modelSwitchConfirmation && (
         <div
           className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
           {...modelDialogProps}

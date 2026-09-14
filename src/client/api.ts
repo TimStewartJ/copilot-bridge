@@ -891,12 +891,28 @@ export interface SessionModelState {
   source: SessionModelSource;
 }
 
-export interface SessionModelSwitchResult {
-  model: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
-  modelId?: string;
+export interface SessionModelSwitchConfirmation {
+  targetModelDisplayName: string;
+  currentTokens: number;
+  targetLimit: number;
 }
+
+export type SessionModelCompactionDecision = "compact" | "cancel";
+
+/**
+ * `confirmation_required` means the conversation exceeds the target model's
+ * prompt limit; retry with a compaction decision, as the Copilot CLI does.
+ */
+export type SessionModelSwitchResult =
+  | {
+      status?: "applied";
+      model: string;
+      reasoningEffort?: string;
+      contextTier?: CopilotContextTier;
+      modelId?: string;
+    }
+  | { status: "confirmation_required"; model: string; confirmation: SessionModelSwitchConfirmation }
+  | { status: "cancelled"; model: string; warning?: string };
 
 /** Derive the current model / reasoning effort for a session on demand. */
 export async function fetchSessionModelState(sessionId: string): Promise<SessionModelState> {
@@ -906,12 +922,14 @@ export async function fetchSessionModelState(sessionId: string): Promise<Session
 /**
  * Explicitly switch the model for a single session.
  * Omit reasoningEffort to keep the session's current reasoning effort when known.
+ * Pass a compaction decision to answer a previous `confirmation_required` result.
  */
 export async function patchSessionModel(
   sessionId: string,
   model: string,
   reasoningEffort?: string,
   contextTier?: CopilotContextTier,
+  options?: { compactionDecision?: SessionModelCompactionDecision },
 ): Promise<SessionModelSwitchResult> {
   const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/model`, {
     method: "PATCH",
@@ -920,6 +938,7 @@ export async function patchSessionModel(
       model,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(contextTier !== undefined ? { contextTier } : {}),
+      ...(options?.compactionDecision ? { compactionDecision: options.compactionDecision } : {}),
     }),
   });
   if (!res.ok) {

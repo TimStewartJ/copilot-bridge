@@ -337,6 +337,27 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(session.setModel).toHaveBeenCalledWith("gpt-5", { reasoningEffort: "high" });
   });
 
+  it("returns the runtime switchTo result so callers can see the compaction preflight", async () => {
+    const switchResult = {
+      status: "confirmation_required",
+      deferred: false,
+      modelId: "gpt-5.4-mini",
+      confirmation: { targetModelDisplayName: "GPT-5 mini", currentTokens: 156_169, targetLimit: 128_000 },
+    };
+    const model = { switchTo: vi.fn(async function (this: unknown) { return this === model ? switchResult : undefined; }) };
+    const session = createFakeSession({ model });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.setModel("gpt-5-mini", { reasoningEffort: "high", compactionDecision: "compact" }))
+      .resolves.toEqual(switchResult);
+    expect(model.switchTo).toHaveBeenCalledWith({
+      reasoningEffort: "high",
+      compactionDecision: "compact",
+      modelId: "gpt-5-mini",
+    });
+    expect(session.setModel).not.toHaveBeenCalled();
+  });
+
   it("exposes sessionId and disconnect from the underlying session", async () => {
     const session = createFakeSession();
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
