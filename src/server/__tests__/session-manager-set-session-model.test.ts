@@ -6,7 +6,7 @@ import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir } from ".
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { readPersistedSessionModelState } from "../session-model-state-sidecar.js";
-import type { AgentCurrentModel, AgentSetModelOptions } from "../agent-backend/types.js";
+import type { AgentCurrentModel, AgentModelSwitchResult, AgentSetModelOptions } from "../agent-backend/types.js";
 
 function createManager(copilotHome?: string) {
   const db = setupTestDb();
@@ -30,13 +30,14 @@ function createMockSession(currentModelId?: string) {
   let current: AgentCurrentModel = {
     ...(currentModelId ? { modelId: currentModelId } : {}),
   };
-  const setModel = vi.fn(async (model: string, options?: AgentSetModelOptions) => {
+  const setModel = vi.fn(async (model: string, options?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined> => {
     current = {
       modelId: model,
       ...(options?.reasoningEffort
         ? { reasoningEffort: options.reasoningEffort }
         : current.reasoningEffort ? { reasoningEffort: current.reasoningEffort } : {}),
     };
+    return { status: "applied", deferred: false, modelId: model };
   });
   const getCurrent = vi.fn(async (): Promise<AgentCurrentModel> => current);
   return makeAgentSessionStub({
@@ -110,7 +111,7 @@ describe("SessionManager.setSessionModel", () => {
     // without reasoningEffort
     const result1 = await manager.setSessionModel("session-1", "gpt-5.5");
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", undefined);
-    expect(result1).toEqual({ model: "gpt-5.5", modelId: "gpt-5.5" });
+    expect(result1).toEqual({ status: "applied", model: "gpt-5.5", modelId: "gpt-5.5" });
 
     // with reasoningEffort
     session.setModel.mockClear();
@@ -158,7 +159,7 @@ describe("SessionManager.setSessionModel", () => {
     );
 
     expect(session.setModel).toHaveBeenCalledWith("hydrafusion", undefined);
-    expect(result).toEqual({ model: "hydrafusion", modelId: "hydrafusion" });
+    expect(result).toEqual({ status: "applied", model: "hydrafusion", modelId: "hydrafusion" });
   });
 
   it("caps tiered models when selecting the default context tier", async () => {
@@ -309,8 +310,8 @@ describe("SessionManager.setSessionModel", () => {
     const manager = createManager();
     let resolveSetModel!: () => void;
     const session = createMockSession("gpt-5.5");
-    session.setModel = vi.fn(() => new Promise<void>((resolve) => {
-      resolveSetModel = resolve;
+    session.setModel = vi.fn(() => new Promise<undefined>((resolve) => {
+      resolveSetModel = () => resolve(undefined);
     }));
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
@@ -335,8 +336,8 @@ describe("SessionManager.setSessionModel", () => {
     const manager = createManager();
     let resolveSetModel!: () => void;
     const session = createMockSession("gpt-5.5");
-    session.setModel = vi.fn(() => new Promise<void>((resolve) => {
-      resolveSetModel = resolve;
+    session.setModel = vi.fn(() => new Promise<undefined>((resolve) => {
+      resolveSetModel = () => resolve(undefined);
     }));
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
@@ -489,5 +490,93 @@ describe("SessionManager.setSessionModel", () => {
     const result = await manager.setSessionModel("session-1", "gpt-5.5");
 
     expect(result).not.toHaveProperty("reasoningEffort");
+  });
+
+  describe("compaction handshake", () => {
+    const CONFIRMATION = { targetModelDisplayName: "GPT-5 mini", currentTokens: 156_169, targetLimit: 128_000 };
+    const persistedState = (copilotHome: string) =>
+      readPersistedSessionModelState(join(copilotHome, "session-state", "session-1"));
+
+    it("returns the runtime confirmation without switching or persisting when the conversation does not fit", async () => {
+      const copilotHome = makeTestDir("model-switch-needs-compaction");
+      const manager = createManager(copilotHome);
+      const session = createMockSession("gpt-5.4-mini");
+      session.setModel.mockResolvedValueOnce({
+        status: "confirmation_required",
+        deferred: false,
+        modelId: "gpt-5.4-mini",
+        confirmation: CONFIRMATION,
+      });
+      manager.backend = {};
+      manager.sessionObjects.set("session-1", session);
+
+      const result = await manager.setSessionModel("session-1", "gpt-5-mini");
+
+      expect(session.setModel).toHaveBeenCalledWith("gpt-5-mini", undefined);
+      expect(result).toEqual({ status: "confirmation_required", model: "gpt-5-mini", confirmation: CONFIRMATION });
+      expect(persistedState(copilotHome)).toEqual({});
+      expect(manager.isSessionBusy("session-1")).toBe(false);
+    });
+
+    it("forwards a compact decision and persists the applied switch", async () => {
+      const copilotHome = makeTestDir("model-switch-compact");
+      const manager = createManager(copilotHome);
+      const session = createMockSession("gpt-5.4-mini");
+      manager.backend = {};
+      manager.sessionObjects.set("session-1", session);
+
+      const result = await manager.setSessionModel("session-1", "gpt-5-mini", undefined, undefined, {
+        compactionDecision: "compact",
+      });
+
+      expect(session.setModel).toHaveBeenCalledWith("gpt-5-mini", { compactionDecision: "compact" });
+      expect(result).toEqual({ status: "applied", model: "gpt-5-mini", modelId: "gpt-5-mini" });
+      expect(persistedState(copilotHome)).toMatchObject({ model: "gpt-5-mini" });
+    });
+
+    it("reports cancelled instead of asking again when compaction still does not fit", async () => {
+      const copilotHome = makeTestDir("model-switch-compact-still-too-large");
+      const manager = createManager(copilotHome);
+      const session = createMockSession("gpt-5.4-mini");
+      session.setModel.mockResolvedValueOnce({
+        status: "confirmation_required",
+        modelId: "gpt-5.4-mini",
+        confirmation: CONFIRMATION,
+        warning: "The conversation is still too large.",
+      });
+      manager.backend = {};
+      manager.sessionObjects.set("session-1", session);
+
+      const result = await manager.setSessionModel("session-1", "gpt-5-mini", undefined, undefined, {
+        compactionDecision: "compact",
+      });
+
+      expect(result).toEqual({
+        status: "cancelled",
+        model: "gpt-5-mini",
+        warning: "The conversation is still too large.",
+      });
+      expect(persistedState(copilotHome)).toEqual({});
+    });
+
+    it.each([
+      ["a runtime cancellation", { status: "cancelled", modelId: "gpt-5.4-mini" }],
+      ["a confirmation without details", { status: "confirmation_required", modelId: "gpt-5.4-mini" }],
+    ])("treats %s as cancelled", async (_label, switchResult) => {
+      const copilotHome = makeTestDir("model-switch-cancelled");
+      const manager = createManager(copilotHome);
+      const session = createMockSession("gpt-5.4-mini");
+      session.setModel.mockResolvedValueOnce(switchResult);
+      manager.backend = {};
+      manager.sessionObjects.set("session-1", session);
+
+      const result = await manager.setSessionModel("session-1", "gpt-5-mini", undefined, undefined, {
+        compactionDecision: "cancel",
+      });
+
+      expect(session.setModel).toHaveBeenCalledWith("gpt-5-mini", { compactionDecision: "cancel" });
+      expect(result).toEqual({ status: "cancelled", model: "gpt-5-mini" });
+      expect(persistedState(copilotHome)).toEqual({});
+    });
   });
 });

@@ -3139,7 +3139,7 @@ export function createApiRouter(
     if (!isCanonicalSessionId(sessionId)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
-    const { model, reasoningEffort, contextTier } = req.body ?? {};
+    const { model, reasoningEffort, contextTier, compactionDecision } = req.body ?? {};
     const normalizedModel = typeof model === "string" ? model.trim() : "";
 
     if (!normalizedModel) {
@@ -3159,9 +3159,16 @@ export function createApiRouter(
     if (contextTier !== undefined && !isCopilotContextTier(contextTier)) {
       return res.status(400).json({ error: "contextTier must be default or long_context" });
     }
+    if (compactionDecision !== undefined && compactionDecision !== "compact" && compactionDecision !== "cancel") {
+      return res.status(400).json({ error: "compactionDecision must be compact or cancel" });
+    }
 
     try {
-      const result = await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort, contextTier);
+      const result = compactionDecision
+        ? await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort, contextTier, {
+            compactionDecision,
+          })
+        : await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort, contextTier);
       res.json(result);
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;

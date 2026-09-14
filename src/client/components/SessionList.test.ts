@@ -709,6 +709,116 @@ describe("SessionList change model dialog", () => {
     }
   });
 
+  describe("compaction confirmation", () => {
+    const CONFIRMATION = { targetModelDisplayName: "GPT-5.6", currentTokens: 156_169, targetLimit: 128_000 };
+    const PROMPT_TITLE = "Compact conversation before switching?";
+    const CURRENT_STATE: SessionModelState = { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" };
+    const text = (harness: { dom: { container: any } }) => harness.dom.container.textContent ?? "";
+
+    afterEach(() => {
+      // Drop unconsumed once-responses so a failing test cannot leak them into later tests.
+      apiMocks.patchSessionModel.mockReset();
+    });
+
+    async function saveHighLongContext(harness: Awaited<ReturnType<typeof openModelDialog>>) {
+      await waitUntilAct(harness.act, () => text(harness).includes("Long context (922K)"), { label: "model metadata" });
+      await clickButton(harness, "High");
+      await clickButton(harness, "Long context (922K)");
+      await clickButton(harness, "Save");
+      await waitUntilAct(harness.act, () => text(harness).includes(PROMPT_TITLE), { label: "compaction prompt" });
+    }
+
+    it("asks like the CLI, shows progress, then compacts and switches with the same request", async () => {
+      let resolveCompaction!: (value: unknown) => void;
+      apiMocks.patchSessionModel
+        .mockResolvedValueOnce({ status: "confirmation_required", model: "gpt-5.6", confirmation: CONFIRMATION })
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveCompaction = resolve; }));
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL],
+      );
+      try {
+        await saveHighLongContext(harness);
+        expect(text(harness)).toContain(
+          `Your conversation is using ~${(156_169).toLocaleString()} tokens, which exceeds GPT-5.6's prompt limit of ${(128_000).toLocaleString()} tokens. Compact the conversation before switching?`,
+        );
+        expect(text(harness)).not.toContain("Change session model");
+
+        await clickButton(harness, "Compact and switch");
+        expect(apiMocks.patchSessionModel).toHaveBeenNthCalledWith(
+          2,
+          "session-1",
+          "gpt-5.6",
+          "high",
+          "long_context",
+          { compactionDecision: "compact" },
+        );
+        expect(text(harness)).toContain("Compacting conversation history (0s)");
+        expect(getReactProps(findButton(harness.dom.container, "Keep current model"))?.disabled).toBe(true);
+        await advanceTimersByTimeAct(harness.act, 2_000);
+        expect(text(harness)).toContain("Compacting conversation history (2s)");
+
+        await harness.act(async () => {
+          resolveCompaction({ status: "applied", model: "gpt-5.6", modelId: "gpt-5.6", reasoningEffort: "high", contextTier: "long_context" });
+        });
+        await waitUntilAct(harness.act, () => !text(harness).includes(PROMPT_TITLE), { label: "dialog closed" });
+        expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual({
+          model: "gpt-5.6",
+          reasoningEffort: "high",
+          contextTier: "long_context",
+          source: "live",
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("keeps the current model without calling the runtime again", async () => {
+      apiMocks.patchSessionModel
+        .mockResolvedValueOnce({ status: "confirmation_required", model: "gpt-5.6", confirmation: CONFIRMATION });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL],
+      );
+      try {
+        await saveHighLongContext(harness);
+        await clickButton(harness, "Keep current model");
+
+        expect(text(harness)).not.toContain(PROMPT_TITLE);
+        expect(text(harness)).not.toContain("Change session model");
+        expect(apiMocks.patchSessionModel).toHaveBeenCalledTimes(1);
+        expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(CURRENT_STATE);
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("explains that the model did not change when compaction still does not fit", async () => {
+      apiMocks.patchSessionModel
+        .mockResolvedValueOnce({ status: "confirmation_required", model: "gpt-5.6", confirmation: CONFIRMATION })
+        .mockResolvedValueOnce({ status: "cancelled", model: "gpt-5.6" });
+      const harness = await openModelDialog(
+        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        [TIERED_MODEL],
+      );
+      try {
+        await saveHighLongContext(harness);
+        await clickButton(harness, "Compact and switch");
+        await waitUntilAct(
+          harness.act,
+          () => text(harness).includes("The conversation still doesn't fit after compacting, so the model wasn't changed."),
+          { label: "cancelled message" },
+        );
+
+        expect(text(harness)).toContain("Change session model");
+        expect(text(harness)).not.toContain(PROMPT_TITLE);
+        expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(CURRENT_STATE);
+      } finally {
+        await harness.cleanup();
+      }
+    });
+  });
+
   describe("shared model preset memory", () => {
     const CLAUDE_OPUS: ModelInfo = {
       id: "claude-opus-5",
