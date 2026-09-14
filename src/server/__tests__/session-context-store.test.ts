@@ -74,7 +74,9 @@ describe("session context telemetry store", () => {
       outputTokens: 100, reasoningTokens: 80, contextWindow: 10000,
       apiCallId: "chatcmpl-123", providerCallId: "request-123",
     };
-    const call = normalizeLiveSessionContextEvent({ type: "assistant.usage", id: "call", data }, options)!;
+    const call = normalizeLiveSessionContextEvent({
+      type: "assistant.usage", id: "call", timestamp: "2026-09-09T00:00:01.000Z", data,
+    }, options)!;
     expect(call).toMatchObject({
       modelUsage: { totalTokens: 1100, inputTokens: 1000, outputTokens: 100 },
       tokensUsed: null, tokensRemaining: null, usageRatio: null,
@@ -85,10 +87,13 @@ describe("session context telemetry store", () => {
     expect(store.getSummary("inclusive")).toMatchObject({ tokensUsed: null, modelUsage: { totalTokens: 1100 } });
     expect(store.getSessionContext("inclusive").turnMeasurements).toEqual([]);
     const explicit = normalizeLiveSessionContextEvent({
-      type: "assistant.usage", id: "explicit", data: { ...data, tokensUsed: 2500 },
+      type: "assistant.usage", id: "explicit", timestamp: "2026-09-09T00:00:02.000Z",
+      data: { ...data, tokensUsed: 2500 },
     }, options)!;
     store.recordContextEvent(explicit);
-    store.recordContextEvent({ ...call, providerEventId: "later-call" });
+    store.recordContextEvent({
+      ...call, providerEventId: "later-call", occurredAt: "2026-09-09T00:00:03.000Z",
+    });
     expect(store.getSummary("inclusive")).toMatchObject({ tokensUsed: 2500, tokensRemaining: 7500 });
     const bounded = store.getSessionContext("inclusive", { limit: 1 });
     expect(bounded.events[0].tokensUsed).toBeNull();
