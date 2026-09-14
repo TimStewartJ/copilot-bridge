@@ -102,7 +102,7 @@ export function createTelemetryStore(db: DatabaseSync) {
     const limit = opts.limit ?? 200;
 
     const rows = db.prepare(
-      `SELECT * FROM telemetry_spans ${where} ORDER BY createdAt DESC LIMIT ?`,
+      `SELECT * FROM telemetry_spans ${where} ORDER BY createdAt DESC, id DESC LIMIT ?`,
     ).all(...params, limit) as any[];
 
     return rows.map(hydrate);

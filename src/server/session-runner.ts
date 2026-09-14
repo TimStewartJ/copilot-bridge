@@ -70,7 +70,7 @@ import {
 } from "./sdk-event-identity.js";
 import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
-import { normalizePromptCacheBreak } from "./session-prompt-fingerprint.js";
+import { normalizePromptCacheBreak, promptProcessMetadata } from "./session-prompt-fingerprint.js";
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
@@ -1009,6 +1009,7 @@ export class SessionRunner {
       if (cacheBreak) {
         this.recordSpan("session.prompt_cache_break", 0, sessionId, {
           ...cacheBreak,
+          ...promptProcessMetadata,
           attribution,
           ...(bridgeTurnId ? { bridgeTurnId } : {}),
         });

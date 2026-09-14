@@ -8,6 +8,7 @@ import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from ".
 import { join } from "node:path";
 import { readSessionLaunchContext } from "../session-launch-context.js";
 import type { AgentBackendDisconnect } from "../agent-backend/types.js";
+import { AppliedPromptFingerprints } from "../session-prompt-fingerprint.js";
 
 type FakeSession = {
   sessionId?: string;
@@ -394,8 +395,11 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(backend.resumeSession).not.toHaveBeenCalled();
     expect(spans()).toHaveLength(1);
     await manager.evictAllCachedSessions();
+    // Simulate losing all process-local fingerprints while retaining telemetry.
+    manager.appliedPromptFingerprints = new AppliedPromptFingerprints(telemetryStore!);
     await manager.cacheResumedSession("fingerprint", fakeSession("fingerprint"), config);
     expect(spans()).toHaveLength(2);
+    expect(spans()[0].metadata).toMatchObject({ previousRead: "persisted" });
     expect(spans().map((span) => span.metadata)).toContainEqual(expect.objectContaining({
       comparison: "previous_applied", cacheBreakCandidate: false, changedCategories: [],
     }));

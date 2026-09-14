@@ -66,6 +66,53 @@ describe("session context telemetry store", () => {
     }
   });
 
+  it("counts Copilot cache and reasoning subsets once without inventing context occupancy", () => {
+    const store = createSessionContextStore(setupTestDb());
+    const options = { sessionId: "inclusive", provider: "copilot", bridgeTurnId: "turn-inclusive" };
+    const data = {
+      inputTokens: 1000, cacheReadTokens: 700, cacheWriteTokens: 200,
+      outputTokens: 100, reasoningTokens: 80, contextWindow: 10000,
+      apiCallId: "chatcmpl-123", providerCallId: "request-123",
+    };
+    const call = normalizeLiveSessionContextEvent({ type: "assistant.usage", id: "call", data }, options)!;
+    expect(call).toMatchObject({
+      modelUsage: { totalTokens: 1100, inputTokens: 1000, outputTokens: 100 },
+      tokensUsed: null, tokensRemaining: null, usageRatio: null,
+      contextWindowCapability: "partial",
+      metadata: { apiCallId: "chatcmpl-123", providerCallId: "request-123" },
+    });
+    store.recordContextEvent(call);
+    expect(store.getSummary("inclusive")).toMatchObject({ tokensUsed: null, modelUsage: { totalTokens: 1100 } });
+    expect(store.getSessionContext("inclusive").turnMeasurements).toEqual([]);
+    const explicit = normalizeLiveSessionContextEvent({
+      type: "assistant.usage", id: "explicit", data: { ...data, tokensUsed: 2500 },
+    }, options)!;
+    store.recordContextEvent(explicit);
+    store.recordContextEvent({ ...call, providerEventId: "later-call" });
+    expect(store.getSummary("inclusive")).toMatchObject({ tokensUsed: 2500, tokensRemaining: 7500 });
+    const bounded = store.getSessionContext("inclusive", { limit: 1 });
+    expect(bounded.events[0].tokensUsed).toBeNull();
+    expect(bounded.turnMeasurements).toHaveLength(1);
+    expect(bounded.turnMeasurements?.[0]).toMatchObject({
+      bridgeTurnId: "turn-inclusive", tokensUsed: 2500, tokensRemaining: 7500,
+    });
+    store.backfillSessionContextEvents({ ...options, events: [{
+      type: "session.shutdown", id: "shutdown", data: {
+        contextWindow: 10000, modelMetrics: { test: { usage: data } },
+      },
+    }] });
+    expect(store.getSummary("inclusive")).toMatchObject({ tokensUsed: 2500, modelUsage: { totalTokens: 1100 } });
+    const shutdown = store.getSessionContext("inclusive").events.find((event) => event.type === "shutdown");
+    expect(shutdown).toMatchObject({ tokensUsed: null, modelUsage: { totalTokens: 1100 } });
+    const generic = normalizeLiveSessionContextEvent({ type: "usage_info", data }, options);
+    expect(generic?.modelUsage?.totalTokens).toBe(2080);
+    const otherProvider = normalizeLiveSessionContextEvent({ type: "assistant.usage", data }, { ...options, provider: "other" });
+    expect(otherProvider?.modelUsage?.totalTokens).toBe(2080);
+    expect(normalizeLiveSessionContextEvent({
+      type: "assistant.usage", data: { ...data, totalTokens: 1234 },
+    }, options)?.modelUsage?.totalTokens).toBe(1234);
+  });
+
   it("retains cache-expiry refreshes with identical token usage and keeps child calls out of the parent summary", () => {
     const store = createSessionContextStore(setupTestDb());
     const options = { sessionId: "cache-expiry", provider: "copilot", bridgeTurnId: "parent", attribution: "turn" as const };
@@ -330,7 +377,7 @@ describe("session context telemetry store", () => {
         inputTokens: 10,
         outputTokens: 5,
         reasoningTokens: 1,
-        totalTokens: 16,
+        totalTokens: 15,
       },
       provenance: {
         modelUsage: { source: "backfill", confidence: "exact" },
