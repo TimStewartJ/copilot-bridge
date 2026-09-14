@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseSync } from "../db.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createFocusDataLayer } from "../focus-data-layer.js";
@@ -260,25 +260,35 @@ describe("canonical Focus domain model", () => {
   });
 
   it("serves Focus entirely from canonical stores after reconciliation", () => {
-    insertLegacyCard({ kind: "decision", title: "Canonical after migration" });
-    // This migration test needs a fresh digest item, not an aging date fixture.
-    const now = new Date().toISOString();
-    insertLegacyCard({
-      kind: "note", dedupeKey: "source:event", title: "Event source",
-      createdAt: now, updatedAt: now, statusChangedAt: now,
-    });
-    const layer = createLayer();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-03T13:00:00.000Z"));
+    try {
+      insertLegacyCard({ kind: "decision", title: "Canonical after migration" });
+      const now = new Date().toISOString();
+      insertLegacyCard({
+        kind: "note", dedupeKey: "source:event", title: "Event source",
+        createdAt: now, updatedAt: now, statusChangedAt: now,
+      });
+      const layer = createLayer();
 
-    db.exec("ALTER TABLE feed_cards RENAME TO unavailable_feed_cards");
+      db.exec("ALTER TABLE feed_cards RENAME TO unavailable_feed_cards");
 
-    expect(layer.projection.getSnapshot()).toMatchObject({
-      decisionTotal: 1,
-      alertTotal: 0,
-      digests: [expect.objectContaining({ family: "source", count: 1 })],
-    });
-    expect(layer.projection.listDecisions({ status: "active" }).objects[0]).toMatchObject({
-      title: "Canonical after migration",
-    });
+      expect(layer.projection.getSnapshot()).toMatchObject({
+        decisionTotal: 1,
+        alertTotal: 0,
+        digests: [expect.objectContaining({ family: "source", count: 1 })],
+      });
+      expect(layer.projection.listDecisions({ status: "active" }).objects[0]).toMatchObject({
+        title: "Canonical after migration",
+      });
+      vi.setSystemTime(new Date("2026-10-03T13:00:00.000Z"));
+      expect(layer.projection.getSnapshot()).toMatchObject({
+        decisionTotal: 1,
+        digests: [],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps canonical and compatibility task references aligned after task deletion", () => {
