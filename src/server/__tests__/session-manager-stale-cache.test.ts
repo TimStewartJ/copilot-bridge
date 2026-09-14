@@ -4,6 +4,7 @@ import { SessionManager } from "../session-manager.js";
 import {
   applyMcpServerStatusChange,
   getStaleMcpSessionServerName,
+  isStaleAgentSessionError,
   normalizeMcpServerStatuses,
 } from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -100,6 +101,15 @@ describe("SessionManager stale cached session recovery", () => {
     )).toBeUndefined();
   });
 
+  it("recognizes provider input-item connection mismatches as stale cached sessions", () => {
+    expect(isStaleAgentSessionError(new Error(
+      "Execution failed: 400 input item ID does not belong to this connection (Request ID: request-1)",
+    ))).toBe(true);
+    expect(isStaleAgentSessionError(new Error(
+      "Execution failed: 400 input item id does not belong to this connection",
+    ))).toBe(true);
+  });
+
   it("does not probe again after a pushed complete MCP snapshot, including empty", async () => {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
@@ -190,6 +200,147 @@ describe("SessionManager stale cached session recovery", () => {
     expect(events).toContainEqual(expect.objectContaining({
       type: "done",
       content: "Recovered on a fresh session.",
+    }));
+  });
+
+  it("evicts a cached session after an input-item connection mismatch and retries", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const cachedSession = createSession(async () => {
+      throw new Error(
+        "Execution failed: 400 input item ID does not belong to this connection (Request ID: request-1)",
+      );
+    });
+    const freshSession = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "assistant.message",
+          data: { content: "Recovered after refreshing the provider connection." },
+          timestamp: "2026-09-14T19:00:00.000Z",
+        });
+        emit({
+          type: "session.idle",
+          data: {},
+          timestamp: "2026-09-14T19:00:01.000Z",
+        });
+      });
+    });
+
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(freshSession),
+    };
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
+
+    expect(cachedSession.send).toHaveBeenCalledTimes(1);
+    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.backend.resumeSession).toHaveBeenCalledTimes(1);
+    expect(freshSession.send).toHaveBeenCalledTimes(1);
+    expect(freshSession.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(manager.sessionObjects.get("session-1")).toBe(freshSession);
+  });
+
+  it("recovers when the input-item mismatch arrives as a session.error event", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+    const cachedSession = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "assistant.turn_start",
+          data: {},
+          timestamp: "2026-09-14T19:05:00.000Z",
+        });
+        emit({
+          type: "session.error",
+          data: {
+            errorType: "query",
+            message: "Execution failed: 400 input item ID does not belong to this connection (Request ID: request-2)",
+          },
+          timestamp: "2026-09-14T19:05:01.000Z",
+        });
+      });
+    });
+    const freshSession = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "assistant.message",
+          data: { content: "Recovered after the session.error event." },
+          timestamp: "2026-09-14T19:05:02.000Z",
+        });
+        emit({
+          type: "session.idle",
+          data: {},
+          timestamp: "2026-09-14T19:05:03.000Z",
+        });
+      });
+    });
+
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(freshSession),
+    };
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
+
+    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.backend.resumeSession).toHaveBeenCalledTimes(1);
+    expect(freshSession.send).toHaveBeenCalledWith({ prompt: "hello" });
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "error",
+      message: expect.stringContaining("input item ID does not belong"),
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      content: "Recovered after the session.error event.",
+    }));
+  });
+
+  it("does not replay a prompt after tool activity before the stale error", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+    const cachedSession = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({
+          type: "tool.execution_start",
+          data: {
+            toolCallId: "tool-1",
+            toolName: "demo-read",
+            arguments: {},
+          },
+          timestamp: "2026-09-14T19:06:00.000Z",
+        });
+        emit({
+          type: "session.error",
+          data: {
+            errorType: "query",
+            message: "Execution failed: 400 input item ID does not belong to this connection (Request ID: request-3)",
+          },
+          timestamp: "2026-09-14T19:06:01.000Z",
+        });
+      });
+    });
+
+    manager.backend = {
+      resumeSession: vi.fn(),
+    };
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
+
+    expect(cachedSession.disconnect).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "error",
+      message: expect.stringContaining("input item ID does not belong"),
     }));
   });
 
