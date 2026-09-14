@@ -6,6 +6,7 @@ import {
   type SessionContextTokenUsage,
 } from "../shared/session-context.js";
 import { isRecord } from "../shared/is-record.js";
+import { safePromptCorrelationId } from "./session-prompt-fingerprint.js";
 
 export interface NormalizedSessionContextEvent {
   sessionId: string;
@@ -158,7 +159,7 @@ function getModel(data: Record<string, unknown> | undefined): string | undefined
   return firstString(data, MODEL_KEYS) ?? firstString(nestedUsage, MODEL_KEYS);
 }
 
-function readTokenUsage(source: Record<string, unknown> | undefined): SessionContextTokenUsage | null {
+function readTokenUsage(source: Record<string, unknown> | undefined, inclusive = false): SessionContextTokenUsage | null {
   if (!source) return null;
   const usage: SessionContextTokenUsage = {};
   const requests = firstNumber(source, ["requests", "requestCount", "count"]);
@@ -181,9 +182,9 @@ function readTokenUsage(source: Record<string, unknown> | undefined): SessionCon
     const totalTokens = [
       inputTokens,
       outputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-      reasoningTokens,
+      inclusive ? undefined : cacheReadTokens,
+      inclusive ? undefined : cacheWriteTokens,
+      inclusive ? undefined : reasoningTokens,
     ].reduce<number>((sum, value) => sum + (value ?? 0), 0);
     if (totalTokens > 0) usage.totalTokens = totalTokens;
   }
@@ -191,12 +192,12 @@ function readTokenUsage(source: Record<string, unknown> | undefined): SessionCon
   return Object.keys(usage).length > 0 ? usage : null;
 }
 
-function extractTokenUsage(data: Record<string, unknown> | undefined): SessionContextTokenUsage | null {
+function extractTokenUsage(data: Record<string, unknown> | undefined, inclusive = false): SessionContextTokenUsage | null {
   if (!data) return null;
-  return readTokenUsage(asRecord(data.usage))
-    ?? readTokenUsage(asRecord(data.tokenUsage))
-    ?? readTokenUsage(asRecord(data.modelUsage))
-    ?? readTokenUsage(data);
+  return readTokenUsage(asRecord(data.usage), inclusive)
+    ?? readTokenUsage(asRecord(data.tokenUsage), inclusive)
+    ?? readTokenUsage(asRecord(data.modelUsage), inclusive)
+    ?? readTokenUsage(data, inclusive);
 }
 
 function addTokenUsage(target: SessionContextTokenUsage, source: SessionContextTokenUsage | null): void {
@@ -209,7 +210,7 @@ function addTokenUsage(target: SessionContextTokenUsage, source: SessionContextT
   }
 }
 
-function extractModelMetricsUsage(modelMetrics: Record<string, unknown> | undefined): {
+function extractModelMetricsUsage(modelMetrics: Record<string, unknown> | undefined, inclusive: boolean): {
   modelUsage: SessionContextTokenUsage | null;
   model: string | null;
   modelCount: number;
@@ -219,7 +220,7 @@ function extractModelMetricsUsage(modelMetrics: Record<string, unknown> | undefi
   const models = Object.keys(modelMetrics).filter((model) => model.trim());
   for (const model of models) {
     const metrics = asRecord(modelMetrics[model]);
-    const usage = readTokenUsage(asRecord(metrics?.usage)) ?? readTokenUsage(metrics);
+    const usage = readTokenUsage(asRecord(metrics?.usage), inclusive) ?? readTokenUsage(metrics, inclusive);
     const requestCount = readTokenUsage(asRecord(metrics?.requests));
     addTokenUsage(aggregate, usage);
     if (requestCount?.requests !== undefined) {
@@ -336,13 +337,25 @@ export function normalizeLiveSessionContextEvent(
   const occurredAt = normalizeTimestamp(eventRecord, data, now);
 
   if (USAGE_EVENT_TYPES.has(eventType)) {
-    const modelUsage = extractTokenUsage(data);
-    const contextUsage = extractContextUsage(data, modelUsage);
+    // Copilot input includes cache traffic; output includes reasoning. Generic
+    // usage shapes retain their existing additive contract.
+    const inclusive = options.provider === "copilot" && eventType === "assistant.usage";
+    const modelUsage = extractTokenUsage(data, inclusive);
+    const contextUsage = extractContextUsage(data, inclusive ? null : modelUsage);
     const cacheExpiresAt = eventType === "assistant.usage" && typeof data?.cacheExpiresAt === "string"
       && data.cacheExpiresAt.length <= 64 && Number.isFinite(Date.parse(data.cacheExpiresAt))
       ? data.cacheExpiresAt : undefined;
     if (!modelUsage && contextUsage.capability === "unavailable" && !cacheExpiresAt) return null;
-    const metadata = metadataFromKeys(data, ["requestId", "toolCallId", "parentToolCallId"]);
+    const metadata = metadataFromKeys(data, ["requestId", "toolCallId", "parentToolCallId"]) ?? {};
+    if (inclusive) {
+      // These are exposed by AssistantUsageData, not PromptCacheBreakData.
+      for (const key of ["apiCallId", "providerCallId"] as const) {
+        const value = safePromptCorrelationId(data?.[key]);
+        if (value) metadata[key] = value;
+      }
+      const agentId = safePromptCorrelationId(eventRecord.agentId);
+      if (agentId) metadata.agentId = agentId;
+    }
     const attribution = getUsageAttribution(data, options.attribution);
     return {
       sessionId: options.sessionId,
@@ -363,7 +376,7 @@ export function normalizeLiveSessionContextEvent(
         ...(modelUsage ? { modelUsage: { source: "live" as const, confidence: "exact" as const } } : {}),
       },
       modelUsageCapability: modelUsage ? "exact" : "unavailable",
-      metadata: cacheExpiresAt ? { ...metadata, cacheExpiresAt } : metadata,
+      metadata: cacheExpiresAt ? { ...metadata, cacheExpiresAt } : Object.keys(metadata).length ? metadata : null,
     };
   }
 
@@ -388,7 +401,7 @@ function normalizeSessionContextMarker(
 ): NormalizedSessionContextEvent | null {
   const eventType = String(eventRecord.type);
   if (eventType === "session.shutdown") {
-    const metrics = extractModelMetricsUsage(asRecord(data?.modelMetrics));
+    const metrics = extractModelMetricsUsage(asRecord(data?.modelMetrics), options.provider === "copilot");
     return {
       sessionId: options.sessionId,
       provider: options.provider,

@@ -13,6 +13,18 @@ beforeEach(() => {
 });
 
 describe("telemetry-store", () => {
+  it("selects the newest server span deterministically when timestamps tie", () => {
+    const span = {
+      name: "session.prompt.applied", sessionId: "same-time", duration: 0,
+      source: "server" as const, createdAt: "2026-09-09T00:00:00Z",
+    };
+    store.recordSpan({ ...span, metadata: { sequence: 1 } });
+    store.recordSpan({ ...span, metadata: { sequence: 2 } });
+    store.recordSpan({ ...span, source: "client", metadata: { sequence: 3 } });
+    expect(store.querySpans({ name: span.name, sessionId: span.sessionId, source: "server", limit: 1 })[0].metadata)
+      .toEqual({ sequence: 2 });
+  });
+
   it("records single and bulk spans with optional session, metadata, and dedupe keys", () => {
     store.recordSpan({ name: "session.create", duration: 150, source: "server" });
     const created = store.querySpans({ name: "session.create" });

@@ -234,6 +234,23 @@ npm run test:slow-report # full Vitest pass + top slowest files
 
 Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Coverage is CI-owned: the GitHub Actions CI workflow runs `test:coverage` on PRs, pushes, manual dispatches, and its nightly schedule; local deploy validation still runs the full non-coverage test lanes through `check:pr`. Client type-checking (`npm run typecheck:client`) is a plain `tsc --noEmit` over `tsconfig.client.json` and must stay at zero diagnostics. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior.
 
+### Context and prompt-cache diagnostics
+
+Copilot `assistant.usage` and shutdown metrics count cache reads/writes within
+input tokens and reasoning within output tokens. Context occupancy uses explicit
+context counts, not those per-call or cumulative usage totals. Other normalized
+usage shapes retain their existing additive contract.
+
+`session.prompt.applied` compares only accepted SDK-handle configurations, including
+the latest retained applied span after restart. Warm handle reuse emits no new
+applied span. Telemetry pruning removes that historical baseline; malformed or
+unreadable history is marked in `previousRead`. Applied and cache-break spans carry
+a process startup marker. Cache-break reasons remain hashed with category `unknown`
+because the installed runtime exposes open strings, not verified reason constants.
+Changed cache-field names remain counts only. Event/agent IDs are bounded, model
+and agent names are hashed, and request snapshots are never recorded. API/provider
+call IDs are available on usage events, not cache-break events.
+
 ### Cross-Platform Test Rules
 
 - Use the shared helpers in `src/server/__tests__/test-paths.ts` for fake homes, normalized path assertions, and fake executable paths.

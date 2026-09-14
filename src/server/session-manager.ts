@@ -727,7 +727,9 @@ export class SessionManager {
   private shuttingDown = false;
   private sessionOverlayBusyReasons = new Map<string, SessionOverlayBusyReason>();
   private sessionObjects = new Map<string, AgentSession>();
-  private readonly appliedPromptFingerprints = new AppliedPromptFingerprints();
+  private readonly appliedPromptFingerprints = new AppliedPromptFingerprints({
+    querySpans: (options) => this.deps.telemetryStore?.querySpans(options) ?? [],
+  });
   private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
   private readonly sessionToolInitialization = new WeakMap<AgentSession, Promise<void>>();
   private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
