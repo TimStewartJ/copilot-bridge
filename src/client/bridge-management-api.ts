@@ -58,7 +58,7 @@ export interface RestartBridgeResponse {
   ok: true;
   waitingSessions: number;
   forced?: boolean;
-  failedRuns?: number;
+  abortedRuns?: number;
   resumingRuns?: number;
 }
 

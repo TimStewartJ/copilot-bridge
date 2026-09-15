@@ -210,6 +210,7 @@ import {
   type DeferWorkerResult,
   type DisposableDeferWorker,
 } from "./defer-worker.js";
+import type { InterruptedRun } from "./restart-resume.js";
 import {
   COPILOT_USAGE_PARSER_VERSION,
   type CopilotUsageSessionScanResult,
@@ -229,9 +230,11 @@ export {
   configureRestartEventBus,
   configureRestartStateStore,
   forceClearRestartPending,
+  forceRestartCutover,
   getRestartWaitingCount,
   isPromptDeliveryInterruptedError,
   isRestartCutoverInProgress,
+  isRestartForced,
   isRestartImminent,
   isRestartPending,
   isRestartPendingError,
@@ -3244,28 +3247,38 @@ export class SessionManager {
     }
   }
 
+  /** Snapshot every in-flight run with the metadata callers need to decide what to resume. */
+  getActiveRuns(): InterruptedRun[] {
+    const records = this.runStateController.getRunRecords();
+    return [...this.activeRunControllers]
+      .filter(([, controller]) => !controller.isCompleted())
+      .map(([sessionId]) => {
+        const record = records.get(sessionId);
+        return {
+          sessionId,
+          promptAccepted: record?.promptAccepted === true,
+          attentionMode: record?.attentionMode === "quiet" ? "quiet" : "normal",
+        };
+      });
+  }
+
+  /** Abort every in-flight run and defer worker check so a forced restart can cut over now. */
+  async abortActiveWork(): Promise<void> {
+    this.deferWorker.abortAll();
+    const deadline = createDeadline(SESSION_ABORT_TIMEOUT_MS);
+    await Promise.allSettled(this.getActiveSessions().map((sessionId) => this.abortSession(sessionId, deadline)));
+  }
+
   /**
    * Fail every in-flight run locally with `message`. Used when the backend
-   * is known to be dead (nothing will ever answer) and for forced restarts.
+   * is known to be dead, so nothing will ever answer an abort.
    * Returns the interrupted runs so callers can decide what to resume.
    */
-  failAllActiveRuns(message: string): Array<{
-    sessionId: string;
-    promptAccepted: boolean;
-    attentionMode: "normal" | "quiet";
-  }> {
-    const interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }> = [];
-    const records = this.runStateController.getRunRecords();
-    for (const [sessionId, controller] of [...this.activeRunControllers]) {
-      if (controller.isCompleted()) continue;
-      const record = records.get(sessionId);
-      interrupted.push({
-        sessionId,
-        promptAccepted: record?.promptAccepted === true,
-        attentionMode: record?.attentionMode === "quiet" ? "quiet" : "normal",
-      });
+  failAllActiveRuns(message: string): InterruptedRun[] {
+    const interrupted = this.getActiveRuns();
+    for (const { sessionId } of interrupted) {
       try {
-        controller.completeError(message);
+        this.activeRunControllers.get(sessionId)?.completeError(message);
       } catch (error) {
         console.error(`[sdk] [${sessionId.slice(0, 8)}] Failed to fail the active run locally:`, error);
       }

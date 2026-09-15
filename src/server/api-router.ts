@@ -24,7 +24,9 @@ import {
   clearRestartPending,
   configureRestartStateStore,
   forceClearRestartPending,
+  forceRestartCutover,
   isRestartCutoverInProgress,
+  isRestartForced,
   isRestartPending,
   isRestartPendingError,
   ModelRefreshBlockedError,
@@ -980,7 +982,7 @@ function restartStatusResponseFromState(state: {
     waitingSessions: Math.max(0, state.waitingSessions),
     requestedAt: state.requestedAt,
     serverInstanceId: SERVER_INSTANCE_ID,
-    canAcceptNewWork: state.phase !== "restarting",
+    canAcceptNewWork: !isRestartCutoverInProgress(state),
   };
 }
 
@@ -1993,6 +1995,7 @@ export function createApiRouter(
       sessionIds: sessions.map((s) => s.id),
       sessions,
       backgroundOperations: Math.max(0, lifecycleBlockingCount - sessions.length),
+      restartForced: isRestartForced(),
       agentBackend: ctx.sessionManager.getBackendStatus(),
     });
   });
@@ -2358,14 +2361,7 @@ export function createApiRouter(
       return res.status(409).json({ error: "A restart is already pending." });
     }
 
-    const interruptedRuns = forced
-      ? ctx.sessionManager.failAllActiveRuns("Bridge restart forced by operator")
-      : [];
-    const failedRuns = interruptedRuns.length;
-    if (forced) {
-      console.warn(`[management] Forced bridge restart failed ${failedRuns} active run(s) locally.`);
-    }
-
+    const interruptedRuns = forced ? ctx.sessionManager.getActiveRuns() : [];
     const waitingSessions = ctx.sessionManager.getLifecycleBlockingSessionCount();
     const restartRequest = restartAlreadyPending
       ? null
@@ -2410,10 +2406,17 @@ export function createApiRouter(
       }
     }
 
+    if (forced) {
+      // Resume prompts are queued first so a launcher that cuts over mid-abort cannot lose them.
+      forceRestartCutover();
+      await ctx.sessionManager.abortActiveWork();
+      console.warn(`[management] Forced bridge restart aborted ${interruptedRuns.length} active run(s).`);
+    }
+
     res.status(202).json({
       ok: true,
       waitingSessions,
-      ...(forced ? { forced: true, failedRuns } : {}),
+      ...(forced ? { forced: true, abortedRuns: interruptedRuns.length } : {}),
       ...(resume ? { resumingRuns } : {}),
     });
   });

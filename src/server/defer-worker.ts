@@ -10,6 +10,7 @@ import {
   serializeDeferCheckpoint,
   type DeferCheckpoint,
 } from "./defer-checkpoint.js";
+import { RESTART_PENDING_MESSAGE } from "./restart-controller.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import { selectCheapHelperModel } from "./session-name-generator.js";
 import type { AppSettings } from "./settings-store.js";
@@ -306,8 +307,14 @@ function createDeferResultTool(
 export class DisposableDeferWorker implements DeferWorkerExecutor {
   private readonly maxConcurrentWorkers = 2;
   private activeWorkers = 0;
+  private readonly abortHandlers = new Set<() => void>();
 
   constructor(private readonly deps: DisposableDeferWorkerDeps) {}
+
+  /** Abort in-flight checks; they fail as restart-pending so runners requeue them without an attempt. */
+  abortAll(): void {
+    for (const abort of this.abortHandlers) abort();
+  }
 
   async run(input: DeferWorkerInput): Promise<DeferWorkerResult> {
     const lease = this.tryAcquire();
@@ -384,6 +391,13 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
     let session: AgentSession | undefined;
     let releaseCapacityReservation: (() => void) | undefined;
     let completionError: string | undefined;
+    let aborted = false;
+    const abort = () => {
+      aborted = true;
+      submission.fail(new Error(RESTART_PENDING_MESSAGE));
+      void session?.abort().catch(() => undefined);
+    };
+    this.abortHandlers.add(abort);
 
     try {
       const settings = this.deps.getSettings();
@@ -451,6 +465,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       };
       releaseCapacityReservation = await this.deps.reserveCapacity(sessionConfig);
       session = await this.deps.createSession(sessionConfig);
+      if (aborted) throw new Error(RESTART_PENDING_MESSAGE);
       await session.sendAndWait({
         prompt: buildDeferWorkerPrompt(input),
         attachments: [],
@@ -460,9 +475,10 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      completionError = normalizedError.message;
+      completionError = aborted ? RESTART_PENDING_MESSAGE : normalizedError.message;
       submission.fail(normalizedError);
     } finally {
+      this.abortHandlers.delete(abort);
       const completedAt = Date.now();
       const result = submission.result;
       const spanMetadata: Record<string, unknown> = {

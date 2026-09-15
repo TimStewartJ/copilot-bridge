@@ -447,7 +447,7 @@ describe("ManagementJobsSection", () => {
       (globalThis.window as unknown as { confirm: typeof confirm }).confirm = confirm;
       expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(false);
       await clickButton(harness, "Force restart");
-      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("fails every in-flight run locally"));
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("aborts every in-flight run and defer check"));
       expect(disconnected.restartMutateAsync).toHaveBeenCalledWith({ force: true });
     } finally {
       await harness.cleanup();
