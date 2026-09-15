@@ -189,27 +189,29 @@ export default function SessionContextGraph({
           </ul>
         </details>
       )}
-      <table className="sr-only">
-        <caption>Context usage by turn</caption>
-        <thead>
-          <tr>
-            <th>Turn</th>
-            <th>Usage</th>
-            <th>Tokens</th>
-            <th>Source</th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((point) => (
-            <tr key={`sr-${point.turn.bridgeTurnId}`}>
-              <td>{point.label}</td>
-              <td>{point.percent !== undefined ? formatPercent(point.percent) : "unavailable"}</td>
-              <td>{point.tokens !== undefined ? formatNumber(point.tokens) : "unavailable"}</td>
-              <td>{provenanceLabel(point.event?.provenance?.tokensUsed) ?? "unknown"}</td>
+      <div className="sr-only">
+        <table>
+          <caption>Context usage by turn</caption>
+          <thead>
+            <tr>
+              <th>Turn</th>
+              <th>Usage</th>
+              <th>Tokens</th>
+              <th>Source</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={`sr-${point.turn.bridgeTurnId}`}>
+                <td>{point.label}</td>
+                <td>{point.percent !== undefined ? formatPercent(point.percent) : "unavailable"}</td>
+                <td>{point.tokens !== undefined ? formatNumber(point.tokens) : "unavailable"}</td>
+                <td>{provenanceLabel(point.event?.provenance?.tokensUsed) ?? "unknown"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

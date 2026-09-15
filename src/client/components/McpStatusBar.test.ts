@@ -34,6 +34,9 @@ describe("McpStatusBar status ownership", () => {
       const status = findAllByTag(harness.dom.container, "P")
         .find((element) => getReactProps(element)?.role === "status");
       expect(status?.textContent).toContain("Loading servers");
+      const panel = findAllByTag(harness.dom.container, "DIV")
+        .find((element) => getReactProps(element)?.className?.includes("w-full max-w-3xl"));
+      expect(panel).toBeDefined();
     } finally {
       await harness.cleanup();
     }
