@@ -674,9 +674,10 @@ export async function triggerSchedule(
       throw linkErr;
     }
 
-    // Fire the prompt
+    // Keep both claims until the runtime accepts delivery, not merely the local
+    // launch. Initialization failures must leave this scheduled slot retryable.
     try {
-      sessionMgr.startWork(sessionId, schedule.prompt);
+      await sessionMgr.startWorkAndWaitForDelivery(sessionId, schedule.prompt);
     } catch (err) {
       const cleanupErrors: string[] = [];
       let unlinkedCreatedSession = false;

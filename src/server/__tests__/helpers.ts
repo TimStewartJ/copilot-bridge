@@ -280,6 +280,8 @@ export function createMockSessionManager() {
     }),
     getSessionModelState: async () => ({ source: "unknown" as const }),
     getMcpStatus: async () => [],
+    getCachedMcpStatus: () => [],
+    getSessionToolReadiness: () => undefined,
     loginMcpServer: async (_sessionId: string, serverName: string) => ({
       serverName,
       authorizationUrl: "https://login.example.test",

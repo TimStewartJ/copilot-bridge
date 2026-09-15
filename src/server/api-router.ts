@@ -3637,17 +3637,26 @@ export function createApiRouter(
     }
   });
 
-  // GET /sessions/:id/mcp-status — get MCP server connection status for a session
+  // Connection observations and tool initialization readiness are independent signals.
   router.get("/sessions/:id/mcp-status", async (req, res) => {
+    const sessionId = req.params.id;
+    const respondWithReadiness = () => {
+      const toolReadiness = ctx.sessionManager.getSessionToolReadiness(sessionId);
+      if (!toolReadiness || toolReadiness.state === "ready") return false;
+      res.json({ servers: ctx.sessionManager.getCachedMcpStatus(sessionId), toolReadiness });
+      return true;
+    };
     try {
+      if (respondWithReadiness()) return;
       const servers = await timeRequestOperation(
         res,
         "sessions.mcpStatus",
-        () => ctx.sessionManager.getMcpStatus(req.params.id),
-        { sessionId: req.params.id },
+        () => ctx.sessionManager.getMcpStatus(sessionId),
+        { sessionId },
       );
-      res.json({ servers });
+      res.json({ servers, toolReadiness: ctx.sessionManager.getSessionToolReadiness(sessionId) ?? null });
     } catch (err) {
+      if (respondWithReadiness()) return;
       res.status(500).json({ error: String(err) });
     }
   });

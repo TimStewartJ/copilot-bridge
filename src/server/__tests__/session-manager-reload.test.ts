@@ -70,7 +70,7 @@ describe("SessionManager reloadSession", () => {
         mcpServers: { demo: { command: "echo", args: ["hi"] } },
       }),
     );
-    expect(servers).toEqual([{ name: "demo", status: "connected", source: "settings" }]);
+    expect(servers).toEqual([expect.objectContaining({ name: "demo", status: "connected", source: "settings", provenance: "probe", observedAt: expect.any(String) })]);
     expect(resumedSession.listMcpServers).toHaveBeenCalledTimes(1);
     expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
     expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
@@ -462,7 +462,7 @@ describe("SessionManager reloadSession", () => {
     expect(result).toEqual({
       serverName: "demo",
       authorizationUrl: "https://login.example.test",
-      servers: [{ name: "demo", status: "needs-auth", source: "settings" }],
+      servers: [expect.objectContaining({ name: "demo", status: "needs-auth", source: "settings", provenance: "probe", sessionId: "session-auth" })],
     });
     expect(list).toHaveBeenCalledTimes(1);
     expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
@@ -494,7 +494,7 @@ describe("SessionManager reloadSession", () => {
     expect(login).toHaveBeenCalledWith(expect.objectContaining({ serverName: "demo" }));
     expect(result).toEqual({
       serverName: "demo",
-      servers: [{ name: "demo", status: "pending", source: "settings" }],
+      servers: [expect.objectContaining({ name: "demo", status: "pending", source: "settings", provenance: "probe", sessionId: "session-auth-cold" })],
     });
     expect(list).toHaveBeenCalledTimes(1);
     expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);

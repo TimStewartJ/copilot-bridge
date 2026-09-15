@@ -48,6 +48,7 @@ vi.mock("../api", async (importOriginal) => {
     fetchMessagesFast: (...args: unknown[]) => fetchMessagesFastMock(...args),
     searchBridge: (...args: unknown[]) => searchBridgeMock(...args),
     fetchMcpStatus: (...args: unknown[]) => fetchMcpStatusMock(...args),
+    fetchMcpStatusSnapshot: async (...args: unknown[]) => ({ servers: await fetchMcpStatusMock(...args), toolReadiness: null }),
     fetchSessionContext: (...args: unknown[]) => fetchSessionContextMock(...args),
     warmSession: (...args: unknown[]) => warmSessionMock(...args),
     reportTiming: (...args: unknown[]) => reportTimingMock(...args),

@@ -6,6 +6,7 @@ import {
   isLocalMcpServerConfig,
 } from "../../../mcp-config";
 import { ConfigCard } from "./ConfigCard";
+import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel } from "../mcp-status-display";
 import {
   summarizeMcpServerConfig,
   summarizeMcpServerExecution,
@@ -37,7 +38,7 @@ export function ServerCard({
     switch (st) {
       case "connected":
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
+          <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5" title={MCP_CONNECTION_GUIDANCE}>
             <CheckCircle2 size={10} /> connected
           </span>
         );
@@ -83,6 +84,8 @@ export function ServerCard({
       onRemove={onRemove}
       removeTitle="Remove"
     >
+      {status && <p className="mt-1 text-[11px] text-text-muted">{mcpObservationLabel(status)}</p>}
+      {st === "connected" && <p className="mt-1 text-[11px] text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>}
       {st === "failed" && status?.error && (
         <div className="mt-1 text-[11px] text-error bg-error/5 px-2 py-1 rounded">
           {status.error}

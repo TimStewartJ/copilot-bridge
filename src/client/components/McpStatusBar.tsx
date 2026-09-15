@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import type { ChatEntry, McpLoginResponse, McpServerStatus } from "../api";
+import type { ChatEntry, McpLoginResponse, McpServerStatus, SessionToolReadinessSnapshot } from "../api";
 import type { SessionContextResponse, SessionContextSummary } from "../../shared/session-context.js";
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, Plug, XCircle } from "lucide-react";
 import { buildChatTurnPreviews, summarizeContext } from "./SessionContextHelpers";
 import SessionContextPanel from "./SessionContextPanel";
+import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, recentToolFailures } from "./mcp-status-display";
 
 interface McpStatusBarProps {
   chatEntries?: ChatEntry[];
@@ -16,6 +17,7 @@ interface McpStatusBarProps {
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
   servers: McpServerStatus[];
+  toolReadiness?: SessionToolReadinessSnapshot;
   statusError?: string;
   statusState: "loading" | "ready" | "error" | "stale";
 }
@@ -61,6 +63,7 @@ export default function McpStatusBar({
   onAuthenticate,
   onRefresh,
   servers,
+  toolReadiness,
   statusError,
   statusState,
 }: McpStatusBarProps) {
@@ -69,15 +72,16 @@ export default function McpStatusBar({
   const [authErrors, setAuthErrors] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState(false);
   const previews = useMemo(() => buildChatTurnPreviews(chatEntries), [chatEntries]);
+  const toolFailures = useMemo(() => recentToolFailures(chatEntries), [chatEntries]);
 
   const summary = context?.summary || liveContextSummary
     ? ({ ...(context?.summary ?? {}), ...(liveContextSummary ?? {}) } as SessionContextSummary)
     : null;
   const capabilities = context?.capabilities;
   const hasContextSignal = Boolean(contextLoading || contextError || summary || (context?.turns?.length ?? 0) > 0 || (context?.events?.length ?? 0) > 0);
-  const hasMcpSignal = statusState !== "ready" || servers.length > 0;
+  const hasMcpSignal = statusState !== "ready" || servers.length > 0 || Boolean(toolReadiness);
   const hasSessionCostSignal = Boolean(sessionCostLoading || sessionCostUsd !== undefined);
-  if (!hasMcpSignal && !hasContextSignal && !hasSessionCostSignal) return null;
+  if (!hasMcpSignal && !hasContextSignal && !hasSessionCostSignal && !toolFailures.length) return null;
 
   const connected = servers.filter((s) => s.status === "connected").length;
   const needsAuth = servers.filter((s) => s.status === "needs-auth").length;
@@ -89,7 +93,7 @@ export default function McpStatusBar({
   const statusSummary = statusState === "loading"
     ? "MCP loading"
     : statusState === "error"
-      ? "MCP unavailable"
+      ? "MCP status unavailable"
       : `MCP ${connected}/${servers.length}`;
 
   const startAuth = async (serverName: string, forceReauth = false) => {
@@ -138,6 +142,8 @@ export default function McpStatusBar({
               {statusState === "stale" && <span className="text-warning ml-1">stale</span>}
             </span>
           </span>}
+          {toolReadiness?.state === "initializing" && <span role="status">Tools initializing...</span>}
+          {toolReadiness?.state === "failed" && <span className="text-warning">Tool initialization failed</span>}
           {hasProblem && (
             <span className={`flex items-center gap-0.5 ${failed > 0 ? "text-error" : "text-warning"}`}>
               <AlertTriangle size={10} />
@@ -178,11 +184,33 @@ export default function McpStatusBar({
               summary={summary}
             />
           )}
-          {hasMcpSignal && <details key={hasProblem || statusState !== "ready" ? "attention" : "healthy"} open={hasProblem || statusState !== "ready"} className="rounded-lg border border-border px-3 py-2">
+          {toolFailures.length > 0 && (
+            <details open className="rounded-lg border border-border px-3 py-2">
+              <summary className="cursor-pointer text-xs font-medium text-warning">Recent tool failures</summary>
+              <div className="pt-2 space-y-2 text-xs text-text-muted">
+                {toolFailures.map(({ name, failure }) => (
+                  <p key={name}><span className="font-medium text-text-primary">{name}: {failure.category}</span><br />{failure.guidance}</p>
+                ))}
+              </div>
+            </details>
+          )}
+          {hasMcpSignal && <details key={hasProblem || statusState !== "ready" || (toolReadiness && toolReadiness.state !== "ready") ? "attention" : "healthy"} open={hasProblem || statusState !== "ready" || Boolean(toolReadiness && toolReadiness.state !== "ready")} className="rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer text-xs font-medium text-text-primary">
               MCP servers <span className="ml-1 font-normal text-text-muted">{connected}/{servers.length} connected</span>
             </summary>
             <div className="pt-2">
+            <p className="mb-2 text-xs text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>
+            {toolReadiness && (
+              <div className="mb-2 text-xs text-text-muted" role={toolReadiness.state === "failed" ? "alert" : "status"}>
+                <p>{toolReadiness.state === "initializing"
+                  ? "Tool initialization is in progress. Discovery can take several minutes."
+                  : toolReadiness.state === "failed"
+                    ? "Tool initialization failed. Check the initialization error before retrying."
+                    : "Tool initialization completed. This does not prove every capability or resource permission is available."}</p>
+                <p>Started: {toolReadiness.startedAt}{toolReadiness.completedAt ? `, completed: ${toolReadiness.completedAt}` : ""}</p>
+                {toolReadiness.error && <p className="break-words text-error">{toolReadiness.error}</p>}
+              </div>
+            )}
             {statusState === "loading" ? (
               <p className="flex items-center gap-1.5 text-xs text-text-muted" role="status">
                 <Loader2 size={12} className="animate-spin" />
@@ -209,7 +237,8 @@ export default function McpStatusBar({
                   <div key={server.name} className="flex flex-wrap items-center gap-2 text-xs py-0.5">
                     <StatusIcon status={server.status} />
                     <span className="font-medium text-text-primary">{server.name}</span>
-                    <span className="text-text-muted">{statusLabel(server.status)}</span>
+                    <span className="text-text-muted" title={MCP_CONNECTION_GUIDANCE}>{statusLabel(server.status)}</span>
+                    <span className="basis-full pl-5 text-text-faint">{mcpObservationLabel(server)}</span>
                     {server.status === "needs-auth" && onAuthenticate && (
                       <>
                         <button
@@ -257,7 +286,7 @@ export default function McpStatusBar({
                 ))}
               </div>
             ) : statusState === "ready" ? (
-              <p className="text-xs text-text-muted">No servers</p>
+              <p className="text-xs text-text-muted">No MCP connection observations. This does not establish tool capability readiness.</p>
             ) : null}
             </div>
           </details>}
