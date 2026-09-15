@@ -137,6 +137,30 @@ describe("SessionManager graceful shutdown", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts active runs and defer checks for a forced restart without stopping the backend", async () => {
+    const session = makeSession();
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const manager = createManager() as any;
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+      stop,
+    };
+    const abortDeferChecks = vi.spyOn(manager.deferWorker, "abortAll");
+
+    manager.startWork("session-1", "hello");
+    await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
+    expect(manager.getActiveRuns()).toEqual([
+      expect.objectContaining({ sessionId: "session-1", attentionMode: "normal" }),
+    ]);
+
+    await manager.abortActiveWork();
+
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(abortDeferChecks).toHaveBeenCalledOnce();
+    expect(manager.getActiveSessions()).toEqual([]);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
   it("bounds a hung backend stop and forces stop without blocking shutdown", async () => {
     vi.useFakeTimers();
     try {

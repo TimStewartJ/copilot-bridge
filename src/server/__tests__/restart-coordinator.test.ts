@@ -75,6 +75,16 @@ describe("waitForIdleSessions", () => {
     expect(log).toHaveBeenCalledWith("All 2 session(s) are stuck (no events for 5s+) — proceeding with restart");
   });
 
+  it("proceeds without waiting when an operator forced the restart", async () => {
+    const { deps, fetchBusy, log } = createDeps([
+      { busy: true, count: 2, sessions: [], backgroundOperations: 2, restartForced: true },
+    ]);
+
+    await expect(waitForIdleSessions(deps)).resolves.toBe(true);
+    expect(fetchBusy).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("Restart forced — proceeding without waiting for 2 active operation(s)");
+  });
+
   it("does not use the stale-session shortcut while background work is active", async () => {
     const { deps, fetchBusy, log } = createDeps([
       {

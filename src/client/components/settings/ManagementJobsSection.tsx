@@ -218,14 +218,8 @@ export function ManagementJobsSection() {
     setActionError(null);
     setActionMessage(null);
     try {
-      const forceRestart = restartMutation.mutateAsync as unknown as (options: { force: true }) => Promise<{ forced?: boolean; failedRuns?: number }>;
-      const result = await forceRestart({ force: true });
-      const failedRuns = typeof result.failedRuns === "number" ? result.failedRuns : null;
-      setActionMessage(
-        failedRuns === null
-          ? "Force restart requested. In-flight runs were failed locally."
-          : `Force restart requested. ${failedRuns} in-flight run${failedRuns === 1 ? "" : "s"} failed locally.`,
-      );
+      const { abortedRuns = 0 } = await restartMutation.mutateAsync({ force: true });
+      setActionMessage(`Force restart requested. ${abortedRuns} in-flight run${abortedRuns === 1 ? "" : "s"} aborted.`);
       void runtimeQuery.refetch();
       void restartStatusQuery.refetch();
     } catch (error) {
@@ -1503,7 +1497,7 @@ function buildForceRestartConfirmation(runtime: RuntimeStatusWithAgentBackend | 
   const stalled = runtime?.sessions.stalled ?? 0;
   return `Force restart Bridge now?
 
-This fails every in-flight run locally before restarting the Bridge. Backend state: ${backendState}. Current sessions: ${active} active, ${stalled} stalled.`;
+This aborts every in-flight run and defer check, then restarts the Bridge without waiting for sessions. Backend state: ${backendState}. Current sessions: ${active} active, ${stalled} stalled.`;
 }
 
 function jobTypeLabel(type: ManagementJobType): string {

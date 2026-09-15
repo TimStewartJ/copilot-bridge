@@ -6,6 +6,8 @@ import { createTestApp } from "../test-support/api-routes.js";
 import {
   beginRestartPending,
   forceClearRestartPending,
+  isRestartCutoverInProgress,
+  isRestartForced,
   refreshRestartState,
 } from "../server/restart-controller.js";
 import { parseRestartSignalContent } from "../server/restart-signal.js";
@@ -17,16 +19,15 @@ afterEach(async () => {
 });
 
 describe("api router server management reliability", () => {
-  it("fails active runs before queueing a forced restart", async () => {
+  it("forces cutover before aborting active work for a forced restart", async () => {
     const { app, ctx } = createTestApp();
-    let lifecycleBlockingCount = 2;
-    ctx.sessionManager.getLifecycleBlockingSessionCount = vi.fn(() => lifecycleBlockingCount);
-    ctx.sessionManager.failAllActiveRuns = vi.fn(() => {
-      lifecycleBlockingCount = 0;
-      return [
-        { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
-        { sessionId: "session-b", promptAccepted: false, attentionMode: "quiet" as const },
-      ];
+    ctx.sessionManager.getLifecycleBlockingSessionCount = vi.fn(() => 2);
+    ctx.sessionManager.getActiveRuns = vi.fn(() => [
+      { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
+      { sessionId: "session-b", promptAccepted: false, attentionMode: "quiet" as const },
+    ]);
+    ctx.sessionManager.abortActiveWork = vi.fn(async () => {
+      expect(isRestartCutoverInProgress()).toBe(true);
     });
 
     const response = await request(app)
@@ -34,26 +35,31 @@ describe("api router server management reliability", () => {
       .send({ force: true });
 
     expect(response.status).toBe(202);
-    expect(ctx.sessionManager.failAllActiveRuns).toHaveBeenCalledWith("Bridge restart forced by operator");
+    expect(ctx.sessionManager.abortActiveWork).toHaveBeenCalledOnce();
     expect(response.body).toEqual({
       ok: true,
-      waitingSessions: 0,
+      waitingSessions: 2,
       forced: true,
-      failedRuns: 2,
+      abortedRuns: 2,
     });
+    expect((await request(app).get("/api/busy")).body).toMatchObject({ restartForced: true });
+    expect((await request(app).get("/api/restart-status")).body).toMatchObject({ canAcceptNewWork: false });
+
+    forceClearRestartPending();
+    expect(isRestartForced()).toBe(false);
+    expect(isRestartCutoverInProgress()).toBe(false);
   });
 
-  it("does not fail active runs for a normal restart", async () => {
+  it("does not abort active work for a normal restart", async () => {
     const { app, ctx } = createTestApp();
     ctx.sessionManager.getLifecycleBlockingSessionCount = vi.fn(() => 2);
-    ctx.sessionManager.failAllActiveRuns = vi.fn(() => [
-      { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
-    ]);
+    ctx.sessionManager.abortActiveWork = vi.fn(async () => {});
 
     const response = await request(app).post("/api/server/restart");
 
     expect(response.status).toBe(202);
-    expect(ctx.sessionManager.failAllActiveRuns).not.toHaveBeenCalled();
+    expect(ctx.sessionManager.abortActiveWork).not.toHaveBeenCalled();
+    expect(isRestartForced()).toBe(false);
     expect(response.body).toEqual({ ok: true, waitingSessions: 2 });
     expect(parseRestartSignalContent(
       readFileSync(join(ctx.runtimePaths!.dataDir, "restart.signal"), "utf8"),
@@ -64,17 +70,16 @@ describe("api router server management reliability", () => {
     });
   });
 
-  it("aborts a pending restart's interactive runs and queues durable resume prompts", async () => {
+  it("queues durable resume prompts before aborting a pending restart's runs", async () => {
     const { app, ctx } = createTestApp();
-    let lifecycleBlockingCount = 2;
-    ctx.sessionManager.getLifecycleBlockingSessionCount = vi.fn(() => lifecycleBlockingCount);
-    ctx.sessionManager.failAllActiveRuns = vi.fn(() => {
-      lifecycleBlockingCount = 0;
-      return [
-        { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
-        { sessionId: "session-b", promptAccepted: true, attentionMode: "quiet" as const },
-        { sessionId: "session-c", promptAccepted: false, attentionMode: "normal" as const },
-      ];
+    ctx.sessionManager.getLifecycleBlockingSessionCount = vi.fn(() => 3);
+    ctx.sessionManager.getActiveRuns = vi.fn(() => [
+      { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
+      { sessionId: "session-b", promptAccepted: true, attentionMode: "quiet" as const },
+      { sessionId: "session-c", promptAccepted: false, attentionMode: "normal" as const },
+    ]);
+    ctx.sessionManager.abortActiveWork = vi.fn(async () => {
+      expect(ctx.deferredPromptStore?.listForSession("session-a")).toHaveLength(1);
     });
     beginRestartPending();
 
@@ -83,11 +88,12 @@ describe("api router server management reliability", () => {
       .send({ force: true, resume: true });
 
     expect(response.status).toBe(202);
+    expect(ctx.sessionManager.abortActiveWork).toHaveBeenCalledOnce();
     expect(response.body).toEqual({
       ok: true,
-      waitingSessions: 0,
+      waitingSessions: 3,
       forced: true,
-      failedRuns: 3,
+      abortedRuns: 3,
       resumingRuns: 1,
     });
     expect(ctx.deferredPromptStore?.listForSession("session-a")).toEqual([
