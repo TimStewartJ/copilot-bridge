@@ -106,6 +106,16 @@ describe("Context history", () => {
     expect(harness.dom.container.textContent).toContain("unavailable");
   });
 
+  it("clips the accessible table and its caption inside a non-table wrapper", async () => {
+    const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    await harness.render(createElement(SessionContextGraph, fixture([])));
+    const wrapper = findAllByTag(harness.dom.container, "DIV").find((node) => getReactProps(node)?.className === "sr-only");
+    expect(wrapper).toBeDefined();
+    expect(findAllByTag(wrapper!, "TABLE")).toHaveLength(1);
+    expect(findAllByTag(wrapper!, "CAPTION")[0].textContent).toBe("Context usage by turn");
+    expect(getReactProps(findAllByTag(wrapper!, "TABLE")[0])?.className).toBeUndefined();
+  });
+
   it("uses a percent axis if only ratios are reported", async () => {
     const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     const props = fixture([null]);
