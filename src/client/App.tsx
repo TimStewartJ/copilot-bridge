@@ -1588,7 +1588,8 @@ export default function App() {
       const result = await reloadSession(sessionId);
       const mcpStatusQueryKey = queryKeys.mcpStatus(sessionId);
       await queryClient.cancelQueries({ queryKey: mcpStatusQueryKey, exact: true });
-      queryClient.setQueryData(mcpStatusQueryKey, result.servers);
+      queryClient.setQueryData(mcpStatusQueryKey, { servers: result.servers });
+      void queryClient.invalidateQueries({ queryKey: mcpStatusQueryKey, exact: true });
       setSessionReloadSignals((prev) => ({
         ...prev,
         [sessionId]: (prev[sessionId] ?? 0) + 1,

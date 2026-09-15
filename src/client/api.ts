@@ -3427,6 +3427,9 @@ export interface McpServerStatus {
   status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "not_configured" | "unknown";
   error?: string;
   source?: string;
+  observedAt?: string;
+  provenance?: "live-event" | "replay-event" | "probe";
+  sessionId?: string;
 }
 export interface McpLoginResponse {
   serverName: string;
@@ -3435,16 +3438,34 @@ export interface McpLoginResponse {
 }
 
 
-export async function fetchMcpStatus(
+export interface SessionToolReadinessSnapshot {
+  state: "initializing" | "ready" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface McpStatusResponse {
+  servers: McpServerStatus[];
+  toolReadiness?: SessionToolReadinessSnapshot | null;
+}
+
+export async function fetchMcpStatusSnapshot(
   sessionId: string,
   options: { signal?: AbortSignal } = {},
-): Promise<McpServerStatus[]> {
-  const result = await apiFetch<{ servers: McpServerStatus[] }>(
+): Promise<McpStatusResponse> {
+  return apiFetch<McpStatusResponse>(
     `/api/sessions/${sessionId}/mcp-status`,
     undefined,
     options,
   );
-  return result.servers;
+}
+
+export async function fetchMcpStatus(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<McpServerStatus[]> {
+  return (await fetchMcpStatusSnapshot(sessionId, options)).servers;
 }
 export async function loginMcpServer(
   sessionId: string,

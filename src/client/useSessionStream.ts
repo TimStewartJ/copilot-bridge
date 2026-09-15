@@ -188,6 +188,10 @@ function normalizeMcpServerStatuses(value: unknown): McpServerStatus[] {
       status,
       ...(typeof entry.error === "string" ? { error: entry.error } : {}),
       ...(typeof entry.source === "string" ? { source: entry.source } : {}),
+      ...(typeof entry.observedAt === "string" ? { observedAt: entry.observedAt } : {}),
+      ...(entry.provenance === "live-event" || entry.provenance === "replay-event" || entry.provenance === "probe"
+        ? { provenance: entry.provenance } : {}),
+      ...(typeof entry.sessionId === "string" ? { sessionId: entry.sessionId } : {}),
     }];
   });
 }
