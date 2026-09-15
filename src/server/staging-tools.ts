@@ -1352,7 +1352,7 @@ async function runStagingDeployJobImpl(
     );
   }
 
-  if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
+  if (!options.deferDeployRestart && isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
     return stagingRestartPendingFailure(stagingDir);
   }
 

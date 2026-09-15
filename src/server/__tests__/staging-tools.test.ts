@@ -1303,7 +1303,9 @@ describe("staging tools", () => {
     const stagingDir = join(createTempDir("bridge-stage-parent-"), "preview-deploy");
     mkdirSync(stagingDir, { recursive: true });
     writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
-    mockDataFilePresence();
+    // A deploy-batch update must continue while the launcher waits for the
+    // existing restart to reach cutover.
+    mockDataFilePresence({ restartInProgress: true });
 
     execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
       const cwd = options?.cwd;
