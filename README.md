@@ -224,9 +224,10 @@ npm test              # full Vitest regression suite
 npm run check:fast    # x-plat audit + client/server type-checking
 npm run check:client  # client type-check + client lane
 npm run check:server  # server type-check + server/shared lane
-npm run check:integration # type-check + API, workflow, persistence/lifecycle, and native-platform integration tests
+npm run check:integration # type-check + API, workflow, persistence/lifecycle, and native process tests
 npm run check:launcher # server type-check + launcher lane
-npm run check:staging # server type-check + staging tooling lane
+npm run check:staging # server type-check + staging tooling lane + native process tests
+npm run check:native  # server type-check + native process tests only
 npm run check:pr      # fast gate + all lanes + full build
 npm run check:deploy  # PR gate + preview smoke
 npm run test:slow-report # full Vitest pass + top slowest files
@@ -257,6 +258,9 @@ call IDs are available on usage events, not cache-break events.
 - Do not hardcode Unix-only fixtures like `/tmp/...` or `/usr/bin/...` in tests.
 - Do not skip Windows with `skipIf(isWindows)` when the behavior can be tested with mocks instead.
 - Prefer mocking failure paths over Unix-only filesystem tricks like `chmod`.
+- Name a test `*.native.test.ts` when it drives real OS process trees (PowerShell/CIM snapshots, `taskkill`, staged backend children, the Copilot CLI). Only the `native` project runs those; on Windows it runs one file at a time after the parallel projects finish.
+- Wait for a completion signal (a returned promise, a settle hook, or a lifecycle callback) instead of polling for background work. When polling is unavoidable, `vi.waitFor` has a shared 20s hang-guard budget; do not tighten it for real I/O.
+- Tests never see the live Bridge runtime environment: the shared Vitest config strips inherited `BRIDGE_*`, `COPILOT_*`, and GitHub token variables, so stub what a test needs with `vi.stubEnv()` or `withTestEnv()`.
 - Run `npm run check:pr` before preview/deploy; `staging_preview` also runs validation automatically. `preview:smoke` checks the staged preview/backend without re-running validation by default; use `npm run preview:smoke:full` to validate and smoke in one command.
 
 ### Build

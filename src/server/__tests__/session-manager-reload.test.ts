@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, makeAgentSessionStub } from "./helpers.js";
+import { setupTestDb, createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 
@@ -32,6 +32,10 @@ describe("SessionManager reloadSession", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("evicts only the requested cached session and resumes it with fresh config", async () => {
@@ -105,6 +109,7 @@ describe("SessionManager reloadSession", () => {
   });
 
   it("waits for the old native session to disconnect before resuming the same ID", async () => {
+    freezeLifecycleDeadlines();
     const manager = createManager();
     let finishDisconnect!: () => void;
     const disconnectGate = new Promise<void>((resolve) => {

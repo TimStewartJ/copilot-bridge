@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage } from "../api";
 import {
+  COMPONENT_IMPORT_WARMUP_TIMEOUT_MS,
   createReactDomHarness,
   findAllByTag,
   getReactProps,
@@ -24,7 +25,7 @@ beforeAll(async () => {
   } finally {
     await harness.cleanup();
   }
-});
+}, COMPONENT_IMPORT_WARMUP_TIMEOUT_MS);
 
 beforeEach(() => {
   apiMocks.fetchWorkReferencePreview.mockReset();

@@ -10,6 +10,13 @@ type CreateReactDomHarnessOptions = {
 };
 
 const DEFAULT_WAIT_MAX_FLUSHES = 100;
+/**
+ * Budget for a beforeAll hook that imports a component graph after installing
+ * the DOM shim. Static imports are collected without any timeout, but a
+ * dynamic import in a hook gets the shared hook budget, which a large graph can
+ * exceed while one worker per core competes for the transform pipeline.
+ */
+export const COMPONENT_IMPORT_WARMUP_TIMEOUT_MS = 120_000;
 type HarnessCleanup = () => Promise<void>;
 const activeHarnessCleanups = new Set<HarnessCleanup>();
 

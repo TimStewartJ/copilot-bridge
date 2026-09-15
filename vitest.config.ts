@@ -9,6 +9,7 @@ export default defineConfig({
       "./vitest.integration.config.ts",
       "./vitest.launcher.config.ts",
       "./vitest.staging.config.ts",
+      "./vitest.native.config.ts",
     ],
     coverage: {
       provider: "v8",

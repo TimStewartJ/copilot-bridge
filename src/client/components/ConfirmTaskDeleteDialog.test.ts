@@ -1,7 +1,12 @@
 import { createElement } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Task, TaskDeletionPreview } from "../api";
-import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
+import {
+  COMPONENT_IMPORT_WARMUP_TIMEOUT_MS,
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+} from "../test-react-harness";
 
 let ConfirmTaskDeleteDialog: typeof import("./ConfirmTaskDeleteDialog").default;
 
@@ -12,7 +17,7 @@ beforeAll(async () => {
   } finally {
     await harness.cleanup();
   }
-});
+}, COMPONENT_IMPORT_WARMUP_TIMEOUT_MS);
 
 const task = {
   id: "task-1",

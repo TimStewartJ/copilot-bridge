@@ -873,7 +873,7 @@ describe("scheduler restart gating", () => {
 
     expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-3", "run once");
     unsubscribe();
-  }, 20_000);
+  });
 
   it("releases an automatic claim if creating the session fails before launch", async () => {
     const { ctx } = createTestApp();

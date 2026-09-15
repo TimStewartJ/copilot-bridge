@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionManager } from "../session-manager.js";
 import {
@@ -9,7 +9,7 @@ import {
 } from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus, makeAgentSessionStub } from "./helpers.js";
+import { setupTestDb, createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub } from "./helpers.js";
 
 type EmitSdkEvent = (event: any) => void;
 
@@ -65,6 +65,10 @@ function createSession(sendImpl: (emit: EmitSdkEvent) => Promise<void> | void) {
 describe("SessionManager stale cached session recovery", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("normalizes unknown MCP status values on full and incremental SDK events", () => {
@@ -189,6 +193,7 @@ describe("SessionManager stale cached session recovery", () => {
   });
 
   it("does not let an in-flight explicit status request overwrite a pushed snapshot", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     let resolveProbe!: (value: { servers: Array<{ name: string; status: string }> }) => void;
     const session = makeAgentSessionStub({
@@ -400,6 +405,7 @@ describe("SessionManager stale cached session recovery", () => {
   });
 
   it("waits for stale wrapper cleanup before resuming the same session ID", async () => {
+    freezeLifecycleDeadlines();
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
     let releaseDisconnect!: () => void;
@@ -430,6 +436,7 @@ describe("SessionManager stale cached session recovery", () => {
   });
 
   it("blocks concurrent same-ID resume admission until stale cleanup finishes", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     let releaseDisconnect!: () => void;
     const cachedSession = createSession(() => {});

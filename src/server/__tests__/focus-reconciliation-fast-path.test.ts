@@ -24,7 +24,9 @@ function changes() { return db.prepare("SELECT total_changes() AS count").get()?
 
 describe("legacy projection reconciliation watermarks", () => {
   it("backfills once, then skips rich hydration and all writes after reconstructing the data layer", () => {
-    const count = 600;
+    // Larger than every 100-row Focus page and summary limit. Reconciliation has
+    // no batch cap, so more rows only add synchronous CPU time under load.
+    const count = 150;
     for (let index = 0; index < count; index++) insertLegacy(crypto.randomUUID(), `legacy:${index}`);
     const first = setup();
     expect(first.mutations.reconcileLegacyFeed()).toEqual({ imported: count, deleted: 0, quarantined: 0 });

@@ -1,5 +1,5 @@
 import { defineProject } from "vitest/config";
-import { sharedTestConfig } from "./vitest.shared.js";
+import { NATIVE_TEST_FILES, sharedTestConfig } from "./vitest.shared.js";
 
 export default defineProject({
   test: {
@@ -10,8 +10,8 @@ export default defineProject({
       "src/shared/**/*.test.ts",
     ],
     exclude: [
+      NATIVE_TEST_FILES,
       "src/server/__tests__/pre-deploy-checkpoint.test.ts",
-      "src/server/__tests__/staging-preview-backend.test.ts",
       "src/server/__tests__/staging-tools.test.ts",
     ],
     // Use threads pool instead of forks. Forks-on-Windows + node:sqlite +

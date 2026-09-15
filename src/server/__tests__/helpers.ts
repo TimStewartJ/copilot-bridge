@@ -421,3 +421,16 @@ export async function advanceTimersAndSettle(
   await vi.advanceTimersByTimeAsync(ms);
   await settle();
 }
+
+/**
+ * Session lifecycle deadlines run on setTimeout and Date.now(): release is
+ * bounded to 5s before a lease is quarantined (reported as a reconnecting
+ * backend), fencing is due after 60s, capacity waits and detail RPCs have their
+ * own bounds. A test that holds one of those operations open and then asserts
+ * on manager state fakes only these clocks, so a starved worker cannot expire a
+ * deadline between arranging a state and asserting it. Microtasks and
+ * setImmediate stay real. Pair with `afterEach(() => vi.useRealTimers())`.
+ */
+export function freezeLifecycleDeadlines(): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+}

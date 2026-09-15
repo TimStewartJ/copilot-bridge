@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -18,6 +18,11 @@ vi.mock("../api", () => ({
   fetchSessionAgents: (sessionId: string) => fetchSessionAgents(sessionId),
   cancelSessionAgent: (sessionId: string, agentId: string) => cancelSessionAgent(sessionId, agentId),
 }));
+
+beforeEach(() => {
+  fetchSessionAgents.mockReset();
+  cancelSessionAgent.mockReset();
+});
 
 function liveSummary(partial: Partial<BackgroundAgentsSummary> = {}): BackgroundAgentsSummary {
   return { running: 1, idle: 0, failed: 0, total: 1, source: "live", ...partial };

@@ -248,7 +248,7 @@ describe("staging preview backend child process", () => {
           expect(initial.status).toBe(200);
           expect(initial.body.index.state).toBe("idle");
           expect(initial.body.totals.inputTokens).toBe(5);
-        }, { timeout: 5_000 });
+        });
 
         expect(ctx.copilotUsageStore.getLastCompletedAt()).toEqual(expect.any(String));
         expect(db.prepare("SELECT COUNT(*) AS count FROM copilot_usage_sessions").get())
@@ -265,7 +265,7 @@ describe("staging preview backend child process", () => {
           expect(completed.status).toBe(200);
           expect(completed.body.index.state).toBe("idle");
           expect(completed.body.totals.inputTokens).toBe(20);
-        }, { timeout: 5_000 });
+        });
       } finally {
         await ctx.copilotUsageReader?.shutdown();
         await ctx.sessionManager.gracefulShutdown();

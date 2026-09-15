@@ -500,6 +500,11 @@ type LoadStagingToolsOptions = {
 async function loadStagingToolsModule(options: LoadStagingToolsOptions = {}) {
   vi.resetModules();
   vi.stubEnv("BRIDGE_STAGING_PREVIEW_DIR", options.previewParent ?? createTempDir("bridge-stage-preview-root-"));
+  // staging_preview seeds from PRODUCTION_DATA_DIR when no seeder is injected.
+  // Pin it to an empty temp dir so no test can snapshot a real bridge.db.
+  const productionDataDir = join(createTempDir("bridge-stage-production-"), "data");
+  mkdirSync(productionDataDir, { recursive: true });
+  vi.stubEnv("BRIDGE_DATA_DIR", productionDataDir);
   return import("../staging-tools.js");
 }
 
