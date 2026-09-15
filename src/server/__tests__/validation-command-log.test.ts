@@ -235,6 +235,10 @@ describe("validation-command-log retention", () => {
     expect(written.path).toBeDefined();
     await vi.waitFor(() => expect(existsSync(ancient)).toBe(false));
     expect(existsSync(written.path as string)).toBe(true);
+    // The ancient log disappears mid-sweep, before the temp capture dir is
+    // pruned and the throttle is recorded. Join the in-flight sweep so the
+    // throttle assertion observes a completed run instead of racing it.
+    await scheduleValidationCommandLogSweep(logDir);
     await expect(scheduleValidationCommandLogSweep(logDir)).resolves.toBeNull();
   });
 

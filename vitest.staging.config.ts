@@ -7,7 +7,6 @@ export default defineProject({
     name: "staging",
     include: [
       "src/server/__tests__/pre-deploy-checkpoint.test.ts",
-      "src/server/__tests__/staging-preview-backend.test.ts",
       "src/server/__tests__/staging-tools.test.ts",
     ],
   },

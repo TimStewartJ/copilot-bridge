@@ -8,6 +8,7 @@ import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
 import type { BridgeSearchResponse } from "../../shared/search.js";
 import {
+  COMPONENT_IMPORT_WARMUP_TIMEOUT_MS,
   createReactDomHarness,
   findAllByTag,
   getReactProps,
@@ -274,7 +275,7 @@ beforeAll(async () => {
   } finally {
     await harness.cleanup();
   }
-}, 30_000);
+}, COMPONENT_IMPORT_WARMUP_TIMEOUT_MS);
 
 function findButtonByText(root: any, text: string): any {
   const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.textContent === text);
@@ -911,7 +912,7 @@ describe("ChatView cached resume loading state", () => {
     } finally {
       await cleanup();
     }
-  }, 30_000);
+  });
 
   it("shows the history sync strip with the cache age once a cached resume outlasts the flash window", async () => {
     vi.useFakeTimers();

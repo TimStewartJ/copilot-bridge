@@ -39,7 +39,10 @@ const TASKKILL_TIMEOUT_MS = 5_000;
 const PROCESS_TABLE_VERIFICATION_RESERVE_MS = PROCESS_TABLE_READ_TIMEOUT_MS;
 export const PROCESS_TREE_TERMINATION_BUDGET_MS = 25_000;
 const WINDOWS_PROCESS_TABLE_COMMAND = [
-  "Get-CimInstance Win32_Process |",
+  // Fetch only the parsed properties. Materializing every Win32_Process
+  // property is roughly twice as slow and pushes loaded machines past the
+  // snapshot timeout.
+  "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate |",
   "ForEach-Object {",
   "$t = '';",
   "if ($_.CreationDate) { try { $t = $_.CreationDate.ToUniversalTime().Ticks } catch { $t = '' } }",

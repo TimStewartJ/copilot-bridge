@@ -4,7 +4,7 @@ import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
+import { createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
 import { join } from "node:path";
 import { readSessionLaunchContext } from "../session-launch-context.js";
 import type { AgentBackendDisconnect } from "../agent-backend/types.js";
@@ -578,6 +578,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("keeps fresh scheduled-session creation responsive while cleanup runs independently", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     manager.maxCachedSessions = 2;
     let releaseOldest!: () => void;
@@ -609,6 +610,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("returns concurrent cache insertions before a hung disconnect finishes", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     let releaseFirst!: () => void;
@@ -670,6 +672,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("retains agent capacity until a pending release completes without polling tasks", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     manager.maxCachedSessions = 1;
     const vanished = fakeSessionWithAgent("vanished");
@@ -789,6 +792,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("blocks new SDK sessions when the cleanup backlog reaches its cap", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedSessions = 1;
@@ -814,6 +818,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("blocks new SDK sessions while retained context weight exceeds the budget", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     manager.sessionCapacityWaitTimeoutMs = 0;
     manager.maxCachedSessions = 1;
@@ -1032,6 +1037,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("waits for capacity and admits the next resume when a slot is released", async () => {
+    freezeLifecycleDeadlines();
     const { manager } = createManager();
     manager.maxCachedContexts = 1;
     manager.sessionCapacityWaitTimeoutMs = 5_000;
@@ -1063,6 +1069,7 @@ describe("SessionManager bounded session lifecycle", () => {
   });
 
   it("rejects concurrent and queued duplicate resumes for the same session id", async () => {
+    freezeLifecycleDeadlines();
     // rejects concurrent resume admission for the same session id
     {
       const { manager } = createManager();

@@ -41,7 +41,7 @@ async function waitForSummary(
   await vi.waitFor(async () => {
     latest = await reader.readSummary(options);
     expect(predicate(latest)).toBe(true);
-  }, { timeout: 5_000 });
+  });
   return latest!;
 }
 

@@ -80,7 +80,9 @@ function createWorkerWithScript(
     config: Record<string, unknown>,
   ) => Promise<void> | void,
   label: string,
+  beginLifecycle: () => () => void,
 ) {
+  const copilotHome = makeTestDir(label);
   return createDisposableDeferWorker({
     getSettings: () => ({
       mcpServers: {},
@@ -89,7 +91,7 @@ function createWorkerWithScript(
     listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
     buildSessionConfig: () => ({}),
     getParentWorkingDirectory: () => undefined,
-    beginLifecycle: () => () => undefined,
+    beginLifecycle,
     reserveCapacity: async () => () => undefined,
     createSession: async (config) => {
       return {
@@ -98,8 +100,24 @@ function createWorkerWithScript(
       } as any;
     },
     deleteSession: async () => undefined,
-    getCopilotHome: () => makeTestDir(label),
+    getCopilotHome: () => copilotHome,
   });
+}
+
+/**
+ * The worker completes its lifecycle only after natural completion has run
+ * every cleanup step (usage scan, span, session delete, directory and store
+ * cleanup, capacity release). Awaiting that signal replaces wall-clock polling
+ * of background cleanup that does real filesystem and SQLite work, and keeps
+ * that work from outliving the test that started it.
+ */
+function createLifecycleProbe() {
+  let markCompleted!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    markCompleted = resolve;
+  });
+  const completeLifecycle = vi.fn(() => markCompleted());
+  return { beginLifecycle: () => completeLifecycle, completeLifecycle, completed };
 }
 
 const workerInput = {
@@ -109,13 +127,18 @@ const workerInput = {
   prompt: "Check build",
 };
 
-function runWorkerScript(
+async function runWorkerScript(
   script: (
     config: Record<string, unknown>,
   ) => Promise<void> | void,
   label: string,
 ) {
-  return createWorkerWithScript(script, label).run(workerInput);
+  const lifecycle = createLifecycleProbe();
+  try {
+    return await createWorkerWithScript(script, label, lifecycle.beginLifecycle).run(workerInput);
+  } finally {
+    await lifecycle.completed;
+  }
 }
 
 describe("defer worker", () => {
@@ -156,7 +179,8 @@ describe("defer worker", () => {
     const deleteSession = vi.fn(async () => undefined);
     const releaseCapacity = vi.fn();
     const recordSpan = vi.fn();
-    const completeLifecycle = vi.fn();
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-native-result");
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -165,7 +189,7 @@ describe("defer worker", () => {
       listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
       buildSessionConfig: () => ({}),
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => completeLifecycle,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => releaseCapacity,
       createSession: async (config) => createNaturalSession(
         config.sessionId as string,
@@ -178,7 +202,7 @@ describe("defer worker", () => {
         { naturalCompletion },
       ) as any,
       deleteSession,
-      getCopilotHome: () => makeTestDir("defer-worker-native-result"),
+      getCopilotHome: () => copilotHome,
       recordSpan,
     });
 
@@ -191,15 +215,14 @@ describe("defer worker", () => {
     expect(deleteSession).not.toHaveBeenCalled();
     expect(releaseCapacity).not.toHaveBeenCalled();
     expect(recordSpan).not.toHaveBeenCalled();
-    expect(completeLifecycle).not.toHaveBeenCalled();
+    expect(lifecycle.completeLifecycle).not.toHaveBeenCalled();
 
     completeNaturally();
-    await vi.waitFor(() => {
-      expect(deleteSession).toHaveBeenCalledOnce();
-      expect(releaseCapacity).toHaveBeenCalledOnce();
-      expect(recordSpan).toHaveBeenCalledOnce();
-      expect(completeLifecycle).toHaveBeenCalledOnce();
-    });
+    await lifecycle.completed;
+    expect(deleteSession).toHaveBeenCalledOnce();
+    expect(releaseCapacity).toHaveBeenCalledOnce();
+    expect(recordSpan).toHaveBeenCalledOnce();
+    expect(lifecycle.completeLifecycle).toHaveBeenCalledOnce();
   });
 
   it("returns validation failures to the worker so it can correct them in the same attempt", async () => {
@@ -263,13 +286,14 @@ describe("defer worker", () => {
     const abort = vi.fn(async () => endTurn());
     const deleteSession = vi.fn(async () => undefined);
     const recordSpan = vi.fn();
-    const completeLifecycle = vi.fn();
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-abort");
     const worker = createDisposableDeferWorker({
       getSettings: () => ({ mcpServers: {} }),
       listModels: async () => [],
       buildSessionConfig: () => ({}),
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => completeLifecycle,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: async (config) => ({
         sessionId: config.sessionId as string,
@@ -280,7 +304,7 @@ describe("defer worker", () => {
         abort,
       }) as any,
       deleteSession,
-      getCopilotHome: () => makeTestDir("defer-worker-abort"),
+      getCopilotHome: () => copilotHome,
       recordSpan,
     });
 
@@ -290,10 +314,9 @@ describe("defer worker", () => {
 
     await expect(result).rejects.toThrow(RESTART_PENDING_MESSAGE);
     expect(abort).toHaveBeenCalledOnce();
-    await vi.waitFor(() => {
-      expect(deleteSession).toHaveBeenCalledOnce();
-      expect(completeLifecycle).toHaveBeenCalledOnce();
-    });
+    await lifecycle.completed;
+    expect(deleteSession).toHaveBeenCalledOnce();
+    expect(lifecycle.completeLifecycle).toHaveBeenCalledOnce();
     expect(recordSpan).toHaveBeenCalledWith(
       "defer.worker",
       expect.any(Number),
@@ -306,16 +329,18 @@ describe("defer worker", () => {
     const createSession = vi.fn(async (config: Record<string, unknown>) =>
       createNaturalSession(config.sessionId as string, config, { action: "finish" })
     );
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-final-schema");
     const worker = createDisposableDeferWorker({
       getSettings: () => ({ mcpServers: {} }),
       listModels: async () => [],
       buildSessionConfig: () => ({}),
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: createSession as any,
       deleteSession: async () => undefined,
-      getCopilotHome: () => makeTestDir("defer-worker-final-schema"),
+      getCopilotHome: () => copilotHome,
     });
 
     await worker.run({
@@ -325,6 +350,7 @@ describe("defer worker", () => {
       prompt: "Final check",
       isFinalRun: true,
     });
+    await lifecycle.completed;
 
     const config = createSession.mock.calls[0]![0];
     const tool = getDeferResultTool(config);
@@ -369,6 +395,7 @@ describe("defer worker", () => {
     const deleteSession = vi.fn(async () => undefined);
     const recordSpan = vi.fn();
     const recordUsage = vi.fn();
+    const lifecycle = createLifecycleProbe();
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -384,7 +411,7 @@ describe("defer worker", () => {
       }] as any,
       buildSessionConfig,
       getParentWorkingDirectory: () => "D:\\work",
-      beginLifecycle: () => () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: createSession as any,
       deleteSession,
@@ -429,9 +456,8 @@ describe("defer worker", () => {
         intervalSeconds: 1200,
       }),
     }), null);
-    await vi.waitFor(() =>
-      expect(deleteSession).toHaveBeenCalledWith(expect.stringMatching(/^d3f3e000-/))
-    );
+    await lifecycle.completed;
+    expect(deleteSession).toHaveBeenCalledWith(expect.stringMatching(/^d3f3e000-/));
     expect(recordSpan).toHaveBeenCalledWith(
       "defer.worker",
       expect.any(Number),
@@ -479,6 +505,7 @@ describe("defer worker", () => {
     const releaseCapacity = vi.fn();
     const deleteSession = vi.fn(async (_sessionId: string) => undefined);
     const logger = { warn: vi.fn() };
+    const lifecycle = createLifecycleProbe();
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -487,7 +514,7 @@ describe("defer worker", () => {
       listModels: async () => [{ id: "small-model", supportedReasoningEfforts: ["low"] }] as any,
       buildSessionConfig: () => ({}),
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => releaseCapacity,
       createSession: async (config) => createNaturalSession(
         config.sessionId as string,
@@ -529,7 +556,8 @@ describe("defer worker", () => {
       prompt: "Finish",
     })).resolves.toEqual({ action: "finish" });
 
-    await vi.waitFor(() => expect(releaseCapacity).toHaveBeenCalledOnce());
+    await lifecycle.completed;
+    expect(releaseCapacity).toHaveBeenCalledOnce();
     expect(deleteSession).toHaveBeenCalledOnce();
     const workerId = deleteSession.mock.calls[0]?.[0] as string;
     expect(existsSync(join(copilotHome, "session-state", workerId))).toBe(false);
@@ -543,6 +571,8 @@ describe("defer worker", () => {
 
   it("automatically selects the cheapest helper model when none is configured", async () => {
     const buildSessionConfig = vi.fn((_options: Record<string, unknown>) => ({}));
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-auto");
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -554,7 +584,7 @@ describe("defer worker", () => {
       ] as any,
       buildSessionConfig,
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: async (config) => createNaturalSession(
         config.sessionId as string,
@@ -562,7 +592,7 @@ describe("defer worker", () => {
         { action: "continue" },
       ) as any,
       deleteSession: async () => undefined,
-      getCopilotHome: () => makeTestDir("defer-worker-auto"),
+      getCopilotHome: () => copilotHome,
     });
 
     await worker.run({
@@ -571,6 +601,7 @@ describe("defer worker", () => {
       parentSessionId: "parent-session",
       prompt: "Check status",
     });
+    await lifecycle.completed;
 
     expect(buildSessionConfig).toHaveBeenCalledWith(expect.objectContaining({
       modelOverride: "cheap-mini",
@@ -581,6 +612,8 @@ describe("defer worker", () => {
 
   it("falls back to an available cheap model when the configured model is stale", async () => {
     const buildSessionConfig = vi.fn((_options: Record<string, unknown>) => ({}));
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-stale-model");
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -598,7 +631,7 @@ describe("defer worker", () => {
       }] as any,
       buildSessionConfig,
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: async (config) => createNaturalSession(
         config.sessionId as string,
@@ -606,7 +639,7 @@ describe("defer worker", () => {
         { action: "continue" },
       ) as any,
       deleteSession: async () => undefined,
-      getCopilotHome: () => makeTestDir("defer-worker-stale-model"),
+      getCopilotHome: () => copilotHome,
     });
 
     await worker.run({
@@ -615,6 +648,7 @@ describe("defer worker", () => {
       parentSessionId: "parent-session",
       prompt: "Check status",
     });
+    await lifecycle.completed;
 
     expect(buildSessionConfig).toHaveBeenCalledWith(expect.objectContaining({
       modelOverride: "cheap-mini",
@@ -661,6 +695,8 @@ describe("defer worker", () => {
         { action: "finish" },
       )
     );
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-sdk-default");
     const worker = createDisposableDeferWorker({
       getSettings: () => ({
         mcpServers: {},
@@ -681,11 +717,11 @@ describe("defer worker", () => {
         modelCapabilities: { contextWindow: 1_000_000 },
       }),
       getParentWorkingDirectory: () => undefined,
-      beginLifecycle: () => () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: createSession as any,
       deleteSession: async () => undefined,
-      getCopilotHome: () => makeTestDir("defer-worker-sdk-default"),
+      getCopilotHome: () => copilotHome,
     });
 
     await worker.run({
@@ -694,6 +730,7 @@ describe("defer worker", () => {
       parentSessionId: "parent-session",
       prompt: "Check once",
     });
+    await lifecycle.completed;
 
     const config = createSession.mock.calls[0]?.[0];
     expect(config).not.toHaveProperty("model");
