@@ -8,6 +8,27 @@ afterEach(() => {
 });
 
 describe("McpStatusBar status ownership", () => {
+  it("keeps a connected transport separate from permission failure guidance", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(McpStatusBar, {
+        servers: [{ name: "kusto", status: "connected", observedAt: new Date().toISOString(), provenance: "probe" }],
+        statusState: "ready",
+        chatEntries: [{ type: "tool", toolCall: { toolCallId: "query", name: "kusto-query", success: false, result: "403 Forbidden" } }],
+      }));
+      const button = findAllByTag(harness.dom.container, "BUTTON")[0];
+      await harness.act(async () => getReactProps(button)?.onClick?.());
+      expect(harness.dom.container.textContent).toContain("1/1 connected");
+      expect(harness.dom.container.textContent).toContain("permission");
+      expect(harness.dom.container.textContent).toContain("403 is not evidence of expired authentication");
+      expect(harness.dom.container.textContent).toContain("Connected means the MCP transport");
+      expect(harness.dom.container.textContent).toContain("(probe)");
+      expect(harness.dom.container.textContent).not.toContain("Start sign-in");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("stays hidden for a confirmed empty configuration with no context signal", async () => {
     const harness = await createReactDomHarness();
     try {

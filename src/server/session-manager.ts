@@ -54,6 +54,7 @@ import type { SessionMetaStore } from "./session-meta-store.js";
 import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
+import { SessionToolReadiness, SESSION_TOOL_READINESS_TIMEOUT_MS, type SessionToolReadinessSnapshot } from "./session-tool-readiness.js";
 import {
   capDeadline,
   createDeadline,
@@ -63,6 +64,7 @@ import {
   type Deadline,
 } from "./deadline.js";
 
+import { isMcpStatusFresh, latestMcpStatus, stampMcpStatusSnapshot } from "./mcp-status.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -300,7 +302,7 @@ const DISCONNECT_TIMEOUT_MS = 5_000;
  */
 const SESSION_DETAIL_RPC_TIMEOUT_MS = 5_000;
 const SESSION_RETIREMENT_BUDGET_MS = 60_000;
-const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = 30_000;
+const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = SESSION_TOOL_READINESS_TIMEOUT_MS;
 const DEFAULT_SESSION_CACHE_IDLE_TTL_MS = 60 * 60_000;
 const SESSION_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const PROCESS_TREE_SAMPLE_THROTTLE_MS = 60_000;
@@ -752,7 +754,7 @@ export class SessionManager {
     querySpans: (options) => this.deps.telemetryStore?.querySpans(options) ?? [],
   });
   private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
-  private readonly sessionToolInitialization = new WeakMap<AgentSession, Promise<void>>();
+  private readonly sessionToolReadiness = new SessionToolReadiness();
   private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
   private sessionToolInitializationWaitTimeoutMs = SESSION_TOOL_INITIALIZATION_TIMEOUT_MS;
   private mcpStatus = new Map<string, McpStatusSnapshot>();
@@ -2973,11 +2975,21 @@ export class SessionManager {
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
     if (!this.supportsSessionToolInitialization()) return;
     const expectedTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
+    const startedAt = Date.now();
+    let outcome = "ready";
+    let phase = "discovery";
     try {
       await session.initializeTools();
+      this.recordSpan("session.tools.discovery", Date.now() - startedAt, sessionId);
+      phase = "metadata";
+      const metadataStartedAt = Date.now();
       const metadata = await session.getCurrentToolMetadata();
+      this.recordSpan("session.tools.metadata", Date.now() - metadataStartedAt, sessionId);
+      phase = "validation";
+      if (!Array.isArray(metadata?.tools) && expectedTools.length > 0) {
+        throw new Error("Native Bridge tool metadata unavailable after initialization");
+      }
       const tools = metadata?.tools ?? [];
-      if (tools.length === 0) return;
       const toolNames = new Set(tools.map((tool) => tool.name));
       const missing = expectedTools.filter((name) => !toolNames.has(name));
       const deferred = tools
@@ -2985,8 +2997,8 @@ export class SessionManager {
         .map((tool) => tool.name);
       const sid = sessionId.slice(0, 8);
       if (missing.length > 0 || deferred.length > 0) {
-        console.warn(
-          `[sdk] [${sid}] Native Bridge tool warmup incomplete: ${
+        throw new Error(
+          `Native Bridge tool warmup incomplete: ${
             missing.length > 0 ? `missing=${missing.join(", ")}` : "missing=none"
           }; ${deferred.length > 0 ? `deferred=${deferred.join(", ")}` : "deferred=none"}`,
         );
@@ -2994,37 +3006,44 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Native Bridge tools ready (${expectedTools.length} canonical tools)`);
       }
     } catch (error) {
+      outcome = "failed";
       console.warn(
         `[sdk] [${sessionId.slice(0, 8)}] Native Bridge tool warmup failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      throw error;
+    } finally {
+      this.recordSpan("session.tools.initialization", Date.now() - startedAt, sessionId, { outcome, phase });
     }
   }
 
-  private ensureSessionToolInitialization(sessionId: string, session: AgentSession): Promise<void> {
-    const existing = this.sessionToolInitialization.get(session);
-    if (existing) return existing;
-
-    const initialization = this.warmNativeBridgeTools(sessionId, session);
-    this.sessionToolInitialization.set(session, initialization);
-    return initialization;
+  getSessionToolReadiness(sessionId: string): SessionToolReadinessSnapshot | undefined {
+    const session = this.sessionObjects.get(sessionId);
+    return session ? this.sessionToolReadiness.getSnapshot(session) : undefined;
   }
 
   private async waitForSessionToolInitialization(
     sessionId: string,
     session: AgentSession,
   ): Promise<boolean> {
-    const outcome = await settleByDeadline(
-      () => this.ensureSessionToolInitialization(sessionId, session),
-      createDeadline(this.sessionToolInitializationWaitTimeoutMs),
+    if (!this.supportsSessionToolInitialization()) return true;
+    const outcome = await this.sessionToolReadiness.wait(
+      session,
+      () => this.warmNativeBridgeTools(sessionId, session),
+      {
+        timeoutMs: this.sessionToolInitializationWaitTimeoutMs,
+        onSlow: () => {
+          console.log(`[sdk] [${sessionId.slice(0, 8)}] Session tools still initializing; waiting for MCP discovery`);
+          this.recordSpan("session.tools.initialization.slow", 30_000, sessionId);
+        },
+      },
     );
     if (outcome.status === "fulfilled") return true;
+    if (outcome.status === "rejected") return false;
     if (!this.sessionToolInitializationTimeoutWarned.has(session)) {
       this.sessionToolInitializationTimeoutWarned.add(session);
-      const detail = outcome.status === "rejected"
-        ? `failed: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`
-        : `timed out after ${this.sessionToolInitializationWaitTimeoutMs}ms`;
+      const detail = `timed out after ${this.sessionToolInitializationWaitTimeoutMs}ms`;
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] Session tool initialization ${detail}`);
     }
     return false;
@@ -3929,7 +3948,7 @@ export class SessionManager {
   /** Get the latest complete MCP snapshot, probing only until one is available. */
   async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
     const cached = this.mcpStatus.get(sessionId);
-    if (cached?.complete) return cached.servers;
+    if (cached?.complete && isMcpStatusFresh(cached)) return cached.servers;
 
     const session = this.sessionObjects.get(sessionId);
     if (session) {
@@ -3958,15 +3977,18 @@ export class SessionManager {
         return this.mcpStatus.get(sessionId)?.servers ?? [];
       }
       const result = listOutcome.value;
-      if (result?.servers && this.sessionObjects.get(sessionId) === session) {
+      if (Array.isArray(result?.servers) && this.sessionObjects.get(sessionId) === session) {
         const current = this.mcpStatus.get(sessionId);
-        if (current?.complete) return current.servers;
-        const probed = normalizeMcpServerStatuses(result.servers);
-        const servers = current && current !== startingSnapshot
-          ? mergeMcpServerStatuses(probed, current.servers)
-          : probed;
-        this.mcpStatus.set(sessionId, { servers, complete: true });
-        return servers;
+        if (current?.complete && current !== startingSnapshot) return current.servers;
+        const probed = stampMcpStatusSnapshot({ servers: normalizeMcpServerStatuses(result.servers), complete: true }, sessionId, "probe");
+        const snapshot = {
+          ...probed,
+          servers: current && current !== startingSnapshot
+            ? mergeMcpServerStatuses(probed.servers, current.servers)
+            : probed.servers,
+        };
+        this.mcpStatus.set(sessionId, snapshot);
+        return snapshot.servers;
       }
     }
     return this.mcpStatus.get(sessionId)?.servers ?? [];
@@ -4036,13 +4058,13 @@ export class SessionManager {
   }
 
 
-  /** Get latest MCP status from any session (for settings page) */
+  getCachedMcpStatus(sessionId: string): McpServerStatus[] {
+    return this.mcpStatus.get(sessionId)?.servers ?? [];
+  }
+
+  /** Latest observed session snapshot, not a global service-health assertion. */
   getLatestMcpStatus(): McpServerStatus[] {
-    // Return the most recent non-empty status from any session
-    for (const [, snapshot] of this.mcpStatus) {
-      if (snapshot.servers.length > 0) return snapshot.servers;
-    }
-    return [];
+    return latestMcpStatus(this.mcpStatus.values());
   }
 
   private normalizeUserInputIdentifier(value: string, fieldName: string): string {

@@ -236,6 +236,7 @@ export class SessionRunStateController {
               return;
             }
             this.logger.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
+            settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryAbortedMessage });
             resolve(finish((timestamp) => {
               const assistantSourceEventId = getAssistantSourceEventId?.();
               bus.emit({

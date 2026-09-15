@@ -165,7 +165,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -199,7 +199,7 @@ describe("scheduler restart gating", () => {
       reasoningEffort: "high",
       contextTier: "long_context",
     });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
   });
 
   it("triggers schedules when restart is pending with waiting sessions", async () => {
@@ -222,7 +222,7 @@ describe("scheduler restart gating", () => {
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -246,7 +246,7 @@ describe("scheduler restart gating", () => {
 
       expect(result).toEqual({ sessionId: "sched-session" });
       expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-      expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
+      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
     } finally {
       forceClearRestartPending();
       configureRestartStateStore(undefined);
@@ -270,7 +270,7 @@ describe("scheduler restart gating", () => {
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -294,7 +294,7 @@ describe("scheduler restart gating", () => {
 
       expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-      expect(sessionManager.startWork).not.toHaveBeenCalled();
+      expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     } finally {
       forceClearRestartPending();
       configureRestartStateStore(undefined);
@@ -309,7 +309,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-slot-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -352,12 +352,12 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
   });
 
-  it("rolls back a newly created schedule session if restart pending flips before startWork", async () => {
+  it("rolls back a newly created schedule session if restart pending flips before startWorkAndWaitForDelivery", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(() => {
+      startWorkAndWaitForDelivery: vi.fn(() => {
         throw new Error(RESTART_PENDING_MESSAGE);
       }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -393,7 +393,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockImplementation((sessionId: string) => sessionId === "last-session"),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -420,7 +420,7 @@ describe("scheduler restart gating", () => {
     expect(result).toEqual({ sessionId: "new-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.isSessionBusy).not.toHaveBeenCalledWith("last-session");
-    expect(sessionManager.startWork).toHaveBeenCalledWith("new-session", "continue work");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("new-session", "continue work");
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("new-session");
     expect(ctx.sessionMetaStore.getMeta("new-session")).toMatchObject({
       triggeredBy: "schedule",
@@ -445,7 +445,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -487,7 +487,7 @@ describe("scheduler restart gating", () => {
         { sessionId: "new-session", summary: "New run" },
       ]),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -528,7 +528,7 @@ describe("scheduler restart gating", () => {
         { sessionId: "archivable-old" },
       ]),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -572,7 +572,7 @@ describe("scheduler restart gating", () => {
       isSessionBusy: vi.fn().mockReturnValue(false),
       listSessionsFromDisk: vi.fn().mockResolvedValue([]),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -616,7 +616,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -641,7 +641,7 @@ describe("scheduler restart gating", () => {
 
     expect(result).toEqual({ sessionId: "sched-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
   });
 
   it("allows an older automatic slot retry even after a newer slot completed", async () => {
@@ -654,7 +654,7 @@ describe("scheduler restart gating", () => {
       createTaskSession: vi.fn()
         .mockResolvedValueOnce({ sessionId: "slot-b-session" })
         .mockResolvedValueOnce({ sessionId: "slot-a-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -684,8 +684,8 @@ describe("scheduler restart gating", () => {
       scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: olderSlot }),
     ).resolves.toEqual({ sessionId: "slot-a-session" });
 
-    expect(sessionManager.startWork).toHaveBeenNthCalledWith(1, "slot-b-session", "run now");
-    expect(sessionManager.startWork).toHaveBeenNthCalledWith(2, "slot-a-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenNthCalledWith(1, "slot-b-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenNthCalledWith(2, "slot-a-session", "run now");
   });
 
   it("skips disabled automatic schedules while still allowing manual trigger", async () => {
@@ -693,7 +693,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -726,7 +726,7 @@ describe("scheduler restart gating", () => {
       scheduler.triggerSchedule(schedule.id, { source: "manual" }),
     ).resolves.toEqual({ sessionId: "sched-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
   });
 
   it("skips automatic runs that are already claimed for the same slot", async () => {
@@ -734,7 +734,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -762,7 +762,7 @@ describe("scheduler restart gating", () => {
 
     expect(result).toEqual({ skipped: "This scheduled slot is already being processed" });
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    expect(sessionManager.startWork).not.toHaveBeenCalled();
+    expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
   });
 
   it("creates a fresh session for one-shot schedules", async () => {
@@ -773,7 +773,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(true),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "fresh-one-shot-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -799,7 +799,7 @@ describe("scheduler restart gating", () => {
       await scheduler.triggerSchedule(schedule.id, { source: "once", scheduledFor: runAt }),
     ).toEqual({ sessionId: "fresh-one-shot-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("fresh-one-shot-session", "continue work");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("fresh-one-shot-session", "continue work");
   });
 
   it("re-arms a one-shot timer after a transient max-concurrent skip and emits schedule changes", async () => {
@@ -827,7 +827,7 @@ describe("scheduler restart gating", () => {
         }
         return Promise.resolve({ sessionId: `sched-session-${callIndex}` });
       }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -871,7 +871,7 @@ describe("scheduler restart gating", () => {
 
     await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session-3", "run once");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-3", "run once");
     unsubscribe();
   }, 20_000);
 
@@ -881,7 +881,7 @@ describe("scheduler restart gating", () => {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockRejectedValueOnce(new Error("create failed"))
         .mockResolvedValueOnce({ sessionId: "recovered-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -921,7 +921,7 @@ describe("scheduler restart gating", () => {
       createTaskSession: vi.fn()
         .mockRejectedValueOnce(new Error("create failed"))
         .mockResolvedValueOnce({ sessionId: "retried-cron-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -951,7 +951,7 @@ describe("scheduler restart gating", () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(2);
-    expect(sessionManager.startWork).toHaveBeenCalledWith("retried-cron-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("retried-cron-session", "run now");
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(1);
   });
 
@@ -962,7 +962,7 @@ describe("scheduler restart gating", () => {
       createTaskSession: vi.fn()
         .mockResolvedValueOnce({ sessionId: "sched-session-1" })
         .mockResolvedValueOnce({ sessionId: "sched-session-2" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -993,22 +993,90 @@ describe("scheduler restart gating", () => {
       scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: slot }),
     ).rejects.toThrow("link failed");
     expect(sessionManager.deleteSession).toHaveBeenCalledWith("sched-session-1");
-    expect(sessionManager.startWork).not.toHaveBeenCalled();
+    expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
 
     linkSpy.mockRestore();
 
     await expect(
       scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: slot }),
     ).resolves.toEqual({ sessionId: "sched-session-2" });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session-2", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-2", "run now");
   });
 
-  it("rolls back a newly created schedule session when startWork throws synchronously", async () => {
+  it("records a scheduled run only after asynchronous prompt delivery is accepted", async () => {
+    const { ctx } = createTestApp();
+    let accept!: () => void;
+    const delivery = new Promise<void>((resolve) => { accept = resolve; });
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "starting-session" }),
+      startWorkAndWaitForDelivery: vi.fn(() => delivery),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore, taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore, globalBus: ctx.globalBus,
+    });
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id, name: "Await acceptance", prompt: "run now", type: "once",
+      runAt: "2026-04-14T15:00:00.000Z",
+    });
+    const events: string[] = [];
+    const unsubscribe = ctx.globalBus.subscribe((event) => { events.push(event.type); });
+    const trigger = scheduler.triggerSchedule(schedule.id);
+    await vi.waitFor(() => expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce());
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(0);
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(true);
+    expect(events).not.toContain("schedule:triggered");
+    expect(await scheduler.triggerSchedule(schedule.id)).toHaveProperty("skipped");
+    accept();
+    await expect(trigger).resolves.toEqual({ sessionId: "starting-session" });
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(1);
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(false);
+    expect(events.filter((type) => type === "schedule:triggered")).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it("rolls back rejected asynchronous delivery and retries the unconsumed cron slot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-14T15:00:00.000Z"));
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValueOnce({ sessionId: "failed-session" })
+        .mockResolvedValueOnce({ sessionId: "accepted-session" }),
+      startWorkAndWaitForDelivery: vi.fn().mockRejectedValueOnce(new Error("Tool initialization failed"))
+        .mockResolvedValueOnce(undefined),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore, taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore, globalBus: ctx.globalBus,
+    });
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id, name: "Delivery failure retry", prompt: "run now", type: "cron",
+      cron: "0 15 * * *", timezone: "UTC",
+    });
+    await expect(scheduler.triggerSchedule(schedule.id, {
+      source: "cron", scheduledFor: "2026-04-14T15:00:00.000Z",
+    })).rejects.toThrow("Tool initialization failed");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(0);
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).not.toContain("failed-session");
+    expect(sessionManager.deleteSession).toHaveBeenCalledWith("failed-session");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(1);
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledTimes(2);
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("accepted-session");
+  });
+
+  it("rolls back a newly created schedule session when startWorkAndWaitForDelivery throws synchronously", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(() => {
+      startWorkAndWaitForDelivery: vi.fn(() => {
         throw new Error("launch failed");
       }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -1041,7 +1109,7 @@ describe("scheduler restart gating", () => {
     const failingManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(() => {
+      startWorkAndWaitForDelivery: vi.fn(() => {
         throw new Error("launch failed");
       }),
       deleteSession: vi.fn().mockRejectedValue(new Error("delete failed")),
@@ -1069,14 +1137,14 @@ describe("scheduler restart gating", () => {
     expect(failCtx.taskStore.getTask(failTask.id)?.sessionIds).toContain("sched-session");
   });
 
-  it("links a newly created scheduled session before startWork runs", async () => {
+  it("links a newly created scheduled session before startWorkAndWaitForDelivery runs", async () => {
     const { ctx } = createTestApp();
     const linkStateAtLaunch: boolean[] = [];
     const task = ctx.taskStore.createTask("Scheduled Task");
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn((sessionId: string) => {
+      startWorkAndWaitForDelivery: vi.fn((sessionId: string) => {
         linkStateAtLaunch.push(ctx.taskStore.getTask(task.id)?.sessionIds.includes(sessionId) ?? false);
       }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -1111,7 +1179,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn(() => sessionBusy),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(() => {
+      startWorkAndWaitForDelivery: vi.fn(() => {
         sessionBusy = true;
         const slotTime = new Date(Date.now() + 3 * 60_000).toISOString();
         ctx.scheduleStore.claimAutomaticRun(schedule.id, slot, "cron", slotTime);
@@ -1144,7 +1212,7 @@ describe("scheduler restart gating", () => {
     const result = await scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: slot });
 
     expect(result).toEqual({ skipped: "This scheduled slot is already being processed" });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
     expect(sessionManager.abortSession).toHaveBeenCalledWith("sched-session");
     expect(sessionManager.deleteSession).toHaveBeenCalledWith("sched-session");
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).not.toContain("sched-session");
@@ -1159,7 +1227,7 @@ describe("scheduler restart gating", () => {
     const sessionManager = {
       isSessionBusy: vi.fn(() => sessionBusy),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWork: vi.fn(() => {
+      startWorkAndWaitForDelivery: vi.fn(() => {
         sessionBusy = true;
         const slotTime = new Date(Date.now() + 3 * 60_000).toISOString();
         ctx.scheduleStore.claimAutomaticRun(schedule.id, slot, "cron", slotTime);
@@ -1206,7 +1274,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "one-shot-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1229,7 +1297,7 @@ describe("scheduler startup recovery", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    expect(sessionManager.startWork).toHaveBeenCalledWith("one-shot-session", "run later");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("one-shot-session", "run later");
   });
 
   it("persists nextRunAt and uses the cursor for supported zero-second six-field crons", () => {
@@ -1240,7 +1308,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
     const task = ctx.taskStore.createTask("Scheduled Task");
@@ -1274,7 +1342,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
     const task = ctx.taskStore.createTask("Scheduled Task");
@@ -1311,7 +1379,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "late-one-shot" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1338,7 +1406,7 @@ describe("scheduler startup recovery", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await scheduler.waitForMissedRunCatchUpForTests();
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    expect(sessionManager.startWork).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot");
   });
 
   it("does not fire a one-shot scheduled beyond Node's max timeout until its real deadline", async () => {
@@ -1349,7 +1417,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "far-future-one-shot" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1389,7 +1457,7 @@ describe("scheduler startup recovery", () => {
     await vi.waitFor(() => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("far-future-one-shot", "run far in the future");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("far-future-one-shot", "run far in the future");
   });
 
   it("retries a one-shot timer in-process after a transient pre-launch failure or after linkSession fails", async () => {
@@ -1404,7 +1472,7 @@ describe("scheduler startup recovery", () => {
         createTaskSession: vi.fn()
           .mockRejectedValueOnce(new Error("create failed"))
           .mockResolvedValueOnce({ sessionId: "retried-one-shot-session" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -1430,12 +1498,12 @@ describe("scheduler startup recovery", () => {
 
       await vi.advanceTimersByTimeAsync(1_000);
       expect(sessionManager.createTaskSession, "pre-launch: first attempt fired").toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWork, "pre-launch: not started yet").not.toHaveBeenCalled();
+      expect(sessionManager.startWorkAndWaitForDelivery, "pre-launch: not started yet").not.toHaveBeenCalled();
       expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt, "pre-launch: nextRunAt pushed").toBe("2026-04-16T16:00:31.000Z");
 
       await vi.advanceTimersByTimeAsync(30_000);
       expect(sessionManager.createTaskSession, "pre-launch: retried").toHaveBeenCalledTimes(2);
-      expect(sessionManager.startWork, "pre-launch: started on retry").toHaveBeenCalledWith("retried-one-shot-session", "run after retry");
+      expect(sessionManager.startWorkAndWaitForDelivery, "pre-launch: started on retry").toHaveBeenCalledWith("retried-one-shot-session", "run after retry");
 
       vi.useRealTimers();
     }
@@ -1451,7 +1519,7 @@ describe("scheduler startup recovery", () => {
         createTaskSession: vi.fn()
           .mockResolvedValueOnce({ sessionId: "link-fail-session-1" })
           .mockResolvedValueOnce({ sessionId: "link-fail-session-2" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -1478,11 +1546,11 @@ describe("scheduler startup recovery", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(sessionManager.createTaskSession, "link-fail: first attempt").toHaveBeenCalledTimes(1);
       expect(sessionManager.deleteSession, "link-fail: session cleaned up").toHaveBeenCalledWith("link-fail-session-1");
-      expect(sessionManager.startWork, "link-fail: not started yet").not.toHaveBeenCalled();
+      expect(sessionManager.startWorkAndWaitForDelivery, "link-fail: not started yet").not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.waitFor(() => { expect(sessionManager.createTaskSession, "link-fail: retried").toHaveBeenCalledTimes(2); });
-      expect(sessionManager.startWork, "link-fail: started on retry").toHaveBeenCalledWith("link-fail-session-2", "run after link retry");
+      expect(sessionManager.startWorkAndWaitForDelivery, "link-fail: started on retry").toHaveBeenCalledWith("link-fail-session-2", "run after link retry");
       linkSpy.mockRestore();
 
       vi.useRealTimers();
@@ -1497,7 +1565,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "catch-up-session" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1551,7 +1619,7 @@ describe("scheduler startup recovery", () => {
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn().mockResolvedValue({ sessionId: "launcher-cleared-one-shot" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -1580,7 +1648,7 @@ describe("scheduler startup recovery", () => {
       await scheduler.waitForMissedRunCatchUpForTests();
 
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWork).toHaveBeenCalledWith(
+      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith(
         "launcher-cleared-one-shot",
         "catch up after launcher clears",
       );
@@ -1620,7 +1688,7 @@ describe("scheduler startup recovery", () => {
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn().mockResolvedValue({ sessionId: "launcher-aged-one-shot" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -1652,7 +1720,7 @@ describe("scheduler startup recovery", () => {
       await scheduler.waitForMissedRunCatchUpForTests();
 
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWork).toHaveBeenCalledWith(
+      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith(
         "launcher-aged-one-shot",
         "catch up after long restart",
       );
@@ -1676,7 +1744,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "rescheduled-one-shot" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1724,7 +1792,7 @@ describe("scheduler startup recovery", () => {
     await vi.waitFor(() => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("rescheduled-one-shot", "run after reschedule");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("rescheduled-one-shot", "run after reschedule");
     expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
       enabled: false,
       runCount: 1,
@@ -1755,7 +1823,7 @@ describe("scheduler startup recovery", () => {
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn().mockResolvedValue({ sessionId: "restart-cleared-cron" }),
-        startWork: vi.fn(),
+        startWorkAndWaitForDelivery: vi.fn(),
         deleteSession: vi.fn().mockResolvedValue(undefined),
       } as any;
 
@@ -1788,7 +1856,7 @@ describe("scheduler startup recovery", () => {
 
       await scheduler.waitForMissedRunCatchUpForTests();
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-cron", "catch up cron");
+      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("restart-cleared-cron", "catch up cron");
       expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(2);
     } finally {
       forceClearRestartPending();
@@ -1804,7 +1872,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn(),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1839,7 +1907,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockImplementation(async () => ({ sessionId: `catch-up-${nextId++}` })),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1864,7 +1932,7 @@ describe("scheduler startup recovery", () => {
     await vi.waitFor(() => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(4);
     });
-    expect(sessionManager.startWork).toHaveBeenCalledTimes(4);
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledTimes(4);
   });
 
   it("uses the watchdog to catch a missed cron slot while the process stays alive", async () => {
@@ -1875,7 +1943,7 @@ describe("scheduler startup recovery", () => {
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "watchdog-catch-up" }),
-      startWork: vi.fn(),
+      startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -1907,7 +1975,7 @@ describe("scheduler startup recovery", () => {
     await vi.waitFor(() => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("watchdog-catch-up", "catch up from watchdog");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("watchdog-catch-up", "catch up from watchdog");
     expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
       runCount: 2,
       lastSessionId: "watchdog-catch-up",

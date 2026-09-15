@@ -125,16 +125,25 @@ interface ActiveExternalToolCall {
   lastActivityAt: number;
 }
 
+import { stampMcpStatusSnapshot, type McpStatusProvenance } from "./mcp-status.js";
+import { classifyToolFailure } from "../shared/tool-failure.js";
+
 export interface McpServerStatus {
   name: string;
   status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "not_configured" | "unknown";
   error?: string;
   source?: string;
+  observedAt?: string;
+  provenance?: McpStatusProvenance;
+  sessionId?: string;
 }
 
 export interface McpStatusSnapshot {
   servers: McpServerStatus[];
   complete: boolean;
+  observedAt?: number;
+  provenance?: McpStatusProvenance;
+  sessionId?: string;
 }
 
 const MCP_SERVER_STATUS_VALUES = new Set<McpServerStatus["status"]>([
@@ -208,6 +217,7 @@ export function applyMcpServerStatusChange(
       servers: mergeMcpServerStatuses(snapshot?.servers ?? [], [{
         ...previous,
         ...next,
+        error: next.error,
       }]),
       complete: snapshot?.complete ?? false,
     },
@@ -1578,7 +1588,16 @@ export class SessionRunner {
             completedToolName,
           );
           const ok = outcome.success !== false;
-          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${outcome.displayName} (${ok ? "ok" : "failed"})`);
+          const failure = ok ? undefined : classifyToolFailure(outcome.result);
+          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${outcome.displayName} (${ok ? "ok" : `failed:${failure!.category}`})`);
+          if (failure) {
+            this.recordSpan("tool.failure", 0, sessionId, {
+              toolName: completedToolName,
+              category: failure.category,
+              retryable: failure.retryable,
+            });
+            console.warn(`[sdk] [${sid}] Tool failure guidance: ${failure.guidance}`);
+          }
           const configuredMcpServer = getConfiguredMcpServerForTool(completedToolName);
           const configuredMcpServerKey = configuredMcpServer?.toLocaleLowerCase();
           if (
@@ -1588,7 +1607,7 @@ export class SessionRunner {
             && !staleMcpServersScheduledThisRun.has(configuredMcpServerKey)
           ) {
             this.clearMcpSessionRecoveryAttempts(sessionId, configuredMcpServer);
-          } else if (!ok) {
+          } else if (!ok && failure?.category === "transport") {
             const staleMcpServer = getStaleMcpSessionServerName(completedToolName, outcome.result);
             const staleMcpServerKey = staleMcpServer?.toLocaleLowerCase();
             if (
@@ -1887,19 +1906,31 @@ export class SessionRunner {
           break;
         }
         case "session.mcp_servers_loaded": {
-          const servers = normalizeMcpServerStatuses(data?.servers);
-          this.deps.mcpStatus.set(sessionId, { servers, complete: true });
+          if (!Array.isArray(data?.servers)) break;
+          const servers = normalizeMcpServerStatuses(data.servers);
+          const observedAt = context.origin === "live" ? eventAt : (Date.parse(event.timestamp) || 0);
+          const current = this.deps.mcpStatus.get(sessionId);
+          if (current?.observedAt !== undefined && current.observedAt > observedAt) break;
+          const snapshot = stampMcpStatusSnapshot({ servers, complete: true }, sessionId,
+            context.origin === "live" ? "live-event" : "replay-event", observedAt);
+          this.deps.mcpStatus.set(sessionId, snapshot);
           const failed = servers.filter((s) => s.status === "failed");
           if (failed.length > 0) {
             console.warn(`[sdk] [${sid}] ⚠️ MCP failures: ${failed.map((s) => `${s.name} (${s.error ?? "unknown"})`).join(", ")}`);
           }
           console.log(`[sdk] [${sid}] 🔌 MCP: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
-          bus.emit({ type: "mcp_status", servers });
+          bus.emit({ type: "mcp_status", servers: snapshot.servers });
           break;
         }
         case "session.mcp_server_status_changed": {
-          const update = applyMcpServerStatusChange(this.deps.mcpStatus.get(sessionId), data);
+          const observedAt = context.origin === "live" ? eventAt : (Date.parse(event.timestamp) || 0);
+          const current = this.deps.mcpStatus.get(sessionId);
+          if (current?.observedAt !== undefined && current.observedAt > observedAt) break;
+          const update = applyMcpServerStatusChange(current, data);
           const { name, status, previousStatus } = update;
+          if (!name) break;
+          update.snapshot = stampMcpStatusSnapshot(update.snapshot, sessionId,
+            context.origin === "live" ? "live-event" : "replay-event", observedAt, name);
           this.deps.mcpStatus.set(sessionId, update.snapshot);
           if (
             context.origin === "live"

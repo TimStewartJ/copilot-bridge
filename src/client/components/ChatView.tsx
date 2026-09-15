@@ -32,6 +32,7 @@ import {
   type ChatMessageDelivery,
   type ChatVisualEntry,
   type McpServerStatus,
+  type McpStatusResponse,
   type ElicitationResponseEndpointPayload,
   type PendingElicitationRequestView,
   type PendingUserInputRequestView,
@@ -51,7 +52,7 @@ import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoot
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
-import { useMcpStatusQuery } from "../hooks/queries/useMcpStatus";
+import { useMcpStatusSnapshotQuery } from "../hooks/queries/useMcpStatus";
 import { useSessionUsageMetricsQuery } from "../hooks/queries/useSessionUsageMetrics";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { queryKeys } from "../queryClient";
@@ -654,7 +655,7 @@ export default function ChatView({
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
-  const mcpStatusQuery = useMcpStatusQuery(historicalMode ? null : sessionId);
+  const mcpStatusQuery = useMcpStatusSnapshotQuery(historicalMode ? null : sessionId);
   const sessionUsageMetricsQuery = useSessionUsageMetricsQuery(historicalMode ? null : sessionId);
   const sessionCostLoading = Boolean(
     sessionId
@@ -886,7 +887,7 @@ export default function ChatView({
     if (!sessionId) return;
     const queryKey = queryKeys.mcpStatus(sessionId);
     void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.setQueryData<McpServerStatus[]>(queryKey, servers);
+    queryClient.setQueryData<McpStatusResponse>(queryKey, (current) => ({ ...current, servers, toolReadiness: current?.toolReadiness ?? undefined }));
   }, [queryClient, sessionId]);
 
   const {
@@ -2902,7 +2903,8 @@ export default function ChatView({
         liveContextSummary={streamContextSummary}
         sessionCostLoading={sessionCostLoading}
         sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd ?? undefined}
-        servers={mcpStatusQuery.data ?? []}
+        servers={mcpStatusQuery.data?.servers ?? []}
+        toolReadiness={mcpStatusQuery.data?.toolReadiness ?? undefined}
         statusState={!sessionId
           ? "ready"
           : mcpStatusQuery.error

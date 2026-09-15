@@ -70,7 +70,7 @@ function fixture() {
   let scheduleNumber = 0;
   const manager = {
     createTaskSession: vi.fn(async (..._args: unknown[]) => ({ sessionId: `protected-session-${++sessionNumber}` })),
-    startWork: vi.fn(),
+    startWorkAndWaitForDelivery: vi.fn(),
     isSessionBusy: vi.fn(() => false),
     deleteSession: vi.fn(async () => {}),
     abortSession: vi.fn(async () => true),
@@ -150,7 +150,7 @@ describe("protected scheduler admission", () => {
 
     const manual = ctx.createSchedule("cron", START);
     expect(await scheduler.triggerSchedule(manual.id)).toEqual({ sessionId: "protected-session-1" });
-    expect(ctx.manager.startWork).toHaveBeenCalledOnce();
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();
     expect(ctx.focusProtectionStore.outstanding("schedule")).toHaveLength(4);
   });
 
@@ -167,7 +167,7 @@ describe("protected scheduler admission", () => {
 
     expect(await run).toEqual({ sessionId: "already-admitted" });
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).toHaveBeenCalledWith("already-admitted", schedule.prompt);
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("already-admitted", schedule.prompt);
     expect(ctx.manager.deleteSession).not.toHaveBeenCalled();
     expect(ctx.focusProtectionStore.impacts(window.id).pending).toBe(0);
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: START, source: "once", status: "triggered" }]);
@@ -193,13 +193,13 @@ describe("protected scheduler admission", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(hold).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(timers);
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(retryAt - Date.now() - 1);
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await scheduler.waitForMissedRunCatchUpForTests();
 
-    expect(ctx.manager.startWork).toHaveBeenCalledOnce();
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: slot, source: "once", status: "triggered" }]);
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({
       postponed: 1, pending: 0, dispositions: { started: 1 },
@@ -224,7 +224,7 @@ describe("protected scheduler admission", () => {
     }
 
     expect(hold).toHaveBeenCalledOnce();
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(timers);
     expect(ctx.claims(schedule.id)).toEqual([]);
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBe(ORIGINAL_SLOT);
@@ -234,7 +234,7 @@ describe("protected scheduler admission", () => {
 
     await vi.advanceTimersByTimeAsync(Date.parse(END) + 3_001 - Date.now());
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).toHaveBeenCalledOnce();
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();
     expect(ctx.claims(schedule.id)).toEqual([{
       runKey: ORIGINAL_SLOT, source: expect.stringMatching(/cron|catchup/), status: "triggered",
     }]);
@@ -256,12 +256,12 @@ describe("protected scheduler admission", () => {
     ctx.globalBus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
     ctx.globalBus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).toHaveBeenCalledTimes(2);
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledTimes(2);
     expect(ctx.claims(cron.id)).toEqual([{ runKey: ORIGINAL_SLOT, source: "catchup", status: "triggered" }]);
     expect(ctx.claims(once.id)).toEqual([{ runKey: ORIGINAL_SLOT, source: "once", status: "triggered" }]);
 
     await vi.advanceTimersByTimeAsync(2 * 60 * 60_000 + 3_001);
-    expect(ctx.manager.startWork).toHaveBeenCalledTimes(2);
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledTimes(2);
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({
       postponed: 2, pending: 0, dispositions: { started: 2 },
     });
@@ -275,7 +275,7 @@ describe("protected scheduler admission", () => {
     await scheduler.triggerSchedule(schedule.id, { source: "once", scheduledFor: START });
     ctx.focusProtectionStore.cancel(window.id);
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).toHaveBeenCalledOnce();
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: START, source: "once", status: "triggered" }]);
   });
 
@@ -293,7 +293,7 @@ describe("protected scheduler admission", () => {
     expect(await scheduler.triggerSchedule(schedule.id)).toEqual({ skipped: "Restart pending" });
     expect(await scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: START }))
       .toEqual({ skipped: "Restart pending" });
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.claims(schedule.id)).toEqual([]);
     expect(ctx.focusProtectionStore.outstanding("schedule")).toEqual([]);
 
@@ -310,7 +310,7 @@ describe("durable protected missed-run recovery", () => {
     const once = ctx.createSchedule("once");
     vi.setSystemTime("2026-09-05T11:30:00.000Z");
     await ctx.start();
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.scheduleStore.getSchedule(cron.id)?.nextRunAt).toBe(ORIGINAL_SLOT);
     expect(ctx.scheduleStore.getSchedule(once.id)?.enabled).toBe(true);
     expect(ctx.focusProtectionStore.outstanding("schedule").map((work) => work.scheduledFor)).toEqual([
@@ -320,7 +320,7 @@ describe("durable protected missed-run recovery", () => {
 
     vi.setSystemTime("2026-09-05T12:30:00.000Z");
     await ctx.start();
-    expect(ctx.manager.startWork).toHaveBeenCalledTimes(2);
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledTimes(2);
     for (const schedule of [cron, once]) {
       expect(ctx.claims(schedule.id)).toEqual([{
         runKey: ORIGINAL_SLOT, source: schedule.type === "cron" ? "catchup" : "once", status: "triggered",
@@ -341,7 +341,7 @@ describe("durable protected missed-run recovery", () => {
     vi.setSystemTime("2026-09-05T13:00:00.000Z");
     await ctx.start();
 
-    expect(ctx.manager.startWork).toHaveBeenCalledTimes(2);
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledTimes(2);
     for (const schedule of schedules) {
       expect(ctx.claims(schedule.id)[0]).toMatchObject({ runKey: ORIGINAL_SLOT, status: "triggered" });
     }
@@ -430,7 +430,7 @@ describe("durable protected missed-run recovery", () => {
     vi.setSystemTime("2026-09-05T13:00:00.000Z");
     await ctx.start();
 
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({
       postponed: 1, pending: 0, dispositions: { [disposition]: 1 },
     });
@@ -446,7 +446,7 @@ describe("durable protected missed-run recovery", () => {
     ctx.scheduleStore.updateSchedule(schedule.id, { name: "Renamed", prompt: "Updated prompt" });
     vi.setSystemTime("2026-09-05T13:00:00.000Z");
     await ctx.start();
-    expect(ctx.manager.startWork).toHaveBeenCalledWith("protected-session-1", "Updated prompt");
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("protected-session-1", "Updated prompt");
     expect(ctx.focusProtectionStore.impacts(window.id).dispositions).toEqual({ started: 1 });
   });
 });
@@ -476,7 +476,7 @@ describe("protected retry ownership", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await scheduler.waitForMissedRunCatchUpForTests();
 
-    expect(ctx.manager.startWork.mock.calls.filter((call) => call[0] === `session-${schedule.name}`)).toHaveLength(1);
+    expect(ctx.manager.startWorkAndWaitForDelivery.mock.calls.filter((call) => call[0] === `session-${schedule.name}`)).toHaveLength(1);
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: ORIGINAL_SLOT, source: "once", status: "triggered" }]);
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({ pending: 0, dispositions: { started: 1 } });
   });
@@ -492,13 +492,13 @@ describe("protected retry ownership", () => {
     await scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: slot });
     await vi.advanceTimersByTimeAsync(63_001);
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({ pending: 1, dispositions: {} });
     expect(ctx.claims(schedule.id)).toEqual([]);
     await vi.advanceTimersByTimeAsync(Date.parse("2026-09-05T10:05:00.000Z") - Date.now());
     await scheduler.waitForMissedRunCatchUpForTests();
 
-    expect(ctx.manager.startWork).toHaveBeenCalledOnce();
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: slot, source: "cron", status: "triggered" }]);
     expect(ctx.focusProtectionStore.impacts(window.id).dispositions).toEqual({ started: 1 });
   });
@@ -513,7 +513,7 @@ describe("protected retry ownership", () => {
     vi.setSystemTime("2026-09-05T14:00:00.000Z");
     ctx.globalBus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).not.toHaveBeenCalled();
+    expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({ pending: 1, dispositions: {} });
 
     state.phase = "idle";
@@ -525,7 +525,7 @@ describe("protected retry ownership", () => {
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({ pending: 1, dispositions: {} });
     await vi.advanceTimersByTimeAsync(30_000);
     await scheduler.waitForMissedRunCatchUpForTests();
-    expect(ctx.manager.startWork).toHaveBeenCalledOnce();
+    expect(ctx.manager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: ORIGINAL_SLOT, source: "once", status: "triggered" }]);
     expect(ctx.focusProtectionStore.impacts(window.id).dispositions).toEqual({ started: 1 });
   });

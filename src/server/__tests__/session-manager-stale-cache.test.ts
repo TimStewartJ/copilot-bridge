@@ -86,6 +86,23 @@ describe("SessionManager stale cached session recovery", () => {
     });
   });
 
+  it("returns the newest global MCP observation rather than the first cached session", () => {
+    const { manager } = createManager();
+    manager.mcpStatus.set("first", { servers: [{ name: "old", status: "connected" }], complete: true, observedAt: 100 });
+    manager.mcpStatus.set("second", { servers: [{ name: "new", status: "failed" }], complete: true, observedAt: 200 });
+    expect(manager.getLatestMcpStatus()).toEqual([{ name: "new", status: "failed" }]);
+  });
+
+  it("refreshes expired complete snapshots with probe provenance", async () => {
+    const { manager } = createManager();
+    manager.mcpStatus.set("session-1", { servers: [{ name: "old", status: "failed" }], complete: true, observedAt: Date.now() - 30_001, provenance: "live-event" });
+    const session = makeAgentSessionStub({ listMcpServers: vi.fn().mockResolvedValue({ servers: [{ name: "demo", status: "connected" }] }) });
+    manager.sessionObjects.set("session-1", session);
+    const servers = await manager.getMcpStatus("session-1");
+    expect(session.listMcpServers).toHaveBeenCalledOnce();
+    expect(servers).toEqual([expect.objectContaining({ name: "demo", status: "connected", provenance: "probe", sessionId: "session-1" })]);
+  });
+
   it("recognizes only namespaced MCP session-not-found failures", () => {
     const failure = "MCP server 'demo': McpError: MCP error -32001: Session not found";
 
@@ -110,6 +127,30 @@ describe("SessionManager stale cached session recovery", () => {
     ))).toBe(true);
   });
 
+  it.each([
+    ["403 Forbidden", "permission"],
+    ["401 Unauthorized: token expired", "authentication"],
+    ["MCP server 'demo': MCP error -32001: Session not found (403 Forbidden)", "permission"],
+    ["Invalid filter: slash paths are not supported", "invalid-input"],
+    ["Kusto assert: ring timeline empty", "query-server"],
+  ])("logs %s separately without downgrading the MCP connection", async (result, category) => {
+    const { manager, eventBusRegistry } = createManager();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const session = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({ type: "session.mcp_servers_loaded", data: { servers: [{ name: "demo", status: "connected" }] } });
+        emit({ type: "tool.execution_start", data: { toolCallId: "call", toolName: "demo-query", arguments: {} } });
+        emit({ type: "tool.execution_complete", data: { toolCallId: "call", success: false, error: { message: result } } });
+        emit({ type: "session.idle", data: {} });
+      });
+    });
+    manager.sessionObjects.set("session-1", session);
+    await manager._doWork("session-1", "hello", eventBusRegistry.getOrCreateBus("session-1"));
+    expect(log.mock.calls.some(([message]) => String(message).includes(`failed:${category}`))).toBe(true);
+    expect(manager.mcpStatus.get("session-1").servers[0].status).toBe("connected");
+  });
+
   it("does not probe again after a pushed complete MCP snapshot, including empty", async () => {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
@@ -131,6 +172,20 @@ describe("SessionManager stale cached session recovery", () => {
 
     await expect(manager.getMcpStatus("session-1")).resolves.toEqual([]);
     expect(session.listMcpServers).not.toHaveBeenCalled();
+  });
+
+  it("ignores malformed loaded events instead of inventing an empty observation", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const session = createSession((emit) => {
+      queueMicrotask(() => {
+        emit({ type: "session.mcp_servers_loaded", data: { servers: [{ name: "demo", status: "connected" }] } });
+        emit({ type: "session.mcp_servers_loaded", data: {} });
+        emit({ type: "session.idle", data: {} });
+      });
+    });
+    manager.sessionObjects.set("session-1", session);
+    await manager._doWork("session-1", "hello", eventBusRegistry.getOrCreateBus("session-1"));
+    expect(manager.getLatestMcpStatus()[0].status).toBe("connected");
   });
 
   it("does not let an in-flight explicit status request overwrite a pushed snapshot", async () => {
