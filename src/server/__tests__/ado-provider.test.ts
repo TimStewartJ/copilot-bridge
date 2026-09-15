@@ -391,7 +391,7 @@ describe("AdoProvider", () => {
           }],
         });
       }
-      if (url.includes("includeWorkItemRefs=true")) {
+      if (url === "https://dev.azure.com/msazure/_apis/git/repositories/repo-id/pullrequests/42?includeWorkItemRefs=true&api-version=7.1") {
         return jsonResponse({
           repository: { id: "repo-id", name: "copilot-bridge" },
           title: "Add work map",
@@ -405,20 +405,80 @@ describe("AdoProvider", () => {
     });
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
-    const pr = { repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 42, provider: "ado" as const };
+    const pr = { repoId: "repo-id", repoName: "copilot-bridge", prId: 42, provider: "ado" as const };
 
     const result = await provider.fetchWorkItemPullRequestLinks(["123"], [pr]);
 
     expect(result).toEqual({
       links: [
-        { workItemId: "123", repoId: "repo-id", repoAliases: ["copilot-bridge"], prId: 42 },
-        { workItemId: "456", repoId: "repo-id", repoAliases: ["copilot-bridge"], prId: 42 },
+        { workItemId: "123", repoId: "repo-id", prId: 42 },
+        { workItemId: "456", repoId: "repo-id", prId: 42 },
       ],
       warnings: [],
     });
     expect((await provider.fetchWorkItems(["123"]))[0]?.title).toBe("Bridge work map");
     expect((await provider.fetchPullRequests([pr]))[0]?.title).toBe("Add work map");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fetches pull requests from any project by organization-wide id, including name-only chat links", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const prId = Number(/pullrequests\/(\d+)\?/.exec(url)?.[1]);
+      return jsonResponse({
+        repository: {
+          id: "ccb450bd-2048-42d2-864d-320ac5718687",
+          name: "SFFLinux-OS-Composition",
+          project: { name: "msk8s" },
+        },
+        title: prId === 17135261 ? "[SFF][Security] Restrict edgeuser OpenSSL privileges" : "Update SFF 2604 target RPM assets",
+        status: prId === 17135261 ? "active" : "completed",
+        createdBy: { displayName: "Vibha Negi" },
+        reviewers: [{}, {}, {}],
+      });
+    });
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchPullRequests([
+      {
+        repoId: "ccb450bd-2048-42d2-864d-320ac5718687",
+        repoName: "SFFLinux-OS-Composition",
+        prId: 17135261,
+        provider: "ado",
+      },
+      {
+        repoId: "SFFLinux-OS-Composition",
+        repoName: "SFFLinux-OS-Composition",
+        prId: 15553686,
+        provider: "ado",
+      },
+    ]);
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
+      "https://dev.azure.com/msazure/_apis/git/pullrequests/15553686?api-version=7.1",
+      "https://dev.azure.com/msazure/_apis/git/pullrequests/17135261?api-version=7.1",
+    ]);
+    expect(result).toEqual([
+      {
+        repoId: "ccb450bd-2048-42d2-864d-320ac5718687",
+        repoName: "SFFLinux-OS-Composition",
+        prId: 17135261,
+        provider: "ado",
+        title: "[SFF][Security] Restrict edgeuser OpenSSL privileges",
+        status: "active",
+        createdBy: "Vibha Negi",
+        reviewerCount: 3,
+        url: "https://msazure.visualstudio.com/msk8s/_git/SFFLinux-OS-Composition/pullrequest/17135261",
+      },
+      expect.objectContaining({
+        repoId: "SFFLinux-OS-Composition",
+        prId: 15553686,
+        status: "completed",
+        url: "https://msazure.visualstudio.com/msk8s/_git/SFFLinux-OS-Composition/pullrequest/15553686",
+      }),
+    ]);
   });
 
   it("reports relationship refresh failures instead of silently returning an empty graph", async () => {

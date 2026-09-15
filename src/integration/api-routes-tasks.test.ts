@@ -341,6 +341,14 @@ describe("Task routes", () => {
     expect(res.body.task.pullRequests).toEqual([
       expect.objectContaining({ repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77", repoName: "Widget.Service", prId: 8, provider: "ado" }),
     ]);
+
+    const nameOnly = await request(app)
+      .post(`/api/tasks/${id}/link`)
+      .send({ type: "pr", repoName: "Widget.Service", prId: 9, provider: "ado" });
+
+    expect(nameOnly.status).toBe(400);
+    expect(nameOnly.body.error).toContain("repository GUID");
+    expect(nameOnly.body.error).not.toContain("undefined");
   });
 
   it("PATCH /api/tasks/:id clears momentum fields when passed empty strings", async () => {

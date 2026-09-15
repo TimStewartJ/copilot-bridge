@@ -14,6 +14,7 @@ import type {
 } from "./types.js";
 import { createProviderCache } from "./cache.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
+import { buildAdoPullRequestUrl } from "../../shared/ado-work-reference.js";
 
 // ── Token cache ───────────────────────────────────────────────────
 
@@ -192,7 +193,12 @@ export class AdoProvider implements WorkTrackingProvider {
   }
 
   getPullRequestUrl(pr: PRRef): string {
-    return `https://${this.org}.visualstudio.com/${this.project}/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}`;
+    return buildAdoPullRequestUrl({
+      org: this.org,
+      project: this.project,
+      repository: pr.repoName ?? pr.repoId,
+      prId: pr.prId,
+    });
   }
 
   private workItemCacheKey(id: string): string {
@@ -239,16 +245,22 @@ export class AdoProvider implements WorkTrackingProvider {
       completed: "completed",
       abandoned: "abandoned",
     };
+    const repoName = data.repository?.name ?? pr.repoName ?? null;
     return {
       repoId: pr.repoId,
-      repoName: data.repository?.name ?? pr.repoName ?? null,
+      repoName,
       prId: pr.prId,
       provider: "ado",
       title: data.title ?? null,
       status: statusMap[data.status?.toLowerCase()] ?? null,
       createdBy: data.createdBy?.displayName ?? null,
       reviewerCount: data.reviewers?.length ?? 0,
-      url: this.getPullRequestUrl({ ...pr, repoName: data.repository?.name ?? pr.repoName }),
+      url: buildAdoPullRequestUrl({
+        org: this.org,
+        project: data.repository?.project?.name || this.project,
+        repository: repoName ?? pr.repoId,
+        prId: pr.prId,
+      }),
     };
   }
 
@@ -378,7 +390,7 @@ export class AdoProvider implements WorkTrackingProvider {
     if (extra.length > 0 || !projectId || !repoId || !Number.isInteger(prId) || prId <= 0) {
       return null;
     }
-    return { workItemId, repoId, repoAliases: [], prId };
+    return { workItemId, repoId, prId };
   }
 
   private linksFromWorkItemPayload(item: any): WorkItemPullRequestLink[] {
@@ -393,20 +405,12 @@ export class AdoProvider implements WorkTrackingProvider {
 
   private linksFromPullRequestPayload(data: any, pr: PRRef): WorkItemPullRequestLink[] {
     if (!Array.isArray(data.workItemRefs)) return [];
-    const repoId = typeof data.repository?.id === "string" && data.repository.id
-      ? data.repository.id
-      : pr.repoId;
-    const repoAliases = [...new Set([
-      pr.repoId,
-      pr.repoName,
-      typeof data.repository?.name === "string" ? data.repository.name : null,
-    ].filter((value): value is string => Boolean(value) && value !== repoId))];
     return data.workItemRefs.flatMap((ref: any) => {
       const workItemId = typeof ref?.id === "string" || typeof ref?.id === "number"
         ? String(ref.id)
         : "";
       return workItemId
-        ? [{ workItemId, repoId, repoAliases, prId: pr.prId }]
+        ? [{ workItemId, repoId: pr.repoId, prId: pr.prId }]
         : [];
     });
   }
@@ -485,8 +489,9 @@ export class AdoProvider implements WorkTrackingProvider {
     const refreshWarnings = await mapWithConcurrency(toFetch, 6, async (pr) => {
       const key = this.prCacheKey(pr);
       try {
+        // Only the repository route returns work item refs; links are stored with the repository GUID it needs.
         const data = await adoFetch(
-          `${this.baseUrl}/${this.project}/_apis/git/repositories/${pr.repoId}/pullrequests/${pr.prId}?includeWorkItemRefs=true&api-version=7.1`,
+          `${this.baseUrl}/_apis/git/repositories/${encodeURIComponent(pr.repoId)}/pullrequests/${pr.prId}?includeWorkItemRefs=true&api-version=7.1`,
         );
         this.cachePR(this.mapPullRequest(data, pr), now);
         const links = this.linksFromPullRequestPayload(data, pr);
@@ -520,12 +525,7 @@ export class AdoProvider implements WorkTrackingProvider {
     ]);
     const linkMap = new Map<string, WorkItemPullRequestLink>();
     for (const link of [...fromPullRequests.links, ...fromWorkItems.links]) {
-      const key = `${link.workItemId}:${link.repoId}:${link.prId}`;
-      const existing = linkMap.get(key);
-      linkMap.set(key, {
-        ...link,
-        repoAliases: [...new Set([...(existing?.repoAliases ?? []), ...link.repoAliases])],
-      });
+      linkMap.set(`${link.workItemId}:${link.repoId}:${link.prId}`, link);
     }
     const links = [...linkMap.values()];
     const warnings: string[] = [];
@@ -623,9 +623,9 @@ export class AdoProvider implements WorkTrackingProvider {
 
     await mapWithConcurrency(toFetch, 6, async (pr) => {
       try {
-        const data = await adoFetch(
-          `${this.baseUrl}/${this.project}/_apis/git/repositories/${pr.repoId}/pullrequests/${pr.prId}?api-version=7.1`,
-        );
+        // Pull request ids are unique across the organization, so this route resolves links from
+        // every project, including chat links that only carry a repository name.
+        const data = await adoFetch(`${this.baseUrl}/_apis/git/pullrequests/${pr.prId}?api-version=7.1`);
 
         const enriched = this.mapPullRequest(data, pr);
 

@@ -574,6 +574,21 @@ describe("session manager task tools", () => {
     ]);
   });
 
+  it("task_link_pr rejects an ADO link without a repository GUID", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Name-only ADO PR");
+
+    const result: any = await getTool(ctx, "task_link_pr").handler({
+      taskId: task.id,
+      repoName: "Widget.Service",
+      prId: 8,
+      provider: "ado",
+    }, createInvocation("task_link_pr"));
+
+    expect(String(result.textResultForLlm)).toContain("Pass the pull request's repository.id as repoId");
+    expect(ctx.taskStore.getTask(task.id)?.pullRequests).toEqual([]);
+  });
+
   it("task_link_pr rejects a non-integer prId through the declared schema", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Bad prId");

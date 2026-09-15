@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesAdoProvider, parseAdoWorkReferenceUrl } from "./ado-work-reference.js";
+import { buildAdoPullRequestUrl, matchesAdoOrganization, parseAdoWorkReferenceUrl } from "./ado-work-reference.js";
 
 describe("parseAdoWorkReferenceUrl", () => {
   it("parses visualstudio.com work-item links", () => {
@@ -43,12 +43,40 @@ describe("parseAdoWorkReferenceUrl", () => {
   });
 });
 
-describe("matchesAdoProvider", () => {
-  it("matches configured organization and project case-insensitively", () => {
+describe("matchesAdoOrganization", () => {
+  it("matches the configured organization case-insensitively", () => {
     const reference = parseAdoWorkReferenceUrl(
       "https://dev.azure.com/MSAZURE/one/_workitems/edit/42",
     );
     expect(reference).not.toBeNull();
-    expect(matchesAdoProvider(reference!, { org: "msazure", project: "One" })).toBe(true);
+    expect(matchesAdoOrganization(reference!, { org: "msazure" })).toBe(true);
+  });
+
+  it("accepts links from other projects in the organization but not other organizations", () => {
+    const otherProject = parseAdoWorkReferenceUrl(
+      "https://dev.azure.com/msazure/msk8s/_git/SFFLinux-OS-Composition/pullrequest/17135261",
+    );
+    const otherOrganization = parseAdoWorkReferenceUrl(
+      "https://other.visualstudio.com/One/_git/Repo/pullrequest/42",
+    );
+    expect(matchesAdoOrganization(otherProject!, { org: "msazure" })).toBe(true);
+    expect(matchesAdoOrganization(otherOrganization!, { org: "msazure" })).toBe(false);
+  });
+});
+
+describe("buildAdoPullRequestUrl", () => {
+  it("builds a pull request web link with encoded project and repository names", () => {
+    expect(buildAdoPullRequestUrl({
+      org: "msazure",
+      project: "msk8s",
+      repository: "SFFLinux-OS-Composition",
+      prId: 17135261,
+    })).toBe("https://msazure.visualstudio.com/msk8s/_git/SFFLinux-OS-Composition/pullrequest/17135261");
+    expect(buildAdoPullRequestUrl({
+      org: "msazure",
+      project: "Azure Stack",
+      repository: "Repo Name",
+      prId: 42,
+    })).toBe("https://msazure.visualstudio.com/Azure%20Stack/_git/Repo%20Name/pullrequest/42");
   });
 });

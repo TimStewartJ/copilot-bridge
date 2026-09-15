@@ -1,4 +1,5 @@
 import type { Task } from "./task-store.js";
+import { buildAdoPullRequestUrl } from "../shared/ado-work-reference.js";
 import type {
   EnrichedPR,
   EnrichedWorkItem,
@@ -94,7 +95,12 @@ function buildPullRequestFallback(
     status: null,
     createdBy: null,
     reviewerCount: 0,
-    url: `https://${config.org}.visualstudio.com/${config.project}/${pr.repoName ?? pr.repoId}/${pr.prId}`,
+    url: buildAdoPullRequestUrl({
+      org: config.org,
+      project: config.project,
+      repository: pr.repoName ?? pr.repoId,
+      prId: pr.prId,
+    }),
   };
 }
 
@@ -167,30 +173,9 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
   const workItemIdsByPullRequest = new Map<string, Set<string>>();
   for (const link of relationshipResult.links) {
     const key = prKey(link.repoId, link.prId);
-    const repoCandidates = new Set([link.repoId, ...link.repoAliases]);
-    let repoName: string | undefined;
-    const taskIds = new Set(taskIdsByPullRequest.get(key) ?? []);
-    for (const [existingKey, existingRef] of [...pullRequestRefs.entries()]) {
-      if (existingRef.prId !== link.prId) continue;
-      if (!repoCandidates.has(existingRef.repoId)
-        && (!existingRef.repoName || !repoCandidates.has(existingRef.repoName))) {
-        continue;
-      }
-      repoName ??= existingRef.repoName
-        ?? (existingRef.repoId !== link.repoId ? existingRef.repoId : undefined);
-      for (const taskId of taskIdsByPullRequest.get(existingKey) ?? []) taskIds.add(taskId);
-      if (existingKey !== key) {
-        pullRequestRefs.delete(existingKey);
-        taskIdsByPullRequest.delete(existingKey);
-      }
+    if (!pullRequestRefs.has(key)) {
+      pullRequestRefs.set(key, { repoId: link.repoId, prId: link.prId, provider: "ado" });
     }
-    pullRequestRefs.set(key, {
-      repoId: link.repoId,
-      ...(repoName ? { repoName } : {}),
-      prId: link.prId,
-      provider: "ado",
-    });
-    if (taskIds.size > 0) taskIdsByPullRequest.set(key, taskIds);
     const pullRequestKeys = pullRequestKeysByWorkItem.get(link.workItemId) ?? new Set<string>();
     pullRequestKeys.add(key);
     pullRequestKeysByWorkItem.set(link.workItemId, pullRequestKeys);

@@ -36,7 +36,6 @@ export interface EnrichedPR {
 export interface WorkItemPullRequestLink {
   workItemId: string;
   repoId: string;
-  repoAliases: string[];
   prId: number;
 }
 
