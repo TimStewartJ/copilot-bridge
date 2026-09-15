@@ -118,10 +118,24 @@ export function parseAdoWorkReferenceUrl(value: string): AdoWorkReference | null
   return null;
 }
 
-export function matchesAdoProvider(
-  reference: Pick<AdoWorkReference, "org" | "project">,
-  provider: { org: string; project: string },
+/**
+ * Work item and pull request ids are unique across an organization, so a link from any
+ * project in the configured organization can be resolved by the provider.
+ */
+export function matchesAdoOrganization(
+  reference: Pick<AdoWorkReference, "org">,
+  provider: { org: string },
 ): boolean {
-  return reference.org.trim().toLowerCase() === provider.org.trim().toLowerCase()
-    && reference.project.trim().toLowerCase() === provider.project.trim().toLowerCase();
+  return reference.org.trim().toLowerCase() === provider.org.trim().toLowerCase();
+}
+
+export function buildAdoPullRequestUrl(options: {
+  org: string;
+  project: string;
+  repository: string;
+  prId: number;
+}): string {
+  const project = encodeURIComponent(options.project);
+  const repository = encodeURIComponent(options.repository);
+  return `https://${options.org}.visualstudio.com/${project}/_git/${repository}/pullrequest/${options.prId}`;
 }

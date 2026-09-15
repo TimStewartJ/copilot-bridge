@@ -141,7 +141,7 @@ export const taskScenarios: IntegrationScenario[] = [
     async run(world) {
       const task = await world.createTask("Coordinate PRs");
       const githubLink = await request(world.app).post(`/api/tasks/${task.id}/link`).send({ type: "pr", repoName: "octo/app", prId: 11, provider: "github" });
-      const adoLink = await request(world.app).post(`/api/tasks/${task.id}/link`).send({ type: "pr", repoId: "repo-guid", repoName: "API", prId: 12, provider: "ado" });
+      const adoLink = await request(world.app).post(`/api/tasks/${task.id}/link`).send({ type: "pr", repoId: "5c0d7f3e-2a9b-4e61-8f3d-9b1a2c4e6d70", repoName: "API", prId: 12, provider: "ado" });
       expect(githubLink.status).toBe(200);
       expect(adoLink.status).toBe(200);
       expect((await world.getTask(task.id)).pullRequests).toHaveLength(2);
@@ -149,7 +149,7 @@ export const taskScenarios: IntegrationScenario[] = [
       expect(removed.status).toBe(200);
       const detail = await world.getTask(task.id);
       expect(detail.pullRequests).toHaveLength(1);
-      expect(detail.pullRequests[0]).toMatchObject({ provider: "ado", prId: 12 });
+      expect(detail.pullRequests[0]).toMatchObject({ provider: "ado", repoId: "5c0d7f3e-2a9b-4e61-8f3d-9b1a2c4e6d70", prId: 12 });
     },
   },
   {

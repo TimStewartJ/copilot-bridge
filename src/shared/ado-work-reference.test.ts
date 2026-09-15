@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesAdoProvider, parseAdoWorkReferenceUrl } from "./ado-work-reference.js";
+import { buildAdoPullRequestUrl, matchesAdoOrganization, parseAdoWorkReferenceUrl } from "./ado-work-reference.js";
 
 describe("parseAdoWorkReferenceUrl", () => {
   it("parses visualstudio.com work-item links", () => {
@@ -43,12 +43,40 @@ describe("parseAdoWorkReferenceUrl", () => {
   });
 });
 
-describe("matchesAdoProvider", () => {
-  it("matches configured organization and project case-insensitively", () => {
+describe("matchesAdoOrganization", () => {
+  it("matches the configured organization case-insensitively", () => {
     const reference = parseAdoWorkReferenceUrl(
       "https://dev.azure.com/EXAMPLEORG/one/_workitems/edit/42",
     );
     expect(reference).not.toBeNull();
-    expect(matchesAdoProvider(reference!, { org: "exampleorg", project: "One" })).toBe(true);
+    expect(matchesAdoOrganization(reference!, { org: "exampleorg" })).toBe(true);
+  });
+
+  it("accepts links from other projects in the organization but not other organizations", () => {
+    const otherProject = parseAdoWorkReferenceUrl(
+      "https://dev.azure.com/exampleorg/exampleproject/_git/sample-repo/pullrequest/10000005",
+    );
+    const otherOrganization = parseAdoWorkReferenceUrl(
+      "https://other.visualstudio.com/One/_git/Repo/pullrequest/42",
+    );
+    expect(matchesAdoOrganization(otherProject!, { org: "exampleorg" })).toBe(true);
+    expect(matchesAdoOrganization(otherOrganization!, { org: "exampleorg" })).toBe(false);
+  });
+});
+
+describe("buildAdoPullRequestUrl", () => {
+  it("builds a pull request web link with encoded project and repository names", () => {
+    expect(buildAdoPullRequestUrl({
+      org: "exampleorg",
+      project: "exampleproject",
+      repository: "sample-repo",
+      prId: 10000005,
+    })).toBe("https://exampleorg.visualstudio.com/exampleproject/_git/sample-repo/pullrequest/10000005");
+    expect(buildAdoPullRequestUrl({
+      org: "exampleorg",
+      project: "Azure Stack",
+      repository: "Repo Name",
+      prId: 42,
+    })).toBe("https://exampleorg.visualstudio.com/Azure%20Stack/_git/Repo%20Name/pullrequest/42");
   });
 });
