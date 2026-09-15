@@ -161,7 +161,7 @@ export default function McpStatusBar({
       </button>
 
       {expanded && (
-        <div className="max-h-[min(50vh,440px)] overflow-y-auto px-4 pb-3 pt-1 space-y-2">
+        <div className="w-full max-w-3xl max-h-[min(50vh,440px)] overflow-y-auto px-4 pb-3 pt-1 space-y-3">
           {hasSessionCostSignal && (
             <div className="flex items-center justify-between text-xs text-text-muted">
               <span title="Cumulative cost reported by the Copilot SDK, not an invoice">Session cost</span>
