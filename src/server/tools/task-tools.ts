@@ -89,7 +89,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_link_pr", {
     description: "Link a pull request to a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id (e.g. an Azure DevOps repository GUID). Derived from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Inferred from the repository reference or the configured provider when omitted." } }, required: ["taskId", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository display name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id. Required for Azure DevOps: the repository GUID (the pull request's repository.id). GitHub derives it from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Inferred from the repository reference or the configured provider when omitted." } }, required: ["taskId", "prId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
@@ -101,7 +101,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   }),
   defineBridgeTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id (e.g. an Azure DevOps repository GUID). Derived from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Omit to unlink the pull request from every provider." } }, required: ["taskId", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository display name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id. Required for Azure DevOps: the repository GUID (the pull request's repository.id). GitHub derives it from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Omit to unlink the pull request from every provider." } }, required: ["taskId", "prId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);

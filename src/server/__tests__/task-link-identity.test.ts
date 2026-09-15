@@ -106,6 +106,19 @@ describe("resolvePullRequestLink", () => {
     });
   });
 
+  it("requires a repository GUID for ADO links and normalizes its casing", () => {
+    for (const request of [
+      { repoName: "Widget.Service", prId: 42, provider: "ado" },
+      { repoId: "Widget.Service", repoName: "Widget.Service", prId: 42, provider: "ado" },
+    ]) {
+      const result = resolvePullRequestLink(request);
+      expect(result).toMatchObject({ ok: false });
+      expect((result as { error: string }).error).toContain("repository GUID");
+    }
+    expect(resolvePullRequestLink({ repoId: "3F2B9C62-0D6A-4B73-8A9B-2F4E0D1A5C77", prId: 42, provider: "ado" }))
+      .toEqual({ ok: true, value: { repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77", prId: 42, provider: "ado" } });
+  });
+
   it("derives a canonical repo id for github refs", () => {
     expect(resolvePullRequestLink({ repoName: "https://github.com/octo/widget", prId: 7, provider: "github" }))
       .toMatchObject({ ok: true, value: { repoId: "octo/widget", repoName: "https://github.com/octo/widget" } });
@@ -200,5 +213,12 @@ describe("unlink provider handling", () => {
     expect(resolvePullRequestUnlink({ repoName: "octo/widget", prId: 5, provider: "gitlab", providers }))
       .toMatchObject({ ok: false });
     expect(resolveWorkItemUnlink({ workItemId: "42", provider: "gitlab" })).toMatchObject({ ok: false });
+  });
+
+  it("requires a repository GUID when unlinking an ADO pull request", () => {
+    expect(resolvePullRequestUnlink({ repoName: "Widget.Service", prId: 5, provider: "ado", providers }))
+      .toMatchObject({ ok: false });
+    expect(resolvePullRequestUnlink({ repoId: "3F2B9C62-0D6A-4B73-8A9B-2F4E0D1A5C77", prId: 5, provider: "ado", providers }))
+      .toEqual({ ok: true, value: { repoIds: ["3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77"], prId: 5, provider: "ado" } });
   });
 });

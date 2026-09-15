@@ -186,7 +186,42 @@ describe("Work-reference preview route", () => {
     }
   });
 
-  it("rejects links outside the configured ADO organization or project", async () => {
+  it("previews pull-request links from other projects in the configured organization", async () => {
+    ctx.settingsStore.updateSettings({
+      providers: { ado: { org: "msazure", project: "One" } },
+    });
+    const pullRequest = {
+      repoId: "SFFLinux-OS-Composition",
+      repoName: "SFFLinux-OS-Composition",
+      prId: 17135261,
+      provider: "ado" as const,
+      title: "[SFF][Security] Restrict edgeuser OpenSSL privileges",
+      status: "active" as const,
+      createdBy: "Vibha Negi",
+      reviewerCount: 3,
+      url: "https://msazure.visualstudio.com/msk8s/_git/SFFLinux-OS-Composition/pullrequest/17135261",
+    };
+    const enrichSpy = vi.spyOn(providers, "enrichPullRequests").mockResolvedValue([pullRequest]);
+
+    try {
+      const res = await request(app)
+        .post("/api/work-references/preview")
+        .send({ url: "https://dev.azure.com/msazure/msk8s/_git/SFFLinux-OS-Composition/pullrequest/17135261" });
+
+      expect(res.status).toBe(200);
+      expect(enrichSpy).toHaveBeenCalledWith([{
+        repoId: "SFFLinux-OS-Composition",
+        repoName: "SFFLinux-OS-Composition",
+        prId: 17135261,
+        provider: "ado",
+      }]);
+      expect(res.body).toEqual({ kind: "pullRequest", pullRequest });
+    } finally {
+      enrichSpy.mockRestore();
+    }
+  });
+
+  it("rejects links outside the configured ADO organization", async () => {
     ctx.settingsStore.updateSettings({
       providers: { ado: { org: "msazure", project: "One" } },
     });
@@ -257,10 +292,10 @@ describe("Dashboard work map route", () => {
     const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks")
       .mockImplementation(async (ids) => ({
         links: [
-          { workItemId: "10", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
-          { workItemId: "11", repoId: "repo-guid", repoAliases: ["copilot-bridge"], prId: 20 },
+          { workItemId: "10", repoId: "repo-guid", prId: 20 },
+          { workItemId: "11", repoId: "repo-guid", prId: 20 },
           ...(ids.includes("13")
-            ? [{ workItemId: "13", repoId: "repo-two", repoAliases: ["other-repo"], prId: 30 }]
+            ? [{ workItemId: "13", repoId: "repo-two", prId: 30 }]
             : []),
         ],
         warnings: [],
@@ -278,7 +313,7 @@ describe("Dashboard work map route", () => {
       ctx.taskStore.linkWorkItem(workItemTask.id, "10", "ado");
       const pullRequestTask = ctx.taskStore.createTask("Review the implementation");
       ctx.taskStore.linkPR(pullRequestTask.id, {
-        repoId: "copilot-bridge",
+        repoId: "repo-guid",
         repoName: "copilot-bridge",
         prId: 20,
         provider: "ado",
@@ -293,7 +328,7 @@ describe("Dashboard work map route", () => {
       expect(relationshipSpy).toHaveBeenNthCalledWith(
         1,
         ["10"],
-        [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
       );
       expect(res.body).toMatchObject({
         enabled: true,
@@ -339,7 +374,7 @@ describe("Dashboard work map route", () => {
       expect(relationshipSpy).toHaveBeenNthCalledWith(
         2,
         ["13", "10"],
-        [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
       );
       expect(assignedRes.body.assignedToMe).toBe(true);
       expect(assignedRes.body.workItems).toEqual(expect.arrayContaining([
@@ -357,6 +392,7 @@ describe("Dashboard work map route", () => {
           prId: 30,
           title: null,
           status: null,
+          url: "https://msazure.visualstudio.com/One/_git/repo-two/pullrequest/30",
           taskIds: [],
           workItemIds: ["13"],
         }),
@@ -372,7 +408,7 @@ describe("Dashboard work map route", () => {
       expect(relationshipSpy).toHaveBeenNthCalledWith(
         3,
         ["10", "12"],
-        [{ repoId: "copilot-bridge", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
+        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
       );
       expect(archivedRes.body.includeArchived).toBe(true);
       expect(archivedRes.body.tasks).toEqual(expect.arrayContaining([

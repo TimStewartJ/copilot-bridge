@@ -5,10 +5,9 @@
  * cannot drift, and so a link is never persisted with a guessed provider.
  *
  * `repoId` is the durable identity a row is keyed by; `repoName` is display
- * text. Callers that know the durable id (an ADO repository GUID) should pass
- * `repoId`. When only a name is available it is still accepted as the id for
- * backwards compatibility — ADO resolves a repository name where it accepts an
- * id — but GitHub references are always canonicalized to `owner/repo` first.
+ * text. Azure DevOps links must use the repository GUID (a pull request's
+ * `repository.id`) so every ADO row has one identity regardless of project.
+ * GitHub references are always canonicalized to `owner/repo` first.
  */
 
 import type { ProviderName, ProvidersConfig } from "./providers/types.js";
@@ -18,6 +17,15 @@ export const PROVIDER_NAMES: readonly ProviderName[] = ["ado", "github", "linear
 
 const PROVIDER_LIST = PROVIDER_NAMES.join(", ");
 const GITHUB_NAME_SEGMENT = /^[A-Za-z0-9._-]+$/;
+const ADO_REPOSITORY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function resolveAdoRepositoryId(value: string): Result<string> {
+  return ADO_REPOSITORY_ID.test(value)
+    ? ok(value.toLowerCase())
+    : err(
+      `Azure DevOps pull requests are linked by repository GUID. Pass the pull request's repository.id as repoId instead of "${value}".`,
+    );
+}
 
 export function isProviderName(value: unknown): value is ProviderName {
   return typeof value === "string" && (PROVIDER_NAMES as readonly string[]).includes(value);
@@ -167,6 +175,12 @@ export function resolvePullRequestRef(input: {
     return err("repoName or repoId is required");
   }
 
+  if (input.provider === "ado") {
+    const adoRepoId = resolveAdoRepositoryId(repoId);
+    if (!adoRepoId.ok) return adoRepoId;
+    repoId = adoRepoId.value;
+  }
+
   if (input.provider === "github") {
     const canonical = canonicalizeGitHubRepoId(repoId, input.providers?.github?.owner);
     if (!canonical) {
@@ -273,5 +287,10 @@ export function resolvePullRequestUnlink(request: LinkRequest): Result<{
 
   const repoIds = pullRequestRepoIdCandidates(request);
   if (repoIds.length === 0) return err("repoName or repoId is required");
+  if (provider.value === "ado") {
+    const adoRepoId = resolveAdoRepositoryId(repoIds[0]);
+    if (!adoRepoId.ok) return adoRepoId;
+    return ok({ repoIds: [adoRepoId.value], prId: prId.value, provider: provider.value });
+  }
   return ok({ repoIds, prId: prId.value, provider: provider.value });
 }

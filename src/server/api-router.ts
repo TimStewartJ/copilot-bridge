@@ -89,7 +89,7 @@ import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
 import {
-  matchesAdoProvider,
+  matchesAdoOrganization,
   parseAdoWorkReferenceUrl,
 } from "../shared/ado-work-reference.js";
 import { isRecord } from "../shared/is-record.js";
@@ -4351,9 +4351,9 @@ export function createApiRouter(
     if (!adoConfig) {
       return res.status(503).json({ error: "The Azure DevOps provider is not configured." });
     }
-    if (!matchesAdoProvider(reference, adoConfig)) {
+    if (!matchesAdoOrganization(reference, adoConfig)) {
       return res.status(400).json({
-        error: "The Azure DevOps link does not match the configured organization and project.",
+        error: "The Azure DevOps link does not match the configured organization.",
       });
     }
 
