@@ -36,7 +36,7 @@ async function requestUsageUntil(
     latest = { status: response.status, body: response.body };
     expect(response.status).toBe(200);
     expect(predicate(response.body)).toBe(true);
-  }, { timeout: 5_000 });
+  });
   return latest!;
 }
 
@@ -155,10 +155,12 @@ describe("Copilot usage routes", () => {
 
   it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
     const copilotHome = createCopilotUsageTestHome();
+    // Days bucket by local date, so pin the event to local noon.
+    const shutdownAt = new Date(2026, 4, 1, 12, 0, 0).toISOString();
     writeCopilotUsageEvents(copilotHome, "usage-session", [
       {
         type: "session.shutdown",
-        timestamp: "2026-05-01T12:00:00.000Z",
+        timestamp: shutdownAt,
         data: {
           modelMetrics: {
             "gpt-5.4": {
@@ -329,8 +331,8 @@ describe("Copilot usage routes", () => {
           empty_model_metrics: 0,
           parse_error: 0,
         },
-        earliestIncludedAt: "2026-05-01T12:00:00.000Z",
-        latestIncludedAt: "2026-05-01T12:00:00.000Z",
+        earliestIncludedAt: shutdownAt,
+        latestIncludedAt: shutdownAt,
         earliestSkippedAt: null,
         latestSkippedAt: null,
       },
@@ -342,7 +344,7 @@ describe("Copilot usage routes", () => {
       sessions: [
         {
           sessionId: "usage-session",
-          shutdownAt: "2026-05-01T12:00:00.000Z",
+          shutdownAt,
           ...aggregateTotals,
           ...aggregateCostEstimate,
           models: [
@@ -740,7 +742,7 @@ describe("Copilot usage routes", () => {
           cachedSessions: 1,
         });
         expect(intermediate.body.models[0].estimatedCostUsd).toBeCloseTo(15);
-      }, { timeout: 5_000 });
+      });
       expect(listModels).toHaveBeenCalledTimes(1);
 
       resolveModels?.([
@@ -752,7 +754,7 @@ describe("Copilot usage routes", () => {
         complete = await request(app).get("/api/copilot-usage");
         expect(complete.body.index.state).toBe("idle");
         expect(complete.body.models[0].estimatedCostUsd).toBeCloseTo(30);
-      }, { timeout: 5_000 });
+      });
       expect(complete?.body.totals.unpricedModelCount).toBe(0);
     } finally {
       usageDb.close();
@@ -887,7 +889,10 @@ describe("Copilot usage range filtering", () => {
   }
 
   it("GET /api/copilot-usage?range= narrows totals to the requested window", async () => {
-    vi.useFakeTimers();
+    // Freeze only the calendar. The usage index yields with setImmediate, so
+    // faking every timer left the background scan progressing only as fast as
+    // waitFor's real-time polling advanced the fake clock.
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     try {
       const copilotHome = createCopilotUsageTestHome();

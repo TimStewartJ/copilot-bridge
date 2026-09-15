@@ -37,6 +37,11 @@ function writeRawEvents(copilotHome: string, sessionId: string, lines: string[])
   writeFileSync(join(sessionDir, "events.jsonl"), `${lines.join("\n")}\n`);
 }
 
+/** Usage days bucket by local date, so date-bucket fixtures are built in local time. */
+function localIso(month: number, day: number, hour: number): string {
+  return new Date(2026, month - 1, day, hour, 0, 0).toISOString();
+}
+
 // Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
 // convert to round USD-per-1M rates: 100 cents => $1/1M.
 function sdkPriceableModel(
@@ -690,10 +695,12 @@ describe("readCopilotUsageSummary", () => {
 
   it("indexes top-level metering even when the shutdown has no model breakdown", async () => {
     const copilotHome = createCopilotHome();
+    // Days bucket by local date, so pin the event to local noon.
+    const shutdownAt = new Date(2026, 7, 11, 12, 0, 0).toISOString();
     writeEvents(copilotHome, "session-1", [
       {
         type: "session.shutdown",
-        timestamp: "2026-08-11T21:45:10.000Z",
+        timestamp: shutdownAt,
         data: {
           totalNanoAiu: 125_000_000_000,
           modelMetrics: {},
@@ -1394,7 +1401,7 @@ describe("readCopilotUsageSummary", () => {
       {
         id: "shared-shutdown-1",
         type: "session.shutdown",
-        timestamp: "2026-08-01T08:00:00.000Z",
+        timestamp: localIso(8, 1, 12),
         data: {
           sessionStartTime: 1_785_000_000_000,
           totalNanoAiu: 150_000_000_000,
@@ -1410,7 +1417,7 @@ describe("readCopilotUsageSummary", () => {
       {
         id: "shared-shutdown-2",
         type: "session.shutdown",
-        timestamp: "2026-08-02T08:00:00.000Z",
+        timestamp: localIso(8, 2, 12),
         data: {
           sessionStartTime: 1_785_000_000_000,
           totalNanoAiu: 240_000_000_000,
@@ -1427,14 +1434,14 @@ describe("readCopilotUsageSummary", () => {
     writeEvents(copilotHome, "parent-session", [
       {
         type: "session.start",
-        timestamp: "2026-08-01T07:00:00.000Z",
+        timestamp: localIso(8, 1, 11),
         data: { selectedModel: "gpt-5.5" },
       },
       ...sharedShutdowns,
       {
         id: "parent-shutdown-3",
         type: "session.shutdown",
-        timestamp: "2026-08-03T08:00:00.000Z",
+        timestamp: localIso(8, 3, 12),
         data: {
           sessionStartTime: 1_785_000_000_000,
           totalNanoAiu: 330_000_000_000,
@@ -1451,14 +1458,14 @@ describe("readCopilotUsageSummary", () => {
     writeEvents(copilotHome, "fork-session", [
       {
         type: "session.start",
-        timestamp: "2026-08-02T12:00:00.000Z",
+        timestamp: localIso(8, 2, 13),
         data: { selectedModel: "gpt-5.5" },
       },
       ...sharedShutdowns,
       {
         id: "fork-shutdown-3",
         type: "session.shutdown",
-        timestamp: "2026-08-04T08:00:00.000Z",
+        timestamp: localIso(8, 4, 12),
         data: {
           sessionStartTime: 1_785_000_000_000,
           totalNanoAiu: 390_000_000_000,
@@ -1475,7 +1482,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({
       copilotHome,
-      now: () => Date.parse("2026-08-05T00:00:00.000Z"),
+      now: () => Date.parse(localIso(8, 5, 12)),
     });
 
     expect(summary.totals).toMatchObject({

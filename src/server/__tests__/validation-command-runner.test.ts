@@ -5,6 +5,7 @@ import {
   buildValidationCommandLogPath,
   getValidationCommandLogDir,
   resetValidationCommandLogSweepThrottle,
+  scheduleValidationCommandLogSweep,
 } from "../validation-command-log.js";
 import { runStreamingValidationCommand } from "../validation-command-runner.js";
 import { RETENTION_DAY_MS } from "../log-retention.js";
@@ -55,5 +56,7 @@ describe("validation command runner retention", () => {
     expect(dirname(logPath)).toBe(logDir);
     await vi.waitFor(() => expect(existsSync(aged)).toBe(false));
     expect(existsSync(logPath)).toBe(true);
+    // Finish the background sweep before temp-dir cleanup removes its directory.
+    await scheduleValidationCommandLogSweep(logDir);
   });
 });

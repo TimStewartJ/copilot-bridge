@@ -9,7 +9,6 @@ import {
   createRestartRuntimePaths,
   createTestApp,
   createWavBuffer,
-  eventually,
   get,
   installApiRouteTestHooks,
   join,
@@ -312,12 +311,14 @@ describe("Voice job routes", () => {
       safeToLeave: true,
     });
 
-    await eventually(async () => {
-      const jobRes = await request(app).get(`/api/voice-jobs/${res.body.id}`);
-      expect(jobRes.status).toBe(200);
-      expect(jobRes.body.status).toBe("error");
-      expect(jobRes.body.transcript).toBe("Hello draft route");
-    });
+    // Processing is registered before the 202 response. shutdown() awaits every
+    // in-flight run, so the job is terminal before the assertion instead of
+    // racing a fixed number of HTTP polls against real filesystem work.
+    await ctx.voiceJobManager.shutdown();
+    const jobRes = await request(app).get(`/api/voice-jobs/${res.body.id}`);
+    expect(jobRes.status).toBe(200);
+    expect(jobRes.body.status).toBe("error");
+    expect(jobRes.body.transcript).toBe("Hello draft route");
 
     const latestDraft = await request(app).get("/api/voice-jobs/latest").query({ composerKey: "draft:quickchat" });
     expect(latestDraft.status).toBe(200);

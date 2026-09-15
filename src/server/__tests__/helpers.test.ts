@@ -1,22 +1,20 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { makeTestDir, makeTestRuntimePaths, withTestEnv } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 
 describe("test helper runtime isolation", () => {
-  let previousDir: string | undefined;
-
-  it("creates tracked temp directories", () => {
-    previousDir = makeTestDir("cleanup");
-    writeFileSync(join(previousDir, "marker.txt"), "ok");
-
-    expect(existsSync(previousDir)).toBe(true);
-  });
-
   it("cleans tracked temp directories after each test", () => {
-    expect(previousDir).toBeDefined();
-    expect(existsSync(previousDir!)).toBe(false);
+    const dir = makeTestDir("cleanup");
+    writeFileSync(join(dir, "marker.txt"), "ok");
+    expect(existsSync(dir)).toBe(true);
+
+    // onTestFinished runs after the shared afterEach cleanup, so this checks
+    // cleanup without depending on another test running first.
+    onTestFinished(() => {
+      expect(existsSync(dir)).toBe(false);
+    });
   });
 
   it("builds explicit isolated runtime paths", () => {
