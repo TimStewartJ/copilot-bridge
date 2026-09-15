@@ -10,6 +10,7 @@ import {
   isDisposableDeferWorkerSessionId,
 } from "../defer-worker.js";
 import { DEFER_CHECKPOINT_MAX_BYTES } from "../defer-checkpoint.js";
+import { RESTART_PENDING_MESSAGE } from "../restart-controller.js";
 import type { BridgeNativeTool } from "../bridge-native-tools.js";
 import { makeTestDir } from "./helpers.js";
 
@@ -251,6 +252,54 @@ describe("defer worker", () => {
   it("rejects a worker that naturally completes without submitting a native result", async () => {
     await expect(runWorkerScript(() => undefined, "defer-worker-missing-result"))
       .rejects.toThrow("ended without calling defer_result");
+  });
+
+  it("aborts an in-flight check as restart-pending and still cleans up its session", async () => {
+    let endTurn!: () => void;
+    let turnStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      turnStarted = resolve;
+    });
+    const abort = vi.fn(async () => endTurn());
+    const deleteSession = vi.fn(async () => undefined);
+    const recordSpan = vi.fn();
+    const completeLifecycle = vi.fn();
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({ mcpServers: {} }),
+      listModels: async () => [],
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: () => completeLifecycle,
+      reserveCapacity: async () => () => undefined,
+      createSession: async (config) => ({
+        sessionId: config.sessionId as string,
+        sendAndWait: () => new Promise<void>((resolve) => {
+          endTurn = resolve;
+          turnStarted();
+        }),
+        abort,
+      }) as any,
+      deleteSession,
+      getCopilotHome: () => makeTestDir("defer-worker-abort"),
+      recordSpan,
+    });
+
+    const result = worker.run(workerInput);
+    await started;
+    worker.abortAll();
+
+    await expect(result).rejects.toThrow(RESTART_PENDING_MESSAGE);
+    expect(abort).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(deleteSession).toHaveBeenCalledOnce();
+      expect(completeLifecycle).toHaveBeenCalledOnce();
+    });
+    expect(recordSpan).toHaveBeenCalledWith(
+      "defer.worker",
+      expect.any(Number),
+      "parent-session",
+      expect.objectContaining({ action: "error", error: RESTART_PENDING_MESSAGE }),
+    );
   });
 
   it("restricts one-shot and final recurring submissions in the native schema and handler", async () => {

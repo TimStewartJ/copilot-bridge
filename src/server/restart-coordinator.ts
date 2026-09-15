@@ -9,6 +9,7 @@ export interface BusyState {
   count: number;
   sessions?: BusySessionActivity[];
   backgroundOperations?: number;
+  restartForced?: boolean;
 }
 
 interface RestartBusyFetchDeps {
@@ -49,6 +50,10 @@ export async function waitForIdleSessions(deps: WaitForIdleDeps): Promise<boolea
       const data = await deps.fetchBusy();
       if (!data.busy) {
         if (Date.now() > start) deps.log("All sessions idle — proceeding with restart");
+        return true;
+      }
+      if (data.restartForced) {
+        deps.log(`Restart forced — proceeding without waiting for ${data.count} active operation(s)`);
         return true;
       }
 

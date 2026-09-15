@@ -39,6 +39,7 @@ let _restartStatePath = DEFAULT_RESTART_STATE_PATH;
 let _restartStateStoreGeneration = 0;
 let _restartState = createDefaultRestartState();
 let _restartStateWriteQueue: Promise<void> = Promise.resolve();
+let _restartForced = false;
 let _restartEventBus: GlobalBus | undefined;
 let _activeSessionCountProvider: () => number = () => 0;
 
@@ -95,6 +96,7 @@ export async function waitForAllRestartStateWritesForTests(): Promise<void> {
 
 function setCachedRestartState(state: RestartState): RestartState {
   _restartState = state;
+  if (!isRestartActive(state)) _restartForced = false;
   return state;
 }
 
@@ -126,7 +128,7 @@ function hasLauncherTakenRestartOwnership(state: RestartState): boolean {
   return state.launcherHeartbeatAt !== null || state.phase === "restarting";
 }
 
-function isRestartActive(state: RestartState): boolean {
+function isRestartActive(state: Pick<RestartState, "phase">): boolean {
   return state.phase !== "idle";
 }
 
@@ -144,7 +146,7 @@ export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
   if (_restartStatePath === nextPath) return;
   _restartStatePath = nextPath;
   _restartStateStoreGeneration += 1;
-  _restartState = createDefaultRestartState();
+  setCachedRestartState(createDefaultRestartState());
   // Detach from writes already queued for the previous path. Their captured
   // targets keep the file path stable, and the generation guard protects this cache.
   const detached = _restartStateWriteQueue;
@@ -203,10 +205,21 @@ export function isRestartPending(): boolean {
   return isRestartActive(_restartState);
 }
 
-export function isRestartCutoverInProgress(state: RestartState = _restartState): boolean {
-  // Waiting phases keep the current server available; only the actual restart
-  // phase should reject new work.
-  return state.phase === "restarting";
+export function isRestartCutoverInProgress(state: Pick<RestartState, "phase"> = _restartState): boolean {
+  // Waiting phases keep the current server available until the launcher starts
+  // the restart or an operator forces it.
+  return state.phase === "restarting" || (_restartForced && isRestartActive(state));
+}
+
+export function isRestartForced(): boolean {
+  return _restartForced;
+}
+
+/** Operator escalation: reject new work now and let the launcher stop waiting for sessions. */
+export function forceRestartCutover(): void {
+  if (!isRestartActive(_restartState)) return;
+  _restartForced = true;
+  emitRestartPendingEvent(_restartState);
 }
 
 function clearRestartPendingInternal(options: { requestId: string } | { force: true }): boolean {
