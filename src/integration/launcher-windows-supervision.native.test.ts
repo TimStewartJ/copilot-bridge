@@ -393,10 +393,12 @@ describeWindows("Windows launcher supervisor decisions", () => {
   it("fails verified process cleanup after bounded identity-safe retries", () => {
     const result = invokePowerShell<{ failed: boolean; stopAttempts: number }>(
       "$script:stopAttempts = 0; "
-      + "function Test-BridgeProcessIdentity($Identity) { return $true }; "
+      + "$mockProcess = [pscustomobject]@{ ProcessId = 900; ParentProcessId = 0; CreationDate = [DateTime]::UtcNow; CommandLine = 'bridge-test' }; "
+      + "$identity = New-BridgeProcessIdentity $mockProcess; "
+      + "function Get-BridgeProcessSnapshotById { return @{ 900 = $mockProcess } }; "
       + "function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction) $script:stopAttempts++ }; "
       + "$failed = $false; "
-      + "try { $null = Stop-BridgeVerifiedProcessIdentities @{ 900 = [pscustomobject]@{ processId = 900 } } @(900) 3 0 } "
+      + "try { $null = Stop-BridgeVerifiedProcessIdentities @{ 900 = $identity } @(900) 3 0 } "
       + "catch { $failed = $true }; "
       + "[pscustomobject]@{ failed = $failed; stopAttempts = $script:stopAttempts } | ConvertTo-Json -Compress",
     );

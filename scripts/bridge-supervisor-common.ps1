@@ -304,6 +304,21 @@ function New-BridgeProcessIdentity($Process) {
   }
 }
 
+function Get-BridgeProcessSnapshotById {
+  $snapshot = @{}
+  $processes = @(Get-CimInstance `
+    -ClassName Win32_Process `
+    -Property ProcessId,ParentProcessId,CreationDate,CommandLine `
+    -ErrorAction Stop)
+  foreach ($process in $processes) {
+    $processId = 0
+    if ([int]::TryParse([string]$process.ProcessId, [ref]$processId) -and $processId -gt 0) {
+      $snapshot[$processId] = $process
+    }
+  }
+  return $snapshot
+}
+
 function Get-BridgeTunnelRuntimeProcess($DataDir, $Processes) {
   $statePath = Join-Path $DataDir "tunnel-runtime.json"
   if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
@@ -333,6 +348,29 @@ function Get-BridgeTunnelRuntimeProcess($DataDir, $Processes) {
 
 function Remove-BridgeTunnelRuntimeState($DataDir) {
   Remove-Item -LiteralPath (Join-Path $DataDir "tunnel-runtime.json") -Force -ErrorAction SilentlyContinue
+}
+
+function Test-BridgeProcessIdentityInSnapshot($Identity, $ProcessesById) {
+  if ($null -eq $Identity -or $null -eq $ProcessesById) {
+    return $false
+  }
+  $processId = 0
+  if (
+    -not [int]::TryParse([string]$Identity.processId, [ref]$processId) -or
+    $processId -le 0 -or
+    -not $ProcessesById.ContainsKey($processId)
+  ) {
+    return $false
+  }
+  $current = $ProcessesById[$processId]
+  return (
+    (Get-BridgeProcessStartTimeUtcTicks $current) -eq [long]$Identity.processStartTimeUtcTicks -and
+    [string]::Equals(
+      [string]$current.CommandLine,
+      [string]$Identity.commandLine,
+      [System.StringComparison]::Ordinal
+    )
+  )
 }
 
 function Test-BridgeProcessIdentity($Identity) {
@@ -547,29 +585,98 @@ function Stop-BridgeVerifiedProcessIdentities(
   $ProcessesById,
   $OrderedProcessIds,
   [int]$MaxAttempts = 3,
-  [int]$AttemptWaitMilliseconds = 5000
+  [int]$AttemptWaitMilliseconds = 5000,
+  [int]$PollMilliseconds = 250
 ) {
-  $remaining = @($OrderedProcessIds | Where-Object {
-    Test-BridgeProcessIdentity $ProcessesById[$_]
-  })
+  $remaining = @($OrderedProcessIds | Where-Object { $ProcessesById.ContainsKey([int]$_) })
+  $pollDelay = [Math]::Max(250, [Math]::Min(500, $PollMilliseconds))
+  $capturedProcessIds = @{}
+  foreach ($processIdValue in $OrderedProcessIds) {
+    $capturedProcessIds[[int]$processIdValue] = $true
+  }
   for ($attempt = 1; $attempt -le $MaxAttempts -and $remaining.Count -gt 0; $attempt++) {
-    for ($index = $remaining.Count - 1; $index -ge 0; $index--) {
-      $processId = [int]$remaining[$index]
-      if (Test-BridgeProcessIdentity $ProcessesById[$processId]) {
+    $snapshot = $null
+    try {
+      $snapshot = Get-BridgeProcessSnapshotById
+    } catch {
+      Write-Warning "Could not read the process snapshot for cleanup attempt ${attempt}: $($_.Exception.Message)"
+      if ($attempt -lt $MaxAttempts) {
+        [System.Threading.Thread]::Sleep($pollDelay)
+      }
+      continue
+    }
+
+    $remaining = @($remaining | Where-Object {
+      Test-BridgeProcessIdentityInSnapshot $ProcessesById[[int]$_] $snapshot
+    })
+
+    $rootProcessIds = @($remaining | Where-Object {
+      $current = $snapshot[[int]$_]
+      $parentId = 0
+      -not (
+        $null -ne $current -and
+        [int]::TryParse([string]$current.ParentProcessId, [ref]$parentId) -and
+        $capturedProcessIds.ContainsKey($parentId)
+      )
+    })
+    $rootProcessIdSet = @{}
+    foreach ($rootProcessId in $rootProcessIds) {
+      $rootProcessIdSet[[int]$rootProcessId] = $true
+    }
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(0, $AttemptWaitMilliseconds))
+    foreach ($processIdValue in $rootProcessIds) {
+      $processId = [int]$processIdValue
+      if (Test-BridgeProcessIdentityInSnapshot $ProcessesById[$processId] $snapshot) {
         Write-Output "Stopping PID $processId (attempt $attempt/$MaxAttempts)"
         Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
       }
     }
 
-    $deadline = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(0, $AttemptWaitMilliseconds))
+    if ($rootProcessIds.Count -gt 0 -and $remaining.Count -gt $rootProcessIds.Count) {
+      do {
+        try {
+          $snapshot = Get-BridgeProcessSnapshotById
+          $remaining = @($remaining | Where-Object {
+            Test-BridgeProcessIdentityInSnapshot $ProcessesById[[int]$_] $snapshot
+          })
+        } catch {
+          Write-Warning "Could not read the process snapshot while waiting for Bridge roots during cleanup attempt ${attempt}: $($_.Exception.Message)"
+        }
+        $rootSurvivors = @($remaining | Where-Object { $rootProcessIdSet.ContainsKey([int]$_) })
+        if ($rootSurvivors.Count -eq 0 -or [DateTime]::UtcNow -ge $deadline) {
+          break
+        }
+        [System.Threading.Thread]::Sleep($pollDelay)
+      } while ($true)
+
+      if ($rootSurvivors.Count -gt 0) {
+        continue
+      }
+    }
+
+    $descendantProcessIds = @($remaining | Where-Object { -not $rootProcessIdSet.ContainsKey([int]$_) })
+    foreach ($processIdValue in $descendantProcessIds) {
+      $processId = [int]$processIdValue
+      if (Test-BridgeProcessIdentityInSnapshot $ProcessesById[$processId] $snapshot) {
+        Write-Output "Stopping PID $processId (attempt $attempt/$MaxAttempts)"
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+      }
+    }
+
     do {
-      $remaining = @($remaining | Where-Object {
-        Test-BridgeProcessIdentity $ProcessesById[$_]
-      })
+      try {
+        $snapshot = Get-BridgeProcessSnapshotById
+        $remaining = @($remaining | Where-Object {
+          Test-BridgeProcessIdentityInSnapshot $ProcessesById[[int]$_] $snapshot
+        })
+      } catch {
+        Write-Warning "Could not read the process snapshot while waiting for cleanup attempt ${attempt}: $($_.Exception.Message)"
+      }
       if ($remaining.Count -eq 0 -or [DateTime]::UtcNow -ge $deadline) {
         break
       }
-      [System.Threading.Thread]::Sleep(100)
+      [System.Threading.Thread]::Sleep($pollDelay)
     } while ($true)
   }
 

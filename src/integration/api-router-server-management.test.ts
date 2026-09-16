@@ -147,6 +147,7 @@ describe("api router server management reliability", () => {
       recoveryCount: 0,
       lastRecoveryAt: null,
       lastRecoveryError: "backend unavailable",
+      recoveryBlockedAt: null,
       lastInterruptedSessionCount: 3,
       lastAutoResumedSessionCount: 0,
     }));

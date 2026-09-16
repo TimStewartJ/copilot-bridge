@@ -27,6 +27,12 @@ export interface AgentBackendStatus {
   recoveryCount: number;
   lastRecoveryAt: string | null;
   lastRecoveryError: string | null;
+  /**
+   * When automatic recovery gave up and the Bridge needs a server restart, or
+   * null while the backend is ready or still recovering on its own. A
+   * supervising launcher restarts the server once this has persisted.
+   */
+  recoveryBlockedAt: string | null;
   /** Sessions whose in-flight turn was failed by the most recent disconnect. */
   lastInterruptedSessionCount: number;
   /** Sessions the Bridge re-sent a continue prompt to after the most recent recovery. */

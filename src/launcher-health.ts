@@ -112,3 +112,93 @@ export function evaluatePostRecoveryState(options: {
     options: { killExisting: false },
   };
 }
+
+/** Reads `agentBackend.recoveryBlockedAt` from a /api/health body without trusting its shape. */
+export function readRecoveryBlockedAt(healthBody: unknown): string | null {
+  if (!healthBody || typeof healthBody !== "object") return null;
+  const agentBackend = (healthBody as { agentBackend?: unknown }).agentBackend;
+  if (!agentBackend || typeof agentBackend !== "object") return null;
+  const blockedAt = (agentBackend as { recoveryBlockedAt?: unknown }).recoveryBlockedAt;
+  return typeof blockedAt === "string" && Number.isFinite(Date.parse(blockedAt)) ? blockedAt : null;
+}
+
+export type BlockedBackendRecoveryObservation =
+  | "not-blocked"
+  | "waiting"
+  | "restarting"
+  | "suppressed"
+  | "budget-exhausted";
+
+export type BlockedBackendRecoveryMonitorOptions = {
+  graceMs: number;
+  maxRestarts: number;
+  windowMs: number;
+  log: (message: string) => void;
+  /** Fire-and-forget. A slow or hung notification must never stall the health poll. */
+  notify: (message: string) => void;
+  restart: (reason: string) => void;
+  isAutoRecoverySuppressed: () => boolean;
+};
+
+/**
+ * A healthy HTTP server whose agent backend recovery is blocked cannot recover
+ * on its own. Restart it once the block has persisted past a grace period, but
+ * cap how often that can happen so a recurring block cannot loop forever, and
+ * never restart while automatic recovery is suppressed.
+ */
+export function createBlockedBackendRecoveryMonitor(options: BlockedBackendRecoveryMonitorOptions) {
+  let restartTimesMs: number[] = [];
+  let interventionReported = false;
+
+  const reportIntervention = (logMessage: string, notifyMessage: string) => {
+    if (interventionReported) return;
+    interventionReported = true;
+    options.log(logMessage);
+    options.notify(notifyMessage);
+  };
+
+  return {
+    observe(recoveryBlockedAt: string | null, nowMs: number): BlockedBackendRecoveryObservation {
+      restartTimesMs = restartTimesMs.filter((startedAtMs) => nowMs - startedAtMs < options.windowMs);
+      const blockedAtMs = recoveryBlockedAt === null ? Number.NaN : Date.parse(recoveryBlockedAt);
+      if (!Number.isFinite(blockedAtMs)) {
+        interventionReported = false;
+        return "not-blocked";
+      }
+
+      const blockedForMs = Math.max(0, nowMs - blockedAtMs);
+      if (blockedForMs < options.graceMs) return "waiting";
+      const blockedForSeconds = Math.round(blockedForMs / 1_000);
+
+      if (options.isAutoRecoverySuppressed()) {
+        reportIntervention(
+          `❌ Agent backend recovery has been blocked for ${blockedForSeconds}s, but automatic recovery is `
+            + "suppressed until an explicit restart. Manual intervention needed.",
+          "❌ Copilot Bridge agent backend recovery is blocked and automatic recovery is suppressed. "
+            + "Manual intervention needed.",
+        );
+        return "suppressed";
+      }
+
+      if (restartTimesMs.length >= options.maxRestarts) {
+        const windowMinutes = Math.round(options.windowMs / 60_000);
+        reportIntervention(
+          `❌ Agent backend recovery has been blocked for ${blockedForSeconds}s, but ${options.maxRestarts} automatic `
+            + `restart(s) already ran in the last ${windowMinutes} minutes. Manual intervention needed.`,
+          `❌ Copilot Bridge agent backend recovery is blocked and ${options.maxRestarts} automatic restart(s) `
+            + `already ran in the last ${windowMinutes} minutes. Manual intervention needed.`,
+        );
+        return "budget-exhausted";
+      }
+
+      restartTimesMs = [...restartTimesMs, nowMs];
+      interventionReported = false;
+      options.log(
+        `Agent backend recovery has been blocked for ${blockedForSeconds}s; restarting the server `
+          + `(automatic restart ${restartTimesMs.length}/${options.maxRestarts} this window)`,
+      );
+      options.restart(`agent backend recovery blocked for ${blockedForSeconds}s`);
+      return "restarting";
+    },
+  };
+}
