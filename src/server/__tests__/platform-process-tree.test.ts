@@ -18,6 +18,7 @@ import {
   createDirectoryLink,
   getDeviceHibernateCommand,
   getProcessIdentityStatus,
+  getProcessIdentityStatuses,
   removeDirectoryLink,
   sampleProcessTree,
   shouldSpawnDetachedProcessGroup,
@@ -139,6 +140,25 @@ describe("process tree platform helpers", () => {
     setPlatform("win32");
     mockExec((_command, _args, _options, callback) => callback(error, table, ""));
     await expect(getProcessIdentityStatus({ pid: 100, startMarker: "1000" }, createDeadline(5_000))).resolves.toBe(expected);
+  });
+
+  it("checks multiple survivor identities with one snapshot, including recycled PIDs", async () => {
+    setPlatform("win32");
+    const first = { pid: 100, startMarker: "1000" };
+    const recycled = { pid: 100, startMarker: "900" };
+    const exited = { pid: 200, startMarker: "1001" };
+    const unknown = { pid: 300, startMarker: "1002" };
+    mockExec((_command, _args, _options, callback) => callback(null, "100 1 1000\r\n300 1", ""));
+    expect(await getProcessIdentityStatuses([first, recycled, exited, unknown], createDeadline(5_000)))
+      .toEqual(new Map([[first, "alive"], [recycled, "replaced"], [exited, "exited"], [unknown, "unknown"]]));
+    expect(execFileMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat an unreadable survivor snapshot as proof of exit", async () => {
+    setPlatform("win32");
+    const identity = { pid: 100, startMarker: "1000" };
+    mockExec((_command, _args, _options, callback) => callback(new Error("CIM unavailable"), "", ""));
+    expect((await getProcessIdentityStatuses([identity], createDeadline(5_000))).get(identity)).toBe("unknown");
   });
 
   it("captures Windows process start times from .NET ticks with one bulk CIM call", async () => {
@@ -275,6 +295,44 @@ describe("process tree platform helpers", () => {
       createDeadline(5_000),
     )).resolves.toMatchObject({ ok: false, status: "identity-unavailable" });
     expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the root birth marker is unreadable rather than calling it replaced", async () => {
+    setPlatform("win32");
+    mockExec((_command, _args, _options, callback) => callback(null, "100 1", ""));
+    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(5_000)))
+      .toMatchObject({ ok: false, status: "identity-unavailable" });
+    expect(execFileMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not acknowledge termination if verification loses a captured birth marker", async () => {
+    setPlatform("win32");
+    let snapshots = 0;
+    mockExec((command, _args, _options, callback) => {
+      if (command === "powershell.exe") {
+        snapshots++;
+        callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "101 1", "");
+      } else callback(null, "", "");
+    });
+    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000)))
+      .toMatchObject({ ok: false, status: "identity-unavailable", error: expect.stringContaining("101") });
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports phase timings and surviving processes without changing verification semantics", async () => {
+    setPlatform("win32");
+    const onPhase = vi.fn();
+    mockExec((command, _args, _options, callback) => {
+      if (command === "powershell.exe") callback(null, "100 1 1000", "");
+      else callback(new Error("access denied"), "", "");
+    });
+    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000), onPhase))
+      .toMatchObject({ ok: false, status: "kill-failed" });
+    expect(onPhase.mock.calls.map(([phase]) => [phase.phase, phase.outcome])).toEqual([
+      ["snapshot", "completed"], ["terminate", "failed"], ["verify", "failed"],
+    ]);
+    for (const [phase] of onPhase.mock.calls) expect(phase.durationMs).toBeGreaterThanOrEqual(0);
+    expect(execFileMock).toHaveBeenCalledTimes(3);
   });
 
   it("accepts a raced taskkill error only when verification proves the original tree is gone", async () => {

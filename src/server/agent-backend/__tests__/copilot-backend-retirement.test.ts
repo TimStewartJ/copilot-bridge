@@ -1,14 +1,17 @@
 import { ChildProcess } from "node:child_process";
 import { CopilotClient, CopilotSession } from "@github/copilot-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getProcessIdentityStatus, sampleProcessTree, terminateProcessTree } from "../../platform.js";
+import { getProcessIdentityStatuses, sampleProcessTree, terminateProcessTree } from "../../platform.js";
+import { createDeadline } from "../../deadline.js";
+import { RUNTIME_FENCE_BUDGET_MS, RUNTIME_FENCE_CHILD_EXIT_WAIT_MS, RUNTIME_FENCE_STARTUP_WAIT_MS } from "../runtime-fence.js";
 import { CopilotBackend } from "../copilot-backend.js";
 import { AGENT_RPC_TIMEOUTS_MS, AgentRpcTimeoutError } from "../rpc-timeouts.js";
 
-vi.mock("../../platform.js", () => ({
+vi.mock("../../platform.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../platform.js")>(),
   sampleProcessTree: vi.fn(),
   terminateProcessTree: vi.fn(),
-  getProcessIdentityStatus: vi.fn(),
+  getProcessIdentityStatuses: vi.fn(),
 }));
 
 function deferred<T>() {
@@ -141,6 +144,8 @@ function backendFixture(startup?: Promise<void>) {
     if (startup) await startup;
   });
   vi.mocked(sampleProcessTree).mockResolvedValue({ root, descendants: [runtime] });
+  vi.mocked(getProcessIdentityStatuses).mockImplementation(async (identities) =>
+    new Map(identities.map((identity) => [identity, "unknown" as const])));
   vi.mocked(terminateProcessTree).mockImplementation(async (identity) => {
     if (identity.pid === root.pid) {
       Reflect.set(child, "exitCode", 0);
@@ -172,6 +177,49 @@ describe("Copilot owned-runtime fence", () => {
     }
   });
 
+  it("skips captured workers only after their parent subtree has been verified gone", async () => {
+    const { backend } = backendFixture();
+    const workers = [{ pid: 5001, startMarker: "worker-one" }, { pid: 5002, startMarker: "worker-two" }];
+    vi.mocked(sampleProcessTree).mockResolvedValue({ root, descendants: [runtime, ...workers, runtime] });
+    const terminate = vi.mocked(terminateProcessTree).getMockImplementation();
+    vi.mocked(terminateProcessTree).mockImplementation(async (identity, deadline, onPhase) => {
+      if (identity === runtime) return { ok: true, status: "terminated", root: runtime,
+        snapshot: { root: runtime, descendants: workers } };
+      return terminate!(identity, deadline, onPhase);
+    });
+    await backend.start();
+    await backend.fence();
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, root]);
+  });
+
+  it("still fences retained orphans when the captured native parent has already exited", async () => {
+    const { backend } = backendFixture();
+    const orphan = { pid: 5001, startMarker: "orphan" };
+    vi.mocked(sampleProcessTree).mockResolvedValue({ root, descendants: [runtime, orphan] });
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce({ ok: true, status: "already-exited", root: runtime });
+    await backend.start();
+    await backend.fence();
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, orphan, root]);
+  });
+
+  it("verifies all survivors together and removes only confirmed-exited identities", async () => {
+    vi.useFakeTimers();
+    const { backend } = backendFixture();
+    const other = { pid: 5001, startMarker: "worker" };
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce({ ok: false, status: "survivors", root: runtime,
+      snapshot: { root: runtime, descendants: [other] }, survivors: [runtime, other] });
+    vi.mocked(getProcessIdentityStatuses).mockResolvedValueOnce(new Map([[runtime, "alive"], [other, "alive"]]))
+      .mockResolvedValueOnce(new Map([[runtime, "exited"], [other, "alive"]]))
+      .mockResolvedValueOnce(new Map([[other, "replaced"]]));
+    await backend.start();
+    const fence = backend.fence();
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(fence).resolves.toBeUndefined();
+    expect(vi.mocked(getProcessIdentityStatuses).mock.calls.map(([identities]) => identities))
+      .toEqual([[runtime, other], [runtime, other], [other]]);
+    expect(terminateProcessTree).toHaveBeenCalledTimes(2);
+  });
+
   it("does not equate a stopped loader with an exited native runtime", async () => {
     const { backend, child, client } = backendFixture();
     await backend.start();
@@ -200,7 +248,7 @@ describe("Copilot owned-runtime fence", () => {
     const starting = backend.start();
     const fence = backend.fence();
     const rejected = expect(fence).rejects.toThrow("startup is still pending");
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(RUNTIME_FENCE_STARTUP_WAIT_MS);
     await rejected;
     expect(terminateProcessTree).not.toHaveBeenCalled();
     startup.resolve();
@@ -235,7 +283,7 @@ describe("Copilot owned-runtime fence", () => {
     }));
     const baseline = child.listenerCount("exit");
     const fence = expect(backend.fence()).rejects.toThrow("child exit is unconfirmed");
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(RUNTIME_FENCE_CHILD_EXIT_WAIT_MS);
     await fence;
     expect(child.listenerCount("exit")).toBeLessThanOrEqual(baseline);
   });
@@ -279,23 +327,24 @@ describe("Copilot owned-runtime fence", () => {
     vi.mocked(terminateProcessTree).mockResolvedValueOnce({
       ok: false, status: "survivors", root: runtime, survivors: [runtime],
     });
-    vi.mocked(getProcessIdentityStatus).mockResolvedValueOnce("alive").mockResolvedValueOnce("exited");
+    vi.mocked(getProcessIdentityStatuses).mockResolvedValueOnce(new Map([[runtime, "alive"]]))
+      .mockResolvedValueOnce(new Map([[runtime, "exited"]]));
     const fence = backend.fence();
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(100);
     await expect(fence).resolves.toBeUndefined();
     expect(terminateProcessTree).toHaveBeenCalledTimes(2);
-    expect(getProcessIdentityStatus).toHaveBeenCalledTimes(2);
+    expect(getProcessIdentityStatuses).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects a runtime that remains alive after the three-second verification budget", async () => {
+  it("rejects a runtime that remains alive after the caller's verification budget", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
     const { backend } = backendFixture();
     await backend.start();
     vi.mocked(terminateProcessTree).mockResolvedValueOnce({
       ok: false, status: "survivors", root: runtime, survivors: [runtime],
     });
-    vi.mocked(getProcessIdentityStatus).mockResolvedValue("alive");
-    const fence = backend.fence();
+    vi.mocked(getProcessIdentityStatuses).mockResolvedValue(new Map([[runtime, "alive"]]));
+    const fence = backend.fence({ deadline: createDeadline(3_000) });
     const rejected = expect(fence).rejects.toThrow("survivors");
     await vi.advanceTimersByTimeAsync(3_000);
     await rejected;
