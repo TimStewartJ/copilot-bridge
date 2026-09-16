@@ -261,6 +261,7 @@ call IDs are available on usage events, not cache-break events.
 - Name a test `*.native.test.ts` when it drives real OS process trees (PowerShell/CIM snapshots, `taskkill`, staged backend children, the Copilot CLI). Only the `native` project runs those; on Windows it runs one file at a time after the parallel projects finish.
 - Wait for a completion signal (a returned promise, a settle hook, or a lifecycle callback) instead of polling for background work. When polling is unavoidable, `vi.waitFor` has a shared 20s hang-guard budget; do not tighten it for real I/O.
 - Tests never see the live Bridge runtime environment: the shared Vitest config strips inherited `BRIDGE_*`, `COPILOT_*`, and GitHub token variables, so stub what a test needs with `vi.stubEnv()` or `withTestEnv()`.
+- Self-update validates in a Git-free release-slot copy. Source-management tests must model checkout metadata explicitly: use `withTestSourceCheckout()` from `test-paths.ts` in a file-local `node:fs` mock. It supplies only this source tree's `.git` marker and delegates other paths; do not restore inherited runtime settings or assume host Git metadata exists.
 - Run `npm run check:pr` before preview/deploy; `staging_preview` also runs validation automatically. `preview:smoke` checks the staged preview/backend without re-running validation by default; use `npm run preview:smoke:full` to validate and smoke in one command.
 
 ### Build

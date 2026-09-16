@@ -203,11 +203,13 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
+  const { withTestSourceCheckout } = await import("./test-paths.js");
+  const existsSync = withTestSourceCheckout(actual.existsSync);
   return {
     ...actual,
     existsSync: (path: Parameters<typeof actual.existsSync>[0]) => {
       const override = existsSyncOverrideMock(path);
-      return typeof override === "boolean" ? override : actual.existsSync(path);
+      return typeof override === "boolean" ? override : existsSync(path);
     },
     writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
       writeFileSyncCallMock(...args);

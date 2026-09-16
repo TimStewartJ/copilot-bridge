@@ -6,7 +6,7 @@ import { createValidationCommandEnv } from "../validation-command-env.js";
 
 describe("runtime paths", () => {
   it("derives development defaults without an implicit workspace", () => {
-    const paths = resolveRuntimePaths({});
+    const paths = resolveRuntimePaths({}, { distributionMode: "development" });
 
     expect(paths.dataDir).toMatch(/data$/);
     expect(paths.docsDir).toBe(join(paths.dataDir, "docs"));
