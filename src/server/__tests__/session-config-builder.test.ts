@@ -21,6 +21,12 @@ import {
 import { createTaskStore } from "../task-store.js";
 import { createTestBus } from "./helpers.js";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { withTestSourceCheckout } = await import("./test-paths.js");
+  return { ...actual, existsSync: withTestSourceCheckout(actual.existsSync) };
+});
+
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task-1",

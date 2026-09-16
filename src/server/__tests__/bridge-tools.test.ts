@@ -6,6 +6,12 @@ import { makeTestRuntimePaths } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { initializeDocsFts } from "../db.js";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { withTestSourceCheckout } = await import("./test-paths.js");
+  return { ...actual, existsSync: withTestSourceCheckout(actual.existsSync) };
+});
+
 describe("Bridge MCP tool definitions", () => {
   it("provides compatibility access to MCP-backed self-admin and staging definitions", () => {
     const { ctx } = createTestApp();

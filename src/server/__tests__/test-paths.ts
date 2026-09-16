@@ -1,8 +1,17 @@
 // Cross-platform test utilities — no node:fs imports so this file is safe
 // to use from client/server tests alongside vi.mock("node:fs").
 
-import { join, posix, win32 } from "node:path";
+import { join, posix, resolve, win32 } from "node:path";
 import { platform, tmpdir } from "node:os";
+import { pathsEqual } from "../path-utils.js";
+
+/** Model this source tree as a checkout even in Git-free release-slot validation. */
+export function withTestSourceCheckout(
+  existsSync: typeof import("node:fs").existsSync,
+): typeof import("node:fs").existsSync {
+  const gitPath = resolve(import.meta.dirname, "..", "..", "..", ".git");
+  return (path) => (typeof path === "string" && pathsEqual(path, gitPath)) || existsSync(path);
+}
 
 /** True when running on Windows */
 export const isWindows = platform() === "win32";
