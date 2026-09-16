@@ -24,8 +24,9 @@ import {
   isHydraFusionModel,
 } from "../../shared/hydrafusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
-import { createDeadline, settleByDeadline, sleepUntilDeadline } from "../deadline.js";
-import { getProcessIdentityStatus, sampleProcessTree, terminateProcessTree, type ProcessTreeSnapshot } from "../platform.js";
+import { capDeadline, createDeadline, settleByDeadline, sleepUntilDeadline, type Deadline } from "../deadline.js";
+import { getProcessIdentityStatuses, sampleProcessTree, terminateProcessTree, type ProcessIdentity, type ProcessTreeSnapshot } from "../platform.js";
+import { RUNTIME_FENCE_BUDGET_MS, RUNTIME_FENCE_CHILD_EXIT_WAIT_MS, RUNTIME_FENCE_STARTUP_WAIT_MS, type RuntimeFenceObservation, type RuntimeFenceOptions } from "./runtime-fence.js";
 import { boundRpc, type AgentRpcName } from "./rpc-timeouts.js";
 import type {
   AgentBackend,
@@ -613,21 +614,21 @@ export class CopilotBackend implements AgentBackend {
     if (this.fencePromise) return Promise.reject(new Error("Cannot start a fenced backend"));
     this.startPromise ??= (async () => {
       const result = await this.startClient();
-      await this.captureOwnedTree();
+      await this.captureOwnedTree(createDeadline(RUNTIME_FENCE_STARTUP_WAIT_MS));
       if (!this.stopping) this.attachTransportWatchers();
       return result;
     })();
     return this.startPromise;
   }
 
-  fence(): Promise<void> {
-    this.fencePromise ??= this.fenceOwnedRuntime();
+  fence(options: RuntimeFenceOptions = {}): Promise<void> {
+    this.fencePromise ??= this.fenceOwnedRuntime(options.deadline ?? createDeadline(RUNTIME_FENCE_BUDGET_MS), options.onPhase);
     return this.fencePromise;
   }
 
-  private async captureOwnedTree(): Promise<void> {
+  private async captureOwnedTree(deadline = createDeadline(2_000)): Promise<void> {
     if (this.localStdioOwnership && this.ownedChild?.pid) {
-      const tree = await sampleProcessTree(this.ownedChild.pid, createDeadline(2_000));
+      const tree = await sampleProcessTree(this.ownedChild.pid, deadline);
       if (tree) {
         const previous = this.ownedTree;
         if (previous?.root.pid === tree.root.pid && previous.root.startMarker === tree.root.startMarker) {
@@ -638,11 +639,16 @@ export class CopilotBackend implements AgentBackend {
           }
         }
         this.ownedTree = tree;
+      } else if (this.ownedChild.exitCode === null && this.ownedChild.signalCode === null) {
+        this.logger.warn("[copilot-backend] Could not capture the local stdio runtime identity; replacement remains gated on verified fencing");
       }
     }
   }
 
-  private async fenceOwnedRuntime(): Promise<void> {
+  private async fenceOwnedRuntime(
+    deadline: Deadline,
+    onPhase?: (observation: RuntimeFenceObservation) => void,
+  ): Promise<void> {
     this.stopping = true;
     this.detachTransportWatchers?.();
     const connection = Reflect.get(this.client, "connectionConfig");
@@ -650,55 +656,80 @@ export class CopilotBackend implements AgentBackend {
       || Reflect.get(this.client, "ffiHost") || connection?.kind !== "stdio") {
       throw new Error("Cannot fence an external, FFI, or unknown runtime owner");
     }
-    const deadline = createDeadline(3_000);
     const starting = this.startPromise;
-    if (starting) {
-      const startup = await settleByDeadline(() => starting, deadline);
-      if (startup.status === "timed-out") throw new Error("Cannot fence while SDK startup is still pending");
-    } else {
-      return;
-    }
+    if (!starting) return;
+    const startupStartedAt = performance.now();
+    const startup = await settleByDeadline(() => starting, capDeadline(deadline, RUNTIME_FENCE_STARTUP_WAIT_MS));
+    onPhase?.({ phase: "startup", durationMs: performance.now() - startupStartedAt,
+      outcome: startup.status === "fulfilled" ? "completed" : "failed",
+      ...(startup.status === "rejected" ? { error: formatDisconnectDetail(startup.error) } : {}),
+    });
+    if (startup.status === "timed-out") throw new Error("Cannot fence while SDK startup is still pending");
     const child = this.ownedChild;
     // The loader's exit alone is not proof that its native runtime child exited.
     if (!child || !this.ownedTree || this.ownedTree.descendants.length === 0) {
       throw new Error("Cannot prove ownership of the native stdio runtime process tree");
     }
-    // Keep the loader alive to reap its native runtime instead of orphaning it.
-    const identities = [...this.ownedTree.descendants].reverse().concat(this.ownedTree.root);
+    // Sampling is breadth-first. Fence each native subtree once, then let the
+    // loader reap it before fencing the loader. Retained orphan identities remain
+    // in the list and still require their own identity-verified termination.
+    const identities = this.ownedTree.descendants.concat(this.ownedTree.root);
     const verified = new Set<string>();
     for (const identity of identities) {
       const key = `${identity.pid}:${identity.startMarker}`;
       if (verified.has(key)) continue;
-      const result = await terminateProcessTree(identity, deadline);
+      const result = await terminateProcessTree(identity, deadline, onPhase);
       if (!result.ok) {
         if (result.status !== "survivors" || !result.survivors?.length) {
           throw new Error(`Runtime fencing failed: ${result.status}${result.error ? `: ${result.error}` : ""}`);
         }
-        for (const survivor of result.survivors) {
-          let status = await getProcessIdentityStatus(survivor, deadline);
-          while (status === "alive" && await sleepUntilDeadline(25, deadline)) {
-            status = await getProcessIdentityStatus(survivor, deadline);
-          }
-          if (status !== "exited" && status !== "replaced") {
-            throw new Error(`Runtime fencing failed: survivors (${survivor.pid}, ${status})`);
-          }
-        }
+        await this.waitForFencedSurvivors(result.survivors, deadline, onPhase);
       }
+      verified.add(key);
       for (const entry of result.snapshot?.descendants ?? []) {
         verified.add(`${entry.pid}:${entry.startMarker}`);
       }
     }
     if (child.exitCode === null && child.signalCode === null) {
+      const exitStartedAt = performance.now();
       let onExit = () => {};
       try {
         const exited = await settleByDeadline(() => new Promise<void>((resolve) => {
           onExit = resolve;
           child.once("exit", onExit);
-        }), deadline);
+        }), capDeadline(deadline, RUNTIME_FENCE_CHILD_EXIT_WAIT_MS));
+        onPhase?.({ phase: "child-exit", durationMs: performance.now() - exitStartedAt,
+          outcome: exited.status === "fulfilled" ? "completed" : "failed", pid: child.pid });
         if (exited.status !== "fulfilled") throw new Error("Runtime process tree terminated but SDK child exit is unconfirmed");
       } finally {
         child.off("exit", onExit);
       }
+    }
+  }
+
+  private async waitForFencedSurvivors(
+    survivors: ProcessIdentity[],
+    deadline: Deadline,
+    onPhase?: (observation: RuntimeFenceObservation) => void,
+  ): Promise<void> {
+    const startedAt = performance.now();
+    let pending = survivors;
+    try {
+      do {
+        const statuses = await getProcessIdentityStatuses(pending, deadline);
+        pending = pending.filter((identity) => {
+          const status = statuses.get(identity);
+          if (!status || status === "unknown") {
+            throw new Error(`Runtime fencing failed: survivors (${identity.pid}, unknown)`);
+          }
+          return status === "alive";
+        });
+        if (pending.length === 0) return;
+      } while (await sleepUntilDeadline(100, deadline));
+      throw new Error(`Runtime fencing failed: survivors (${pending.map((identity) => identity.pid).join(", ")}, alive)`);
+    } finally {
+      onPhase?.({ phase: "survivors", durationMs: performance.now() - startedAt,
+        outcome: pending.length === 0 ? "completed" : "failed" });
     }
   }
 

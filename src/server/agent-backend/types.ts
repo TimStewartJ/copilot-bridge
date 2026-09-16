@@ -39,6 +39,7 @@ import type {
   SectionOverride,
 } from "@github/copilot-sdk";
 import type { CopilotModelContextMetadata } from "../../shared/copilot-context.js";
+import type { RuntimeFenceOptions } from "./runtime-fence.js";
 
 /**
  * Declares which optional features a backend supports. Consumers (UI, run
@@ -506,8 +507,8 @@ export interface AgentBackend {
 
   /** Force-stop. Optional because not every SDK exposes one. */
   forceStop?(): Promise<unknown>;
-  /** Authoritative runtime-ownership boundary. Rejects when ownership cannot be proved. */
-  fence(): Promise<void>;
+  /** Authoritative, single-flight runtime-ownership boundary. Rejects when ownership cannot be proved. */
+  fence(options?: RuntimeFenceOptions): Promise<void>;
 
   /**
    * Subscribe to the loss of the backend RPC channel (connection closed,

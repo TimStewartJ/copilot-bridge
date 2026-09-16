@@ -88,6 +88,16 @@ export type ProcessTreeTerminationResult =
       error?: string;
     };
 
+export interface ProcessTreeTerminationObservation {
+  phase: "snapshot" | "terminate" | "verify";
+  durationMs: number;
+  outcome: "completed" | "failed";
+  pid?: number;
+  error?: string;
+}
+
+export type ProcessIdentityStatus = "alive" | "exited" | "replaced" | "unknown";
+
 export type DeviceHibernateCommand = {
   platform: NodeJS.Platform;
   command: string;
@@ -319,17 +329,28 @@ export async function captureProcessIdentity(
   return entry?.startMarker ? { pid, startMarker: entry.startMarker } : null;
 }
 
+export async function getProcessIdentityStatuses(
+  identities: readonly ProcessIdentity[],
+  deadline: Deadline,
+): Promise<ReadonlyMap<ProcessIdentity, ProcessIdentityStatus>> {
+  const statuses = new Map<ProcessIdentity, ProcessIdentityStatus>(identities.map((identity) => [identity, "unknown"]));
+  if (identities.length === 0 || deadlineExpired(deadline)) return statuses;
+  const result = await readProcessTable(deadline, PROCESS_IDENTITY_READ_TIMEOUT_MS);
+  if (!result.ok) return statuses;
+  for (const identity of identities) {
+    if (!isValidPid(identity.pid) || !identity.startMarker) continue;
+    const entry = result.table.get(identity.pid);
+    statuses.set(identity, !entry ? "exited" : !entry.startMarker ? "unknown"
+      : entry.startMarker === identity.startMarker ? "alive" : "replaced");
+  }
+  return statuses;
+}
+
 export async function getProcessIdentityStatus(
   identity: ProcessIdentity,
   deadline: Deadline,
-): Promise<"alive" | "exited" | "replaced" | "unknown"> {
-  if (!isValidPid(identity.pid) || !identity.startMarker || deadlineExpired(deadline)) return "unknown";
-  const result = await readProcessTable(deadline, PROCESS_IDENTITY_READ_TIMEOUT_MS);
-  if (!result.ok) return "unknown";
-  const entry = result.table.get(identity.pid);
-  if (!entry) return "exited";
-  if (!entry.startMarker) return "unknown";
-  return entry.startMarker === identity.startMarker ? "alive" : "replaced";
+): Promise<ProcessIdentityStatus> {
+  return (await getProcessIdentityStatuses([identity], deadline)).get(identity) ?? "unknown";
 }
 
 function parseProcessStartMarkerMs(
@@ -433,6 +454,7 @@ function requestPosixTreeKill(snapshot: ProcessTreeSnapshot): string | undefined
 export async function terminateProcessTree(
   root: ProcessIdentity,
   deadline: Deadline,
+  onPhase?: (observation: ProcessTreeTerminationObservation) => void,
 ): Promise<ProcessTreeTerminationResult> {
   if (!isValidPid(root.pid) || !root.startMarker) {
     return { ok: false, status: "invalid-identity", root };
@@ -441,7 +463,10 @@ export async function terminateProcessTree(
     return { ok: false, status: "deadline-exceeded", root };
   }
 
+  const snapshotStartedAt = performance.now();
   const initial = await readProcessTable(capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS));
+  onPhase?.({ phase: "snapshot", durationMs: performance.now() - snapshotStartedAt,
+    outcome: initial.ok ? "completed" : "failed", pid: root.pid, ...(!initial.ok ? { error: initial.error } : {}) });
   if (!initial.ok) {
     return {
       ok: false,
@@ -453,6 +478,9 @@ export async function terminateProcessTree(
 
   const currentRoot = initial.table.get(root.pid);
   if (!currentRoot) return { ok: true, status: "already-exited", root };
+  if (!currentRoot.startMarker) {
+    return { ok: false, status: "identity-unavailable", root, error: "The root process did not have a creation marker." };
+  }
   if (currentRoot.startMarker !== root.startMarker) {
     return { ok: true, status: "identity-replaced", root };
   }
@@ -467,9 +495,12 @@ export async function terminateProcessTree(
     };
   }
   const snapshot: ProcessTreeSnapshot = { root, descendants };
+  const terminationStartedAt = performance.now();
   const commandFailure = isWindows()
     ? await requestWindowsTreeKill(root, deadline)
     : requestPosixTreeKill(snapshot);
+  onPhase?.({ phase: "terminate", durationMs: performance.now() - terminationStartedAt,
+    outcome: commandFailure ? "failed" : "completed", pid: root.pid, ...(commandFailure ? { error: commandFailure } : {}) });
 
   if (deadlineExpired(deadline)) {
     return {
@@ -484,8 +515,11 @@ export async function terminateProcessTree(
   if (!isWindows()) {
     await sleepUntilDeadline(25, deadline);
   }
+  const verificationStartedAt = performance.now();
   const verification = await readProcessTable(deadline);
   if (!verification.ok) {
+    onPhase?.({ phase: "verify", durationMs: performance.now() - verificationStartedAt,
+      outcome: "failed", pid: root.pid, error: verification.error });
     return {
       ok: false,
       status: deadlineExpired(deadline) ? "deadline-exceeded" : "snapshot-unavailable",
@@ -495,7 +529,20 @@ export async function terminateProcessTree(
     };
   }
 
+  const uncertain = [root, ...descendants].find((identity) => {
+    const entry = verification.table.get(identity.pid);
+    return entry && !entry.startMarker;
+  });
+  if (uncertain) {
+    const error = `Cannot verify process identity for PID ${uncertain.pid}.`;
+    onPhase?.({ phase: "verify", durationMs: performance.now() - verificationStartedAt,
+      outcome: "failed", pid: root.pid, error });
+    return { ok: false, status: "identity-unavailable", root, snapshot, error };
+  }
   const survivors = matchingIdentities(verification.table, [root, ...descendants]);
+  onPhase?.({ phase: "verify", durationMs: performance.now() - verificationStartedAt,
+    outcome: survivors.length === 0 ? "completed" : "failed", pid: root.pid,
+    ...(survivors.length > 0 ? { error: `${survivors.length} owned process(es) still alive` } : {}) });
   if (survivors.length === 0) {
     return {
       ok: true,
