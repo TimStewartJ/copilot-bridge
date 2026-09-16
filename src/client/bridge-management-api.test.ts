@@ -39,6 +39,7 @@ describe("bridge management client API", () => {
         recoveryCount: 0,
         lastRecoveryAt: null,
         lastRecoveryError: null,
+        recoveryBlockedAt: null,
         lastInterruptedSessionCount: 0,
         lastAutoResumedSessionCount: 0,
       },

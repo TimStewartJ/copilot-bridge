@@ -296,7 +296,8 @@ describe("SessionManager retirement fencing", () => {
     next.fence.mockRejectedValue(new Error("candidate still alive"));
     manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(manager.backendTransition).toEqual({ owner: next, phase: "blocked" });
+    expect(manager.backendTransition).toMatchObject({ owner: next, phase: "blocked", blockedAtMs: expect.any(Number) });
+    expect(manager.getBackendStatus().recoveryBlockedAt).toEqual(expect.any(String));
     await manager.gracefulShutdown();
     expect(next.stop).toHaveBeenCalledOnce();
     expect(backend.stop).not.toHaveBeenCalled();

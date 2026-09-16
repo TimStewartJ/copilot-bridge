@@ -32,12 +32,16 @@ function execFileAsync(
   });
 }
 
-const PROCESS_TABLE_READ_TIMEOUT_MS = 8_000;
-const PROCESS_IDENTITY_READ_TIMEOUT_MS = 10_000;
+// A loaded Windows host (~900 processes) has needed more than 8s for one CIM snapshot.
+export const PROCESS_TABLE_READ_TIMEOUT_MS = 20_000;
+const PROCESS_IDENTITY_READ_TIMEOUT_MS = PROCESS_TABLE_READ_TIMEOUT_MS;
 const PROCESS_TABLE_MAX_BUFFER = 16 * 1024 * 1024;
 const TASKKILL_TIMEOUT_MS = 5_000;
+const PROCESS_TREE_DEADLINE_OVERHEAD_MS = 3_000;
 const PROCESS_TABLE_VERIFICATION_RESERVE_MS = PROCESS_TABLE_READ_TIMEOUT_MS;
-export const PROCESS_TREE_TERMINATION_BUDGET_MS = 25_000;
+// Initial snapshot, taskkill, and verification snapshot, plus process spawn overhead.
+export const PROCESS_TREE_TERMINATION_BUDGET_MS =
+  (PROCESS_TABLE_READ_TIMEOUT_MS * 2) + TASKKILL_TIMEOUT_MS + PROCESS_TREE_DEADLINE_OVERHEAD_MS;
 const WINDOWS_PROCESS_TABLE_COMMAND = [
   // Fetch only the parsed properties. Materializing every Win32_Process
   // property is roughly twice as slow and pushes loaded machines past the
@@ -86,6 +90,8 @@ export type ProcessTreeTerminationResult =
       snapshot?: ProcessTreeSnapshot;
       survivors?: ProcessIdentity[];
       error?: string;
+      /** The kill command ran out of time before it finished; the captured tree may be partly terminated. */
+      commandTimedOut?: boolean;
     };
 
 export interface ProcessTreeTerminationObservation {
@@ -197,6 +203,35 @@ function commandError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** execFile sets `killed` when it terminated the command itself, which it does only on timeout or output overflow. */
+function wasKilledByTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const failure = error as Error & { code?: unknown; killed?: unknown };
+  return failure.killed === true && failure.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+}
+
+/**
+ * execFile's own message is just "Command failed: <full command line>", which
+ * hides why a process command failed. Name the operation and the reason instead.
+ */
+function describeProcessCommandFailure(label: string, error: unknown, timeoutMs: number): string {
+  if (!(error instanceof Error)) return `${label} failed: ${String(error)}`;
+  const failure = error as Error & { code?: unknown; killed?: unknown; signal?: unknown; stderr?: unknown };
+  const reason = failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+    ? "exceeded its output buffer"
+    : wasKilledByTimeout(error)
+      ? `timed out after ${timeoutMs}ms`
+      : typeof failure.code === "number"
+        ? `exited with code ${failure.code}`
+        : typeof failure.code === "string"
+          ? `failed to start (${failure.code})`
+          : typeof failure.signal === "string"
+            ? `was terminated by ${failure.signal}`
+            : `failed: ${failure.message.split(/\r?\n/)[0]}`;
+  const stderr = stringifyProcessOutput(failure.stderr);
+  return stderr ? `${label} ${reason}: ${stderr}` : `${label} ${reason}`;
+}
+
 async function readWindowsProcessTable(
   deadline: Deadline,
   timeoutCapMs = PROCESS_TABLE_READ_TIMEOUT_MS,
@@ -216,7 +251,7 @@ async function readWindowsProcessTable(
     );
     return { ok: true, table: parseWindowsProcessTable(String(stdout)) };
   } catch (error) {
-    return { ok: false, error: commandError(error) };
+    return { ok: false, error: describeProcessCommandFailure("CIM process snapshot", error, timeoutMs) };
   }
 }
 
@@ -239,7 +274,7 @@ async function readPosixProcessTable(
     );
     return { ok: true, table: parsePosixProcessTable(String(stdout)) };
   } catch (error) {
-    return { ok: false, error: commandError(error) };
+    return { ok: false, error: describeProcessCommandFailure("ps process snapshot", error, timeoutMs) };
   }
 }
 
@@ -409,25 +444,31 @@ function matchingIdentities(
   return identities.filter((identity) => identityMatches(table, identity));
 }
 
+type TreeKillOutcome = {
+  error?: string;
+  /** The command did not get, or did not finish within, its share of the deadline. */
+  timedOut: boolean;
+};
+
 async function requestWindowsTreeKill(
   identity: ProcessIdentity,
   deadline: Deadline,
-): Promise<string | undefined> {
+): Promise<TreeKillOutcome> {
   const budgetMs = remainingMs(deadline);
   const verificationReserveMs = budgetMs > PROCESS_TABLE_VERIFICATION_RESERVE_MS
     ? PROCESS_TABLE_VERIFICATION_RESERVE_MS
     : Math.floor(budgetMs / 2);
   const killDeadline = deadlineBefore(deadline, verificationReserveMs);
   const timeoutMs = remainingMs(killDeadline, TASKKILL_TIMEOUT_MS);
-  if (timeoutMs <= 0) return "deadline exceeded before taskkill";
+  if (timeoutMs <= 0) return { error: "deadline exceeded before taskkill", timedOut: true };
   try {
     await execFileAsync("taskkill", ["/T", "/F", "/PID", String(identity.pid)], {
       windowsHide: true,
       timeout: timeoutMs,
     });
-    return undefined;
+    return { timedOut: false };
   } catch (error) {
-    return commandError(error);
+    return { error: describeProcessCommandFailure("taskkill", error, timeoutMs), timedOut: wasKilledByTimeout(error) };
   }
 }
 
@@ -496,9 +537,10 @@ export async function terminateProcessTree(
   }
   const snapshot: ProcessTreeSnapshot = { root, descendants };
   const terminationStartedAt = performance.now();
-  const commandFailure = isWindows()
+  const kill: TreeKillOutcome = isWindows()
     ? await requestWindowsTreeKill(root, deadline)
-    : requestPosixTreeKill(snapshot);
+    : { error: requestPosixTreeKill(snapshot), timedOut: false };
+  const commandFailure = kill.error;
   onPhase?.({ phase: "terminate", durationMs: performance.now() - terminationStartedAt,
     outcome: commandFailure ? "failed" : "completed", pid: root.pid, ...(commandFailure ? { error: commandFailure } : {}) });
 
@@ -559,6 +601,7 @@ export async function terminateProcessTree(
     snapshot,
     survivors,
     ...(commandFailure ? { error: commandFailure } : {}),
+    ...(kill.timedOut ? { commandTimedOut: true } : {}),
   };
 }
 

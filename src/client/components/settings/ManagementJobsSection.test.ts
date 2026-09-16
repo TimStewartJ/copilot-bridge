@@ -64,6 +64,7 @@ function createAgentBackendStatus(overrides: Partial<AgentBackendStatus> = {}): 
     recoveryCount: 1,
     lastRecoveryAt: "2026-05-20T12:04:00.000Z",
     lastRecoveryError: "resume failed",
+    recoveryBlockedAt: null,
     lastInterruptedSessionCount: 3,
     lastAutoResumedSessionCount: 2,
     ...overrides,

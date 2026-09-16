@@ -57,8 +57,9 @@ describe("owned Copilot stdio recovery on the actual host platform", () => {
     const unsubscribe = globalBus.subscribe((event) => {
       if (event.type !== "backend:status" || !event.agentBackend) return;
       if (event.agentBackend.state === "ready" && event.agentBackend.recoveryCount === 1) resolveRecovery();
-      else if (event.agentBackend.state === "disconnected" && event.agentBackend.lastRecoveryError) {
-        rejectRecovery(new Error(event.agentBackend.lastRecoveryError));
+      else if (event.agentBackend.recoveryBlockedAt) {
+        // Transient fencing failures are retried; only a blocked recovery is final.
+        rejectRecovery(new Error(event.agentBackend.lastRecoveryError ?? "Agent backend recovery blocked"));
       }
     });
     const unrelated = spawn(process.execPath, ["-e", "process.send('ready'); setInterval(() => {}, 1000)"], {
