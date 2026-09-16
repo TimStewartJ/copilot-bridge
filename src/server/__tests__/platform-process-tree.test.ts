@@ -19,6 +19,8 @@ import {
   getDeviceHibernateCommand,
   getProcessIdentityStatus,
   getProcessIdentityStatuses,
+  PROCESS_TABLE_READ_TIMEOUT_MS,
+  PROCESS_TREE_TERMINATION_BUDGET_MS,
   removeDirectoryLink,
   sampleProcessTree,
   shouldSpawnDetachedProcessGroup,
@@ -394,14 +396,101 @@ describe("process tree platform helpers", () => {
 
     const result = await terminateProcessTree(
       { pid: 100, startMarker: "1000" },
-      createDeadline(8_050),
+      createDeadline(PROCESS_TABLE_READ_TIMEOUT_MS + 50),
     );
 
     expect(result).toMatchObject({ ok: false, status: "kill-failed" });
+    expect(result).not.toHaveProperty("commandTimedOut");
     expect(taskkillTimeoutMs).toBeGreaterThan(0);
     expect(taskkillTimeoutMs).toBeLessThanOrEqual(50);
     expect(execFileMock.mock.calls.filter(([command]) => command === "taskkill")).toHaveLength(1);
     expect(execFileMock.mock.calls.some(([command]) => command === "wmic")).toBe(false);
+  });
+
+  it("flags a taskkill that ran out of time so callers can retry the survivors", async () => {
+    setPlatform("win32");
+    let snapshots = 0;
+    mockExec((command, _args, options, callback) => {
+      if (command === "powershell.exe") {
+        snapshots++;
+        callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "101 100 1001", "");
+        return;
+      }
+      callback(Object.assign(new Error("Command failed: taskkill /T /F /PID 100"), {
+        killed: true, signal: "SIGTERM", code: null,
+      }), "", "");
+      expect(Number(options.timeout)).toBeGreaterThan(0);
+    });
+
+    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS)))
+      .toMatchObject({
+        ok: false,
+        status: "kill-failed",
+        commandTimedOut: true,
+        survivors: [{ pid: 101, startMarker: "1001" }],
+        error: expect.stringMatching(/^taskkill timed out after \d+ms$/),
+      });
+  });
+
+  it("completes an eleven-second CIM snapshot that an eight-second cap used to kill", async () => {
+    setPlatform("win32");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
+    try {
+      const latencyMs = 11_000;
+      const snapshotTimeouts: number[] = [];
+      mockExec((command, _args, options, callback) => {
+        if (command !== "powershell.exe") {
+          callback(null, "", "");
+          return;
+        }
+        const timeoutMs = Number(options.timeout);
+        snapshotTimeouts.push(timeoutMs);
+        const first = snapshotTimeouts.length === 1;
+        setTimeout(() => {
+          if (latencyMs > timeoutMs) {
+            callback(Object.assign(new Error("Command failed: powershell.exe"), { killed: true, signal: "SIGTERM" }), "", "");
+          } else {
+            callback(null, first ? "100 1 1000\r\n101 100 1001" : "", "");
+          }
+        }, Math.min(latencyMs, timeoutMs));
+      });
+
+      const result = terminateProcessTree(
+        { pid: 100, startMarker: "1000" },
+        createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
+      );
+      await vi.advanceTimersByTimeAsync(2 * latencyMs);
+      await expect(result).resolves.toMatchObject({ ok: true, status: "terminated" });
+      expect(snapshotTimeouts).toHaveLength(2);
+      expect(Math.min(...snapshotTimeouts)).toBeGreaterThan(latencyMs);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the failed snapshot and why it failed instead of repeating the command line", async () => {
+    setPlatform("win32");
+    mockExec((_command, _args, _options, callback) => callback(
+      Object.assign(new Error("Command failed: powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process"), {
+        killed: true, signal: "SIGTERM", code: null,
+      }),
+      "",
+      "",
+    ));
+    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS)))
+      .toMatchObject({
+        ok: false,
+        status: "snapshot-unavailable",
+        error: expect.stringMatching(/^CIM process snapshot timed out after \d+ms$/),
+      });
+
+    mockExec((_command, _args, _options, callback) => callback(
+      Object.assign(new Error("Command failed: powershell.exe\nAccess denied"), { killed: false, code: 1, stderr: "Access denied\r\n" }),
+      "",
+      "Access denied\r\n",
+    ));
+    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS)))
+      .toMatchObject({ ok: false, status: "snapshot-unavailable", error: "CIM process snapshot exited with code 1: Access denied" });
   });
 
   it.skipIf(!canCreateDirectoryLinks)("creates and removes directory links with native filesystem APIs", () => {

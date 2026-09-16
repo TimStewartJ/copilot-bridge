@@ -96,9 +96,11 @@ import {
   type RestartOutcome,
 } from "./launcher-restart.js";
 import {
+  createBlockedBackendRecoveryMonitor,
   evaluateHealthPoll,
   evaluatePostRecoveryState,
   evaluateUnexpectedExit,
+  readRecoveryBlockedAt,
   shouldIgnoreHealthPollResult,
 } from "./launcher-health.js";
 import {
@@ -161,8 +163,13 @@ const HEALTH_TIMEOUT = 120_000;
 const HEALTH_POLL_INTERVAL = 30_000;
 const HEALTH_POLL_TIMEOUT = 5_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
+/** How long the server may report blocked agent backend recovery before the launcher restarts it. */
+const BLOCKED_BACKEND_RECOVERY_GRACE_MS = 60_000;
+const BLOCKED_BACKEND_RECOVERY_MAX_RESTARTS = 3;
+const BLOCKED_BACKEND_RECOVERY_RESTART_WINDOW_MS = 60 * 60_000;
 
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
+const WEBHOOK_TIMEOUT_MS = 10_000;
 
 const BUSY_CHECK_INTERVAL = 3_000;
 const BUSY_WAIT_TIMEOUT = 3_600_000; // 60 minutes max wait
@@ -222,6 +229,19 @@ const tunnelSupervisor = new TunnelSupervisor({
   log,
   onReady: (url) => notifyWebhook("🔗 Copilot Bridge public URL ready", url),
 });
+const blockedBackendRecovery = createBlockedBackendRecoveryMonitor({
+  graceMs: BLOCKED_BACKEND_RECOVERY_GRACE_MS,
+  maxRestarts: BLOCKED_BACKEND_RECOVERY_MAX_RESTARTS,
+  windowMs: BLOCKED_BACKEND_RECOVERY_RESTART_WINDOW_MS,
+  log,
+  notify: (message) => {
+    void notifyWebhook(`${message} (${tag()})`, tunnelSupervisor.getUrl());
+  },
+  // The HTTP server is responsive, so only the verified force-kill path can also
+  // take down a runtime that fencing could not prove gone.
+  restart: (reason) => recoverServer(reason, { killExisting: true }),
+  isAutoRecoverySuppressed: () => suppressAutoRecovery,
+});
 
 type ServerLaunchTarget = {
   root: string;
@@ -233,6 +253,8 @@ type ServerLaunchTarget = {
 type HealthProbeResult = {
   healthy: boolean;
   failureDetail?: string;
+  /** When the server reported that agent backend recovery is blocked. */
+  recoveryBlockedAt?: string | null;
 };
 
 function log(msg: string) {
@@ -853,7 +875,10 @@ async function probeServerHealth(timeoutMs: number): Promise<HealthProbeResult> 
   try {
     const res = await fetch(bridgeLocalUrl("/api/health"), { signal: controller.signal });
     const durationMs = Date.now() - startedAt;
-    if (res.ok) return { healthy: true };
+    if (res.ok) {
+      const body = await res.json().catch(() => null);
+      return { healthy: true, recoveryBlockedAt: readRecoveryBlockedAt(body) };
+    }
     return { healthy: false, failureDetail: `HTTP ${res.status} after ${durationMs}ms` };
   } catch (error) {
     const durationMs = Date.now() - startedAt;
@@ -1016,6 +1041,9 @@ async function pollServerHealth(): Promise<void> {
 
     if (healthResult.healthy) {
       clearRollbackCheckpointAfterHealthyState();
+      if (blockedBackendRecovery.observe(healthResult.recoveryBlockedAt ?? null, Date.now()) === "restarting") {
+        return;
+      }
     }
 
     if (!decision.logMessage) {
@@ -1691,6 +1719,8 @@ async function notifyWebhook(message: string, url?: string): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: message, url }),
+      // Recovery paths await this; an unresponsive endpoint must not hold them open.
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
     if (res.ok) {
       log("Webhook notification sent");

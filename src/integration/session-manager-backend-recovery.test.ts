@@ -16,10 +16,11 @@ import { createTelemetryStore } from "../server/telemetry-store.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
+  BACKEND_RECOVERY_BLOCKED_MESSAGE,
   BACKEND_RECOVERY_CONTINUE_PROMPT,
 } from "../server/backend-availability.js";
 import type { AgentBackendDisconnect } from "../server/agent-backend/types.js";
-import { RUNTIME_FENCE_BUDGET_MS, type RuntimeFenceOptions } from "../server/agent-backend/runtime-fence.js";
+import { RUNTIME_FENCE_BUDGET_MS, RuntimeFenceError, type RuntimeFenceOptions } from "../server/agent-backend/runtime-fence.js";
 import { createDeadline } from "../server/deadline.js";
 import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
 
@@ -270,7 +271,7 @@ describe("SessionManager backend disconnect recovery", () => {
     }
   });
 
-  it("retains ownership after the aggregate fence deadline even if acknowledgement arrives late", async () => {
+  it("retries after the aggregate fence deadline and accepts a late acknowledgement without fencing twice", async () => {
     vi.useFakeTimers();
     const dead = createFakeBackend("dead", {});
     const fresh = createFakeBackend("fresh", {});
@@ -281,15 +282,101 @@ describe("SessionManager backend disconnect recovery", () => {
       await manager.initialize();
       dead.simulateDisconnect();
       await vi.advanceTimersByTimeAsync(RUNTIME_FENCE_BUDGET_MS);
+      expect(manager.getBackendStatus()).toMatchObject({ state: "disconnected", recoveryBlockedAt: null });
       expect(manager.getBackendStatus().lastRecoveryError).toContain("Runtime fencing timed-out");
+      expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECONNECTING_MESSAGE);
       expect(fresh.start).not.toHaveBeenCalled();
       finishFence();
       await flushMicrotasks();
+      // Ownership is still retained until the scheduled retry observes the acknowledgement.
       expect(fresh.start).not.toHaveBeenCalled();
-      expect(manager.getBackendUnavailableReason()).toContain("restart");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1, lastRecoveryError: null }));
+      expect(fresh.start).toHaveBeenCalledOnce();
       expect(dead.fence).toHaveBeenCalledOnce();
     } finally {
       finishFence?.();
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("retries transient fencing failures with backoff until the runtime is proven gone", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    const fresh = createFakeBackend("fresh", {});
+    dead.fence
+      .mockRejectedValueOnce(new RuntimeFenceError("Runtime fencing failed: snapshot-unavailable: CIM process snapshot timed out after 20000ms", true))
+      .mockRejectedValueOnce(new RuntimeFenceError("Runtime fencing failed: deadline-exceeded", true))
+      .mockResolvedValueOnce(undefined);
+    const { manager, telemetryStore } = createManager([dead, fresh]);
+    try {
+      await manager.initialize();
+      dead.simulateDisconnect({ reason: "health-probe-failed", detail: "watchdog no-progress" });
+      await vi.waitFor(() => expect(dead.fence).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(manager.getBackendStatus().lastRecoveryError).toContain("snapshot-unavailable"));
+      expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECONNECTING_MESSAGE);
+      expect(fresh.start).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(dead.fence).toHaveBeenCalledTimes(2));
+      expect(fresh.start).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
+      expect(dead.fence).toHaveBeenCalledTimes(3);
+      expect(dead.fence.mock.invocationCallOrder[2]).toBeLessThan(fresh.start.mock.invocationCallOrder[0]);
+      expect(manager.getBackendStatus()).toMatchObject({ lastRecoveryError: null, recoveryBlockedAt: null });
+      expect(telemetryStore.querySpans({ name: "backend.recover", limit: 5 }).map((span) => span.metadata?.outcome).sort())
+        .toEqual(["failed", "failed", "recovered"]);
+    } finally {
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("blocks and publishes when transient fencing never succeeds within the retry window", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    const fresh = createFakeBackend("fresh", {});
+    dead.fence.mockRejectedValue(new RuntimeFenceError("Runtime fencing failed: snapshot-unavailable", true));
+    const { manager, statusEvents } = createManager([dead, fresh]);
+    try {
+      await manager.initialize();
+      dead.simulateDisconnect();
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECONNECTING_MESSAGE);
+      expect(manager.getBackendStatus().recoveryBlockedAt).toBeNull();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECOVERY_BLOCKED_MESSAGE);
+      const blockedAt = manager.getBackendStatus().recoveryBlockedAt;
+      expect(Number.isFinite(Date.parse(blockedAt))).toBe(true);
+      expect(manager.backendRecoveryRetryTimer).toBeNull();
+      const fenceCalls = dead.fence.mock.calls.length;
+      expect(fenceCalls).toBeGreaterThan(3);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(dead.fence).toHaveBeenCalledTimes(fenceCalls);
+      expect(fresh.start).not.toHaveBeenCalled();
+      expect(manager.getBackendStatus().recoveryBlockedAt).toBe(blockedAt);
+      const lastStatus = statusEvents.filter((event) => event.type === "backend:status").at(-1);
+      expect(lastStatus?.agentBackend.recoveryBlockedAt).toBe(blockedAt);
+    } finally {
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("blocks immediately on a terminal fencing failure without retrying it", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    const fresh = createFakeBackend("fresh", {});
+    dead.fence.mockRejectedValue(new RuntimeFenceError("Runtime fencing failed: survivors (4243, alive)", false));
+    const { manager } = createManager([dead, fresh]);
+    try {
+      await manager.initialize();
+      dead.simulateDisconnect();
+      await vi.waitFor(() => expect(manager.getBackendUnavailableReason()).toBe(BACKEND_RECOVERY_BLOCKED_MESSAGE));
+      expect(manager.getBackendStatus().recoveryBlockedAt).toEqual(expect.any(String));
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(dead.fence).toHaveBeenCalledOnce();
+      expect(fresh.start).not.toHaveBeenCalled();
+    } finally {
       await manager.gracefulShutdown();
     }
   });

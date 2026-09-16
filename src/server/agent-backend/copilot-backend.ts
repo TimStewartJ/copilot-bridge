@@ -25,9 +25,24 @@ import {
 } from "../../shared/hydrafusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
 import { capDeadline, createDeadline, settleByDeadline, sleepUntilDeadline, type Deadline } from "../deadline.js";
-import { getProcessIdentityStatuses, sampleProcessTree, terminateProcessTree, type ProcessIdentity, type ProcessTreeSnapshot } from "../platform.js";
-import { RUNTIME_FENCE_BUDGET_MS, RUNTIME_FENCE_CHILD_EXIT_WAIT_MS, RUNTIME_FENCE_STARTUP_WAIT_MS, type RuntimeFenceObservation, type RuntimeFenceOptions } from "./runtime-fence.js";
-import { boundRpc, type AgentRpcName } from "./rpc-timeouts.js";
+import {
+  getProcessIdentityStatuses,
+  sampleProcessTree,
+  terminateProcessTree,
+  type ProcessIdentity,
+  type ProcessTreeSnapshot,
+  type ProcessTreeTerminationResult,
+} from "../platform.js";
+import {
+  isRetryableRuntimeFenceError,
+  RUNTIME_FENCE_BUDGET_MS,
+  RUNTIME_FENCE_CHILD_EXIT_WAIT_MS,
+  RUNTIME_FENCE_STARTUP_WAIT_MS,
+  RuntimeFenceError,
+  type RuntimeFenceObservation,
+  type RuntimeFenceOptions,
+} from "./runtime-fence.js";
+import { boundRpc, isAgentRpcTimeoutError, type AgentRpcName } from "./rpc-timeouts.js";
 import type {
   AgentBackend,
   AgentBackendConnectionStatus,
@@ -532,6 +547,24 @@ function wrapCopilotSession(
   return new CopilotAgentSession(session, rpc, onBackendDisconnect);
 }
 
+/** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
+export const BACKEND_PING_ATTEMPTS = 3;
+export const BACKEND_PING_RETRY_DELAY_MS = 1_000;
+
+function identityKey(identity: ProcessIdentity): string {
+  return `${identity.pid}:${identity.startMarker}`;
+}
+
+/**
+ * Termination failures that prove nothing about the runtime: the process table could not be
+ * observed in time, or the kill command ran out of time. A later attempt may still succeed.
+ */
+function isRetryableTerminationFailure(result: Extract<ProcessTreeTerminationResult, { ok: false }>): boolean {
+  return result.status === "snapshot-unavailable"
+    || result.status === "deadline-exceeded"
+    || (result.status === "kill-failed" && result.commandTimedOut === true);
+}
+
 function formatDisconnectDetail(error: unknown): string | undefined {
   if (error === undefined || error === null) return undefined;
   if (error instanceof Error) return error.message;
@@ -564,7 +597,16 @@ export class CopilotBackend implements AgentBackend {
   private healthProbe: Promise<boolean> | undefined;
   private readonly logger: Pick<Console, "warn" | "error">;
   private startPromise: Promise<unknown> | undefined;
+  /** Set once by the first fence request and never cleared: a fenced backend never starts again. */
+  private fenceRequested = false;
+  /** The current fence attempt. Cleared only after a retryable failure so a later caller can try again. */
   private fencePromise: Promise<void> | undefined;
+  /**
+   * Processes a failed fence attempt may already have signalled but did not prove gone. The next
+   * attempt must re-check them before acknowledging: killing a parent orphans its surviving
+   * children, so the owned tree the next attempt starts from may no longer reach them.
+   */
+  private unverifiedFenceIdentities: ProcessIdentity[] = [];
   private ownedChild: ChildProcess | undefined;
   private ownedTree: ProcessTreeSnapshot | null = null;
   private readonly localStdioOwnership: boolean;
@@ -611,7 +653,7 @@ export class CopilotBackend implements AgentBackend {
   });
 
   start(): Promise<unknown> {
-    if (this.fencePromise) return Promise.reject(new Error("Cannot start a fenced backend"));
+    if (this.fenceRequested) return Promise.reject(new Error("Cannot start a fenced backend"));
     this.startPromise ??= (async () => {
       const result = await this.startClient();
       await this.captureOwnedTree(createDeadline(RUNTIME_FENCE_STARTUP_WAIT_MS));
@@ -622,7 +664,14 @@ export class CopilotBackend implements AgentBackend {
   }
 
   fence(options: RuntimeFenceOptions = {}): Promise<void> {
-    this.fencePromise ??= this.fenceOwnedRuntime(options.deadline ?? createDeadline(RUNTIME_FENCE_BUDGET_MS), options.onPhase);
+    this.fenceRequested = true;
+    if (!this.fencePromise) {
+      const attempt = this.fenceOwnedRuntime(options.deadline ?? createDeadline(RUNTIME_FENCE_BUDGET_MS), options.onPhase);
+      this.fencePromise = attempt;
+      void attempt.catch((error: unknown) => {
+        if (this.fencePromise === attempt && isRetryableRuntimeFenceError(error)) this.fencePromise = undefined;
+      });
+    }
     return this.fencePromise;
   }
 
@@ -654,7 +703,7 @@ export class CopilotBackend implements AgentBackend {
     const connection = Reflect.get(this.client, "connectionConfig");
     if (!this.localStdioOwnership || Reflect.get(this.client, "isExternalServer") !== false
       || Reflect.get(this.client, "ffiHost") || connection?.kind !== "stdio") {
-      throw new Error("Cannot fence an external, FFI, or unknown runtime owner");
+      throw new RuntimeFenceError("Cannot fence an external, FFI, or unknown runtime owner", false);
     }
     const starting = this.startPromise;
     if (!starting) return;
@@ -664,30 +713,46 @@ export class CopilotBackend implements AgentBackend {
       outcome: startup.status === "fulfilled" ? "completed" : "failed",
       ...(startup.status === "rejected" ? { error: formatDisconnectDetail(startup.error) } : {}),
     });
-    if (startup.status === "timed-out") throw new Error("Cannot fence while SDK startup is still pending");
+    if (startup.status === "timed-out") throw new RuntimeFenceError("Cannot fence while SDK startup is still pending", true);
     const child = this.ownedChild;
+    if (child && !this.ownedTree && child.exitCode === null && child.signalCode === null) {
+      // The startup capture can fail on a loaded host. A child whose exit has not been
+      // observed cannot have had its PID recycled, so its current tree is still ours.
+      await this.captureOwnedTree(deadline);
+      if (!this.ownedTree) {
+        throw new RuntimeFenceError("Runtime fencing failed: snapshot-unavailable: could not capture the owned runtime process tree", true);
+      }
+    }
     // The loader's exit alone is not proof that its native runtime child exited.
     if (!child || !this.ownedTree || this.ownedTree.descendants.length === 0) {
-      throw new Error("Cannot prove ownership of the native stdio runtime process tree");
+      throw new RuntimeFenceError("Cannot prove ownership of the native stdio runtime process tree", false);
     }
+    const ownedIdentities = this.ownedTree.descendants.concat(this.ownedTree.root);
+    const owned = new Set(ownedIdentities.map(identityKey));
+    const retained = (await this.recheckUnverifiedFenceIdentities(deadline, onPhase))
+      .filter((identity) => !owned.has(identityKey(identity)));
     // Sampling is breadth-first. Fence each native subtree once, then let the
     // loader reap it before fencing the loader. Retained orphan identities remain
     // in the list and still require their own identity-verified termination.
-    const identities = this.ownedTree.descendants.concat(this.ownedTree.root);
+    const identities = [...this.ownedTree.descendants, ...retained, this.ownedTree.root];
     const verified = new Set<string>();
     for (const identity of identities) {
-      const key = `${identity.pid}:${identity.startMarker}`;
+      const key = identityKey(identity);
       if (verified.has(key)) continue;
       const result = await terminateProcessTree(identity, deadline, onPhase);
       if (!result.ok) {
+        this.retainUnverifiedFenceIdentities([...(result.snapshot?.descendants ?? []), ...(result.survivors ?? [])]);
         if (result.status !== "survivors" || !result.survivors?.length) {
-          throw new Error(`Runtime fencing failed: ${result.status}${result.error ? `: ${result.error}` : ""}`);
+          throw new RuntimeFenceError(
+            `Runtime fencing failed: ${result.status}${result.error ? `: ${result.error}` : ""}`,
+            isRetryableTerminationFailure(result),
+          );
         }
         await this.waitForFencedSurvivors(result.survivors, deadline, onPhase);
       }
       verified.add(key);
       for (const entry of result.snapshot?.descendants ?? []) {
-        verified.add(`${entry.pid}:${entry.startMarker}`);
+        verified.add(identityKey(entry));
       }
     }
     if (child.exitCode === null && child.signalCode === null) {
@@ -700,11 +765,50 @@ export class CopilotBackend implements AgentBackend {
         }), capDeadline(deadline, RUNTIME_FENCE_CHILD_EXIT_WAIT_MS));
         onPhase?.({ phase: "child-exit", durationMs: performance.now() - exitStartedAt,
           outcome: exited.status === "fulfilled" ? "completed" : "failed", pid: child.pid });
-        if (exited.status !== "fulfilled") throw new Error("Runtime process tree terminated but SDK child exit is unconfirmed");
+        if (exited.status !== "fulfilled") {
+          throw new RuntimeFenceError("Runtime process tree terminated but SDK child exit is unconfirmed", true);
+        }
       } finally {
         child.off("exit", onExit);
       }
     }
+    this.unverifiedFenceIdentities = [];
+  }
+
+  private retainUnverifiedFenceIdentities(identities: readonly ProcessIdentity[]): void {
+    const known = new Set(this.unverifiedFenceIdentities.map(identityKey));
+    for (const identity of identities) {
+      const key = identityKey(identity);
+      if (known.has(key)) continue;
+      known.add(key);
+      this.unverifiedFenceIdentities.push(identity);
+    }
+  }
+
+  /**
+   * Checks every process a previous attempt left unverified with one process-table read.
+   * Returns the ones still alive, which this attempt must terminate. An unreadable status
+   * proves nothing either way, so it fails the attempt without acknowledging ownership.
+   */
+  private async recheckUnverifiedFenceIdentities(
+    deadline: Deadline,
+    onPhase?: (observation: RuntimeFenceObservation) => void,
+  ): Promise<ProcessIdentity[]> {
+    const retained = this.unverifiedFenceIdentities;
+    if (retained.length === 0) return [];
+    const startedAt = performance.now();
+    const statuses = await getProcessIdentityStatuses(retained, deadline);
+    const unknown = retained.find((identity) => {
+      const status = statuses.get(identity);
+      return !status || status === "unknown";
+    });
+    onPhase?.({ phase: "survivors", durationMs: performance.now() - startedAt,
+      outcome: unknown ? "failed" : "completed" });
+    if (unknown) {
+      throw new RuntimeFenceError(`Runtime fencing failed: survivors (${unknown.pid}, unknown)`, true);
+    }
+    this.unverifiedFenceIdentities = retained.filter((identity) => statuses.get(identity) === "alive");
+    return this.unverifiedFenceIdentities;
   }
 
   private async waitForFencedSurvivors(
@@ -720,13 +824,16 @@ export class CopilotBackend implements AgentBackend {
         pending = pending.filter((identity) => {
           const status = statuses.get(identity);
           if (!status || status === "unknown") {
-            throw new Error(`Runtime fencing failed: survivors (${identity.pid}, unknown)`);
+            throw new RuntimeFenceError(`Runtime fencing failed: survivors (${identity.pid}, unknown)`, true);
           }
           return status === "alive";
         });
         if (pending.length === 0) return;
       } while (await sleepUntilDeadline(100, deadline));
-      throw new Error(`Runtime fencing failed: survivors (${pending.map((identity) => identity.pid).join(", ")}, alive)`);
+      throw new RuntimeFenceError(
+        `Runtime fencing failed: survivors (${pending.map((identity) => identity.pid).join(", ")}, alive)`,
+        false,
+      );
     } finally {
       onPhase?.({ phase: "survivors", durationMs: performance.now() - startedAt,
         outcome: pending.length === 0 ? "completed" : "failed" });
@@ -779,30 +886,48 @@ export class CopilotBackend implements AgentBackend {
 
   /**
    * Ping the runtime over the RPC channel. Coalesces concurrent probes. A
-   * failed probe marks the backend disconnected (once) so every caller sees
-   * the same outcome.
+   * single slow ping on a loaded host is not proof of loss, so while the
+   * transport still looks alive the probe retries timed-out pings and only
+   * declares the backend disconnected (once) after consecutive misses. A
+   * closed transport, exited process, or non-timeout failure still reports
+   * immediately.
    */
   probeHealth(timeoutMs?: number, reason = "health-probe"): Promise<boolean> {
     if (this.healthProbe) return this.healthProbe;
     const probe = (async (): Promise<boolean> => {
-      if (this.stopping) return false;
-      if (this.lastDisconnect) return false;
-      const client = this.client as any;
-      if (client.state !== "connected" || !client.connection) {
-        this.emitDisconnect("health-probe-failed", `${reason}: client state is ${String(client.state)}`);
-        return false;
-      }
-      try {
-        await boundRpc("backend.ping", () => client.ping("bridge-health"), {}, timeoutMs);
-        return true;
-      } catch (error) {
+      for (let attempt = 1; ; attempt++) {
         if (this.stopping) return false;
-        const detail = error instanceof Error ? error.message : String(error);
-        this.emitDisconnect(
-          reason.startsWith("rpc-timeout") ? "rpc-timeout" : "health-probe-failed",
-          `${reason}: ${detail}`,
-        );
-        return false;
+        if (this.lastDisconnect) return false;
+        const client = this.client as any;
+        if (client.state !== "connected" || !client.connection) {
+          this.emitDisconnect("health-probe-failed", `${reason}: client state is ${String(client.state)}`);
+          return false;
+        }
+        try {
+          await boundRpc("backend.ping", () => client.ping("bridge-health"), {}, timeoutMs);
+          if (attempt > 1) {
+            this.logger.warn(`[copilot-backend] ${reason}: backend.ping answered on attempt ${attempt}/${BACKEND_PING_ATTEMPTS}; keeping the backend`);
+          }
+          return true;
+        } catch (error) {
+          if (this.stopping) return false;
+          const detail = error instanceof Error ? error.message : String(error);
+          if (isAgentRpcTimeoutError(error) && attempt < BACKEND_PING_ATTEMPTS) {
+            this.logger.warn(
+              `[copilot-backend] ${reason}: backend.ping timed out (attempt ${attempt}/${BACKEND_PING_ATTEMPTS}); retrying before declaring the backend lost`,
+            );
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, BACKEND_PING_RETRY_DELAY_MS);
+              timer.unref?.();
+            });
+            continue;
+          }
+          this.emitDisconnect(
+            reason.startsWith("rpc-timeout") ? "rpc-timeout" : "health-probe-failed",
+            `${reason}: ${detail}${attempt > 1 ? ` (${attempt} consecutive pings)` : ""}`,
+          );
+          return false;
+        }
       }
     })();
     this.healthProbe = probe;
@@ -914,7 +1039,7 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
-    if (this.fencePromise) throw new Error("Cannot create a session on a fenced backend");
+    if (this.fenceRequested) throw new Error("Cannot create a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);
     return wrapCopilotSession(
@@ -926,7 +1051,7 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
-    if (this.fencePromise) throw new Error("Cannot resume a session on a fenced backend");
+    if (this.fenceRequested) throw new Error("Cannot resume a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
     return wrapCopilotSession(

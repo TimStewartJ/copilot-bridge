@@ -195,7 +195,9 @@ On Windows, `.\scripts\start-bridge.ps1` launches the durable outer supervisor
 in the background; `-Wait` keeps the caller attached for Scheduled Task setups.
 `.\scripts\stop-bridge.ps1`
 writes an intentional-stop sentinel before terminating this checkout's process
-tree, so the supervisor will not relaunch it. A normal
+tree, so the supervisor will not relaunch it. It stops the tree's roots before
+their descendants, so nothing respawns mid-stop, and verifies process identities
+against one process snapshot per pass. A normal
 `.\scripts\start-bridge.ps1` explicitly clears that sentinel; to resume in
 supervised mode, use `.\scripts\start-bridge.ps1 -Wait -ClearIntentionalStop`.
 
@@ -289,9 +291,19 @@ Late release can clear quarantine before recycling, but timeout never clears own
 
 At the deadline, `cleanup-stalled` uses the same replacement mechanism as transport
 recovery and model refresh: retain owner, confirm its `fence()`, discard old handles
-and reservations, then own/start the replacement. Unknown fencing blocks recovery.
-Only failed candidate startup followed by confirmed candidate fencing permits a retry
-(recovery only, at most three attempts). Shutdown can always reach the current owner.
+and reservations, then own/start the replacement. Recovery retries fencing that could
+not observe or finish in time (a timed-out snapshot or observation, an exhausted
+deadline, unknown survivor status, or a taskkill that ran out of time) with backoff for
+up to five minutes. Processes a failed attempt may already have signalled stay
+unverified: the next attempt re-checks them with one process-table read and terminates
+any that are still alive before it acknowledges, because a killed parent orphans its
+surviving children. Unknown ownership, unverifiable identities, and processes that
+outlive their kill block recovery immediately. Failed candidate startup followed by
+confirmed candidate fencing permits at most two more start attempts. A blocked recovery
+publishes `agentBackend.recoveryBlockedAt`; the launcher force-restarts a server that
+has reported it for 60 seconds, at most three times per hour, and only reports (log
+plus optional webhook) when that budget is spent or automatic recovery is suppressed.
+Shutdown can always reach the current owner.
 Accepted interactive work uses the existing continuation/cooldown policy; quiet
 defer turns are not automatically continued. Expiring a resume barrier also requires
 fenced recovery rather than admitting another handle.
@@ -303,9 +315,12 @@ additional native close call. Do not infer process exit from an empty task list,
 successful resume, or healthy ping.
 
 Runtime fencing uses one absolute deadline shared by SessionManager and the backend.
-The default 65-second aggregate budget is derived from two 25-second process-tree
-termination phases plus bounded startup (10 seconds) and SDK child-exit confirmation
-(5 seconds). It is not reset per PID, retry, or concurrent caller. A shutdown caller
+The default 111-second aggregate budget is derived from two 48-second process-tree
+termination phases (two 20-second CIM snapshots, a 5-second taskkill, and 3 seconds of
+spawn overhead) plus bounded startup (10 seconds) and SDK child-exit confirmation
+(5 seconds). Concurrent callers join the in-flight attempt without resetting its
+deadline, and it is not reset per PID. Only a retryable failure lets a later recovery
+attempt start a fresh one, and a fenced backend never starts again. A shutdown caller
 can supply its shorter remaining deadline without extending the server's 13-second
 shutdown budget. Each native subtree is terminated and identity-verified before the
 loader; captured descendants covered by that verification are not scanned again.
@@ -317,8 +332,11 @@ Release/quarantine spans carry lease, generation, timing and outcome; backend re
 spans record replacement reasons and failures. `backend.fence` records the ownership
 acknowledgement, and `backend.fence.phase` records startup, snapshot, termination,
 verification, survivor, and child-exit timings and errors. No failed retirement
-episode is retried. A timed-out RPC plus failed ping indicates unresponsiveness, not
-proof that the runtime process crashed or its transport physically closed.
+episode is retried. A timed-out RPC triggers a liveness probe, and the runtime is
+declared lost only after three consecutive ping timeouts while its transport still
+looks alive (immediately when the process exits, the pipe closes, or a ping fails for
+another reason). That indicates unresponsiveness, not proof that the runtime process
+crashed or its transport physically closed.
 
 ### Public URL Configuration
 

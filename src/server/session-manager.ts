@@ -55,7 +55,7 @@ import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunch
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { SessionToolReadiness, SESSION_TOOL_READINESS_TIMEOUT_MS, type SessionToolReadinessSnapshot } from "./session-tool-readiness.js";
-import { RUNTIME_FENCE_BUDGET_MS } from "./agent-backend/runtime-fence.js";
+import { isRetryableRuntimeFenceError, RUNTIME_FENCE_BUDGET_MS } from "./agent-backend/runtime-fence.js";
 import {
   capDeadline,
   createDeadline,
@@ -284,6 +284,14 @@ const SESSION_ABORT_TIMEOUT_MS = 4_000;
 const ABORT_REQUEST_TIMEOUT_MS = 10_000;
 const BACKEND_RECOVERY_RETRY_INITIAL_MS = 5_000;
 const BACKEND_RECOVERY_RETRY_MAX_MS = 60_000;
+/** A replacement that fails to start is retried this many times before recovery blocks. */
+const BACKEND_RECOVERY_MAX_START_RETRIES = 2;
+/**
+ * Fencing that could not observe the process table (typically a slow CIM snapshot on a
+ * loaded host) proves nothing either way, so recovery keeps retrying it for this long
+ * before blocking. The host usually settles within a couple of minutes.
+ */
+const BACKEND_FENCE_RETRY_WINDOW_MS = 5 * 60_000;
 /** A session is re-sent a continue prompt at most once per window after a backend recovery. */
 const BACKEND_AUTO_RESUME_COOLDOWN_MS = 10 * 60_000;
 const BACKEND_AUTO_RESUME_IDLE_WAIT_MS = 30_000;
@@ -425,6 +433,15 @@ type BackendFence = {
 type BackendTransition = {
   owner: AgentBackend;
   phase: "retiring" | "starting" | "retrying" | "blocked";
+  /** What a "retrying" transition will attempt again. */
+  retry?: "fence" | "start";
+  /** When recovery gave up; published so a supervising launcher can restart the server. */
+  blockedAtMs?: number;
+};
+
+type BackendRecoveryProgress = {
+  startedAtMs: number;
+  startRetries: number;
 };
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
@@ -3155,6 +3172,29 @@ export class SessionManager {
     return fence.observation;
   }
 
+  /**
+   * Forget a fence observation that proved nothing so the next recovery attempt
+   * observes a fresh one. A still-running operation keeps its own deadline and is
+   * joined by the next observation; it is forgotten only once it has failed.
+   */
+  private resetBackendFenceAttempt(backend: AgentBackend): void {
+    const fence = this.backendFences.get(backend);
+    if (!fence || fence.confirmed) return;
+    fence.observation = undefined;
+    fence.deadline = undefined;
+    const operation = fence.operation;
+    if (!operation) return;
+    void operation.then(() => undefined, () => {
+      if (fence.operation === operation && !fence.confirmed) fence.operation = undefined;
+    });
+  }
+
+  private blockBackendTransition(transition: BackendTransition): void {
+    transition.phase = "blocked";
+    transition.retry = undefined;
+    transition.blockedAtMs ??= Date.now();
+  }
+
   /** Why new work cannot reach the backend right now, or undefined when it can. */
   getBackendUnavailableReason(): string | undefined {
     if (this.backendTransition?.phase === "blocked") return BACKEND_RECOVERY_BLOCKED_MESSAGE;
@@ -3238,6 +3278,9 @@ export class SessionManager {
       recoveryCount: this.backendRecoveryCount,
       lastRecoveryAt: this.lastBackendRecoveryAtMs == null ? null : new Date(this.lastBackendRecoveryAtMs).toISOString(),
       lastRecoveryError: this.lastBackendRecoveryError,
+      recoveryBlockedAt: this.backendTransition?.phase === "blocked" && this.backendTransition.blockedAtMs != null
+        ? new Date(this.backendTransition.blockedAtMs).toISOString()
+        : null,
       lastInterruptedSessionCount: this.lastInterruptedSessionCount,
       lastAutoResumedSessionCount: this.lastAutoResumedSessionCount,
     };
@@ -3381,6 +3424,7 @@ export class SessionManager {
     deadBackend: AgentBackend,
     interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }>,
     attempt: number,
+    progress: BackendRecoveryProgress = { startedAtMs: Date.now(), startRetries: 0 },
   ): Promise<void> {
     if (this.shuttingDown) return;
     if (this.backendRotation) {
@@ -3417,24 +3461,37 @@ export class SessionManager {
 
     if (!recovered) {
       if (this.shuttingDown) return;
-      if (this.backendTransition?.phase !== "retrying" || attempt >= 2) {
-        if (this.backendTransition) this.backendTransition.phase = "blocked";
+      const transition = this.backendTransition;
+      const retry = transition?.phase === "retrying" ? transition.retry : undefined;
+      const canRetry = retry === "fence"
+        ? Date.now() - progress.startedAtMs < BACKEND_FENCE_RETRY_WINDOW_MS
+        : retry === "start" && progress.startRetries < BACKEND_RECOVERY_MAX_START_RETRIES;
+      if (!transition || !canRetry) {
+        if (transition) this.blockBackendTransition(transition);
         for (const record of this.cleanupOwnership.values()) {
           record.phase = "operator-blocked";
           if (record.timer) clearTimeout(record.timer);
         }
-        console.error("[sdk] Runtime recovery blocked; ownership retained. An operator restart is required.");
+        console.error(
+          "[sdk] Runtime recovery blocked; ownership retained. A server restart is required "
+          + "(a supervising launcher performs it automatically).",
+        );
         this.notifySessionCapacityChanged();
+        this.emitBackendStatus();
         return;
       }
       const delayMs = Math.min(
         BACKEND_RECOVERY_RETRY_INITIAL_MS * Math.pow(2, attempt),
         BACKEND_RECOVERY_RETRY_MAX_MS,
       );
-      console.error(`[sdk] Retrying agent backend recovery in ${Math.round(delayMs / 1000)}s`);
+      console.error(
+        `[sdk] Retrying agent backend recovery in ${Math.round(delayMs / 1000)}s after `
+        + (retry === "fence" ? "a transient runtime fencing failure" : "a replacement start failure"),
+      );
+      const nextProgress = retry === "start" ? { ...progress, startRetries: progress.startRetries + 1 } : progress;
       this.backendRecoveryRetryTimer = setTimeout(() => {
         this.backendRecoveryRetryTimer = null;
-        void this.recoverBackendAfterDisconnect(deadBackend, interrupted, attempt + 1);
+        void this.recoverBackendAfterDisconnect(deadBackend, interrupted, attempt + 1, nextProgress);
       }, delayMs);
       this.backendRecoveryRetryTimer.unref?.();
       return;
@@ -3524,7 +3581,7 @@ export class SessionManager {
       this.backendTransition = transition;
       this.backend = null;
       this.backendCreatedAtMs = null;
-      let retryable = false;
+      let retry: BackendTransition["retry"];
       let fencingError: string | undefined;
       try {
         let stopFailure: { error: unknown } | undefined;
@@ -3541,6 +3598,11 @@ export class SessionManager {
         if (fenced.status !== "fulfilled") {
           fencingError = `Runtime fencing ${fenced.status}`
             + (fenced.status === "rejected" ? `: ${String(fenced.error)}` : "");
+          const transient = fenced.status === "timed-out" || isRetryableRuntimeFenceError(fenced.error);
+          if (transient && reason === "recovery" && !this.shuttingDown) {
+            retry = "fence";
+            this.resetBackendFenceAttempt(previousBackend);
+          }
         }
         if (stopFailure) throw stopFailure.error;
         if (fencingError) throw new Error(fencingError);
@@ -3571,7 +3633,9 @@ export class SessionManager {
             fencingError = `Candidate fencing ${cleanup.status}`
               + (cleanup.status === "rejected" ? `: ${String(cleanup.error)}` : "");
           }
-          retryable = !started && !this.shuttingDown && reason === "recovery" && cleanup.status === "fulfilled";
+          retry = !started && !this.shuttingDown && reason === "recovery" && cleanup.status === "fulfilled"
+            ? "start"
+            : undefined;
           throw error;
         }
         if (this.backendTransition === transition) this.backendTransition = null;
@@ -3579,7 +3643,12 @@ export class SessionManager {
         return nextBackend;
       } catch (error) {
         if (this.backendTransition === transition) {
-          transition.phase = retryable ? "retrying" : "blocked";
+          if (retry) {
+            transition.phase = "retrying";
+            transition.retry = retry;
+          } else {
+            this.blockBackendTransition(transition);
+          }
           this.backend = null;
           this.backendCreatedAtMs = null;
           this.backendLifecycleState = this.shuttingDown ? "stopped" : "disconnected";

@@ -11,7 +11,8 @@ export const BACKEND_DISCONNECTED_MESSAGE =
 /** The backend is being replaced after a disconnect; new work is refused until it is back. */
 export const BACKEND_RECONNECTING_MESSAGE = "Agent backend is reconnecting; try again shortly.";
 export const BACKEND_RECOVERY_BLOCKED_MESSAGE =
-  "Agent backend recovery is blocked; restart Bridge after checking the runtime recovery error.";
+  "Agent backend recovery is blocked; the Bridge restarts automatically shortly. "
+  + "If this persists, restart Bridge after checking the runtime recovery error.";
 /** Legacy timeout text kept transient so persisted delivery failures remain retryable. */
 export const SESSION_RESUME_SETTLING_MESSAGE = "Session resume timed out and is still settling; try again shortly.";
 /** The backend has not finished starting yet. */

@@ -6,8 +6,13 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../../backend-availability.js";
-import { CopilotBackend } from "../copilot-backend.js";
+import { BACKEND_PING_ATTEMPTS, BACKEND_PING_RETRY_DELAY_MS, CopilotBackend } from "../copilot-backend.js";
 import { AGENT_RPC_TIMEOUTS_MS } from "../rpc-timeouts.js";
+
+const PING_TIMEOUT_MS = AGENT_RPC_TIMEOUTS_MS["backend.ping"];
+/** Every consecutive ping timing out, with the retry delay between them. */
+const PING_DETECTION_WINDOW_MS = PING_TIMEOUT_MS * BACKEND_PING_ATTEMPTS
+  + BACKEND_PING_RETRY_DELAY_MS * (BACKEND_PING_ATTEMPTS - 1);
 
 type Listener = (...args: any[]) => void;
 
@@ -155,10 +160,72 @@ describe("CopilotBackend disconnect detection", () => {
     connection.fireError(new Error("bad frame"));
     expect(onDisconnect).not.toHaveBeenCalled();
     expect(client.ping).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["backend.ping"]);
+    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(PING_DETECTION_WINDOW_MS - PING_TIMEOUT_MS - 1);
+    expect(client.ping).toHaveBeenCalledTimes(BACKEND_PING_ATTEMPTS);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
       reason: "health-probe-failed",
       detail: expect.stringContaining("connection-error"),
+    }));
+    expect(onDisconnect.mock.calls[0]![0].detail).toContain(`${BACKEND_PING_ATTEMPTS} consecutive pings`);
+  });
+
+  it("keeps a slow but alive backend when a retried ping answers", async () => {
+    vi.useFakeTimers();
+    let pings = 0;
+    const { client } = createFakeClient({
+      ping: () => (++pings === 1 ? new Promise(() => {}) : Promise.resolve({ message: "pong" })),
+    });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+
+    const probe = backend.probeHealth(undefined, "watchdog no-progress");
+    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + BACKEND_PING_RETRY_DELAY_MS);
+    await expect(probe).resolves.toBe(true);
+    expect(client.ping).toHaveBeenCalledTimes(2);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(backend.getConnectionStatus()).toMatchObject({ state: "connected" });
+    expect(silentLogger.warn).toHaveBeenCalledWith(expect.stringContaining(`timed out (attempt 1/${BACKEND_PING_ATTEMPTS})`));
+  });
+
+  it("reports a runtime exit between ping retries immediately and stops pinging", async () => {
+    vi.useFakeTimers();
+    const { client, cliProcess } = createFakeClient({ ping: () => new Promise(() => {}) });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+
+    const probe = backend.probeHealth();
+    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    cliProcess.emit("exit", 1, null);
+    expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({ reason: "process-exit" }));
+    await vi.advanceTimersByTimeAsync(BACKEND_PING_RETRY_DELAY_MS);
+    await expect(probe).resolves.toBe(false);
+    expect(client.ping).toHaveBeenCalledTimes(1);
+    expect(onDisconnect).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a ping that fails for a reason other than a timeout", async () => {
+    const { client } = createFakeClient({
+      ping: async () => { throw new Error("Pending response rejected since connection got disposed"); },
+    });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+
+    await expect(backend.probeHealth()).resolves.toBe(false);
+    expect(client.ping).toHaveBeenCalledOnce();
+    expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "health-probe-failed",
+      detail: expect.stringContaining("connection got disposed"),
     }));
   });
 
@@ -201,7 +268,8 @@ describe("CopilotBackend disconnect detection", () => {
     await rejection;
     expect(client.ping).toHaveBeenCalledTimes(1);
     expect(silentLogger.warn).toHaveBeenCalledWith(expect.stringContaining("RPC session.send timed out"));
-    await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["backend.ping"]);
+    await vi.advanceTimersByTimeAsync(PING_DETECTION_WINDOW_MS);
+    expect(client.ping).toHaveBeenCalledTimes(BACKEND_PING_ATTEMPTS);
     expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
       reason: "rpc-timeout",
       detail: expect.stringContaining("rpc-timeout:session.send"),

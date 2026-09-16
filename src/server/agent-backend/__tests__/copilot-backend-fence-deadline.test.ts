@@ -88,5 +88,13 @@ describe("fencing through the real platform helper with mocked Windows side effe
     expect(killed).toEqual([]);
     expect(phases.at(-1)).toMatchObject({ phase: "snapshot", outcome: "failed" });
     await expect(backend.start()).rejects.toThrow("fenced");
+
+    // The snapshot was only too slow for that deadline; a later attempt with a fresh budget can still prove the runtime gone.
+    const retry = backend.fence({ deadline: createDeadline(RUNTIME_FENCE_BUDGET_MS) });
+    expect(retry).not.toBe(fence);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(retry).resolves.toBeUndefined();
+    expect(killed).toEqual([101, 100]);
+    await expect(backend.start()).rejects.toThrow("fenced");
   });
 });

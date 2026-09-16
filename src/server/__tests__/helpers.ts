@@ -190,6 +190,7 @@ export function createMockSessionManager() {
       recoveryCount: 0,
       lastRecoveryAt: null,
       lastRecoveryError: null,
+      recoveryBlockedAt: null,
       lastInterruptedSessionCount: 0,
       lastAutoResumedSessionCount: 0,
     }),

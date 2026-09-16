@@ -228,7 +228,113 @@ describe("Copilot owned-runtime fence", () => {
     vi.mocked(terminateProcessTree).mockResolvedValue({ ok: false, status: "survivors", root: runtime, survivors: [runtime] });
     const fence = backend.fence();
     await expect(fence).rejects.toThrow("survivors");
+    // An unreadable survivor check proves nothing: a later attempt re-checks the retained survivor
+    // with one read and fails again without signalling anything or assuming exit.
+    const retry = backend.fence();
+    expect(retry).not.toBe(fence);
+    await expect(retry).rejects.toThrow("survivors (4243, unknown)");
+    expect(terminateProcessTree).toHaveBeenCalledOnce();
+    await expect(backend.start()).rejects.toThrow("fenced");
+  });
+
+  it("retries a transient snapshot failure on a later fence call without ever allowing a restart", async () => {
+    const { backend } = backendFixture();
+    await backend.start();
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce({
+      ok: false, status: "snapshot-unavailable", root: runtime, error: "CIM process snapshot timed out after 20000ms",
+    });
+    const first = backend.fence();
+    await expect(first).rejects.toMatchObject({
+      name: "RuntimeFenceError", retryable: true, message: expect.stringContaining("timed out after 20000ms"),
+    });
+    await expect(backend.start()).rejects.toThrow("fenced");
+    await expect(backend.createSession({})).rejects.toThrow("fenced");
+    const second = backend.fence();
+    expect(second).not.toBe(first);
+    await expect(second).resolves.toBeUndefined();
+    expect(backend.fence()).toBe(second);
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, runtime, root]);
+    expect(getProcessIdentityStatuses).not.toHaveBeenCalled();
+  });
+
+  it("re-verifies processes a timed-out taskkill may have orphaned before acknowledging a retry", async () => {
+    const { backend } = backendFixture();
+    const orphan = { pid: 5001, startMarker: "mcp-orphan" };
+    const exitedWorker = { pid: 5002, startMarker: "mcp-exited" };
+    await backend.start();
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce({
+      ok: false, status: "kill-failed", root: runtime, commandTimedOut: true, error: "taskkill timed out after 5000ms",
+      snapshot: { root: runtime, descendants: [orphan, exitedWorker] }, survivors: [orphan],
+    });
+    const first = backend.fence();
+    await expect(first).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("kill-failed") });
+
+    // The native runtime is gone now, but its orphaned child is still alive and must be terminated first.
+    vi.mocked(getProcessIdentityStatuses).mockResolvedValueOnce(new Map([[orphan, "alive"], [exitedWorker, "exited"]]));
+    vi.mocked(terminateProcessTree).mockImplementationOnce(async (identity) => ({ ok: true, status: "already-exited", root: identity }));
+    const second = backend.fence();
+    expect(second).not.toBe(first);
+    await expect(second).resolves.toBeUndefined();
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, runtime, orphan, root]);
+    expect(vi.mocked(getProcessIdentityStatuses).mock.calls.map(([identities]) => identities)).toEqual([[orphan, exitedWorker]]);
+  });
+
+  it("does not acknowledge a retry while processes signalled by a failed attempt cannot be observed", async () => {
+    const { backend } = backendFixture();
+    const orphan = { pid: 5001, startMarker: "mcp-orphan" };
+    await backend.start();
+    // taskkill ran, then the verification snapshot timed out.
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce({
+      ok: false, status: "snapshot-unavailable", root: runtime, error: "CIM process snapshot timed out after 20000ms",
+      snapshot: { root: runtime, descendants: [orphan] },
+    });
+    await expect(backend.fence()).rejects.toMatchObject({ retryable: true });
+
+    await expect(backend.fence()).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("5001, unknown") });
+    expect(terminateProcessTree).toHaveBeenCalledOnce();
+    await expect(backend.start()).rejects.toThrow("fenced");
+
+    vi.mocked(getProcessIdentityStatuses).mockResolvedValueOnce(new Map([[orphan, "exited"]]));
+    await expect(backend.fence()).resolves.toBeUndefined();
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, runtime, root]);
+  });
+
+  it.each([
+    { label: "an unverifiable identity", result: { ok: false as const, status: "identity-unavailable" as const, root: runtime } },
+    {
+      label: "a kill command that failed without timing out",
+      result: {
+        ok: false as const, status: "kill-failed" as const, root: runtime,
+        error: "taskkill exited with code 1: Access is denied.", survivors: [runtime],
+      },
+    },
+  ])("keeps a terminal fencing failure cached: $label", async ({ result }) => {
+    const { backend } = backendFixture();
+    await backend.start();
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce(result);
+    const fence = backend.fence();
+    await expect(fence).rejects.toMatchObject({ name: "RuntimeFenceError", retryable: false });
     expect(backend.fence()).toBe(fence);
+    expect(terminateProcessTree).toHaveBeenCalledOnce();
+  });
+
+  it("recaptures the owned runtime tree while fencing when the startup capture failed", async () => {
+    const { backend } = backendFixture();
+    vi.mocked(sampleProcessTree).mockResolvedValueOnce(null);
+    await backend.start();
+    await expect(backend.fence()).resolves.toBeUndefined();
+    expect(sampleProcessTree).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, root]);
+  });
+
+  it("treats an uncapturable runtime tree as retryable while the owned child is still running", async () => {
+    const { backend } = backendFixture();
+    vi.mocked(sampleProcessTree).mockResolvedValue(null);
+    await backend.start();
+    const fence = backend.fence();
+    await expect(fence).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("could not capture") });
+    expect(terminateProcessTree).not.toHaveBeenCalled();
+    expect(backend.fence()).not.toBe(fence);
   });
 
   it("fails closed on unknown ownership, external servers and FFI", async () => {
@@ -253,7 +359,11 @@ describe("Copilot owned-runtime fence", () => {
     expect(terminateProcessTree).not.toHaveBeenCalled();
     startup.resolve();
     await starting;
-    expect(backend.fence()).toBe(fence);
+    // A pending startup was only too slow to observe; once it settles a later attempt can prove the runtime gone.
+    const retry = backend.fence();
+    expect(retry).not.toBe(fence);
+    await expect(retry).resolves.toBeUndefined();
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, root]);
     await expect(backend.start()).rejects.toThrow("fenced");
     expect(start).toHaveBeenCalledOnce();
   });
