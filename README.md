@@ -91,14 +91,16 @@ GitHub work item and pull request enrichment reuses the same ambient auth: `BRID
 
 ### Copilot Runtime
 
-Bridge uses `@github/copilot-sdk` 1.0.13 and its bundled, platform-specific native runtime.
-Install optional dependencies (the npm default); no separate CLI runtime override or wrapper is needed. The SDK
-natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge tool-loading metadata.
+Bridge uses `@github/copilot-sdk` 1.0.14 and launches the pinned `@github/copilot` CLI (1.0.86-0) through its npm
+loader, so a CLI release can be validated independently of the SDK's bundled runtime. Install optional dependencies
+(the npm default) so the platform-specific CLI and SDK packages are present; no separate CLI runtime override or
+wrapper is needed. The SDK natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge
+tool-loading metadata.
 
 HydraFusion uses the runtime's native orchestration, with its startup feature flags enabled and experimental
 mode supplied on session creation and resume. Sessions select `hydrafusion` directly, without first creating
 a different model's session. Reasoning effort and context tier are chosen by HydraFusion rather than fixed
-in Bridge. This is a research preview; its native feature flags are tied to the pinned SDK/runtime version.
+in Bridge. This is a research preview; its native feature flags are tied to the pinned CLI version.
 
 ### Packaged Release Mode
 

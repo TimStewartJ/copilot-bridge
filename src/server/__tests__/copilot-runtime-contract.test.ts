@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const EXPECTED_CLI_VERSION = "1.0.84-3";
-const EXPECTED_SDK_VERSION = "1.0.13";
+const EXPECTED_CLI_VERSION = "1.0.86-0";
+const EXPECTED_SDK_VERSION = "1.0.14";
 
 // Launching the pinned CLI lives in copilot-cli-launch.native.test.ts.
 describe("installed Copilot package contract", () => {
