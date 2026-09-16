@@ -1,7 +1,10 @@
 import { Buffer } from "node:buffer";
+import {
+  DEFER_CHECKPOINT_MAX_BYTES,
+  type DeferCheckpoint,
+} from "../shared/defer-checkpoint.js";
 
-export const DEFER_CHECKPOINT_MAX_BYTES = 16 * 1024;
-export type DeferCheckpoint = Record<string, unknown>;
+export { DEFER_CHECKPOINT_MAX_BYTES, type DeferCheckpoint };
 
 function isCheckpoint(value: unknown): value is DeferCheckpoint {
   return value !== null && typeof value === "object" && !Array.isArray(value);

@@ -48,6 +48,9 @@
   /* Feedback */
   --color-copy-success: #4ade80;
 
+  /* Syntax */
+  --color-syntax-string: #5eead4;
+
   /* Chat transient states */
   --color-chat-sending-bg: rgba(59, 130, 246, 0.14);
   --color-chat-sending-border: rgba(96, 165, 250, 0.32);
@@ -104,6 +107,8 @@
   --color-agent-border: rgba(124, 58, 237, 0.20);
 
   --color-copy-success: #16a34a;
+
+  --color-syntax-string: #0f766e;
 
   --color-chat-sending-bg: rgba(37, 99, 235, 0.08);
   --color-chat-sending-border: rgba(37, 99, 235, 0.18);
