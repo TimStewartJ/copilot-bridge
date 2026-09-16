@@ -11,6 +11,7 @@ import type {
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { ModelFamily } from "../shared/model-families.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
+import type { DeferCheckpoint } from "../shared/defer-checkpoint.js";
 import type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
 export type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
 import type {
@@ -180,6 +181,8 @@ export interface DeferredWorkItem {
   kind: DeferredWorkKind;
   name?: string;
   prompt: string;
+  /** Latest private checkpoint saved by a recurring defer worker. */
+  checkpoint?: DeferCheckpoint;
   status: DeferredWorkStatus;
   nextRunAt: string;
   intervalSeconds?: number;

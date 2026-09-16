@@ -112,6 +112,38 @@ describe("session deferred activity routes", () => {
     ]);
   });
 
+  it("includes the latest recurring checkpoint in the session defer list", async () => {
+    const { app, ctx } = createTestApp();
+    const loop = ctx.deferLoopStore!.create({
+      sessionId: SESSION_ID,
+      name: "Build monitor",
+      prompt: "Watch build 123",
+      intervalSeconds: 300,
+      nextRunAt: "2030-01-01T00:05:00.000Z",
+    });
+    const claimed = ctx.deferLoopStore!.claimDue(loop.id, 60_000, "2030-01-01T00:05:00.000Z")!;
+    ctx.deferLoopStore!.settleOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2030-01-01T00:10:00.000Z",
+      "2030-01-01T00:05:30.000Z",
+      { checkpoint: { buildId: 123, status: "running" } },
+    );
+
+    const response = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.defers).toEqual([
+      expect.objectContaining({
+        deferId: loop.deferId,
+        kind: "interval",
+        status: "active",
+        runCount: 1,
+        checkpoint: { buildId: 123, status: "running" },
+      }),
+    ]);
+  });
+
   it("returns per-defer runs and rejects another session's defer", async () => {
     const { app, ctx } = createTestApp();
     const loop = ctx.deferLoopStore!.create({

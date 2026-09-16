@@ -4,6 +4,7 @@ import {
   createReactDomHarness,
   findAllByTag,
   getReactProps,
+  waitUntilAct,
 } from "../test-react-harness";
 
 const hookMocks = vi.hoisted(() => ({
@@ -11,11 +12,16 @@ const hookMocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   reactivate: vi.fn(),
 }));
+const clipboardMocks = vi.hoisted(() => ({ writeClipboardText: vi.fn() }));
 
 vi.mock("../hooks/queries/useSessionDefers", () => ({
   useSessionDefersQuery: () => hookMocks.query(),
   useCancelSessionDeferMutation: () => hookMocks.cancel(),
   useReactivateSessionDeferMutation: () => hookMocks.reactivate(),
+}));
+
+vi.mock("../lib/clipboard", () => ({
+  writeClipboardText: clipboardMocks.writeClipboardText,
 }));
 
 const { default: DeferredWorkSheet } = await import("./DeferredWorkSheet");
@@ -144,6 +150,127 @@ describe("DeferredWorkSheet", () => {
       await getReactProps(buttonWithText(harness.dom.container, "Cancel"))?.onClick?.();
     });
     expect(cancel).toHaveBeenCalledWith("interval_active");
+    await harness.cleanup();
+  });
+
+  it("shows the latest checkpoint for recurring defers as a JSON tree", async () => {
+    const activeCheckpoint = { buildId: 123, status: "running", pr: { head: "57ebc41", votes: [0, 10] } };
+    const completedCheckpoint = { result: "succeeded", checks: 4 };
+    clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
+    const baseItem = {
+      attempts: 0,
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-02T00:00:00.000Z",
+    };
+    hookMocks.query.mockReturnValue({
+      data: {
+        sessionId: "session-1",
+        defers: [
+          {
+            ...baseItem,
+            deferId: "interval_active",
+            kind: "interval",
+            name: "Build monitor",
+            prompt: "Watch build 123",
+            status: "active",
+            nextRunAt: "2030-01-01T00:05:00.000Z",
+            intervalSeconds: 300,
+            runCount: 2,
+            checkpoint: activeCheckpoint,
+            canCancel: true,
+            canReactivate: false,
+          },
+          {
+            ...baseItem,
+            deferId: "interval_fresh",
+            kind: "interval",
+            name: "Fresh monitor",
+            prompt: "Watch build 456",
+            status: "active",
+            nextRunAt: "2030-01-01T00:06:00.000Z",
+            intervalSeconds: 300,
+            runCount: 0,
+            canCancel: true,
+            canReactivate: false,
+          },
+          {
+            ...baseItem,
+            deferId: "once_pending",
+            kind: "once",
+            prompt: "Check once",
+            status: "pending",
+            nextRunAt: "2030-01-01T00:07:00.000Z",
+            canCancel: true,
+            canReactivate: false,
+          },
+          {
+            ...baseItem,
+            deferId: "interval_completed",
+            kind: "interval",
+            name: "Release monitor",
+            prompt: "Watch release",
+            status: "completed",
+            nextRunAt: "2026-09-02T00:00:00.000Z",
+            intervalSeconds: 300,
+            runCount: 4,
+            checkpoint: completedCheckpoint,
+            canCancel: false,
+            canReactivate: false,
+          },
+        ],
+        recentRuns: [],
+        recentDeliveries: [],
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    hookMocks.cancel.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    hookMocks.reactivate.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    const harness = await createReactDomHarness();
+    await harness.render(createElement(DeferredWorkSheet, {
+      session: { sessionId: "session-1", summary: "Build session" },
+      onClose: vi.fn(),
+    }));
+    const container = harness.dom.container;
+    const text = () => container.textContent ?? "";
+    const regions = () => findAllByTag(container, "DIV").filter((element) => getReactProps(element)?.role === "region");
+    const copyButtons = () => findAllByTag(container, "BUTTON").filter(
+      (button) => getReactProps(button)?.["aria-label"]?.startsWith("Cop"),
+    );
+
+    expect(text()).toContain(`Checkpoint3 keys · ${JSON.stringify(activeCheckpoint).length} B of 16 KB`);
+    expect(regions()).toHaveLength(1);
+    expect(getReactProps(regions()[0])?.["aria-label"]).toBe("Checkpoint JSON");
+    expect(regions()[0]?.textContent).toBe('buildId:123status:"running"pr:{2}head:"57ebc41"votes:[2][0, 10]');
+    expect(text().split("None saved yet")).toHaveLength(2);
+    expect(text()).toContain("Last checkpoint2 keys");
+    expect(text()).not.toContain('result:"succeeded"');
+    expect(copyButtons()).toHaveLength(2);
+
+    await harness.act(async () => {
+      getReactProps(copyButtons()[0])?.onClick?.();
+    });
+    await waitUntilAct(
+      harness.act,
+      () => getReactProps(copyButtons()[0])?.["aria-label"] === "Copied",
+      { label: "checkpoint copied" },
+    );
+    expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(JSON.stringify(activeCheckpoint, null, 2));
+
+    await harness.act(async () => {
+      getReactProps(buttonWithText(container, "Show"))?.onClick?.();
+    });
+    expect(regions()).toHaveLength(2);
+    expect(getReactProps(regions()[1])?.["aria-label"]).toBe("Last checkpoint JSON");
+    expect(regions()[1]?.textContent).toBe('result:"succeeded"checks:4');
+
+    await harness.act(async () => {
+      getReactProps(buttonWithText(container, "Hide"))?.onClick?.();
+    });
+    expect(regions()).toHaveLength(1);
+    expect(regions()[0]?.textContent).toBe('result:"succeeded"checks:4');
     await harness.cleanup();
   });
 
