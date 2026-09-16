@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   AlertTriangle,
+  Braces,
+  Check,
   CheckCircle2,
   Clock,
+  Copy,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -16,13 +19,16 @@ import type {
   DeferredWorkStatus,
   Session,
 } from "../api";
+import { DEFER_CHECKPOINT_MAX_BYTES, type DeferCheckpoint } from "../../shared/defer-checkpoint.js";
 import {
   useCancelSessionDeferMutation,
   useReactivateSessionDeferMutation,
   useSessionDefersQuery,
 } from "../hooks/queries/useSessionDefers";
+import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
 import EmptyState from "./shared/EmptyState";
+import JsonTree from "./shared/JsonTree";
 import { useModalDialog } from "./shared/useModalDialog";
 
 interface DeferredWorkSheetProps {
@@ -32,6 +38,8 @@ interface DeferredWorkSheetProps {
 }
 
 const ACTIVE_STATUSES = new Set<DeferredWorkStatus>(["active", "pending", "running"]);
+const CHECKPOINT_NEAR_LIMIT_RATIO = 0.8;
+const COPY_FEEDBACK_MS = 2_000;
 
 function formatDuration(durationMs: number): string {
   if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))}ms`;
@@ -43,6 +51,12 @@ function formatInterval(seconds: number): string {
   if (seconds % 3_600 === 0) return `${seconds / 3_600}h`;
   if (seconds % 60 === 0) return `${seconds / 60}m`;
   return `${seconds}s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1_024) return `${bytes} B`;
+  const kilobytes = bytes / 1_024;
+  return `${kilobytes < 10 ? kilobytes.toFixed(1) : Math.round(kilobytes)} KB`;
 }
 
 function statusTone(status: DeferredWorkStatus): string {
@@ -82,6 +96,125 @@ function DeliveryIcon({ delivery }: { delivery: DeferredWorkDelivery }) {
     return <Clock size={14} className="text-accent" />;
   }
   return <CheckCircle2 size={14} className="text-success" />;
+}
+
+type CopyState = "idle" | "copied" | "failed";
+
+const COPY_LABELS: Record<CopyState, string> = {
+  idle: "Copy checkpoint JSON",
+  copied: "Copied",
+  failed: "Copy failed",
+};
+
+function CopyCheckpointButton({ checkpoint }: { checkpoint: DeferCheckpoint }) {
+  const [copyState, setCopyState] = useState<CopyState>("idle");
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => () => {
+    requestRef.current += 1;
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = null;
+  }, []);
+
+  const copy = () => {
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = null;
+    setCopyState("idle");
+
+    const settle = (next: CopyState) => {
+      if (requestRef.current !== requestId) return;
+      setCopyState(next);
+      resetTimerRef.current = setTimeout(() => {
+        resetTimerRef.current = null;
+        if (requestRef.current === requestId) setCopyState("idle");
+      }, COPY_FEEDBACK_MS);
+    };
+
+    void writeClipboardText(JSON.stringify(checkpoint, null, 2)).then(
+      () => settle("copied"),
+      () => settle("failed"),
+    );
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={COPY_LABELS[copyState]}
+      title={COPY_LABELS[copyState]}
+      className="grid size-6 place-items-center rounded-md text-text-muted hover:bg-bg-hover hover:text-text-primary"
+    >
+      {copyState === "copied" && <Check size={13} className="text-copy-success" />}
+      {copyState === "failed" && <AlertTriangle size={13} className="text-error" />}
+      {copyState === "idle" && <Copy size={13} />}
+    </button>
+  );
+}
+
+function DeferCheckpointPreview({ item }: { item: DeferredWorkItem }) {
+  const isActive = ACTIVE_STATUSES.has(item.status);
+  const [open, setOpen] = useState(isActive);
+  const { checkpoint } = item;
+  const summary = useMemo(() => {
+    if (!checkpoint) return null;
+    return {
+      keyCount: Object.keys(checkpoint).length,
+      bytes: new TextEncoder().encode(JSON.stringify(checkpoint)).length,
+    };
+  }, [checkpoint]);
+  const label = isActive ? "Checkpoint" : "Last checkpoint";
+  const nearLimit = !!summary
+    && summary.bytes >= DEFER_CHECKPOINT_MAX_BYTES * CHECKPOINT_NEAR_LIMIT_RATIO;
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-lg border border-border-subtle bg-bg-primary shadow-sm">
+      <div className="flex items-center justify-between gap-2 py-1.5 pl-2.5 pr-1.5">
+        <div
+          className="flex min-w-0 items-center gap-2 text-[11px]"
+          title="Private JSON state the recurring worker passes to its next check. It is never sent to this session."
+        >
+          <span className="grid size-5 shrink-0 place-items-center rounded-md bg-accent-surface text-accent">
+            <Braces size={12} aria-hidden="true" />
+          </span>
+          <span className="shrink-0 text-xs font-semibold text-text-primary">{label}</span>
+          {summary ? (
+            <span className={`truncate ${nearLimit ? "text-warning" : "text-text-muted"}`}>
+              {summary.keyCount} key{summary.keyCount === 1 ? "" : "s"} · {formatBytes(summary.bytes)} of{" "}
+              {formatBytes(DEFER_CHECKPOINT_MAX_BYTES)}
+            </span>
+          ) : (
+            <span className="truncate text-text-faint">{isActive ? "None saved yet" : "None saved"}</span>
+          )}
+        </div>
+        {checkpoint && (
+          <div className="flex shrink-0 items-center gap-0.5">
+            <CopyCheckpointButton checkpoint={checkpoint} />
+            <button
+              type="button"
+              onClick={() => setOpen((current) => !current)}
+              aria-expanded={open}
+              className="rounded px-1.5 py-0.5 text-[11px] text-text-muted hover:bg-bg-hover hover:text-text-primary"
+            >
+              {open ? "Hide" : "Show"}
+            </button>
+          </div>
+        )}
+      </div>
+      {checkpoint && open && (
+        <div
+          role="region"
+          aria-label={`${label} JSON`}
+          tabIndex={0}
+          className="max-h-96 overflow-auto border-t border-border-subtle px-1 py-1.5"
+        >
+          <JsonTree value={checkpoint} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function DeferCard({
@@ -136,6 +269,8 @@ function DeferCard({
           </button>
         )}
       </div>
+
+      {item.kind === "interval" && <DeferCheckpointPreview item={item} />}
 
       <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">
         {item.prompt}
