@@ -1,11 +1,12 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { AgentBackend, AgentSession, AgentSessionRelease } from "../agent-backend/index.js";
 import { makeAgentSessionStub } from "./helpers.js";
+import type { RuntimeFenceOptions } from "../agent-backend/runtime-fence.js";
 
 describe("agent session stub release contract", () => {
   it("requires release and fencing in backend-neutral contracts", () => {
     expectTypeOf<AgentSession["release"]>().toEqualTypeOf<() => Promise<AgentSessionRelease>>();
-    expectTypeOf<AgentBackend["fence"]>().toEqualTypeOf<() => Promise<void>>();
+    expectTypeOf<AgentBackend["fence"]>().toEqualTypeOf<(options?: RuntimeFenceOptions) => Promise<void>>();
   });
 
   it("acknowledges one simulated raw disconnect and caches its release promise", async () => {

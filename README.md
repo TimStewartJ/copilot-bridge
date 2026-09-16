@@ -299,8 +299,23 @@ draining for about five seconds after release, even with the former reaper or an
 additional native close call. Do not infer process exit from an empty task list,
 successful resume, or healthy ping.
 
+Runtime fencing uses one absolute deadline shared by SessionManager and the backend.
+The default 65-second aggregate budget is derived from two 25-second process-tree
+termination phases plus bounded startup (10 seconds) and SDK child-exit confirmation
+(5 seconds). It is not reset per PID, retry, or concurrent caller. A shutdown caller
+can supply its shorter remaining deadline without extending the server's 13-second
+shutdown budget. Each native subtree is terminated and identity-verified before the
+loader; captured descendants covered by that verification are not scanned again.
+Retained orphans still require their own verified cleanup. Survivor checks batch all
+remaining identities into one process-table read per check. Missing creation markers
+or unreadable verification remain unknown, never proof of exit or PID replacement.
+
 Release/quarantine spans carry lease, generation, timing and outcome; backend recovery
-spans record replacement reasons and failures. No failed retirement episode is retried.
+spans record replacement reasons and failures. `backend.fence` records the ownership
+acknowledgement, and `backend.fence.phase` records startup, snapshot, termination,
+verification, survivor, and child-exit timings and errors. No failed retirement
+episode is retried. A timed-out RPC plus failed ping indicates unresponsiveness, not
+proof that the runtime process crashed or its transport physically closed.
 
 ### Public URL Configuration
 

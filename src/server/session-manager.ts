@@ -55,6 +55,7 @@ import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunch
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { SessionToolReadiness, SESSION_TOOL_READINESS_TIMEOUT_MS, type SessionToolReadinessSnapshot } from "./session-tool-readiness.js";
+import { RUNTIME_FENCE_BUDGET_MS } from "./agent-backend/runtime-fence.js";
 import {
   capDeadline,
   createDeadline,
@@ -281,8 +282,6 @@ const GRACEFUL_SHUTDOWN_BUDGET_MS = 13_000;
 const SESSION_ABORT_TIMEOUT_MS = 4_000;
 /** Upper bound an HTTP abort request may wait on the backend before resolving locally. */
 const ABORT_REQUEST_TIMEOUT_MS = 10_000;
-/** Hard bound on force-stopping an orphaned runtime before a replacement is started. */
-const BACKEND_RECOVERY_FORCE_STOP_TIMEOUT_MS = 5_000;
 const BACKEND_RECOVERY_RETRY_INITIAL_MS = 5_000;
 const BACKEND_RECOVERY_RETRY_MAX_MS = 60_000;
 /** A session is re-sent a continue prompt at most once per window after a backend recovery. */
@@ -419,6 +418,7 @@ type BackendFence = {
   waiters: Set<() => void>;
   confirmed: boolean;
   operation?: Promise<void>;
+  deadline?: Deadline;
   observation?: ReturnType<typeof settleByDeadline<void>>;
 };
 
@@ -3124,23 +3124,34 @@ export class SessionManager {
     }
   }
 
-  private fenceBackend(backend: AgentBackend): Promise<void> {
+  private fenceBackend(backend: AgentBackend, deadline = createDeadline(RUNTIME_FENCE_BUDGET_MS)): Promise<void> {
     const fence = this.getBackendFence(backend);
     if (fence.operation) return fence.operation;
+    fence.deadline = deadline;
     fence.operation = Promise.resolve().then(async () => {
-      await backend.fence();
-      fence.confirmed = true;
-      for (const waiter of fence.waiters) waiter();
-      fence.waiters.clear();
+      const startedAt = performance.now();
+      let outcome = "failed";
+      try {
+        await backend.fence({ deadline, onPhase: (phase) => {
+          this.recordSpan("backend.fence.phase", phase.durationMs, undefined, {
+            phase: phase.phase, outcome: phase.outcome, pid: phase.pid, error: phase.error, backend: backend.id,
+          });
+        } });
+        fence.confirmed = true;
+        for (const waiter of fence.waiters) waiter();
+        fence.waiters.clear();
+        outcome = "acknowledged";
+      } finally {
+        this.recordSpan("backend.fence", performance.now() - startedAt, undefined, { outcome, backend: backend.id });
+      }
     });
     return fence.operation;
   }
 
   private observeBackendFence(backend: AgentBackend): ReturnType<typeof settleByDeadline<void>> {
     const fence = this.getBackendFence(backend);
-    fence.observation ??= settleByDeadline(
-      () => this.fenceBackend(backend), createDeadline(BACKEND_RECOVERY_FORCE_STOP_TIMEOUT_MS),
-    );
+    const deadline = fence.deadline ?? createDeadline(RUNTIME_FENCE_BUDGET_MS);
+    fence.observation ??= settleByDeadline(() => this.fenceBackend(backend, deadline), deadline);
     return fence.observation;
   }
 
@@ -5541,7 +5552,7 @@ export class SessionManager {
       const stopOutcome = await settleByDeadline(
         () => {
           if (this.backendTransition?.owner === backend && this.backendRotation) {
-            return this.fenceBackend(backend);
+            return this.fenceBackend(backend, stopDeadline);
           }
           if (this.cleanupOwnership.size > 0 && backend.forceStop) {
             console.warn("[sdk] Bypassing graceful SDK detach while runtime leases are uncertain");

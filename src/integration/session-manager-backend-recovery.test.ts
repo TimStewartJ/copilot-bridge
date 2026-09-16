@@ -19,6 +19,8 @@ import {
   BACKEND_RECOVERY_CONTINUE_PROMPT,
 } from "../server/backend-availability.js";
 import type { AgentBackendDisconnect } from "../server/agent-backend/types.js";
+import { RUNTIME_FENCE_BUDGET_MS, type RuntimeFenceOptions } from "../server/agent-backend/runtime-fence.js";
+import { createDeadline } from "../server/deadline.js";
 import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
 
 function makeSession(sessionId: string) {
@@ -64,7 +66,7 @@ function createFakeBackend(name: string, sessions: Record<string, ReturnType<typ
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     forceStop: vi.fn(async () => {}),
-    fence: vi.fn(async () => {}),
+    fence: vi.fn(async (_options?: RuntimeFenceOptions) => {}),
     listModels: vi.fn(async (): Promise<Array<{ id: string; name: string }>> => []),
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => { throw new Error("not implemented in test"); }),
@@ -231,6 +233,91 @@ describe("SessionManager backend disconnect recovery", () => {
     // Finish the resumed turn so the run settles.
     resumedInteractive.emit({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
     await flushMicrotasks();
+  });
+
+  it("waits past five seconds for identity-verified fencing with the same deadline passed to the backend", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    const fresh = createFakeBackend("fresh", {});
+    let finishFence!: () => void;
+    let options: RuntimeFenceOptions | undefined;
+    dead.fence.mockImplementation((input) => {
+      options = input;
+      return new Promise<void>((resolve) => { finishFence = resolve; });
+    });
+    const { manager, telemetryStore } = createManager([dead, fresh]);
+    try {
+      await manager.initialize();
+      dead.simulateDisconnect({ reason: "rpc-timeout" });
+      await flushMicrotasks();
+      expect(options?.deadline).toBeDefined();
+      expect(options!.deadline!.expiresAtUnixMs - Date.now()).toBe(RUNTIME_FENCE_BUDGET_MS);
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(manager.getBackendStatus().state).toBe("reconnecting");
+      expect(fresh.start).not.toHaveBeenCalled();
+      options?.onPhase?.({ phase: "snapshot", durationMs: 6_000, outcome: "completed", pid: 100 });
+      finishFence();
+      await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
+      expect(dead.fence).toHaveBeenCalledOnce();
+      expect(fresh.start).toHaveBeenCalledOnce();
+      expect(telemetryStore.querySpans({ name: "backend.fence.phase" })[0]?.metadata)
+        .toMatchObject({ phase: "snapshot", outcome: "completed", pid: 100 });
+      expect(telemetryStore.querySpans({ name: "backend.fence" })[0]?.metadata)
+        .toMatchObject({ outcome: "acknowledged" });
+    } finally {
+      finishFence?.();
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("retains ownership after the aggregate fence deadline even if acknowledgement arrives late", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    const fresh = createFakeBackend("fresh", {});
+    let finishFence!: () => void;
+    dead.fence.mockImplementation(() => new Promise<void>((resolve) => { finishFence = resolve; }));
+    const { manager } = createManager([dead, fresh]);
+    try {
+      await manager.initialize();
+      dead.simulateDisconnect();
+      await vi.advanceTimersByTimeAsync(RUNTIME_FENCE_BUDGET_MS);
+      expect(manager.getBackendStatus().lastRecoveryError).toContain("Runtime fencing timed-out");
+      expect(fresh.start).not.toHaveBeenCalled();
+      finishFence();
+      await flushMicrotasks();
+      expect(fresh.start).not.toHaveBeenCalled();
+      expect(manager.getBackendUnavailableReason()).toContain("restart");
+      expect(dead.fence).toHaveBeenCalledOnce();
+    } finally {
+      finishFence?.();
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("shares the first caller's shorter absolute fence deadline without extending it", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    let finishFence!: () => void;
+    let options: RuntimeFenceOptions | undefined;
+    dead.fence.mockImplementation((input) => {
+      options = input;
+      return new Promise<void>((resolve) => { finishFence = resolve; });
+    });
+    const { manager } = createManager([dead]);
+    try {
+      await manager.initialize();
+      const deadline = createDeadline(1_000);
+      const fence = manager.fenceBackend(dead, deadline);
+      await flushMicrotasks();
+      expect(options?.deadline).toBe(deadline);
+      expect(manager.fenceBackend(dead, createDeadline(RUNTIME_FENCE_BUDGET_MS))).toBe(fence);
+      finishFence();
+      await fence;
+      expect(dead.fence).toHaveBeenCalledOnce();
+    } finally {
+      finishFence?.();
+      await manager.gracefulShutdown();
+    }
   });
 
   it("does not resume turns whose prompt was never accepted and ignores disconnects from superseded backends", async () => {
