@@ -11,6 +11,12 @@ import {
 } from "../server/management-job-store.js";
 import { forceClearRestartPending } from "../server/restart-controller.js";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { withTestSourceCheckout } = await import("../server/__tests__/test-paths.js");
+  return { ...actual, existsSync: withTestSourceCheckout(actual.existsSync) };
+});
+
 function createManagementJobApiTestApp(): ReturnType<typeof createTestApp> & { store: ManagementJobStore } {
   const local = createTestApp();
   const dataDir = local.ctx.runtimePaths?.dataDir;
