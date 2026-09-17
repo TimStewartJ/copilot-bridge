@@ -52,7 +52,7 @@ export type ValidationGateRunResult<Result extends ValidationCommandResult> =
   | ValidationGateSuccess<Result>
   | ValidationGateFailure<Result>;
 
-const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
+const VALIDATION_TIMEOUT_MS = 1_000 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
 // Bump when the deploy gate contract changes in a way that should invalidate existing stamps.
 export const DEPLOY_GATE_VERSION = 2;
