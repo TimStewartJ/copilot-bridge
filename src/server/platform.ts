@@ -2,8 +2,8 @@
 // Windows uses one CIM snapshot + one taskkill + one verification snapshot.
 
 import { execFile, type ExecFileOptions } from "node:child_process";
-import { lstatSync, rmSync, symlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
+import { join, resolve, win32 } from "node:path";
 import {
   capDeadline,
   deadlineBefore,
@@ -646,5 +646,78 @@ export function removeDirectoryLink(
   } catch (err: any) {
     if (err.code === "ENOENT") return { ok: true, output: "already removed" };
     return { ok: false, output: String(err) };
+  }
+}
+
+interface WindowsSchedulingApi {
+  getCurrentProcess(): unknown;
+  setProcessPowerThrottling(process: unknown, state: { Version: number; ControlMask: number; StateMask: number }): number;
+  setPriorityClass(process: unknown, priorityClass: number): number;
+}
+
+async function loadWindowsSchedulingApi(): Promise<WindowsSchedulingApi> {
+  const imported = await import("koffi");
+  const koffi = (imported as { default?: unknown }).default ?? imported;
+  const api = koffi as {
+    load(name: string): { func(signature: string): (...args: unknown[]) => unknown };
+    struct(name: string, fields: Record<string, string>): unknown;
+  };
+  const kernel32 = api.load("kernel32.dll");
+  api.struct("BRIDGE_PROCESS_POWER_THROTTLING_STATE", { Version: "uint32", ControlMask: "uint32", StateMask: "uint32" });
+  const getCurrentProcess = kernel32.func("void* __stdcall GetCurrentProcess()");
+  const setProcessInformation = kernel32.func(
+    "int __stdcall SetProcessInformation(void* hProcess, int infoClass, BRIDGE_PROCESS_POWER_THROTTLING_STATE* info, uint32 size)",
+  );
+  const setPriorityClass = kernel32.func("int __stdcall SetPriorityClass(void* hProcess, uint32 priorityClass)");
+  return {
+    getCurrentProcess: () => getCurrentProcess(),
+    setProcessPowerThrottling: (process, state) => Number(setProcessInformation(process, 4, state, 12)),
+    setPriorityClass: (process, priorityClass) => Number(setPriorityClass(process, priorityClass)),
+  };
+}
+
+const PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
+const ABOVE_NORMAL_PRIORITY_CLASS = 0x8000;
+
+/**
+ * The OS tar binary used to unpack runtime-downloaded archives. Windows ships bsdtar in
+ * System32 (gzip and bzip2 support); prefer it over any GNU tar earlier on PATH, which
+ * misreads drive-letter paths as remote hosts.
+ */
+export function resolveTarCommand(options: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  exists?: (path: string) => boolean;
+} = {}): string {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return "tar";
+  const env = options.env ?? process.env;
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.windir || "C:\\Windows";
+  const candidate = win32.join(systemRoot, "System32", "tar.exe");
+  return (options.exists ?? existsSync)(candidate) ? candidate : "tar";
+}
+
+/**
+ * Opts the current process out of Windows EcoQoS so latency-sensitive native inference
+ * runs on performance cores. Hidden background processes are otherwise scheduled onto
+ * efficiency cores, which made local speech models 3-10x slower on hybrid CPUs.
+ */
+export async function preferHighPerformanceScheduling(options: {
+  platform?: NodeJS.Platform;
+  loadApi?: () => Promise<WindowsSchedulingApi>;
+} = {}): Promise<{ applied: boolean; detail?: string }> {
+  if ((options.platform ?? process.platform) !== "win32") return { applied: false, detail: "not windows" };
+  try {
+    const api = await (options.loadApi ?? loadWindowsSchedulingApi)();
+    const handle = api.getCurrentProcess();
+    const qos = api.setProcessPowerThrottling(handle, {
+      Version: 1,
+      ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+      StateMask: 0,
+    });
+    const priority = api.setPriorityClass(handle, ABOVE_NORMAL_PRIORITY_CLASS);
+    return { applied: qos !== 0, detail: `highQoS=${qos !== 0} aboveNormal=${priority !== 0}` };
+  } catch (error) {
+    return { applied: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }

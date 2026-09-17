@@ -64,8 +64,8 @@ describe("deriveVoiceUiState", () => {
     });
 
     // status error with unavailable status
-    expect(deriveVoiceUiState({ ...baseState, statusError: "Whisper unavailable", statusAvailable: false })).toMatchObject({
-      message: "Voice status check failed. Click the mic to retry. (Whisper unavailable)",
+    expect(deriveVoiceUiState({ ...baseState, statusError: "Speech engine unavailable", statusAvailable: false })).toMatchObject({
+      message: "Voice status check failed. Click the mic to retry. (Speech engine unavailable)",
       tone: "error",
       showButton: true,
     });

@@ -31,6 +31,12 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.focusSessionLaunchService?.stop();
+    const voiceModeOutcome = await settleByDeadline(async () => {
+      await ctx.voiceGateway?.shutdown();
+    }, deadline);
+    if (voiceModeOutcome.status !== "fulfilled") {
+      console.error(`[web] Voice mode shutdown ${voiceModeOutcome.status}`);
+    }
     try {
       await ctx.searchIndex?.shutdown();
     } catch (error) {
@@ -63,6 +69,14 @@ export function shutdownAppContextServices(
     );
     if (voiceOutcome.status !== "fulfilled") {
       console.error(`[web] Voice job shutdown ${voiceOutcome.status}`);
+    }
+
+    // Stopped last: in-flight chat mic transcriptions and voice conversations both use the engine.
+    const speechEngineOutcome = await settleByDeadline(async () => {
+      await ctx.voiceRuntime?.engine.stop("server shutdown");
+    }, deadline);
+    if (speechEngineOutcome.status !== "fulfilled") {
+      console.error(`[web] Speech engine shutdown ${speechEngineOutcome.status}`);
     }
 
     ctx.scheduler?.shutdown();

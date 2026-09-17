@@ -3314,7 +3314,8 @@ export async function sendTestPushNotification(endpoint?: string): Promise<PushS
 
 export interface TranscriptionStatus {
   available: boolean;
-  provider: "disabled" | "whisper.cpp";
+  /** "speech-engine" is the local Parakeet recognizer shared with voice mode. */
+  provider: "disabled" | "speech-engine";
   label: string;
   reason?: string;
   maxDurationSeconds: number;

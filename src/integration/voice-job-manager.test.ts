@@ -45,8 +45,8 @@ function createManagerHarness(transcribe = vi.fn()) {
     transcriptionService: {
       getStatus: () => ({
         available: true,
-        provider: "whisper.cpp",
-        label: "whisper.cpp",
+        provider: "speech-engine",
+        label: "Parakeet v3 (local)",
         maxDurationSeconds: 120,
       }),
       transcribe,
@@ -95,8 +95,8 @@ describe("voice job restart gating", () => {
       transcriptionService: {
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe: vi.fn(),
@@ -153,8 +153,8 @@ describe("voice job restart gating", () => {
       transcriptionService: {
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe: vi.fn(),
@@ -188,7 +188,7 @@ describe("voice job restart gating", () => {
 
   describe("voice job artifact retention", () => {
     it("removes audio artifacts when transcription fails", async () => {
-      const transcribe = vi.fn().mockRejectedValue(new Error("whisper failed"));
+      const transcribe = vi.fn().mockRejectedValue(new Error("speech engine failed"));
       const { runtimePaths, store, manager } = createManagerHarness(transcribe);
       const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
       writeFileSync(sourceFilePath, "test-audio");
@@ -203,7 +203,7 @@ describe("voice job restart gating", () => {
 
       expect(store.getVoiceJob(accepted.id)).toMatchObject({
         status: "error",
-        error: "whisper failed",
+        error: "speech engine failed",
       });
       expect(existsSync(join(runtimePaths.dataDir, "voice-jobs", accepted.id))).toBe(false);
     });
@@ -221,7 +221,7 @@ describe("voice job restart gating", () => {
         targetSessionId: "existing-session",
         audioPath,
       });
-      store.markError(id, "whisper failed");
+      store.markError(id, "speech engine failed");
 
       await manager.runMaintenance();
       manager.resumePendingJobs();
@@ -306,8 +306,8 @@ describe("voice job restart gating", () => {
       transcriptionService: {
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe: vi.fn(),
@@ -365,8 +365,8 @@ describe("voice job restart gating", () => {
       transcriptionService: {
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe: vi.fn(),
@@ -425,8 +425,8 @@ describe("voice job restart gating", () => {
       transcriptionService: {
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe: vi.fn(),

@@ -6,7 +6,7 @@ import multer from "multer";
 import { randomUUID, createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
-import { join, basename, dirname } from "node:path";
+import { join, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import {
@@ -148,6 +148,12 @@ import {
 } from "./device-hibernate.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
+import { isVoiceAgentSessionId } from "./voice/voice-agent.js";
+import { VoiceGateway } from "./voice/voice-gateway.js";
+import { createVoiceRouter } from "./voice/voice-router.js";
+import { createVoiceRuntime } from "./voice/voice-runtime.js";
+import type { VoiceBridgeFacade } from "./voice/voice-tools.js";
+import { resolveRuntimePaths } from "./runtime-paths.js";
 import {
   formatLoopDeferActivity,
   formatOneShotDeferActivity,
@@ -1109,8 +1115,10 @@ export function createApiRouter(
   // contexts that rely on the production scheduler fallback.
   if (!ctx.isStaging) ctx.scheduler ??= schedulerModule();
   const shutdownCoordinator = options.shutdownCoordinator ?? createServerShutdownCoordinator(ctx);
+  const voiceRuntime = ctx.voiceRuntime ??= createVoiceRuntime(ctx.runtimePaths ?? resolveRuntimePaths(process.env));
   const transcriptionService =
-    (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
+    (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService
+    ?? createTranscriptionService({ installer: voiceRuntime.installer, engine: voiceRuntime.engine, env: ctx.runtimePaths?.env });
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
   const sessionStorageReader = options.sessionStorageReader
@@ -1216,11 +1224,7 @@ export function createApiRouter(
           return res.status(400).json({ error: `Audio exceeds ${status.maxDurationSeconds} seconds.` });
         }
 
-        const workingDir = (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir ?? dirname(req.file.path);
-        const result = await transcriptionService.transcribe({
-          filePath: req.file.path,
-          workingDir,
-        });
+        const result = await transcriptionService.transcribe({ filePath: req.file.path });
         console.log(`[web] Transcribed voice input via ${result.provider}`);
         return res.json(result);
       } catch (error) {
@@ -1353,6 +1357,81 @@ export function createApiRouter(
   // JSON body parser — after upload route so multipart isn't rejected
   router.use(express.json({ limit: "20mb" }));
   router.use(createApiJsonErrorHandler());
+
+  // ── Hands-free voice mode ───────────────────────────────────────
+  // The facade reuses the same session list, read-state, send and create logic as the
+  // REST routes so voice actions behave exactly like the UI.
+  const voiceFacade: VoiceBridgeFacade = {
+    listSessions: async () => {
+      const sessions = materializeSessionList(await getEnrichedSessionList(false), false);
+      const readState = ctx.readStateStore.getReadState();
+      return sessions.map((session: any) => {
+        const activity: string | undefined = session.lastActivityAt ?? session.modifiedTime ?? session.startTime;
+        const lastRead = readState[session.sessionId];
+        return {
+          sessionId: session.sessionId,
+          title: typeof session.summary === "string" && session.summary.trim() ? session.summary.trim() : "Untitled session",
+          runState: session.runState ?? "idle",
+          needsUserInput: !!session.needsUserInput,
+          unread: !!activity && (!lastRead || Date.parse(activity) > Date.parse(lastRead)),
+          archived: !!session.archived,
+          lastActivityAt: activity,
+          linkedTaskIds: Array.isArray(session.linkedTaskIds) ? session.linkedTaskIds : [],
+          intentText: session.intentText ?? null,
+        };
+      });
+    },
+    markRead: (sessionIds) => {
+      for (const sessionId of sessionIds) {
+        ctx.readStateStore.markRead(sessionId, resolveReadThroughActivityAt(sessionId));
+      }
+      emitReadStateChanged();
+    },
+    sendMessage: async (sessionId, prompt) => {
+      if (isRestartCutoverInProgress(await refreshRestartState())) throw new Error(RESTART_PENDING_MESSAGE);
+      if (ctx.sessionMetaStore.getMeta(sessionId)?.archived) setSessionArchived(sessionId, false);
+      console.log(`[voice] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
+      if (ctx.sessionManager.isSessionBusy(sessionId)) {
+        await ctx.sessionManager.steerSession(sessionId, prompt);
+        return "steered";
+      }
+      ctx.sessionManager.startWork(sessionId, prompt);
+      return "started";
+    },
+    createSession: async ({ taskId, model, reasoningEffort }) => {
+      if (isRestartCutoverInProgress(await refreshRestartState())) throw new Error(RESTART_PENDING_MESSAGE);
+      const creation = await resolveSessionCreationOptions({ model, reasoningEffort }, taskId ? { taskId } : {});
+      if (creation.error) throw new Error(creation.error);
+      if (!taskId) {
+        const result = await ctx.sessionManager.createSession({ background: true, ...creation.options });
+        invalidateEnrichedCache("voice:session:create");
+        return result;
+      }
+      const task = ctx.taskStore.getTask(taskId);
+      if (!task) throw new Error("Task not found");
+      const group = task.groupId ? ctx.taskGroupStore.getGroup(task.groupId) : undefined;
+      const result = await ctx.sessionManager.createTaskSession(
+        task.id,
+        task.title,
+        task.workItems,
+        task.pullRequests.map(formatLinkedPullRequest),
+        task.notes,
+        task.cwd,
+        undefined,
+        group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null,
+        { background: true, ...creation.options },
+      );
+      invalidateEnrichedCache("voice:task-session:create");
+      ctx.taskStore.linkSession(task.id, result.sessionId);
+      return result;
+    },
+  };
+  ctx.voiceGateway ??= new VoiceGateway({
+    ctx,
+    facade: voiceFacade,
+    runtime: voiceRuntime,
+  });
+  router.use("/voice", createVoiceRouter(ctx.voiceGateway));
 
   // Wire settings getter for providers (so they can resolve without module-level imports)
   setSettingsGetter(() => ctx.settingsStore.getSettings());
@@ -1762,6 +1841,7 @@ export function createApiRouter(
       ].filter((session: any) =>
         !isDisposableTitleSessionId(session.sessionId)
         && !isDisposableDeferWorkerSessionId(session.sessionId)
+        && !isVoiceAgentSessionId(session.sessionId)
       );
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const readState = ctx.readStateStore.getReadState();

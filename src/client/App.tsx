@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import { Routes, Route, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryClient";
@@ -100,6 +100,8 @@ import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
 import SearchView from "./components/SearchView";
+
+const VoiceModeView = lazy(() => import("./voice/VoiceModeView"));
 import { useSearchBackground } from "./hooks/useSearchBackground";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
@@ -135,6 +137,7 @@ function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<strin
 export default function App() {
   const navigate = useNavigate();
   const { location, navigationType, open: searchOpen, close: closeSearch } = useSearchBackground();
+  const isVoiceRoute = location.pathname === "/voice";
   const isMobile = useIsMobile();
   const { hasAttention, hasAttentionRef } = usePageAttention();
   const pageHasAttention = hasAttention && !searchOpen;
@@ -932,6 +935,10 @@ export default function App() {
   const handleOpenSettings = () => {
     navigate("/settings");
   };
+
+  const handleOpenVoice = useCallback(() => {
+    navigate("/voice");
+  }, [navigate]);
 
   const handleOpenDocsRoot = useCallback(() => {
     navigate("/docs");
@@ -1740,7 +1747,7 @@ export default function App() {
   return (
     <>
     <div
-      inert={searchOpen || undefined}
+      inert={searchOpen || isVoiceRoute || undefined}
       className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
@@ -1775,6 +1782,7 @@ export default function App() {
         onGoHome={handleOpenDashboard}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
+        onOpenVoice={handleOpenVoice}
         onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
         isDocsActive={isDocsActive}
         isDashboardActive={isDashboardActive}
@@ -2192,6 +2200,7 @@ export default function App() {
           homeChecklistIndicator={homeChecklistIndicator}
           taskAttention={mobileTaskAttention}
           chatAttention={mobileChatAttention}
+          onOpenVoice={handleOpenVoice}
         />
       )}
     </div>
@@ -2200,6 +2209,11 @@ export default function App() {
       sessions={sessions}
       onClose={closeSearch}
     />}
+    {isVoiceRoute && (
+      <Suspense fallback={<div className="fixed inset-0 z-[70] bg-[#06070d]" />}>
+        <VoiceModeView />
+      </Suspense>
+    )}
     </>
   );
 }
