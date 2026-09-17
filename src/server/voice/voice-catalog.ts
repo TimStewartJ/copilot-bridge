@@ -10,7 +10,6 @@ export interface VoiceNpmPackageAsset {
   id: string;
   name: string;
   version: string;
-  tarballUrl: string;
   /** npm registry `dist.integrity` (sha512, base64). */
   integrity: string;
   sizeBytes: number;
@@ -50,7 +49,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "sherpa-onnx-node",
     name: "sherpa-onnx-node",
     version: "1.13.8",
-    tarballUrl: "https://registry.npmjs.org/sherpa-onnx-node/-/sherpa-onnx-node-1.13.8.tgz",
     integrity: "sha512-MsDMBdhLFTZ1GwvcGSSQhnS7g/EA8OMH6IYysCVUOM7j8Icty9KRc0E6YT1A5fWBsZwRfKOeh88QC95aRvS8ag==",
     sizeBytes: 30_000,
   },
@@ -59,7 +57,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "sherpa-onnx-win-x64",
     name: "sherpa-onnx-win-x64",
     version: "1.13.8",
-    tarballUrl: "https://registry.npmjs.org/sherpa-onnx-win-x64/-/sherpa-onnx-win-x64-1.13.8.tgz",
     integrity: "sha512-oZF1c9VPOKtMwn83Bboc5XSWL+76BRoyB3eUuVnCknBKxwSULZU2Foia9VHWzU+n4I12rPsP6z6H9Rp1hD9o8g==",
     sizeBytes: 9_000_000,
     targets: ["win32-x64"],
@@ -69,7 +66,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "sherpa-onnx-linux-x64",
     name: "sherpa-onnx-linux-x64",
     version: "1.13.8",
-    tarballUrl: "https://registry.npmjs.org/sherpa-onnx-linux-x64/-/sherpa-onnx-linux-x64-1.13.8.tgz",
     integrity: "sha512-6plnhjagsSeTntCgnlag86hWbs/uZE9Crms1LgOb68/1nKsIQjMd+WG519m+aPwT6TrsBOiEMzrx41t8sL5L5g==",
     sizeBytes: 12_000_000,
     targets: ["linux-x64"],
@@ -79,7 +75,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "sherpa-onnx-linux-arm64",
     name: "sherpa-onnx-linux-arm64",
     version: "1.13.8",
-    tarballUrl: "https://registry.npmjs.org/sherpa-onnx-linux-arm64/-/sherpa-onnx-linux-arm64-1.13.8.tgz",
     integrity: "sha512-Tlg7a70b/Wge3OF8IgTHF9jhSVCsLyKQKhwc4BsJ5A+dL/SrFtGBjzuHp4XeLhiiOT7afCxX5PdSn/D4c8Lnuw==",
     sizeBytes: 14_000_000,
     targets: ["linux-arm64"],
@@ -89,7 +84,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "sherpa-onnx-darwin-arm64",
     name: "sherpa-onnx-darwin-arm64",
     version: "1.13.8",
-    tarballUrl: "https://registry.npmjs.org/sherpa-onnx-darwin-arm64/-/sherpa-onnx-darwin-arm64-1.13.8.tgz",
     integrity: "sha512-FPNgJMgnWVl/KhRTIhG3KL3A4Om63Rn4YKXc9/uHY7SzLcvqLJLc/h7UBWJwduXvv7K18t5NpxHR6XgXn4sjWw==",
     sizeBytes: 12_000_000,
     targets: ["darwin-arm64"],
@@ -99,7 +93,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "onnxruntime-common",
     name: "onnxruntime-common",
     version: "1.30.0",
-    tarballUrl: "https://registry.npmjs.org/onnxruntime-common/-/onnxruntime-common-1.30.0.tgz",
     integrity: "sha512-7fdVWjAID1dVhH/G8qK3APARunV4VkBFoCQAP7qp4Wkab0mrorvmc+sqiT+mKXOzDqdjN5j+/Z9nb4gzNPWcyA==",
     sizeBytes: 150_000,
   },
@@ -108,7 +101,6 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
     id: "onnxruntime-node",
     name: "onnxruntime-node",
     version: "1.30.0",
-    tarballUrl: "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.30.0.tgz",
     integrity: "sha512-twhs1C2C/BFkz1yc5OY0KIU2GUq6DURO7hD4bx5Q2Qy3nAMJwRXW8xU3NVczE29VA9lolLOYepoD8fjTGOfIqw==",
     sizeBytes: 110_000_000,
     // The package bundles binaries for every platform; extract only this host's.

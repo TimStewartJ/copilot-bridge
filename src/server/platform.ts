@@ -3,7 +3,8 @@
 
 import { execFile, type ExecFileOptions } from "node:child_process";
 import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
-import { join, resolve, win32 } from "node:path";
+import { cp, rename, rm } from "node:fs/promises";
+import { join, posix, resolve, win32 } from "node:path";
 import {
   capDeadline,
   deadlineBefore,
@@ -678,6 +679,88 @@ async function loadWindowsSchedulingApi(): Promise<WindowsSchedulingApi> {
 
 const PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
 const ABOVE_NORMAL_PRIORITY_CLASS = 0x8000;
+
+const MOVE_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 3_000, 4_000] as const;
+const TRANSIENT_MOVE_ERROR_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * Moves a file or directory that was only just written. On Windows a virus scanner or
+ * indexer that is still reading the new files makes the rename fail for a few seconds, so
+ * it is retried and then replaced by a copy. The copy also covers a destination on another
+ * volume.
+ */
+export async function moveFreshPath(source: string, destination: string, options: {
+  renamePath?: (from: string, to: string) => Promise<void>;
+  copyPath?: (from: string, to: string) => Promise<void>;
+  removePath?: (path: string) => Promise<void>;
+  wait?: (delayMs: number) => Promise<void>;
+  log?: (message: string) => void;
+} = {}): Promise<void> {
+  const renamePath = options.renamePath ?? rename;
+  const wait = options.wait ?? ((delayMs: number) => new Promise<void>((done) => setTimeout(done, delayMs)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await renamePath(source, destination);
+      return;
+    } catch (error) {
+      const code = String((error as NodeJS.ErrnoException).code);
+      if (code === "EXDEV") break;
+      if (!TRANSIENT_MOVE_ERROR_CODES.has(code)) throw error;
+      const delayMs = MOVE_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) break;
+      if (attempt === 0) options.log?.(`Moving ${source} failed with ${code} (another program is reading the new files); retrying`);
+      await wait(delayMs);
+    }
+  }
+  options.log?.(`Copying ${source} into place because it could not be renamed`);
+  await (options.copyPath ?? ((from, to) => cp(from, to, { recursive: true, force: true })))(source, destination);
+  // Whatever still holds the source open must not fail a move that has already landed.
+  await (options.removePath ?? ((path) => rm(path, { recursive: true, force: true })))(source).catch(() => undefined);
+}
+
+export interface NpmInvocation {
+  /** Executable to spawn directly, never through a shell. */
+  command: string;
+  /** Arguments that go before the npm sub-command (the npm-cli.js path when run with Node). */
+  args: string[];
+}
+
+const NPM_CLI_SEGMENTS = ["node_modules", "npm", "bin", "npm-cli.js"];
+
+/**
+ * How to run the machine's npm client without a shell, or undefined when Windows has none.
+ * The npm that ships beside the running Node is preferred and run with that Node binary.
+ * Otherwise npm comes from PATH: POSIX can execute the `npm` launcher directly, while the
+ * Windows `npm.cmd` shim needs a shell, so the npm-cli.js beside it is run with Node instead.
+ */
+export function resolveNpmInvocation(options: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  execPath?: string;
+  exists?: (path: string) => boolean;
+} = {}): NpmInvocation | undefined {
+  const isWindows = (options.platform ?? process.platform) === "win32";
+  const env = options.env ?? process.env;
+  const execPath = options.execPath ?? process.execPath;
+  const exists = options.exists ?? existsSync;
+  const paths = isWindows ? win32 : posix;
+  const runWithNode = (cliPath: string): NpmInvocation => ({ command: execPath, args: [cliPath] });
+
+  const execDir = paths.dirname(execPath);
+  const bundled = isWindows
+    ? paths.join(execDir, ...NPM_CLI_SEGMENTS)
+    : paths.join(execDir, "..", "lib", ...NPM_CLI_SEGMENTS);
+  if (exists(bundled)) return runWithNode(bundled);
+  if (!isWindows) return { command: "npm", args: [] };
+
+  // A copied environment object loses Windows' case-insensitive variable lookup.
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH");
+  for (const dir of (pathKey ? env[pathKey] ?? "" : "").split(paths.delimiter).filter(Boolean)) {
+    const cliPath = paths.join(dir, ...NPM_CLI_SEGMENTS);
+    if (exists(paths.join(dir, "npm.cmd")) && exists(cliPath)) return runWithNode(cliPath);
+  }
+  return undefined;
+}
 
 /**
  * The OS tar binary used to unpack runtime-downloaded archives. Windows ships bsdtar in

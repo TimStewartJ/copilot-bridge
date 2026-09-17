@@ -15,7 +15,7 @@ export function createVoiceRuntime(runtimePaths: Pick<RuntimePaths, "dataDir" | 
   const paths = resolveVoicePaths(runtimePaths);
   return {
     paths,
-    installer: new VoiceInstaller({ paths }),
+    installer: new VoiceInstaller({ paths, env: runtimePaths.env }),
     engine: new VoiceEngine({ paths, env: runtimePaths.env }),
   };
 }
