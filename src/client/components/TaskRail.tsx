@@ -3,7 +3,7 @@ import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api"
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, AudioLines } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -37,6 +37,7 @@ interface TaskRailProps {
   onGoHome: () => void;
   onOpenSettings: () => void;
   onOpenDocs: () => void;
+  onOpenVoice?: () => void;
   onOpenSearch?: () => void;
   isDocsActive: boolean;
   isDashboardActive: boolean;
@@ -110,6 +111,7 @@ export default function TaskRail({
   onGoHome,
   onOpenSettings,
   onOpenDocs,
+  onOpenVoice,
   onOpenSearch,
   isDocsActive,
   isDashboardActive,
@@ -434,6 +436,17 @@ export default function TaskRail({
           >
             <BookOpen size={18} />
           </button>
+          {onOpenVoice && (
+            <button
+              type="button"
+              onClick={onOpenVoice}
+              title="Voice mode"
+              aria-label="Voice mode"
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
+            >
+              <AudioLines size={18} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onNewTask()}
@@ -780,6 +793,20 @@ export default function TaskRail({
           Docs
         </button>
       </div>
+
+      {/* Voice mode */}
+      {onOpenVoice && (
+        <div className="px-2 pb-1">
+          <button
+            type="button"
+            onClick={onOpenVoice}
+            className="w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+          >
+            <AudioLines size={14} />
+            Voice mode
+          </button>
+        </div>
+      )}
 
       {/* Settings and quota */}
       <div className="space-y-1 border-t border-border px-2 py-2">

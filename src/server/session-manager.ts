@@ -3746,6 +3746,32 @@ export class SessionManager {
     return models;
   }
 
+  /**
+   * Creates the hands-free voice assistant's internal session on the shared runtime. The
+   * caller supplies an isolated `configDirectory` so it never enters Bridge session lists,
+   * search, or usage history; capacity and restart lifecycles still apply.
+   */
+  async createVoiceAgentSession(config: AgentSessionConfig): Promise<AgentSession> {
+    if (this.shuttingDown) throw new Error("Session manager is shutting down");
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) throw new Error(RESTART_PENDING_MESSAGE);
+    const completeLifetime = this.beginSessionCreationLifetime();
+    try {
+      const client = await this.getBackendAfterRotation();
+      const sessionConfig: AgentSessionConfig = {
+        ...config,
+        ...(client.permissionPolicy ? { onPermissionRequest: client.permissionPolicy } : {}),
+      };
+      const reservation = await this.beginSessionCreation(sessionConfig as { mcpServers?: Record<string, McpServerConfig> });
+      try {
+        return await this.createOwnedSession(client, sessionConfig);
+      } finally {
+        this.endSessionCreation(reservation);
+      }
+    } finally {
+      completeLifetime();
+    }
+  }
+
   /** Live account quota counter from the agent backend, when the SDK exposes it. */
   async getAccountQuota(): Promise<unknown> {
     const client = await this.getBackendAfterRotation();

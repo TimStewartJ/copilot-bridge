@@ -69,7 +69,7 @@ vi.mock("./settings", () => {
     SystemPromptSection: EmptySection,
     TagsSection: EmptySection,
     UpdatesSection: EmptySection,
-    VoiceInputSection: EmptySection,
+    SpeechEngineSection: EmptySection,
   };
 });
 

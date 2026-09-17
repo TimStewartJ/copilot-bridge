@@ -2,7 +2,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
-import type { IncomingHttpHeaders } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import { connect as netConnect } from "node:net";
+import type { Duplex } from "node:stream";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -970,6 +972,63 @@ async function enforceStagingBackendResourceLimits(
     log(`Stopping least-recent staged backend ${prefix} (${reason}); data preserved`);
     await teardownStagingBackend(prefix, { removeData: false });
   }
+}
+
+/**
+ * Forwards a WebSocket upgrade under `/staging/<prefix>/api/…` to a running staged
+ * backend. Returns false when no backend is running so the caller can reject it.
+ */
+export function proxyStagingUpgrade(
+  prefix: string,
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+): boolean {
+  const backend = activeStagingBackends.get(prefix);
+  if (!backend || backend.stopping) return false;
+  const target = new URL(backend.baseUrl);
+  const requestUrl = req.url ?? "/";
+  const stagingPrefix = `/staging/${prefix}`;
+  const upstreamPath = requestUrl.startsWith(stagingPrefix) ? requestUrl.slice(stagingPrefix.length) : requestUrl;
+  backend.lastAccessAt = Date.now();
+  backend.inflightRequests++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    backend.inflightRequests = Math.max(0, backend.inflightRequests - 1);
+    backend.lastAccessAt = Date.now();
+  };
+  const upstream = netConnect(Number(target.port), target.hostname, () => {
+    const originalHost = req.headers["x-forwarded-host"] ?? req.headers.host;
+    const headerLines: string[] = [];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const name = req.rawHeaders[i]!;
+      const lower = name.toLowerCase();
+      if (lower === "host" || lower === "x-forwarded-host") continue;
+      headerLines.push(`${name}: ${req.rawHeaders[i + 1]}`);
+    }
+    headerLines.push(`Host: ${target.host}`);
+    if (originalHost) headerLines.push(`X-Forwarded-Host: ${Array.isArray(originalHost) ? originalHost[0] : originalHost}`);
+    upstream.write(`${req.method ?? "GET"} ${upstreamPath} HTTP/1.1\r\n${headerLines.join("\r\n")}\r\n\r\n`);
+    if (head.length > 0) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.on("error", (error) => {
+    log(`Staging backend upgrade proxy error for ${prefix}: ${error.message}`);
+    socket.destroy();
+  });
+  socket.on("error", () => upstream.destroy());
+  upstream.on("close", () => {
+    release();
+    socket.destroy();
+  });
+  socket.on("close", () => {
+    release();
+    upstream.destroy();
+  });
+  return true;
 }
 
 export function createStagingProxyHandler(prefix: string, backend: ActiveStagingBackend): RequestHandler {

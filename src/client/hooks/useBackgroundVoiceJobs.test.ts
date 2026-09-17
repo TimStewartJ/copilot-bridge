@@ -290,7 +290,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       retryable: true,
     });
 
-    transcribeAudioMock.mockResolvedValueOnce({ text: "Retried transcript", provider: "whisper.cpp" });
+    transcribeAudioMock.mockResolvedValueOnce({ text: "Retried transcript", provider: "speech-engine" });
     await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
     });

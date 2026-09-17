@@ -138,6 +138,11 @@ async function main(): Promise<void> {
   app.use("/api", createApiCacheControlMiddleware(), createApiRouter(ctx));
 
   server = createServer(app);
+  server.on("upgrade", (req, socket, head) => {
+    if (ctx.voiceGateway?.handleUpgrade(req, socket, head)) return;
+    socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    socket.destroy();
+  });
   await new Promise<void>((resolve, reject) => {
     server!.once("error", reject);
     server!.listen(parsePort(process.env.BRIDGE_STAGING_BACKEND_PORT), "127.0.0.1", () => {

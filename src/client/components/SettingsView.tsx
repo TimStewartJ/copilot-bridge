@@ -14,7 +14,7 @@ import {
   DeviceManagementSection,
   ProvidersSection,
   TagsSection,
-  VoiceInputSection,
+  SpeechEngineSection,
   UpdatesSection,
   BridgeCommitsSection,
   CopilotUsageSection,
@@ -316,6 +316,10 @@ export default function SettingsView() {
               <SkillsSection />
             </CategoryPanel>
 
+            <CategoryPanel category="voice" activeCategory={activeCategory}>
+              <SpeechEngineSection />
+            </CategoryPanel>
+
             <CategoryPanel category="updates" activeCategory={activeCategory}>
               <UpdatesSection />
               <ManagementJobsSection />
@@ -324,7 +328,6 @@ export default function SettingsView() {
 
             <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
               <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} />
-              <VoiceInputSection />
             </CategoryPanel>
 
             <CategoryPanel category="usage" activeCategory={activeCategory}>

@@ -258,10 +258,7 @@ export function createVoiceJobManager({
       });
 
       try {
-        const result = await transcriptionService.transcribe({
-          filePath: job.audioPath,
-          workingDir: dirname(job.audioPath),
-        });
+        const result = await transcriptionService.transcribe({ filePath: job.audioPath });
         transcript = result.text.trim();
         if (!transcript) {
           throw new Error("No transcript returned");

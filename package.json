@@ -82,6 +82,7 @@
     "vega-lite": "^6.4.3",
     "vscode-jsonrpc": "^8.2.1",
     "web-push": "^3.6.7",
+    "ws": "^8.21.3",
     "yaml": "^2.8.3"
   },
   "devDependencies": {
@@ -94,6 +95,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/supertest": "^7.2.0",
+    "@types/ws": "^8.18.1",
     "@typescript/native-preview": "7.0.0-dev.20260518.1",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "^4.1.3",

@@ -4,10 +4,13 @@ import "./log-timestamps.js";
 import "./load-bridge-env.js";
 import express from "express";
 import { existsSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
 import { join, dirname } from "node:path";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { rememberRequestOrigin, shouldTrustProxyHeaders } from "./public-url.js";
+import { proxyStagingUpgrade } from "./staging-backend-manager.js";
 import {
   pruneOrphanedWorktrees,
   getActivePreviews,
@@ -267,6 +270,7 @@ async function main(): Promise<void> {
       console.log(`[web] 🟢 Server running at http://localhost:${port}`);
       resolve();
     });
+    server.on("upgrade", handleServerUpgrade);
     server.once("error", reject);
   });
 
@@ -279,6 +283,25 @@ async function main(): Promise<void> {
 
 function gracefulExit(signal: string): void {
   void shutdownCoordinator.request(`${signal} received`);
+}
+
+/** WebSocket upgrades: voice mode on this server, or forwarded to a staged preview backend. */
+function handleServerUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+  let pathname = "/";
+  try {
+    pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+  const staging = pathname.match(/^\/staging\/([^/]+)\/api\//);
+  const handled = staging
+    ? proxyStagingUpgrade(staging[1]!, req, socket, head)
+    : defaultContext.voiceGateway?.handleUpgrade(req, socket, head) === true;
+  if (!handled) {
+    socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    socket.destroy();
+  }
 }
 
 process.on("SIGINT", () => gracefulExit("SIGINT"));

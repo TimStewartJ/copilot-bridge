@@ -54,13 +54,13 @@ describe("Transcription routes", () => {
   });
 
   it("POST /api/transcribe returns a transcript for uploaded wav audio", async () => {
-    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "whisper.cpp" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
     ({ app, ctx } = createTestApp({
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe,
@@ -75,12 +75,11 @@ describe("Transcription routes", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ text: "Hello bridge", provider: "whisper.cpp" });
+    expect(res.body).toEqual({ text: "Hello bridge", provider: "speech-engine" });
     expect(transcribe).toHaveBeenCalledOnce();
-    expect(transcribe).toHaveBeenCalledWith(expect.objectContaining({
+    expect(transcribe).toHaveBeenCalledWith({
       filePath: expect.stringContaining("recording.wav"),
-      workingDir: expect.any(String),
-    }));
+    });
   });
 
   it("POST /api/transcribe returns 503 when voice input is unavailable", async () => {
@@ -91,7 +90,7 @@ describe("Transcription routes", () => {
           available: false,
           provider: "disabled",
           label: "Unavailable",
-          reason: "Voice input is not configured on the server.",
+          reason: "Set up the speech engine in Settings → Voice, or from Voice mode.",
           maxDurationSeconds: 120,
         }),
         transcribe,
@@ -106,7 +105,7 @@ describe("Transcription routes", () => {
       });
 
     expect(res.status).toBe(503);
-    expect(res.body.error).toContain("Voice input is not configured");
+    expect(res.body.error).toContain("Set up the speech engine");
     expect(transcribe).not.toHaveBeenCalled();
   });
 
@@ -116,8 +115,8 @@ describe("Transcription routes", () => {
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe,
@@ -142,8 +141,8 @@ describe("Transcription routes", () => {
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 1,
         }),
         transcribe,
@@ -177,14 +176,14 @@ describe("Voice job routes", () => {
       total: 1,
       hasMore: false,
     }));
-    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "whisper.cpp" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
     ({ app, ctx } = createTestApp({
       sessionManager,
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe,
@@ -236,8 +235,8 @@ describe("Voice job routes", () => {
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
       }),
@@ -281,14 +280,14 @@ describe("Voice job routes", () => {
     sessionManager.startWork = vi.fn(() => {
       throw new Error("Session is busy, please wait");
     });
-    const transcribe = vi.fn().mockResolvedValue({ text: "Hello draft route", provider: "whisper.cpp" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Hello draft route", provider: "speech-engine" });
     ({ app, ctx } = createTestApp({
       sessionManager,
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
           available: true,
-          provider: "whisper.cpp",
-          label: "whisper.cpp",
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
           maxDurationSeconds: 120,
         }),
         transcribe,
