@@ -29,7 +29,7 @@ describe("runLauncherBuild", () => {
     expect(runLauncherBuild({ ensureDeps, run, log })).toBe(true);
 
     expect(run.mock.calls).toEqual([
-      ["npm run check:deploy", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npm run check:deploy", { timeoutMs: 1_000_000, isolateRuntimeEnv: true }],
     ]);
   });
 
@@ -47,7 +47,7 @@ describe("runLauncherBuild", () => {
       }),
     })).toBe(true);
     expect(run1.mock.calls).toEqual([
-      ["npm run build", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npm run build", { timeoutMs: 1_000_000, isolateRuntimeEnv: true }],
     ]);
     expect(log1).toHaveBeenCalledWith(
       "Deploy validation already passed for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa — running production build only",
@@ -66,7 +66,7 @@ describe("runLauncherBuild", () => {
       }),
     })).toBe(true);
     expect(run2.mock.calls).toEqual([
-      ["npm run check:deploy", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npm run check:deploy", { timeoutMs: 1_000_000, isolateRuntimeEnv: true }],
     ]);
     expect(log2).toHaveBeenCalledWith(
       "Deploy validation stamp not used: stamp dependency hash does not match current dependencies",
