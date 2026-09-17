@@ -14,7 +14,7 @@ export { ServerCard } from "./ServerCard";
 export { ServerEditor } from "./ServerEditor";
 export { TagsSection } from "./TagsSection";
 export { SkillsSection } from "./SkillsSection";
-export { VoiceInputSection } from "./VoiceInputSection";
+export { SpeechEngineSection } from "./SpeechEngineSection";
 export { UpdatesSection } from "./UpdatesSection";
 export { BridgeCommitsSection } from "./BridgeCommitsSection";
 export { CopilotUsageSection } from "./CopilotUsageSection";

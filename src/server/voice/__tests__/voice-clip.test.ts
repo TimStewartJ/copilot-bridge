@@ -1,0 +1,139 @@
+import { describe, expect, it } from "vitest";
+import { CLIP_CHUNK_PLAN, decodeWav, joinTranscripts, planSpeechChunks, WavDecodeError } from "../voice-clip.js";
+
+interface WavOptions {
+  format?: number;
+  channels?: number;
+  sampleRate?: number;
+  bitsPerSample?: number;
+  extensibleFormat?: number;
+  extraChunk?: boolean;
+}
+
+function buildWav(frames: number[][], options: WavOptions = {}): Uint8Array {
+  const channels = options.channels ?? 1;
+  const bitsPerSample = options.bitsPerSample ?? 16;
+  const sampleRate = options.sampleRate ?? 16_000;
+  const format = options.format ?? 1;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = channels * bytesPerSample;
+  const fmtSize = format === 0xfffe ? 40 : 16;
+  const extra = options.extraChunk ? 8 + 3 + 1 : 0;
+  const dataBytes = frames.length * blockAlign;
+  const buffer = new ArrayBuffer(12 + 8 + fmtSize + extra + 8 + dataBytes);
+  const view = new DataView(buffer);
+  const writeAscii = (offset: number, text: string) => [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  writeAscii(0, "RIFF");
+  view.setUint32(4, buffer.byteLength - 8, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, fmtSize, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  if (format === 0xfffe) {
+    view.setUint16(36, 22, true);
+    view.setUint16(38, bitsPerSample, true);
+    view.setUint16(44, options.extensibleFormat ?? 1, true);
+  }
+  let offset = 20 + fmtSize;
+  if (options.extraChunk) {
+    writeAscii(offset, "LIST");
+    view.setUint32(offset + 4, 3, true);
+    offset += 8 + 3 + 1;
+  }
+  writeAscii(offset, "data");
+  view.setUint32(offset + 4, dataBytes, true);
+  offset += 8;
+  for (const frame of frames) {
+    for (const value of frame) {
+      if (format === 3 || options.extensibleFormat === 3) {
+        view.setFloat32(offset, value, true);
+      } else if (bitsPerSample === 16) {
+        view.setInt16(offset, Math.round(value * 32767), true);
+      } else if (bitsPerSample === 24) {
+        const int = Math.round(value * 8388607);
+        view.setUint8(offset, int & 0xff);
+        view.setUint8(offset + 1, (int >> 8) & 0xff);
+        view.setInt8(offset + 2, int >> 16);
+      } else if (bitsPerSample === 8) {
+        view.setUint8(offset, Math.max(0, Math.min(255, Math.round(value * 128) + 128)));
+      }
+      offset += bytesPerSample;
+    }
+  }
+  return new Uint8Array(buffer);
+}
+
+function expectSamples(actual: Float32Array, expected: number[]): void {
+  expect(actual).toHaveLength(expected.length);
+  expected.forEach((value, index) => expect(actual[index]).toBeCloseTo(value, 3));
+}
+
+describe("decodeWav", () => {
+  it("decodes 16-bit mono PCM and skips unrelated chunks", () => {
+    const decoded = decodeWav(buildWav([[0.5], [-0.25], [0]], { sampleRate: 48_000, extraChunk: true }));
+    expect(decoded).toMatchObject({ sampleRate: 48_000, channels: 1 });
+    expectSamples(decoded.samples, [0.5, -0.25, 0]);
+  });
+
+  it("averages stereo channels into mono", () => {
+    const decoded = decodeWav(buildWav([[0.5, -0.5], [0.25, 0.75]], { channels: 2 }));
+    expectSamples(decoded.samples, [0, 0.5]);
+  });
+
+  it("decodes 8-bit, 24-bit and float encodings", () => {
+    expectSamples(decodeWav(buildWav([[0.5], [-0.5]], { bitsPerSample: 8 })).samples, [0.5, -0.5]);
+    expectSamples(decodeWav(buildWav([[0.75], [-0.75]], { bitsPerSample: 24 })).samples, [0.75, -0.75]);
+    expectSamples(decodeWav(buildWav([[0.125], [-1]], { format: 3, bitsPerSample: 32 })).samples, [0.125, -1]);
+    expectSamples(decodeWav(buildWav([[0.3]], { format: 0xfffe, extensibleFormat: 3, bitsPerSample: 32 })).samples, [0.3]);
+  });
+
+  it("rejects files that are not decodable PCM WAV", () => {
+    expect(() => decodeWav(new TextEncoder().encode("not a wav file"))).toThrow(WavDecodeError);
+    expect(() => decodeWav(buildWav([[0.1]], { format: 0x55 }))).toThrow("Unsupported WAV encoding");
+    const header = buildWav([[0.1]]).slice(0, 36);
+    expect(() => decodeWav(header)).toThrow("missing audio data");
+  });
+});
+
+describe("planSpeechChunks", () => {
+  const sampleRate = 100;
+  const options = { sampleRate, maxChunkSeconds: 10, maxGapSeconds: 1, padSeconds: 0.5 };
+
+  it("merges segments separated by short pauses and pads the result", () => {
+    expect(planSpeechChunks([{ start: 200, end: 400 }, { start: 450, end: 600 }], 2_000, options)).toEqual([{ start: 150, end: 650 }]);
+  });
+
+  it("starts a new chunk after a long pause and keeps padding from overlapping", () => {
+    const chunks = planSpeechChunks([{ start: 100, end: 300 }, { start: 420, end: 500 }], 1_000, { ...options, maxGapSeconds: 1 });
+    expect(chunks).toEqual([{ start: 50, end: 350 }, { start: 370, end: 550 }]);
+    const tight = planSpeechChunks([{ start: 0, end: 300 }, { start: 950, end: 1_400 }], 1_450, { ...options, maxChunkSeconds: 5, maxGapSeconds: 10 });
+    expect(tight).toEqual([{ start: 0, end: 350 }, { start: 900, end: 1_450 }]);
+    expect(tight[0]!.end).toBeLessThanOrEqual(tight[1]!.start);
+  });
+
+  it("never lets merged chunks exceed the maximum length", () => {
+    const segments = Array.from({ length: 6 }, (_, index) => ({ start: index * 300, end: index * 300 + 250 }));
+    const chunks = planSpeechChunks(segments, 2_000, { ...options, padSeconds: 0 });
+    expect(chunks).toEqual([{ start: 0, end: 850 }, { start: 900, end: 1_750 }]);
+  });
+
+  it("ignores empty or out-of-range segments and sorts input", () => {
+    expect(planSpeechChunks([{ start: 700, end: 690 }, { start: 500, end: 900 }, { start: -50, end: 100 }], 800, { ...options, padSeconds: 0 }))
+      .toEqual([{ start: 0, end: 100 }, { start: 500, end: 800 }]);
+  });
+
+  it("uses recognizer-friendly defaults", () => {
+    expect(CLIP_CHUNK_PLAN).toEqual({ maxChunkSeconds: 20, maxGapSeconds: 1.5, padSeconds: 0.25 });
+  });
+});
+
+describe("joinTranscripts", () => {
+  it("joins non-empty parts with single spaces", () => {
+    expect(joinTranscripts([" Hello there. ", "", "  How are\nyou? "])).toBe("Hello there. How are you?");
+  });
+});

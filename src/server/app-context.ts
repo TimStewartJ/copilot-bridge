@@ -62,6 +62,8 @@ import type { ManagementJobStore } from "./management-job-store.js";
 import type { StagingPreviewDiscoveryController } from "./staging-preview-discovery.js";
 import type { SessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
+import type { VoiceGateway } from "./voice/voice-gateway.js";
+import type { VoiceRuntime } from "./voice/voice-runtime.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -141,5 +143,9 @@ export interface AppContext {
   bridgeToolsMcpServer?: BridgeToolsMcpServer;
   /** Shared launcher log file path when this server was started by the launcher */
   launcherLogPath?: string;
+  /** Hands-free voice mode conversations. Created by the API router. */
+  voiceGateway?: VoiceGateway;
+  /** Local speech engine and installer shared by voice mode and chat mic transcription. */
+  voiceRuntime?: VoiceRuntime;
   isStaging?: boolean;
 }

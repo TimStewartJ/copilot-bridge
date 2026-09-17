@@ -325,11 +325,11 @@ export function createMockTranscriptionService(overrides?: Partial<Transcription
       available: false,
       provider: "disabled",
       label: "Unavailable",
-      reason: "Voice input is not configured on the server.",
+      reason: "Set up the speech engine in Settings → Voice, or from Voice mode.",
       maxDurationSeconds: 120,
     }),
     transcribe: async () => {
-      throw new Error("Voice input is not configured on the server.");
+      throw new Error("Set up the speech engine in Settings → Voice, or from Voice mode.");
     },
     ...overrides,
   };

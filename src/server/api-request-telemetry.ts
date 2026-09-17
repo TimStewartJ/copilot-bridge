@@ -12,6 +12,8 @@ const DEFAULT_INFLIGHT_MAX_REPORTS = 24;
 const LARGE_EVENT_LOOP_LAG_MS = 1_000;
 const API_SUBPATH_RE = /^(?:\/staging\/[^/]+)?\/api(?<subpath>\/.*)?$/;
 const SESSION_STREAM_SUBPATH_RE = /^\/sessions\/[^/]+\/stream$/;
+// Voice mode streams audio in small, frequent requests; tracking each one would flood telemetry.
+const VOICE_CONVERSATION_SUBPATH_RE = /^\/voice\/conversations\/[^/]+\/(?:audio|events|control)$/;
 const REQUEST_TELEMETRY_KEY = "__requestTelemetry";
 
 type RequestMetadataBase = {
@@ -152,6 +154,7 @@ function shouldSkipTelemetry(path: string): boolean {
 
   return apiSubpath === "/status-stream"
     || SESSION_STREAM_SUBPATH_RE.test(apiSubpath)
+    || VOICE_CONVERSATION_SUBPATH_RE.test(apiSubpath)
     || apiSubpath === "/telemetry"
     || apiSubpath.startsWith("/telemetry/");
 }

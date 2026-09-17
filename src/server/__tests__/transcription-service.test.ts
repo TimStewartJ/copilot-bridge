@@ -1,210 +1,106 @@
-import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+  createTranscriptionService,
+  describeTranscriptionUnavailable,
+  type TranscriptionSpeechEngine,
+} from "../transcription-service.js";
+import type { VoiceInstallStatus } from "../voice/voice-installer.js";
 
-const spawnMock = vi.fn();
+function installStatus(overrides: Partial<VoiceInstallStatus> = {}): VoiceInstallStatus {
+  return {
+    supported: true,
+    target: "linux-x64",
+    installed: true,
+    installing: false,
+    totalBytes: 100,
+    remainingBytes: 0,
+    assets: [],
+    ...overrides,
+  };
+}
 
-vi.mock("node:child_process", () => ({
-  spawn: spawnMock,
-}));
-
-const ENV_KEYS = [
-  "BRIDGE_TRANSCRIPTION_PROVIDER",
-  "BRIDGE_TRANSCRIPTION_TIMEOUT_MS",
-  "BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS",
-  "BRIDGE_WHISPER_CPP_COMMAND",
-  "BRIDGE_WHISPER_CPP_MODEL",
-  "BRIDGE_WHISPER_CPP_LANGUAGE",
-  "BRIDGE_WHISPER_CPP_ARGS_JSON",
-  "BRIDGE_WHISPER_CPP_NO_GPU",
-] as const;
+function createEngine(result: Partial<Awaited<ReturnType<TranscriptionSpeechEngine["transcribeFile"]>>> = {}) {
+  const release = vi.fn();
+  const engine = {
+    retain: vi.fn(() => release),
+    transcribeFile: vi.fn(async () => ({ text: " Hello bridge ", audioSeconds: 2, speechSeconds: 1.5, chunks: 1, ms: 40, ...result })),
+  };
+  return { engine, release };
+}
 
 describe("transcription service", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    spawnMock.mockReset();
-    for (const key of ENV_KEYS) {
-      vi.stubEnv(key, undefined);
-    }
+  it("describes why the chat mic is unavailable until the speech engine is installed", () => {
+    expect(describeTranscriptionUnavailable(installStatus())).toBeUndefined();
+    expect(describeTranscriptionUnavailable(installStatus({ supported: false, installed: false, target: "win32-arm64" })))
+      .toBe("Local speech recognition isn't supported on win32-arm64.");
+    expect(describeTranscriptionUnavailable(installStatus({
+      installed: false,
+      installing: true,
+      progress: { assetId: "parakeet-v3", label: "Parakeet", phase: "downloading", receivedBytes: 1, totalBytes: 2, overallFraction: 0.42 },
+    }))).toBe("The speech engine is still installing (42%).");
+    expect(describeTranscriptionUnavailable(installStatus({ installed: false }))).toContain("Settings → Voice");
+    expect(describeTranscriptionUnavailable(installStatus({ installed: false, error: "Digest mismatch." })))
+      .toMatch(/^Speech engine setup failed: Digest mismatch\. Set up/);
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  it("reports status from the installer on every call", () => {
+    let status = installStatus({ installed: false });
+    const { engine } = createEngine();
+    const service = createTranscriptionService({ installer: { getStatus: () => status }, engine, env: {} });
 
-  it("returns disabled status when voice input is unconfigured", async () => {
-    const { createTranscriptionService } = await import("../transcription-service.js");
-
-    const service = createTranscriptionService();
-
+    expect(service.getStatus()).toMatchObject({ available: false, provider: "disabled", maxDurationSeconds: 120 });
+    status = installStatus();
     expect(service.getStatus()).toEqual({
-      available: false,
-      provider: "disabled",
-      label: "Unavailable",
-      reason: "Voice input is not configured on the server.",
+      available: true,
+      provider: "speech-engine",
+      label: "Parakeet v3 (local)",
       maxDurationSeconds: 120,
     });
   });
 
-  it("returns disabled status when whisper.cpp is only partially configured", async () => {
-    vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
-    vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
-
-    const { createTranscriptionService } = await import("../transcription-service.js");
-
-    const service = createTranscriptionService();
-
-    expect(service.getStatus()).toMatchObject({
-      available: false,
-      provider: "disabled",
-      reason: "Set BRIDGE_WHISPER_CPP_COMMAND and BRIDGE_WHISPER_CPP_MODEL to enable voice input.",
+  it("honors the configured maximum recording length", () => {
+    const { engine } = createEngine();
+    const service = createTranscriptionService({
+      installer: { getStatus: () => installStatus() },
+      engine,
+      env: { BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS: "300" },
     });
+    expect(service.getStatus().maxDurationSeconds).toBe(300);
   });
 
-  it("spawns whisper.cpp with the expected arguments and returns the transcript", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "bridge-transcription-test-"));
-    try {
-      const modelPath = join(tempDir, "ggml-base.en.bin");
-      const audioPath = join(tempDir, "recording.wav");
-      writeFileSync(modelPath, "model");
-      writeFileSync(audioPath, "audio");
+  it("keeps the engine alive while transcribing and trims the transcript", async () => {
+    const { engine, release } = createEngine();
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
 
-      vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_MODEL", modelPath);
-      vi.stubEnv("BRIDGE_WHISPER_CPP_LANGUAGE", "auto");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_ARGS_JSON", JSON.stringify(["--prompt", "bridge"]));
-      vi.stubEnv("BRIDGE_WHISPER_CPP_NO_GPU", "true");
-
-      spawnMock.mockImplementation((command: string, args: string[]) => {
-        const child = new EventEmitter() as EventEmitter & {
-          stdout: PassThrough;
-          stderr: PassThrough;
-          kill: ReturnType<typeof vi.fn>;
-        };
-        child.stdout = new PassThrough();
-        child.stderr = new PassThrough();
-        child.kill = vi.fn();
-
-        const outputPrefix = args[args.indexOf("-of") + 1];
-        writeFileSync(`${outputPrefix}.txt`, "hello world\n");
-        queueMicrotask(() => child.emit("close", 0));
-
-        return child as any;
-      });
-
-      const { createTranscriptionService } = await import("../transcription-service.js");
-      const service = createTranscriptionService();
-
-      expect(service.getStatus()).toMatchObject({
-        available: true,
-        provider: "whisper.cpp",
-        label: "whisper.cpp",
-      });
-
-      const result = await service.transcribe({
-        filePath: audioPath,
-        workingDir: tempDir,
-      });
-
-      expect(result).toEqual({ text: "hello world", provider: "whisper.cpp" });
-      expect(spawnMock).toHaveBeenCalledWith(
-        "whisper-cli",
-        [
-          "-m",
-          modelPath,
-          "-f",
-          audioPath,
-          "-l",
-          "auto",
-          "-otxt",
-          "-of",
-          join(tempDir, "transcript"),
-          "-np",
-          "-nt",
-          "-ng",
-          "--prompt",
-          "bridge",
-        ],
-        expect.objectContaining({
-          env: process.env,
-          stdio: ["ignore", "pipe", "pipe"],
-        }),
-      );
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+    await expect(service.transcribe({ filePath: "clip.wav" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
+    expect(engine.retain).toHaveBeenCalledOnce();
+    expect(engine.transcribeFile).toHaveBeenCalledWith("clip.wav", { timeoutMs: 600_000 });
+    expect(release).toHaveBeenCalledOnce();
   });
 
-  it("rejects timed out transcriptions even if the child never closes", async () => {
-    vi.useFakeTimers();
-    const tempDir = mkdtempSync(join(tmpdir(), "bridge-transcription-test-"));
-    try {
-      const modelPath = join(tempDir, "ggml-base.en.bin");
-      const audioPath = join(tempDir, "recording.wav");
-      writeFileSync(modelPath, "model");
-      writeFileSync(audioPath, "audio");
+  it("fails clearly when the recording has no speech and still releases the engine", async () => {
+    const { engine, release } = createEngine({ text: "  " });
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
 
-      vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_MODEL", modelPath);
-      vi.stubEnv("BRIDGE_TRANSCRIPTION_TIMEOUT_MS", "10");
-
-      const kill = vi.fn();
-      spawnMock.mockImplementation(() => {
-        const child = new EventEmitter() as EventEmitter & {
-          stdout: PassThrough;
-          stderr: PassThrough;
-          kill: ReturnType<typeof vi.fn>;
-        };
-        child.stdout = new PassThrough();
-        child.stderr = new PassThrough();
-        child.kill = kill;
-        return child as any;
-      });
-
-      const { createTranscriptionService } = await import("../transcription-service.js");
-      const service = createTranscriptionService();
-
-      const promise = service.transcribe({
-        filePath: audioPath,
-        workingDir: tempDir,
-      });
-
-      await vi.advanceTimersByTimeAsync(10);
-      await expect(promise).rejects.toThrow("Transcription timed out after 10ms");
-      expect(kill).toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+    await expect(service.transcribe({ filePath: "quiet.wav" })).rejects.toThrow("No speech was detected");
+    expect(release).toHaveBeenCalledOnce();
   });
 
-  it("reports invalid extra args JSON in status", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "bridge-transcription-test-"));
-    try {
-      const modelPath = join(tempDir, "ggml-base.en.bin");
-      writeFileSync(modelPath, "model");
+  it("releases the engine when transcription fails", async () => {
+    const { engine, release } = createEngine();
+    engine.transcribeFile.mockRejectedValueOnce(new Error("Speech engine exited (1)"));
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
 
-      vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
-      vi.stubEnv("BRIDGE_WHISPER_CPP_MODEL", modelPath);
-      vi.stubEnv("BRIDGE_WHISPER_CPP_ARGS_JSON", "{bad json}");
+    await expect(service.transcribe({ filePath: "clip.wav" })).rejects.toThrow("Speech engine exited");
+    expect(release).toHaveBeenCalledOnce();
+  });
 
-      const { createTranscriptionService } = await import("../transcription-service.js");
+  it("does not start the engine when the speech engine is not installed", async () => {
+    const { engine } = createEngine();
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus({ installed: false }) }, engine, env: {} });
 
-      const service = createTranscriptionService();
-
-      expect(service.getStatus()).toMatchObject({
-        available: false,
-        provider: "disabled",
-        reason: "BRIDGE_WHISPER_CPP_ARGS_JSON must be valid JSON.",
-      });
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+    await expect(service.transcribe({ filePath: "clip.wav" })).rejects.toThrow("Settings → Voice");
+    expect(engine.retain).not.toHaveBeenCalled();
+    expect(engine.transcribeFile).not.toHaveBeenCalled();
   });
 });

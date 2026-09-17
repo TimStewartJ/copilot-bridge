@@ -73,8 +73,8 @@ describe("ChatInput voice retry", () => {
       browserSupported: true,
       status: {
         available: true,
-        provider: "whisper.cpp",
-        label: "whisper.cpp",
+        provider: "speech-engine",
+        label: "Parakeet v3 (local)",
         maxDurationSeconds: 120,
       },
       statusError: null,
@@ -252,8 +252,8 @@ describe("ChatInput voice retry", () => {
       browserSupported: true,
       status: {
         available: true,
-        provider: "whisper.cpp",
-        label: "whisper.cpp",
+        provider: "speech-engine",
+        label: "Parakeet v3 (local)",
         maxDurationSeconds: 120,
       },
       statusError: null,

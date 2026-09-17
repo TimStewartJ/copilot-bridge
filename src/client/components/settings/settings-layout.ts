@@ -1,4 +1,4 @@
-export type CategoryId = "general" | "integrations" | "updates" | "usage" | "diagnostics";
+export type CategoryId = "general" | "integrations" | "voice" | "updates" | "usage" | "diagnostics";
 
 export type SectionId =
   | "system-prompt"
@@ -11,7 +11,7 @@ export type SectionId =
   | "tags"
   | "mcp-servers"
   | "skills"
-  | "voice-input"
+  | "speech-engine"
   | "management-jobs"
   | "browser-diagnostics"
   | "updates"
@@ -36,6 +36,11 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
     sections: ["providers", "tags", "mcp-servers", "skills"],
   },
   {
+    id: "voice",
+    label: "Voice",
+    sections: ["speech-engine"],
+  },
+  {
     id: "updates",
     label: "Updates & Deployment",
     sections: ["updates", "management-jobs", "bridge-status"],
@@ -43,7 +48,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "diagnostics",
     label: "Diagnostics",
-    sections: ["browser-diagnostics", "voice-input"],
+    sections: ["browser-diagnostics"],
   },
   {
     id: "usage",

@@ -40,6 +40,7 @@ import { createGlobalBus } from "./global-bus.js";
 import type { AppContext } from "./app-context.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
+import { createVoiceRuntime } from "./voice/voice-runtime.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
@@ -160,6 +161,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const deferLoopStore = createDeferLoopStore(db);
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
+  const voiceRuntime = createVoiceRuntime(runtimePaths);
 
   try {
     taskAgentDefinitionStore.sweepOrphanedTaskAgentDirectories(
@@ -215,7 +217,13 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     globalBus,
     eventBusRegistry,
     sessionManager: null as any,
-    transcriptionService: createTranscriptionService(),
+    transcriptionService: createTranscriptionService({
+      installer: voiceRuntime.installer,
+      engine: voiceRuntime.engine,
+      env: runtimePaths.env,
+      logger: console,
+    }),
+    voiceRuntime,
     voiceJobManager: null as any,
     pushSubscriptionStore,
     managementJobStore,
