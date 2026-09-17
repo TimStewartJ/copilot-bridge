@@ -147,7 +147,7 @@ function SetupPanel({ controller }: { controller: VoiceModeController }) {
           Download and set up ({formatBytes(install.remainingBytes || install.totalBytes)})
         </button>
       )}
-      {(install.error || controller.error) && <p className="mt-3 text-xs text-rose-300">{install.error ?? controller.error}</p>}
+      {(install.error || controller.error) && <p className="mt-3 break-words text-xs text-rose-300">{install.error ?? controller.error}</p>}
     </div>
   );
 }

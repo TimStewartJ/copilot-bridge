@@ -1,13 +1,18 @@
 // Installs the voice engine on demand: pinned native npm packages and speech models,
 // verified against published digests, into the voice data directory.
+//
+// Packages come through the machine's npm client and models over HTTPS. A verified archive
+// that is already in the downloads folder is used as it is, so a host that can reach neither
+// source can still be set up by copying the files in by hand.
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { resolveTarCommand } from "../platform.js";
+import { moveFreshPath, resolveTarCommand } from "../platform.js";
+import { createNpmClient, describeNpmError, type NpmClient } from "./voice-npm-client.js";
 import {
   currentVoiceTarget,
   isVoiceTargetSupported,
@@ -82,10 +87,17 @@ interface AssetMarker {
 export interface VoiceInstallerOptions {
   paths: VoicePaths;
   target?: string;
+  env?: NodeJS.ProcessEnv;
   fetch?: typeof fetch;
   extract?: ExtractArchive;
+  /** Defaults to the machine's npm client, found beside Node or on PATH. */
+  npmClient?: NpmClient;
+  /** Delay between retries of a file move that a scanner is blocking. Tests pass a no-op so they never sleep. */
+  wait?: (delayMs: number) => Promise<void>;
   logger?: Pick<Console, "log" | "warn" | "error">;
 }
+
+type PhaseReport = (phase: VoiceInstallProgress["phase"], received: number, total: number) => void;
 
 function assetLabel(asset: VoiceAsset): string {
   return asset.kind === "model" ? asset.label : `${asset.name} ${asset.version}`;
@@ -93,6 +105,30 @@ function assetLabel(asset: VoiceAsset): string {
 
 function assetDigest(asset: VoiceAsset): string {
   return asset.kind === "model" ? `sha256:${asset.sha256}` : asset.integrity;
+}
+
+/** Matches what `npm pack` and a browser download name the file, so a hand-copied archive is found. */
+function archiveFileName(asset: VoiceAsset): string {
+  if (asset.kind === "npm") return `${asset.name}-${asset.version}.tgz`;
+  return asset.fileName ?? basename(new URL(asset.url).pathname);
+}
+
+/** Node reports every connection problem as "fetch failed"; the actual reason is on the cause chain. */
+function describeNetworkError(error: unknown): string {
+  let reason = error instanceof Error ? error.message : String(error);
+  let cause = (error as { cause?: unknown } | undefined)?.cause;
+  for (let depth = 0; cause && depth < 5; depth += 1) {
+    const { code, message, cause: next } = cause as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof code === "string" && code) reason = code;
+    else if (typeof message === "string" && message) reason = message;
+    cause = next;
+  }
+  return reason;
+}
+
+/** Cleanup never fails an install that otherwise worked; a virus scanner may still hold the files. */
+async function removeQuietly(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true }).catch(() => undefined);
 }
 
 export class VoiceInstaller {
@@ -104,12 +140,14 @@ export class VoiceInstaller {
   private readonly fetchImpl: typeof fetch;
   private readonly extract: ExtractArchive;
   private readonly logger: Pick<Console, "log" | "warn" | "error">;
+  private npmClient?: NpmClient;
 
   constructor(private readonly options: VoiceInstallerOptions) {
     this.target = options.target ?? currentVoiceTarget();
     this.fetchImpl = options.fetch ?? fetch;
     this.extract = options.extract ?? createTarExtractor();
     this.logger = options.logger ?? console;
+    this.npmClient = options.npmClient;
   }
 
   private assets(): VoiceAsset[] {
@@ -207,7 +245,7 @@ export class VoiceInstaller {
     let completedBytes = 0;
     for (const asset of pending) {
       this.logger.log(`[voice-install] Installing ${assetLabel(asset)}`);
-      const report = (phase: VoiceInstallProgress["phase"], receivedBytes: number, assetTotal: number) => {
+      const report: PhaseReport = (phase, receivedBytes, assetTotal) => {
         const fraction = assetTotal > 0 ? Math.min(1, receivedBytes / assetTotal) : 0;
         this.progress = {
           assetId: asset.id,
@@ -235,27 +273,28 @@ export class VoiceInstaller {
     this.logger.log("[voice-install] Voice engine installed");
   }
 
-  private async download(
-    asset: VoiceAsset,
-    url: string,
-    destination: string,
-    algorithm: "sha256" | "sha512",
-    report: (phase: VoiceInstallProgress["phase"], received: number, total: number) => void,
-  ): Promise<string> {
+  /** Whether the archive matches the digest pinned in the catalog. */
+  private async matchesDigest(asset: VoiceAsset, archive: string, report: PhaseReport): Promise<boolean> {
+    const size = (await stat(archive)).size;
+    report("verifying", size, size);
+    const hash = createHash(asset.kind === "npm" ? "sha512" : "sha256");
+    for await (const chunk of createReadStream(archive, { highWaterMark: 1024 * 1024 })) hash.update(chunk as Buffer);
+    return asset.kind === "npm"
+      ? `sha512-${hash.digest("base64")}` === asset.integrity
+      : hash.digest("hex") === asset.sha256;
+  }
+
+  private async download(asset: VoiceModelAsset, destination: string, report: PhaseReport): Promise<void> {
     const partial = `${destination}.part`;
     await rm(partial, { force: true });
-    const response = await this.fetchImpl(url, { redirect: "follow" });
-    if (!response.ok || !response.body) {
-      throw new Error(`Download failed for ${assetLabel(asset)} (HTTP ${response.status})`);
-    }
+    const response = await this.fetchImpl(asset.url, { redirect: "follow" });
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
     const headerLength = Number(response.headers.get("content-length"));
     const total = Number.isFinite(headerLength) && headerLength > 0 ? headerLength : asset.sizeBytes;
-    const hash = createHash(algorithm);
     let received = 0;
     let lastReport = 0;
     const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
     source.on("data", (chunk: Buffer) => {
-      hash.update(chunk);
       received += chunk.length;
       const now = Date.now();
       if (now - lastReport > 250) {
@@ -264,24 +303,65 @@ export class VoiceInstaller {
       }
     });
     await pipeline(source, createWriteStream(partial));
-    report("verifying", received, total);
-    const digest = algorithm === "sha256" ? hash.digest("hex") : hash.digest("base64");
-    await rename(partial, destination);
-    return digest;
+    await this.move(partial, destination);
   }
 
-  private async installPackage(
-    asset: VoiceNpmPackageAsset,
-    report: (phase: VoiceInstallProgress["phase"], received: number, total: number) => void,
-  ): Promise<void> {
-    const { paths } = this.options;
-    const archive = join(paths.downloadsDir, `${asset.name}-${asset.version}.tgz`);
-    const digest = await this.download(asset, asset.tarballUrl, archive, "sha512", report);
-    const expected = asset.integrity.replace(/^sha512-/, "");
-    if (digest !== expected) {
-      await rm(archive, { force: true });
+  private move(source: string, destination: string): Promise<void> {
+    return moveFreshPath(source, destination, {
+      ...(this.options.wait ? { wait: this.options.wait } : {}),
+      log: (message) => this.logger.warn(`[voice-install] ${message}`),
+    });
+  }
+
+  private async packWithNpm(asset: VoiceNpmPackageAsset, destination: string): Promise<void> {
+    this.npmClient ??= createNpmClient({ env: this.options.env });
+    const scratch = join(this.options.paths.downloadsDir, `npm-${asset.id}`);
+    try {
+      await this.move(await this.npmClient.pack(`${asset.name}@${asset.version}`, scratch), destination);
+    } finally {
+      await removeQuietly(scratch);
+    }
+  }
+
+  /** Leaves a digest-verified archive in the downloads folder and returns its path. */
+  private async obtainArchive(asset: VoiceAsset, report: PhaseReport): Promise<string> {
+    const { downloadsDir } = this.options.paths;
+    const fileName = archiveFileName(asset);
+    const archive = join(downloadsDir, fileName);
+    let rejectedCopy = false;
+    if (existsSync(archive)) {
+      // Copied in by hand for a host that can't download it, or kept from a run whose unpack step failed.
+      if (await this.matchesDigest(asset, archive, report)) {
+        this.logger.log(`[voice-install] Using ${fileName} from the downloads folder`);
+        return archive;
+      }
+      rejectedCopy = true;
+      await removeQuietly(archive);
+    }
+    report("downloading", 0, asset.sizeBytes);
+    try {
+      if (asset.kind === "npm") await this.packWithNpm(asset, archive);
+      else await this.download(asset, archive, report);
+    } catch (error) {
+      const [route, reason, byHand] = asset.kind === "npm"
+        ? ["with npm", describeNpmError(error), `run "npm pack ${asset.name}@${asset.version}"`]
+        : [`from ${new URL(asset.url).host}`, describeNetworkError(error), `download ${asset.url}`];
+      throw new Error(
+        `Couldn't download ${assetLabel(asset)} ${route}: ${reason}. `
+        + `To add it by hand, ${byHand} on any computer, copy ${fileName} into ${downloadsDir}, then retry.`
+        + (rejectedCopy ? ` The ${fileName} that was already there did not match the expected digest and was removed.` : ""),
+      );
+    }
+    if (!(await this.matchesDigest(asset, archive, report))) {
+      await removeQuietly(archive);
       throw new Error(`Integrity check failed for ${assetLabel(asset)}`);
     }
+    return archive;
+  }
+
+  private async installPackage(asset: VoiceNpmPackageAsset, report: PhaseReport): Promise<void> {
+    const { paths } = this.options;
+    const archive = await this.obtainArchive(asset, report);
     report("extracting", asset.sizeBytes, asset.sizeBytes);
     const staging = join(paths.engineDir, `.extract-${asset.id}`);
     await rm(staging, { recursive: true, force: true });
@@ -299,38 +379,27 @@ export class VoiceInstaller {
       const destination = join(paths.engineDir, "node_modules", asset.name);
       await rm(destination, { recursive: true, force: true });
       await mkdir(dirname(destination), { recursive: true });
-      await rename(packageDir, destination);
+      await this.move(packageDir, destination);
     } finally {
-      await rm(staging, { recursive: true, force: true });
-      await rm(archive, { force: true });
+      await removeQuietly(staging);
     }
+    // Only a finished install gives up the verified archive, so a failed unpack never costs a second download.
+    await removeQuietly(archive);
   }
 
-  private async installModel(
-    asset: VoiceModelAsset,
-    report: (phase: VoiceInstallProgress["phase"], received: number, total: number) => void,
-  ): Promise<void> {
+  private async installModel(asset: VoiceModelAsset, report: PhaseReport): Promise<void> {
     const { paths } = this.options;
-    const downloadName = asset.fileName ?? basename(new URL(asset.url).pathname);
-    const archive = join(paths.downloadsDir, downloadName);
-    const digest = await this.download(asset, asset.url, archive, "sha256", report);
-    if (digest !== asset.sha256) {
-      await rm(archive, { force: true });
-      throw new Error(`Integrity check failed for ${assetLabel(asset)}`);
-    }
+    const archive = await this.obtainArchive(asset, report);
     if (asset.archive) {
       report("extracting", asset.sizeBytes, asset.sizeBytes);
-      try {
-        await this.extract(archive, paths.modelsDir, { compression: "bzip2" });
-      } finally {
-        await rm(archive, { force: true });
-      }
+      await this.extract(archive, paths.modelsDir, { compression: "bzip2" });
     } else {
-      await rename(archive, join(paths.modelsDir, asset.fileName!));
+      await this.move(archive, join(paths.modelsDir, asset.fileName!));
     }
     for (const file of asset.verifyFiles) {
       const fileStat = await stat(join(paths.modelsDir, file)).catch(() => undefined);
       if (!fileStat) throw new Error(`${assetLabel(asset)} is missing ${file} after install`);
     }
+    await removeQuietly(archive);
   }
 }

@@ -155,7 +155,7 @@ export function SpeechEngineSection() {
         )}
 
         {installStatus?.error && !installStatus.installing && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          <div className="break-words rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
             Setup failed: {installStatus.error}
           </div>
         )}
