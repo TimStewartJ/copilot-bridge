@@ -22,7 +22,7 @@ const TEMP_DIR_SUFFIX = ".tmp";
 /**
  * Upper bound on how long a release temp directory may sit untouched while its
  * recorded PID is still alive before we treat that PID as reused. Generously
- * larger than the default 10-minute build timeout.
+ * larger than the default 1000-second build timeout.
  */
 const TEMP_DIR_MAX_LIVE_AGE_MS = 60 * 60_000;
 const RELEASE_SLOT_RENAME_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 1_500] as const;
