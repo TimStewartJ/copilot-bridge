@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import { runGit as runGitInDir, runGitSync as runGitSyncInDir } from "./git-command.js";
+import { runGit as runGitInDir } from "./git-command.js";
 import type { GitCommandResult } from "./git-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,20 +64,10 @@ let cachedRemoteCommit:
   | null = null;
 
 // The running commit is a process-lifetime boot snapshot, so it is read once per
-// module instance instead of once per reader. Re-reading it would spawn a
-// synchronous `git log` on every `createApiRouter` call, and a later read could
-// capture a commit newer than the one this process actually started from — which
-// is exactly the drift `runningVsLocal` exists to report.
-let cachedRunningCommit: GitCommitSnapshot | null = null;
-
-function runGitSync(args: string[], timeoutMs?: number): GitCommandResult {
-  return runGitSyncInDir(ROOT, args, timeoutMs);
-}
-
-export function gitHash(): string {
-  const result = runGitSync(["rev-parse", "--short", "HEAD"]);
-  return result.ok && result.output ? result.output : "unknown";
-}
+// module instance instead of once per reader. The read starts when the first reader is
+// created, at boot: a later read could capture a commit newer than the one this process
+// actually started from — which is exactly the drift `runningVsLocal` exists to report.
+let cachedRunningCommit: Promise<GitCommitSnapshot> | null = null;
 
 function runGit(args: string[], timeoutMs?: number): Promise<GitCommandResult> {
   return runGitInDir(ROOT, args, timeoutMs);
@@ -99,18 +89,6 @@ function parseCommitSnapshot(output: string, ref: string): GitCommitSnapshot {
     shortSha,
     message,
   };
-}
-
-function readCommitAtRefSync(gitRef: string, refLabel = gitRef): GitCommitSnapshot {
-  const result = runGitSync(["log", "-1", `--format=${COMMIT_FORMAT}`, gitRef]);
-  if (!result.ok) {
-    return {
-      status: "unavailable",
-      ref: refLabel,
-      error: result.error,
-    };
-  }
-  return parseCommitSnapshot(result.output, refLabel);
 }
 
 async function readCommitAtRef(gitRef: string, refLabel = gitRef): Promise<GitCommitSnapshot> {
@@ -246,9 +224,10 @@ async function compareCommitSnapshots(left: GitCommitSnapshot, right: GitCommitS
 }
 
 export function createBridgeGitRevisionReader(): BridgeGitRevisionReader {
-  const runningCommit = (cachedRunningCommit ??= readCommitAtRefSync("HEAD", "HEAD @ server start"));
+  const runningCommitRead = (cachedRunningCommit ??= readCommitAtRef("HEAD", "HEAD @ server start"));
 
   return async (options = {}) => {
+    const runningCommit = await runningCommitRead;
     const [local, remote] = await Promise.all([
       readCommitAtRef("HEAD", "HEAD"),
       readRemoteCommit(options.forceRefresh === true),

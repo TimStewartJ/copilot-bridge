@@ -1,19 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.hoisted(() => vi.fn());
-const execFileSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     execFile: execFileMock,
-    execFileSync: execFileSyncMock,
   };
 });
 
 const HEAD_LOG_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "HEAD"];
-const SHORT_HASH_ARGS = ["rev-parse", "--short", "HEAD"];
 const UPSTREAM_ARGS = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"];
 const REMOTE_LOG_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "origin/main"];
 const FETCH_REMOTE_ARGS = ["fetch", "--quiet", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
@@ -47,17 +44,6 @@ function expectNonInteractiveGitCalls(): void {
       },
     });
   }
-  for (const [, args, options] of execFileSyncMock.mock.calls) {
-    expect(args[0]).toBe("--no-pager");
-    expect(options).toMatchObject({
-      env: {
-        GIT_PAGER: "cat",
-        PAGER: "cat",
-        TERM: "dumb",
-        GIT_TERMINAL_PROMPT: "0",
-      },
-    });
-  }
 }
 
 async function loadGitRevisionModule() {
@@ -67,7 +53,6 @@ async function loadGitRevisionModule() {
 
 afterEach(() => {
   execFileMock.mockReset();
-  execFileSyncMock.mockReset();
   vi.resetModules();
 });
 
@@ -89,23 +74,25 @@ function mockExecFileImplementation(
   });
 }
 
+/**
+ * The running commit is read once, when the first reader is created, with the same `git log`
+ * arguments as every later read of the live checkout. Order tells them apart.
+ */
+function headReads(running: string, local: string): () => string {
+  let reads = 0;
+  return () => (reads++ === 0 ? running : local);
+}
+
 describe("createBridgeGitRevisionReader", () => {
   it("captures the running commit at reader creation time while returning current local and remote commits", async () => {
     const runningSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const localSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const remoteSha = "cccccccccccccccccccccccccccccccccccccccc";
-    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
-      if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput(runningSha, "aaaaaaa", "Running bridge commit");
-      }
-      throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
-    });
+    const readHead = headReads(commitOutput(runningSha, "aaaaaaa", "Running bridge commit"), commitOutput(localSha, "bbbbbbb", "Latest local commit"));
     mockExecFileImplementation((args) => {
       const normalizedArgs = normalizeGitArgs(args);
       const key = gitArgsKey(args);
-      if (key === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput(localSha, "bbbbbbb", "Latest local commit");
-      }
+      if (key === gitArgsKey(HEAD_LOG_ARGS)) return readHead();
       if (key === gitArgsKey(UPSTREAM_ARGS)) return "origin/main";
       if (key === gitArgsKey(FETCH_REMOTE_ARGS)) return "";
       if (key === gitArgsKey(REMOTE_LOG_ARGS)) {
@@ -163,18 +150,11 @@ describe("createBridgeGitRevisionReader", () => {
   it("reports missing upstream configuration explicitly", async () => {
     const runningSha = "dddddddddddddddddddddddddddddddddddddddd";
     const localSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
-      if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput(runningSha, "ddddddd", "Running commit");
-      }
-      throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
-    });
+    const readHead = headReads(commitOutput(runningSha, "ddddddd", "Running commit"), commitOutput(localSha, "eeeeeee", "Local commit"));
     mockExecFileImplementation((args) => {
       const normalizedArgs = normalizeGitArgs(args);
       const key = gitArgsKey(args);
-      if (key === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput(localSha, "eeeeeee", "Local commit");
-      }
+      if (key === gitArgsKey(HEAD_LOG_ARGS)) return readHead();
       if (key === gitArgsKey(UPSTREAM_ARGS)) {
         return new Error("fatal: no upstream configured");
       }
@@ -216,18 +196,11 @@ describe("createBridgeGitRevisionReader", () => {
 
   it("reuses a cached remote result until forced to refresh", async () => {
     let fetchCalls = 0;
-    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
-      if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput("ffffffffffffffffffffffffffffffffffffffff", "fffffff", "Running commit");
-      }
-      throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
-    });
+    const readHead = headReads(commitOutput("ffffffffffffffffffffffffffffffffffffffff", "fffffff", "Running commit"), commitOutput("9999999999999999999999999999999999999999", "9999999", "Local commit"));
     mockExecFileImplementation((args) => {
       const normalizedArgs = normalizeGitArgs(args);
       const key = gitArgsKey(args);
-      if (key === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput("9999999999999999999999999999999999999999", "9999999", "Local commit");
-      }
+      if (key === gitArgsKey(HEAD_LOG_ARGS)) return readHead();
       if (key === gitArgsKey(UPSTREAM_ARGS)) return "origin/main";
       if (key === gitArgsKey(FETCH_REMOTE_ARGS)) {
         fetchCalls += 1;
@@ -255,71 +228,22 @@ describe("createBridgeGitRevisionReader", () => {
 
   it("reads the running commit once per process instead of once per reader", async () => {
     const runningSha = "dddddddddddddddddddddddddddddddddddddddd";
-    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
-      if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput(runningSha, "ddddddd", "Running bridge commit");
-      }
-      throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
-    });
+    const readHead = headReads(commitOutput(runningSha, "ddddddd", "Running bridge commit"), commitOutput(runningSha, "ddddddd", "Running bridge commit"));
     mockExecFileImplementation((args) => {
       const key = gitArgsKey(args);
-      if (key === gitArgsKey(HEAD_LOG_ARGS)) return commitOutput(runningSha, "ddddddd", "Running bridge commit");
+      if (key === gitArgsKey(HEAD_LOG_ARGS)) return readHead();
       if (key === gitArgsKey(UPSTREAM_ARGS)) return new Error("no upstream");
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);
     });
 
     const revisions = await loadGitRevisionModule();
-    // Creating a reader used to spawn a synchronous `git log` every time, so
-    // every test that built an API router paid a process spawn.
+    // Each reader call reads the live checkout once. Only the first reader adds the boot read.
     const first = await revisions.createBridgeGitRevisionReader()();
     const second = await revisions.createBridgeGitRevisionReader()();
 
-    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    const headLogReads = execFileMock.mock.calls.filter(([, args]) => gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS));
+    expect(headLogReads).toHaveLength(3);
     expect(first.running).toEqual(second.running);
     expect(first.running).toMatchObject({ status: "ok", ref: "HEAD @ server start", sha: runningSha });
-  });
-});
-
-describe("gitHash", () => {
-  it("reads the current short hash through the hardened sync git helper", async () => {
-    execFileSyncMock.mockReturnValue("abc1234\n");
-
-    const revisions = await loadGitRevisionModule();
-
-    expect(revisions.gitHash()).toBe("abc1234");
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", ...SHORT_HASH_ARGS],
-      expect.objectContaining({
-        cwd: expect.any(String),
-        encoding: "utf-8",
-        env: expect.objectContaining({
-          GIT_PAGER: "cat",
-          PAGER: "cat",
-          TERM: "dumb",
-          GIT_TERMINAL_PROMPT: "0",
-        }),
-        timeout: 5_000,
-      }),
-    );
-    expectNonInteractiveGitCalls();
-  });
-
-  it("returns unknown when the current short hash cannot be read or is empty", async () => {
-    // Git throws (e.g. not a worktree)
-    execFileSyncMock.mockImplementation(() => {
-      throw new Error("not a git worktree");
-    });
-    const revisions1 = await loadGitRevisionModule();
-    expect(revisions1.gitHash(), "throws").toBe("unknown");
-    expectNonInteractiveGitCalls();
-
-    execFileSyncMock.mockReset();
-
-    // Git returns empty output
-    execFileSyncMock.mockReturnValue("\n");
-    const revisions2 = await loadGitRevisionModule();
-    expect(revisions2.gitHash(), "empty output").toBe("unknown");
-    expectNonInteractiveGitCalls();
   });
 });

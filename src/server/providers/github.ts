@@ -2,7 +2,7 @@
 // Auth is ambient (no secrets in settings): BRIDGE_COPILOT_GITHUB_TOKEN → GH_TOKEN →
 // GITHUB_TOKEN → `gh auth token`. Without any token, public repositories still enrich.
 
-import { execFile } from "node:child_process";
+import { getProcessHost } from "../process-host.js";
 import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, GitHubProviderConfig } from "./types.js";
 import { createProviderCache, type ProviderCache } from "./cache.js";
 
@@ -96,18 +96,13 @@ function readTokenFromEnv(): string | null {
   return null;
 }
 
-function runGhAuthToken(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "gh",
-      ["auth", "token", "--hostname", "github.com"],
-      { timeout: CLI_TOKEN_TIMEOUT_MS },
-      (err, stdout) => {
-        if (err) reject(err);
-        else resolve(typeof stdout === "string" ? stdout : String(stdout));
-      },
-    );
-  });
+async function runGhAuthToken(): Promise<string> {
+  const { stdout } = await getProcessHost().execFile(
+    "gh",
+    ["auth", "token", "--hostname", "github.com"],
+    { timeout: CLI_TOKEN_TIMEOUT_MS },
+  );
+  return stdout;
 }
 
 /** Read a token from `gh` (cached, single in-flight lookup). Returns null when unavailable. */

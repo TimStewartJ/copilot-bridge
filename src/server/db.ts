@@ -309,6 +309,12 @@ export function openDatabase(dataDir: string): DatabaseSync {
   try {
     // Enable WAL mode for better concurrency and performance
     db.exec("PRAGMA journal_mode = WAL");
+    // Every store commits on the server's main thread. The default (FULL) flushes the disk on
+    // each commit; under disk load that flush has been measured at 0.5-2.6s, which freezes the
+    // event loop. NORMAL is SQLite's recommended WAL setting: the database cannot be corrupted
+    // and commits survive a process crash or kill. Only an OS crash or power loss can lose the
+    // last few transactions.
+    db.exec("PRAGMA synchronous = NORMAL");
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA foreign_keys = ON");
     initSchema(db);
@@ -842,6 +848,15 @@ function initSchema(db: DatabaseSync): void {
       ON deferred_prompts(status, runAt);
     CREATE INDEX IF NOT EXISTS idx_deferred_prompts_sessionId_status_runAt
       ON deferred_prompts(sessionId, status, runAt);
+
+    -- Accepted runs still in flight. A row that survives to the next boot marks a run
+    -- cut off by a server kill or crash, since graceful shutdown drives runs to idle.
+    CREATE TABLE IF NOT EXISTS interrupted_run_markers (
+      sessionId TEXT PRIMARY KEY,
+      attentionMode TEXT NOT NULL,
+      acceptedAt TEXT NOT NULL,
+      lastResumedAt TEXT
+    );
 
     -- Recurring same-session deferred execution loops
     CREATE TABLE IF NOT EXISTS defer_loops (

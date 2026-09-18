@@ -2487,6 +2487,11 @@ export function createApiRouter(
     }
 
     if (forced) {
+      if (!resume) {
+        // The user chose not to resume these runs. If the launcher cuts over before an abort
+        // finishes, the run's marker would survive to the next boot and resume it anyway.
+        for (const run of interruptedRuns) ctx.interruptedRunStore?.clear(run.sessionId);
+      }
       // Resume prompts are queued first so a launcher that cuts over mid-abort cannot lose them.
       forceRestartCutover();
       await ctx.sessionManager.abortActiveWork();

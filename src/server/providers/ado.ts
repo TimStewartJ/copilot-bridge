@@ -1,6 +1,6 @@
 // Azure DevOps provider — enriches work items and PRs via ADO REST API
 
-import { execSync } from "node:child_process";
+import { getProcessHost } from "../process-host.js";
 import type {
   PRRef,
   EnrichedWorkItem,
@@ -39,32 +39,42 @@ class AdoRequestError extends Error {
 
 function isTokenTimeoutError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  const code = (err as NodeJS.ErrnoException).code;
-  return code === "ETIMEDOUT" || /timed? ?out/i.test(err.message);
+  // A command killed by its timeout reports `killed`, not an ETIMEDOUT code.
+  const failure = err as NodeJS.ErrnoException & { killed?: boolean };
+  return failure.code === "ETIMEDOUT" || failure.killed === true || /timed? ?out/i.test(err.message);
 }
 
-function fetchAccessTokenOnce(): string {
-  const result = execSync(
+async function fetchAccessTokenOnce(): Promise<string> {
+  const { stdout } = await getProcessHost().exec(
     // 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps public resource ID
     // (used by all az CLI / MSAL integrations — not a secret)
     'az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv',
     { encoding: "utf-8", timeout: TOKEN_FETCH_TIMEOUT_MS },
-  ).trim();
+  );
+  const result = stdout.trim();
   if (!result) {
     throw new Error("ADO access token command returned empty result");
   }
   return result;
 }
 
-function getAccessToken(): string {
-  if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
-    return cachedToken.value;
-  }
+let tokenRefreshInFlight: Promise<string> | null = null;
 
+/** Single-flight: parallel requests share one `az` invocation instead of starting one each. */
+function getAccessToken(): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
+    return Promise.resolve(cachedToken.value);
+  }
+  return (tokenRefreshInFlight ??= refreshAccessToken().finally(() => {
+    tokenRefreshInFlight = null;
+  }));
+}
+
+async function refreshAccessToken(): Promise<string> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= TOKEN_FETCH_ATTEMPTS; attempt++) {
     try {
-      const result = fetchAccessTokenOnce();
+      const result = await fetchAccessTokenOnce();
       cachedToken = { value: result, expiresAt: Date.now() + TOKEN_CACHE_TTL };
       return result;
     } catch (err) {
@@ -107,7 +117,7 @@ async function adoFetch(url: string): Promise<any> {
 }
 
 async function adoFetchAttempt(url: string, isRetry: boolean): Promise<any> {
-  const token = getAccessToken();
+  const token = await getAccessToken();
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -579,7 +589,7 @@ export class AdoProvider implements WorkTrackingProvider {
         "AND [System.State] <> 'Removed'",
         "ORDER BY [System.ChangedDate] DESC",
       ].join(" ");
-      const raw = execSync(
+      const { stdout: raw } = await getProcessHost().exec(
         `az boards query --wiql ${JSON.stringify(query)} --query "[].id" --output json`,
         {
           encoding: "utf-8",

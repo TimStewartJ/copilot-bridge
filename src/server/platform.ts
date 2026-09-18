@@ -1,7 +1,6 @@
 // Platform abstraction — encapsulates OS-specific operations behind a unified API.
 // Windows uses one CIM snapshot + one taskkill + one verification snapshot.
 
-import { execFile, type ExecFileOptions } from "node:child_process";
 import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
 import { cp, rename, rm } from "node:fs/promises";
 import { join, posix, resolve, win32 } from "node:path";
@@ -13,24 +12,14 @@ import {
   sleepUntilDeadline,
   type Deadline,
 } from "./deadline.js";
+import { getProcessHost, type HostExecOptions } from "./process-host.js";
 
 function execFileAsync(
   command: string,
   args: readonly string[],
-  options: ExecFileOptions,
+  options: HostExecOptions,
 ): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(command, [...args], options, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve({
-        stdout: Buffer.isBuffer(stdout) ? stdout.toString("utf8") : String(stdout ?? ""),
-        stderr: Buffer.isBuffer(stderr) ? stderr.toString("utf8") : String(stderr ?? ""),
-      });
-    });
-  });
+  return getProcessHost().execFile(command, args, options);
 }
 
 // A loaded Windows host (~900 processes) has needed more than 8s for one CIM snapshot.
@@ -760,6 +749,32 @@ export function resolveNpmInvocation(options: {
     if (exists(paths.join(dir, "npm.cmd")) && exists(cliPath)) return runWithNode(cliPath);
   }
   return undefined;
+}
+
+export interface WindowsKeepAwakeApi {
+  /** SetThreadExecutionState. ES_CONTINUOUS state belongs to the calling thread. */
+  setThreadExecutionState(flags: number): number;
+  /** Relative mouse movement in pixels. */
+  moveMouse(dx: number, dy: number): void;
+}
+
+/** In-process Win32 bindings, so keeping the machine awake never starts a helper process. */
+export async function loadWindowsKeepAwakeApi(): Promise<WindowsKeepAwakeApi> {
+  const imported = await import("koffi");
+  const koffi = ((imported as { default?: unknown }).default ?? imported) as {
+    load(name: string): { func(signature: string): (...args: unknown[]) => unknown };
+  };
+  const setThreadExecutionState = koffi.load("kernel32.dll").func("uint32 __stdcall SetThreadExecutionState(uint32 esFlags)");
+  const mouseEvent = koffi.load("user32.dll").func(
+    "void __stdcall mouse_event(uint32 dwFlags, int32 dx, int32 dy, uint32 dwData, uintptr_t dwExtraInfo)",
+  );
+  const MOUSEEVENTF_MOVE = 0x0001;
+  return {
+    setThreadExecutionState: (flags) => Number(setThreadExecutionState(flags)),
+    moveMouse: (dx, dy) => {
+      mouseEvent(MOUSEEVENTF_MOVE, dx, dy, 0, 0);
+    },
+  };
 }
 
 /**

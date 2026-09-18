@@ -45,6 +45,7 @@ import type { RuntimePaths } from "./runtime-paths.js";
 import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
 import { createDeferLoopStore } from "./defer-loop-store.js";
+import { createInterruptedRunStore } from "./interrupted-run-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createSessionManager } from "./session-manager.js";
@@ -159,6 +160,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   }
   const deferredPromptStore = createDeferredPromptStore(db);
   const deferLoopStore = createDeferLoopStore(db);
+  const interruptedRunStore = createInterruptedRunStore(db);
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
   const voiceRuntime = createVoiceRuntime(runtimePaths);
@@ -229,6 +231,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     managementJobStore,
     deferredPromptStore,
     deferLoopStore,
+    interruptedRunStore,
     scheduler,
     copilotHome,
     apiBasePath: options.apiBasePath,

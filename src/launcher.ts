@@ -29,7 +29,7 @@ import {
 } from "./server/deadline.js";
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
-import { gitHash } from "./server/git-revisions.js";
+import { gitHash } from "./launcher-git.js";
 import { fetchRestartBusyState, waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
@@ -162,6 +162,12 @@ const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 120_000;
 const HEALTH_POLL_INTERVAL = 30_000;
 const HEALTH_POLL_TIMEOUT = 5_000;
+/**
+ * Steady-state polls wait this long for an answer. A timeout only proves the event loop was busy
+ * for that long: a server stalled by machine load is alive, and killing it destroys every
+ * in-flight session run to fix nothing. Only a server that stays silent this long is treated as hung.
+ */
+const HEALTH_STEADY_POLL_TIMEOUT = 60_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
 /** How long the server may report blocked agent backend recovery before the launcher restarts it. */
 const BLOCKED_BACKEND_RECOVERY_GRACE_MS = 60_000;
@@ -253,6 +259,7 @@ type ServerLaunchTarget = {
 type HealthProbeResult = {
   healthy: boolean;
   failureDetail?: string;
+  durationMs?: number;
   /** When the server reported that agent backend recovery is blocked. */
   recoveryBlockedAt?: string | null;
 };
@@ -877,7 +884,7 @@ async function probeServerHealth(timeoutMs: number): Promise<HealthProbeResult> 
     const durationMs = Date.now() - startedAt;
     if (res.ok) {
       const body = await res.json().catch(() => null);
-      return { healthy: true, recoveryBlockedAt: readRecoveryBlockedAt(body) };
+      return { healthy: true, durationMs, recoveryBlockedAt: readRecoveryBlockedAt(body) };
     }
     return { healthy: false, failureDetail: `HTTP ${res.status} after ${durationMs}ms` };
   } catch (error) {
@@ -1016,7 +1023,7 @@ async function pollServerHealth(): Promise<void> {
       failureDetail: "server process missing",
     };
     if (polledServer) {
-      healthResult = await probeServerHealth(HEALTH_POLL_TIMEOUT);
+      healthResult = await probeServerHealth(HEALTH_STEADY_POLL_TIMEOUT);
     }
 
     if (
@@ -1040,6 +1047,9 @@ async function pollServerHealth(): Promise<void> {
     steadyHealthFailures = decision.nextFailures;
 
     if (healthResult.healthy) {
+      if ((healthResult.durationMs ?? 0) > HEALTH_POLL_TIMEOUT) {
+        log(`Health check slow: answered after ${healthResult.durationMs}ms (server is alive; not a failure)`);
+      }
       clearRollbackCheckpointAfterHealthyState();
       if (blockedBackendRecovery.observe(healthResult.recoveryBlockedAt ?? null, Date.now()) === "restarting") {
         return;

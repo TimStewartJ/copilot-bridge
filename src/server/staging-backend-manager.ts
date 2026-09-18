@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
@@ -18,6 +17,7 @@ import {
   terminateProcessTree,
   type ProcessIdentity,
 } from "./platform.js";
+import { getProcessHost, type HostChild } from "./process-host.js";
 import {
   createDeadline,
   remainingMs,
@@ -63,7 +63,7 @@ import { log } from "./staging-log.js";
 import { parseJsonc } from "./jsonc.js";
 
 export interface ActiveStagingBackend {
-  child: ChildProcess;
+  child: HostChild;
   identity: Promise<ProcessIdentity | null>;
   baseUrl: string;
   port: number;
@@ -1142,10 +1142,10 @@ export function buildStagingBackendSpawnConfig(
   };
 }
 
-const closedStagingBackendChildren = new WeakSet<ChildProcess>();
+const closedStagingBackendChildren = new WeakSet<HostChild>();
 const STAGING_BACKEND_IDENTITY_RETRY_DELAY_MS = 100;
 
-function trackChildClose(child: ChildProcess): void {
+function trackChildClose(child: HostChild): void {
   child.once("close", () => {
     closedStagingBackendChildren.add(child);
   });
@@ -1157,7 +1157,7 @@ function streamIsClosed(stream: NodeJS.ReadableStream | NodeJS.WritableStream | 
   return state.destroyed === true || state.closed === true;
 }
 
-function childHasClosed(child: ChildProcess): boolean {
+function childHasClosed(child: HostChild): boolean {
   if (closedStagingBackendChildren.has(child)) return true;
   if (child.exitCode === null && child.signalCode === null) return false;
   return !child.connected
@@ -1167,7 +1167,7 @@ function childHasClosed(child: ChildProcess): boolean {
 }
 
 async function captureStagingBackendIdentity(
-  child: ChildProcess,
+  child: HostChild,
   options: {
     timeoutMs?: number;
     retryDelayMs?: number;
@@ -1194,7 +1194,7 @@ async function captureStagingBackendIdentity(
   return null;
 }
 
-function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+function waitForChildClose(child: HostChild, timeoutMs: number): Promise<boolean> {
   if (childHasClosed(child)) return Promise.resolve(true);
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
@@ -1210,7 +1210,7 @@ function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<bool
 }
 
 async function stopStagingBackendChild(
-  child: ChildProcess,
+  child: HostChild,
   identityPromise: Promise<ProcessIdentity | null>,
 ): Promise<void> {
   if (childHasClosed(child)) return;
@@ -1264,7 +1264,7 @@ export async function startStagingBackendProcess(
 ): Promise<ActiveStagingBackend> {
   const spawnConfig = buildStagingBackendSpawnConfig(stagingDir, runtimePaths, apiBasePath, options);
   const output: CapturedCommandOutput = { output: "", truncatedChars: 0 };
-  const child = spawn(spawnConfig.command, spawnConfig.args, {
+  const child = await getProcessHost().spawn(spawnConfig.command, spawnConfig.args, {
     cwd: stagingDir,
     env: spawnConfig.env,
     stdio: ["ignore", "pipe", "pipe", "ipc"],

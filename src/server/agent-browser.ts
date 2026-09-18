@@ -1,16 +1,16 @@
 // Shared agent-browser helpers with automatic recovery from stale Chrome state.
 
-import { exec, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
-import { promisify } from "node:util";
+import { getProcessHost, type HostExecOptions } from "./process-host.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 
 const DEFAULT_TIMEOUT = 30_000;
-const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
+const execAsync = (command: string, options: HostExecOptions) => getProcessHost().exec(command, options);
+const execFileAsync = (file: string, args: readonly string[], options: HostExecOptions) =>
+  getProcessHost().execFile(file, args, options);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
 const RUNTIME_FILES = [...LOCK_FILES, "DevToolsActivePort", "lockfile"];
 
@@ -593,109 +593,61 @@ function agentBrowserJsonOutput(command: BrowserCommand, envelope: AgentBrowserJ
   return "";
 }
 
+function parseAgentBrowserEnvelope(stdout: string): AgentBrowserJsonEnvelope | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+  try {
+    const envelope = JSON.parse(trimmed) as AgentBrowserJsonEnvelope;
+    return typeof envelope.success === "boolean" ? envelope : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The CLI client can print its JSON result without exiting promptly, so the command completes
+ * as soon as stdout holds a complete JSON value and the lingering client is killed.
+ */
 async function runAgentBrowserJsonCommand(
   command: BrowserCommand,
   timeout: number,
   env: NodeJS.ProcessEnv,
 ): Promise<{ ok: boolean; output: string }> {
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof execFile> | undefined;
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
+  let stdout = "";
+  let stderr = "";
+  let failure: unknown;
+  try {
+    const agentBrowserCommand = getAgentBrowserCommand();
+    ({ stdout, stderr } = await getProcessHost().execFile(
+      agentBrowserCommand.file,
+      [...command, "--json"],
+      {
+        encoding: "utf-8",
+        maxBuffer: 10 * 1024 * 1024,
+        env,
+        shell: agentBrowserCommand.shell,
+        timeout,
+        completeWhen: "stdout-json",
+      },
+    ));
+  } catch (error) {
+    failure = error;
+    const commandError = error as { stdout?: unknown; stderr?: unknown };
+    stdout = commandError.stdout?.toString() ?? "";
+    stderr = commandError.stderr?.toString() ?? "";
+  }
 
-    const finish = (result: { ok: boolean; output: string }): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        child?.kill();
-      } catch {
-        // The short-lived CLI client may already have exited.
-      }
-      resolve(result);
-    };
+  const envelope = parseAgentBrowserEnvelope(stdout);
+  if (envelope) return { ok: envelope.success, output: agentBrowserJsonOutput(command, envelope) };
+  if (failure === undefined) return { ok: true, output: (stdout || stderr).trim() };
 
-    const parseCompleteJson = (): boolean => {
-      const trimmed = stdout.trim();
-      if (!trimmed) return false;
-      try {
-        const envelope = JSON.parse(trimmed) as AgentBrowserJsonEnvelope;
-        if (typeof envelope.success !== "boolean") return false;
-        finish({
-          ok: envelope.success,
-          output: agentBrowserJsonOutput(command, envelope),
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const timer = setTimeout(() => {
-      finish({
-        ok: false,
-        output: stderr.trim() || stdout.trim() || `agent-browser command timed out after ${timeout}ms`,
-      });
-    }, timeout);
-
-    try {
-      const agentBrowserCommand = getAgentBrowserCommand();
-      child = execFile(
-        agentBrowserCommand.file,
-        [...command, "--json"],
-        {
-          encoding: "utf-8",
-          maxBuffer: 10 * 1024 * 1024,
-          env,
-          shell: agentBrowserCommand.shell,
-        },
-        (error, stdoutValue, stderrValue) => {
-          if (settled) return;
-          const mockedResult = stdoutValue && typeof stdoutValue === "object"
-            ? stdoutValue as { stdout?: unknown; stderr?: unknown }
-            : undefined;
-          stdout ||= mockedResult?.stdout?.toString() ?? stdoutValue?.toString() ?? "";
-          stderr ||= mockedResult?.stderr?.toString() ?? stderrValue?.toString() ?? "";
-          if (parseCompleteJson()) return;
-          if (error) {
-            const commandError = error as Error & { stderr?: unknown; stdout?: unknown };
-            finish({
-              ok: false,
-              output: commandError.stderr?.toString().trim()
-                || commandError.stdout?.toString().trim()
-                || stderr.trim()
-                || stdout.trim()
-                || String(error),
-            });
-            return;
-          }
-          finish({
-            ok: true,
-            output: (stdout || stderr).trim(),
-          });
-        },
-      );
-      child.stdout?.on("data", (chunk) => {
-        stdout += chunk.toString();
-        parseCompleteJson();
-      });
-      child.stderr?.on("data", (chunk) => {
-        stderr += chunk.toString();
-      });
-      child.on("error", (error) => {
-        finish({
-          ok: false,
-          output: stderr.trim() || stdout.trim() || String(error),
-        });
-      });
-    } catch (error) {
-      finish({
-        ok: false,
-        output: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
+  const timedOut = (failure as { killed?: boolean }).killed === true;
+  return {
+    ok: false,
+    output: stderr.trim()
+      || stdout.trim()
+      || (timedOut ? `agent-browser command timed out after ${timeout}ms` : String(failure)),
+  };
 }
 
 export async function run(

@@ -67,6 +67,9 @@ export interface SessionRunStateControllerDeps {
   promptDeliveryShutdownMessage: string;
   persistTerminalOverlay(sessionId: string, overlay: SyntheticTerminalOverlay): void;
   clearTerminalOverlay(sessionId: string): void;
+  /** Durably records an accepted run so a server kill or crash can be resumed on the next boot. */
+  persistAcceptedRun?(sessionId: string, attentionMode: "normal" | "quiet"): void;
+  clearAcceptedRun?(sessionId: string): void;
   logger?: Pick<Console, "warn">;
 }
 
@@ -156,7 +159,12 @@ export class SessionRunStateController {
       isCompleted: () => completed,
       markPromptAccepted: () => {
         const current = this.sessionRuns.get(sessionId);
-        if (current) this.sessionRuns.set(sessionId, { ...current, promptAccepted: true });
+        if (current) {
+          this.sessionRuns.set(sessionId, { ...current, promptAccepted: true });
+          // Only with a live record: its idle transition is what clears the marker again.
+          this.runMarkerHook(sessionId, "persist", () =>
+            this.deps.persistAcceptedRun?.(sessionId, current.attentionMode === "quiet" ? "quiet" : "normal"));
+        }
         settlePromptDelivery({ status: "accepted" });
       },
       completeDone: (content, options) => {
@@ -266,6 +274,7 @@ export class SessionRunStateController {
     if (state === "idle") {
       if (!current) return;
       this.sessionRuns.delete(sessionId);
+      this.runMarkerHook(sessionId, "clear", () => this.deps.clearAcceptedRun?.(sessionId));
       this.deps.onRunIdle?.(sessionId, now);
       const assistantPreview = this.completedAssistantPreviews.get(sessionId);
       this.completedAssistantPreviews.delete(sessionId);
@@ -320,6 +329,16 @@ export class SessionRunStateController {
 
   private getActiveSessionCount(): number {
     return this.deps.getActiveSessionCount?.() ?? this.sessionRuns.size;
+  }
+
+  /** Marker persistence is best-effort: a storage failure must never fail or wedge the run itself. */
+  private runMarkerHook(sessionId: string, action: "persist" | "clear", hook: () => void): void {
+    try {
+      hook();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to ${action} interrupted-run marker: ${message}`);
+    }
   }
 
   touchSessionRun(sessionId: string, at = Date.now()): void {

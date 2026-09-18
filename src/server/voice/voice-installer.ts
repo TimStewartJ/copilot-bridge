@@ -5,13 +5,13 @@
 // that is already in the downloads folder is used as it is, so a host that can reach neither
 // source can still be set up by copying the files in by hand.
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { moveFreshPath, resolveTarCommand } from "../platform.js";
+import { getProcessHost } from "../process-host.js";
 import { createNpmClient, describeNpmError, type NpmClient } from "./voice-npm-client.js";
 import {
   currentVoiceTarget,
@@ -60,21 +60,20 @@ export type ExtractArchive = (archivePath: string, destination: string, options:
 }) => Promise<void>;
 
 export function createTarExtractor(tarCommand = resolveTarCommand()): ExtractArchive {
-  return (archivePath, destination, options) => new Promise((resolve, reject) => {
+  return async (archivePath, destination, options) => {
     // Run inside the destination with a relative archive path so no drive letter reaches tar.
     const args = [
       options.compression === "gzip" ? "-xzf" : "-xjf",
       relative(destination, archivePath),
       ...(options.members ?? []),
     ];
-    execFile(tarCommand, args, { cwd: destination, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (error, _stdout, stderr) => {
-      if (error) {
-        reject(new Error(`Failed to extract ${basename(archivePath)}: ${String(stderr || error.message).trim()}`));
-        return;
-      }
-      resolve();
-    });
-  });
+    try {
+      await getProcessHost().execFile(tarCommand, args, { cwd: destination, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    } catch (error) {
+      const failure = error as { stderr?: unknown; message?: string };
+      throw new Error(`Failed to extract ${basename(archivePath)}: ${String(failure.stderr || failure.message).trim()}`);
+    }
+  };
 }
 
 interface AssetMarker {

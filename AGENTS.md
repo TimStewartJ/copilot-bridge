@@ -35,6 +35,17 @@ These instructions apply to the whole repository. Keep changes small, typed, cro
 - Use `src/server/__tests__/test-paths.ts` helpers for fake homes, normalized path assertions, and fake executable paths.
 - Do not skip Windows with `skipIf(isWindows)` when behavior can be tested with mocks.
 
+## Never block the server's event loop
+
+The server's main thread serves HTTP, health probes, and session event acknowledgements. When it stalls for a few seconds, sessions lose their tool-permission acknowledgements; when it stalls longer, the launcher's watchdog sees a dead server.
+
+- Never start a process from server runtime code with `node:child_process`. Creating a process is a synchronous call on the calling thread (`CreateProcessW` on Windows) and has been measured taking tens of seconds under machine load. Use `getProcessHost()` from `src/server/process-host.ts`: `execFile`/`exec` run a command to completion, `spawn`/`fork` start a long-lived child. It creates every process on a worker thread and enforces `timeout` on the calling thread, so a command whose process cannot be created in time fails instead of holding its caller.
+- `spawn` and `fork` are asynchronous. A process that cannot be created still resolves, with `pid` undefined and an `"error"` event, as `child_process.spawn` does. Test mocks must deliver a child's events after the caller subscribes, never from a microtask queued inside `spawn`.
+- Never use `execSync`, `execFileSync`, or `spawnSync` in server runtime code. Synchronous helpers for the launcher live in `src/launcher-git.ts` and `src/server/sync-command-runner.ts` and must not be imported by the server.
+- `src/server/__tests__/process-creation-boundary.test.ts` walks the real import graph from the server entry points and fails on any process-creating import outside `src/server/process-host-worker.ts`.
+- Test suites run the inline backend because they mock `node:child_process` on their own thread. The native project sets `BRIDGE_PROCESS_HOST=worker` to run the production path. Setting `BRIDGE_PROCESS_HOST=inline` in `.env` restores calling-thread process creation as an operational fallback.
+- Prefer in-process bindings over helper processes for small OS calls (see `loadWindowsKeepAwakeApi` in `src/server/platform.ts`).
+
 ## Platform mocking in tests
 
 Do not mock platform detection while performing real native OS side effects. If a test sets `process.platform`, mocks `node:os.platform`, or otherwise forces a platform branch, then native side effects for that branch must also be mocked.

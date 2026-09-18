@@ -26,8 +26,13 @@ describe("api router server management reliability", () => {
       { sessionId: "session-a", promptAccepted: true, attentionMode: "normal" as const },
       { sessionId: "session-b", promptAccepted: false, attentionMode: "quiet" as const },
     ]);
+    ctx.interruptedRunStore!.markAccepted("session-a", "normal");
+    ctx.interruptedRunStore!.markAccepted("session-elsewhere", "normal");
     ctx.sessionManager.abortActiveWork = vi.fn(async () => {
       expect(isRestartCutoverInProgress()).toBe(true);
+      // Declined resume: the marker is gone before the launcher can cut over mid-abort,
+      // so the next boot cannot resume a run the user chose to drop.
+      expect(ctx.interruptedRunStore!.list().map((marker) => marker.sessionId)).toEqual(["session-elsewhere"]);
     });
 
     const response = await request(app)
@@ -78,8 +83,11 @@ describe("api router server management reliability", () => {
       { sessionId: "session-b", promptAccepted: true, attentionMode: "quiet" as const },
       { sessionId: "session-c", promptAccepted: false, attentionMode: "normal" as const },
     ]);
+    ctx.interruptedRunStore!.markAccepted("session-a", "normal");
     ctx.sessionManager.abortActiveWork = vi.fn(async () => {
       expect(ctx.deferredPromptStore?.listForSession("session-a")).toHaveLength(1);
+      // Requested resume: the marker stays, so a cutover mid-abort still resumes the run.
+      expect(ctx.interruptedRunStore!.list().map((marker) => marker.sessionId)).toEqual(["session-a"]);
     });
     beginRestartPending();
 

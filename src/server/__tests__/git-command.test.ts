@@ -1,14 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.hoisted(() => vi.fn());
-const execFileSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     execFile: execFileMock,
-    execFileSync: execFileSyncMock,
   };
 });
 
@@ -26,7 +24,6 @@ async function loadGitCommandModule() {
 
 afterEach(() => {
   execFileMock.mockReset();
-  execFileSyncMock.mockReset();
   vi.resetModules();
 });
 
@@ -141,51 +138,5 @@ describe("runGit", () => {
     const result = await runGit("/work/dir", ["status"]);
 
     expect(result).toEqual({ ok: false, error: "fatal: not a git repository" });
-  });
-});
-
-describe("runGitSync", () => {
-  it("invokes git with --no-pager, the provided cwd, the non-interactive env, and the default timeout", async () => {
-    const { runGitSync } = await loadGitCommandModule();
-    execFileSyncMock.mockReturnValue("  abc123\n");
-
-    const result = runGitSync("/repo", ["rev-parse", "--short", "HEAD"]);
-
-    expect(result).toEqual({ ok: true, output: "abc123" });
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", "rev-parse", "--short", "HEAD"],
-      expect.objectContaining({
-        cwd: "/repo",
-        encoding: "utf-8",
-        env: expect.objectContaining(NON_INTERACTIVE_ENV),
-        timeout: 5_000,
-      }),
-    );
-  });
-
-  it("honors an explicit timeout override", async () => {
-    const { runGitSync } = await loadGitCommandModule();
-    execFileSyncMock.mockReturnValue("ok");
-
-    runGitSync("/repo", ["log"], 999);
-
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", "log"],
-      expect.objectContaining({ timeout: 999 }),
-    );
-  });
-
-  it("formats thrown errors via their stderr", async () => {
-    const { runGitSync } = await loadGitCommandModule();
-    execFileSyncMock.mockImplementation(() => {
-      throw Object.assign(new Error("Command failed"), { stderr: Buffer.from("fatal: bad revision\n") });
-    });
-
-    expect(runGitSync("/repo", ["rev-parse", "HEAD"])).toEqual({
-      ok: false,
-      error: "fatal: bad revision",
-    });
   });
 });

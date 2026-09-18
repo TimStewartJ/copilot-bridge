@@ -2,10 +2,10 @@
 // registry in favour of an internal feed only serves tarballs to a real npm client, and npm
 // already carries the registry, credentials, proxy and CA settings that installed Bridge
 // itself. The installer checks every tarball against a pinned integrity afterwards.
-import { execFile } from "node:child_process";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveNpmInvocation, type NpmInvocation } from "../platform.js";
+import { getProcessHost } from "../process-host.js";
 
 export type RunCommand = (command: string, args: string[], options: {
   cwd: string;
@@ -23,27 +23,25 @@ export class CommandError extends Error {
   }
 }
 
-export const runCommand: RunCommand = (command, args, options) => new Promise((resolve, reject) => {
-  execFile(command, args, {
-    cwd: options.cwd,
-    env: options.env,
-    timeout: options.timeoutMs,
-    windowsHide: true,
-    maxBuffer: 16 * 1024 * 1024,
-  }, (error, _stdout, stderr) => {
-    if (!error) {
-      resolve();
-      return;
-    }
-    const failure = error as NodeJS.ErrnoException & { killed?: boolean };
-    reject(new CommandError(failure.message, {
+export const runCommand: RunCommand = async (command, args, options) => {
+  try {
+    await getProcessHost().execFile(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      timeout: options.timeoutMs,
+      windowsHide: true,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean; stderr?: unknown };
+    throw new CommandError(failure.message, {
       ...(typeof failure.code === "number" ? { exitCode: failure.code } : {}),
       missing: failure.code === "ENOENT",
       timedOut: failure.killed === true,
-      stderr: String(stderr ?? ""),
-    }));
-  });
-});
+      stderr: String(failure.stderr ?? ""),
+    });
+  }
+};
 
 export interface NpmClient {
   /** Fetches the published tarball for `name@version` into an emptied `directory` and returns its path. */

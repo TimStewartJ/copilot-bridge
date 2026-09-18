@@ -6,6 +6,7 @@ import type { TaskGroupStore } from "./task-group-store.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import type { InterruptedRunStore } from "./interrupted-run-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
@@ -120,6 +121,7 @@ export interface AppContext {
   pushNotificationService?: PushNotificationService;
   /** Deferred prompt persistence */
   deferredPromptStore?: DeferredPromptStore;
+  interruptedRunStore?: InterruptedRunStore;
   /** Recurring defer loop persistence */
   deferLoopStore?: DeferLoopStore;
   /** Deferred prompt dispatcher */
