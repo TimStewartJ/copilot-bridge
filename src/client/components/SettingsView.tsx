@@ -9,6 +9,7 @@ import {
   ModelSection,
   ReasoningEffortSection,
   DeferWorkerSection,
+  ComputerUseSection,
   AppearanceSection,
   NotificationsSection,
   DeviceManagementSection,
@@ -314,6 +315,7 @@ export default function SettingsView() {
               <McpServersSection
                 resetSignal={mcpSectionResetSignal}
               />
+              <ComputerUseSection draft={draft} setDraft={setDraft} />
               <SkillsSection />
             </CategoryPanel>
 

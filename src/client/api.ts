@@ -3062,6 +3062,17 @@ export interface DeferWorkerSettings {
   contextTier?: CopilotContextTier;
 }
 
+export interface ComputerUseSettings {
+  enabled?: boolean;
+}
+
+export interface ComputerUseStatus {
+  enabled: boolean;
+  available: boolean;
+  version?: string;
+  reason?: string;
+}
+
 export interface ModelFamilyDefault {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -3095,6 +3106,7 @@ export interface AppSettings {
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
+  computerUse?: ComputerUseSettings;
   focusNotifications?: FocusNotificationPolicy;
 }
 
@@ -3119,11 +3131,18 @@ export function serializeSettingsPatch(updates: AppSettingsUpdates): string {
   if ("deferWorker" in updates && updates.deferWorker === undefined) {
     normalized.deferWorker = {};
   }
+  if ("computerUse" in updates && updates.computerUse === undefined) {
+    normalized.computerUse = {};
+  }
   return JSON.stringify(normalized);
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
   return apiFetch<AppSettings>("/api/settings");
+}
+
+export async function fetchComputerUseStatus(): Promise<ComputerUseStatus> {
+  return apiFetch<ComputerUseStatus>("/api/computer-use/status");
 }
 
 export async function patchSettings(updates: AppSettingsUpdates): Promise<AppSettings> {
