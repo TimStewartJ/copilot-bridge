@@ -838,7 +838,7 @@ describe("Schedule routes", () => {
       }),
     ]));
     expect(res.body).toHaveProperty("offset", 0);
-    expect(res.body).toHaveProperty("limit");
+    expect(res.body).toHaveProperty("limit", 20);
   });
 
   it("GET /api/schedules/:id/sessions returns 404 for unknown schedule", async () => {
@@ -851,9 +851,9 @@ describe("Schedule routes", () => {
       taskId, name: "Paged", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
     });
 
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s2");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s3");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1", "2026-01-01T00:00:00.000Z");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s2", "2026-01-02T00:00:00.000Z");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s3", "2026-01-03T00:00:00.000Z");
 
     const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=2&offset=1`);
     expect(res.status).toBe(200);
@@ -861,6 +861,62 @@ describe("Schedule routes", () => {
     expect(res.body.offset).toBe(1);
     expect(res.body.limit).toBe(2);
     expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.sessions).toMatchObject([{ sessionId: "s2" }, { sessionId: "s1" }]);
+  });
+
+  it.each(["-1", "1.5", "NaN", "Infinity", "9007199254740992"])(
+    "GET /api/schedules/:id/sessions rejects offset=%s",
+    async (offset) => {
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId, name: "Invalid offset", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+      });
+
+      const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`).query({ offset });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "offset must be a non-negative integer." });
+    },
+  );
+
+  it.each(["0", "-1", "1.5", "NaN"])(
+    "GET /api/schedules/:id/sessions rejects limit=%s",
+    async (limit) => {
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId, name: "Invalid limit", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+      });
+
+      const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`).query({ limit });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "limit must be a positive integer." });
+    },
+  );
+
+  it("GET /api/schedules/:id/sessions accepts zero offset and clamps the limit", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Capped page", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=101&offset=0`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      total: 1, offset: 0, limit: 100, sessions: [{ sessionId: "s1" }],
+    });
+  });
+
+  it("GET /api/schedules/:id/sessions accepts the maximum safe offset as an empty page", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Empty page", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`)
+      .query({ offset: Number.MAX_SAFE_INTEGER });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ sessions: [], total: 1, offset: Number.MAX_SAFE_INTEGER, limit: 20 });
   });
 
   it("GET /api/schedules/:id/sessions includes recursive session storage totals", async () => {
