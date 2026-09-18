@@ -64,14 +64,21 @@ function mockSpawnResult(result: MockSpawnResult): void {
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
 
-    queueMicrotask(() => {
-      if (result.error) {
-        child.emit("error", result.error);
-        return;
-      }
-      if (result.stdout) child.stdout.emit("data", result.stdout);
-      if (result.stderr) child.stderr.emit("data", result.stderr);
-      child.emit("close", result.code ?? 0, result.signal ?? null);
+    // A real child reports its result on a later event-loop turn, after the caller has
+    // subscribed. Process creation is asynchronous, so the mock waits for that subscription.
+    let finished = false;
+    child.on("newListener", (event) => {
+      if (event !== "close" || finished) return;
+      finished = true;
+      queueMicrotask(() => {
+        if (result.error) {
+          child.emit("error", result.error);
+          return;
+        }
+        if (result.stdout) child.stdout.emit("data", result.stdout);
+        if (result.stderr) child.stderr.emit("data", result.stderr);
+        child.emit("close", result.code ?? 0, result.signal ?? null);
+      });
     });
 
     return child;

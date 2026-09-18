@@ -1,10 +1,11 @@
 import { createPublicKey, randomUUID, verify } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { SpawnOptions } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { isPathAtOrUnder } from "./path-utils.js";
+import { getProcessHost, type HostChild } from "./process-host.js";
 
 export type UpdateChannel = "stable" | "preview";
 export type UpdateCheckStatus =
@@ -111,7 +112,7 @@ export interface StartUpdateInstallOptions extends CheckForUpdateOptions {
   powerShellCommand?: string;
 }
 
-type SpawnImpl = (command: string, args: string[], options: Parameters<typeof spawn>[2]) => ChildProcess;
+type SpawnImpl = (command: string, args: string[], options: SpawnOptions) => HostChild | Promise<HostChild>;
 
 export class UpdateInstallError extends Error {
   constructor(message: string, readonly statusCode = 409) {
@@ -789,9 +790,9 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
     runtimePaths,
     installStatus,
   });
-  let child: ChildProcess;
+  let child: HostChild;
   try {
-    child = (options.spawnImpl ?? spawn)(
+    child = await (options.spawnImpl ?? ((command, args, spawnOptions) => getProcessHost().spawn(command, args, spawnOptions)))(
       powerShellCommand,
       [
         "-NoProfile",

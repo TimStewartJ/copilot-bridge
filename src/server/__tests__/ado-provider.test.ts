@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const execSyncMock = vi.hoisted(() => vi.fn<
+// Stands in for the `az` CLI: returns its stdout, or throws the failure it exits with.
+const azCommandMock = vi.hoisted(() => vi.fn<
   (cmd: string, options?: { encoding?: string; timeout?: number }) => string
 >(() => "token\n"));
 
@@ -8,7 +9,19 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execSync: execSyncMock,
+    // The provider runs `az` through the process host, which calls exec(command, options, callback).
+    exec: (
+      cmd: string,
+      options: { encoding?: string; timeout?: number },
+      callback: (error: unknown, stdout: string, stderr: string) => void,
+    ) => {
+      try {
+        callback(null, azCommandMock(cmd, options), "");
+      } catch (error) {
+        callback(error, "", "");
+      }
+      return {};
+    },
   };
 });
 
@@ -43,8 +56,8 @@ describe("AdoProvider", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-01T00:00:00.000Z"));
-    execSyncMock.mockReset();
-    execSyncMock.mockReturnValue("token\n");
+    azCommandMock.mockReset();
+    azCommandMock.mockReturnValue("token\n");
     globalThis.fetch = vi.fn() as typeof fetch;
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -247,9 +260,9 @@ describe("AdoProvider", () => {
   });
 
   it("retries timed out token fetches once with the longer timeout before requesting ADO data", async () => {
-    execSyncMock
+    azCommandMock
       .mockImplementationOnce((_cmd, _options) => {
-        const err = Object.assign(new Error("spawnSync timed out"), { code: "ETIMEDOUT" });
+        const err = Object.assign(new Error("Command failed: az account get-access-token"), { killed: true, signal: "SIGTERM" });
         throw err;
       })
       .mockReturnValueOnce("retry-token\n");
@@ -271,13 +284,13 @@ describe("AdoProvider", () => {
     }]);
 
     expect(result[0]?.title).toBe("Cherry-pick PR");
-    expect(execSyncMock).toHaveBeenCalledTimes(2);
-    expect(execSyncMock.mock.calls[0]?.[1]).toMatchObject({ timeout: 30_000 });
-    expect(execSyncMock.mock.calls[1]?.[1]).toMatchObject({ timeout: 30_000 });
+    expect(azCommandMock).toHaveBeenCalledTimes(2);
+    expect(azCommandMock.mock.calls[0]?.[1]).toMatchObject({ timeout: 30_000 });
+    expect(azCommandMock.mock.calls[1]?.[1]).toMatchObject({ timeout: 30_000 });
   });
 
   it("invalidates the cached token and retries once when ADO returns the sign-in HTML page", async () => {
-    execSyncMock
+    azCommandMock
       .mockReturnValueOnce("stale-token\n")
       .mockReturnValueOnce("fresh-token\n");
     const fetchMock = getFetchMock();
@@ -302,7 +315,7 @@ describe("AdoProvider", () => {
 
     expect(result[0]?.title).toBe("Recovered work item");
     expect(result[0]?.state).toBe("Active");
-    expect(execSyncMock).toHaveBeenCalledTimes(2);
+    expect(azCommandMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const firstAuth = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string> | undefined;
     const secondAuth = (fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.headers as Record<string, string> | undefined;
@@ -311,7 +324,7 @@ describe("AdoProvider", () => {
   });
 
   it("falls back when both the initial request and the sign-in HTML retry come back as HTML", async () => {
-    execSyncMock
+    azCommandMock
       .mockReturnValueOnce("stale-token\n")
       .mockReturnValueOnce("still-bad-token\n");
     const fetchMock = getFetchMock();
@@ -333,12 +346,12 @@ describe("AdoProvider", () => {
         url: "https://msazure.visualstudio.com/One/_workitems/edit/123",
       },
     ]);
-    expect(execSyncMock).toHaveBeenCalledTimes(2);
+    expect(azCommandMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("only triggers one extra token fetch when many parallel requests hit the sign-in HTML page", async () => {
-    execSyncMock
+    azCommandMock
       .mockReturnValueOnce("stale-token\n")
       .mockReturnValueOnce("fresh-token\n");
     const fetchMock = getFetchMock();
@@ -365,7 +378,7 @@ describe("AdoProvider", () => {
 
     expect(result.map((pr) => pr.title)).toEqual(["Recovered PR", "Recovered PR", "Recovered PR"]);
     // 1 stale fetch + 1 fresh fetch — not one az invocation per failing request.
-    expect(execSyncMock).toHaveBeenCalledTimes(2);
+    expect(azCommandMock).toHaveBeenCalledTimes(2);
   });
 
   it("discovers work item and pull request links in both directions and reuses enriched metadata", async () => {
@@ -554,7 +567,7 @@ describe("AdoProvider", () => {
   });
 
   it("loads and caches work item IDs assigned to the authenticated ADO user", async () => {
-    execSyncMock.mockImplementation((command) =>
+    azCommandMock.mockImplementation((command) =>
       command.includes("--wiql") ? "[12,34,12]\n" : "token\n");
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
@@ -567,11 +580,11 @@ describe("AdoProvider", () => {
       ids: ["12", "34"],
       warnings: [],
     });
-    expect(execSyncMock).toHaveBeenCalledTimes(1);
-    expect(execSyncMock.mock.calls[0]?.[0]).toContain("WHERE [System.AssignedTo] = @Me");
-    expect(execSyncMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Resolved'");
-    expect(execSyncMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Removed'");
-    expect(execSyncMock.mock.calls[0]?.[1]).toMatchObject({
+    expect(azCommandMock).toHaveBeenCalledTimes(1);
+    expect(azCommandMock.mock.calls[0]?.[0]).toContain("WHERE [System.AssignedTo] = @Me");
+    expect(azCommandMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Resolved'");
+    expect(azCommandMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Removed'");
+    expect(azCommandMock.mock.calls[0]?.[1]).toMatchObject({
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });
