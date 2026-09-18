@@ -51,6 +51,7 @@ import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js"
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import type { InterruptedRunStore } from "./interrupted-run-store.js";
 import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
@@ -568,6 +569,7 @@ export interface SessionManagerDeps {
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
   sessionMetaStore?: SessionMetaStore;
+  interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
   cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
   taskStore: TaskStore;
   taskAgentDefinitionStore?: TaskAgentDefinitionStore;
@@ -679,6 +681,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     sessionTitles: ctx.sessionTitles,
     sessionWorkspaceStore: ctx.sessionWorkspaceStore,
     sessionMetaStore: ctx.sessionMetaStore,
+    interruptedRunStore: ctx.interruptedRunStore,
     cliSessionCatalog: ctx.cliSessionCatalog,
     taskStore: ctx.taskStore,
     taskAgentDefinitionStore: ctx.taskAgentDefinitionStore,
@@ -897,6 +900,12 @@ export class SessionManager {
       },
       clearTerminalOverlay: (sessionId) => {
         this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
+      },
+      persistAcceptedRun: (sessionId, attentionMode) => {
+        this.deps.interruptedRunStore?.markAccepted(sessionId, attentionMode);
+      },
+      clearAcceptedRun: (sessionId) => {
+        this.deps.interruptedRunStore?.clear(sessionId);
       },
       logger: console,
     });

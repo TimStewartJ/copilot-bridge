@@ -42,6 +42,7 @@ import { createDocsSnapshotStore } from "../docs-snapshot-store.js";
 import { createApiRouter, type ApiRouterOptions } from "../api-router.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
+import { createInterruptedRunStore } from "../interrupted-run-store.js";
 import type { AppContext } from "../app-context.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "../visual-artifacts.js";
@@ -164,6 +165,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     pushNotificationService: createPushNotificationService({ subscriptionStore: pushSubscriptionStore }),
     deferredPromptStore: createDeferredPromptStore(db),
     deferLoopStore: createDeferLoopStore(db),
+    interruptedRunStore: createInterruptedRunStore(db),
     copilotHome,
     apiBasePath: "/api",
     runtimePaths,

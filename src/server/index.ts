@@ -5,7 +5,7 @@ import "./load-bridge-env.js";
 import express from "express";
 import { existsSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
@@ -25,6 +25,8 @@ import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
 import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
+import { queueBootRecoveryPrompts } from "./restart-resume.js";
+import { setProcessLaunchObserver } from "./process-host.js";
 import {
   getEventLoopLagRequestTelemetryMetadata,
   startRequestTelemetryInflightReporter,
@@ -42,6 +44,8 @@ import {
   getValidationCommandLogDir,
   scheduleValidationCommandLogSweep,
 } from "./validation-command-log.js";
+
+const SLOW_PROCESS_CREATE_MS = 250;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -217,8 +221,41 @@ async function main(): Promise<void> {
   // it on a timer. Deliberately not awaited: the first sweep on a long-unpruned
   // host can delete tens of thousands of files.
   startRequestTelemetryInflightReporter(defaultContext.telemetryStore);
+  // Process creation runs on worker threads, so a slow one no longer freezes this loop. Record
+  // the slow ones anyway: they show when the operating system is struggling to start processes.
+  setProcessLaunchObserver(({ kind, file, createMs, queuedMs }) => {
+    if (createMs < SLOW_PROCESS_CREATE_MS && queuedMs < SLOW_PROCESS_CREATE_MS) return;
+    defaultContext.telemetryStore?.recordSpan({
+      name: "process.create.slow",
+      duration: createMs,
+      metadata: { kind, command: basename(file.split(" ")[0] ?? file).slice(0, 80), queuedMs: Math.round(queuedMs) },
+      source: "server",
+    });
+  });
   void storageMaintenance.runOnce();
   storageMaintenance.start();
+
+  // Queue continue prompts for runs a server kill or crash cut off, before the runner starts.
+  // Production boot only: the staged preview server shares the hook below but must never
+  // resume sessions from its copied database.
+  try {
+    const { deferredPromptStore, interruptedRunStore } = defaultContext;
+    if (deferredPromptStore && interruptedRunStore) {
+      const recovery = queueBootRecoveryPrompts({
+        deferredPromptStore,
+        deferredPromptRunner: defaultContext.deferredPromptRunner,
+        globalBus: defaultContext.globalBus,
+      }, interruptedRunStore);
+      if (recovery.resumed.length + recovery.skippedCooldown.length > 0) {
+        console.warn(
+          `[restart-resume] Runs interrupted by the last server exit: resumed [${recovery.resumed.join(", ")}], `
+          + `not resumed again within the cooldown [${recovery.skippedCooldown.join(", ")}]`,
+        );
+      }
+    }
+  } catch (error) {
+    console.error("[restart-resume] Boot recovery failed:", error);
+  }
 
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);

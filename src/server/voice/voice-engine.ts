@@ -1,10 +1,10 @@
 // Bridge-side client for the speech engine child process: lazy start, on-demand model loading,
 // request routing, streaming synthesis, idle shutdown and crash recovery.
-import { fork, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { cpus } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { getProcessHost, type HostChild } from "../process-host.js";
 import type {
   VoiceClipTranscription,
   VoiceEngineCapability,
@@ -89,11 +89,12 @@ export interface VoiceEngineOptions {
   env: NodeJS.ProcessEnv;
   idleShutdownMs?: number;
   logger?: Pick<Console, "log" | "warn" | "error">;
-  spawn?: (entry: string, execArgv: string[], env: NodeJS.ProcessEnv) => ChildProcess;
+  spawn?: (entry: string, execArgv: string[], env: NodeJS.ProcessEnv) => HostChild;
 }
 
 export class VoiceEngine implements VoiceEngineApi {
-  private child?: ChildProcess;
+  private child?: HostChild;
+  private stopCount = 0;
   private startPromise?: Promise<void>;
   private runtimeReady = false;
   private info?: VoiceEngineReadyInfo;
@@ -218,14 +219,20 @@ export class VoiceEngine implements VoiceEngineApi {
     this.setStatus({ state: "starting", detail: "Starting speech engine", loaded: [] });
     const { entry, execArgv } = resolveEngineWorkerEntry();
     const env = this.buildChildEnv();
+    const stopsBeforeFork = this.stopCount;
     const child = this.options.spawn
       ? this.options.spawn(entry, execArgv, env)
-      : fork(entry, [], {
+      : await getProcessHost().fork(entry, [], {
         execArgv,
         env,
         serialization: "advanced",
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
+    if (this.stopCount !== stopsBeforeFork) {
+      // stop() ran while the process was being created and had nothing to stop yet.
+      this.killChild(child);
+      throw new Error("Speech engine stopped while starting");
+    }
     this.child = child;
     child.stdout?.on("data", (chunk) => this.logger.log(`[voice-engine] ${String(chunk).trimEnd()}`));
     child.stderr?.on("data", (chunk) => this.logger.warn(`[voice-engine] ${String(chunk).trimEnd()}`));
@@ -286,7 +293,7 @@ export class VoiceEngine implements VoiceEngineApi {
     }
   }
 
-  private onExit(child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
+  private onExit(child: HostChild, code: number | null, signal: NodeJS.Signals | null): void {
     if (this.child !== child) return;
     this.child = undefined;
     this.runtimeReady = false;
@@ -390,7 +397,7 @@ export class VoiceEngine implements VoiceEngineApi {
     };
   }
 
-  private killChild(child: ChildProcess): void {
+  private killChild(child: HostChild): void {
     if (this.child === child) this.child = undefined;
     try {
       child.kill();
@@ -400,6 +407,7 @@ export class VoiceEngine implements VoiceEngineApi {
   }
 
   async stop(reason: string): Promise<void> {
+    this.stopCount += 1;
     const child = this.child;
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);

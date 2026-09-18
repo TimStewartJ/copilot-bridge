@@ -1,14 +1,10 @@
-import { spawn, spawnSync, type SpawnSyncOptions } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   closeSync,
   mkdirSync,
   openSync,
-  readFileSync,
-  rmSync,
   writeSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   createDeadline,
   settleByDeadline,
@@ -20,6 +16,7 @@ import {
   terminateProcessTree,
   type ProcessIdentity,
 } from "./platform.js";
+import { getProcessHost, type HostChild } from "./process-host.js";
 import {
   appendCapturedCommandOutput,
   joinFailureSections,
@@ -30,7 +27,6 @@ import {
   buildCommandFailureOutput,
   buildValidationCommandLogPath,
   formatCommandFailureStreams,
-  isCommandTimeoutResult,
   scheduleValidationCommandLogSweep,
   writeValidationCommandLog,
 } from "./validation-command-log.js";
@@ -53,18 +49,6 @@ export interface AsyncValidationCommandRunOptions {
   timeoutMs: number;
   shell?: boolean;
   failureOutputFormat?: ValidationCommandFailureOutputFormat;
-}
-
-export interface SyncValidationCommandRunOptions {
-  rootDir: string;
-  source: string;
-  command: string;
-  args?: readonly string[];
-  displayCommand?: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  timeoutMs: number;
-  shell?: boolean;
 }
 
 export interface StreamingValidationCommandRunOptions {
@@ -107,7 +91,7 @@ interface CommandFailureDetails {
 
 type ValidationCommandFailureOutputFormat = "labeled" | "plain";
 
-function displayCommand(options: { command: string; args?: readonly string[]; displayCommand?: string }): string {
+export function displayCommand(options: { command: string; args?: readonly string[]; displayCommand?: string }): string {
   return options.displayCommand ?? [options.command, ...(options.args ?? [])].join(" ");
 }
 
@@ -208,93 +192,24 @@ export function formatValidationCommandFailureResult({
   };
 }
 
-function createOutputFile(rootDir: string, suffix: string): { path: string; fd: number } {
-  const dir = join(rootDir, "data", "validation-logs", ".tmp");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${Date.now()}-${process.pid}-${randomBytes(4).toString("hex")}-${suffix}.log`);
-  return { path, fd: openSync(path, "w") };
-}
-
-function readOutput(path: string): string {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return "";
-  }
-}
-
-function cleanupOutputFile(path: string): void {
-  rmSync(path, { force: true });
-}
-
-function closeFile(file: { fd: number; closed: boolean }): void {
-  if (file.closed) return;
-  closeSync(file.fd);
-  file.closed = true;
-}
-
-export function runSyncValidationCommand(options: SyncValidationCommandRunOptions): ValidationCommandRunResult {
-  const stdoutFile = { ...createOutputFile(options.rootDir, "stdout"), closed: false };
-  const stderrFile = { ...createOutputFile(options.rootDir, "stderr"), closed: false };
-  const startedAt = Date.now();
-  const command = displayCommand(options);
-  try {
-    const spawnOptions: SpawnSyncOptions = {
-      cwd: options.cwd,
-      env: options.env,
-      shell: options.shell ?? (!options.args || options.args.length === 0),
-      stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
-      timeout: options.timeoutMs,
-      windowsHide: true,
-    };
-    const result = options.args
-      ? spawnSync(options.command, [...options.args], spawnOptions)
-      : spawnSync(options.command, spawnOptions);
-    const elapsedMs = Date.now() - startedAt;
-    closeFile(stdoutFile);
-    closeFile(stderrFile);
-    const stdout = readOutput(stdoutFile.path);
-    const stderr = readOutput(stderrFile.path);
-
-    if (result.status === 0 && !result.error && !result.signal) {
-      return { ok: true, output: stdout };
-    }
-
-    const timedOut = isCommandTimeoutResult({
-      error: result.error,
-      signal: result.signal,
-      elapsedMs,
-      timeoutMs: options.timeoutMs,
-    });
-
-    return formatValidationCommandFailureResult({
-      rootDir: options.rootDir,
-      source: options.source,
-      command,
-      cwd: options.cwd,
-      stdout,
-      stderr,
-      errorMessage: result.error?.message,
-      status: result.status,
-      signal: result.signal,
-      elapsedMs,
-      timedOut,
-      timeoutMs: options.timeoutMs,
-    });
-  } finally {
-    closeFile(stdoutFile);
-    closeFile(stderrFile);
-    cleanupOutputFile(stdoutFile.path);
-    cleanupOutputFile(stderrFile.path);
-  }
-}
-
 function spawnShell(options: Pick<AsyncValidationCommandRunOptions, "args" | "shell">): boolean {
   return options.shell ?? (!options.args || options.args.length === 0);
 }
 
+function startCommand(
+  options: Pick<AsyncValidationCommandRunOptions, "command" | "args" | "cwd" | "env" | "shell">,
+): Promise<HostChild> {
+  return getProcessHost().spawn(options.command, options.args ?? [], {
+    cwd: options.cwd,
+    env: options.env,
+    shell: spawnShell(options),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+}
+
 async function stopChild(
-  child: ReturnType<typeof spawn>,
+  child: HostChild,
   identityPromise: Promise<ProcessIdentity | null>,
   deadline: Deadline,
 ): Promise<void> {
@@ -310,23 +225,9 @@ export async function runValidationCommand(
 ): Promise<ValidationCommandRunResult> {
   const startedAt = Date.now();
   const command = displayCommand(options);
+  const child = await startCommand(options);
 
   return await new Promise((resolve) => {
-    const child = options.args
-      ? spawn(options.command, [...options.args], {
-        cwd: options.cwd,
-        env: options.env,
-        shell: spawnShell(options),
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      })
-      : spawn(options.command, {
-        cwd: options.cwd,
-        env: options.env,
-        shell: spawnShell(options),
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
     const stdout: CapturedCommandOutput = { output: "", truncatedChars: 0 };
     const stderr: CapturedCommandOutput = { output: "", truncatedChars: 0 };
     const operationDeadline = options.timeoutMs > 0
@@ -452,22 +353,8 @@ export async function runStreamingValidationCommand(
     return { ...failure, elapsedMs, status: null, signal: null, reason };
   }
 
+  const child = await startCommand(options);
   return await new Promise((resolve) => {
-    const child = options.args
-      ? spawn(options.command, [...options.args], {
-        cwd: options.cwd,
-        env: options.env,
-        shell: spawnShell(options),
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      })
-      : spawn(options.command, {
-        cwd: options.cwd,
-        env: options.env,
-        shell: spawnShell(options),
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
     const stdout: CapturedCommandOutput = { output: "", truncatedChars: 0 };
     const stderr: CapturedCommandOutput = { output: "", truncatedChars: 0 };
     const operationDeadline = timeoutMs > 0

@@ -3,7 +3,14 @@ import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDir } from "../../__tests__/helpers.js";
 import { testExecutablePath } from "../../__tests__/test-paths.js";
-import { CommandError, createNpmClient, describeNpmError, type RunCommand } from "../voice-npm-client.js";
+import { CommandError, createNpmClient, describeNpmError, runCommand, type RunCommand } from "../voice-npm-client.js";
+
+const execFileMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  execFile: execFileMock,
+}));
 
 const invocation = { command: testExecutablePath("node"), args: [testExecutablePath("npm-cli.js")] };
 
@@ -53,5 +60,44 @@ describe("npm client", () => {
     expect(describeNpmError(failure("", { timedOut: true }))).toBe("npm timed out");
     expect(describeNpmError(failure(""))).toBe("npm exited with code 1");
     expect(describeNpmError(new Error("plain"))).toBe("plain");
+  });
+});
+
+describe("runCommand", () => {
+  const options = { cwd: testExecutablePath("scratch"), env: { NPM_CONFIG_REGISTRY: "https://feed.example/npm/" }, timeoutMs: 1_000 };
+  type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+  const finishWith = (failure: object | null, stderr = "") => {
+    execFileMock.mockImplementation((_command: string, _args: string[], _options: object, callback: ExecFileCallback) => {
+      callback(failure ? Object.assign(new Error("Command failed"), failure) : null, "", stderr);
+      return {};
+    });
+  };
+
+  it("starts npm without a shell through the process host", async () => {
+    finishWith(null);
+    await expect(runCommand("npm", ["pack", "example@1.2.3"], options)).resolves.toBeUndefined();
+    expect(execFileMock).toHaveBeenCalledWith(
+      "npm",
+      ["pack", "example@1.2.3"],
+      expect.objectContaining({ cwd: options.cwd, env: options.env, timeout: 1_000, windowsHide: true }),
+      expect.any(Function),
+    );
+    expect(execFileMock.mock.calls[0]?.[2]).not.toHaveProperty("shell");
+  });
+
+  it("reports an exit code, a missing npm, and a timeout as command errors", async () => {
+    finishWith({ code: 1 }, "npm error code E404");
+    await expect(runCommand("npm", ["pack"], options)).rejects.toMatchObject({
+      name: "CommandError",
+      details: { exitCode: 1, missing: false, timedOut: false, stderr: "npm error code E404" },
+    });
+
+    finishWith({ code: "ENOENT" });
+    const missing = await runCommand("npm", ["pack"], options).catch((error: unknown) => error);
+    expect(missing).toBeInstanceOf(CommandError);
+    expect((missing as CommandError).details).toEqual({ missing: true, timedOut: false, stderr: "" });
+
+    finishWith({ killed: true, signal: "SIGTERM" });
+    await expect(runCommand("npm", ["pack"], options)).rejects.toMatchObject({ details: { timedOut: true, missing: false } });
   });
 });

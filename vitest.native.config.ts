@@ -7,5 +7,12 @@ export default defineProject({
     ...nativeProjectScheduling,
     name: "native",
     include: [NATIVE_TEST_FILES],
+    env: {
+      ...sharedTestConfig.env,
+      // Native tests start real processes and mock nothing, so they run the production path:
+      // process creation on worker threads. Other projects use the inline backend because their
+      // suites mock node:child_process on the test's own thread.
+      BRIDGE_PROCESS_HOST: "worker",
+    },
   },
 });

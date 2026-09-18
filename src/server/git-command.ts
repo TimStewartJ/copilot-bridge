@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { getProcessHost } from "./process-host.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 export const LOCAL_GIT_TIMEOUT_MS = 5_000;
@@ -45,42 +45,13 @@ export function formatGitError(error: unknown, stdout?: unknown, stderr?: unknow
 }
 
 export function runGit(cwd: string, args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): Promise<GitCommandResult> {
-  return new Promise((resolve) => {
-    execFile(
-      "git",
-      ["--no-pager", ...args],
-      {
-        cwd,
-        encoding: "utf-8",
-        env: withNonInteractiveCommandEnv(),
-        timeout: timeoutMs,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          resolve({
-            ok: false,
-            error: formatGitError(error, stdout, stderr),
-          });
-          return;
-        }
-        resolve({ ok: true, output: stdout.trim() });
-      },
-    );
-  });
-}
-
-export function runGitSync(cwd: string, args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): GitCommandResult {
-  try {
-    return {
-      ok: true,
-      output: execFileSync("git", ["--no-pager", ...args], {
-        cwd,
-        encoding: "utf-8",
-        env: withNonInteractiveCommandEnv(),
-        timeout: timeoutMs,
-      }).trim(),
-    };
-  } catch (error) {
-    return { ok: false, error: formatGitError(error) };
-  }
+  return getProcessHost().execFile("git", ["--no-pager", ...args], {
+    cwd,
+    encoding: "utf-8",
+    env: withNonInteractiveCommandEnv(),
+    timeout: timeoutMs,
+  }).then(
+    ({ stdout }): GitCommandResult => ({ ok: true, output: stdout.trim() }),
+    (error): GitCommandResult => ({ ok: false, error: formatGitError(error) }),
+  );
 }

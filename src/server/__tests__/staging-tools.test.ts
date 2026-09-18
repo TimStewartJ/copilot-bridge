@@ -57,6 +57,9 @@ const spawnMock = vi.hoisted(() => {
       },
       on(event: string, listener: Listener) {
         listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+        // A real child reports its result on a later event-loop turn, after the caller has
+        // subscribed. Process creation is asynchronous, so the mock waits for that subscription.
+        if (event === "close") queueMicrotask(finish);
         return child;
       },
     };
@@ -72,7 +75,10 @@ const spawnMock = vi.hoisted(() => {
       }
     };
 
-    queueMicrotask(() => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
       try {
         const output = execSyncMock(renderedCommand, {
           cwd: options?.cwd,
@@ -87,7 +93,7 @@ const spawnMock = vi.hoisted(() => {
         emitOutput(stderrListeners, failure.stderr);
         emit("close", typeof failure.status === "number" ? failure.status : 1, failure.signal ?? null);
       }
-    });
+    };
 
     return child;
   });

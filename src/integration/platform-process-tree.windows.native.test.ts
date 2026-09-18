@@ -98,6 +98,13 @@ async function terminateWithSnapshotRetries(
   return { result, snapshot: result.snapshot ?? snapshot };
 }
 
+function describeTermination(result: ProcessTreeTerminationResult): string {
+  if (result.ok) return `status=${result.status}`;
+  const survivors = result.survivors?.map((identity) => identity.pid).join(",") ?? "none reported";
+  return `status=${result.status} commandTimedOut=${result.commandTimedOut === true} `
+    + `survivors=${survivors} error=${result.error ?? "none"}`;
+}
+
 async function requestHelperCleanup(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   if (child.connected) {
@@ -169,7 +176,7 @@ describe.runIf(process.platform === "win32")("Windows process-tree integration",
 
       const { result, snapshot } = await terminateWithSnapshotRetries(rootIdentity);
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, describeTermination(result)).toBe(true);
       expect(["terminated", "already-exited"]).toContain(result.status);
       expect(snapshot?.descendants.length).toBeGreaterThan(0);
       await waitForExit(root);
