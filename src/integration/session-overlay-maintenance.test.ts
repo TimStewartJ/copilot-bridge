@@ -23,7 +23,7 @@ function ageDefer(table: string, id: string, updatedAt = OLD_ISO): void {
 }
 
 describe("session overlay maintenance", () => {
-  it("runs the reaper, deletes deleted-schedule runs, and prunes terminal defers", () => {
+  it("runs the reaper, deletes deleted-schedule runs, and prunes terminal defers", async () => {
     ctx.cliSessionCatalog = { listSessions: () => [] } as any;
     ctx.bridgeSessionStateStore.setTitleOverride("orphan-overlay", "Orphan");
     ageState("orphan-overlay");
@@ -66,7 +66,7 @@ describe("session overlay maintenance", () => {
     });
 
     const maintenance = createSessionOverlayMaintenance(ctx, { logger: { log: vi.fn(), error: vi.fn() } });
-    const result = maintenance.runOnce();
+    const result = await maintenance.runOnce();
     maintenance.stop();
 
     expect(result.reaped).toBe(1);
@@ -83,21 +83,21 @@ describe("session overlay maintenance", () => {
     expect(loopStore.get(liveLoop.id)).toBeDefined();
   });
 
-  it("keeps recently-terminal defers until the retention window elapses", () => {
+  it("keeps recently-terminal defers until the retention window elapses", async () => {
     ctx.cliSessionCatalog = { listSessions: () => [] } as any;
     const deferStore = ctx.deferredPromptStore!;
     const recentTerminal = deferStore.create("some-session", "done", OLD_ISO);
     deferStore.markCompletedById(recentTerminal.id);
 
     const maintenance = createSessionOverlayMaintenance(ctx, { logger: { log: vi.fn(), error: vi.fn() } });
-    const result = maintenance.runOnce();
+    const result = await maintenance.runOnce();
     maintenance.stop();
 
     expect(result.prunedDeferredPrompts).toBe(0);
     expect(deferStore.get(recentTerminal.id)).toBeDefined();
   });
 
-  it("arms an unref'd interval on start and disposes it on stop", () => {
+  it("arms an unref'd interval on start and disposes it on stop", async () => {
     ctx.cliSessionCatalog = { listSessions: () => [] } as any;
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
@@ -106,7 +106,7 @@ describe("session overlay maintenance", () => {
       intervalMs: 60_000,
       logger: { log: vi.fn(), error: vi.fn() },
     });
-    maintenance.start();
+    await maintenance.start();
 
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
     const timer = setIntervalSpy.mock.results[0]!.value as ReturnType<typeof setInterval>;
@@ -116,7 +116,7 @@ describe("session overlay maintenance", () => {
     expect(clearIntervalSpy).toHaveBeenCalledWith(timer);
 
     // Stopped maintenance never re-arms.
-    maintenance.start();
+    await maintenance.start();
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 
     setIntervalSpy.mockRestore();

@@ -3873,14 +3873,14 @@ export class SessionManager {
     this.backendCreatedAtMs = Date.now();
     this.attachBackendLifecycle(backend);
     console.log("[sdk] Agent backend ready");
-    this.sweepLeakedDisposableTitleSessions();
-    this.sweepLeakedDisposableDeferWorkerSessions();
+    await this.sweepLeakedDisposableTitleSessions();
+    await this.sweepLeakedDisposableDeferWorkerSessions();
   }
 
-  private sweepLeakedDisposableTitleSessions(): void {
+  private async sweepLeakedDisposableTitleSessions(): Promise<void> {
     const start = Date.now();
     try {
-      const sweptIds = sweepLeakedCliSessionStoreRows({
+      const sweptIds = await sweepLeakedCliSessionStoreRows({
         copilotHome: this.getCopilotHome(),
         idPrefix: DISPOSABLE_TITLE_SESSION_ID_PREFIX,
         cutoffTimestampMs: this.processStartedAtMs - SessionManager.DISPOSABLE_TITLE_SWEEP_GRACE_MS,
@@ -3901,10 +3901,10 @@ export class SessionManager {
     }
   }
 
-  private sweepLeakedDisposableDeferWorkerSessions(): void {
+  private async sweepLeakedDisposableDeferWorkerSessions(): Promise<void> {
     const start = Date.now();
     try {
-      const sweptIds = sweepLeakedCliSessionStoreRows({
+      const sweptIds = await sweepLeakedCliSessionStoreRows({
         copilotHome: this.getCopilotHome(),
         idPrefix: DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX,
         cutoffTimestampMs: this.processStartedAtMs - SessionManager.DISPOSABLE_TITLE_SWEEP_GRACE_MS,
@@ -4350,10 +4350,10 @@ export class SessionManager {
     return existsSync(join(this.getSessionStateDir(sessionId), "workspace.yaml"));
   }
 
-  private hasCliCatalogSession(sessionId: string): boolean {
+  private async hasCliCatalogSession(sessionId: string): Promise<boolean> {
     if (!this.isSessionStatePathSegment(sessionId)) return false;
     try {
-      return this.deps.cliSessionCatalog?.hasSession(sessionId) === true;
+      return await this.deps.cliSessionCatalog?.hasSession(sessionId) === true;
     } catch (error) {
       console.warn(
         `[sdk] [${sessionId.slice(0, 8)}] Failed to check CLI session catalog:`,
@@ -4363,8 +4363,8 @@ export class SessionManager {
     }
   }
 
-  private hasKnownPersistedSession(sessionId: string): boolean {
-    return this.hasCliCatalogSession(sessionId) || this.hasWorkspaceYamlOnDisk(sessionId);
+  private async hasKnownPersistedSession(sessionId: string): Promise<boolean> {
+    return await this.hasCliCatalogSession(sessionId) || this.hasWorkspaceYamlOnDisk(sessionId);
   }
 
   private async canAddressSession(sessionId: string): Promise<boolean> {
@@ -5259,7 +5259,7 @@ export class SessionManager {
   async getSessionCreationState(sessionId: string): Promise<"pending" | "present" | "absent"> {
     if (!isCanonicalSessionId(sessionId)) throw new Error("A canonical session ID is required");
     if (this.requestedSessionCreations.has(sessionId) || this.pendingSessionCreations.has(sessionId)) return "pending";
-    if (this.sessionObjects.has(sessionId) || this.hasKnownPersistedSession(sessionId)) return "present";
+    if (this.sessionObjects.has(sessionId) || await this.hasKnownPersistedSession(sessionId)) return "present";
     const sessions = await this.getBackend().listSessions();
     return sessions.some((session) => session.sessionId === sessionId) ? "present" : "absent";
   }
@@ -5308,7 +5308,7 @@ export class SessionManager {
         console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
       }
       try {
-        deleteCliSessionStoreRows(copilotHome, sessionId);
+        await deleteCliSessionStoreRows(copilotHome, sessionId);
       } catch (err) {
         console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
         throw err;

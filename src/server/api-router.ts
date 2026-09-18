@@ -842,11 +842,11 @@ async function readWorkspaceYamlForList(sessionStateDir: string, sessionId: stri
   };
 }
 
-function listSessionsFromCliCatalog(
+async function listSessionsFromCliCatalog(
   ctx: AppContext,
   preloadedMeta?: ReturnType<AppContext["sessionMetaStore"]["listMeta"]>,
-): any[] | undefined {
-  const catalogSessions = ctx.cliSessionCatalog?.listSessions();
+): Promise<any[] | undefined> {
+  const catalogSessions = await ctx.cliSessionCatalog?.listSessions();
   if (!catalogSessions) return undefined;
   const meta = preloadedMeta ?? ctx.sessionMetaStore.listMeta();
   return catalogSessions.map((session) => {
@@ -1884,7 +1884,7 @@ export function createApiRouter(
     const tBuild = Date.now();
     const build = (async () => {
       const meta = ctx.sessionMetaStore.listMeta();
-      const catalogSessions = listSessionsFromCliCatalog(ctx, meta);
+      const catalogSessions = await listSessionsFromCliCatalog(ctx, meta);
       const usingCliCatalog = catalogSessions !== undefined;
       const diskSessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
       const catalogSessionIds = new Set(catalogSessions?.map((session) => session.sessionId));
@@ -3355,7 +3355,7 @@ export function createApiRouter(
     let originalTitle = ctx.sessionTitles.getTitle(sourceId);
     if (!originalTitle) {
       try {
-        const sourceSession = ctx.cliSessionCatalog?.getSession(sourceId)
+        const sourceSession = await ctx.cliSessionCatalog?.getSession(sourceId)
           ?? (await ctx.sessionManager.listSessionsFromDisk())
             .find((session: any) => session.sessionId === sourceId);
         originalTitle = sourceSession ? resolveSessionSummary(sourceSession) : undefined;

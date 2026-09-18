@@ -79,8 +79,8 @@ describe("persisted session discovery", () => {
         expect.objectContaining({ sessionId: "ordinary", summary: "Ordinary SDK session", linkedTaskIds: [task.id] }),
         expect.objectContaining({ sessionId: "fusion", summary: "HydraFusion SDK session", linkedTaskIds: [task.id] }),
       ]));
-      expect(ctx.cliSessionCatalog?.getSession("ordinary")).toBeUndefined();
-      expect(ctx.cliSessionCatalog?.getSession("fusion")).toBeUndefined();
+      expect(await ctx.cliSessionCatalog?.getSession("ordinary")).toBeUndefined();
+      expect(await ctx.cliSessionCatalog?.getSession("fusion")).toBeUndefined();
     },
   );
 

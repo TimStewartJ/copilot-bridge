@@ -94,8 +94,8 @@ function summarizeFields(state: BridgeSessionState): string[] {
   return fields;
 }
 
-function getReferences(ctx: AppContext): ReaperReferences {
-  const catalogSessions = ctx.cliSessionCatalog?.listSessions();
+async function getReferences(ctx: AppContext): Promise<ReaperReferences> {
+  const catalogSessions = await ctx.cliSessionCatalog?.listSessions();
   const taskSessionIds = new Set<string>();
   for (const task of ctx.taskStore.listTasks()) {
     for (const sessionId of task.sessionIds) taskSessionIds.add(sessionId);
@@ -180,15 +180,15 @@ function countReasons(rows: SessionOverlayReaperRow[]): Record<string, number> {
   return counts;
 }
 
-export function runSessionOverlayReaper(
+export async function runSessionOverlayReaper(
   ctx: AppContext,
   options: SessionOverlayReaperOptions = {},
-): SessionOverlayReaperReport {
+): Promise<SessionOverlayReaperReport> {
   const dryRun = options.dryRun ?? true;
   const minimumAgeMs = options.minimumAgeMs ?? DEFAULT_MINIMUM_AGE_MS;
   const cutoff = Date.now() - minimumAgeMs;
   const states = Object.values(ctx.bridgeSessionStateStore.listStates());
-  const refs = getReferences(ctx);
+  const refs = await getReferences(ctx);
   const rows = states
     .map((state) => classifyState(ctx, state, refs, cutoff))
     .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
@@ -204,7 +204,7 @@ export function runSessionOverlayReaper(
         continue;
       }
 
-      const refreshedRefs = getReferences(ctx);
+      const refreshedRefs = await getReferences(ctx);
       const refreshed = classifyState(ctx, current, refreshedRefs, cutoff);
       if (refreshed.decision !== "reap") {
         skippedDuringApply += 1;
