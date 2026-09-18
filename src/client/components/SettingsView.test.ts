@@ -240,6 +240,17 @@ describe("SettingsView save controls", () => {
     await waitUntilAct(harness.act, () => settingsMocks.mutateAsync.mock.calls.length > 0);
     expect(settingsMocks.mutateAsync.mock.calls[0][0]).not.toHaveProperty("focusNotifications");
   });
+  it("does not write MCP servers back from a stale general draft", async () => {
+    settingsMocks.useSettingsQuery.mockReturnValue({
+      data: { ...savedSettings, mcpServers: { teams: { command: "node", args: ["teams.js"] } } },
+      isLoading: false,
+    });
+    const harness = await renderSettingsView();
+    await makeSettingsDirty(harness);
+    await harness.act(async () => { getReactProps(buttonWithText(harness.dom.container, "Save"))?.onClick?.(); });
+    await waitUntilAct(harness.act, () => settingsMocks.mutateAsync.mock.calls.length > 0);
+    expect(settingsMocks.mutateAsync.mock.calls[0][0]).not.toHaveProperty("mcpServers");
+  });
   it("shows one native action pair and discards the draft with the MCP reset signal", async () => {
     const harness = await renderSettingsView();
     await makeSettingsDirty(harness);
