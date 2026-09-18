@@ -229,8 +229,9 @@ export default function SettingsView() {
     if (!draft) return;
     setSaving(true);
     try {
-      // Notification policy has its own save; a stale general draft must not undo it.
-      const { focusNotifications: _focusNotifications, ...updates } = draft;
+      // Notification policy and MCP servers have their own saves; a stale general
+      // draft must not undo them.
+      const { focusNotifications: _focusNotifications, mcpServers: _mcpServers, ...updates } = draft;
       const updated = await settingsMutation.mutateAsync(updates);
       setSettings(updated);
       setDraft(structuredClone(updated));

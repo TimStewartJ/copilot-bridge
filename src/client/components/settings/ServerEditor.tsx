@@ -9,6 +9,7 @@ import {
   type RemoteMcpServerConfig,
 } from "../../../mcp-config";
 import { Field } from "./Field";
+import { withUneditedMcpServerFields } from "./mcp-editor-config";
 
 function parseKeyValueLines(text: string): Record<string, string> {
   const values: Record<string, string> = {};
@@ -119,17 +120,14 @@ export function ServerEditor({
       };
       if (tools.length > 0) cfg.tools = tools;
       if (Object.keys(env).length > 0) cfg.env = env;
-      if (isLocalMcpServerConfig(initialConfig) && initialConfig.workingDirectory) {
-        cfg.workingDirectory = initialConfig.workingDirectory;
-      }
-      onSave(cfg, name.trim());
+      onSave(withUneditedMcpServerFields(initialConfig, cfg), name.trim());
       return;
     }
 
     const cfg: RemoteMcpServerConfig = { type: transport, url: url.trim() };
     if (tools.length > 0) cfg.tools = tools;
     if (Object.keys(headers).length > 0) cfg.headers = headers;
-    onSave(cfg, name.trim());
+    onSave(withUneditedMcpServerFields(initialConfig, cfg), name.trim());
   };
 
   return (
