@@ -8,12 +8,15 @@
 //   execFile / exec   run a command to completion on a small pool of worker threads.
 //   spawn / fork      start a long-lived child on its own dedicated worker thread, so relaying
 //                     its output and IPC is never stuck behind another slow process creation.
+//   removeTree        delete a directory tree on its own worker thread. It is the same kind of
+//                     call: rmSync holds its thread for the whole delete.
 //
 // Deadlines are enforced on the calling thread: a command whose process cannot even be created
 // in time fails with a timeout instead of holding its caller for the length of the stall.
 
 import type { ForkOptions, Serializable, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { lstatSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { PassThrough, Writable, type Readable } from "node:stream";
@@ -367,6 +370,30 @@ export class ProcessHost {
   /** Like child_process.fork, but asynchronous: resolves once the process exists. */
   fork(modulePath: string, args: readonly string[] = [], options: ForkOptions = {}): Promise<HostChild> {
     return this.start("fork", modulePath, args, options);
+  }
+
+  /** Deletes a file or directory tree. A path that is already gone is not an error. */
+  async removeTree(path: string): Promise<void> {
+    if (this.closed) throw new Error("Process host shut down");
+    if (!lstatSync(path, { throwIfNoEntry: false })) return;
+    if (this.mode === "inline") {
+      (await import("./process-host-worker.js")).removeTreeOnCallingThread(path);
+      return;
+    }
+    const worker = this.createWorker();
+    this.dedicated.add(worker);
+    try {
+      const event = await new Promise<HostEvent>((resolve, reject) => {
+        worker.on("message", resolve);
+        worker.on("error", reject);
+        worker.on("exit", (code) => reject(new Error(`Process host worker exited with code ${code}`)));
+        worker.postMessage({ type: "remove-tree", id: ++this.nextId, path } satisfies HostRequest);
+      });
+      if (event.type === "tree-removed" && event.error) throw toError(event.error);
+    } finally {
+      this.dedicated.delete(worker);
+      void worker.terminate();
+    }
   }
 
   /** Stops every worker thread. Children of terminated workers are not waited for. */

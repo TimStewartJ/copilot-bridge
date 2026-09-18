@@ -349,6 +349,10 @@ vi.mock("../staging-log.js", () => ({
 // (e.g. a Windows file lock) after retries are exhausted. Used to exercise
 // staging preview data-removal failure handling.
 const rmSyncThrowDirs = vi.hoisted(() => new Set<string>());
+/** Worktrees and previews are deleted directly, so the delete call is what proves a removal. */
+function removedTrees(): string[] {
+  return rmSyncCallMock.mock.calls.map(([path]) => String(path));
+}
 
 const tempDirs: string[] = [];
 
@@ -664,6 +668,9 @@ describe("staging tools", () => {
         ? "master\n"
         : successfulCommandOutput(command)
     ));
+    // Worktrees go beside the control root. Pin it so this test cannot touch the real checkout's parent.
+    const sandbox = createTempDir("bridge-stage-init-");
+    vi.stubEnv("BRIDGE_CONTROL_ROOT", join(sandbox, "production"));
     const tools = await loadStagingTools();
 
     const result = await tools.staging_init.handler(
@@ -680,6 +687,9 @@ describe("staging tools", () => {
       success: true,
       message: expect.stringContaining("Dependencies are isolated per worktree"),
     });
+    expect(result.stagingDir.startsWith(join(sandbox, "bridge-staging"))).toBe(true);
+    // `git worktree add` creates missing parents itself; with git mocked, nothing else may.
+    expect(existsSync(join(sandbox, "bridge-staging"))).toBe(false);
     expect(createDirectoryLinkMock).not.toHaveBeenCalled();
   });
 
@@ -721,7 +731,7 @@ describe("staging tools", () => {
     writeFileSync(join(dataDir, "bridge.db"), "runtime-db");
     writeFileSync(join(docsDir, "index.md"), "# Runtime docs");
 
-    mod.removePreviewData(dataDir);
+    await mod.removePreviewData(dataDir);
 
     expect(readFileSync(join(logDir, "deploy.log"), "utf-8")).toBe("keep");
     expect(existsSync(join(dataDir, "bridge.db"))).toBe(false);
@@ -1205,6 +1215,41 @@ describe("staging tools", () => {
     expect(mod.getStagingRouter(prefix)).toBeUndefined();
   });
 
+  it("deletes orphaned worktrees, leaves other directories alone, and one locked orphan does not hide the rest", async () => {
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const lockedOrphan = join(stagingParent, "aaa-locked-orphan");
+    const orphan = join(stagingParent, "bbb-orphan");
+    const activeDir = join(stagingParent, "ccc-active");
+    const notAWorktree = join(stagingParent, "ddd-someone-elses-folder");
+    for (const dir of [lockedOrphan, orphan, activeDir, notAWorktree]) mkdirSync(join(dir, "src"), { recursive: true });
+    for (const dir of [lockedOrphan, orphan, activeDir]) writeFileSync(join(dir, ".git"), "gitdir: elsewhere\n");
+    const preview = publishTestPreviewGeneration(mod, activeDir, "generation-one", "<!doctype html>", previewParent);
+    rmSyncThrowDirs.add(lockedOrphan);
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "git worktree prune" || cmd.startsWith("git branch -D ")) return "";
+      throw new Error(`Unexpected command: ${cmd}`);
+    });
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+      activePreviewMap: new Map<string, string>(),
+      expressApp: null,
+      listBranchPrefixes: () => new Set(["ccc-active"]),
+    });
+
+    expect(existsSync(orphan)).toBe(false);
+    expect(existsSync(lockedOrphan)).toBe(true);
+    expect(existsSync(join(notAWorktree, "src"))).toBe(true);
+    expect(removedTrees()).not.toContain(notAWorktree);
+    expect(stagingLogMock).toHaveBeenCalledWith(expect.stringContaining("could not remove orphaned staging worktree aaa-locked-orphan"));
+    // Entries after the locked one are still seen as active, so their previews are not pruned as orphans.
+    expect(mod.__testing.readActivePreviewTarget(preview.prefix, previewParent)).not.toBeNull();
+  });
+
   it("prunes stale clean staging worktrees while preserving the newest active work", async () => {
     vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
     vi.stubEnv("BRIDGE_STAGING_STALE_ARTIFACT_MAX_AGE_MS", "1");
@@ -1269,7 +1314,6 @@ describe("staging tools", () => {
       }
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -1311,11 +1355,18 @@ describe("staging tools", () => {
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "deps-hash"))).toBe(false);
   });
 
-  it("defers restart and cleanup for a batched deploy", async () => {
+  it("withdraws the preview at deploy time and deletes it with the worktree only after activation", async () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = join(createTempDir("bridge-stage-parent-"), "preview-deploy");
     mkdirSync(stagingDir, { recursive: true });
     writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    const preview = publishTestPreviewGeneration(mod, stagingDir, "generation-one", "<!doctype html>");
+    const previewsServedByAStartingServer = () => {
+      const served = new Map<string, string>();
+      mod.registerExistingPreviewsFromDisk({ stagingParent: dirname(stagingDir), activePreviewMap: served, expressApp: null });
+      return [...served.keys()];
+    };
+    expect(previewsServedByAStartingServer()).toEqual([preview.prefix]);
     // A deploy-batch update must continue while the launcher waits for the
     // existing restart to reach cutover.
     mockDataFilePresence({ restartInProgress: true });
@@ -1335,6 +1386,7 @@ describe("staging tools", () => {
       if (cmd.startsWith("git diff ")) return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
+      if (cmd === "git worktree prune" || cmd === 'git branch -D "staging/preview-deploy"') return "";
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
@@ -1349,9 +1401,36 @@ describe("staging tools", () => {
       releaseCandidate: { commitSha: "1111111111111111111111111111111111111111" },
     });
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(
-      `git worktree remove "${stagingDir}" --force`,
-    );
+
+    // The restarted server warms the newest published preview and then holds its database open,
+    // so the preview is withdrawn now. Nothing is deleted before the release is activated.
+    expect(previewsServedByAStartingServer()).toEqual([]);
+    expect(existsSync(join(preview.dataDir!, "bridge.db"))).toBe(true);
+    expect(removedTrees()).not.toContain(stagingDir);
+
+    await mod.cleanupCompletedStagingDeploy(stagingDir);
+
+    expect(existsSync(preview.dataDir!)).toBe(false);
+    expect(removedTrees()).toContain(stagingDir);
+    expect(existsSync(stagingDir)).toBe(false);
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands.slice(-2)).toEqual(["git worktree prune", 'git branch -D "staging/preview-deploy"']);
+  });
+
+  it("leaves the worktree alone while the deployed preview cannot be deleted", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = join(createTempDir("bridge-stage-parent-"), "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    const preview = publishTestPreviewGeneration(mod, stagingDir, "generation-one", "<!doctype html>");
+    execSyncMock.mockImplementation(() => "");
+    // A backend that holds the preview database open fails the delete (EPERM on Windows), and
+    // that backend runs out of the worktree. Deleting half of it would break a live process.
+    rmSyncThrowDirs.add(dirname(dirname(preview.outDir)));
+
+    await expect(mod.cleanupCompletedStagingDeploy(stagingDir)).rejects.toThrow("EBUSY");
+
+    expect(removedTrees()).not.toContain(stagingDir);
+    expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain('git branch -D "staging/preview-deploy"');
   });
 
   it("uses a matching preview validation stamp to run smoke-only deploy validation", async () => {
@@ -1405,7 +1484,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -1518,7 +1596,7 @@ describe("staging tools", () => {
     expect(headReads[0]?.[1]?.cwd).toBe(stagingDir);
     expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
     expect(commands).not.toContain("git push origin main");
-    expect(commands).not.toContain(`git worktree remove "${stagingDir}" --force`);
+    expect(removedTrees()).not.toContain(stagingDir);
     expect(commands).not.toContain('git branch -D "staging/preview-deploy"');
     expect(commands).not.toContain("git worktree prune");
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
@@ -1720,7 +1798,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -1916,7 +1993,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -2137,7 +2213,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -2246,7 +2321,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -2268,7 +2342,7 @@ describe("staging tools", () => {
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
     expect(hasRestartSignalWriteAttempt()).toBe(false);
-    expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(`git worktree remove "${stagingDir}" --force`);
+    expect(removedTrees()).not.toContain(stagingDir);
   });
 
   it("blocks restart when deploy validation fails on the rebased staging tree", async () => {
@@ -2404,7 +2478,7 @@ describe("staging tools", () => {
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).toContain("git reset --hard 1111111111111111111111111111111111111111");
-    expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain(`git worktree remove "${stagingDir}" --force`);
+    expect(removedTrees()).not.toContain(stagingDir);
   });
 
   it("does not rebase the validated production commit after a push rejection", async () => {
@@ -2466,7 +2540,7 @@ describe("staging tools", () => {
     expect(pushAttempts).toBe(2);
     expect(commands).not.toContain("git rebase --abort");
     expect(resetIndex).toBeGreaterThan(-1);
-    expect(commands).not.toContain(`git worktree remove "${stagingDir}" --force`);
+    expect(removedTrees()).not.toContain(stagingDir);
   });
 
   it("rejects staging_deploy when a restart is already in flight (signal file present)", async () => {
@@ -2543,7 +2617,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-deploy"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
@@ -3090,7 +3163,6 @@ describe("staging tools", () => {
       if (cmd === 'git diff "aaaa000000000000000000000000000000000000" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "aaaa000\n";
       if (cmd === "git push origin main") return "";
-      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
       if (cmd === 'git branch -D "staging/preview-ordering"') return "";
       if (cmd === "git worktree prune") return "";
       throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);

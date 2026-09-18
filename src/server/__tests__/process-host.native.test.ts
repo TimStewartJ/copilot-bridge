@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { getProcessHost, HostExecError, ProcessHost } from "../process-host.js";
+import { createDirectoryLink } from "../platform.js";
 import { makeTestDir } from "./helpers.js";
 
 // Drives real worker threads and real child processes, so it runs in the native project where
@@ -104,6 +105,39 @@ describe("ProcessHost on real worker threads", () => {
 
     expect(await output).toBe("got:hello");
     expect(await exited).toBe(0);
+  });
+
+  it("deletes a directory tree, and a path that is already gone", async () => {
+    const tree = join(makeTestDir("process-host-remove-"), "worktree");
+    mkdirSync(join(tree, "node_modules", "pkg", "lib"), { recursive: true });
+    writeFileSync(join(tree, "node_modules", "pkg", "lib", "index.js"), "module.exports = 1;");
+    writeFileSync(join(tree, "package.json"), "{}");
+
+    await host.removeTree(tree);
+    expect(existsSync(tree)).toBe(false);
+    await expect(host.removeTree(tree)).resolves.toBeUndefined();
+  });
+
+  it("never follows a directory link out of the tree it deletes", async () => {
+    // Older staging worktrees link node_modules to production's. Deleting the worktree must
+    // remove the link (a junction on Windows, a symlink elsewhere), never what it points at.
+    const root = makeTestDir("process-host-remove-link-");
+    const production = join(root, "production", "node_modules");
+    const worktree = join(root, "worktree");
+    mkdirSync(join(production, "pkg"), { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(production, "pkg", "index.js"), "precious");
+    expect(createDirectoryLink(join(worktree, "node_modules"), production, root)).toMatchObject({ ok: true });
+    expect(readFileSync(join(worktree, "node_modules", "pkg", "index.js"), "utf8")).toBe("precious");
+
+    await host.removeTree(worktree);
+
+    expect(existsSync(worktree)).toBe(false);
+    expect(readFileSync(join(production, "pkg", "index.js"), "utf8")).toBe("precious");
+  });
+
+  it("rejects when the delete fails", async () => {
+    await expect(host.removeTree(`bad${String.fromCharCode(0)}path`)).rejects.toMatchObject({ code: "ERR_INVALID_ARG_VALUE" });
   });
 
   it("reports a process that cannot be created through the child's error event", async () => {

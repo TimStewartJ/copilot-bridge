@@ -8,13 +8,29 @@ import { describe, expect, it } from "vitest";
 // call, its event loop served nothing for the duration: health probes failed, the launcher
 // killed the server, and sessions lost their tool-permission acknowledgements. Every process
 // creation in the server runtime therefore goes through process-host.ts, which performs it on
-// a worker thread. This test walks the real import graph so the rule cannot erode silently.
+// a worker thread. Deleting or copying a directory tree synchronously is the same kind of call:
+// it holds its thread for the whole operation, and a worktree is tens of thousands of files.
+// `staging_cleanup` froze the live server for 2.4 s that way. This test walks the real import
+// graph so neither rule can erode silently.
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC_DIR = resolve(SERVER_DIR, "..");
 const RUNTIME_ENTRY_POINTS = ["index.ts", "staging-preview-server.ts"].map((name) => join(SERVER_DIR, name));
 const ONLY_PROCESS_CREATOR = join(SERVER_DIR, "process-host-worker.ts");
 const PROCESS_CREATING_EXPORTS = new Set(["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]);
+
+// Modules the server loads that may still delete or copy a tree synchronously, and why that
+// cannot stall the server. Everything else goes through getProcessHost().removeTree().
+const SYNC_TREE_OPERATIONS_ALLOWED: Record<string, string> = {
+  "server/process-host-worker.ts": "the worker thread that performs the server's tree deletes",
+  "server/dependency-sync.ts": "dependency installs run in the launcher and the job runner",
+  "server/release-slots.ts": "release slots are pruned by the launcher",
+  "server/validation-command-env.ts": "validation commands run in the job runner",
+  "server/staging-backend-manager.ts": "copies docs while seeding preview data, which the job runner does",
+  "server/docs-snapshot-store.ts": "bounded by the docs folder, inside one synchronous snapshot transaction",
+  "server/task-agent-definition-store.ts": "a task's agent folder holds a handful of small files",
+};
+const SYNC_TREE_CALL = /\b(rmSync|cpSync|rmdirSync)\s*\(/g;
 
 const IMPORT_STATEMENT = /(?:^|\n)\s*(import|export)\s+(type\s+)?([^"';]*?)\s*from\s*["']([^"']+)["']/g;
 const SIDE_EFFECT_IMPORT = /(?:^|\n)\s*import\s*["']([^"']+)["']/g;
@@ -78,7 +94,28 @@ function walkRuntimeGraph(): Map<string, ModuleImport[]> {
 
 const display = (file: string): string => relative(SRC_DIR, file).split("\\").join("/");
 
-describe("process creation boundary", () => {
+/** Synchronous calls in `source` that delete or copy a whole tree: cpSync, rmdirSync, and rmSync with `recursive`. */
+function syncTreeOperations(source: string): string[] {
+  const found: string[] = [];
+  for (const match of source.matchAll(SYNC_TREE_CALL)) {
+    const lineStart = source.lastIndexOf("\n", match.index) + 1;
+    if (/^\s*(\/\/|\*)/.test(source.slice(lineStart, match.index))) continue;
+    let depth = 0;
+    let end = match.index + match[0].length - 1;
+    do {
+      if (source[end] === "(") depth++;
+      else if (source[end] === ")") depth--;
+      end++;
+    } while (depth > 0 && end < source.length);
+    const call = source.slice(match.index, end);
+    if (match[1] !== "rmSync" || /\brecursive\b/.test(call)) {
+      found.push(`${match[1]} at line ${source.slice(0, match.index).split("\n").length}`);
+    }
+  }
+  return found;
+}
+
+describe("server main-thread boundary", () => {
   const graph = walkRuntimeGraph();
 
   it("walks the real server runtime graph", () => {
@@ -112,6 +149,23 @@ describe("process creation boundary", () => {
       "Server runtime modules must start processes through getProcessHost() (src/server/process-host.ts), "
       + "which creates them on a worker thread. Creating a process on the main thread freezes the event loop.",
     ).toEqual([]);
+  });
+
+  it("deletes and copies directory trees only off the main thread", () => {
+    const violations: string[] = [];
+    const unusedExceptions = new Set(Object.keys(SYNC_TREE_OPERATIONS_ALLOWED));
+    for (const file of graph.keys()) {
+      const operations = syncTreeOperations(readFileSync(file, "utf-8"));
+      if (operations.length === 0) continue;
+      if (unusedExceptions.delete(display(file))) continue;
+      violations.push(`${display(file)}: ${operations.join(", ")}`);
+    }
+    expect(
+      violations,
+      "Server runtime modules must delete directory trees with getProcessHost().removeTree(), which runs on a "
+      + "worker thread. A synchronous tree delete or copy on the main thread freezes the event loop.",
+    ).toEqual([]);
+    expect([...unusedExceptions], "exceptions that no longer apply must be removed").toEqual([]);
   });
 
   it("keeps the launcher-only synchronous helpers out of the server runtime", () => {
