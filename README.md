@@ -244,6 +244,16 @@ Use `check:fast` during day-to-day editing, then run the area-specific `check:*`
 
 ### Context and prompt-cache diagnostics
 
+Resumes still pending at 30 seconds emit `session.resume.diagnostic` spans with
+attempt/session identity, purpose, backend generation/PID, and a bounded snapshot
+of Bridge-observed pending operations (names and ages only). A single 5-second
+diagnostic ping reports transport responsiveness without triggering recovery.
+Timeout evidence is recorded before the unchanged 60-second watchdog; SDK
+settlement is recorded separately from the ownership wrapper, including late
+settlement after fencing. Fast resumes emit no diagnostic spans. No request
+payloads or raw errors are captured. These observations do not expose internal
+SDK operations or identify the native session-lock owner.
+
 Copilot `assistant.usage` and shutdown metrics count cache reads/writes within
 input tokens and reasoning within output tokens. Context occupancy uses explicit
 context counts, not those per-call or cumulative usage totals. Other normalized
