@@ -11,6 +11,13 @@ function spyOnResumeCleanup(manager: any) {
   };
 }
 
+function diagnosticGate<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 describe("SessionManager reloadSession", () => {
   function createManager() {
     const db = setupTestDb();
@@ -36,6 +43,121 @@ describe("SessionManager reloadSession", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each(["resolved", "rejected"])("does not emit diagnostics for a fast %s resume", async (outcome) => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const backend = { diagnosticPing: vi.fn() };
+    manager.backend = backend;
+    const record = vi.spyOn(manager, "recordSpan");
+    const session = makeAgentSessionStub({});
+    const error = new Error("private provider error");
+    const work = outcome === "resolved" ? Promise.resolve(session) : Promise.reject(error);
+    const result = manager.resumeAgentSessionWithTimeout(backend, "fast", work, "timeout", "reload");
+    if (outcome === "resolved") await expect(result).resolves.toBe(session);
+    else await expect(result).rejects.toBe(error);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(backend.diagnosticPing).not.toHaveBeenCalled();
+    expect(record.mock.calls.filter(([name]) => name === "session.resume.diagnostic")).toEqual([]);
+  });
+
+  it("records a slow resume and failed diagnostic ping without triggering recovery", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const gate = diagnosticGate<ReturnType<typeof makeAgentSessionStub>>();
+    const backend = {
+      diagnosticPing: vi.fn().mockRejectedValue(new Error("private credential detail")),
+      getConnectionStatus: () => ({ state: "connected", pid: 4242, lastDisconnect: { detail: "private" } }),
+      getDiagnostics: () => ({ pendingCount: 1, omittedCount: 0, pending: [{ operation: "session.resume", ageMs: 30_000 }] }),
+    };
+    manager.backend = backend;
+    const recover = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+    const record = vi.spyOn(manager, "recordSpan");
+    const result = manager.resumeAgentSessionWithTimeout(backend, "slow", gate.promise, "timeout", "warmup");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(backend.diagnosticPing).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(backend.diagnosticPing).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledWith("session.resume.diagnostic", 30_000, "slow", expect.objectContaining({
+      purpose: "warmup", pid: 4242, outcome: "slow", timedOut: false,
+      attemptId: expect.any(String), generation: expect.any(Number),
+      operations: backend.getDiagnostics(),
+    }));
+    expect(record).toHaveBeenCalledWith("session.resume.diagnostic", 30_000, "slow", expect.objectContaining({
+      outcome: "ping", ping: "failed",
+    }));
+    expect(recover).not.toHaveBeenCalled();
+    gate.resolve(makeAgentSessionStub({}));
+    await result;
+    expect(record).toHaveBeenCalledWith("session.resume.diagnostic", 30_000, "slow", expect.objectContaining({
+      outcome: "sdk-resolved",
+    }));
+    expect(JSON.stringify(record.mock.calls)).not.toContain("private");
+  });
+
+  it("captures timeout before recovery at exactly 60s even if diagnostics fail or hang", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const gate = diagnosticGate<ReturnType<typeof makeAgentSessionStub>>();
+    const ping = diagnosticGate<string>();
+    const backend = {
+      diagnosticPing: vi.fn(() => ping.promise),
+      getDiagnostics: () => { throw new Error("private snapshot detail"); },
+    };
+    manager.backend = backend;
+    const recover = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+    const record = vi.spyOn(manager, "recordSpan");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = manager.resumeAgentSessionWithTimeout(backend, "timeout", gate.promise, "original timeout", "reload");
+    const rejected = expect(result).rejects.toThrow("original timeout");
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(recover).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(recover).toHaveBeenCalledOnce();
+    const index = record.mock.calls.findIndex(([, , , metadata]) =>
+      typeof metadata === "object" && metadata !== null && "outcome" in metadata && metadata.outcome === "timeout");
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(record.mock.invocationCallOrder[index]).toBeLessThan(recover.mock.invocationCallOrder[0]);
+    expect(record.mock.calls[index]).toEqual([
+      "session.resume.diagnostic", 60_000, "timeout", expect.objectContaining({ snapshot: "failed", timedOut: true }),
+    ]);
+    gate.reject(new Error("private late SDK failure"));
+    ping.resolve("timeout");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(record).toHaveBeenCalledWith("session.resume.diagnostic", 60_000, "timeout", expect.objectContaining({
+      outcome: "sdk-rejected", timedOut: true,
+    }));
+    expect(JSON.stringify(record.mock.calls)).not.toContain("private");
+    warning.mockRestore();
+  });
+
+  it("does not confuse fence completion with original SDK settlement or replacement attribution", async () => {
+    vi.useFakeTimers();
+    const manager = createManager();
+    const gate = diagnosticGate<ReturnType<typeof makeAgentSessionStub>>();
+    const backend = { getConnectionStatus: () => ({ state: "connected", pid: 4242 }) };
+    manager.backend = backend;
+    const record = vi.spyOn(manager, "recordSpan");
+    const result = manager.resumeAgentSessionWithTimeout(backend, "fenced", gate.promise, "timeout", "send");
+    const rejected = expect(result).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const generation = manager.backendGeneration;
+    const fence = manager.getBackendFence(backend);
+    fence.confirmed = true;
+    for (const waiter of fence.waiters) waiter();
+    manager.backend = { getConnectionStatus: () => ({ state: "connected", pid: 9999 }) };
+    manager.backendGeneration++;
+    await rejected;
+    expect(record.mock.calls.some(([, , , metadata]) =>
+      typeof metadata === "object" && metadata !== null && "outcome" in metadata && metadata.outcome === "sdk-rejected")).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    gate.resolve(makeAgentSessionStub({}));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(record).toHaveBeenCalledWith("session.resume.diagnostic", 31_000, "fenced", expect.objectContaining({
+      outcome: "sdk-resolved", pid: 4242, generation, timedOut: false,
+    }));
   });
 
   it("evicts only the requested cached session and resumes it with fresh config", async () => {

@@ -645,12 +645,15 @@ export interface SessionUsageMetrics {
 
 export type SessionHistoryUndoErrorCode = "busy" | "stale-boundary" | "unsupported";
 
+type ResumePurpose = "warmup" | "send" | "reload" | "model-switch" | "name" | "mcp-auth" | "history-undo";
+
 interface SessionResumeLifecycleOptions {
   backend: AgentBackend;
   sessionId: string;
   sessionConfig: { mcpServers?: Record<string, McpServerConfig> };
   cancellationMessage: string;
   timeoutMessage?: string;
+  purpose?: ResumePurpose;
   reuseCachedSession?: boolean;
   reserveCachedSession?: boolean;
   beforeResume?: () => void | Promise<void>;
@@ -1014,7 +1017,7 @@ export class SessionManager {
         }),
       endSessionResume: (lease) => this.endSessionResume(lease),
       resumeSessionWithTimeout: (backend, sessionId, resume, timeoutMessage) =>
-        this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage),
+        this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage, "send"),
       notifySessionCapacityChanged: () => this.notifySessionCapacityChanged(),
       cacheResumedSession: (sessionId, session, sessionConfig) =>
         this.cacheResumedSession(sessionId, session, sessionConfig),
@@ -2343,11 +2346,56 @@ export class SessionManager {
     sessionId: string,
     resume: Promise<AgentSession>,
     timeoutMessage: string,
+    purpose: ResumePurpose,
   ): Promise<AgentSession> {
     const sid = sessionId.slice(0, 8);
     const owner = this.captureRuntimeOwner(owningBackend);
     const owningBackendGeneration = owner.generation;
     const token = Symbol(sessionId);
+    const startedAt = Date.now();
+    let slow = false;
+    let timedOut = false;
+    let pid: number | undefined;
+    const diagnostic = (outcome: string, details: Record<string, unknown> = {}): void => {
+      if (!slow) return;
+      let snapshot: Record<string, unknown>;
+      try {
+        const connection = owningBackend.getConnectionStatus?.();
+        pid ??= connection?.pid;
+        snapshot = {
+          connection: connection?.state ?? "unsupported",
+          operations: owningBackend.getDiagnostics?.() ?? null,
+        };
+      } catch {
+        snapshot = { snapshot: "failed" };
+        console.warn(`[sdk] [${sid}] Resume diagnostic snapshot failed`);
+      }
+      this.recordSpan("session.resume.diagnostic", Date.now() - startedAt, sessionId, {
+        attemptId: owner.lease,
+        generation: owningBackendGeneration,
+        pid: pid ?? null,
+        purpose,
+        outcome,
+        timedOut,
+        ...snapshot,
+        ...details,
+      });
+    };
+    const checkpoint = setTimeout(() => {
+      slow = true;
+      diagnostic("slow");
+      // This probe is observational: never use recovery-capable probeHealth here.
+      void Promise.resolve().then(() => owningBackend.diagnosticPing?.() ?? "unsupported").then(
+        (ping) => diagnostic("ping", { ping }),
+        () => diagnostic("ping", { ping: "failed" }),
+      );
+    }, 30_000);
+    checkpoint.unref?.();
+    // Observe the SDK promise, not awaitOwnedSession's fence race.
+    void resume.then(
+      () => diagnostic("sdk-resolved"),
+      () => diagnostic("sdk-rejected"),
+    );
     let releaseAfterLateSettlement = true;
     const releaseBarrier = (): boolean => {
       const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
@@ -2358,6 +2406,9 @@ export class SessionManager {
     };
     return resumeSessionWithTimeout(this.awaitOwnedSession(owner, resume), timeoutMessage, undefined, {
       onTimeout: () => {
+        timedOut = true;
+        slow = true;
+        diagnostic("timeout");
         if (
           this.backend !== owningBackend
           || this.backendGeneration !== owningBackendGeneration
@@ -2415,6 +2466,14 @@ export class SessionManager {
         throw new Error(BACKEND_DISCONNECTED_MESSAGE);
       }
       return session;
+    }).then((session) => {
+      diagnostic("wrapper-resolved");
+      return session;
+    }, (error: unknown) => {
+      diagnostic("wrapper-rejected");
+      throw error;
+    }).finally(() => {
+      clearTimeout(checkpoint);
     });
   }
 
@@ -2440,6 +2499,7 @@ export class SessionManager {
       sessionConfig,
       cancellationMessage,
       timeoutMessage,
+      purpose,
       reuseCachedSession = false,
       reserveCachedSession = false,
       beforeResume,
@@ -2461,7 +2521,7 @@ export class SessionManager {
         this.assertRuntimeOwner(owner);
         const resume = backend.resumeSession(sessionId, sessionConfig);
         const resumedSession = timeoutMessage
-          ? await this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage)
+          ? await this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage, purpose ?? "reload")
           : await this.awaitOwnedSession(owner, resume);
         this.sessionRuntimeOwners.set(resumedSession, owner);
         this.assertRuntimeOwner(owner);
@@ -4041,6 +4101,7 @@ export class SessionManager {
         sessionId,
         client.resumeSession(sessionId, sessionConfig),
         "name resume timed out after 60s",
+        "name",
       );
       this.trackSessionCapacityProfile(session, sessionConfig);
       return await operation(session);
@@ -4239,6 +4300,7 @@ export class SessionManager {
       sessionConfig: resumeConfig,
       cancellationMessage: "MCP authentication resume cancelled before admission",
       timeoutMessage: "MCP auth resume timed out after 60s",
+      purpose: "mcp-auth",
       reuseCachedSession: true,
       beforeResume: () => {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
@@ -4601,6 +4663,7 @@ export class SessionManager {
           sessionConfig: resumeConfig,
           cancellationMessage: "History undo resume cancelled before admission",
           timeoutMessage: "undo history resume timed out after 60s",
+          purpose: "history-undo",
           flushPendingEviction: false,
         });
       }
@@ -5097,6 +5160,7 @@ export class SessionManager {
       sessionConfig: resumeConfig,
       cancellationMessage: "Session warmup cancelled before admission",
       timeoutMessage: "warmSession timed out after 60s",
+      purpose: "warmup",
     }, () => {
       this.invalidateSessionListCache("session:warm");
       this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
@@ -5207,6 +5271,7 @@ export class SessionManager {
       sessionConfig: resumeConfig,
       cancellationMessage: "Session reload cancelled before admission",
       timeoutMessage: "reloadSession timed out after 60s",
+      purpose: "reload",
       reserveCachedSession: true,
       beforeResume: async () => {
         const cached = this.sessionObjects.get(sessionId);
@@ -5491,6 +5556,7 @@ export class SessionManager {
             sessionId,
             client.resumeSession(sessionId, resumeConfig),
             "resumeSession timed out after 60s",
+            "model-switch",
           );
           session = await this.cacheResumedSession(sessionId, session, resumeConfig);
         } finally {

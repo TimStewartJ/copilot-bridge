@@ -481,6 +481,13 @@ export interface AgentBackendConnectionStatus {
   lastDisconnect?: AgentBackendDisconnect;
 }
 
+/** Metadata only; pending work may outlive its caller's timeout. */
+export type AgentBackendDiagnostics = {
+  pendingCount: number;
+  omittedCount: number;
+  pending: Array<{ operation: string; ageMs: number }>;
+};
+
 /**
  * Backend handle that owns a coding-agent SDK client process and exposes
  * the operations Bridge uses to manage sessions.
@@ -520,6 +527,12 @@ export interface AgentBackend {
 
   /** Current transport state for health reporting. */
   getConnectionStatus?(): AgentBackendConnectionStatus;
+
+  /** Bounded, oldest-first snapshot without arguments, payloads, or errors. */
+  getDiagnostics?(): AgentBackendDiagnostics;
+
+  /** Observational ping only: never starts or recovers a backend, or declares it disconnected. */
+  diagnosticPing?(): Promise<"responsive" | "timeout" | "failed" | "skipped">;
 
   /**
    * Cheap liveness probe of the RPC channel. Resolves false when the channel
