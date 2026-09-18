@@ -1,15 +1,18 @@
-// The only module in the server runtime that creates child processes.
+// The only module in the server runtime that creates child processes or deletes directory trees.
 //
 // On Windows, process creation is a synchronous CreateProcessW call on the calling thread, and
 // under machine load that call has been measured taking tens of seconds. The process host loads
 // this module as a worker thread so that stall never lands on the server's main event loop. The
 // inline backend (tests, operational fallback) calls the same functions on its own thread.
+// Deleting a tree is the same kind of call: rmSync holds its thread for the whole delete, and a
+// worktree is tens of thousands of files.
 //
 // Constraints: `new Worker()` loads this file from compiled JS, from tsx, and from Vitest, where
 // loader hooks are not reliably inherited. It therefore has no runtime imports from the codebase
 // (type imports are erased) and uses only erasable TypeScript syntax.
 
 import { exec, execFile, fork, spawn, type ChildProcess, type ForkOptions, type SpawnOptions } from "node:child_process";
+import { rmSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
 import type {
   HostEvent,
@@ -129,6 +132,11 @@ export function execToOutcome(
   });
 }
 
+/** Keeps the retry policy staging cleanup always used. Any wait is on this thread, not the server's. */
+export function removeTreeOnCallingThread(path: string): void {
+  rmSync(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+}
+
 /** Inline backend only: creates the process on the calling thread and returns the real handle. */
 export function spawnOnCallingThread(file: string, args: readonly string[], options: SpawnOptions): ChildProcess {
   return args.length === 0 ? spawn(file, options) : spawn(file, [...args], options);
@@ -233,6 +241,15 @@ function serveProcessHost(port: NonNullable<typeof parentPort>): void {
     if (request.type === "spawn") return handleSpawn(request);
     if (request.type === "cancel") {
       runningExecs.get(request.id)?.abort();
+      return;
+    }
+    if (request.type === "remove-tree") {
+      try {
+        removeTreeOnCallingThread(request.path);
+        post({ type: "tree-removed", id: request.id });
+      } catch (error) {
+        post({ type: "tree-removed", id: request.id, error: serializeError(error) });
+      }
       return;
     }
 

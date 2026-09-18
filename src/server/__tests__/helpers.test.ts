@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
+import { isPathAtOrUnder } from "../path-utils.js";
 import { makeTestDir, makeTestRuntimePaths, withTestEnv } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 
@@ -26,7 +27,7 @@ describe("test helper runtime isolation", () => {
     expect(runtimePaths.env.BRIDGE_DATA_DIR).toBe(runtimePaths.dataDir);
     expect(runtimePaths.env.BRIDGE_DOCS_DIR).toBe(runtimePaths.docsDir);
     expect(runtimePaths.env.COPILOT_HOME).toBe(runtimePaths.copilotHome);
-    expect(runtimePaths.dataDir.startsWith(process.cwd())).toBe(false);
+    expect(isPathAtOrUnder(process.cwd(), runtimePaths.dataDir)).toBe(false);
   });
 
   it("restores env after scoped mutations", async () => {
@@ -58,7 +59,7 @@ describe("test helper runtime isolation", () => {
     expect(ctx.runtimePaths).toBeDefined();
     expect(ctx.copilotHome).toBe(ctx.runtimePaths?.copilotHome);
     expect(existsSync(ctx.runtimePaths!.dataDir)).toBe(true);
-    expect(ctx.runtimePaths!.dataDir.startsWith(process.cwd())).toBe(false);
+    expect(isPathAtOrUnder(process.cwd(), ctx.runtimePaths!.dataDir)).toBe(false);
     expect(ctx.runtimePaths!.env.COPILOT_HOME).toBe(ctx.copilotHome);
   });
 

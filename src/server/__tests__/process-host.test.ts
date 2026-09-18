@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostExecError, ProcessHost, type HostWorker, type ProcessLaunchObservation } from "../process-host.js";
 import type { HostEvent, HostRequest } from "../process-host-protocol.js";
+import { makeTestDir } from "./helpers.js";
 
 /** A scripted worker thread: records what the host sends and replies only when the test says so. */
 class ScriptedWorker extends EventEmitter {
@@ -212,6 +215,43 @@ describe("ProcessHost worker loss", () => {
     expect(workers).toHaveLength(2);
     workers[1]!.reply(done(workers[1]!.execRequests()[0]!.id, "recovered"));
     expect((await waiting).stdout).toBe("recovered");
+  });
+});
+
+describe("ProcessHost removeTree", () => {
+  it("deletes on a dedicated worker thread, never on the calling thread", async () => {
+    const { host, workers } = createHost();
+    const tree = makeTestDir("process-host-remove-");
+
+    const removing = host.removeTree(tree);
+    const request = workers[0]!.requests[0] as Extract<HostRequest, { type: "remove-tree" }>;
+    expect(request).toMatchObject({ type: "remove-tree", path: tree });
+    workers[0]!.reply({ type: "tree-removed", id: request.id });
+
+    await expect(removing).resolves.toBeUndefined();
+    // The scripted worker deleted nothing, so a missing tree would mean the calling thread did.
+    expect(existsSync(tree)).toBe(true);
+    expect(workers[0]!.terminated).toBe(true);
+
+    // A delete can hold its thread for minutes, so commands never share a worker with it.
+    void host.execFile("git", ["status"]);
+    expect(workers).toHaveLength(2);
+
+    // Nothing to delete: no worker thread is started for it.
+    await host.removeTree(join(tree, "missing"));
+    expect(workers).toHaveLength(2);
+  });
+
+  it("rejects with the file system error, or when its worker is lost", async () => {
+    const { host, workers } = createHost();
+    const locked = host.removeTree(makeTestDir("process-host-locked-")).catch((error: unknown) => error);
+    const request = workers[0]!.requests[0] as Extract<HostRequest, { type: "remove-tree" }>;
+    workers[0]!.reply({ type: "tree-removed", id: request.id, error: { message: "EPERM: operation not permitted", code: "EPERM" } });
+    expect(await locked).toMatchObject({ code: "EPERM" });
+
+    const lost = host.removeTree(makeTestDir("process-host-lost-")).catch((error: unknown) => error);
+    workers[1]!.emit("exit", 1);
+    expect(String((await lost as Error).message)).toContain("Process host worker exited with code 1");
   });
 });
 

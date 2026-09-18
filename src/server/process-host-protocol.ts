@@ -115,6 +115,7 @@ export type HostRequest =
   | { type: "exec"; id: number; request: HostExecRequest }
   | { type: "cancel"; id: number }
   | { type: "spawn"; id: number; file: string; args: string[]; options: HostSpawnOptions }
+  | { type: "remove-tree"; id: number; path: string }
   | { type: "stdin"; id: number; chunk: Uint8Array | null }
   | { type: "send"; id: number; seq: number; message: unknown }
   | { type: "kill"; id: number; signal?: NodeJS.Signals | number }
@@ -125,6 +126,7 @@ export type HostEvent =
   | { type: "exec-created"; id: number; createMs: number }
   | { type: "exec-done"; id: number; outcome: HostExecOutcome }
   | { type: "spawned"; id: number; pid: number; createMs: number }
+  | { type: "tree-removed"; id: number; error?: SerializedHostError }
   | { type: "error"; id: number; error: SerializedHostError; createMs?: number }
   | { type: "stdout" | "stderr"; id: number; chunk: Uint8Array }
   | { type: "message"; id: number; message: unknown }

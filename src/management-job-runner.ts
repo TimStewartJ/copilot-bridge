@@ -313,6 +313,13 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const log = options.log ?? runnerLog;
   let holdReason: string | null = null;
+  /** A preview never conflicts with a restart, so previews run while every other job waits for one. */
+  const runPreviewOrWait = async (): Promise<void> => {
+    const previewJob = options.store.claimNext({ runnerPid: process.pid, staleAfterMs, types: ["staging_preview"] });
+    if (!previewJob) return wait(pollIntervalMs);
+    await runClaimedManagementJob(options.store, previewJob, options);
+    await pruneManagementJobArtifacts(options.store, log);
+  };
 
   log(`Runner PID ${process.pid} started`);
   while (!options.shouldStop?.()) {
@@ -320,17 +327,7 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
     if (nextHold) {
       if (nextHold !== holdReason) log(`Holding queued jobs: ${nextHold}`);
       holdReason = nextHold;
-      const previewJob = options.store.claimNext({
-        runnerPid: process.pid,
-        staleAfterMs,
-        types: ["staging_preview"],
-      });
-      if (previewJob) {
-        await runClaimedManagementJob(options.store, previewJob, options);
-        await pruneManagementJobArtifacts(options.store, log);
-        continue;
-      }
-      await wait(pollIntervalMs);
+      await runPreviewOrWait();
       continue;
     }
     holdReason = null;
@@ -338,6 +335,9 @@ export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOpt
     if (options.deployBatchDataDir && pending.length > 0) {
       await runDeployBatch(options);
       await pruneManagementJobArtifacts(options.store, log);
+      // Deploys stay pending until their shared restart activates, which can wait on busy sessions
+      // for an hour. Without a pause here the loop ran flat out on one core and starved previews.
+      if (listPendingDeploys(options.store).length > 0) await runPreviewOrWait();
       continue;
     }
     const job = options.store.claimNext({ runnerPid: process.pid, staleAfterMs });
