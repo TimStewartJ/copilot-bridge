@@ -486,6 +486,8 @@ The bridge includes a few different maintenance paths:
 
 Graceful server shutdown stops owned staging-preview backends concurrently within the shared 13-second shutdown budget, using captured process identities. New backend starts are blocked during shutdown; preview data is preserved for restoration. Cleanup failures or deadline overruns are logged rather than falling back to bare-PID kills.
 
+Startup staging cleanup removes empty, branchless leftovers without recursive deletion or missing-branch failure logs. Nonempty directories without Git metadata are retained. Orphan worktrees with local changes, unreadable Git status, or active/pending preview backends keep their directories and previews; age-based cleanup retains its existing recency and cleanliness checks. Removal summaries count only directories actually gone.
+
 The launcher is responsible for checkpointing, building, health checks, and recovering from bad restarts.
 
 ## Logs

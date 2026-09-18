@@ -3,6 +3,7 @@
 // and deploy only after validation passes.
 
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
+import { rmdir } from "node:fs/promises";
 import { join, dirname, basename, resolve } from "node:path";
 import type express from "express";
 import { randomBytes } from "node:crypto";
@@ -130,7 +131,7 @@ import {
   type StagingPreviewDiscoveryTrigger,
 } from "./staging-preview-discovery.js";
 import { queuedManagementJobResult } from "./management-job-tool-results.js";
-import { createGitPullRebaseCommand } from "./git-command.js";
+import { createGitCommand, createGitPullRebaseCommand } from "./git-command.js";
 
 
 type StagingRunOptions = {
@@ -657,14 +658,31 @@ function ensureNodeModulesIgnored(stagingDir: string): void {
   }
 }
 
+async function runCleanupGit(args: string[]): Promise<string> {
+  const command = createGitCommand(args);
+  const result = await run(command.displayCommand, PRODUCTION_ROOT, {
+    executable: command.command,
+    args: command.args,
+  });
+  if (!result.ok) throw new Error(`${command.displayCommand}: ${result.output}`);
+  return result.output;
+}
+
+async function stagingBranchExists(branch: string): Promise<boolean> {
+  const output = await runCleanupGit(["branch", "--list", "--format=%(refname:short)", "--", branch]);
+  return output.split(/\r?\n/).some((line) => line.trim() === branch);
+}
+
 /**
  * Remove a staging worktree and its branch. `git worktree remove` cannot delete node_modules in
  * time and refuses a directory it no longer tracks, so the tree is deleted and then pruned.
  */
 async function removeWorktree(stagingDir: string, branch: string): Promise<void> {
   await getProcessHost().removeTree(stagingDir);
-  await run("git worktree prune", PRODUCTION_ROOT);
-  await run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
+  await runCleanupGit(["worktree", "prune"]);
+  if (await stagingBranchExists(branch)) {
+    await runCleanupGit(["branch", "-D", "--", branch]);
+  }
 }
 
 async function worktreeHasUncommittedChanges(stagingDir: string): Promise<boolean> {
@@ -727,6 +745,9 @@ async function pruneStaleStagingArtifacts(options: {
       await options.removeWorktree(entry.stagingDir, entry.branch);
     } catch (error) {
       options.log(`Warning: could not remove stale staging worktree ${entry.prefix}: ${error}`);
+    }
+    if (existsSync(entry.stagingDir)) {
+      options.log(`Retained stale staging worktree: ${entry.prefix}`);
       continue;
     }
     options.activeWorktrees.delete(entry.prefix);
@@ -775,11 +796,12 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   const getBranchPrefixes = options.listBranchPrefixes ?? listStagingBranchPrefixes;
   const removeOrphanedWorktree = options.removeWorktree ?? removeWorktree;
   const pruneGitWorktrees = options.pruneGitWorktrees ?? (async () => {
-    await run("git worktree prune", PRODUCTION_ROOT);
+    await runCleanupGit(["worktree", "prune"]);
   });
 
   // Collect active staging prefixes (worktrees with valid branches)
   const activeWorktrees = new Set<string>();
+  const retainedOrphans = new Set<string>();
   const restorablePreviews = new Map<string, PreviewTarget>();
   const activeBranchPrefixes = await getBranchPrefixes();
   const skipOrphanPrune = activeBranchPrefixes === null;
@@ -801,13 +823,28 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
         }
 
         if (!activeBranchPrefixes.has(entry.name)) {
-          // Only a git worktree is the Bridge's to delete; any other directory here is left alone.
-          if (!existsSync(join(stagingDir, ".git"))) continue;
           try {
+            if (hasActiveStagingBackend(entry.name) || hasPendingStagingBackendStart(entry.name)) continue;
+            // Recheck after the snapshot: staging_init may have created a branch in the meantime.
+            if (await stagingBranchExists(branch)) continue;
+            const isWorktree = existsSync(join(stagingDir, ".git"));
+            if (isWorktree && await worktreeHasUncommittedChanges(stagingDir)) {
+              writeLog(`Skipping orphan staging worktree with local changes or unreadable status: ${entry.name}`);
+              continue;
+            }
+            if (hasActiveStagingBackend(entry.name) || hasPendingStagingBackendStart(entry.name)) continue;
+            if (!isWorktree) {
+              if (readdirSync(stagingDir).length > 0) continue;
+              // Non-recursive removal fails safely if another operation populates the directory.
+              await rmdir(stagingDir);
+              continue;
+            }
             await removeOrphanedWorktree(stagingDir, branch);
-            orphanedWorktreeDirs++;
           } catch (error) {
             writeLog(`Warning: could not remove orphaned staging worktree ${entry.name}: ${error}`);
+          } finally {
+            if (existsSync(stagingDir)) retainedOrphans.add(entry.name);
+            else orphanedWorktreeDirs++;
           }
           continue;
         }
@@ -823,6 +860,8 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
     }
   }
 
+  // Retained orphans keep their previews but are not candidates for age-based pruning.
+  const previewWorktrees = new Set([...activeWorktrees, ...retainedOrphans]);
   // Clean up orphaned staging preview directories, but keep ones with active worktrees.
   for (const stagingPreviewParent of uniqueResolvedPaths(stagingPreviewParents)) {
     if (!existsSync(stagingPreviewParent)) continue;
@@ -830,7 +869,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
       const generatedPrefixes = new Set<string>();
       for (const target of listActivePreviewTargets(stagingPreviewParent, stagingParent)) {
         generatedPrefixes.add(target.prefix);
-        const parsed = parsePreviewPrefix(target.prefix, activeWorktrees);
+        const parsed = parsePreviewPrefix(target.prefix, previewWorktrees);
         if (parsed) {
           if (!restorablePreviews.has(target.prefix)) {
             previewMap.set(target.prefix, target.outDir);
@@ -861,7 +900,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
       for (const entry of distEntries) {
         if (!entry.isDirectory()) continue;
         if (entry.name.startsWith(".")) continue;
-        const parsed = parsePreviewPrefix(entry.name, activeWorktrees);
+        const parsed = parsePreviewPrefix(entry.name, previewWorktrees);
         if (parsed) {
           if (generatedPrefixes.has(entry.name)) continue;
           const distDir = join(stagingPreviewParent, entry.name);
