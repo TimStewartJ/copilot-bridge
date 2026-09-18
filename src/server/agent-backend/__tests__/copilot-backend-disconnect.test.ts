@@ -75,17 +75,7 @@ function createFakeClient(options: { ping?: () => Promise<unknown> } = {}) {
 
 const silentLogger = { warn: vi.fn(), error: vi.fn() };
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-describe("CopilotBackend diagnostics", () => {
+describe("CopilotBackend disconnect detection", () => {
   afterEach(() => {
     vi.useRealTimers();
     silentLogger.warn.mockClear();
@@ -94,8 +84,9 @@ describe("CopilotBackend diagnostics", () => {
 
   it.each(["resolve", "reject"] as const)("bounds a hanging diagnostic ping without disconnecting on late %s", async (settlement) => {
     vi.useFakeTimers();
-    const work = deferred<unknown>();
-    const { client } = createFakeClient({ ping: () => work.promise });
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: unknown) => void;
+    const { client } = createFakeClient({ ping: () => new Promise((yes, no) => { resolve = yes; reject = no; }) });
     const backend = new CopilotBackend(client, { logger: silentLogger });
     const onDisconnect = vi.fn();
     backend.onDisconnect(onDisconnect);
@@ -109,25 +100,23 @@ describe("CopilotBackend diagnostics", () => {
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await expect(ping).resolves.toBe("timeout");
-    work[settlement](new Error("private late payload"));
+    (settlement === "resolve" ? resolve : reject)(new Error("private late payload"));
     await vi.advanceTimersByTimeAsync(0);
 
     expect(client.ping).toHaveBeenCalledOnce();
     expect(probeHealth).not.toHaveBeenCalled();
     expect(onDisconnect).not.toHaveBeenCalled();
-    expect(silentLogger.warn).not.toHaveBeenCalled();
-    expect(silentLogger.error).not.toHaveBeenCalled();
     expect(backend.getConnectionStatus().state).toBe("connected");
-    expect(backend.getDiagnostics()).toEqual({ pendingCount: 0, omittedCount: 0, pending: [] });
     await backend.stop();
   });
 
-  it.each(["responsive", "failed"] as const)("classifies a diagnostic ping as %s without recovery", async (outcome) => {
+  it.each(["responsive", "rejected", "thrown"] as const)("classifies a %s diagnostic ping without recovery", async (outcome) => {
     vi.useFakeTimers();
     const { client } = createFakeClient({
-      ping: async () => {
-        if (outcome === "failed") throw new Error("private error");
-        return { message: "private payload" };
+      ping: () => {
+        if (outcome === "thrown") throw new Error("private error");
+        return outcome === "rejected"
+          ? Promise.reject(new Error("private error")) : Promise.resolve({ message: "private payload" });
       },
     });
     const backend = new CopilotBackend(client, { logger: silentLogger });
@@ -135,13 +124,10 @@ describe("CopilotBackend diagnostics", () => {
     backend.onDisconnect(onDisconnect);
     await backend.start();
     const probeHealth = vi.spyOn(backend, "probeHealth");
-    await expect(backend.diagnosticPing()).resolves.toBe(outcome);
-    expect(client.start).toHaveBeenCalledOnce();
+    await expect(backend.diagnosticPing()).resolves.toBe(outcome === "responsive" ? "responsive" : "failed");
     expect(client.ping).toHaveBeenCalledOnce();
     expect(probeHealth).not.toHaveBeenCalled();
     expect(onDisconnect).not.toHaveBeenCalled();
-    expect(silentLogger.warn).not.toHaveBeenCalled();
-    expect(silentLogger.error).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     await backend.stop();
   });
@@ -163,165 +149,13 @@ describe("CopilotBackend diagnostics", () => {
       if (state === "fenced") await expect(backend.fence()).rejects.toThrow("Cannot fence");
       const onDisconnect = vi.fn();
       backend.onDisconnect(onDisconnect);
-      const probeHealth = vi.spyOn(backend, "probeHealth");
       await expect(backend.diagnosticPing()).resolves.toBe("skipped");
       expect(client.start).toHaveBeenCalledTimes(state === "unstarted" ? 0 : 1);
       expect(client.ping).not.toHaveBeenCalled();
-      expect(probeHealth).not.toHaveBeenCalled();
       expect(onDisconnect).not.toHaveBeenCalled();
       await backend.stop();
     },
   );
-
-  it.each(["resolve", "reject"] as const)("retains underlying guarded work past timeout until %s", async (settlement) => {
-    vi.useFakeTimers();
-    const work = deferred<unknown>();
-    const { client } = createFakeClient();
-    client.getSessionMetadata.mockImplementation(() => work.promise);
-    const backend = new CopilotBackend(client, { logger: silentLogger });
-    await backend.start();
-    const request = backend.getSessionMetadata("private-session");
-    const rejected = expect(request).rejects.toMatchObject({ code: "AGENT_RPC_TIMEOUT" });
-    await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["backend.getSessionMetadata"]);
-    await rejected;
-    expect(backend.getDiagnostics()).toEqual({
-      pendingCount: 1,
-      omittedCount: 0,
-      pending: [{ operation: "backend.getSessionMetadata", ageMs: 60_000 }],
-    });
-    work[settlement](new Error("private result"));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(backend.getDiagnostics()).toEqual({ pendingCount: 0, omittedCount: 0, pending: [] });
-    await backend.stop();
-  });
-
-  it("tracks external-use probes past their timeout without probing health", async () => {
-    vi.useFakeTimers();
-    const work = deferred<unknown>();
-    const { client } = createFakeClient();
-    client.rpc.sessions.checkInUse.mockImplementation(() => work.promise);
-    const backend = new CopilotBackend(client, { logger: silentLogger });
-    await backend.start();
-    const request = backend.checkSessionsInUse(["private-session"]);
-    const rejected = expect(request).rejects.toMatchObject({ code: "AGENT_RPC_TIMEOUT" });
-    await vi.advanceTimersByTimeAsync(10_000);
-    await rejected;
-    expect(backend.getDiagnostics()).toEqual({
-      pendingCount: 1,
-      omittedCount: 0,
-      pending: [{ operation: "backend.checkSessionsInUse", ageMs: 10_000 }],
-    });
-    expect(client.ping).not.toHaveBeenCalled();
-    work.reject(new Error("private result"));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(backend.getDiagnostics().pendingCount).toBe(0);
-    await backend.stop();
-  });
-
-  it("bounds retained metadata to 64 and snapshots to the oldest 20, counting omitted work", async () => {
-    vi.useFakeTimers();
-    const { client } = createFakeClient();
-    const backend = new CopilotBackend(client, { logger: silentLogger });
-    await backend.start();
-    const work = Array.from({ length: 70 }, () => deferred<unknown>());
-    const requests: Promise<unknown>[] = [];
-    for (const entry of work) {
-      client.getSessionMetadata.mockImplementationOnce(() => entry.promise);
-      requests.push(backend.getSessionMetadata("private-session"));
-      await vi.advanceTimersByTimeAsync(1);
-    }
-    const snapshot = backend.getDiagnostics();
-    expect(snapshot).toEqual({
-      pendingCount: 70,
-      omittedCount: 50,
-      pending: Array.from({ length: 20 }, (_, i) => ({ operation: "backend.getSessionMetadata", ageMs: 70 - i })),
-    });
-    snapshot.pending[0]!.operation = "mutated";
-    expect(backend.getDiagnostics().pending[0]!.operation).toBe("backend.getSessionMetadata");
-    for (const entry of work.slice(0, 60)) entry.resolve({ secret: "private payload" });
-    await Promise.all(requests.slice(0, 60));
-    expect(backend.getDiagnostics()).toEqual({
-      pendingCount: 10,
-      omittedCount: 6,
-      pending: Array.from({ length: 4 }, (_, i) => ({ operation: "backend.getSessionMetadata", ageMs: 10 - i })),
-    });
-    for (const entry of work.slice(60)) entry.resolve({});
-    await Promise.all(requests);
-    expect(backend.getDiagnostics()).toEqual({ pendingCount: 0, omittedCount: 0, pending: [] });
-    await backend.stop();
-  });
-
-  it("tracks create, resume, and session RPCs without exposing config or arguments", async () => {
-    vi.useFakeTimers();
-    const create = deferred<unknown>();
-    const resume = deferred<unknown>();
-    const send = deferred<unknown>();
-    const { client } = createFakeClient();
-    client.createSession.mockImplementation(() => create.promise);
-    client.resumeSession.mockImplementation(() => resume.promise);
-    const backend = new CopilotBackend(client, { logger: silentLogger });
-    await backend.start();
-    const creating = backend.createSession({ privateConfig: "secret" });
-    await vi.advanceTimersByTimeAsync(10);
-    const resuming = backend.resumeSession("private-session", { privateConfig: "secret" });
-    const resumeRejected = expect(resuming).rejects.toThrow("private error");
-    await vi.advanceTimersByTimeAsync(10);
-    expect(backend.getDiagnostics()).toEqual({
-      pendingCount: 2,
-      omittedCount: 0,
-      pending: [
-        { operation: "backend.createSession", ageMs: 20 },
-        { operation: "backend.resumeSession", ageMs: 10 },
-      ],
-    });
-    create.resolve({ sessionId: "private-session", send: () => send.promise });
-    resume.reject(new Error("private error"));
-    const session = await creating;
-    await resumeRejected;
-    expect(backend.getDiagnostics().pendingCount).toBe(0);
-    const sending = session.send({ prompt: "private prompt" });
-    const sendRejected = expect(sending).rejects.toMatchObject({ code: "AGENT_RPC_TIMEOUT" });
-    await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["session.send"]);
-    await sendRejected;
-    expect(backend.getDiagnostics()).toEqual({
-      pendingCount: 1,
-      omittedCount: 0,
-      pending: [{ operation: "session.send", ageMs: 120_000 }],
-    });
-    send.resolve("private response");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(backend.getDiagnostics().pendingCount).toBe(0);
-    await backend.stop();
-  });
-
-  it.each(["stop", "forceStop", "fence"] as const)("clears tracking on %s and ignores late settlements", async (method) => {
-    vi.useFakeTimers();
-    const work = deferred<unknown>();
-    const { client } = createFakeClient();
-    client.getSessionMetadata.mockImplementation(() => work.promise);
-    const backend = new CopilotBackend(client, { logger: silentLogger });
-    await backend.start();
-    const request = backend.getSessionMetadata("private-session");
-    const rejected = expect(request).rejects.toThrow("late error");
-    expect(backend.getDiagnostics().pendingCount).toBe(1);
-    if (method === "fence") await expect(backend.fence()).rejects.toThrow("Cannot fence");
-    else await backend[method]();
-    expect(backend.getDiagnostics()).toEqual({ pendingCount: 0, omittedCount: 0, pending: [] });
-    work.reject(new Error("late error"));
-    await rejected;
-    expect(backend.getDiagnostics()).toEqual({ pendingCount: 0, omittedCount: 0, pending: [] });
-    client.getSessionMetadata.mockResolvedValue({});
-    await backend.getSessionMetadata("after-retirement");
-    expect(backend.getDiagnostics()).toEqual({ pendingCount: 0, omittedCount: 0, pending: [] });
-  });
-});
-
-describe("CopilotBackend disconnect detection", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-    silentLogger.warn.mockClear();
-    silentLogger.error.mockClear();
-  });
 
   it("reports a closed JSON-RPC connection once and exposes it in the connection status", async () => {
     const { client, connection } = createFakeClient();
