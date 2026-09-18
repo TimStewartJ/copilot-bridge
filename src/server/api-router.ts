@@ -1044,6 +1044,8 @@ function parseManagementJobStatuses(value: unknown): ManagementJobStatus[] | und
   });
 }
 
+function parsePositiveIntegerQuery(value: unknown, name: string, max: number, defaultValue: number): number;
+function parsePositiveIntegerQuery(value: unknown, name: string, max: number): number | undefined;
 function parsePositiveIntegerQuery(
   value: unknown,
   name: string,
@@ -1059,6 +1061,27 @@ function parsePositiveIntegerQuery(
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new ManagementJobApiError(`${name} must be a positive integer.`);
+  }
+  return Math.min(parsed, max);
+}
+
+function parseNonNegativeIntegerQuery(value: unknown, name: string, max: number, defaultValue: number): number;
+function parseNonNegativeIntegerQuery(value: unknown, name: string, max: number): number | undefined;
+function parseNonNegativeIntegerQuery(
+  value: unknown,
+  name: string,
+  max: number,
+  defaultValue?: number,
+): number | undefined {
+  const values = queryParamValues(value);
+  if (values.length === 0) return defaultValue;
+  const raw = values[0];
+  if (!/^\d+$/.test(raw)) {
+    throw new ManagementJobApiError(`${name} must be a non-negative integer.`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new ManagementJobApiError(`${name} must be a non-negative integer.`);
   }
   return Math.min(parsed, max);
 }
@@ -5738,8 +5761,8 @@ export function createApiRouter(
       const schedule = ctx.scheduleStore.getSchedule(req.params.id);
       if (!schedule) return res.status(404).json({ error: "Schedule not found" });
 
-      const limit = Math.min(Number(req.query.limit) || 20, 100);
-      const offset = Number(req.query.offset) || 0;
+      const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 100, 20);
+      const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
 
       const allRuns = ctx.sessionMetaStore.listScheduleRuns(req.params.id);
       const pageRuns = allRuns.slice(offset, offset + limit);
@@ -5796,6 +5819,9 @@ export function createApiRouter(
         limit,
       });
     } catch (err) {
+      if (err instanceof ManagementJobApiError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
       res.status(500).json({ error: String(err) });
     }
   });
@@ -6369,10 +6395,13 @@ export function createApiRouter(
     router.get("/docs/search", (req, res) => {
       try {
         const q = String(req.query.q || "");
-        const limit = Math.min(Number(req.query.limit) || 50, 200);
-        const offset = Number(req.query.offset) || 0;
+        const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 200, 50);
+        const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
         res.json(docsIdx.search(q, limit, offset));
       } catch (err) {
+        if (err instanceof ManagementJobApiError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(500).json({ error: String(err) });
@@ -6492,8 +6521,8 @@ export function createApiRouter(
     router.get("/docs/db/*folder", (req, res) => {
       try {
         const folder = paramPath((req.params as any).folder);
-        const limit = Math.min(Number(req.query.limit) || 10000, 10000);
-        const offset = Number(req.query.offset) || 0;
+        const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 10000, 10000);
+        const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
         const sortField = req.query._sort as string | undefined;
         const sortOrder = (req.query._order as string | undefined) === "asc" ? "asc" as const : "desc" as const;
         const includeBody = ["1", "true", "yes", "on"].includes(String(req.query._includeBody ?? "").toLowerCase());
@@ -6516,7 +6545,7 @@ export function createApiRouter(
         res.json(result);
       } catch (err: any) {
         const message = err?.message || String(err);
-        res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
+        res.status(err instanceof DocsStoreValidationError || err instanceof ManagementJobApiError ? 400 : 500).json({ error: message });
       }
     });
 
