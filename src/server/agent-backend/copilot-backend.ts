@@ -46,7 +46,6 @@ import { boundRpc, isAgentRpcTimeoutError, type AgentRpcName } from "./rpc-timeo
 import type {
   AgentBackend,
   AgentBackendConnectionStatus,
-  AgentBackendDiagnostics,
   AgentBackendDisconnect,
   AgentBackendDisconnectReason,
   AgentBackgroundTask,
@@ -612,10 +611,6 @@ export class CopilotBackend implements AgentBackend {
   private ownedTree: ProcessTreeSnapshot | null = null;
   private readonly localStdioOwnership: boolean;
   private readonly startClient: () => Promise<void>;
-  private diagnostics = {
-    pendingCount: 0,
-    pending: new Map<symbol, { operation: string; startedAt: number }>(),
-  };
 
   constructor(private readonly client: CopilotClient, options: {
     logger?: Pick<Console, "warn" | "error">;
@@ -650,32 +645,7 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
-  private trackRpc<T>(
-    operation: AgentRpcName | "backend.createSession" | "backend.resumeSession",
-    work: Promise<T>,
-  ): Promise<T> {
-    if (this.stopping || this.fenceRequested) return work;
-    const registry = this.diagnostics;
-    const key = Symbol();
-    registry.pendingCount++;
-    if (registry.pending.size < 64) {
-      registry.pending.set(key, { operation, startedAt: Date.now() });
-    }
-    const settled = () => {
-      registry.pendingCount--;
-      registry.pending.delete(key);
-    };
-    // Observe the original promise, not the bounded caller, including late rejections.
-    void work.then(settled, settled);
-    return work;
-  }
-
-  private clearDiagnostics(): void {
-    // Late settlements belong to the retired registry, never the new counters.
-    this.diagnostics = { pendingCount: 0, pending: new Map() };
-  }
-
-  private readonly rpc: CopilotRpcGuard = (name, operation) => boundRpc(name, () => this.trackRpc(name, operation()), {
+  private readonly rpc: CopilotRpcGuard = (name, operation) => boundRpc(name, operation, {
     onTimeout: (rpc, timeoutMs) => {
       this.logger.warn(`[copilot-backend] RPC ${rpc} timed out after ${timeoutMs}ms; probing backend liveness`);
       void this.probeHealth(undefined, `rpc-timeout:${rpc}`);
@@ -695,7 +665,6 @@ export class CopilotBackend implements AgentBackend {
 
   fence(options: RuntimeFenceOptions = {}): Promise<void> {
     this.fenceRequested = true;
-    this.clearDiagnostics();
     if (!this.fencePromise) {
       const attempt = this.fenceOwnedRuntime(options.deadline ?? createDeadline(RUNTIME_FENCE_BUDGET_MS), options.onPhase);
       this.fencePromise = attempt;
@@ -873,7 +842,6 @@ export class CopilotBackend implements AgentBackend {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    this.clearDiagnostics();
     this.detachTransportWatchers?.();
     await this.captureOwnedTree();
     const errors = await this.client.stop();
@@ -887,7 +855,6 @@ export class CopilotBackend implements AgentBackend {
 
   forceStop(): Promise<unknown> {
     this.stopping = true;
-    this.clearDiagnostics();
     this.detachTransportWatchers?.();
     const fn = (this.client as any).forceStop;
     if (typeof fn !== "function") return Promise.resolve();
@@ -914,19 +881,6 @@ export class CopilotBackend implements AgentBackend {
       state,
       ...(typeof pid === "number" ? { pid } : {}),
       ...(this.lastDisconnect ? { lastDisconnect: this.lastDisconnect } : {}),
-    };
-  }
-
-  getDiagnostics(): AgentBackendDiagnostics {
-    const now = Date.now();
-    const pending = [...this.diagnostics.pending.values()].slice(0, 20).map(({ operation, startedAt }) => ({
-      operation,
-      ageMs: Math.max(0, now - startedAt),
-    }));
-    return {
-      pendingCount: this.diagnostics.pendingCount,
-      omittedCount: this.diagnostics.pendingCount - pending.length,
-      pending,
     };
   }
 
@@ -1089,7 +1043,7 @@ export class CopilotBackend implements AgentBackend {
     // backend is dead; transport watchers and critical RPCs still detect loss.
     const result = await boundRpc(
       "backend.checkSessionsInUse",
-      () => this.trackRpc("backend.checkSessionsInUse", checkInUse.call(sessions, { sessionIds: [...sessionIds] })),
+      () => checkInUse.call(sessions, { sessionIds: [...sessionIds] }),
     );
     const inUse = Array.isArray((result as any)?.inUse)
       ? (result as any).inUse.filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
@@ -1100,7 +1054,7 @@ export class CopilotBackend implements AgentBackend {
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     if (this.fenceRequested) throw new Error("Cannot create a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
-    const session = await this.trackRpc("backend.createSession", this.client.createSession(prepared.sdkConfig as any));
+    const session = await this.client.createSession(prepared.sdkConfig as any);
     return wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,
@@ -1112,7 +1066,7 @@ export class CopilotBackend implements AgentBackend {
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
     if (this.fenceRequested) throw new Error("Cannot resume a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
-    const session = await this.trackRpc("backend.resumeSession", this.client.resumeSession(sessionId, prepared.sdkConfig as any));
+    const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
     return wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,
