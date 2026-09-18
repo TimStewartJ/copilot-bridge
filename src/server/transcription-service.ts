@@ -1,4 +1,4 @@
-// Chat mic transcription, backed by the local speech engine that also powers voice mode.
+// Chat mic transcription, backed by the local speech engine that also powers Helm's hands-free mode.
 import type { VoiceClipTranscription } from "./voice/voice-engine-protocol.js";
 import type { VoiceInstallStatus } from "./voice/voice-installer.js";
 
@@ -40,7 +40,7 @@ export interface TranscriptionServiceDeps {
 
 const DEFAULT_MAX_DURATION_SECONDS = 120;
 const MIN_TIMEOUT_MS = 120_000;
-const SETUP_HINT = "Set up the speech engine in Settings → Voice, or from Voice mode.";
+const SETUP_HINT = "Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.";
 
 export const TRANSCRIPTION_LABEL = "Parakeet v3 (local)";
 

@@ -1,12 +1,14 @@
-// Tools the voice assistant uses to manage Bridge: sessions, unread replies, questions
-// waiting on the user, dispatching work to stronger models, and on-screen cards.
+// Tools Helm uses to orchestrate Bridge: sessions, unread replies, questions waiting on the
+// user, dispatching work to stronger models, and housekeeping. The same tools serve typed
+// chat and hands-free voice, so both modes behave identically.
 import type { AppContext } from "../app-context.js";
-import { defineBridgeTool } from "../agent-tools-mcp/adapter.js";
+import { defineBridgeTool, type BridgeToolInvocation } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import { toolFailure } from "../tool-results.js";
 import type { AgentModelInfo } from "../agent-backend/types.js";
+import { formatBridgeLink } from "../../shared/bridge-links.js";
 
-export interface VoiceSessionSummary {
+export interface HelmSessionSummary {
   sessionId: string;
   title: string;
   runState: string;
@@ -18,42 +20,71 @@ export interface VoiceSessionSummary {
   intentText?: string | null;
 }
 
-/** Bridge operations shared with the REST API so voice actions behave exactly like the UI. */
-export interface VoiceBridgeFacade {
-  listSessions(): Promise<VoiceSessionSummary[]>;
+/** Bridge operations shared with the REST API so Helm actions behave exactly like the UI. */
+export interface HelmBridgeFacade {
+  listSessions(options?: { includeArchived?: boolean }): Promise<HelmSessionSummary[]>;
   markRead(sessionIds: string[]): void;
+  setArchived(sessionIds: string[], archived: boolean): void;
   sendMessage(sessionId: string, prompt: string): Promise<"started" | "steered">;
   createSession(options: { taskId?: string; model?: string; reasoningEffort?: string }): Promise<{ sessionId: string }>;
 }
 
-export interface VoiceCardLink {
-  label: string;
-  path: string;
+/** Hands-free controls for the Helm conversation that is calling a tool, when voice is attached. */
+export interface HelmHandsFreeHooks {
+  requestHandsFree(action: "sleep" | "end"): void;
 }
 
-export interface VoiceToolHooks {
-  watchSession(sessionId: string): void;
-  showCard(card: { title: string; body: string; links: VoiceCardLink[] }): void;
-  requestVoiceMode(action: "sleep" | "end"): void;
+export interface HelmToolRuntime {
+  /** Remembers a session the conversation dispatched work to, so hands-free can announce it. */
+  watchSession(helmSessionId: string | undefined, sessionId: string): void;
+  getHandsFreeHooks(helmSessionId: string | undefined): HelmHandsFreeHooks | undefined;
 }
 
-/** Existing Bridge tools the voice assistant may also use. */
-export const REUSED_BRIDGE_TOOL_NAMES = [
-  "task_list",
-  "task_get_info",
-  "task_create",
-  "task_update_momentum",
-  "action_add",
-  "action_list",
-  "action_update",
-  "decision_list",
-  "alert_list",
-  "docs_search",
-  "docs_read",
-  "focus_protection_current",
-];
+export const HELM_TOOL_NAMES = [
+  "bridge_overview",
+  "list_sessions",
+  "read_session",
+  "send_to_session",
+  "start_session",
+  "stop_session",
+  "answer_session_question",
+  "mark_sessions_read",
+  "archive_sessions",
+  "list_models",
+  "hands_free",
+] as const;
+
+/**
+ * Bridge tools Helm may use besides its own: everything for day-to-day management of tasks,
+ * schedules, docs and Focus items. Helm never edits code, browses, or deploys, so tools that
+ * do real work stay with worker sessions.
+ *
+ * Every tool's schema rides along on every turn, and Helm is meant to answer quickly (out loud,
+ * in hands-free), so the surface stops at orchestration. Left out on purpose:
+ * - Focus governance for monitoring producers (authority grants, coverage assertions, audits,
+ *   episode forensics, pilot metrics). Helm is not a producer, and an authority grant needs
+ *   the user's exact, explicit scope, which speech-recognized input cannot guarantee.
+ * - Docs backup administration and collection schema changes.
+ */
+const HELM_BRIDGE_TOOL_PREFIXES = ["task_", "tag_", "action_", "decision_", "alert_", "event_", "focus_", "schedule_", "docs_"];
+const HELM_BRIDGE_TOOL_NAMES = new Set(["session_rename", "publish_visual"]);
+const HELM_BRIDGE_TOOL_EXCLUDED_PREFIXES = ["focus_authority_", "focus_coverage_", "focus_audit_", "docs_snapshot_"];
+const HELM_BRIDGE_TOOL_EXCLUSIONS = new Set([
+  "focus_episode_get",
+  "focus_quality_metrics",
+  "focus_digest_mark_viewed",
+  "docs_db_create",
+  "docs_db_delete",
+]);
+
+export function isHelmBridgeToolName(name: string): boolean {
+  if (HELM_BRIDGE_TOOL_EXCLUSIONS.has(name)) return false;
+  if (HELM_BRIDGE_TOOL_EXCLUDED_PREFIXES.some((prefix) => name.startsWith(prefix))) return false;
+  return HELM_BRIDGE_TOOL_NAMES.has(name) || HELM_BRIDGE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
 
 const MAX_REPLY_CHARS = 3_000;
+const MAX_HISTORY_MESSAGES = 12;
 
 export function formatAgo(iso: string | undefined, now = Date.now()): string | undefined {
   if (!iso) return undefined;
@@ -87,12 +118,13 @@ function referenceTokens(text: string): string[] {
 }
 
 export type SessionResolution =
-  | { ok: true; session: VoiceSessionSummary }
-  | { ok: false; error: string; candidates?: VoiceSessionSummary[] };
+  | { ok: true; session: HelmSessionSummary }
+  | { ok: false; error: string; candidates?: HelmSessionSummary[] };
 
-/** Resolves a session by id, short ref, or spoken title. */
-export function resolveSession(sessions: VoiceSessionSummary[], reference: unknown): SessionResolution {
-  const ref = typeof reference === "string" ? reference.trim() : "";
+/** Resolves a session by id, short ref, `bridge://session/…` link, or spoken title. */
+export function resolveSession(sessions: HelmSessionSummary[], reference: unknown): SessionResolution {
+  const raw = typeof reference === "string" ? reference.trim() : "";
+  const ref = raw.replace(/^bridge:\/\/sessions?\//i, "");
   if (!ref) return { ok: false, error: "A session reference is required." };
   const byId = sessions.find((session) => session.sessionId === ref)
     ?? (ref.length >= 4 ? sessions.filter((session) => session.sessionId.startsWith(ref.toLowerCase())) : [])[0];
@@ -119,14 +151,24 @@ export function resolveSession(sessions: VoiceSessionSummary[], reference: unkno
   };
 }
 
-function describeSession(ctx: AppContext, session: VoiceSessionSummary, now = Date.now()) {
+function describeSessionTarget(session: HelmSessionSummary) {
+  return {
+    session: session.title,
+    ref: sessionRef(session.sessionId),
+    link: formatBridgeLink({ kind: "session", sessionId: session.sessionId }),
+  };
+}
+
+function describeSession(ctx: AppContext, session: HelmSessionSummary, now = Date.now()) {
   const task = session.linkedTaskIds[0] ? ctx.taskStore.getTask(session.linkedTaskIds[0]) : undefined;
   return {
     ref: sessionRef(session.sessionId),
     title: session.title,
+    link: formatBridgeLink({ kind: "session", sessionId: session.sessionId }),
     status: session.needsUserInput ? "waiting on you" : session.runState === "idle" ? "idle" : session.runState,
     unread: session.unread,
-    ...(task ? { task: task.title } : {}),
+    ...(session.archived ? { archived: true } : {}),
+    ...(task ? { task: task.title, taskLink: formatBridgeLink({ kind: "task", taskId: task.id }) } : {}),
     ...(session.intentText && session.runState !== "idle" ? { doing: session.intentText } : {}),
     ...(formatAgo(session.lastActivityAt, now) ? { lastActivity: formatAgo(session.lastActivityAt, now) } : {}),
   };
@@ -153,13 +195,46 @@ function pendingQuestions(ctx: AppContext, sessionId: string) {
   };
 }
 
-export function createVoiceToolDefinitions(
+export interface BridgeSessionCounts {
+  waiting: number;
+  running: number;
+  unread: number;
+}
+
+function partitionSessions(sessions: HelmSessionSummary[]) {
+  const active = sessions.filter((session) => !session.archived);
+  return {
+    waiting: active.filter((session) => session.needsUserInput),
+    running: active.filter((session) => session.runState !== "idle" && !session.needsUserInput),
+    unread: active.filter((session) => session.unread && session.runState === "idle" && !session.needsUserInput),
+  };
+}
+
+export function countBridgeSessions(sessions: HelmSessionSummary[]): BridgeSessionCounts {
+  const { waiting, running, unread } = partitionSessions(sessions);
+  return { waiting: waiting.length, running: running.length, unread: unread.length };
+}
+
+/** One compact line of live Bridge state that rides along with a turn. */
+export function buildBridgeSnapshotLine(sessions: HelmSessionSummary[], now = Date.now()): string {
+  const { waiting, running, unread } = partitionSessions(sessions);
+  const describe = (list: HelmSessionSummary[], withAgo: boolean) => list.slice(0, 3)
+    .map((session) => `"${session.title}"${withAgo && formatAgo(session.lastActivityAt, now) ? ` (${formatAgo(session.lastActivityAt, now)})` : ""}`)
+    .join(", ");
+  return [
+    waiting.length ? `${waiting.length} waiting on you: ${describe(waiting, false)}` : "nothing waiting on you",
+    running.length ? `${running.length} running: ${describe(running, false)}` : "nothing running",
+    unread.length ? `${unread.length} unread: ${describe(unread, true)}` : "no unread replies",
+  ].join("; ");
+}
+
+export function createHelmToolDefinitions(
   ctx: AppContext,
-  facade: VoiceBridgeFacade,
-  hooks: VoiceToolHooks,
+  facade: HelmBridgeFacade,
+  runtime: HelmToolRuntime,
 ): BridgeToolDefinition[] {
-  const withSession = async (reference: unknown) => {
-    const sessions = await facade.listSessions();
+  const withSession = async (reference: unknown, options?: { includeArchived?: boolean }) => {
+    const sessions = await facade.listSessions(options);
     return resolveSession(sessions, reference);
   };
   const resolutionFailure = (resolution: Extract<SessionResolution, { ok: false }>) => toolFailure(resolution.error, {
@@ -170,24 +245,37 @@ export function createVoiceToolDefinitions(
 
   const tools: BridgeToolDefinition[] = [
     defineBridgeTool("bridge_overview", {
-      description: "Snapshot of the user's Bridge right now: unread replies, sessions still running, sessions waiting on the user, and active tasks with next actions. Use for 'what's new', 'what's going on', 'anything need me?'.",
+      description: "Snapshot of the user's Bridge right now: unread replies, sessions still running, sessions waiting on the user, and active tasks (most recently active first) with their last activity and next actions. counts.activeTasks is the total when more exist than are listed. Use for 'what's new', 'what's going on', 'anything need me?', 'what changed recently?'.",
       parameters: { type: "object", properties: {} },
       handler: async () => {
         const now = Date.now();
-        const sessions = (await facade.listSessions()).filter((session) => !session.archived);
-        const waiting = sessions.filter((session) => session.needsUserInput);
-        const running = sessions.filter((session) => session.runState !== "idle" && !session.needsUserInput);
-        const unread = sessions.filter((session) => session.unread && session.runState === "idle" && !session.needsUserInput);
-        const tasks = ctx.taskStore.listTasks()
+        const sessions = await facade.listSessions();
+        const { waiting, running, unread } = partitionSessions(sessions);
+        // The same "last activity" the task rail shows: the newest of the task's own changes and
+        // its sessions' activity. Without it, a recency question costs one task_get_info per task.
+        const sessionActivity = new Map<string, number>();
+        for (const session of sessions) {
+          const time = Date.parse(session.lastActivityAt ?? "");
+          if (!Number.isFinite(time)) continue;
+          for (const taskId of session.linkedTaskIds) {
+            if (time > (sessionActivity.get(taskId) ?? 0)) sessionActivity.set(taskId, time);
+          }
+        }
+        const activeTasks = ctx.taskStore.listTasks()
           .filter((task) => task.status === "active" && !task.muted)
-          .sort((a, b) => b.priority - a.priority || b.updatedAt.localeCompare(a.updatedAt))
-          .slice(0, 8)
-          .map((task) => ({
+          .map((task) => ({ task, lastActivityAt: Math.max(Date.parse(task.updatedAt) || 0, sessionActivity.get(task.id) ?? 0) }))
+          .sort((a, b) => b.task.priority - a.task.priority || b.lastActivityAt - a.lastActivityAt);
+        const tasks = activeTasks.slice(0, 8).map(({ task, lastActivityAt }) => {
+          const lastActivity = lastActivityAt > 0 ? formatAgo(new Date(lastActivityAt).toISOString(), now) : undefined;
+          return {
             taskId: task.id,
             title: task.title,
+            link: formatBridgeLink({ kind: "task", taskId: task.id }),
+            ...(lastActivity ? { lastActivity } : {}),
             ...(task.nextAction ? { nextAction: task.nextAction } : {}),
             ...(task.waitingOn ? { waitingOn: task.waitingOn } : {}),
-          }));
+          };
+        });
         return {
           now: new Date(now).toISOString(),
           waitingOnYou: waiting.slice(0, 8).map((session) => ({
@@ -196,17 +284,17 @@ export function createVoiceToolDefinitions(
           })),
           running: running.slice(0, 8).map((session) => describeSession(ctx, session, now)),
           unreadReplies: unread.slice(0, 10).map((session) => describeSession(ctx, session, now)),
-          counts: { waitingOnYou: waiting.length, running: running.length, unread: unread.length },
+          counts: { waitingOnYou: waiting.length, running: running.length, unread: unread.length, activeTasks: activeTasks.length },
           activeTasks: tasks,
         };
       },
     }),
     defineBridgeTool("list_sessions", {
-      description: "List Bridge chat sessions. Filter by unread, running, waiting (needs the user), recent, or a spoken title query or task id.",
+      description: "List Bridge chat sessions. Filter by unread, running, waiting (needs the user), recent, archived, or a title query or task id.",
       parameters: {
         type: "object",
         properties: {
-          filter: { type: "string", enum: ["unread", "running", "waiting", "recent", "all"], description: "Which sessions to include. Defaults to recent." },
+          filter: { type: "string", enum: ["unread", "running", "waiting", "recent", "archived", "all"], description: "Which sessions to include. Defaults to recent." },
           query: { type: "string", description: "Words from the session title." },
           taskId: { type: "string", description: "Only sessions linked to this task." },
           limit: { type: "number", description: "Maximum sessions to return (default 10, max 25)." },
@@ -214,8 +302,11 @@ export function createVoiceToolDefinitions(
       },
       handler: async (args: any) => {
         const now = Date.now();
-        let sessions = (await facade.listSessions()).filter((session) => !session.archived);
-        switch (args.filter ?? "recent") {
+        const filter = args.filter ?? "recent";
+        const archivedOnly = filter === "archived";
+        let sessions = await facade.listSessions(archivedOnly ? { includeArchived: true } : undefined);
+        sessions = sessions.filter((session) => (archivedOnly ? session.archived : !session.archived));
+        switch (filter) {
           case "unread":
             sessions = sessions.filter((session) => session.unread);
             break;
@@ -243,12 +334,13 @@ export function createVoiceToolDefinitions(
       },
     }),
     defineBridgeTool("read_session", {
-      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Marks it read by default. Summarize conversationally; don't read it verbatim unless asked.",
+      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Marks it read by default. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked.",
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, or title words." },
+          session: { type: "string", description: "Session ref, id, link, or title words." },
           markRead: { type: "boolean", description: "Mark the session read after reading. Defaults to true." },
+          history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
         },
         required: ["session"],
       },
@@ -256,19 +348,23 @@ export function createVoiceToolDefinitions(
         const resolution = await withSession(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
         const { session } = resolution;
-        const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 30 });
-        const textMessages = messages.filter((entry: any) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim());
-        const latestReply = [...textMessages].reverse().find((entry: any) => entry.role === "assistant") as { content: string; timestamp?: string } | undefined;
-        const latestPrompt = [...textMessages].reverse().find((entry: any) => entry.role === "user") as { content: string } | undefined;
+        const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 40 });
+        const textMessages = messages.filter((entry: any) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()) as Array<{ role: string; content: string; timestamp?: string }>;
+        const latestReply = [...textMessages].reverse().find((entry) => entry.role === "assistant");
+        const latestPrompt = [...textMessages].reverse().find((entry) => entry.role === "user");
         const bus = ctx.eventBusRegistry.getBus(session.sessionId);
         const live = session.runState !== "idle" ? bus?.getLastAssistantSegment() : undefined;
         const questions = pendingQuestions(ctx, session.sessionId);
+        const historyCount = Math.min(MAX_HISTORY_MESSAGES, Math.max(0, Math.floor(Number(args.history) || 0)));
         if (args.markRead !== false && session.unread) facade.markRead([session.sessionId]);
         return {
           ...describeSession(ctx, session),
           ...(latestPrompt ? { lastPrompt: truncate(latestPrompt.content, 500) } : {}),
           ...(latestReply ? { latestReply: truncate(latestReply.content, MAX_REPLY_CHARS), repliedAt: latestReply.timestamp } : { latestReply: null }),
           ...(live?.content ? { liveProgress: truncate(live.content, 800) } : {}),
+          ...(historyCount > 0
+            ? { recentMessages: textMessages.slice(-historyCount).map((entry) => ({ role: entry.role, content: truncate(entry.content, 1_200) })) }
+            : {}),
           ...(questions.userInputs.length
             ? { waitingForAnswer: questions.userInputs.map((request) => ({ question: request.question, choices: request.choices ?? [], allowFreeform: request.allowFreeform })) }
             : {}),
@@ -283,27 +379,27 @@ export function createVoiceToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, or title words." },
+          session: { type: "string", description: "Session ref, id, link, or title words." },
           message: { type: "string", description: "The message to send, written as the user would type it." },
         },
         required: ["session", "message"],
       },
-      handler: async (args: any) => {
-        const resolution = await withSession(args.session);
+      handler: async (args: any, invocation: BridgeToolInvocation) => {
+        const resolution = await withSession(args.session, { includeArchived: true });
         if (!resolution.ok) return resolutionFailure(resolution);
         const message = String(args.message ?? "").trim();
         if (!message) return toolFailure("message is required");
         try {
           const mode = await facade.sendMessage(resolution.session.sessionId, message);
-          hooks.watchSession(resolution.session.sessionId);
-          return { success: true, session: resolution.session.title, ref: sessionRef(resolution.session.sessionId), delivery: mode };
+          runtime.watchSession(invocation.sessionId, resolution.session.sessionId);
+          return { success: true, ...describeSessionTarget(resolution.session), delivery: mode };
         } catch (error) {
           return toolFailure(error instanceof Error ? error.message : String(error));
         }
       },
     }),
     defineBridgeTool("start_session", {
-      description: "Start a new Bridge session that does real work (coding, research, fixes, writing) with a capable model, optionally inside a task. Returns immediately while it works; you'll hear when it finishes. Write a complete, self-contained prompt with all needed context.",
+      description: "Start a new Bridge session that does real work (coding, research, fixes, writing) with a capable model, optionally inside a task. Returns immediately while it works. Write a complete, self-contained prompt with all needed context.",
       parameters: {
         type: "object",
         properties: {
@@ -314,7 +410,7 @@ export function createVoiceToolDefinitions(
         },
         required: ["prompt"],
       },
-      handler: async (args: any) => {
+      handler: async (args: any, invocation: BridgeToolInvocation) => {
         const prompt = String(args.prompt ?? "").trim();
         if (!prompt) return toolFailure("prompt is required");
         const taskId = typeof args.taskId === "string" && args.taskId.trim() ? args.taskId.trim() : undefined;
@@ -326,10 +422,11 @@ export function createVoiceToolDefinitions(
             ...(typeof args.reasoningEffort === "string" && args.reasoningEffort.trim() ? { reasoningEffort: args.reasoningEffort.trim() } : {}),
           });
           await facade.sendMessage(sessionId, prompt);
-          hooks.watchSession(sessionId);
+          runtime.watchSession(invocation.sessionId, sessionId);
           return {
             success: true,
             ref: sessionRef(sessionId),
+            link: formatBridgeLink({ kind: "session", sessionId }),
             ...(taskId ? { task: ctx.taskStore.getTask(taskId)?.title } : {}),
             model: args.model ?? ctx.settingsStore.getSettings().model ?? "default",
           };
@@ -343,7 +440,7 @@ export function createVoiceToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, or title words." },
+          session: { type: "string", description: "Session ref, id, link, or title words." },
           confirmed: { type: "boolean", description: "Must be true: the user explicitly confirmed stopping it." },
         },
         required: ["session", "confirmed"],
@@ -354,7 +451,7 @@ export function createVoiceToolDefinitions(
         if (!resolution.ok) return resolutionFailure(resolution);
         const aborted = await ctx.sessionManager.abortSession(resolution.session.sessionId);
         return aborted
-          ? { success: true, session: resolution.session.title }
+          ? { success: true, ...describeSessionTarget(resolution.session) }
           : toolFailure(`${resolution.session.title} isn't running.`);
       },
     }),
@@ -363,12 +460,12 @@ export function createVoiceToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, or title words." },
+          session: { type: "string", description: "Session ref, id, link, or title words." },
           answer: { type: "string", description: "The user's answer." },
         },
         required: ["session", "answer"],
       },
-      handler: async (args: any) => {
+      handler: async (args: any, invocation: BridgeToolInvocation) => {
         const resolution = await withSession(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
         const request = pendingQuestions(ctx, resolution.session.sessionId).userInputs[0];
@@ -385,8 +482,8 @@ export function createVoiceToolDefinitions(
             answer: choice ?? answer,
             wasFreeform: !choice,
           });
-          hooks.watchSession(resolution.session.sessionId);
-          return { success: true, session: resolution.session.title, question: request.question, answer: choice ?? answer };
+          runtime.watchSession(invocation.sessionId, resolution.session.sessionId);
+          return { success: true, ...describeSessionTarget(resolution.session), question: request.question, answer: choice ?? answer };
         } catch (error) {
           return toolFailure(error instanceof Error ? error.message : String(error));
         }
@@ -397,7 +494,7 @@ export function createVoiceToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          sessions: { type: "array", items: { type: "string" }, description: "Session refs, ids, or titles." },
+          sessions: { type: "array", items: { type: "string" }, description: "Session refs, ids, links, or titles." },
           allUnread: { type: "boolean", description: "Mark every unread session read." },
         },
       },
@@ -415,6 +512,33 @@ export function createVoiceToolDefinitions(
         if (ids.size === 0) return toolFailure("Nothing to mark read.");
         facade.markRead([...ids]);
         return { success: true, marked: ids.size };
+      },
+    }),
+    defineBridgeTool("archive_sessions", {
+      description: "Archive finished sessions to tidy the lists, or restore archived ones. Never archive a session that is running or waiting on the user.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessions: { type: "array", items: { type: "string" }, description: "Session refs, ids, links, or titles." },
+          archived: { type: "boolean", description: "True to archive (default), false to restore." },
+        },
+        required: ["sessions"],
+      },
+      handler: async (args: any) => {
+        const archived = args.archived !== false;
+        const sessions = await facade.listSessions({ includeArchived: true });
+        const targets: HelmSessionSummary[] = [];
+        for (const reference of Array.isArray(args.sessions) ? args.sessions.slice(0, 25) : []) {
+          const resolution = resolveSession(sessions, reference);
+          if (!resolution.ok) return resolutionFailure(resolution);
+          if (archived && (resolution.session.runState !== "idle" || resolution.session.needsUserInput)) {
+            return toolFailure(`${resolution.session.title} is still ${resolution.session.needsUserInput ? "waiting on the user" : "running"}.`);
+          }
+          targets.push(resolution.session);
+        }
+        if (targets.length === 0) return toolFailure("No sessions to update.");
+        facade.setArchived(targets.map((session) => session.sessionId), archived);
+        return { success: true, archived, sessions: targets.map((session) => session.title) };
       },
     }),
     defineBridgeTool("list_models", {
@@ -436,53 +560,27 @@ export function createVoiceToolDefinitions(
         };
       },
     }),
-    defineBridgeTool("show_on_screen", {
-      description: "Show a card on the user's voice screen for details that are awkward to speak: lists, code, links, longer summaries. Say one short sentence pointing to it.",
-      parameters: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          body: { type: "string", description: "Markdown body." },
-          sessions: { type: "array", items: { type: "string" }, description: "Session refs to link." },
-          taskIds: { type: "array", items: { type: "string" }, description: "Task ids to link." },
-        },
-        required: ["title", "body"],
-      },
-      handler: async (args: any) => {
-        const links: VoiceCardLink[] = [];
-        if (Array.isArray(args.sessions) && args.sessions.length) {
-          const sessions = await facade.listSessions();
-          for (const reference of args.sessions.slice(0, 6)) {
-            const resolution = resolveSession(sessions, reference);
-            if (resolution.ok) links.push({ label: resolution.session.title, path: `/sessions/${resolution.session.sessionId}` });
-          }
-        }
-        for (const taskId of Array.isArray(args.taskIds) ? args.taskIds.slice(0, 6) : []) {
-          const task = typeof taskId === "string" ? ctx.taskStore.getTask(taskId) : undefined;
-          if (task) links.push({ label: task.title, path: `/tasks/${task.id}` });
-        }
-        hooks.showCard({ title: String(args.title).slice(0, 120), body: String(args.body).slice(0, 8_000), links });
-        return { success: true };
-      },
-    }),
-    defineBridgeTool("voice_mode", {
-      description: "Control voice mode when the user asks: sleep (stop listening until 'hey Bridge') or end (exit voice mode).",
+    defineBridgeTool("hands_free", {
+      description: "Control hands-free voice when the user asks out loud: sleep (stop listening until 'hey Bridge') or end (leave hands-free and return to chat). Only works while hands-free is active.",
       parameters: {
         type: "object",
         properties: { action: { type: "string", enum: ["sleep", "end"] } },
         required: ["action"],
       },
-      handler: async (args: any) => {
+      handler: async (args: any, invocation: BridgeToolInvocation) => {
         if (args.action !== "sleep" && args.action !== "end") return toolFailure("action must be sleep or end");
-        hooks.requestVoiceMode(args.action);
+        const hooks = runtime.getHandsFreeHooks(invocation.sessionId);
+        if (!hooks) return toolFailure("Hands-free isn't active. The user can start it with the Hands-free button in Helm.");
+        hooks.requestHandsFree(args.action);
         return { success: true };
       },
     }),
   ];
 
+  const ownNames = new Set(tools.map((tool) => tool.name));
   const reused = ctx.bridgeToolsMcpServer
     ?.getToolDefinitions("all")
-    .filter((definition) => REUSED_BRIDGE_TOOL_NAMES.includes(definition.name) && definition.scope !== "session")
+    .filter((definition) => isHelmBridgeToolName(definition.name) && !ownNames.has(definition.name))
     .map((definition): BridgeToolDefinition => ({
       ...definition,
       handler: async (args, extra) => boundToolResult(await definition.handler(args, extra)) as Awaited<ReturnType<BridgeToolDefinition["handler"]>>,
@@ -491,12 +589,12 @@ export function createVoiceToolDefinitions(
   return [...tools, ...reused];
 }
 
-/** Caps long notes and lists in reused tool results so voice turns stay fast and cheap. */
+/** Caps long notes and lists in reused tool results so Helm turns stay fast and cheap. */
 export function boundToolResult(value: unknown, depth = 0): unknown {
-  if (typeof value === "string") return value.length > 1_500 ? `${value.slice(0, 1_500)}… (truncated)` : value;
+  if (typeof value === "string") return value.length > 4_000 ? `${value.slice(0, 4_000)}… (truncated)` : value;
   if (Array.isArray(value)) {
-    const bounded = value.slice(0, 40).map((entry) => boundToolResult(entry, depth + 1));
-    return value.length > 40 ? [...bounded, `… ${value.length - 40} more`] : bounded;
+    const bounded = value.slice(0, 60).map((entry) => boundToolResult(entry, depth + 1));
+    return value.length > 60 ? [...bounded, `… ${value.length - 60} more`] : bounded;
   }
   if (value && typeof value === "object" && depth < 8) {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, boundToolResult(entry, depth + 1)]));

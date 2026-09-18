@@ -325,11 +325,11 @@ export function createMockTranscriptionService(overrides?: Partial<Transcription
       available: false,
       provider: "disabled",
       label: "Unavailable",
-      reason: "Set up the speech engine in Settings → Voice, or from Voice mode.",
+      reason: "Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.",
       maxDurationSeconds: 120,
     }),
     transcribe: async () => {
-      throw new Error("Set up the speech engine in Settings → Voice, or from Voice mode.");
+      throw new Error("Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.");
     },
     ...overrides,
   };

@@ -318,7 +318,15 @@ function save(state: DraftState): void {
   }
 }
 
-export function useDrafts(sessions: Session[], activeComposerKey?: string | null) {
+/**
+ * @param preservedKeys Composer keys of conversations that live outside `sessions` (Helm).
+ *   `null` means they are not known yet, which postpones cleanup rather than guessing.
+ */
+export function useDrafts(
+  sessions: Session[],
+  activeComposerKey?: string | null,
+  preservedKeys: readonly string[] | null = [],
+) {
   const [initialLoad] = useState(load);
   const [state, setState] = useState<DraftState>(initialLoad.state);
   const stateRef = useRef(state);
@@ -337,8 +345,9 @@ export function useDrafts(sessions: Session[], activeComposerKey?: string | null
 
   // GC: prune drafts for sessions that no longer exist
   useEffect(() => {
-    if (sessions.length === 0) return;
+    if (sessions.length === 0 || preservedKeys === null) return;
     const validIds = new Set(sessions.map((s) => s.sessionId));
+    for (const key of preservedKeys) validIds.add(key);
     // Deep links can open an archived session before the full inventory is loaded.
     if (activeComposerKey) validIds.add(activeComposerKey);
     setState((prev) => {
@@ -355,7 +364,7 @@ export function useDrafts(sessions: Session[], activeComposerKey?: string | null
       save(pruned);
       return pruned;
     });
-  }, [activeComposerKey, sessions]);
+  }, [activeComposerKey, preservedKeys, sessions]);
 
   const scheduleSave = useCallback((composerKey: string) => {
     const existingTimer = timersRef.current[composerKey];

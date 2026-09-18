@@ -257,6 +257,21 @@ export interface StartWorkOptions {
   historyTruncation?: QuietIntervalDeferTailTruncationRequest;
   mode?: SendMode;
   clientMessageId?: string;
+  /**
+   * Shown in the transcript instead of `prompt`. Lets a caller add model-only framing
+   * (for example hands-free voice context) without it appearing as something the user said.
+   */
+  displayPrompt?: string;
+  /**
+   * "system" marks an application-generated turn. The runtime records it with system
+   * provenance, so it never appears in the transcript as a user message.
+   */
+  promptSource?: "system";
+  /**
+   * Reasoning effort for this turn, applied to the session just before the prompt is sent.
+   * Lets one conversation think harder for some turns than others (Helm: typed vs spoken).
+   */
+  reasoningEffort?: string;
 }
 
 async function setSessionModeForSend(session: AgentSession, mode: string): Promise<void> {
@@ -384,6 +399,8 @@ export interface SessionRunnerDeps {
   recordSessionAttention(sessionId: string, at?: string): void;
   touchSessionActivity?(sessionId: string, at: number): void;
   invalidateSessionListCache(reason?: string): void;
+  /** Switches the live session to the effort a turn asked for. Best effort; never fails the turn. */
+  applyTurnReasoningEffort?(sessionId: string, session: AgentSession, reasoningEffort: string): Promise<void>;
   maybeAutoNameSession(
     sessionId: string,
     options: SessionAutoNameOptions,
@@ -522,13 +539,15 @@ export class SessionRunner {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
-    bus.setPendingPrompt(prompt, attachments, options.clientMessageId);
+    const hiddenPrompt = options.promptSource === "system";
+    const visiblePrompt = options.displayPrompt ?? prompt;
+    if (!hiddenPrompt) bus.setPendingPrompt(visiblePrompt, attachments, options.clientMessageId);
     return this.startBackgroundRun(
       sessionId,
       bus,
       (runController) => this.doWork(sessionId, prompt, bus, runController, attachments, options),
       {
-        pendingPrompt: prompt,
+        ...(hiddenPrompt ? {} : { pendingPrompt: visiblePrompt }),
         promptAccepted: false,
         attentionMode: options.attentionMode === "quiet" ? "quiet" : "normal",
       },
@@ -686,7 +705,7 @@ export class SessionRunner {
     const activeRunController = runController ?? this.createRunController(sessionId, bus);
     const parsedCommand = parseSlashCommandPrompt(prompt);
     let sendPrompt = prompt;
-    let displayPrompt: string | undefined;
+    let displayPrompt: string | undefined = options.displayPrompt;
     let mode: string = options.mode ?? DEFAULT_SEND_MODE;
     let commandResult: AgentSlashCommandResult | undefined;
 
@@ -714,10 +733,14 @@ export class SessionRunner {
             pendingPrompt: displayPrompt ?? sendPrompt,
           });
         }
+        if (options.reasoningEffort) {
+          await this.deps.applyTurnReasoningEffort?.(sessionId, session, options.reasoningEffort);
+        }
         await setSessionModeForSend(session, mode);
         await session.send({
           prompt: sendPrompt,
           ...(displayPrompt ? { displayPrompt } : {}),
+          ...(options.promptSource ? { source: options.promptSource } : {}),
           ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
         });
       },

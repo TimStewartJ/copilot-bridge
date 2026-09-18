@@ -65,4 +65,16 @@ describe("MobileBottomNav attention", () => {
     );
     expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-warning");
   });
+
+  it("offers Helm as a tab that stays inside the app shell", async () => {
+    const onSelectTab = vi.fn();
+    harness = await createReactDomHarness();
+    await harness.render(createElement(MobileBottomNav, { activeTab: "helm", onSelectTab }));
+
+    const helm = findButtonByLabel(harness.dom.container, "Helm");
+    expect(getReactProps(helm)?.["aria-current"]).toBe("page");
+    expect(getReactProps(findButtonByLabel(harness.dom.container, "Chats"))?.["aria-current"]).toBeUndefined();
+    await harness.act(() => getReactProps(helm)!.onClick());
+    expect(onSelectTab).toHaveBeenCalledWith("helm");
+  });
 });

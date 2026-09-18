@@ -249,6 +249,30 @@ describe("useDrafts launch persistence", () => {
     expect(drafts!.getDraft("archived-session")).toEqual({ text: "hello" });
   });
 
+  it("keeps drafts of conversations that live outside the session list, and waits until they are known", async () => {
+    const otherSession: Session = {
+      sessionId: "other-session",
+      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    };
+    seedStorage({ "helm-session": { text: "ask Helm later" }, "gone-session": { text: "stale" } });
+    let preserved: readonly string[] | null = null;
+    function HelmDraftProbe() {
+      drafts = useDrafts([otherSession], null, preserved);
+      return null;
+    }
+
+    harness = await createReactDomHarness();
+    await harness.render(createElement(HelmDraftProbe));
+    // Unknown yet: cleanup is postponed rather than guessing.
+    expect(drafts!.getDraft("helm-session")).toEqual({ text: "ask Helm later" });
+    expect(drafts!.getDraft("gone-session")).toEqual({ text: "stale" });
+
+    preserved = ["helm-session"];
+    await harness.render(createElement(HelmDraftProbe));
+    expect(drafts!.getDraft("helm-session")).toEqual({ text: "ask Helm later" });
+    expect(drafts!.getDraft("gone-session")).toBeNull();
+  });
+
   it("keeps a launch-only draft when its message is empty", async () => {
     await renderProbe();
     await harness!.act(async () => {

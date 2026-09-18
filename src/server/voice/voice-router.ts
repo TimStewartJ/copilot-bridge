@@ -1,4 +1,4 @@
-// REST routes for the local speech engine and hands-free voice mode (mounted under /api/voice).
+// REST routes for the local speech engine and Helm's hands-free voice (mounted under /api/voice).
 import express from "express";
 import { openSseConnection } from "../sse-response.js";
 import type { VoiceGateway } from "./voice-gateway.js";
@@ -11,7 +11,7 @@ function readToken(req: express.Request): unknown {
 function rejectCrossSite(req: express.Request, res: express.Response): boolean {
   const site = req.get("sec-fetch-site")?.toLowerCase();
   if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {
-    res.status(403).json({ error: "Voice mode requests must come from the Bridge UI." });
+    res.status(403).json({ error: "Voice requests must come from the Bridge UI." });
     return true;
   }
   return false;
@@ -37,10 +37,14 @@ export function createVoiceRouter(gateway: VoiceGateway): express.Router {
   router.post("/conversations", (req, res) => {
     if (rejectCrossSite(req, res)) return;
     if (!gateway.installer.getStatus().installed) {
-      return res.status(409).json({ error: "Voice mode isn't installed yet." });
+      return res.status(409).json({ error: "Hands-free voice isn't installed yet." });
     }
     const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
-    res.json(gateway.createConversation(body.settings));
+    const helmSessionId = typeof body.helmSessionId === "string" ? body.helmSessionId.trim() : "";
+    if (!helmSessionId || !gateway.helm.isHelmSession(helmSessionId)) {
+      return res.status(404).json({ error: "Helm conversation not found. Start or resume one first." });
+    }
+    res.json(gateway.createConversation(helmSessionId, body.settings));
   });
 
   router.get("/conversations/:id/events", (req, res) => {

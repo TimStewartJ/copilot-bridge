@@ -141,6 +141,11 @@ interface ChatViewProps {
   backgroundAgents?: BackgroundAgentsSummary;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void; newWorkDisabled?: boolean; newWorkDisabledHint?: string;
+  /** Rendered between the transcript and the composer (Helm's hands-free dock). */
+  composerAccessory?: ReactNode;
+  /** Hides the composer's record button while something else owns the microphone. */
+  hideVoiceInput?: boolean;
+  composerPlaceholder?: string;
 }
 
 function useThrottledText(value: string, intervalMs: number): string {
@@ -632,6 +637,9 @@ export default function ChatView({
   backgroundAgents,
   onForkSession,
   onRenderedReadThrough, newWorkDisabled = false, newWorkDisabledHint,
+  composerAccessory,
+  hideVoiceInput,
+  composerPlaceholder,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3064,6 +3072,7 @@ export default function ChatView({
           </div>
         </div>
       )}
+      {!historicalMode && composerAccessory}
       {!historicalMode && <ChatInput
         onSend={handleSend}
         onAbort={isStreaming ? abortSession : undefined}
@@ -3083,6 +3092,8 @@ export default function ChatView({
         slashCommands={slashCommands}
         slashCommandsSupported={slashCommandsSupported}
         defaultSendMode={defaultSendMode}
+        hideVoiceInput={hideVoiceInput}
+        placeholder={composerPlaceholder}
       />}
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (

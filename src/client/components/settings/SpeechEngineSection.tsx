@@ -38,7 +38,7 @@ export function describeEngineState(engine: VoiceStatus["engine"]): string {
     case "failed":
       return `Stopped unexpectedly${engine.detail ? ` (${engine.detail})` : ""}. It restarts the next time it's needed.`;
     default:
-      return "Not running. It starts when you use the chat mic or Voice mode, loads only the models that feature needs, and exits after 10 idle minutes.";
+      return "Not running. It starts when you use the chat mic or Helm's hands-free mode, loads only the models that feature needs, and exits after 10 idle minutes.";
   }
 }
 
@@ -96,7 +96,7 @@ export function SpeechEngineSection() {
   return (
     <SettingsSection
       title="Speech engine"
-      description="Local speech recognition and voices for the chat mic and Voice mode. Audio never leaves the computer hosting Bridge; only text reaches your Copilot model."
+      description="Local speech recognition and voices for the chat mic and Helm's hands-free mode. Audio never leaves the computer hosting Bridge; only text reaches your Copilot model."
       action={(
         <button
           type="button"
@@ -171,13 +171,13 @@ export function SpeechEngineSection() {
               </p>
             </div>
             <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
-              <div className="flex items-center gap-1.5 font-medium text-text-secondary"><AudioLines size={12} /> Voice mode</div>
+              <div className="flex items-center gap-1.5 font-medium text-text-secondary"><AudioLines size={12} /> Hands-free (Helm)</div>
               <p className="mt-1 text-text-muted">
                 {installStatus?.installed ? "Ready for hands-free conversations." : "Available once the speech engine is installed."}
               </p>
               {installStatus?.installed && (
-                <Link to="/voice" className="mt-1.5 inline-flex items-center gap-1 text-accent hover:underline">
-                  Open voice mode
+                <Link to="/helm" className="mt-1.5 inline-flex items-center gap-1 text-accent hover:underline">
+                  Open Helm
                 </Link>
               )}
             </div>

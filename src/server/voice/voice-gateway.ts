@@ -1,22 +1,25 @@
-// Voice mode gateway: owns conversations and bridges browser transports (WebSocket, or
-// HTTP POST + SSE through proxies that block upgrades) to the shared speech engine.
+// Hands-free gateway: owns voice conversations and bridges browser transports (WebSocket, or
+// HTTP POST + SSE through proxies that block upgrades) to the shared speech engine. Each
+// conversation speaks for one Helm conversation; the Helm session holds all the context.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AppContext } from "../app-context.js";
 import type { StatusEvent } from "../global-bus.js";
-import { VoiceAgent } from "./voice-agent.js";
+import type { HelmService } from "../helm/helm-service.js";
+import { buildBridgeSnapshotLine, countBridgeSessions, type HelmBridgeFacade } from "../helm/helm-tools.js";
+import { HelmVoiceAgent } from "../helm/helm-voice-agent.js";
 import {
   DEFAULT_VOICE_SETTINGS,
   KOKORO_VOICES,
   normalizeVoiceSettings,
-  PREFERRED_VOICE_MODELS,
   type VoicePaths,
   type VoiceSettings,
 } from "./voice-catalog.js";
 import {
   VoiceConversation,
+  type TypedTextDelivery,
   type VoiceAudioChunk,
   type VoiceClientSink,
   type VoiceServerEvent,
@@ -26,7 +29,6 @@ import { VOICE_ENGINE_CAPABILITIES } from "./voice-engine-protocol.js";
 import type { VoiceInstaller } from "./voice-installer.js";
 import { pruneVoiceLogs, VoiceLog } from "./voice-log.js";
 import type { VoiceRuntime } from "./voice-runtime.js";
-import { createVoiceToolDefinitions, formatAgo, type VoiceBridgeFacade, type VoiceCardLink } from "./voice-tools.js";
 
 export const VOICE_WS_PATH_SUFFIX = "/voice/ws";
 const RECONNECT_GRACE_MS = 60_000;
@@ -36,10 +38,8 @@ const ANNOUNCE_DEBOUNCE_MS = 1_500;
 
 export type VoiceGatewayEvent =
   | VoiceServerEvent
-  | { type: "hello"; conversationId: string; transport: "websocket" | "http"; settings: VoiceSettings; state: string }
+  | { type: "hello"; conversationId: string; helmSessionId: string; transport: "websocket" | "http"; settings: VoiceSettings; state: string }
   | { type: "engine"; state: VoiceEngineStatus["state"]; detail?: string }
-  | { type: "agent"; model?: string }
-  | { type: "card"; id: string; title: string; body: string; links: VoiceCardLink[] }
   | { type: "bridge_counts"; unread: number; running: number; waiting: number }
   | { type: "pong"; t: number }
   | { type: "ended"; reason: string };
@@ -108,22 +108,6 @@ function parseClientMessage(raw: unknown): VoiceClientMessage | undefined {
   }
 }
 
-export function buildBridgeSnapshotLine(sessions: Awaited<ReturnType<VoiceBridgeFacade["listSessions"]>>, now = Date.now()): string {
-  const active = sessions.filter((session) => !session.archived);
-  const waiting = active.filter((session) => session.needsUserInput);
-  const running = active.filter((session) => session.runState !== "idle" && !session.needsUserInput);
-  const unread = active.filter((session) => session.unread && session.runState === "idle" && !session.needsUserInput);
-  const describe = (list: typeof active, withAgo: boolean) => list.slice(0, 3)
-    .map((session) => `"${session.title}"${withAgo && formatAgo(session.lastActivityAt, now) ? ` (${formatAgo(session.lastActivityAt, now)})` : ""}`)
-    .join(", ");
-  const parts = [
-    waiting.length ? `${waiting.length} waiting on you: ${describe(waiting, false)}` : "nothing waiting on you",
-    running.length ? `${running.length} running: ${describe(running, false)}` : "nothing running",
-    unread.length ? `${unread.length} unread: ${describe(unread, true)}` : "no unread replies",
-  ];
-  return parts.join("; ");
-}
-
 class ConversationSession implements VoiceClientSink {
   readonly id = randomUUID();
   readonly token = randomBytes(32).toString("base64url");
@@ -135,31 +119,27 @@ class ConversationSession implements VoiceClientSink {
   private releaseEngine?: () => void;
   private unsubscribeBus?: () => void;
   private unsubscribeEngine?: () => void;
-  private readonly watched = new Set<string>();
+  private unbindHandsFree?: () => void;
   private readonly announceTimers = new Map<string, NodeJS.Timeout>();
   private countsTimer?: NodeJS.Timeout;
-  private readonly agent: VoiceAgent;
+  private readonly agent: HelmVoiceAgent;
   readonly conversation: VoiceConversation;
   readonly log: VoiceLog;
   disposed = false;
 
   constructor(
     private readonly gateway: VoiceGateway,
+    readonly helmSessionId: string,
     private settings: VoiceSettings,
   ) {
     this.log = new VoiceLog(gateway.paths.logsDir, this.id);
-    const tools = createVoiceToolDefinitions(gateway.ctx, gateway.facade, {
-      watchSession: (sessionId) => this.watched.add(sessionId),
-      showCard: (card) => this.sendJson({ type: "card", id: randomUUID(), ...card }),
-      requestVoiceMode: (action) => setTimeout(() => this.onControl(action === "sleep" ? "sleep" : "end"), 1_500).unref(),
-    });
-    this.agent = new VoiceAgent({
-      factory: gateway.ctx.sessionManager,
-      tools,
-      stateDir: gateway.paths.agentStateDir,
-      requestedModel: settings.model,
-      defaultWorkModel: gateway.ctx.settingsStore.getSettings().model,
+    this.agent = new HelmVoiceAgent({
+      sessionId: helmSessionId,
+      sessionManager: gateway.ctx.sessionManager,
+      getBus: (sessionId) => gateway.ctx.eventBusRegistry.getOrCreateBus(sessionId),
       snapshot: async () => buildBridgeSnapshotLine(await gateway.facade.listSessions()),
+      // Everything hands-free answers is spoken, including a message typed while it is on.
+      resolveReasoningEffort: () => gateway.helm.getTurnReasoningEffort("spoken"),
       logger: console,
       onTiming: (timing) => this.log.write("agent_timing", { ...timing }),
     });
@@ -171,7 +151,7 @@ class ConversationSession implements VoiceClientSink {
       settings,
       log: (event, details) => this.log.write(event, details),
     });
-    this.log.write("created", { settings });
+    this.log.write("created", { settings, helmSessionId });
   }
 
   send(event: VoiceServerEvent): void {
@@ -206,6 +186,7 @@ class ConversationSession implements VoiceClientSink {
     transport.sendJson({
       type: "hello",
       conversationId: this.id,
+      helmSessionId: this.helmSessionId,
       transport: transport.kind,
       settings: this.settings,
       state: this.conversation.state,
@@ -243,16 +224,13 @@ class ConversationSession implements VoiceClientSink {
       case "start":
         void this.start(message.greet !== false);
         break;
-      case "config": {
-        const previousModel = this.settings.model;
+      case "config":
         this.settings = normalizeVoiceSettings(message.settings, this.settings);
         this.conversation.updateSettings(this.settings);
         this.log.write("settings", { settings: this.settings });
-        this.sendJson({ type: "notice", level: "info", message: previousModel !== this.settings.model ? "Model changes apply the next time voice mode starts." : "Settings updated." });
         break;
-      }
       case "text":
-        if (this.started) this.conversation.submitText(message.text);
+        void this.submitTypedText(message.text);
         break;
       case "control":
         this.onControl(message.action);
@@ -267,9 +245,20 @@ class ConversationSession implements VoiceClientSink {
     }
   }
 
+  /**
+   * A message typed into the Helm chat while hands-free is on: answered out loud like a spoken
+   * one. Resolves once the message has reached the session (or is known not to have).
+   */
+  submitTypedText(text: string, clientMessageId?: string): Promise<TypedTextDelivery> | undefined {
+    if (!this.started || this.disposed) return undefined;
+    return new Promise((resolve) => {
+      this.conversation.submitText(text, { ...(clientMessageId ? { clientMessageId } : {}), onDelivery: resolve });
+    });
+  }
+
   private onControl(action: "sleep" | "wake" | "stop_speaking" | "end"): void {
     if (action === "end") {
-      void this.end("user ended voice mode");
+      void this.end("user left hands-free");
       return;
     }
     if (!this.started) return;
@@ -284,14 +273,14 @@ class ConversationSession implements VoiceClientSink {
     const run = (async () => {
       const installStatus = this.gateway.installer.getStatus();
       if (!installStatus.installed) {
-        this.sendJson({ type: "notice", level: "error", message: "Voice mode isn't set up yet. Install the speech models first." });
+        this.sendJson({ type: "notice", level: "error", message: "Hands-free isn't set up yet. Install the speech models first." });
         return;
       }
       this.releaseEngine = this.gateway.engine.retain();
       this.unsubscribeEngine = this.gateway.engine.onStatus((status) => {
         this.sendJson({ type: "engine", state: status.state, ...(status.detail ? { detail: status.detail } : {}) });
         if (status.state === "failed" && this.started) {
-          this.sendJson({ type: "notice", level: "error", message: "The speech engine stopped unexpectedly. Restart voice mode to continue." });
+          this.sendJson({ type: "notice", level: "error", message: "The speech engine stopped unexpectedly. Start hands-free again to continue." });
           void this.end("speech engine failed");
         }
       });
@@ -308,12 +297,17 @@ class ConversationSession implements VoiceClientSink {
       }
       if (this.disposed) return;
       await warm;
-      this.sendJson({ type: "agent", ...(this.agent.modelInfo.model ? { model: this.agent.modelInfo.model } : {}) });
+      if (this.disposed) return;
       this.started = true;
+      this.unbindHandsFree = this.gateway.helm.bindHandsFree(this.helmSessionId, {
+        requestHandsFree: (action) => setTimeout(() => this.onControl(action), 1_500).unref(),
+      });
       this.subscribeToBridge();
-      this.conversation.start({ greet });
+      // A conversation with history just picks up where it left off; only a fresh one is greeted.
+      const greetNow = greet && this.gateway.helm.getTurnCount(this.helmSessionId) === 0;
+      this.conversation.start({ greet: greetNow });
       void this.pushCounts();
-      this.log.write("started", { greet, model: this.agent.modelInfo.model, engine: this.gateway.engine.status.info });
+      this.log.write("started", { greet: greetNow, engine: this.gateway.engine.status.info });
     })().finally(() => {
       this.starting = undefined;
     });
@@ -330,8 +324,9 @@ class ConversationSession implements VoiceClientSink {
       || event.type === "readstate:changed" || event.type === "session:user-input") {
       this.scheduleCounts();
     }
-    if (!event.sessionId || this.settings.announce === "off") return;
-    const watched = this.settings.announce === "all" || this.watched.has(event.sessionId);
+    if (!event.sessionId || event.sessionId === this.helmSessionId || this.settings.announce === "off") return;
+    if (this.gateway.helm.isHelmSession(event.sessionId)) return;
+    const watched = this.settings.announce === "all" || this.gateway.helm.isWatched(this.helmSessionId, event.sessionId);
     if (!watched) return;
     if (event.type === "session:idle") {
       this.scheduleAnnouncement(event.sessionId, "finished", event.assistantPreview);
@@ -375,13 +370,7 @@ class ConversationSession implements VoiceClientSink {
 
   private async pushCounts(): Promise<void> {
     try {
-      const sessions = (await this.gateway.facade.listSessions()).filter((session) => !session.archived);
-      this.sendJson({
-        type: "bridge_counts",
-        waiting: sessions.filter((session) => session.needsUserInput).length,
-        running: sessions.filter((session) => session.runState !== "idle" && !session.needsUserInput).length,
-        unread: sessions.filter((session) => session.unread && session.runState === "idle" && !session.needsUserInput).length,
-      });
+      this.sendJson({ type: "bridge_counts", ...countBridgeSessions(await this.gateway.facade.listSessions()) });
     } catch {
       // Counts are decorative.
     }
@@ -396,6 +385,9 @@ class ConversationSession implements VoiceClientSink {
     for (const timer of this.announceTimers.values()) clearTimeout(timer);
     this.unsubscribeBus?.();
     this.unsubscribeEngine?.();
+    this.unbindHandsFree?.();
+    // Leaving hands-free must not cut off a reply: detach first so the session keeps writing it into the chat.
+    this.agent.detach();
     this.conversation.dispose();
     this.gateway.engine.closeStream(this.streamId);
     this.releaseEngine?.();
@@ -404,7 +396,6 @@ class ConversationSession implements VoiceClientSink {
     this.transport = undefined;
     transport?.close(reason);
     this.gateway.forget(this);
-    await this.agent.dispose().catch(() => undefined);
     this.log.close();
   }
 }
@@ -512,15 +503,19 @@ class HttpTransport implements VoiceTransport {
   }
 }
 
+export type VoiceGatewayHelm = Pick<HelmService, "isHelmSession" | "bindHandsFree" | "isWatched" | "getTurnCount" | "getTurnReasoningEffort">;
+
 export interface VoiceGatewayOptions {
   ctx: AppContext;
-  facade: VoiceBridgeFacade;
+  facade: HelmBridgeFacade;
+  helm: VoiceGatewayHelm;
   runtime: Pick<VoiceRuntime, "paths" | "engine" | "installer">;
 }
 
 export class VoiceGateway {
   readonly ctx: AppContext;
-  readonly facade: VoiceBridgeFacade;
+  readonly facade: HelmBridgeFacade;
+  readonly helm: VoiceGatewayHelm;
   readonly paths: VoicePaths;
   readonly engine: VoiceEngine;
   readonly installer: VoiceInstaller;
@@ -531,6 +526,7 @@ export class VoiceGateway {
   constructor(options: VoiceGatewayOptions) {
     this.ctx = options.ctx;
     this.facade = options.facade;
+    this.helm = options.helm;
     this.paths = options.runtime.paths;
     this.engine = options.runtime.engine;
     this.installer = options.runtime.installer;
@@ -543,16 +539,31 @@ export class VoiceGateway {
       engine: this.engine.status,
       voices: KOKORO_VOICES,
       defaults: DEFAULT_VOICE_SETTINGS,
-      preferredModels: PREFERRED_VOICE_MODELS,
       activeConversations: this.conversations.size,
     };
   }
 
-  createConversation(settings: unknown): { conversationId: string; token: string } {
-    const session = new ConversationSession(this, normalizeVoiceSettings(settings));
+  /** Starts hands-free for a Helm conversation. One voice conversation speaks for it at a time. */
+  createConversation(helmSessionId: string, settings: unknown): { conversationId: string; token: string } {
+    if (!this.helm.isHelmSession(helmSessionId)) throw new Error("Helm conversation not found");
+    for (const existing of this.conversations.values()) {
+      if (existing.helmSessionId === helmSessionId) void existing.end("hands-free started somewhere else");
+    }
+    const session = new ConversationSession(this, helmSessionId, normalizeVoiceSettings(settings));
     this.conversations.set(session.id, session);
     session.armGraceTimer();
     return { conversationId: session.id, token: session.token };
+  }
+
+  /**
+   * Routes a message typed in the Helm chat through the live hands-free conversation, so it is
+   * framed and answered out loud like a spoken turn. Undefined when hands-free isn't active for it.
+   */
+  submitTypedText(helmSessionId: string, text: string, clientMessageId?: string): Promise<TypedTextDelivery> | undefined {
+    for (const session of this.conversations.values()) {
+      if (session.helmSessionId === helmSessionId && !session.disposed) return session.submitTypedText(text, clientMessageId);
+    }
+    return undefined;
   }
 
   private find(conversationId: unknown, token: unknown): ConversationSession | undefined {

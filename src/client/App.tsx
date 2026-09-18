@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
-import { Routes, Route, useNavigate, useParams } from "react-router-dom";
+import { Navigate, Routes, Route, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryClient";
 import {
@@ -101,7 +101,11 @@ import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
 import SearchView from "./components/SearchView";
 
-const VoiceModeView = lazy(() => import("./voice/VoiceModeView"));
+const HelmView = lazy(() => import("./helm/HelmView"));
+import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
+import { HandsFreeProvider, useHandsFree } from "./voice/HandsFreeProvider";
+import { HandsFreePill } from "./voice/HandsFreeDock";
+import { BridgeReferenceContext } from "./components/BridgeReference";
 import { useSearchBackground } from "./hooks/useSearchBackground";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
@@ -135,9 +139,18 @@ function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<strin
 }
 
 export default function App() {
+  return (
+    <HandsFreeProvider>
+      <AppShell />
+    </HandsFreeProvider>
+  );
+}
+
+function AppShell() {
   const navigate = useNavigate();
   const { location, navigationType, open: searchOpen, close: closeSearch } = useSearchBackground();
-  const isVoiceRoute = location.pathname === "/voice";
+  const isHelmRoute = location.pathname === "/helm";
+  const handsFree = useHandsFree();
   const isMobile = useIsMobile();
   const { hasAttention, hasAttentionRef } = usePageAttention();
   const pageHasAttention = hasAttention && !searchOpen;
@@ -304,6 +317,32 @@ export default function App() {
   }, [location.pathname, location.search, location.hash, searchOpen, navigate]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
+  const bridgeReferenceContext = useMemo(() => ({ isUnread }), [isUnread]);
+  // Helm conversations are not in the session lists, so their drafts need their own protection
+  // from draft cleanup. Until Helm's state is known, nothing is pruned.
+  const helmStateQuery = useHelmStateQuery();
+  const helmDraftKeys = useMemo(() => {
+    const helmState = helmStateQuery.data;
+    if (!helmState) return helmStateQuery.isError ? [] : null;
+    return [helmState.current, ...helmState.recent].flatMap((conversation) => (conversation ? [conversation.sessionId] : []));
+  }, [helmStateQuery.data, helmStateQuery.isError]);
+  const helmSessionIdsRef = useRef<ReadonlySet<string>>(new Set());
+  helmSessionIdsRef.current = new Set(helmDraftKeys ?? []);
+
+  // A deep link or search hit for a Helm conversation belongs in Helm, not in an orphan chat view.
+  useEffect(() => {
+    if (!activeSessionId || !helmDraftKeys?.includes(activeSessionId)) return;
+    let cancelled = false;
+    void resumeHelmConversation(activeSessionId)
+      .then(() => queryClient.invalidateQueries({ queryKey: helmStateQueryKey }))
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) navigate("/helm", { replace: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, helmDraftKeys, navigate, queryClient]);
   const renderedReadThroughRef = useRef<Record<string, string>>({});
   const [renderedReadThroughState, setRenderedReadThroughState] = useState<Record<string, string>>({});
   const rememberRenderedReadThrough = useCallback((sessionId: string, readThroughActivityAt: string) => {
@@ -343,7 +382,7 @@ export default function App() {
     setDraftLaunchOptions,
     clearDraft,
     hasDraft,
-  } = useDrafts(sessions, activeComposerKey);
+  } = useDrafts(sessions, activeComposerKey, helmDraftKeys);
   const [draftSessionMap, setDraftSessionMap] = useState<Record<string, string>>({});
 
   const getDraftSession = useCallback((composerKey: string) => {
@@ -482,6 +521,7 @@ export default function App() {
         if (event.sessionId) {
           clearSessionBusyHint(event.sessionId);
           patchSessionInCache(event.sessionId, { runState: "idle", intentText: null });
+          if (helmSessionIdsRef.current.has(event.sessionId)) void queryClient.invalidateQueries({ queryKey: helmStateQueryKey });
         }
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
         invalidateSessions();
@@ -496,6 +536,7 @@ export default function App() {
       case "session:title":
         if (event.sessionId && event.title) {
           patchSessionInCache(event.sessionId, { summary: event.title });
+          if (helmSessionIdsRef.current.has(event.sessionId)) void queryClient.invalidateQueries({ queryKey: helmStateQueryKey });
         }
         invalidateDashboard();
         break;
@@ -936,8 +977,8 @@ export default function App() {
     navigate("/settings");
   };
 
-  const handleOpenVoice = useCallback(() => {
-    navigate("/voice");
+  const handleOpenHelm = useCallback(() => {
+    navigate("/helm");
   }, [navigate]);
 
   const handleOpenDocsRoot = useCallback(() => {
@@ -978,8 +1019,9 @@ export default function App() {
     }
   };
 
-  const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "docs" | "settings") => {
+  const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "helm" | "docs" | "settings") => {
     switch (tab) {
+      case "helm": handleOpenHelm(); break;
       case "home": handleOpenDashboard(); break;
       case "tasks": handleOpenTaskList(); break;
       case "chats": handleOpenQuickChatsList(); break;
@@ -1738,6 +1780,7 @@ export default function App() {
     settings: mobileRouteMeta.route === "settings",
     docs: mobileRouteMeta.route === "docs-root" || mobileRouteMeta.route === "docs-detail",
     search: location.pathname === "/search",
+    helm: mobileRouteMeta.route === "helm",
   };
   const newWorkDisabledByRestart = restartBanner.phase === "pending" && !restartBanner.canAcceptNewWork;
   const newWorkDisabledByRestartHint = newWorkDisabledByRestart
@@ -1746,8 +1789,9 @@ export default function App() {
 
   return (
     <>
+    <BridgeReferenceContext.Provider value={bridgeReferenceContext}>
     <div
-      inert={searchOpen || isVoiceRoute || undefined}
+      inert={searchOpen || undefined}
       className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
@@ -1782,7 +1826,8 @@ export default function App() {
         onGoHome={handleOpenDashboard}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
-        onOpenVoice={handleOpenVoice}
+        onOpenHelm={handleOpenHelm}
+        isHelmActive={isHelmRoute}
         onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
         isDocsActive={isDocsActive}
         isDashboardActive={isDashboardActive}
@@ -1930,7 +1975,7 @@ export default function App() {
         flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
         ${/* Desktop: always visible */""}
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
-        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs || isMobileRoute.search ? "flex" : "hidden md:flex"}
+        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs || isMobileRoute.search || isMobileRoute.helm ? "flex" : "hidden md:flex"}
       `.trim()}>
         {mobileRouteMeta.showSharedHeader && (
           <MobileDetailHeader
@@ -2174,6 +2219,32 @@ export default function App() {
             />
             <Route path="docs/*" element={<DocsView onDocTitleChange={setDocTitle} />} />
             <Route path="settings" element={<SettingsView />} />
+            <Route
+              path="helm"
+              element={
+                <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading Helm…</div>}>
+                  <HelmView
+                    onMessageSent={invalidateSessions}
+                    getDraft={getDraft}
+                    setDraft={setDraft}
+                    clearDraft={clearDraft}
+                    getVoiceJob={getJobForComposer}
+                    startBackgroundVoiceJob={startBackgroundVoiceJob}
+                    retryVoiceJobUpload={retryVoiceJobUpload}
+                    reviewVoiceJob={reviewInstead}
+                    clearVoiceJobError={clearVoiceJobError}
+                    discardVoiceRecording={discardVoiceRecording}
+                    sessionReloadSignals={sessionReloadSignals}
+                    sessionBusySignals={sessionBusySignals}
+                    sessionHistorySignals={sessionHistorySignals}
+                    newWorkDisabled={newWorkDisabledByRestart}
+                    newWorkDisabledHint={newWorkDisabledByRestartHint}
+                  />
+                </Suspense>
+              }
+            />
+            {/* Voice mode became Helm's hands-free mode; keep old links and home-screen shortcuts working. */}
+            <Route path="voice" element={<Navigate to="/helm" replace />} />
           </Routes>
         </main>
       </div>
@@ -2200,7 +2271,6 @@ export default function App() {
           homeChecklistIndicator={homeChecklistIndicator}
           taskAttention={mobileTaskAttention}
           chatAttention={mobileChatAttention}
-          onOpenVoice={handleOpenVoice}
         />
       )}
     </div>
@@ -2209,11 +2279,17 @@ export default function App() {
       sessions={sessions}
       onClose={closeSearch}
     />}
-    {isVoiceRoute && (
-      <Suspense fallback={<div className="fixed inset-0 z-[70] bg-[#06070d]" />}>
-        <VoiceModeView />
-      </Suspense>
+    {handsFree.active && !isHelmRoute && !searchOpen && (
+      <HandsFreePill
+        controller={handsFree}
+        onOpenHelm={handleOpenHelm}
+        onEnd={() => void handsFree.stop()}
+        bottomOffset={isMobile && mobileRouteMeta.showBottomNav
+          ? "calc(4.25rem + env(safe-area-inset-bottom))"
+          : "max(0.75rem, env(safe-area-inset-bottom))"}
+      />
     )}
+    </BridgeReferenceContext.Provider>
     </>
   );
 }
