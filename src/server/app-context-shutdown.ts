@@ -6,6 +6,7 @@
 // not pay for that graph.
 
 import type { AppContext } from "./app-context.js";
+import { stopAllStagingBackends } from "./staging-backend-manager.js";
 import {
   createDeadline,
   settleByDeadline,
@@ -28,6 +29,7 @@ export function shutdownAppContextServices(
     ctx.focusProtectionStore?.stop();
     ctx.sessionOverlayMaintenance?.stop();
     ctx.stagingPreviewDiscovery?.stop();
+    const stagingShutdown = stopAllStagingBackends(deadline);
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.focusSessionLaunchService?.stop();
@@ -80,6 +82,7 @@ export function shutdownAppContextServices(
     }
 
     ctx.scheduler?.shutdown();
+    await stagingShutdown;
   })();
   appContextShutdownOperations.set(ctx, operation);
   return operation;

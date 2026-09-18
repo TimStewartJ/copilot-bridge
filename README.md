@@ -484,6 +484,8 @@ The bridge includes a few different maintenance paths:
 2. **`self_update`** - pull the latest repo state, sync dependencies, and restart safely.
 3. **`staging_init` -> `staging_preview` -> `staging_deploy`** - make larger changes in isolated worktrees, preview them, then queue up to 10 deploys for one combined restart. Queued deploy jobs can join that restart while it is queued or waiting for sessions; the runner holds them during actual cutover or an unrelated restart. Each staging worktree owns its dependencies; run `npm install --no-audit --no-fund --include=dev` there before direct checks rather than linking or reusing production `node_modules`.
 
+Graceful server shutdown stops owned staging-preview backends concurrently within the shared 13-second shutdown budget, using captured process identities. New backend starts are blocked during shutdown; preview data is preserved for restoration. Cleanup failures or deadline overruns are logged rather than falling back to bare-PID kills.
+
 The launcher is responsible for checkpointing, building, health checks, and recovering from bad restarts.
 
 ## Logs

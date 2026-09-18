@@ -23,6 +23,7 @@ import {
   remainingMs,
   settleByDeadline,
   sleepUntilDeadline,
+  type Deadline,
 } from "./deadline.js";
 import { BRIDGE_CONTROL_ROOT_ENV } from "./control-root.js";
 import {
@@ -104,6 +105,48 @@ const terminallyFailedPreviews = new Map<string, number>();
 
 let backendIdleReaper: ReturnType<typeof setInterval> | null = null;
 let _expressApp: express.Application | null = null;
+let shutdownDeadline: Deadline | undefined;
+let shutdownOperation: Promise<void> | undefined;
+const pendingBackendSpawns = new Set<Promise<HostChild>>();
+const ownedBackendChildren = new Map<HostChild, Promise<ProcessIdentity | null>>();
+let shutdownChildStops = new WeakMap<HostChild, Promise<void>>();
+
+function assertBackendStartsAllowed(): void {
+  if (shutdownDeadline) throw new Error("Server is shutting down; staging backend starts are disabled.");
+}
+
+/** Stop detached preview children without deleting their restorable data. */
+export function stopAllStagingBackends(deadline: Deadline): Promise<void> {
+  if (shutdownOperation) return shutdownOperation;
+  shutdownDeadline = deadline;
+  if (backendIdleReaper) clearInterval(backendIdleReaper);
+  backendIdleReaper = null;
+  for (const backend of activeStagingBackends.values()) {
+    backend.stopping = true;
+    ownedBackendChildren.set(backend.child, backend.identity);
+  }
+  activeStagingRouters.clear();
+  const children = [
+    ...Array.from(ownedBackendChildren.keys(), (child) => Promise.resolve(child)),
+    ...pendingBackendSpawns,
+  ];
+  shutdownOperation = Promise.all(children.map(async (pendingChild) => {
+    const outcome = await settleByDeadline(async () => {
+      const child = await pendingChild;
+      const identity = ownedBackendChildren.get(child);
+      if (identity) await stopStagingBackendChild(child, identity);
+      for (const [prefix, backend] of activeStagingBackends) {
+        if (backend.child === child) activeStagingBackends.delete(prefix);
+      }
+    }, deadline);
+    if (outcome.status !== "fulfilled") {
+      log(`Warning: staging backend shutdown ${outcome.status}${
+        outcome.status === "rejected" ? `: ${outcome.error}` : ""
+      }`);
+    }
+  })).then(() => {});
+  return shutdownOperation;
+}
 
 export function registerExpressApp(app: express.Application): void {
   _expressApp = app;
@@ -697,6 +740,10 @@ async function handleLazyStagingRequest(
   res: Parameters<RequestHandler>[1],
   next: Parameters<RequestHandler>[2],
 ): Promise<void> {
+  if (shutdownDeadline) {
+    res.status(503).json({ error: "Server is shutting down", prefix });
+    return;
+  }
   const activeRouter = activeStagingRouters.get(prefix);
   if (activeRouter) {
     activeRouter(req, res, next);
@@ -1148,6 +1195,7 @@ const STAGING_BACKEND_IDENTITY_RETRY_DELAY_MS = 100;
 function trackChildClose(child: HostChild): void {
   child.once("close", () => {
     closedStagingBackendChildren.add(child);
+    ownedBackendChildren.delete(child);
   });
 }
 
@@ -1171,12 +1219,13 @@ async function captureStagingBackendIdentity(
   options: {
     timeoutMs?: number;
     retryDelayMs?: number;
+    deadline?: Deadline;
   } = {},
 ): Promise<ProcessIdentity | null> {
   const pid = child.pid;
   if (!pid) return null;
 
-  const deadline = createDeadline(options.timeoutMs ?? STAGING_BACKEND_STARTUP_TIMEOUT_MS);
+  const deadline = options.deadline ?? createDeadline(options.timeoutMs ?? STAGING_BACKEND_STARTUP_TIMEOUT_MS);
   const retryDelayMs = options.retryDelayMs ?? STAGING_BACKEND_IDENTITY_RETRY_DELAY_MS;
   let attempts = 0;
   do {
@@ -1209,27 +1258,41 @@ function waitForChildClose(child: HostChild, timeoutMs: number): Promise<boolean
   });
 }
 
-async function stopStagingBackendChild(
+function stopStagingBackendChild(
   child: HostChild,
   identityPromise: Promise<ProcessIdentity | null>,
+): Promise<void> {
+  if (!shutdownDeadline) return runStagingBackendChildStop(child, identityPromise);
+  const existing = shutdownChildStops.get(child);
+  if (existing) return existing;
+  const operation = runStagingBackendChildStop(child, identityPromise, shutdownDeadline);
+  shutdownChildStops.set(child, operation);
+  return operation;
+}
+
+async function runStagingBackendChildStop(
+  child: HostChild,
+  identityPromise: Promise<ProcessIdentity | null>,
+  shutdownBudget?: Deadline,
 ): Promise<void> {
   if (childHasClosed(child)) return;
   const identityResult = await settleByDeadline(
     () => identityPromise,
-    createDeadline(STAGING_BACKEND_STARTUP_TIMEOUT_MS),
+    shutdownBudget ?? createDeadline(STAGING_BACKEND_STARTUP_TIMEOUT_MS),
   );
   let identity = identityResult.status === "fulfilled" ? identityResult.value : null;
   if (!identity && !childHasClosed(child)) {
     log(`Recapturing staging backend creation identity for PID ${child.pid ?? "unknown"} before termination`);
     identity = await captureStagingBackendIdentity(child, {
       timeoutMs: STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS,
+      deadline: shutdownBudget,
     });
   }
   if (!identity) {
     if (childHasClosed(child)) return;
     throw new Error("Staging backend creation identity was unavailable; refusing bare-PID termination.");
   }
-  const deadline = createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS);
+  const deadline = shutdownBudget ?? createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS);
   const result = await terminateProcessTree(identity, deadline);
   if (!result.ok) {
     const survivors = result.survivors?.map(({ pid }) => pid).join(",") ?? "none";
@@ -1262,17 +1325,30 @@ export async function startStagingBackendProcess(
   apiBasePath: string,
   options: StagingBackendStartOptions = {},
 ): Promise<ActiveStagingBackend> {
+  assertBackendStartsAllowed();
   const spawnConfig = buildStagingBackendSpawnConfig(stagingDir, runtimePaths, apiBasePath, options);
   const output: CapturedCommandOutput = { output: "", truncatedChars: 0 };
-  const child = await getProcessHost().spawn(spawnConfig.command, spawnConfig.args, {
+  const spawn = getProcessHost().spawn(spawnConfig.command, spawnConfig.args, {
     cwd: stagingDir,
     env: spawnConfig.env,
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     windowsHide: true,
     detached: shouldSpawnDetachedProcessGroup(),
   });
+  pendingBackendSpawns.add(spawn);
+  let child: HostChild;
+  try {
+    child = await spawn;
+  } finally {
+    pendingBackendSpawns.delete(spawn);
+  }
   trackChildClose(child);
-  const identity = captureStagingBackendIdentity(child);
+  const identity = captureStagingBackendIdentity(child, { deadline: shutdownDeadline });
+  ownedBackendChildren.set(child, identity);
+  if (shutdownDeadline) {
+    await stopStagingBackendChild(child, identity);
+    assertBackendStartsAllowed();
+  }
 
   child.stdout?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stdout", output, chunk));
   child.stderr?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stderr", output, chunk));
@@ -1382,7 +1458,9 @@ export async function initializeStagingBackend(
     target?: PreviewTarget;
   } = {},
 ): Promise<void> {
+  assertBackendStartsAllowed();
   await teardownStagingBackend(prefix, { removeData: false });
+  assertBackendStartsAllowed();
   if (!options.dataDir) {
     const stalePreviewDataDir = activePreviewDataDirs.get(prefix)
       ?? join(stagingDir, "data");
@@ -1402,6 +1480,7 @@ export async function initializeStagingBackend(
 
     log(`Starting staged backend child process from ${stagingDir}...`);
     const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
+    assertBackendStartsAllowed();
     activeStagingBackends.set(prefix, stagingBackend);
     activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend));
     installStagingBackendIdleReaper();
@@ -1412,7 +1491,7 @@ export async function initializeStagingBackend(
   } catch (err) {
     activeStagingRouters.delete(prefix);
     activeStagingBackends.delete(prefix);
-    if (runtimePaths && !options.dataDir) {
+    if (runtimePaths && !options.dataDir && !shutdownDeadline) {
       await removePreviewData(runtimePaths.dataDir);
     }
     activePreviewDataDirs.delete(prefix);
@@ -1425,7 +1504,9 @@ async function restoreStagingBackend(
   stagingDir: string,
   options: { dataDir?: string } = {},
 ): Promise<void> {
+  assertBackendStartsAllowed();
   await teardownStagingBackend(prefix, { removeData: false });
+  assertBackendStartsAllowed();
 
   let runtimePaths: RuntimePaths | null = null;
 
@@ -1438,6 +1519,7 @@ async function restoreStagingBackend(
 
     log(`Restoring staged backend child process from ${stagingDir}...`);
     const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
+    assertBackendStartsAllowed();
     activeStagingBackends.set(prefix, stagingBackend);
     activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend));
     installStagingBackendIdleReaper();
@@ -1471,6 +1553,7 @@ export async function restoreStagingBackendWithRetry(
       await initializeBackend(prefix, stagingDir);
       return { restored: true, attempts: attempt };
     } catch (err) {
+      if (shutdownDeadline) throw err;
       lastError = err instanceof Error ? err.message : String(err);
       if (attempt < maxAttempts) {
         writeLog(
@@ -1526,6 +1609,13 @@ export const __testing = {
     return switchingStagingPreviews.has(prefix);
   },
   resetBackendState(): void {
+    if (backendIdleReaper) clearInterval(backendIdleReaper);
+    backendIdleReaper = null;
+    shutdownDeadline = undefined;
+    shutdownOperation = undefined;
+    shutdownChildStops = new WeakMap();
+    pendingBackendSpawns.clear();
+    ownedBackendChildren.clear();
     activeStagingBackends.clear();
     activePreviewDataDirs.clear();
     activeStagingRouters.clear();
