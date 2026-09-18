@@ -13,6 +13,7 @@ import {
   createAgentBackend,
   type AgentBackend,
   type AgentBackendFactory,
+  type AgentElicitationResponse,
   type AgentModelCompactionDecision,
   type AgentModelInfo,
   type AgentModelSwitchConfirmation,
@@ -274,6 +275,15 @@ const DISMISSED_USER_INPUT_RESPONSE = {
   dismissed: true,
 } as const;
 const CANCELED_ELICITATION_RESPONSE = { action: "cancel" } as const;
+/** A question nobody has answered for this long is answered automatically so the turn can continue. */
+export const PENDING_INTERACTION_AUTO_ANSWER_MS = 60 * 60_000;
+// The Copilot CLI's autopilot `ask_user` response, minus its autopilot-only task_complete tool and
+// plus an explicit refusal to stand in for an approval.
+export const PENDING_INTERACTION_AUTO_ANSWER =
+  "The user is not available to respond and will review your work later. Work autonomously and make good decisions. "
+  + "This automatic reply is not an approval: do not perform anything that needs the user's explicit confirmation. "
+  + "If the request is genuinely ambiguous or unresolvable, stop and summarize the ambiguity rather than proceeding "
+  + "on an unfounded assumption.";
 
 // Graceful shutdown must finish before the launcher's force-kill window
 // (GRACEFUL_EXIT_WAIT = 15s) so the server exits on its own. The overall budget
@@ -1022,6 +1032,7 @@ export class SessionManager {
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       getPendingUserInputCount: (sessionId) => this.getPendingUserInputOnlyCount(sessionId),
       getPendingInteractionCount: (sessionId) => this.getPendingInteractionCount(sessionId),
+      autoAnswerOverdueInteractions: (sessionId) => this.autoAnswerOverdueInteractions(sessionId),
       recordPendingInteractionEvent: (sessionId, kind, state, at) =>
         this.recordPendingInteractionEvent(sessionId, kind, state, at),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
@@ -2609,6 +2620,93 @@ export class SessionManager {
         (requestId) => session.tryRespondToElicitation(requestId, CANCELED_ELICITATION_RESPONSE),
       ),
     ]);
+  }
+
+  /**
+   * Answers questions nobody has answered for PENDING_INTERACTION_AUTO_ANSWER_MS, the way the
+   * Copilot CLI answers `ask_user` in autopilot, so an unattended turn continues instead of waiting
+   * forever. The run watchdog calls this on every tick while an interaction is pending. Never
+   * rejects: a failed answer is retried on the next tick.
+   */
+  private async autoAnswerOverdueInteractions(sessionId: string): Promise<void> {
+    const session = this.sessionObjects.get(sessionId);
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    if (!session || !bus || bus.complete) return;
+    const now = Date.now();
+    const timestamp = new Date(now).toISOString();
+    // A request without a parseable timestamp compares false here and stays with the user.
+    const isOverdue = (request: { requestedAt?: string }) =>
+      now - Date.parse(request.requestedAt ?? "") >= PENDING_INTERACTION_AUTO_ANSWER_MS;
+    const attempt = async (
+      kind: "user_input" | "elicitation",
+      request: { requestId: string; requestedAt?: string },
+      action: string,
+      respond: () => Promise<boolean>,
+      settle: (answered: boolean) => void,
+    ): Promise<void> => {
+      try {
+        // False means the runtime no longer holds the request, so the entry is dropped either way.
+        const answered = await respond();
+        settle(answered);
+        console.warn(
+          `[sdk] [${sessionId.slice(0, 8)}] ${answered ? `Auto-answered (${action})` : "Dropped stale"} ${kind} ${request.requestId} after an hour without a response`,
+        );
+        this.recordSpan("session.pending_interaction.auto_answer", 0, sessionId, {
+          kind,
+          action,
+          answered,
+          waitedMs: now - Date.parse(request.requestedAt ?? ""),
+        });
+      } catch (error) {
+        console.warn(
+          `[sdk] [${sessionId.slice(0, 8)}] Failed to auto-answer ${kind} ${request.requestId}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    };
+
+    const pending = bus.getPendingInteractionIndex();
+    for (const request of pending.pendingUserInputs.filter(isOverdue)) {
+      const response = { answer: PENDING_INTERACTION_AUTO_ANSWER, wasFreeform: true };
+      await attempt(
+        "user_input",
+        request,
+        "answer",
+        () => session.respondToUserInput(request.requestId, response),
+        (answered) => answered
+          ? bus.emitUserInputAnswered(request.requestId, response, timestamp)
+          : bus.emitUserInputCanceled(request.requestId, { reason: "answered_elsewhere", timestamp }),
+      );
+    }
+    for (const request of pending.pendingElicitations.filter(isOverdue)) {
+      // Only the agent's own ask_user form gets the autopilot-style answer. Its fields accept a
+      // freeform value whatever their type, and a single answered field reaches the model as
+      // "User responded: <text>". Anything an MCP server asked for is cancelled, never invented.
+      const firstField = Object.entries(request.requestedSchema?.properties ?? {})[0];
+      const response: AgentElicitationResponse = !request.elicitationSource && firstField
+        ? {
+            action: "accept",
+            content: {
+              [firstField[0]]: firstField[1].type === "array"
+                ? [PENDING_INTERACTION_AUTO_ANSWER]
+                : PENDING_INTERACTION_AUTO_ANSWER,
+            },
+          }
+        : CANCELED_ELICITATION_RESPONSE;
+      await attempt(
+        "elicitation",
+        request,
+        response.action,
+        () => session.tryRespondToElicitation(request.requestId, response),
+        (answered) => answered && response.action === "accept"
+          ? bus.emitElicitationResolved(request.requestId, "accept", timestamp)
+          : bus.emitElicitationCanceled(request.requestId, {
+              reason: answered ? "session_ended" : "answered_elsewhere",
+              timestamp,
+            }),
+      );
+    }
+    void this.reconcilePendingInteractionCounts(sessionId, session);
   }
 
   private recordPendingInteractionEvent(
