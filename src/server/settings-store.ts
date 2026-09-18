@@ -43,6 +43,10 @@ export interface DeferWorkerSettings {
   contextTier?: CopilotContextTier;
 }
 
+export interface ComputerUseSettings {
+  enabled?: boolean;
+}
+
 export interface ModelFamilyDefault {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -76,6 +80,7 @@ export interface AppSettings {
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
+  computerUse?: ComputerUseSettings;
   focusNotifications?: FocusNotificationPolicy;
 }
 
@@ -229,6 +234,16 @@ function normalizeDeferWorkerSettings(value: unknown): DeferWorkerSettings | und
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
   };
+}
+
+function normalizeComputerUseSettings(value: unknown): ComputerUseSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("computerUse must be an object");
+  const enabled = value.enabled;
+  if (enabled !== undefined && enabled !== null && typeof enabled !== "boolean") {
+    validationError("computerUse.enabled must be a boolean");
+  }
+  return enabled === true ? { enabled: true } : undefined;
 }
 
 function normalizeFocusNotifications(value: unknown): FocusNotificationPolicy | undefined {
@@ -491,6 +506,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("deferWorker" in value) {
     normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
   }
+  if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("focusNotifications" in value) {
     normalized.focusNotifications = normalizeFocusNotifications(value.focusNotifications);
   }

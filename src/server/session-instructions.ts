@@ -24,6 +24,12 @@ When referring to an Azure DevOps work item or pull request in a user-facing res
 </work_reference_links>
 `.trim();
 
+export const COMPUTER_USE_OFF_GUIDANCE = `
+<computer_use>
+Desktop computer use is turned off for this Bridge, so this session has no computer-use tools. If a task needs it, say so and point the user to Settings > Integrations > Computer use.
+</computer_use>
+`.trim();
+
 export const STAGING_INSTRUCTIONS = `
 <staging_workflow>
 When modifying code in this repository (the Copilot Bridge):

@@ -289,6 +289,58 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
   });
 
+  describe("computer use", () => {
+    const pluginDirectory = join("/sdk", "plugins", "computer-use");
+    const settingsStoreWith = (computerUse?: { enabled: boolean }) => ({
+      getSettings: () => ({ ...(computerUse ? { computerUse } : {}) }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    }) as unknown as SettingsStore;
+
+    it("stays off by default and tells the session so without resolving the plugin", () => {
+      const resolve = vi.fn();
+      for (const forResume of [false, true]) {
+        const cfg = buildSessionConfig({
+          deps: createDeps({ settingsStore: settingsStoreWith(), resolveComputerUsePlugin: resolve }),
+          options: { forResume },
+          callbacks: createCallbacks(),
+        });
+
+        expect(cfg.pluginDirectories).toBeUndefined();
+        expect(cfg.systemMessage.content).toContain("<computer_use>");
+      }
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it("loads the SDK plugin on create and resume when the setting is on", () => {
+      for (const forResume of [false, true]) {
+        const cfg = buildSessionConfig({
+          deps: createDeps({
+            settingsStore: settingsStoreWith({ enabled: true }),
+            resolveComputerUsePlugin: () => ({ available: true, pluginDirectory, version: "0.1.88" }),
+          }),
+          options: { forResume },
+          callbacks: createCallbacks(),
+        });
+
+        expect(cfg.pluginDirectories).toEqual([pluginDirectory]);
+        expect(cfg.systemMessage.content).not.toContain("<computer_use>");
+      }
+    });
+
+    it("loads nothing when the setting is on but the SDK ships no plugin", () => {
+      const cfg = buildSessionConfig({
+        deps: createDeps({
+          settingsStore: settingsStoreWith({ enabled: true }),
+          resolveComputerUsePlugin: () => ({ available: false, reason: "not installed" }),
+        }),
+        callbacks: createCallbacks(),
+      });
+
+      expect(cfg.pluginDirectories).toBeUndefined();
+    });
+  });
+
   it("lets a scheduled session override global model launch options", () => {
     const settingsStore = {
       getSettings: () => ({

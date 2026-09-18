@@ -24,6 +24,7 @@ import {
   AGENT_LIFECYCLE_GUIDANCE,
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
+  COMPUTER_USE_OFF_GUIDANCE,
   DEFAULT_IDENTITY,
   FEED_GUIDANCE,
   RESEARCH_GUIDANCE,
@@ -50,6 +51,7 @@ import {
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import { pathsEqual } from "./path-utils.js";
+import { resolveComputerUsePlugin, type ComputerUsePluginStatus } from "./computer-use-plugin.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -102,6 +104,7 @@ export interface SessionConfigBuilderDeps {
   permissionPolicy?: AgentPermissionPolicy;
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
+  resolveComputerUsePlugin?: () => ComputerUsePluginStatus;
 }
 
 export interface SessionConfigBuilderCallbacks {
@@ -272,6 +275,16 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   const settings = deps.settingsStore?.getSettings();
 
+  // Computer Use is upstream's plugin from the SDK platform package. Loading it per
+  // session keeps the Bridge setting as the only gate, independent of CLI user settings.
+  const computerUseEnabled = settings?.computerUse?.enabled === true;
+  const computerUsePlugin = computerUseEnabled
+    ? (deps.resolveComputerUsePlugin ?? resolveComputerUsePlugin)()
+    : undefined;
+  if (computerUsePlugin?.available && computerUsePlugin.pluginDirectory) {
+    cfg.pluginDirectories = [computerUsePlugin.pluginDirectory];
+  }
+
   // Model + reasoningEffort only belong on createSession. On resume the SDK
   // overwrites _selectedModel without sanitizing chat history (which corrupts
   // cross-family tool_call shapes). Resume intentionally trusts the SDK's
@@ -333,6 +346,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     FEED_GUIDANCE,
     TOOL_NAMING_GUIDANCE,
     WORK_REFERENCE_GUIDANCE,
+    ...(computerUseEnabled ? [] : [COMPUTER_USE_OFF_GUIDANCE]),
   ];
 
   if (task) {
