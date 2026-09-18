@@ -190,6 +190,26 @@ describe("settings-store", () => {
     })).toThrow("browser.headed must be a boolean");
   });
 
+  it("keeps computer use off unless it is explicitly enabled", () => {
+    expect(store.getSettings().computerUse).toBeUndefined();
+
+    expect(store.updateSettings({ computerUse: { enabled: true } }).computerUse).toEqual({ enabled: true });
+    expect(store.getSettings().computerUse).toEqual({ enabled: true });
+    expect(store.updateSettings({ identity: "unrelated" }).computerUse).toEqual({ enabled: true });
+
+    expect(store.updateSettings({ computerUse: { enabled: false } }).computerUse).toBeUndefined();
+    store.updateSettings({ computerUse: { enabled: true } });
+    expect(store.updateSettings({ computerUse: {} }).computerUse).toBeUndefined();
+    expect(store.getSettings().computerUse).toBeUndefined();
+
+    expect(() => store.updateSettings({
+      computerUse: { enabled: "true" } as any,
+    })).toThrow("computerUse.enabled must be a boolean");
+    expect(() => store.updateSettings({
+      computerUse: "on" as any,
+    })).toThrow("computerUse must be an object");
+  });
+
   it("persists and validates remembered model presets", () => {
     const updated = store.updateSettings({
       modelPresets: {

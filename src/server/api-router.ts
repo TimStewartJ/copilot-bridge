@@ -185,6 +185,7 @@ import {
   launchHeadedDiagnosticsBrowser,
   probeBrowserContext,
 } from "./browser-diagnostics.js";
+import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
@@ -6288,14 +6289,17 @@ export function createApiRouter(
       clearProviderCache();
 
       const mcpChanged = JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers);
+      const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
-      // MCP server changes can't be hot-swapped on a live session — evict so the
-      // next resume rebuilds with the new MCP config.
-      if (mcpChanged) {
-        console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
+      // MCP server and plugin changes can't be hot-swapped on a live session — evict
+      // so the next resume rebuilds with the new config.
+      if (mcpChanged || computerUseChanged) {
+        console.log(
+          `[settings] ${mcpChanged ? "MCP servers" : "Computer use"} changed — evicting cached sessions for re-resume`,
+        );
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached
@@ -6313,6 +6317,16 @@ export function createApiRouter(
     } catch (err) {
       const status = err instanceof SettingsValidationError ? 400 : 500;
       res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // GET /computer-use/status — whether upstream's Computer Use plugin is installed and enabled
+  router.get("/computer-use/status", (_req, res) => {
+    try {
+      const { pluginDirectory: _pluginDirectory, ...plugin } = resolveComputerUsePlugin();
+      res.json({ enabled: ctx.settingsStore.getSettings().computerUse?.enabled === true, ...plugin });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

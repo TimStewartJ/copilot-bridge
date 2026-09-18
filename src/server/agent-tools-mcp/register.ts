@@ -25,7 +25,6 @@ import { registerStagingTools, STAGING_TOOLS } from "../staging-tools.js";
 import { registerWebSearchTools } from "../web-search-tools.js";
 import { registerBrowserFetchTools } from "../browser-fetch-tools.js";
 import { registerBrowserExecTools } from "../browser-exec-tools.js";
-import { registerComputerUseSessionTools, registerComputerUseStatelessTools } from "../computer-use-tools.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./server.js";
 
 export interface RegisterAllBridgeToolsOptions {
@@ -66,13 +65,11 @@ export function registerAllBridgeTools(
   registerWebSearchTools(server, ctx);
   registerBrowserFetchTools(server, ctx);
   registerBrowserExecTools(server, ctx);
-  registerComputerUseStatelessTools(server, ctx);
   registerSessionTools(server, ctx, { hiddenTools });
   registerAttachmentTools(server, ctx, { hiddenTools });
   registerVisualTools(server, ctx, { hiddenTools });
   registerDeferTools(server, ctx, { hiddenTools });
   registerBrowserSessionTools(server, ctx, { hiddenTools });
-  registerComputerUseSessionTools(server, ctx);
 }
 
 export function getBridgeToolDefinitions(

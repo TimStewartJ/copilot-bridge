@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { COMPUTER_USE_PLUGIN_NAME, resolveComputerUsePlugin } from "../computer-use-plugin.js";
 
 const EXPECTED_CLI_VERSION = "1.0.86";
 const EXPECTED_SDK_VERSION = "1.0.14";
@@ -42,6 +43,29 @@ describe("installed Copilot package contract", () => {
     const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
     expect(rpcTypes).not.toContain("pendingUserInputs");
     expect(rpcTypes).not.toContain("pendingElicitations");
+  });
+
+  // Verified for win32-x64 only; the other platform packages have not been inspected.
+  it.runIf(process.platform === "win32")("ships the Computer Use plugin the Bridge loads per session", () => {
+    const status = resolveComputerUsePlugin();
+    expect(status.reason).toBeUndefined();
+    expect(status.available).toBe(true);
+
+    const pluginDirectory = status.pluginDirectory!;
+    const mcpConfig = JSON.parse(readFileSync(join(pluginDirectory, ".mcp.json"), "utf-8")) as {
+      mcpServers?: Record<string, { type?: string; command?: string }>;
+    };
+    const server = mcpConfig.mcpServers?.[COMPUTER_USE_PLUGIN_NAME];
+    expect(server?.type).toBe("stdio");
+    const command = server!.command!.replace("${PLUGIN_ROOT}", pluginDirectory);
+    expect(existsSync(command), `${command} is missing`).toBe(true);
+  });
+
+  it("forwards pluginDirectories when creating and resuming sessions", () => {
+    const clientPath = findInstalledSdkFile(join("dist", "client.js"));
+    expect(clientPath, "No installed @github/copilot-sdk dist/client.js found.").toBeTruthy();
+    const forwarded = readFileSync(clientPath!, "utf-8").match(/pluginDirectories: config\.pluginDirectories/g) ?? [];
+    expect(forwarded).toHaveLength(2);
   });
 });
 

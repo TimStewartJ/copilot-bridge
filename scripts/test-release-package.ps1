@@ -134,8 +134,7 @@ $envNames = @(
   "BRIDGE_TUNNEL_NAME",
   "BRIDGE_PUBLIC_BASE_URL",
   "BRIDGE_DISABLE_UPDATE_CHECK",
-  "BRIDGE_DISTRIBUTION_MODE",
-  "COMPUTER_USE"
+  "BRIDGE_DISTRIBUTION_MODE"
 )
 
 try {
@@ -227,7 +226,6 @@ try {
   Set-Item -Path "Env:BRIDGE_PUBLIC_BASE_URL" -Value ""
   Set-Item -Path "Env:BRIDGE_DISABLE_UPDATE_CHECK" -Value "true"
   Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"
-  Set-Item -Path "Env:COMPUTER_USE" -Value ""
 
   Push-Location $releaseRoot
   try {

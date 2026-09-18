@@ -411,8 +411,7 @@ try {
     "COPILOT_HOME=$(Join-Path $dataDir ".copilot")",
     "BRIDGE_WEBHOOK_URL=",
     "BRIDGE_TUNNEL_NAME=release-e2e-$port",
-    "BRIDGE_PUBLIC_BASE_URL=",
-    "COMPUTER_USE="
+    "BRIDGE_PUBLIC_BASE_URL="
   ) | Set-Content -Path (Join-Path $configDir ".env") -Encoding UTF8
 
   Set-Item -Path "Env:BRIDGE_STATE_ROOT" -Value $stateRoot
@@ -428,7 +427,6 @@ try {
   Set-Item -Path "Env:BRIDGE_WEBHOOK_URL" -Value ""
   Set-Item -Path "Env:BRIDGE_TUNNEL_NAME" -Value "release-e2e-$port"
   Set-Item -Path "Env:BRIDGE_PUBLIC_BASE_URL" -Value ""
-  Set-Item -Path "Env:COMPUTER_USE" -Value ""
 
   $nodePath = Resolve-NodePath
   $installedAppRoot = Join-Path $installRoot "app"

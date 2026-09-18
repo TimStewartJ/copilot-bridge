@@ -148,6 +148,13 @@ describe("serializeSettingsPatch", () => {
     );
   });
 
+  it("sends an explicit computer-use clear so turning it off reaches the server", () => {
+    expect(serializeSettingsPatch({ computerUse: undefined })).toBe(
+      JSON.stringify({ computerUse: {} }),
+    );
+    expect(serializeSettingsPatch({ theme: "dark" })).toBe(JSON.stringify({ theme: "dark" }));
+  });
+
   describe("session creation client API", () => {
     afterEach(() => {
       vi.unstubAllGlobals();
