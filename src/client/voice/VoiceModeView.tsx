@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   Check,
+  ChevronDown,
   ExternalLink,
   Loader2,
   Mic,
@@ -166,26 +167,30 @@ function SettingsSheet({ controller, onClose }: { controller: VoiceModeControlle
     voices: status.voices.filter((voice) => voice.accent === accent),
   }));
   const label = "text-[11px] font-medium uppercase tracking-wide text-white/50";
-  const field = "mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-2 text-sm text-white";
+  const field = "w-full min-w-0 appearance-none truncate rounded-lg border border-white/10 bg-black/40 py-2 pl-2.5 pr-9 text-base text-white sm:text-sm";
+  const selectArrow = <ChevronDown size={16} aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/60" />;
   return (
     <div className="absolute inset-0 z-20 flex justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="h-full w-full max-w-sm overflow-y-auto border-l border-white/10 bg-[#0b0d18] p-5 text-white" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between">
+      <div className="flex h-full min-w-0 w-full flex-col overflow-hidden bg-[#0b0d18] text-white [color-scheme:dark] sm:max-w-sm sm:border-l sm:border-white/10" onClick={(event) => event.stopPropagation()}>
+        <div className="flex shrink-0 items-center justify-between px-5 pt-5" style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
           <div className="text-sm font-semibold">Voice settings</div>
           <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-1 text-white/60 hover:bg-white/10 hover:text-white">
             <X size={16} />
           </button>
         </div>
-        <div className="mt-5 space-y-5">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
           <div>
-            <div className={label}>Voice</div>
-            <select className={field} value={settings.voice} onChange={(event) => update({ voice: event.target.value })}>
-              {voicesByAccent.map(({ accent, voices }) => (
-                <optgroup key={accent} label={accent}>
-                  {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}</option>)}
-                </optgroup>
-              ))}
-            </select>
+            <label htmlFor="voice-setting-voice" className={label}>Voice</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-voice" className={field} value={settings.voice} onChange={(event) => update({ voice: event.target.value })}>
+                {voicesByAccent.map(({ accent, voices }) => (
+                  <optgroup key={accent} label={accent}>
+                    {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              {selectArrow}
+            </div>
           </div>
           <div>
             <div className={label}>Speaking speed · {settings.speed.toFixed(2)}×</div>
@@ -201,32 +206,45 @@ function SettingsSheet({ controller, onClose }: { controller: VoiceModeControlle
             <span>Interrupt by talking<span className="block text-[11px] text-white/45">Short reactions like “yeah” won't cut it off.</span></span>
           </label>
           <div>
-            <div className={label}>Announce Bridge updates</div>
-            <select className={field} value={settings.announce} onChange={(event) => update({ announce: event.target.value as VoiceSettings["announce"] })}>
-              <option value="watched">Sessions I start or message by voice</option>
-              <option value="all">Every session that finishes or needs me</option>
-              <option value="off">Off</option>
-            </select>
+            <label htmlFor="voice-setting-announce" className={label}>Announce Bridge updates</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-announce" aria-describedby="voice-announce-help" className={field} value={settings.announce} onChange={(event) => update({ announce: event.target.value as VoiceSettings["announce"] })}>
+                <option value="watched">Voice sessions</option>
+                <option value="all">All sessions</option>
+                <option value="off">Off</option>
+              </select>
+              {selectArrow}
+            </div>
+            <div id="voice-announce-help" className="mt-1 text-[11px] text-white/40">
+              {settings.announce === "watched" ? "Announce updates from sessions you start or message by voice." : settings.announce === "all" ? "Announce every session that finishes or needs you." : "Session announcements are off."}
+            </div>
           </div>
           <div>
-            <div className={label}>Assistant model</div>
-            <select className={field} value={settings.model ?? ""} onChange={(event) => update({ model: event.target.value || undefined })}>
-              <option value="">Auto (fast and cheap)</option>
-              {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-            </select>
-            <div className="mt-1 text-[11px] text-white/40">Applies next time voice mode starts. Real work is still sent to sessions with your default or chosen models.</div>
+            <label htmlFor="voice-setting-model" className={label}>Assistant model</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-model" aria-describedby="voice-model-help" className={field} value={settings.model ?? ""} onChange={(event) => update({ model: event.target.value || undefined })}>
+                <option value="">Auto (fast and cheap)</option>
+                {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+              </select>
+              {selectArrow}
+            </div>
+            <div id="voice-model-help" className="mt-1 text-[11px] text-white/40">Applies next time voice mode starts. Real work is still sent to sessions with your default or chosen models.</div>
           </div>
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-1" checked={controller.echoSafe} onChange={(event) => controller.setEchoSafe(event.target.checked)} />
             <span>Echo-safe playback<span className="block text-[11px] text-white/45">Lets it hear you over its own voice without headphones. Applies on next start.</span></span>
           </label>
           <div>
-            <div className={label}>Connection</div>
-            <select className={field} value={controller.transportPreference} onChange={(event) => controller.setTransportPreference(event.target.value as "auto" | "websocket" | "http")}>
-              <option value="auto">Automatic (WebSocket, then HTTP)</option>
-              <option value="websocket">WebSocket only</option>
-              <option value="http">HTTP streaming (for strict proxies)</option>
-            </select>
+            <label htmlFor="voice-setting-connection" className={label}>Connection</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-connection" aria-describedby="voice-connection-help" className={field} value={controller.transportPreference} onChange={(event) => controller.setTransportPreference(event.target.value as "auto" | "websocket" | "http")}>
+                <option value="auto">Automatic</option>
+                <option value="websocket">WebSocket only</option>
+                <option value="http">HTTP streaming</option>
+              </select>
+              {selectArrow}
+            </div>
+            <div id="voice-connection-help" className="mt-1 text-[11px] text-white/40">Automatic tries WebSocket, then HTTP. Use HTTP streaming for strict proxies.</div>
           </div>
         </div>
       </div>
