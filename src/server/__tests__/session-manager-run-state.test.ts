@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readRestartState, writeRestartState } from "../restart-state.js";
 import {
   forceClearRestartPending,
+  PENDING_INTERACTION_AUTO_ANSWER,
   SessionManager,
   RESTART_PENDING_MESSAGE,
   configureRestartStateStore,
@@ -2175,6 +2176,141 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+  });
+
+  it("auto-answers questions that waited an hour instead of aborting the turn", async () => {
+    const sessionId = "session-auto-answer";
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    // Like the runtime, a responder completes the request with a live event before it returns.
+    session.respondToUserInput.mockImplementation(async (...[requestId, response]: any[]) => {
+      getHandler()?.({
+        type: "user_input.completed",
+        data: { requestId, ...response },
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    });
+    session.tryRespondToElicitation.mockImplementation(async (...[requestId, response]: any[]) => {
+      getHandler()?.({
+        type: "elicitation.completed",
+        data: { requestId, action: response.action },
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    });
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    const multiSelect = { type: "array", items: { type: "string", enum: ["a", "b"] } };
+    const approval = { type: "object", properties: { approved: { type: "boolean" }, extras: multiSelect } };
+    const timestamp = new Date().toISOString();
+    getHandler()?.({
+      type: "user_input.requested",
+      timestamp,
+      data: { requestId: "ui-legacy", question: "Which one?" },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: { requestId: "el-ask", message: "Approve?", mode: "form", requestedSchema: approval },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: {
+        requestId: "el-multi",
+        message: "Extras?",
+        mode: "form",
+        requestedSchema: { type: "object", properties: { extras: multiSelect } },
+      },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: {
+        requestId: "el-mcp",
+        message: "Token?",
+        mode: "form",
+        elicitationSource: "some-mcp",
+        requestedSchema: approval,
+      },
+    });
+    await flushMicrotasks();
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(4);
+
+    await vi.advanceTimersByTimeAsync(59 * 60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    expect(session.respondToUserInput).not.toHaveBeenCalled();
+    expect(session.tryRespondToElicitation).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+
+    expect(session.respondToUserInput.mock.calls).toEqual([
+      ["ui-legacy", { answer: PENDING_INTERACTION_AUTO_ANSWER, wasFreeform: true }],
+    ]);
+    expect(session.tryRespondToElicitation.mock.calls).toEqual([
+      ["el-ask", { action: "accept", content: { approved: PENDING_INTERACTION_AUTO_ANSWER } }],
+      ["el-multi", { action: "accept", content: { extras: [PENDING_INTERACTION_AUTO_ANSWER] } }],
+      ["el-mcp", { action: "cancel" }],
+    ]);
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(telemetryStore!.querySpans({ name: "session.run.no_progress", sessionId })).toEqual([]);
+    expect(telemetryStore!.querySpans({ name: "session.run.no_progress_abort", sessionId })).toEqual([]);
+    expect(telemetryStore!.querySpans({ name: "session.pending_interaction.auto_answer", sessionId })).toHaveLength(4);
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+  });
+
+  it("drops an overdue question the runtime no longer holds and lets the watchdog end the dead turn", async () => {
+    const sessionId = "session-auto-answer-stale";
+    const { manager } = createManager();
+    // The default responder reports false for a request the runtime does not hold.
+    const { session, getHandler } = makeSession();
+    session.abort.mockImplementation(async () => {
+      getHandler()?.({ type: "abort", data: { reason: "watchdog" }, timestamp: new Date().toISOString() });
+    });
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp: new Date().toISOString(),
+      data: {
+        requestId: "el-gone",
+        message: "Approve?",
+        mode: "form",
+        requestedSchema: { type: "object", properties: { approved: { type: "boolean" } } },
+      },
+    });
+    await flushMicrotasks();
+
+    // Watchdog ticks await real file I/O under fake timers, so which tick observes the hour is not
+    // exact. Settling between phases keeps the contract deterministic: one attempt, never retried,
+    // and the next tick then ends the dead turn like any other stall.
+    await vi.advanceTimersByTimeAsync(61 * 60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+    expect(session.tryRespondToElicitation).toHaveBeenCalledTimes(1);
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await manager.waitForSessionWatchdogIdle(sessionId);
+    await flushMicrotasks();
+    expect(session.tryRespondToElicitation).toHaveBeenCalledTimes(1);
+    expect(session.abort).toHaveBeenCalledTimes(1);
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
   });
 

@@ -359,7 +359,11 @@ describe("defer worker", () => {
 
   it("runs with configured model options and deletes the temporary session", async () => {
     const copilotHome = makeTestDir("defer-worker");
-    const buildSessionConfig = vi.fn(() => ({ mcpServers: { ado: { type: "http" } } }));
+    const buildSessionConfig = vi.fn(() => ({
+      mcpServers: { ado: { type: "http" } },
+      pendingInteractionEvents: true,
+      excludedTools: ["report_intent"],
+    }));
     const createSession = vi.fn(async (config: Record<string, unknown>) =>
       createNaturalSession(
         config.sessionId as string,
@@ -444,6 +448,9 @@ describe("defer worker", () => {
       enableConfigDiscovery: false,
       enableSessionStore: false,
       mcpServers: { ado: { type: "http" } },
+      // Nobody can answer a worker, so it must not be able to ask.
+      pendingInteractionEvents: false,
+      excludedTools: ["report_intent", "ask_user"],
     }));
     const helper = await createSession.mock.results[0]!.value;
     expect(helper.sendAndWait).toHaveBeenCalledWith(expect.objectContaining({
