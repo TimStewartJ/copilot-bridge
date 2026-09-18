@@ -448,6 +448,9 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       }
       const sessionConfig = {
         ...baseConfig,
+        // Nobody can answer a worker, so it gets neither ask_user nor the elicitation capability.
+        pendingInteractionEvents: false,
+        excludedTools: [...(Array.isArray(baseConfig.excludedTools) ? baseConfig.excludedTools : []), "ask_user"],
         tools: [
           ...(Array.isArray(baseConfig.tools) ? baseConfig.tools : []),
           createDeferResultTool(input, submission),

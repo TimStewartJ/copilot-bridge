@@ -373,6 +373,8 @@ export interface SessionRunnerDeps {
   flushPendingSessionEviction(sessionId: string): void;
   getPendingUserInputCount(sessionId: string): number;
   getPendingInteractionCount(sessionId: string): number;
+  /** Answers questions nobody has answered for an hour. Never rejects. */
+  autoAnswerOverdueInteractions(sessionId: string): Promise<void>;
   recordPendingInteractionEvent(
     sessionId: string,
     kind: "user_input" | "elicitation",
@@ -2124,6 +2126,13 @@ export class SessionRunner {
           if (runController.isCompleted()) return;
           now = Date.now();
           noProgressMs = Math.max(0, now - getLastProgressAt());
+        }
+        if (this.deps.getPendingInteractionCount(sessionId) > 0) {
+          // Waiting on the user is not a stall, so it never warns or aborts. Overdue questions get
+          // an automatic answer instead; the probe above still catches a dead backend.
+          noProgressWarningActive = false;
+          await this.deps.autoAnswerOverdueInteractions(sessionId);
+          return;
         }
         if (noProgressMs < NO_PROGRESS_WARNING_MS) {
           noProgressWarningActive = false;
