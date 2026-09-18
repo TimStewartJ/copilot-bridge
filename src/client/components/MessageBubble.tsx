@@ -10,6 +10,7 @@ import { buildToolCallForest } from "../lib/tool-call-tree";
 import ToolCallTree from "./ToolCallTree";
 import CodeBlock from "./CodeBlock";
 import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
+import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChatBridgeLink } from "./BridgeReference";
 import { APP_PROSE } from "./shared/prose-classes";
 
 interface MessageBubbleProps {
@@ -80,23 +81,30 @@ function extractNodeText(node: unknown): string {
   return node.children.map(extractNodeText).join("");
 }
 
-function standaloneWorkReference(node: unknown): {
-  url: string;
-  label: string;
-  reference: AdoWorkReference;
-} | null {
+/** The link of a paragraph that holds nothing else, which is what earns a preview card. */
+function standaloneLink(node: unknown): { url: string; label: string } | null {
   if (!isRecord(node) || !Array.isArray(node.children) || node.children.length !== 1) return null;
   const link = node.children[0];
   if (!isRecord(link) || link.type !== "element" || link.tagName !== "a") return null;
   const properties = link.properties;
   if (!isRecord(properties) || typeof properties.href !== "string") return null;
-  const reference = parseAdoWorkReferenceUrl(properties.href);
-  if (!reference) return null;
-  return {
-    url: properties.href,
-    label: extractNodeText(link),
-    reference,
-  };
+  return { url: properties.href, label: extractNodeText(link) };
+}
+
+function standaloneWorkReference(node: unknown): {
+  url: string;
+  label: string;
+  reference: AdoWorkReference;
+} | null {
+  const link = standaloneLink(node);
+  const reference = link ? parseAdoWorkReferenceUrl(link.url) : null;
+  return link && reference ? { ...link, reference } : null;
+}
+
+/** A label that merely repeats the URL says nothing; the item's own title is better. */
+function meaningfulLabel(label: string, url: string): string | undefined {
+  const trimmed = label.trim();
+  return trimmed && trimmed !== url.trim() ? trimmed : undefined;
 }
 
 const ChatMarkdownParagraph: NonNullable<Components["p"]> = ({ node, children, ...props }) => {
@@ -104,12 +112,26 @@ const ChatMarkdownParagraph: NonNullable<Components["p"]> = ({ node, children, .
   if (workReference) {
     return <ChatWorkReferencePreview {...workReference} />;
   }
+  const link = standaloneLink(node);
+  const bridgeTarget = link ? parseChatBridgeLink(link.url) : null;
+  if (link && bridgeTarget) {
+    return <BridgeReferenceCard target={bridgeTarget} label={meaningfulLabel(link.label, link.url)} />;
+  }
   return <p {...props}>{children}</p>;
+};
+
+const ChatMarkdownLink: NonNullable<Components["a"]> = ({ node, children, href, ...props }) => {
+  const bridgeTarget = parseChatBridgeLink(href);
+  if (bridgeTarget) {
+    return <BridgeReferenceChip target={bridgeTarget} label={meaningfulLabel(extractNodeText(node), href ?? "")} />;
+  }
+  return <a href={href} {...props}>{children}</a>;
 };
 
 const MESSAGE_MARKDOWN_COMPONENTS: Components = {
   pre: CodeBlock,
   p: ChatMarkdownParagraph,
+  a: ChatMarkdownLink,
 };
 
 export default memo(function MessageBubble({
@@ -233,7 +255,7 @@ export default memo(function MessageBubble({
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MESSAGE_MARKDOWN_COMPONENTS}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MESSAGE_MARKDOWN_COMPONENTS} urlTransform={bridgeUrlTransform}>
                 {message.content}
               </ReactMarkdown>
             </div>

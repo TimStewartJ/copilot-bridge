@@ -12,7 +12,8 @@ import {
   type VoiceStatus,
   type VoiceTransportPreference,
 } from "./voice-api";
-import { VoiceAudio } from "./voice-audio";
+import { describeVoiceCaptureError } from "../hooks/useVoiceInput";
+import { VoiceAudio, type VoiceAudioStartResult } from "./voice-audio";
 import { connectVoiceTransport, type VoiceTransport, type VoiceTransportHandlers } from "./voice-transport";
 import { initialVoiceViewState, reduceVoiceEvent, type VoiceViewState } from "./voice-view-model";
 
@@ -36,9 +37,14 @@ function loadEchoSafe(): boolean {
   }
 }
 
+/**
+ * Controller for hands-free voice. It attaches to one Helm conversation at a time and holds
+ * no conversation context itself, so starting and stopping it never loses anything.
+ */
 export function useVoiceMode() {
   const [status, setStatus] = useState<VoiceStatus | null>(null);
   const [phase, setPhase] = useState<VoiceSessionPhase>("loading");
+  const [helmSessionId, setHelmSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const [transportPreference, setTransportPreferenceState] = useState<VoiceTransportPreference>(() => loadTransportPreference());
@@ -80,10 +86,6 @@ export function useVoiceMode() {
       return null;
     }
   }, []);
-
-  useEffect(() => {
-    void refreshStatus();
-  }, [refreshStatus]);
 
   useEffect(() => {
     if (!status?.install.installing) return;
@@ -145,6 +147,8 @@ export function useVoiceMode() {
     if (attempt >= RECONNECT_DELAYS_MS.length) {
       setPhase("error");
       setError("Lost the connection to Bridge.");
+      setHelmSessionId(null);
+      ticketRef.current = null;
       void teardown();
       return;
     }
@@ -177,6 +181,8 @@ export function useVoiceMode() {
           endedRef.current = true;
           audio?.earcon("end");
           setPhase("ended");
+          setHelmSessionId(null);
+          ticketRef.current = null;
           window.setTimeout(() => void teardown(), 400);
           break;
       }
@@ -190,13 +196,19 @@ export function useVoiceMode() {
     },
   };
 
-  const start = useCallback(async () => {
-    const currentSettings = settingsRef.current;
+  /**
+   * Starts hands-free for a Helm conversation. The id may be a promise-returning function so the
+   * caller can create the conversation on demand: audio has to start inside the tap that asked
+   * for it (iOS will not resume an AudioContext after a network wait), so that happens first.
+   */
+  const start = useCallback(async (target: string | (() => Promise<string>)) => {
+    const currentSettings = settingsRef.current ?? (await refreshStatus())?.defaults ?? null;
     if (!currentSettings) return;
     setError(null);
     setEchoWarning(null);
     endedRef.current = false;
     dispatch({ type: "reset" });
+    setHelmSessionId(typeof target === "string" ? target : null);
     setPhase("connecting");
     const audio = new VoiceAudio({
       echoSafe,
@@ -209,23 +221,34 @@ export function useVoiceMode() {
     });
     audioRef.current = audio;
     try {
-      const result = await audio.start();
+      let result: VoiceAudioStartResult;
+      try {
+        result = await audio.start();
+      } catch (err) {
+        // Browsers report a missing or blocked microphone in their own words
+        // ("The object can not be found here."); say what it means instead.
+        throw new Error(describeVoiceCaptureError(err));
+      }
       if (echoSafe && !result.echoSafe) {
         setEchoWarning(`Echo-safe playback isn't available (${result.echoSafeError ?? "unsupported"}). Headphones will work best.`);
       }
       audio.earcon("start");
-      const ticket = await createVoiceConversation(currentSettings);
+      const targetHelmSessionId = typeof target === "string" ? target : await target();
+      setHelmSessionId(targetHelmSessionId);
+      const ticket = await createVoiceConversation(targetHelmSessionId, currentSettings);
       ticketRef.current = ticket;
       const transport = await connect(ticket);
+      // The server greets only a conversation with no history; otherwise it just starts listening.
       transport.sendControl({ type: "start", greet: true });
       setPhase("active");
       void acquireWakeLock();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
+      setHelmSessionId(null);
       await teardown();
     }
-  }, [acquireWakeLock, connect, echoSafe, teardown]);
+  }, [acquireWakeLock, connect, echoSafe, refreshStatus, teardown]);
 
   const stop = useCallback(async () => {
     endedRef.current = true;
@@ -234,16 +257,12 @@ export function useVoiceMode() {
     await new Promise((resolve) => window.setTimeout(resolve, 250));
     await teardown();
     ticketRef.current = null;
+    setHelmSessionId(null);
     setPhase("ended");
   }, [teardown]);
 
   const control = useCallback((action: "sleep" | "wake" | "stop_speaking") => {
     transportRef.current?.sendControl({ type: "control", action });
-  }, []);
-
-  const sendText = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (trimmed) transportRef.current?.sendControl({ type: "text", text: trimmed });
   }, []);
 
   const updateSettings = useCallback((patch: Partial<VoiceSettings>) => {
@@ -270,6 +289,8 @@ export function useVoiceMode() {
     setEchoSafeState(value);
   }, []);
 
+  const clearError = useCallback(() => setError(null), []);
+
   const toggleMic = useCallback(() => {
     setMicMuted((current) => {
       audioRef.current?.setMicMuted(!current);
@@ -291,9 +312,15 @@ export function useVoiceMode() {
     void teardown();
   }, [teardown]);
 
+  const active = phase === "connecting" || phase === "active" || phase === "reconnecting";
+
   return {
     status,
     phase,
+    /** True from the moment hands-free starts connecting until it ends. */
+    active,
+    /** The Helm conversation hands-free is speaking for. */
+    helmSessionId,
     error,
     settings,
     view,
@@ -304,11 +331,11 @@ export function useVoiceMode() {
     micLevelRef,
     getOutputLevel: () => audioRef.current?.outputLevel() ?? 0,
     refreshStatus,
+    clearError,
     install,
     start,
     stop,
     control,
-    sendText,
     updateSettings,
     setTransportPreference,
     setEchoSafe,

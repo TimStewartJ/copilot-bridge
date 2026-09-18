@@ -33,11 +33,12 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.focusSessionLaunchService?.stop();
-    const voiceModeOutcome = await settleByDeadline(async () => {
+    ctx.helm?.dispose();
+    const handsFreeOutcome = await settleByDeadline(async () => {
       await ctx.voiceGateway?.shutdown();
     }, deadline);
-    if (voiceModeOutcome.status !== "fulfilled") {
-      console.error(`[web] Voice mode shutdown ${voiceModeOutcome.status}`);
+    if (handsFreeOutcome.status !== "fulfilled") {
+      console.error(`[web] Hands-free shutdown ${handsFreeOutcome.status}`);
     }
     try {
       await ctx.searchIndex?.shutdown();

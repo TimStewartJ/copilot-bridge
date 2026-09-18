@@ -47,6 +47,13 @@ export interface ComputerUseSettings {
   enabled?: boolean;
 }
 
+export interface HelmSettings {
+  /** Reasoning effort for Helm turns answered in the chat. */
+  typedReasoningEffort?: ReasoningEffort;
+  /** Reasoning effort for Helm turns answered out loud in hands-free. */
+  spokenReasoningEffort?: ReasoningEffort;
+}
+
 export interface ModelFamilyDefault {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -81,6 +88,7 @@ export interface AppSettings {
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   computerUse?: ComputerUseSettings;
+  helm?: HelmSettings;
   focusNotifications?: FocusNotificationPolicy;
 }
 
@@ -244,6 +252,24 @@ function normalizeComputerUseSettings(value: unknown): ComputerUseSettings | und
     validationError("computerUse.enabled must be a boolean");
   }
   return enabled === true ? { enabled: true } : undefined;
+}
+
+function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("helm must be an object");
+  const readEffort = (key: keyof HelmSettings): string | undefined => {
+    const raw = value[key];
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== "string" || raw.length > 32) validationError(`helm.${key} must be a reasoning effort name`);
+    return raw.trim() || undefined;
+  };
+  const typedReasoningEffort = readEffort("typedReasoningEffort");
+  const spokenReasoningEffort = readEffort("spokenReasoningEffort");
+  if (!typedReasoningEffort && !spokenReasoningEffort) return undefined;
+  return {
+    ...(typedReasoningEffort ? { typedReasoningEffort } : {}),
+    ...(spokenReasoningEffort ? { spokenReasoningEffort } : {}),
+  };
 }
 
 function normalizeFocusNotifications(value: unknown): FocusNotificationPolicy | undefined {
@@ -507,6 +533,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
     normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
   }
   if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
+  if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("focusNotifications" in value) {
     normalized.focusNotifications = normalizeFocusNotifications(value.focusNotifications);
   }

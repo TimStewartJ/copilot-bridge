@@ -90,7 +90,7 @@ describe("Transcription routes", () => {
           available: false,
           provider: "disabled",
           label: "Unavailable",
-          reason: "Set up the speech engine in Settings → Voice, or from Voice mode.",
+          reason: "Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.",
           maxDurationSeconds: 120,
         }),
         transcribe,

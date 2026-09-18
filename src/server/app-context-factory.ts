@@ -41,6 +41,7 @@ import type { AppContext } from "./app-context.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
 import { createVoiceRuntime } from "./voice/voice-runtime.js";
+import { createHelmStore } from "./helm/helm-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
@@ -164,6 +165,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
   const voiceRuntime = createVoiceRuntime(runtimePaths);
+  const helmStore = createHelmStore(db);
 
   try {
     taskAgentDefinitionStore.sweepOrphanedTaskAgentDirectories(
@@ -226,6 +228,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       logger: console,
     }),
     voiceRuntime,
+    helmStore,
     voiceJobManager: null as any,
     pushSubscriptionStore,
     managementJobStore,

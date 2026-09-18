@@ -1,7 +1,7 @@
 import { matchPath } from "react-router-dom";
 import { isDashboardRoutePath } from "./dashboard-routes";
 
-export type MobileNavTab = "home" | "tasks" | "chats" | "docs" | "settings";
+export type MobileNavTab = "home" | "tasks" | "chats" | "helm" | "docs" | "settings";
 
 export type MobileRouteKind =
   | "dashboard"
@@ -12,6 +12,7 @@ export type MobileRouteKind =
   | "task-session"
   | "quick-chat"
   | "settings"
+  | "helm"
   | "docs-root"
   | "docs-detail"
   | "search"
@@ -104,6 +105,16 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
     return buildMeta({
       route: "settings",
       activeTab: "settings",
+      showBottomNav: true,
+      isRoot: true,
+      isDetail: false,
+    });
+  }
+
+  if (normalizedPath === "/helm") {
+    return buildMeta({
+      route: "helm",
+      activeTab: "helm",
       showBottomNav: true,
       isRoot: true,
       isDetail: false,

@@ -4,7 +4,6 @@ export type VoiceState = "starting" | "listening" | "hearing" | "endpointing" | 
 export type VoiceAnnounceMode = "watched" | "all" | "off";
 
 export interface VoiceSettings {
-  model?: string;
   voice: string;
   speed: number;
   patience: number;
@@ -54,7 +53,6 @@ export interface VoiceStatus {
   engine: { state: "stopped" | "starting" | "ready" | "failed"; detail?: string; loaded?: VoiceEngineCapability[] };
   voices: KokoroVoice[];
   defaults: VoiceSettings;
-  preferredModels: string[];
   activeConversations: number;
 }
 
@@ -80,11 +78,12 @@ export async function startVoiceInstall(): Promise<VoiceInstallStatus> {
   return res.json() as Promise<VoiceInstallStatus>;
 }
 
-export async function createVoiceConversation(settings: VoiceSettings): Promise<VoiceConversationTicket> {
+/** Starts hands-free for a Helm conversation; the voice side holds no context of its own. */
+export async function createVoiceConversation(helmSessionId: string, settings: VoiceSettings): Promise<VoiceConversationTicket> {
   const res = await fetch(`${API_BASE}/api/voice/conversations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ settings }),
+    body: JSON.stringify({ helmSessionId, settings }),
   });
   if (!res.ok) throw new Error(await readError(res));
   return res.json() as Promise<VoiceConversationTicket>;
@@ -106,7 +105,7 @@ export function loadStoredVoiceSettings(defaults: VoiceSettings): VoiceSettings 
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return defaults;
-    const parsed = JSON.parse(raw) as Partial<VoiceSettings>;
+    const { model: _legacyModel, ...parsed } = JSON.parse(raw) as Partial<VoiceSettings> & { model?: unknown };
     return { ...defaults, ...parsed };
   } catch {
     return defaults;
@@ -117,7 +116,7 @@ export function storeVoiceSettings(settings: VoiceSettings): void {
   try {
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   } catch {
-    // Private browsing or quota errors should not break voice mode.
+    // Private browsing or quota errors should not break hands-free.
   }
 }
 

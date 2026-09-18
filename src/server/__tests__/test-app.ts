@@ -32,6 +32,7 @@ import { createCopilotUsageStore } from "../copilot-usage-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
+import { createHelmStore } from "../helm/helm-store.js";
 import { createPushNotificationService } from "../push-notification-service.js";
 import { createPushSubscriptionStore } from "../push-subscription-store.js";
 import { createVoiceJobManager } from "../voice-job-manager.js";
@@ -166,6 +167,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     deferredPromptStore: createDeferredPromptStore(db),
     deferLoopStore: createDeferLoopStore(db),
     interruptedRunStore: createInterruptedRunStore(db),
+    helmStore: createHelmStore(db),
     copilotHome,
     apiBasePath: "/api",
     runtimePaths,
@@ -204,6 +206,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
 
   const cleanup = registerTestAppCleanup(async () => {
     const cleanupErrors: unknown[] = [];
+    ctx.helm?.dispose();
     ctx.focusSessionLaunchService?.stop();
     ctx.focusProtectionStore.stop();
     await ctx.stopPushEventNotifications?.();
