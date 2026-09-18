@@ -613,7 +613,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
         );
       }
       try {
-        deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
+        await deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
       } catch (error) {
         this.deps.logger?.warn(
           `[defer-worker] Disposable session DB cleanup failed: ${error instanceof Error ? error.message : String(error)}`,

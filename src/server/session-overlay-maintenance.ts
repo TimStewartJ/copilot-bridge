@@ -34,9 +34,9 @@ export interface SessionOverlayMaintenanceOptions {
 
 export interface SessionOverlayMaintenance {
   /** Runs one pass immediately and arms the recurring timer. */
-  start(): SessionOverlayMaintenanceResult;
+  start(): Promise<SessionOverlayMaintenanceResult>;
   /** Runs one pass without touching the timer. Exposed for tests. */
-  runOnce(): SessionOverlayMaintenanceResult;
+  runOnce(): Promise<SessionOverlayMaintenanceResult>;
   stop(): void;
 }
 
@@ -53,8 +53,8 @@ export function createSessionOverlayMaintenance(
   let timer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
 
-  function runOnce(): SessionOverlayMaintenanceResult {
-    const report = runSessionOverlayReaper(ctx, {
+  async function runOnce(): Promise<SessionOverlayMaintenanceResult> {
+    const report = await runSessionOverlayReaper(ctx, {
       dryRun: false,
       cleanupDeletedScheduleRuns: true,
       minimumAgeMs,
@@ -80,19 +80,14 @@ export function createSessionOverlayMaintenance(
     return result;
   }
 
-  function start(): SessionOverlayMaintenanceResult {
+  async function start(): Promise<SessionOverlayMaintenanceResult> {
     if (!timer && !stopped) {
       timer = setInterval(() => {
-        try {
-          const result = runOnce();
-          logMaintenance(result);
-        } catch (error) {
-          logger.error("[session-overlay] Maintenance failed:", error);
-        }
+        runOnce().then(logMaintenance, (error) => logger.error("[session-overlay] Maintenance failed:", error));
       }, intervalMs);
       timer.unref?.();
     }
-    const result = runOnce();
+    const result = await runOnce();
     logMaintenance(result);
     return result;
   }

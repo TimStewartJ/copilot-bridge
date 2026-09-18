@@ -15,7 +15,7 @@ function ageState(db: DatabaseSync, sessionId: string, updatedAt = oldIso): void
 }
 
 describe("session overlay reaper", () => {
-  it("dry-runs safely and applies only stale unreferenced overlay rows", () => {
+  it("dry-runs safely and applies only stale unreferenced overlay rows", async () => {
     const sessionManager = {
       ...createMockSessionManager(),
       getActiveSessions: () => ["active-session"],
@@ -45,7 +45,7 @@ describe("session overlay reaper", () => {
     mkdirSync(join(ctx.copilotHome!, "session-state", "disk-session"), { recursive: true });
     ctx.eventBusRegistry.getOrCreateBus("active-session");
 
-    const dryRun = runSessionOverlayReaper(ctx, { dryRun: true, minimumAgeMs: 24 * 60 * 60 * 1000 });
+    const dryRun = await runSessionOverlayReaper(ctx, { dryRun: true, minimumAgeMs: 24 * 60 * 60 * 1000 });
 
     expect(dryRun.wouldReap).toBe(1);
     expect(dryRun.reaped).toBe(0);
@@ -63,7 +63,7 @@ describe("session overlay reaper", () => {
     ]));
     expect(dryRun.rows.find((row) => row.sessionId === "pending-input")?.reasons).toContain("pending_user_input");
 
-    const applied = runSessionOverlayReaper(ctx, { dryRun: false, minimumAgeMs: 24 * 60 * 60 * 1000 });
+    const applied = await runSessionOverlayReaper(ctx, { dryRun: false, minimumAgeMs: 24 * 60 * 60 * 1000 });
 
     expect(applied.reaped).toBe(1);
     expect(ctx.bridgeSessionStateStore.getState("orphan")).toBeUndefined();
@@ -72,14 +72,14 @@ describe("session overlay reaper", () => {
     expect(ctx.bridgeSessionStateStore.getState("catalog-session")).toBeDefined();
   });
 
-  it("retains rows when the CLI catalog is unavailable", () => {
+  it("retains rows when the CLI catalog is unavailable", async () => {
     const { ctx, db } = createTestApp({
       cliSessionCatalog: { listSessions: () => undefined } as any,
     });
     ctx.bridgeSessionStateStore.setTitleOverride("catalog-unknown", "Keep");
     ageState(db, "catalog-unknown");
 
-    const report = runSessionOverlayReaper(ctx, { dryRun: false, minimumAgeMs: 24 * 60 * 60 * 1000 });
+    const report = await runSessionOverlayReaper(ctx, { dryRun: false, minimumAgeMs: 24 * 60 * 60 * 1000 });
 
     expect(report.reaped).toBe(0);
     expect(report.rows[0]).toMatchObject({
@@ -90,7 +90,7 @@ describe("session overlay reaper", () => {
     expect(ctx.bridgeSessionStateStore.getState("catalog-unknown")).toBeDefined();
   });
 
-  it("reports deleted-schedule run groups and deletes them only on explicit apply", () => {
+  it("reports deleted-schedule run groups and deletes them only on explicit apply", async () => {
     const { ctx, db } = createTestApp({
       cliSessionCatalog: { listSessions: () => [] } as any,
     });
@@ -99,7 +99,7 @@ describe("session overlay reaper", () => {
     db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
       .run("deleted-schedule", "run-2", oldIso);
 
-    const dryRun = runSessionOverlayReaper(ctx, {
+    const dryRun = await runSessionOverlayReaper(ctx, {
       dryRun: true,
       cleanupDeletedScheduleRuns: true,
       minimumAgeMs: 0,
@@ -108,7 +108,7 @@ describe("session overlay reaper", () => {
     expect(dryRun.deletedScheduleRuns).toMatchObject({ wouldDelete: 2, deleted: 0 });
     expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs").get() as any).count).toBe(2);
 
-    const applied = runSessionOverlayReaper(ctx, {
+    const applied = await runSessionOverlayReaper(ctx, {
       dryRun: false,
       cleanupDeletedScheduleRuns: true,
       minimumAgeMs: 0,

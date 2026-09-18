@@ -267,7 +267,7 @@ export class SessionNameAutogenerator {
     // Defensive for legacy/pre-flag rows: disconnect/delete flush SDK tracking before returning.
     const start = Date.now();
     try {
-      deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
+      await deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
       this.recordSpan("session.name.cleanup", start, sessionId, { result: "ok" });
     } catch (error) {
       this.recordSpan("session.name.cleanup", start, sessionId, {

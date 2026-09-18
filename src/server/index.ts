@@ -262,7 +262,7 @@ async function main(): Promise<void> {
 
   try {
     defaultContext.sessionOverlayMaintenance = createSessionOverlayMaintenance(defaultContext);
-    defaultContext.sessionOverlayMaintenance.start();
+    await defaultContext.sessionOverlayMaintenance.start();
   } catch (error) {
     console.error("[session-overlay] Initial maintenance failed:", error);
   }
