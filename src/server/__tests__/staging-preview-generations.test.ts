@@ -24,7 +24,7 @@ function completeGeneration(
 }
 
 describe("staging preview generations", () => {
-  it("publishes a completed generation atomically and prunes retired generations later", () => {
+  it("publishes a completed generation atomically and prunes retired generations later", async () => {
     const root = makeTestDir("preview-generations");
     const previewParent = join(root, "previews");
     const stagingDir = join(root, "worktrees", "preview-123");
@@ -58,12 +58,12 @@ describe("staging preview generations", () => {
     expect(readActivePreviewTarget(first.prefix, previewParent)?.generationId).toBe("generation-two");
     expect(existsSync(dirname(first.outDir))).toBe(true);
 
-    expect(prunePreviewGenerations(first.prefix, "generation-two", previewParent)).toBe(2);
+    expect(await prunePreviewGenerations(first.prefix, "generation-two", previewParent)).toBe(2);
     expect(existsSync(dirname(first.outDir))).toBe(false);
     expect(existsSync(dirname(second.outDir))).toBe(false);
     expect(existsSync(dirname(completeSecond.outDir))).toBe(true);
 
-    removePublishedPreview(first.prefix, previewParent);
+    await removePublishedPreview(first.prefix, previewParent);
     expect(readActivePreviewTarget(first.prefix, previewParent)).toBeNull();
     expect(existsSync(dirname(completeSecond.outDir))).toBe(false);
   });

@@ -179,7 +179,7 @@ export async function cleanupStagingBackendResources(
   const ownedPreviewDataDir = activePreviewDataDirs.get(prefix);
   if (removeData && ownedPreviewDataDir) {
     try {
-      removePreviewData(ownedPreviewDataDir);
+      await removePreviewData(ownedPreviewDataDir);
     } catch (error) {
       log(`Warning: failed to remove preview data for ${prefix}: ${error}`);
     } finally {
@@ -284,7 +284,7 @@ export async function activateStagingPreviewTarget(
     rememberRestorablePreviewTarget(target);
     if (previousDataDir && previousDataDir !== target.dataDir) {
       try {
-        removePreviewData(previousDataDir);
+        await removePreviewData(previousDataDir);
       } catch (error) {
         log(`Warning: failed to remove retired preview data for ${prefix}: ${error}`);
       } finally {
@@ -1368,7 +1368,7 @@ async function teardownStagingBackend(
   }
   activeStagingBackends.delete(prefix);
   if (removeData) {
-    removePreviewData(staging.runtimePaths.dataDir);
+    await removePreviewData(staging.runtimePaths.dataDir);
     activePreviewDataDirs.delete(prefix);
   }
   log(`Staging backend torn down: ${prefix}`);
@@ -1386,7 +1386,7 @@ export async function initializeStagingBackend(
   if (!options.dataDir) {
     const stalePreviewDataDir = activePreviewDataDirs.get(prefix)
       ?? join(stagingDir, "data");
-    removePreviewData(stalePreviewDataDir);
+    await removePreviewData(stalePreviewDataDir);
     activePreviewDataDirs.delete(prefix);
   }
   rememberRestorablePreviewTarget(options.target ?? createPreviewTarget(stagingDir));
@@ -1413,7 +1413,7 @@ export async function initializeStagingBackend(
     activeStagingRouters.delete(prefix);
     activeStagingBackends.delete(prefix);
     if (runtimePaths && !options.dataDir) {
-      removePreviewData(runtimePaths.dataDir);
+      await removePreviewData(runtimePaths.dataDir);
     }
     activePreviewDataDirs.delete(prefix);
     throw err;

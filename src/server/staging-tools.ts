@@ -21,6 +21,7 @@ import {
 } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { removeDirectoryLink } from "./platform.js";
+import { getProcessHost } from "./process-host.js";
 import { buildPublicUrl } from "./public-url.js";
 import {
   DEPLOY_CHECK_COMMAND,
@@ -95,6 +96,7 @@ import {
   removePreviewGeneration,
   removePreviewData,
   removePublishedPreview,
+  unpublishPreview,
   shouldManageStagingArtifacts,
   uniqueResolvedPaths,
   type PreviewTarget,
@@ -147,13 +149,11 @@ type StagingCommandRunner = (
 
 const STAGING_DEPENDENCY_HASH_FILENAME = ".bridge-deps-hash";
 
-async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
-  await cleanupPreviewTarget(stagingDir);
-}
-
 export async function cleanupCompletedStagingDeploy(stagingDir: string): Promise<void> {
   const prefix = basename(stagingDir);
-  await cleanupPreviewArtifactsForStagingDir(stagingDir);
+  // A preview that cannot be deleted means its backend is still running out of this worktree,
+  // so the worktree is only deleted once the preview is gone.
+  await cleanupPreviewTarget(stagingDir);
   await removeWorktree(stagingDir, `staging/${prefix}`);
   deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
 }
@@ -169,7 +169,7 @@ async function cleanupPreviewResources(
     await cleanupStagingBackendResources(prefix, { removeData: options.removeData });
   }
   if (removeDist) {
-    removeStagingDist(prefix);
+    await removeStagingDist(prefix);
   }
 }
 
@@ -456,7 +456,7 @@ async function runStagingPreviewDiscovery(
     }
 
     try {
-      const removed = prunePreviewGenerations(
+      const removed = await prunePreviewGenerations(
         target.prefix,
         target.generationId!,
       );
@@ -522,9 +522,9 @@ async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void)
 }
 
 
-function removeStagingDist(prefix: string): void {
+async function removeStagingDist(prefix: string): Promise<void> {
   for (const previewParent of listStagingPreviewParents()) {
-    removePublishedPreview(prefix, previewParent);
+    await removePublishedPreview(prefix, previewParent);
   }
   activePreviews.delete(prefix);
 }
@@ -657,25 +657,14 @@ function ensureNodeModulesIgnored(stagingDir: string): void {
   }
 }
 
-/** Remove a staging worktree and its branch. Handles node_modules cleanup. */
+/**
+ * Remove a staging worktree and its branch. `git worktree remove` cannot delete node_modules in
+ * time and refuses a directory it no longer tracks, so the tree is deleted and then pruned.
+ */
 async function removeWorktree(stagingDir: string, branch: string): Promise<void> {
-  // Remove node_modules first — git worktree remove can't handle symlinks or large dirs
-  const junctionPath = join(stagingDir, "node_modules");
-  try {
-    const stat = lstatSync(junctionPath);
-    if (stat.isSymbolicLink()) {
-      rmSync(junctionPath);
-    } else if (stat.isDirectory()) {
-      rmSync(junctionPath, { recursive: true, force: true });
-    }
-  } catch (error) {
-    if (getFsErrorCode(error) !== "ENOENT") {
-      log(`Warning: failed to remove node_modules: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  await run(`git worktree remove "${stagingDir}" --force`, PRODUCTION_ROOT);
-  await run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
+  await getProcessHost().removeTree(stagingDir);
   await run("git worktree prune", PRODUCTION_ROOT);
+  await run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
 }
 
 async function worktreeHasUncommittedChanges(stagingDir: string): Promise<boolean> {
@@ -733,8 +722,13 @@ async function pruneStaleStagingArtifacts(options: {
       continue;
     }
 
-    await cleanupPreviewArtifactsForStagingDir(entry.stagingDir);
-    await options.removeWorktree(entry.stagingDir, entry.branch);
+    try {
+      await cleanupPreviewTarget(entry.stagingDir);
+      await options.removeWorktree(entry.stagingDir, entry.branch);
+    } catch (error) {
+      options.log(`Warning: could not remove stale staging worktree ${entry.prefix}: ${error}`);
+      continue;
+    }
     options.activeWorktrees.delete(entry.prefix);
     for (const target of entry.targets) {
       options.previewMap.delete(target.prefix);
@@ -807,8 +801,14 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
         }
 
         if (!activeBranchPrefixes.has(entry.name)) {
-          await removeOrphanedWorktree(stagingDir, branch);
-          orphanedWorktreeDirs++;
+          // Only a git worktree is the Bridge's to delete; any other directory here is left alone.
+          if (!existsSync(join(stagingDir, ".git"))) continue;
+          try {
+            await removeOrphanedWorktree(stagingDir, branch);
+            orphanedWorktreeDirs++;
+          } catch (error) {
+            writeLog(`Warning: could not remove orphaned staging worktree ${entry.name}: ${error}`);
+          }
           continue;
         }
 
@@ -838,7 +838,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
             restoredPreviewDirs++;
           }
           try {
-            prunePreviewGenerations(
+            await prunePreviewGenerations(
               target.prefix,
               target.generationId!,
               stagingPreviewParent,
@@ -850,7 +850,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
             );
           }
         } else if (!skipOrphanPrune) {
-          removePublishedPreview(target.prefix, stagingPreviewParent);
+          await removePublishedPreview(target.prefix, stagingPreviewParent);
           previewMap.delete(target.prefix);
           forgetStagingPreviewBackend(target.prefix);
           orphanedPreviewDirs++;
@@ -876,7 +876,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
             restoredPreviewDirs++;
           }
         } else if (!skipOrphanPrune) {
-          rmSync(join(stagingPreviewParent, entry.name), { recursive: true, force: true });
+          await getProcessHost().removeTree(join(stagingPreviewParent, entry.name));
           previewMap.delete(entry.name);
           forgetStagingPreviewBackend(entry.name);
           orphanedPreviewDirs++;
@@ -1085,7 +1085,7 @@ export async function runStagingPreviewJob(
     stagingDir,
   );
   if (!buildResult.ok) {
-    removePreviewGeneration(target);
+    await removePreviewGeneration(target);
     return commandFailure(
       "Staging preview build failed.",
       `Vite could not build the staging preview for ${basePath}.`,
@@ -1101,7 +1101,7 @@ export async function runStagingPreviewJob(
     const seedPreviewData = options.seedPreviewData ?? seedStagingData;
     seedPreviewData(stagingDir, { dataDir: target.dataDir });
   } catch (error) {
-    removePreviewGeneration(target);
+    await removePreviewGeneration(target);
     const message = error instanceof Error ? error.message : String(error);
     return stagingFailure(
       "Staging preview data preparation failed.",
@@ -1117,7 +1117,7 @@ export async function runStagingPreviewJob(
   try {
     publishPreviewGeneration(target);
   } catch (error) {
-    removePreviewGeneration(target);
+    await removePreviewGeneration(target);
     const message = error instanceof Error ? error.message : String(error);
     return stagingFailure(
       "Staging preview generation publish failed.",
@@ -1850,6 +1850,10 @@ async function runStagingDeployJobImpl(
 
   await unstashProduction();
 
+  // The restarted server warms the newest preview, which is this one. Its backend then holds the
+  // preview database open while post-activation cleanup deletes it, and the delete fails (EPERM).
+  unpublishPreview(prefix);
+
   const restartDeferred = options.deferDeployRestart === true;
   if (!restartDeferred) {
     if (!existsSync(PRODUCTION_DATA_DIR)) mkdirSync(PRODUCTION_DATA_DIR, { recursive: true });
@@ -1860,7 +1864,7 @@ async function runStagingDeployJobImpl(
       writeLog(`Restart signal failed after deploy: ${failureMessage}`);
       let cleanupNote = "";
       try {
-        await cleanupPreviewArtifactsForStagingDir(stagingDir);
+        await cleanupPreviewTarget(stagingDir);
         await removeWorktree(stagingDir, branch);
         deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
         writeLog("Staging worktree cleaned up after restart signal failure");
@@ -1950,10 +1954,6 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
         log("Pulled latest from origin");
       } else {
         log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
-      }
-
-      if (!existsSync(STAGING_PARENT)) {
-        mkdirSync(STAGING_PARENT, { recursive: true });
       }
 
       // Create branch from current HEAD
@@ -2103,7 +2103,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
 
       log(`Cleaning up staging worktree: ${stagingDir}`);
 
-      await cleanupPreviewArtifactsForStagingDir(stagingDir);
+      await cleanupPreviewTarget(stagingDir);
       await removeWorktree(stagingDir, branch);
       deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
 

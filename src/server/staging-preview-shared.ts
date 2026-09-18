@@ -12,6 +12,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { resolveBridgeControlRoot } from "./control-root.js";
+import { getProcessHost } from "./process-host.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,8 +52,6 @@ export const STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS = parsePositiveIntegerEnv("
 export const STAGING_STALE_ARTIFACT_MAX_AGE_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_MAX_AGE_MS", 14 * 24 * 60 * 60_000);
 export const STAGING_STALE_ARTIFACT_KEEP_RECENT = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_KEEP_RECENT", 25);
 export const STAGING_STALE_ARTIFACT_RECENT_GRACE_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_RECENT_GRACE_MS", 2 * 60 * 60_000);
-export const STAGING_ARTIFACT_CLEANUP_MAX_RETRIES = 20;
-export const STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS = 50;
 export const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
   process.env[STAGING_PREVIEW_DIR_ENV],
   join(PRODUCTION_DATA_DIR, "staging-previews"),
@@ -278,16 +277,19 @@ export function listActivePreviewTargets(
   return targets;
 }
 
-export function removePreviewGeneration(target: PreviewTarget): void {
+/** Preview trees hold a client build and a database copy, so they are deleted off the main thread. */
+const removeTree = (path: string): Promise<void> => getProcessHost().removeTree(path);
+
+export async function removePreviewGeneration(target: PreviewTarget): Promise<void> {
   if (!target.generationId) return;
-  removeDirectoryWithRetries(dirname(target.outDir));
+  await removeTree(dirname(target.outDir));
 }
 
-export function prunePreviewGenerations(
+export async function prunePreviewGenerations(
   prefix: string,
   keepGenerationId: string,
   previewParent = STAGING_PREVIEW_PARENT,
-): number {
+): Promise<number> {
   const generationsDir = join(
     previewParent,
     STAGING_PREVIEW_GENERATIONS_DIRNAME,
@@ -297,26 +299,24 @@ export function prunePreviewGenerations(
   let removed = 0;
   for (const entry of readdirSync(generationsDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === keepGenerationId) continue;
-    removeDirectoryWithRetries(join(generationsDir, entry.name));
+    await removeTree(join(generationsDir, entry.name));
     removed++;
   }
   return removed;
 }
 
-export function removePublishedPreview(
+/** Withdraws a preview without deleting it: a server started from now on will not open its files. */
+export function unpublishPreview(prefix: string, previewParent = STAGING_PREVIEW_PARENT): void {
+  rmSync(activePreviewManifestPath(prefix, previewParent), { force: true });
+}
+
+export async function removePublishedPreview(
   prefix: string,
   previewParent = STAGING_PREVIEW_PARENT,
-): void {
-  rmSync(activePreviewManifestPath(prefix, previewParent), { force: true });
-  const generationsDir = join(
-    previewParent,
-    STAGING_PREVIEW_GENERATIONS_DIRNAME,
-    prefix,
-  );
-  if (existsSync(generationsDir)) removeDirectoryWithRetries(generationsDir);
-
-  const legacyDistDir = join(previewParent, prefix);
-  if (existsSync(legacyDistDir)) removeDirectoryWithRetries(legacyDistDir);
+): Promise<void> {
+  unpublishPreview(prefix, previewParent);
+  await removeTree(join(previewParent, STAGING_PREVIEW_GENERATIONS_DIRNAME, prefix));
+  await removeTree(join(previewParent, prefix));
 }
 
 export function shouldManageStagingArtifacts(
@@ -343,25 +343,16 @@ export function previewTargetLastActivityMs(target: PreviewTarget): number {
   );
 }
 
-export function removePreviewData(dataDir: string): void {
+export async function removePreviewData(dataDir: string): Promise<void> {
   if (!statPathExists(dataDir)) return;
   if (!statPathExists(join(dataDir, "validation-logs"))) {
-    removeDirectoryWithRetries(dataDir);
+    await removeTree(dataDir);
     return;
   }
   for (const entry of readdirSync(dataDir)) {
     if (entry === "validation-logs") continue;
-    removeDirectoryWithRetries(join(dataDir, entry));
+    await removeTree(join(dataDir, entry));
   }
-}
-
-export function removeDirectoryWithRetries(dir: string): void {
-  rmSync(dir, {
-    recursive: true,
-    force: true,
-    maxRetries: STAGING_ARTIFACT_CLEANUP_MAX_RETRIES,
-    retryDelay: STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS,
-  });
 }
 
 function statPathExists(path: string): boolean {

@@ -641,6 +641,59 @@ describe("management job runner", () => {
     }
   });
 
+  it("runs previews and idles between polls while a batched deploy waits for its restart", async () => {
+    const { db, store, dataDir } = createStore("runner-deploy-waiting");
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const deploy = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "deploy-1"), message: "deploy" });
+      let preview: ManagementJob | undefined;
+      let stopping = false;
+      let reconciles = 0;
+      const dispatched: string[] = [];
+
+      await runManagementJobRunnerLoop({
+        store,
+        pollIntervalMs: 7,
+        log: () => {},
+        deployBatchDataDir: dataDir,
+        shouldStop: () => stopping,
+        // A restart that waits for busy sessions is in flight, but its batch window is still open,
+        // so nothing is held. The deploy stays pending for as long as the sessions stay busy.
+        getHoldReason: () => null,
+        queueDeployRestart: () => writeFileSync(join(dataDir, "restart.signal"), "{}", "utf8"),
+        // Read once per reconcile, so this counts passes through the pending-deploy branch.
+        getActiveRelease: () => {
+          reconciles++;
+          if (reconciles === 4) preview = store.enqueue("staging_preview", { stagingDir: "preview" });
+          if (reconciles > 200) stopping = true; // a loop that starves the preview must still end
+          return null;
+        },
+        dispatch: async (job) => {
+          dispatched.push(job.type);
+          if (job.type === "staging_preview") {
+            stopping = true;
+            return { success: true };
+          }
+          return {
+            restartDeferred: true,
+            releaseCandidate: { id: "release-1", root: join(dataDir, "release-1"), commitSha: "commit-1", source: "staging_deploy", dependencyHash: "deps-1" },
+          };
+        },
+      });
+
+      expect(dispatched).toEqual(["staging_deploy", "staging_preview"]);
+      expect(store.get(preview!.id)?.status).toBe("succeeded");
+      expect(store.get(deploy.id)?.result).toMatchObject({ restartQueued: true, restartActivated: false });
+      // Each pass with nothing to do waits one poll interval instead of looping straight away.
+      expect(timers.mock.calls.filter(([, delay]) => delay === 7).length).toBeGreaterThanOrEqual(2);
+      expect(reconciles).toBe(4);
+    } finally {
+      timers.mockRestore();
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("caps each deploy batch and leaves later jobs queued", async () => {
     const { db, store, dataDir } = createStore("runner-deploy-cap");
     try {
