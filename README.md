@@ -242,6 +242,23 @@ npm run test:slow-report # full Vitest pass + top slowest files
 
 Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Coverage is CI-owned: the GitHub Actions CI workflow runs `test:coverage` on PRs, pushes, manual dispatches, and its nightly schedule; local deploy validation still runs the full non-coverage test lanes through `check:pr`. Client type-checking (`npm run typecheck:client`) is a plain `tsc --noEmit` over `tsconfig.client.json` and must stay at zero diagnostics. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior.
 
+### Pagination query parameters
+
+The GET endpoints `/api/schedules/:id/sessions`, `/api/docs/search`, and
+`/api/docs/db/*folder` validate `limit` as a positive integer and `offset` as a
+non-negative integer. Negative, fractional, non-numeric, and unsafe integer values
+return HTTP 400 with an `{ "error": "..." }` body; `limit=0` is invalid, while
+`offset=0` is valid. Omitted parameters retain these defaults:
+
+| Endpoint | Default limit | Maximum limit | Default offset |
+| --- | --- | --- | --- |
+| Schedule sessions | 20 | 100 | 0 |
+| Docs search | 50 | 200 | 0 |
+| Docs database entries | 10000 | 10000 | 0 |
+
+Valid limits above the endpoint maximum are clamped. Offsets accept integers up
+to `Number.MAX_SAFE_INTEGER`.
+
 ### Context and prompt-cache diagnostics
 
 Resumes still pending at 30 seconds emit `session.resume.diagnostic` spans with

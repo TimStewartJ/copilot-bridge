@@ -39,6 +39,22 @@ const unsafeDocsRoutePaths = [
   ["UNC", "%5C%5Cserver%5Cshare"],
 ] as const;
 
+describe.each(["/api/docs/search", "/api/docs/db/incidents"])("%s pagination", (route) => {
+  it.each(["-1", "1.5", "NaN", "Infinity", "9007199254740992"])("rejects offset=%s", async (offset) => {
+    const res = await request(app).get(route).query({ offset });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "offset must be a non-negative integer." });
+  });
+
+  it.each(["0", "-1", "1.5", "NaN"])("rejects limit=%s", async (limit) => {
+    const res = await request(app).get(route).query({ limit });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "limit must be a positive integer." });
+  });
+});
+
 describe("Task group tag routes", () => {
   it("PUT /api/task-groups/:id/tags assigns tags to a group", async () => {
     const group = (await request(app).post("/api/task-groups").send({ name: "Tagged Group" })).body.group;
@@ -82,6 +98,23 @@ describe("Docs routes", () => {
     const res = await request(app).get("/api/docs/search?q=xylophone");
     expect(res.status).toBe(200);
     expect(res.body.results.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { query: {}, limit: 50, offset: 0 },
+    { query: { limit: "201", offset: "0" }, limit: 200, offset: 0 },
+    { query: { offset: String(Number.MAX_SAFE_INTEGER) }, limit: 50, offset: Number.MAX_SAFE_INTEGER },
+  ])("GET /api/docs/search passes validated pagination $query to the index", async ({ query, limit, offset }) => {
+    const search = vi.spyOn(ctx.docsIndex!, "search");
+    try {
+      const res = await request(app).get("/api/docs/search").query({ q: "xylophone", ...query });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ results: [], total: 0 });
+      expect(search).toHaveBeenCalledWith("xylophone", limit, offset);
+    } finally {
+      search.mockRestore();
+    }
   });
 
   it("self-heals a conflicting docs FTS table before docs search", async () => {
@@ -251,6 +284,23 @@ describe("Docs DB routes", () => {
     expect(res.body.entries.length).toBe(2);
     expect(typeof res.body.total).toBe("number");
     expect(res.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
+  });
+
+  it.each([
+    { query: {}, limit: 10000, offset: 0 },
+    { query: { limit: "10001", offset: "0" }, limit: 10000, offset: 0 },
+    { query: { offset: String(Number.MAX_SAFE_INTEGER) }, limit: 10000, offset: Number.MAX_SAFE_INTEGER },
+  ])("GET /api/docs/db passes validated pagination $query to the index", async ({ query, limit, offset }) => {
+    const queryByFolder = vi.spyOn(ctx.docsIndex!, "queryByFolder");
+    try {
+      const res = await request(app).get(`/api/docs/db/${folder}`).query(query);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ entries: [], total: 0 });
+      expect(queryByFolder).toHaveBeenCalledWith(folder, undefined, undefined, limit, offset, false);
+    } finally {
+      queryByFolder.mockRestore();
+    }
   });
 
   it("GET /api/docs/db can include markdown bodies", async () => {
