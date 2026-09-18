@@ -1,4 +1,4 @@
-// Browser audio for voice mode: 16 kHz microphone capture and echo-cancellable playback.
+// Browser audio for hands-free voice: 16 kHz microphone capture and echo-cancellable playback.
 
 const CAPTURE_WORKLET_SOURCE = `
 class BridgeVoiceCapture extends AudioWorkletProcessor {
@@ -110,7 +110,7 @@ export class VoiceAudio {
   async start(): Promise<VoiceAudioStartResult> {
     const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error("This browser can't capture audio. Voice mode needs HTTPS (or localhost) and a modern browser.");
+      throw new Error("This browser can't capture audio. Hands-free needs HTTPS (or localhost) and a modern browser.");
     }
     const ctx = new AudioContextCtor({ latencyHint: "interactive" });
     this.ctx = ctx;

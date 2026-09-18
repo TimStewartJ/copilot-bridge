@@ -104,6 +104,9 @@ interface ChatInputProps {
   slashCommands?: SlashCommandInfo[];
   slashCommandsSupported?: boolean;
   defaultSendMode?: SendMode;
+  /** Hides the record button while something else owns the microphone (hands-free voice). */
+  hideVoiceInput?: boolean;
+  placeholder?: string;
 }
 
 export default function ChatInput({
@@ -125,6 +128,8 @@ export default function ChatInput({
   slashCommands = [],
   slashCommandsSupported = false,
   defaultSendMode = DEFAULT_SEND_MODE,
+  hideVoiceInput = false,
+  placeholder = "Type a message...",
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -718,7 +723,7 @@ export default function ChatInput({
             >
               <Paperclip size={18} />
             </button>
-            {voiceUi.showButton && (
+            {voiceUi.showButton && !hideVoiceInput && (
               <button
                 onClick={() => {
                   if (voice.phase === "recording") {
@@ -777,7 +782,7 @@ export default function ChatInput({
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               enterKeyHint="enter"
-              placeholder="Type a message..."
+              placeholder={placeholder}
               rows={1}
               className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
             />

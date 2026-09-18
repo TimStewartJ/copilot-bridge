@@ -668,6 +668,18 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_voice_jobs_updated ON voice_jobs(updatedAt);
     CREATE INDEX IF NOT EXISTS idx_voice_jobs_taskId ON voice_jobs(taskId);
 
+    -- Helm conversations: orchestration chats kept out of the normal session lists.
+    -- At most one row is current; older rows stay resumable until retention prunes them.
+    CREATE TABLE IF NOT EXISTS helm_conversations (
+      sessionId TEXT PRIMARY KEY,
+      createdAt TEXT NOT NULL,
+      lastActiveAt TEXT NOT NULL,
+      turnCount INTEGER NOT NULL DEFAULT 0,
+      isCurrent INTEGER NOT NULL DEFAULT 0,
+      kept INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_helm_conversations_lastActiveAt ON helm_conversations(lastActiveAt);
+
     -- Docs knowledge base — structured metadata table
     CREATE TABLE IF NOT EXISTS docs_pages (
       rowid INTEGER PRIMARY KEY,

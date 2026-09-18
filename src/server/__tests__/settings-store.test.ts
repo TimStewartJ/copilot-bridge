@@ -184,6 +184,24 @@ describe("settings-store", () => {
     })).toThrow("deferWorker.contextTier must be default or long_context");
   });
 
+  it("persists and validates Helm's per-mode reasoning efforts", () => {
+    expect(store.getSettings().helm).toBeUndefined();
+
+    const updated = store.updateSettings({ helm: { typedReasoningEffort: " max ", spokenReasoningEffort: "xhigh" } });
+    expect(updated.helm).toEqual({ typedReasoningEffort: "max", spokenReasoningEffort: "xhigh" });
+    expect(store.getSettings().helm).toEqual(updated.helm);
+
+    // One mode can be set on its own; clearing both removes the block so defaults apply again.
+    expect(store.updateSettings({ helm: { spokenReasoningEffort: "high" } }).helm).toEqual({ spokenReasoningEffort: "high" });
+    expect(store.updateSettings({ helm: { typedReasoningEffort: "", spokenReasoningEffort: null as any } }).helm).toBeUndefined();
+
+    expect(() => store.updateSettings({ helm: "max" as any })).toThrow("helm must be an object");
+    expect(() => store.updateSettings({ helm: { typedReasoningEffort: 5 as any } }))
+      .toThrow("helm.typedReasoningEffort must be a reasoning effort name");
+    expect(() => store.updateSettings({ helm: { spokenReasoningEffort: "x".repeat(40) } }))
+      .toThrow("helm.spokenReasoningEffort must be a reasoning effort name");
+  });
+
   it("rejects non-boolean browser headed settings", () => {
     expect(() => store.updateSettings({
       browser: { headed: "true" } as any,

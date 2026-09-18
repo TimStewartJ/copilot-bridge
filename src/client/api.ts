@@ -1028,7 +1028,8 @@ export async function undoSessionTurn(
 
 export interface ChatMessageAcceptedResponse {
   status: "accepted";
-  mode?: "steered" | "command";
+  /** "hands-free": a Helm message that will also be answered out loud. */
+  mode?: "steered" | "command" | "hands-free";
 }
 
 export interface ChatMessageSendOptions {
@@ -3089,6 +3090,13 @@ export interface ModelPreset {
 
 export type ModelPresets = Partial<Record<ModelPresetSlot, ModelPreset>>;
 
+export interface HelmSettings {
+  /** Reasoning effort for Helm turns answered in the chat. */
+  typedReasoningEffort?: ReasoningEffort;
+  /** Reasoning effort for Helm turns answered out loud in hands-free. */
+  spokenReasoningEffort?: ReasoningEffort;
+}
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -3107,6 +3115,7 @@ export interface AppSettings {
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   computerUse?: ComputerUseSettings;
+  helm?: HelmSettings;
   focusNotifications?: FocusNotificationPolicy;
 }
 

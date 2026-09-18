@@ -371,6 +371,78 @@ describe("VoiceConversation", () => {
     ctx.conversation.enqueueEvent("Session Tellus finished.");
     expect(ctx.agent.last.input).toEqual({ kind: "event", text: "Session Tellus finished." });
   });
+
+  it("speaks only what comes before the on-screen divider", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "What's waiting on me?");
+    const { listener } = ctx.agent.last;
+    listener.onDelta("Two sessions need you. I put them on screen.\n--");
+    listener.onDelta("-\n- [Deploy check](bridge://session/cccccccc)\n- [Tellus](bridge://session/aaaaaaaa)\n");
+    listener.onDone({ aborted: false });
+    await advance(50);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["Two sessions need you.", "I put them on screen."]);
+    const done = ctx.sink.events.find((event) => event.type === "assistant_done") as { text: string };
+    expect(done.text).toContain("bridge://session/cccccccc");
+  });
+
+  it("shows a list instead of reading it aloud, even without a divider", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "List my recent tasks.");
+    const { listener } = ctx.agent.last;
+    listener.onDelta("The three most recent tasks are on screen:\n\n- [Bridge Meta](bridge://task/a)\n- [Circles](bridge://task/b)\n");
+    listener.onDelta("- [Apple Watch](bridge://task/c)\n\nWant me to open one?");
+    listener.onDone({ aborted: false });
+    await advance(50);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["The three most recent tasks are on screen:", "Want me to open one?"]);
+    const done = ctx.sink.events.find((event) => event.type === "assistant_done") as { text: string };
+    expect(done.text).toContain("- [Circles](bridge://task/b)");
+  });
+
+  it("says so when a reply is nothing but on-screen content", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "Show me the unread ones.");
+    const { listener } = ctx.agent.last;
+    listener.onDelta("- [Tellus](bridge://session/a)\n- [Deploy check](bridge://session/b)\n");
+    listener.onDone({ aborted: false });
+    await advance(50);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["I've put that on screen."]);
+
+    // An empty reply (background talk the assistant chose to ignore) stays silent.
+    await speakTurn(ctx, "No no, put it over there.");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(50);
+    expect(ctx.engine.synthCalls).toHaveLength(1);
+  });
+
+  it("gives each assistant message in a turn its own spoken part", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "Archive the finished ones and tell me what's left.");
+    const { listener } = ctx.agent.last;
+    listener.onDelta("On it.\n---\nArchiving three sessions\n");
+    listener.onMessageEnd?.();
+    listener.onDelta("All done, two are still running");
+    listener.onMessageEnd?.();
+    listener.onDone({ aborted: false });
+    await advance(50);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["On it.", "All done, two are still running"]);
+  });
+
+  it("always sends typed messages to the agent, carrying their identity", async () => {
+    const ctx = setup();
+    ctx.conversation.submitText("stop", { clientMessageId: "client-1" });
+    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "stop", clientMessageId: "client-1" });
+    expect(ctx.conversation.state).toBe("thinking");
+    expect(ctx.sink.events).toContainEqual({ type: "user", turnId: expect.any(Number), text: "stop" });
+
+    ctx.conversation.sleep({ announce: false });
+    ctx.conversation.submitText("um");
+    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "um" });
+    ctx.agent.last.listener.onDelta("Yes? ");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(10);
+    ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
+    expect(ctx.conversation.state).toBe("listening");
+  });
 });
 
 describe("looksLikeEcho", () => {

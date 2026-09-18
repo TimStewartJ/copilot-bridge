@@ -148,11 +148,12 @@ import {
 } from "./device-hibernate.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
-import { isVoiceAgentSessionId } from "./voice/voice-agent.js";
-import { VoiceGateway } from "./voice/voice-gateway.js";
+import { createHelmRouter } from "./helm/helm-router.js";
+import { HELM_DEFAULT_REASONING_EFFORTS, HelmService } from "./helm/helm-service.js";
+import type { HelmBridgeFacade } from "./helm/helm-tools.js";
+import { VoiceGateway, type VoiceGatewayHelm } from "./voice/voice-gateway.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
 import { createVoiceRuntime } from "./voice/voice-runtime.js";
-import type { VoiceBridgeFacade } from "./voice/voice-tools.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import {
   formatLoopDeferActivity,
@@ -1122,6 +1123,15 @@ function managementJobCancellationConflictBody(
   );
 }
 
+/** Stands in for Helm in contexts built without its store: hands-free simply has nothing to attach to. */
+const HELM_UNAVAILABLE: VoiceGatewayHelm = {
+  isHelmSession: () => false,
+  bindHandsFree: () => () => undefined,
+  isWatched: () => false,
+  getTurnCount: () => 0,
+  getTurnReasoningEffort: (mode) => HELM_DEFAULT_REASONING_EFFORTS[mode],
+};
+
 export interface ApiRouterOptions {
   shutdownCoordinator?: ServerShutdownCoordinator;
   sessionStorageReader?: SessionStorageReader;
@@ -1382,12 +1392,13 @@ export function createApiRouter(
   router.use(express.json({ limit: "20mb" }));
   router.use(createApiJsonErrorHandler());
 
-  // ── Hands-free voice mode ───────────────────────────────────────
+  // ── Helm (orchestration chat and hands-free voice) ──────────────
   // The facade reuses the same session list, read-state, send and create logic as the
-  // REST routes so voice actions behave exactly like the UI.
-  const voiceFacade: VoiceBridgeFacade = {
-    listSessions: async () => {
-      const sessions = materializeSessionList(await getEnrichedSessionList(false), false);
+  // REST routes so Helm's actions behave exactly like the UI.
+  const helmFacade: HelmBridgeFacade = {
+    listSessions: async (options) => {
+      const includeArchived = options?.includeArchived === true;
+      const sessions = materializeSessionList(await getEnrichedSessionList(includeArchived), includeArchived);
       const readState = ctx.readStateStore.getReadState();
       return sessions.map((session: any) => {
         const activity: string | undefined = session.lastActivityAt ?? session.modifiedTime ?? session.startTime;
@@ -1411,10 +1422,14 @@ export function createApiRouter(
       }
       emitReadStateChanged();
     },
+    setArchived: (sessionIds, archived) => {
+      for (const sessionId of sessionIds) setSessionArchived(sessionId, archived);
+      invalidateEnrichedCache("helm:session:archive");
+    },
     sendMessage: async (sessionId, prompt) => {
       if (isRestartCutoverInProgress(await refreshRestartState())) throw new Error(RESTART_PENDING_MESSAGE);
       if (ctx.sessionMetaStore.getMeta(sessionId)?.archived) setSessionArchived(sessionId, false);
-      console.log(`[voice] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
+      console.log(`[helm] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
       if (ctx.sessionManager.isSessionBusy(sessionId)) {
         await ctx.sessionManager.steerSession(sessionId, prompt);
         return "steered";
@@ -1428,7 +1443,7 @@ export function createApiRouter(
       if (creation.error) throw new Error(creation.error);
       if (!taskId) {
         const result = await ctx.sessionManager.createSession({ background: true, ...creation.options });
-        invalidateEnrichedCache("voice:session:create");
+        invalidateEnrichedCache("helm:session:create");
         return result;
       }
       const task = ctx.taskStore.getTask(taskId);
@@ -1445,14 +1460,29 @@ export function createApiRouter(
         group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null,
         { background: true, ...creation.options },
       );
-      invalidateEnrichedCache("voice:task-session:create");
+      invalidateEnrichedCache("helm:task-session:create");
       ctx.taskStore.linkSession(task.id, result.sessionId);
       return result;
     },
   };
+  const helmStore = ctx.helmStore;
+  if (helmStore && !ctx.helm) {
+    ctx.helm = new HelmService({
+      ctx,
+      store: helmStore,
+      facade: helmFacade,
+      deleteSession: async (sessionId) => {
+        await deleteSessionWithOwnedState(sessionId, "helm:conversation:delete");
+        emitReadStateChanged();
+      },
+    });
+    ctx.helm.startRetention();
+  }
+  if (ctx.helm) router.use("/helm", createHelmRouter(ctx.helm));
   ctx.voiceGateway ??= new VoiceGateway({
     ctx,
-    facade: voiceFacade,
+    facade: helmFacade,
+    helm: ctx.helm ?? HELM_UNAVAILABLE,
     runtime: voiceRuntime,
   });
   router.use("/voice", createVoiceRouter(ctx.voiceGateway));
@@ -1865,7 +1895,8 @@ export function createApiRouter(
       ].filter((session: any) =>
         !isDisposableTitleSessionId(session.sessionId)
         && !isDisposableDeferWorkerSessionId(session.sessionId)
-        && !isVoiceAgentSessionId(session.sessionId)
+        // Helm conversations live in Helm's own history, not in the chat lists.
+        && !helmStore?.isHelmSession(session.sessionId)
       );
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const readState = ctx.readStateStore.getReadState();
@@ -3535,6 +3566,21 @@ export function createApiRouter(
 
     const attachCount = Array.isArray(attachments) ? attachments.length : 0;
     console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"${attachCount ? ` (+${attachCount} attachment${attachCount > 1 ? "s" : ""})` : ""}`);
+
+    // While hands-free is on, a message typed into the Helm chat is a turn of the same spoken
+    // conversation: it is framed for voice and answered out loud. Anything voice can't carry
+    // (attachments, slash commands) takes the ordinary path below.
+    if (ctx.helm?.isHelmSession(sessionId) && attachCount === 0 && !parseSlashCommandPrompt(prompt)) {
+      const delivery = await ctx.voiceGateway?.submitTypedText(sessionId, prompt, clientMessageId);
+      if (delivery?.delivered) {
+        res.status(202).json({ status: "accepted", mode: "hands-free" });
+        return;
+      }
+      if (delivery?.error) {
+        return res.status(409).json({ error: delivery.error });
+      }
+      // Hands-free is off, or it ended before the message got through: deliver it as plain chat.
+    }
 
     try {
       if (ctx.sessionManager.isSessionBusy(sessionId)) {

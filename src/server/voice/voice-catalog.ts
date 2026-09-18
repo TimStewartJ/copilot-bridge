@@ -1,4 +1,4 @@
-// Pinned assets, voices and defaults for the hands-free voice assistant.
+// Pinned assets, voices and defaults for the local speech engine and hands-free voice.
 import { join } from "node:path";
 import type { RuntimePaths } from "../runtime-paths.js";
 
@@ -225,7 +225,6 @@ export function resolveKokoroVoice(voiceId: string | undefined): KokoroVoice {
 export type VoiceAnnounceMode = "watched" | "all" | "off";
 
 export interface VoiceSettings {
-  model?: string;
   voice: string;
   speed: number;
   /** 0 = eager (answers quickly after a pause), 1 = patient (waits longer while you think). */
@@ -242,15 +241,9 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   announce: "watched",
 };
 
-/** Cheap, fast models preferred for the voice agent, in order. */
-export const PREFERRED_VOICE_MODELS = ["gpt-5.6-luna", "mai-code-1.1-flash", "gpt-5.4-mini", "gpt-5-mini", "claude-haiku-4.5"];
-
 export function normalizeVoiceSettings(input: unknown, previous: VoiceSettings = DEFAULT_VOICE_SETTINGS): VoiceSettings {
   const value = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const next: VoiceSettings = { ...previous };
-  if (typeof value.model === "string" && value.model.trim().length <= 100) {
-    next.model = value.model.trim() || undefined;
-  }
   if (typeof value.voice === "string" && KOKORO_VOICES.some((voice) => voice.id === value.voice)) {
     next.voice = value.voice;
   }
@@ -273,7 +266,6 @@ export interface VoicePaths {
   modelsDir: string;
   downloadsDir: string;
   logsDir: string;
-  agentStateDir: string;
 }
 
 export function resolveVoicePaths(runtimePaths: Pick<RuntimePaths, "dataDir" | "env">): VoicePaths {
@@ -285,6 +277,5 @@ export function resolveVoicePaths(runtimePaths: Pick<RuntimePaths, "dataDir" | "
     modelsDir: join(voiceDir, "models"),
     downloadsDir: join(voiceDir, "downloads"),
     logsDir: join(voiceDir, "logs"),
-    agentStateDir: join(voiceDir, "agent-state"),
   };
 }

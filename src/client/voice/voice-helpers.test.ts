@@ -131,27 +131,37 @@ describe("voice transport connection", () => {
 });
 
 describe("voice view model", () => {
-  it("tracks transcript, tools, cards and interruptions", () => {
+  it("tracks what the dock shows: caption, running tools, notices and counts", () => {
     let state = initialVoiceViewState;
     state = reduceVoiceEvent(state, { type: "hello", transport: "http", state: "listening" });
+    state = reduceVoiceEvent(state, { type: "notice", level: "warning", message: "Reconnected." });
     state = reduceVoiceEvent(state, { type: "user", turnId: 1, text: "what's new?" });
+    expect(state.caption).toEqual({ speaker: "user", text: "what's new?" });
+    expect(state.notice).toBeNull();
+
     state = reduceVoiceEvent(state, { type: "tool", genId: 1, toolCallId: "t1", name: "bridge_overview", status: "running" });
-    state = reduceVoiceEvent(state, { type: "assistant_delta", genId: 1, text: "Two sessions " });
-    state = reduceVoiceEvent(state, { type: "assistant_delta", genId: 1, text: "finished." });
+    state = reduceVoiceEvent(state, { type: "tool", genId: 1, toolCallId: "t2", name: "read_session", status: "running" });
+    expect(state.activity.map((entry) => entry.label)).toEqual(["Checking Bridge", "Reading a reply"]);
     state = reduceVoiceEvent(state, { type: "tool", genId: 1, toolCallId: "t1", name: "bridge_overview", status: "done" });
+    expect(state.activity.map((entry) => entry.label)).toEqual(["Reading a reply"]);
+
+    // The words themselves live in the Helm chat, not here: deltas change nothing.
+    expect(reduceVoiceEvent(state, { type: "assistant_delta", genId: 1, text: "Two sessions " })).toBe(state);
     state = reduceVoiceEvent(state, { type: "assistant_chunk", genId: 1, chunkId: 1, text: "Two sessions finished." });
-    state = reduceVoiceEvent(state, { type: "stop_audio", genId: 1, reason: "barge-in" });
-    state = reduceVoiceEvent(state, { type: "card", id: "c1", title: "Unread", body: "- Tellus", links: [] });
     state = reduceVoiceEvent(state, { type: "user", turnId: 2, text: "um", handled: "ignored" });
-    expect(state.transport).toBe("http");
-    expect(state.items.map((item) => item.kind)).toEqual(["user", "tool", "assistant", "card"]);
-    expect(state.items[1]).toMatchObject({ label: "Checking Bridge", status: "done" });
-    expect(state.items[2]).toMatchObject({ text: "Two sessions finished.", interrupted: true });
     expect(state.caption).toEqual({ speaker: "assistant", text: "Two sessions finished." });
+
+    state = reduceVoiceEvent(state, { type: "bridge_counts", unread: 2, running: 1, waiting: 0 });
+    state = reduceVoiceEvent(state, { type: "state", state: "listening" });
+    expect(state).toMatchObject({ transport: "http", voiceState: "listening", activity: [], counts: { unread: 2, running: 1, waiting: 0 } });
+
+    state = reduceVoiceEvent(state, { type: "ended", reason: "user left hands-free" });
+    expect(state).toMatchObject({ voiceState: "ended", ended: "user left hands-free" });
   });
 
   it("formats labels and sizes", () => {
     expect(describeVoiceTool("send_to_session")).toBe("Sending to a session");
+    expect(describeVoiceTool("hands_free")).toBe("Adjusting hands-free");
     expect(describeVoiceTool("some_new_tool")).toBe("some new tool");
     expect(formatBytes(891 * 1024 * 1024)).toBe("891 MB");
     expect(formatBytes(1.5 * 1024 ** 3)).toBe("1.5 GB");

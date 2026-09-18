@@ -1,4 +1,4 @@
-import { LayoutDashboard, ListTodo, MessageSquare, BookOpen, Settings, AudioLines } from "lucide-react";
+import { LayoutDashboard, ListTodo, MessageSquare, BookOpen, Settings, ShipWheel } from "lucide-react";
 import { useMemo } from "react";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import {
@@ -7,7 +7,7 @@ import {
 } from "../hooks/useTaskIndicators";
 import CopilotQuotaMenu from "./CopilotQuotaMenu";
 
-type Tab = "home" | "tasks" | "chats" | "docs" | "settings";
+type Tab = "home" | "tasks" | "chats" | "helm" | "docs" | "settings";
 
 interface MobileBottomNavProps {
   activeTab: Tab;
@@ -16,7 +16,6 @@ interface MobileBottomNavProps {
   taskAttention?: TabAttentionSummary;
   chatAttention?: TabAttentionSummary;
   showDocs?: boolean;
-  onOpenVoice?: () => void;
 }
 
 export function MobileBottomNav({
@@ -26,12 +25,12 @@ export function MobileBottomNav({
   taskAttention = { count: 0, needsUserInputCount: 0 },
   chatAttention = { count: 0, needsUserInputCount: 0 },
   showDocs = true,
-  onOpenVoice,
 }: MobileBottomNavProps) {
   const tabs: { id: Tab; label: string; icon: typeof ListTodo }[] = useMemo(() => [
     { id: "home", label: "Home", icon: LayoutDashboard },
     { id: "tasks", label: "Tasks", icon: ListTodo },
     { id: "chats", label: "Chats", icon: MessageSquare },
+    { id: "helm", label: "Helm", icon: ShipWheel },
     ...(showDocs ? [{ id: "docs" as Tab, label: "Docs", icon: BookOpen }] : []),
     { id: "settings", label: "Settings", icon: Settings },
   ], [showDocs]);
@@ -67,6 +66,7 @@ export function MobileBottomNav({
               key={id}
               type="button"
               onClick={() => onSelectTab(id)}
+              aria-current={active ? "page" : undefined}
               className={`flex h-full flex-1 flex-col items-center justify-center gap-0.5 transition-colors ${active ? "text-accent" : "text-text-muted active:text-text-secondary"}`}
               aria-label={
                 homeIndicatorDescription
@@ -101,19 +101,6 @@ export function MobileBottomNav({
             </button>
           );
         })}
-        {onOpenVoice && (
-          <button
-            type="button"
-            onClick={onOpenVoice}
-            className="flex h-full flex-1 flex-col items-center justify-center gap-0.5 text-text-muted active:text-text-secondary"
-            aria-label="Voice mode"
-          >
-            <span className="rounded-full p-1">
-              <AudioLines size={20} strokeWidth={1.8} />
-            </span>
-            <span className="text-[10px] font-medium leading-tight">Voice</span>
-          </button>
-        )}
         <div className="flex h-full flex-1 flex-col items-center justify-center gap-0.5 text-text-muted">
           <CopilotQuotaMenu collapsed mobile />
           <span className="text-[10px] font-medium leading-tight">Quota</span>

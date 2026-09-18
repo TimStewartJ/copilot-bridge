@@ -191,6 +191,7 @@ import {
   type CopilotContextTier,
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
+import { resolveSupportedReasoningEffort } from "../shared/reasoning-effort.js";
 import {
   readPersistedSessionModelState,
   writePersistedSessionModelState,
@@ -617,6 +618,29 @@ export interface SessionManagerDeps {
   /** Root of .copilot directory — defaults to homedir()/.copilot */
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
+  /**
+   * Returns the profile of a session that is not a general-purpose chat (for example a Helm
+   * conversation). Consulted on every config build so create, resume and reload agree.
+   */
+  resolveSessionProfile?(sessionId: string): SessionConfigProfile | undefined;
+  /**
+   * Called when a prompt the user authored is accepted for a session, whatever route it
+   * took (chat, steering, hands-free voice, a transcribed recording). Application-generated
+   * prompts are excluded.
+   */
+  onUserPrompt?(sessionId: string): void;
+}
+
+/** Replaces what a session is and can do while keeping the manager's lifecycle fields. */
+export interface SessionConfigProfile {
+  /** Tool names the session must expose once its tools are initialized. */
+  readonly toolNames: readonly string[];
+  apply<T extends Record<string, unknown>>(config: T): T;
+  /**
+   * Reasoning effort for a turn that did not ask for one. Read at the start of each turn, so
+   * a settings change applies to the next message rather than the next conversation.
+   */
+  defaultTurnReasoningEffort?(): string | undefined;
 }
 
 /** Options that don't come from AppContext — caller provides these directly. */
@@ -739,6 +763,13 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     createBackend: opts.createBackend,
     copilotHome,
     runtimePaths,
+    resolveSessionProfile: (sessionId) => {
+      if (!ctx.helmStore?.isHelmSession(sessionId)) return undefined;
+      // Fail closed: a Helm conversation must never be resumed as a general-purpose session.
+      if (!ctx.helm) throw new Error("Helm is still starting; try again in a moment");
+      return ctx.helm.getSessionProfile();
+    },
+    onUserPrompt: (sessionId) => ctx.helm?.recordTurn(sessionId),
   });
 }
 
@@ -1041,6 +1072,8 @@ export class SessionManager {
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
       touchSessionActivity: (sessionId, at) => this.touchSessionTree(sessionId, at),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
+      applyTurnReasoningEffort: (sessionId, session, reasoningEffort) =>
+        this.applyTurnReasoningEffort(sessionId, session, reasoningEffort),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
     });
     configureRestartStateStore(deps.runtimePaths);
@@ -2937,7 +2970,8 @@ export class SessionManager {
         cfg.modelCapabilities = modelCapabilities;
       }
     }
-    return cfg;
+    const profile = opts.sessionId ? this.deps.resolveSessionProfile?.(opts.sessionId) : undefined;
+    return profile ? profile.apply(cfg) : cfg;
   }
 
   private shouldUseNativeBridgeTools(): boolean {
@@ -3144,7 +3178,8 @@ export class SessionManager {
 
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
     if (!this.supportsSessionToolInitialization()) return;
-    const expectedTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
+    const expectedTools = this.deps.resolveSessionProfile?.(sessionId)?.toolNames
+      ?? this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
     const startedAt = Date.now();
     let outcome = "ready";
     let phase = "discovery";
@@ -3897,32 +3932,6 @@ export class SessionManager {
     const { models } = await this.loadModelMetadata(client, { useCache: false });
     this.recordSpan("session.listModels", Date.now() - t0);
     return models;
-  }
-
-  /**
-   * Creates the hands-free voice assistant's internal session on the shared runtime. The
-   * caller supplies an isolated `configDirectory` so it never enters Bridge session lists,
-   * search, or usage history; capacity and restart lifecycles still apply.
-   */
-  async createVoiceAgentSession(config: AgentSessionConfig): Promise<AgentSession> {
-    if (this.shuttingDown) throw new Error("Session manager is shutting down");
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) throw new Error(RESTART_PENDING_MESSAGE);
-    const completeLifetime = this.beginSessionCreationLifetime();
-    try {
-      const client = await this.getBackendAfterRotation();
-      const sessionConfig: AgentSessionConfig = {
-        ...config,
-        ...(client.permissionPolicy ? { onPermissionRequest: client.permissionPolicy } : {}),
-      };
-      const reservation = await this.beginSessionCreation(sessionConfig as { mcpServers?: Record<string, McpServerConfig> });
-      try {
-        return await this.createOwnedSession(client, sessionConfig);
-      } finally {
-        this.endSessionCreation(reservation);
-      }
-    } finally {
-      completeLifetime();
-    }
   }
 
   /** Live account quota counter from the agent backend, when the SDK exposes it. */
@@ -5017,7 +5026,81 @@ export class SessionManager {
     if (this.deletingSessions.has(sessionId)) {
       throw new Error("Session is being deleted");
     }
-    this.sessionRunner.startWork(sessionId, prompt, attachments, options);
+    this.sessionRunner.startWork(sessionId, prompt, attachments, this.withTurnDefaults(sessionId, options));
+    this.noteUserPrompt(sessionId, options);
+  }
+
+  /** Fills in what the session's profile wants for a turn that didn't say (Helm: effort for typed turns). */
+  private withTurnDefaults(sessionId: string, options?: StartWorkOptions): StartWorkOptions | undefined {
+    if (options?.reasoningEffort) return options;
+    const reasoningEffort = this.deps.resolveSessionProfile?.(sessionId)?.defaultTurnReasoningEffort?.();
+    return reasoningEffort ? { ...options, reasoningEffort } : options;
+  }
+
+  /** The effort each live session was last switched to for a turn, so an unchanged mode costs no RPC. */
+  private readonly appliedTurnEfforts = new WeakMap<AgentSession, string>();
+
+  /**
+   * Switches a live session to the reasoning effort a turn asked for, keeping its model and
+   * context tier. Runs inside the turn just before the prompt is sent, which is the one moment
+   * every route (chat, transcribed recordings, hands-free) has in common. A level the model
+   * lacks falls back to the nearest one below it. Never fails the turn: effort is a preference.
+   */
+  private async applyTurnReasoningEffort(sessionId: string, session: AgentSession, requested: string): Promise<void> {
+    if (this.appliedTurnEfforts.get(session) === requested) return;
+    const startedAt = Date.now();
+    const sid = sessionId.slice(0, 8);
+    try {
+      const current = await session.getCurrentModel();
+      const model = current?.modelId;
+      if (!model) return;
+      const modelMetadata = this.modelMetadata ?? (this.backend ? await this.loadModelMetadataForRuntime(this.backend) : undefined);
+      const supported = modelMetadata?.find((candidate) => candidate.id === model)?.supportedReasoningEfforts;
+      const reasoningEffort = resolveSupportedReasoningEffort(requested, supported);
+      if (!reasoningEffort) return;
+      if (reasoningEffort !== current.reasoningEffort) {
+        const persisted = this.readPersistedSessionModelState(sessionId);
+        const resolved = this.resolveModelRuntimeOptions(
+          model,
+          normalizeCopilotContextTier(current.contextTier) ?? (persisted.model === model ? persisted.contextTier : undefined),
+          modelMetadata,
+        );
+        const result = await session.setModel(model, {
+          reasoningEffort,
+          ...(resolved.contextTier ? { contextTier: resolved.contextTier } : {}),
+          ...(resolved.modelCapabilities ? { modelCapabilities: resolved.modelCapabilities } : {}),
+        });
+        if (result?.status === "confirmation_required" || result?.status === "cancelled") {
+          console.warn(`[sdk] [${sid}] Turn effort ${reasoningEffort} not applied: ${result.status}`);
+          return;
+        }
+        this.persistSessionModelState(sessionId, {
+          model,
+          reasoningEffort,
+          ...(resolved.contextTier ? { contextTier: resolved.contextTier } : {}),
+          ...(resolved.modelCapabilities ? { modelCapabilities: resolved.modelCapabilities } : {}),
+        });
+        const duration = Date.now() - startedAt;
+        console.log(`[sdk] [${sid}] Turn effort ${current.reasoningEffort ?? "default"} -> ${reasoningEffort} (${duration}ms)`);
+        this.recordSpan("session.turn.reasoningEffort", duration, sessionId, {
+          from: current.reasoningEffort,
+          to: reasoningEffort,
+          ...(reasoningEffort !== requested ? { requested } : {}),
+        });
+      }
+      this.appliedTurnEfforts.set(session, requested);
+    } catch (error) {
+      console.warn(`[sdk] [${sid}] Could not set turn effort ${requested}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private noteUserPrompt(sessionId: string, options?: StartWorkOptions): void {
+    if (options?.promptSource === "system" || options?.attentionMode === "quiet") return;
+    try {
+      this.deps.onUserPrompt?.(sessionId);
+    } catch (error) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] onUserPrompt failed:`, error);
+    }
   }
 
   runDeferWorker(input: DeferWorkerInput): Promise<DeferWorkerResult> {
@@ -5037,7 +5120,8 @@ export class SessionManager {
     if (this.deletingSessions.has(sessionId)) {
       throw new Error("Session is being deleted");
     }
-    await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, options);
+    await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, this.withTurnDefaults(sessionId, options));
+    this.noteUserPrompt(sessionId, options);
   }
 
   async hasPersistedUserMessage(sessionId: string, prompt: string): Promise<boolean> {
@@ -5055,6 +5139,7 @@ export class SessionManager {
     clientMessageId?: string,
   ): Promise<void> {
     await this.sessionRunner.steerSession(sessionId, prompt, attachments, clientMessageId);
+    this.noteUserPrompt(sessionId);
   }
 
   /** @internal Test seam — delegates to the SessionRunner. */
@@ -5609,6 +5694,7 @@ export class SessionManager {
         };
       }
       console.log(`[sdk] [${sid}] setSessionModel(${switchLabel})`);
+      this.appliedTurnEfforts.delete(session);
 
       let currentAfterSwitch: Awaited<ReturnType<AgentSession["getCurrentModel"]>>;
       try {
