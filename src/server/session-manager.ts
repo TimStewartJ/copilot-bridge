@@ -2355,30 +2355,21 @@ export class SessionManager {
     const startedAt = Date.now();
     let slow = false;
     let timedOut = false;
+    let wrapperEnded = false;
     let pid: number | undefined;
-    const diagnostic = (outcome: string, details: Record<string, unknown> = {}): void => {
+    const diagnostic = (outcome: "slow" | "ping" | "timeout" | "backend-resolved" | "backend-rejected", ping?: string): void => {
       if (!slow) return;
-      let snapshot: Record<string, unknown>;
+      let connection = "unavailable";
       try {
-        const connection = owningBackend.getConnectionStatus?.();
-        pid ??= connection?.pid;
-        snapshot = {
-          connection: connection?.state ?? "unsupported",
-          operations: owningBackend.getDiagnostics?.() ?? null,
-        };
+        const status = owningBackend.getConnectionStatus?.();
+        pid ??= status?.pid;
+        connection = status?.state ?? "unsupported";
       } catch {
-        snapshot = { snapshot: "failed" };
         console.warn(`[sdk] [${sid}] Resume diagnostic snapshot failed`);
       }
       this.recordSpan("session.resume.diagnostic", Date.now() - startedAt, sessionId, {
-        attemptId: owner.lease,
-        generation: owningBackendGeneration,
-        pid: pid ?? null,
-        purpose,
-        outcome,
-        timedOut,
-        ...snapshot,
-        ...details,
+        attemptId: owner.lease, generation: owningBackendGeneration, pid: pid ?? null,
+        purpose, outcome, timedOut, wrapperEnded, connection, ping,
       });
     };
     const checkpoint = setTimeout(() => {
@@ -2386,15 +2377,15 @@ export class SessionManager {
       diagnostic("slow");
       // This probe is observational: never use recovery-capable probeHealth here.
       void Promise.resolve().then(() => owningBackend.diagnosticPing?.() ?? "unsupported").then(
-        (ping) => diagnostic("ping", { ping }),
-        () => diagnostic("ping", { ping: "failed" }),
+        (ping) => diagnostic("ping", ping),
+        () => diagnostic("ping", "failed"),
       );
     }, 30_000);
     checkpoint.unref?.();
-    // Observe the SDK promise, not awaitOwnedSession's fence race.
+    // Observe backend settlement, not awaitOwnedSession's fence race.
     void resume.then(
-      () => diagnostic("sdk-resolved"),
-      () => diagnostic("sdk-rejected"),
+      () => diagnostic("backend-resolved"),
+      () => diagnostic("backend-rejected"),
     );
     let releaseAfterLateSettlement = true;
     const releaseBarrier = (): boolean => {
@@ -2466,13 +2457,8 @@ export class SessionManager {
         throw new Error(BACKEND_DISCONNECTED_MESSAGE);
       }
       return session;
-    }).then((session) => {
-      diagnostic("wrapper-resolved");
-      return session;
-    }, (error: unknown) => {
-      diagnostic("wrapper-rejected");
-      throw error;
     }).finally(() => {
+      wrapperEnded = true;
       clearTimeout(checkpoint);
     });
   }
