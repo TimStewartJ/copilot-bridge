@@ -1127,11 +1127,11 @@ describe("SessionManager disk session list cache", () => {
     expect(cacheResults).toEqual(expect.arrayContaining(["miss", "coalesced", "hit"]));
   });
 
-  it("records disposable title cleanup sweep spans with elapsed durations", () => {
+  it("records disposable title cleanup sweep spans with elapsed durations", async () => {
     const copilotHome = makeTestDir("session-manager-cleanup-sweep");
     const { manager, telemetryStore } = createManager(copilotHome);
 
-    manager.sweepLeakedDisposableTitleSessions();
+    await manager.sweepLeakedDisposableTitleSessions();
 
     const spans = telemetryStore.querySpans({ name: "session.name.cleanupSweep" });
     expect(spans).toHaveLength(1);

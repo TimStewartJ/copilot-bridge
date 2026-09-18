@@ -14,7 +14,7 @@ function getSentPayload(sendNotification: ReturnType<typeof vi.fn>): Record<stri
 function createPushTestApp(sessionNames: Record<string, string> = {}) {
   return createTestApp({
     cliSessionCatalog: {
-      listSessions: () => Object.entries(sessionNames).map(([sessionId, summary]) => ({ sessionId, summary })),
+      getSession: async (sessionId: string) => sessionId in sessionNames ? { sessionId, summary: sessionNames[sessionId] } : undefined,
     } as any,
   });
 }

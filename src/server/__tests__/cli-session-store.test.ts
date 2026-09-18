@@ -1,8 +1,10 @@
-import { mkdirSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  CliSessionStore,
   deleteCliSessionStoreRows,
   sweepLeakedCliSessionStoreRows,
 } from "../cli-session-store.js";
@@ -29,7 +31,7 @@ function createCliStore(copilotHome: string): DatabaseSync {
 }
 
 describe("CLI session store cleanup", () => {
-  it("deletes exact session rows and related rows", () => {
+  it("deletes exact session rows and related rows", async () => {
     const copilotHome = makeTestDir("cli-session-store-exact");
     const db = createCliStore(copilotHome);
     try {
@@ -44,7 +46,7 @@ describe("CLI session store cleanup", () => {
       db.close();
     }
 
-    deleteCliSessionStoreRows(copilotHome, "b17e1000-old");
+    await deleteCliSessionStoreRows(copilotHome, "b17e1000-old");
 
     const readDb = new DatabaseSync(join(copilotHome, "session-store.db"), { readOnly: true });
     try {
@@ -55,7 +57,7 @@ describe("CLI session store cleanup", () => {
     }
   });
 
-  it("deletes rows from new tables that reference sessions", () => {
+  it("deletes rows from new tables that reference sessions", async () => {
     const copilotHome = makeTestDir("cli-session-store-foreign-keys");
     const db = createCliStore(copilotHome);
     try {
@@ -90,7 +92,7 @@ describe("CLI session store cleanup", () => {
       db.close();
     }
 
-    deleteCliSessionStoreRows(copilotHome, "delete-me");
+    await deleteCliSessionStoreRows(copilotHome, "delete-me");
 
     const readDb = new DatabaseSync(join(copilotHome, "session-store.db"), { readOnly: true });
     try {
@@ -106,7 +108,7 @@ describe("CLI session store cleanup", () => {
     }
   });
 
-  it("sweeps only old helper rows whose session directories are gone", () => {
+  it("sweeps only old helper rows whose session directories are gone", async () => {
     const copilotHome = makeTestDir("cli-session-store-sweep");
     const db = createCliStore(copilotHome);
     try {
@@ -120,7 +122,7 @@ describe("CLI session store cleanup", () => {
     }
     mkdirSync(join(copilotHome, "session-state", "b17e1000-active"), { recursive: true });
 
-    const swept = sweepLeakedCliSessionStoreRows({
+    const swept = await sweepLeakedCliSessionStoreRows({
       copilotHome,
       idPrefix: "b17e1000",
       cutoffTimestampMs: Date.parse("2026-05-08T23:05:00Z"),
@@ -138,16 +140,16 @@ describe("CLI session store cleanup", () => {
 });
 
 describe("copilot CLI session catalog", () => {
-  it("returns undefined when the CLI session store is missing", () => {
+  it("returns undefined when the CLI session store is missing", async () => {
     const copilotHome = makeTestDir("missing-cli-catalog");
     const catalog = createCopilotCliSessionCatalog({ copilotHome });
 
-    expect(catalog.listSessions()).toBeUndefined();
-    expect(catalog.getSession("session-1")).toBeUndefined();
-    expect(catalog.hasSession("session-1")).toBeUndefined();
+    expect(await catalog.listSessions()).toBeUndefined();
+    expect(await catalog.getSession("session-1")).toBeUndefined();
+    expect(await catalog.hasSession("session-1")).toBeUndefined();
   });
 
-  it("lists sessions from the CLI session store without reading workspace files or hiding helper-looking rows", () => {
+  it("lists sessions from the CLI session store without reading workspace files or hiding helper-looking rows", async () => {
     const copilotHome = makeTestDir("cli-catalog");
     mkdirSync(copilotHome, { recursive: true });
     const db = new DatabaseSync(join(copilotHome, "session-store.db"));
@@ -200,9 +202,9 @@ Reply with ONLY the title text for a stale helper',
     db.close();
     const catalog = createCopilotCliSessionCatalog({ copilotHome });
 
-    expect(catalog.hasSession("session-1")).toBe(true);
-    expect(catalog.hasSession("missing-session")).toBe(false);
-    expect(catalog.getSession("session-1")).toEqual({
+    expect(await catalog.hasSession("session-1")).toBe(true);
+    expect(await catalog.hasSession("missing-session")).toBe(false);
+    expect(await catalog.getSession("session-1")).toEqual({
       sessionId: "session-1",
       summary: "Review catalog adapter",
       startTime: "2026-05-07T10:00:00.000Z",
@@ -212,7 +214,7 @@ Reply with ONLY the title text for a stale helper',
       branch: "main",
       hostType: "github",
     });
-    expect(catalog.listSessions()).toEqual([
+    expect(await catalog.listSessions()).toEqual([
       {
         sessionId: "legacy-title-helper",
         summary: "Generate a concise 3-6 word title for this conversation.\nReply with ONLY the title text for a stale helper",
@@ -244,5 +246,103 @@ Reply with ONLY the title text for a stale helper',
         hostType: "github",
       },
     ]);
+  });
+});
+
+describe("CLI session catalog failures", () => {
+  it("reports a store it cannot read as unavailable and records why", async () => {
+    const copilotHome = join(makeTestDir("bridge-cli-store-unreadable-"), ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
+    writeFileSync(join(copilotHome, "session-store.db"), "this is not a SQLite database");
+    const recordSpan = vi.fn();
+    const catalog = createCopilotCliSessionCatalog({ copilotHome, recordSpan });
+
+    expect(await catalog.listSessions()).toBeUndefined();
+    expect(await catalog.hasSession("session-1")).toBeUndefined();
+
+    expect(recordSpan.mock.calls.map(([name, , , metadata]) => [name, metadata.result])).toEqual([
+      ["session.cliCatalog.list", "error"],
+      ["session.cliCatalog.has", "error"],
+    ]);
+    expect(recordSpan.mock.calls[0]![3].error).toMatch(/not a database/i);
+  });
+});
+
+/** A scripted worker thread: records what the store sends and replies only when the test says so. */
+class ScriptedWorker extends EventEmitter {
+  readonly requests: Array<{ id: number; request: { op: string } }> = [];
+  referenced = true;
+  terminated = false;
+
+  postMessage(message: { id: number; request: { op: string } }): void {
+    this.requests.push(message);
+  }
+  ref(): void {
+    this.referenced = true;
+  }
+  unref(): void {
+    this.referenced = false;
+  }
+  terminate(): Promise<number> {
+    this.terminated = true;
+    return Promise.resolve(0);
+  }
+}
+
+function createWorkerStore() {
+  const workers: ScriptedWorker[] = [];
+  const store = new CliSessionStore({
+    inline: false,
+    createWorker: () => {
+      const worker = new ScriptedWorker();
+      workers.push(worker);
+      return worker as never;
+    },
+  });
+  return { store, workers };
+}
+
+describe("CliSessionStore worker backend", () => {
+  it("runs every request on one worker thread and matches replies to their requests", async () => {
+    const { store, workers } = createWorkerStore();
+    const list = store.run({ op: "list", copilotHome: "home" });
+    const has = store.run({ op: "has", copilotHome: "home", sessionId: "session-1" });
+
+    expect(workers).toHaveLength(1);
+    expect(workers[0]!.referenced).toBe(false);
+    expect(workers[0]!.requests.map((message) => message.request.op)).toEqual(["list", "has"]);
+
+    workers[0]!.emit("message", { id: workers[0]!.requests[1]!.id, value: { result: "miss" } });
+    workers[0]!.emit("message", { id: workers[0]!.requests[0]!.id, value: { result: "hit", sessions: [] } });
+    expect(await has).toEqual({ result: "miss" });
+    expect(await list).toEqual({ result: "hit", sessions: [] });
+  });
+
+  it("rejects a request with the error the worker reported", async () => {
+    const { store, workers } = createWorkerStore();
+    const pending = store.run({ op: "delete", copilotHome: "home", sessionId: "session-1" });
+    workers[0]!.emit("message", { id: workers[0]!.requests[0]!.id, error: "database is locked" });
+    await expect(pending).rejects.toThrow("database is locked");
+  });
+
+  it("fails the requests a lost worker was holding and starts a new worker for the next one", async () => {
+    const { store, workers } = createWorkerStore();
+    const held = store.run({ op: "list", copilotHome: "home" });
+    workers[0]!.emit("exit", 1);
+    await expect(held).rejects.toThrow("CLI session store worker exited with code 1");
+
+    const next = store.run({ op: "list", copilotHome: "home" });
+    expect(workers).toHaveLength(2);
+    workers[0]!.emit("error", new Error("late event from the lost worker"));
+    workers[1]!.emit("message", { id: workers[1]!.requests[0]!.id, value: { result: "missing" } });
+    expect(await next).toEqual({ result: "missing" });
+  });
+
+  it("never starts a worker thread on the inline backend", async () => {
+    const createWorker = vi.fn();
+    const store = new CliSessionStore({ inline: true, createWorker });
+    const copilotHome = join(makeTestDir("bridge-cli-store-inline-"), ".copilot");
+    expect(await store.run({ op: "list", copilotHome })).toEqual({ result: "missing" });
+    expect(createWorker).not.toHaveBeenCalled();
   });
 });

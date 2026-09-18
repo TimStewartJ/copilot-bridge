@@ -10,8 +10,10 @@ import { describe, expect, it } from "vitest";
 // creation in the server runtime therefore goes through process-host.ts, which performs it on
 // a worker thread. Deleting or copying a directory tree synchronously is the same kind of call:
 // it holds its thread for the whole operation, and a worktree is tens of thousands of files.
-// `staging_cleanup` froze the live server for 2.4 s that way. This test walks the real import
-// graph so neither rule can erode silently.
+// `staging_cleanup` froze the live server for 2.4 s that way. Opening a file another program keeps
+// writing is a third: on Windows an antivirus scan holds the open until it is done, and
+// node:sqlite is synchronous. Reading the Copilot CLI's session store on the main thread froze
+// the live server for 12.2 s. This test walks the real import graph so no rule can erode silently.
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC_DIR = resolve(SERVER_DIR, "..");
@@ -31,6 +33,14 @@ const SYNC_TREE_OPERATIONS_ALLOWED: Record<string, string> = {
   "server/task-agent-definition-store.ts": "a task's agent folder holds a handful of small files",
 };
 const SYNC_TREE_CALL = /\b(rmSync|cpSync|rmdirSync)\s*\(/g;
+
+// Modules the server loads that may open a SQLite database themselves, and why that cannot stall
+// the server. The Copilot CLI's session store goes through cli-session-store.ts instead.
+const SQLITE_OPENERS_ALLOWED: Record<string, string> = {
+  "server/db.ts": "the Bridge's own database, in its data directory, opened once at boot and kept open",
+  "server/cli-session-store-worker.ts": "the worker thread that reads and writes the Copilot CLI's session store",
+  "server/staging-backend-manager.ts": "reads the production database while seeding preview data, which the job runner does",
+};
 
 const IMPORT_STATEMENT = /(?:^|\n)\s*(import|export)\s+(type\s+)?([^"';]*?)\s*from\s*["']([^"']+)["']/g;
 const SIDE_EFFECT_IMPORT = /(?:^|\n)\s*import\s*["']([^"']+)["']/g;
@@ -128,6 +138,8 @@ describe("server main-thread boundary", () => {
       "server/voice/voice-engine.ts",
       "server/process-host.ts",
       "server/process-host-worker.ts",
+      "server/cli-session-store.ts",
+      "server/cli-session-store-worker.ts",
     ]) {
       expect(modules, `${expected} should be reachable from the server entry points`).toContain(expected);
     }
@@ -164,6 +176,23 @@ describe("server main-thread boundary", () => {
       violations,
       "Server runtime modules must delete directory trees with getProcessHost().removeTree(), which runs on a "
       + "worker thread. A synchronous tree delete or copy on the main thread freezes the event loop.",
+    ).toEqual([]);
+    expect([...unusedExceptions], "exceptions that no longer apply must be removed").toEqual([]);
+  });
+
+  it("opens SQLite databases only where a held open cannot stall the server", () => {
+    const violations: string[] = [];
+    const unusedExceptions = new Set(Object.keys(SQLITE_OPENERS_ALLOWED));
+    for (const [file, imports] of graph) {
+      if (!imports.some(({ specifier }) => specifier === "node:sqlite" || specifier === "sqlite")) continue;
+      if (unusedExceptions.delete(display(file))) continue;
+      violations.push(display(file));
+    }
+    expect(
+      violations,
+      "Server runtime modules must not open a SQLite database that another program writes. node:sqlite is "
+      + "synchronous, and an antivirus scan can hold the open for seconds, which freezes the event loop. Use the "
+      + "Bridge's own database (db.ts), or run the work on a worker thread as src/server/cli-session-store.ts does.",
     ).toEqual([]);
     expect([...unusedExceptions], "exceptions that no longer apply must be removed").toEqual([]);
   });

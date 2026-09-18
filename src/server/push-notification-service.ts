@@ -402,7 +402,7 @@ export function initPushEventNotifications(
       summary = await service.sendToAll({
         title: `${fresh.length} ${fresh.length === 1 ? "session needs" : "sessions need"} input`,
         body: `${names}${fresh.length > 3 ? ` and ${fresh.length - 3} more` : ""} — tap to respond in Bridge.`,
-        url: fresh.length === 1 ? buildSessionNotificationTarget(ctx, fresh[0].sessionId).url : buildPublicUrl(path) ?? path,
+        url: fresh.length === 1 ? buildSessionNotificationLink(ctx, fresh[0].sessionId).url : buildPublicUrl(path) ?? path,
         tag: `bridge-needs-input-${window.id}`,
         data: { eventType: "session:user-input", protectionWindowId: window.id,
           sessionIds: sessionIds.slice(0, 10), sessionCount: sessionIds.length, summary: true },
@@ -535,14 +535,15 @@ export function initPushEventNotifications(
         return;
       }
       if (notifiedSessions.has(event.sessionId) || sendingSessions.get(event.sessionId) === generation) return;
-      const target = buildSessionNotificationTarget(ctx, event.sessionId);
-      ctx.focusAttentionStore?.record({
-        eventType: "notification_eligibility", objectId: decision?.id, objectType: decision ? "decision" : undefined,
-        reason: "needs-input", details: { sessionId: event.sessionId },
-      });
       sendingSessions.set(event.sessionId, generation);
       let summary: PushSendSummary;
       try {
+        const target = await buildSessionNotificationTarget(ctx, event.sessionId);
+        if (inputEpisodes.get(event.sessionId) !== generation) return;
+        ctx.focusAttentionStore?.record({
+          eventType: "notification_eligibility", objectId: decision?.id, objectType: decision ? "decision" : undefined,
+          reason: "needs-input", details: { sessionId: event.sessionId },
+        });
         summary = await service.sendToAll({
           title: target.sessionName,
           body: withTaskContext(target.taskName, "Needs input - tap to respond in Bridge."),
@@ -600,15 +601,22 @@ function isSessionLinkedToMutedTask(
   return fallbackTask ? areSessionUnreadBubblesMuted([fallbackTask]) : false;
 }
 
-function buildSessionNotificationTarget(
+async function buildSessionNotificationTarget(
   ctx: Pick<AppContext, "taskStore" | "cliSessionCatalog" | "apiBasePath">,
   sessionId: string,
-): { sessionName: string; taskName?: string; url: string } {
+): Promise<{ sessionName: string; taskName?: string; url: string }> {
+  const cliName = (await ctx.cliSessionCatalog?.getSession(sessionId))?.summary;
+  return {
+    sessionName: normalizeNotificationName(cliName) ?? `Session ${sessionId.slice(0, 8)}`,
+    ...buildSessionNotificationLink(ctx, sessionId),
+  };
+}
+
+function buildSessionNotificationLink(
+  ctx: Pick<AppContext, "taskStore" | "apiBasePath">,
+  sessionId: string,
+): { taskName?: string; url: string } {
   const task = ctx.taskStore.findTaskBySessionId(sessionId);
-  const cliName = ctx.cliSessionCatalog?.listSessions()
-    ?.find((session) => session.sessionId === sessionId)
-    ?.summary;
-  const sessionName = normalizeNotificationName(cliName) ?? `Session ${sessionId.slice(0, 8)}`;
   const taskName = normalizeNotificationName(task?.title);
   const appPath = task
     ? `/tasks/${encodeURIComponent(task.id)}/sessions/${encodeURIComponent(sessionId)}`
@@ -617,7 +625,6 @@ function buildSessionNotificationTarget(
   const appBasePath = apiBasePath.endsWith("/api") ? apiBasePath.slice(0, -4) : "";
   const routedPath = `${appBasePath}${appPath}`;
   return {
-    sessionName,
     ...(taskName ? { taskName } : {}),
     url: buildPublicUrl(routedPath) ?? routedPath,
   };

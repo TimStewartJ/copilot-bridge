@@ -81,14 +81,15 @@ const DEFAULT_MAX_POOL_WORKERS = 4;
 const DEADLINE_GRACE_MS = 1_000;
 
 /**
+ * Locates a worker module that sits beside the caller, such as "process-host-worker".
  * Compiled builds load the .js worker and inherit execArgv. Source runs (tsx, Vitest) load the
  * .ts worker with the tsx loader passed explicitly: loader hooks registered by a tsx parent are
  * not reliably inherited by worker threads. Inherited execArgv is never re-passed, because
  * `new Worker` rejects process-level flags that inheritance silently tolerates.
  */
-export function resolveProcessHostWorkerEntry(moduleUrl = import.meta.url): { entry: string; execArgv?: string[] } {
+export function resolveWorkerEntry(name: string, moduleUrl = import.meta.url): { entry: string; execArgv?: string[] } {
   const isSource = moduleUrl.endsWith(".ts");
-  const entry = join(dirname(fileURLToPath(moduleUrl)), `process-host-worker.${isSource ? "ts" : "js"}`);
+  const entry = join(dirname(fileURLToPath(moduleUrl)), `${name}.${isSource ? "ts" : "js"}`);
   if (isSource) {
     return { entry, execArgv: ["--import", pathToFileURL(createRequire(moduleUrl).resolve("tsx/esm")).href] };
   }
@@ -96,7 +97,7 @@ export function resolveProcessHostWorkerEntry(moduleUrl = import.meta.url): { en
 }
 
 function startWorkerThread(): HostWorker {
-  const { entry, execArgv } = resolveProcessHostWorkerEntry();
+  const { entry, execArgv } = resolveWorkerEntry("process-host-worker");
   return new Worker(entry, { workerData: { [WORKER_FLAG]: true }, ...(execArgv ? { execArgv } : {}) });
 }
 

@@ -1,154 +1,98 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+// Main-thread access to the Copilot CLI's session store (<copilot home>/session-store.db).
+//
+// Every operation runs in cli-session-store-worker.ts on one long-lived worker thread, in the
+// order it was asked for, so an open that an antivirus scan holds for seconds, or a delete waiting
+// for the CLI's write lock, never stalls the server's event loop. Callers wait for the answer;
+// nothing is cached or timed out, so results mean what they always did. The inline backend
+// (tests, BRIDGE_PROCESS_HOST=inline) runs the same function on the calling thread.
 
-const RELATED_SESSION_TABLES = ["turns", "checkpoints", "session_files", "session_refs"] as const;
-const BEST_EFFORT_SESSION_TABLES = ["search_index"] as const;
+import { Worker } from "node:worker_threads";
+import { getProcessHost, resolveWorkerEntry, type HostWorker } from "./process-host.js";
+import type { CliCatalogRead, CliCatalogReadRequest, CliSessionStoreRequest } from "./cli-session-store-worker.js";
 
-interface SessionReference {
-  table: string;
-  column: string;
+/** Must match CLI_SESSION_STORE_WORKER_FLAG in the worker module, which the main thread never imports in worker mode. */
+const WORKER_FLAG = "bridgeCliSessionStoreWorker";
+
+interface Reply {
+  id: number;
+  value?: unknown;
+  error?: string;
 }
 
-function openWritableSessionStore(copilotHome: string): DatabaseSync | undefined {
-  const dbPath = join(copilotHome, "session-store.db");
-  if (!existsSync(dbPath)) return undefined;
-  const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA busy_timeout=5000");
-  return db;
+function startWorkerThread(): HostWorker {
+  const { entry, execArgv } = resolveWorkerEntry("cli-session-store-worker");
+  return new Worker(entry, { workerData: { [WORKER_FLAG]: true }, ...(execArgv ? { execArgv } : {}) });
 }
 
-function tableExists(db: DatabaseSync, table: string): boolean {
-  return !!db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-}
+export class CliSessionStore {
+  private worker: HostWorker | undefined;
+  private readonly waiting = new Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
+  private nextId = 0;
 
-function quoteSqlIdentifier(identifier: string): string {
-  return `"${identifier.replaceAll("\"", "\"\"")}"`;
-}
+  constructor(private readonly options: { inline?: boolean; createWorker?: () => HostWorker } = {}) {}
 
-function tableHasColumn(db: DatabaseSync, table: string, column: string): boolean {
-  return (db.prepare(`PRAGMA table_info(${quoteSqlIdentifier(table)})`).all() as Array<{ name?: string }>)
-    .some((row) => row.name === column);
-}
-
-function listSessionReferences(db: DatabaseSync): SessionReference[] {
-  const references = new Map<string, SessionReference>();
-  const addReference = (table: string, column: string) => {
-    references.set(`${table}\0${column}`, { table, column });
-  };
-
-  for (const table of RELATED_SESSION_TABLES) {
-    if (tableExists(db, table) && tableHasColumn(db, table, "session_id")) {
-      addReference(table, "session_id");
+  async run(request: CliSessionStoreRequest): Promise<unknown> {
+    if (this.options.inline ?? getProcessHost().mode === "inline") {
+      return (await import("./cli-session-store-worker.js")).runCliSessionStoreRequest(request);
     }
+    return new Promise((resolve, reject) => {
+      const id = ++this.nextId;
+      this.waiting.set(id, { resolve, reject });
+      this.connect().postMessage({ id, request });
+    });
   }
 
-  const tables = db.prepare(`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name NOT LIKE 'sqlite_%'
-      AND name <> 'sessions'
-  `).all() as Array<{ name?: unknown }>;
-  for (const row of tables) {
-    if (typeof row.name !== "string" || !row.name) continue;
-    const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${quoteSqlIdentifier(row.name)})`).all() as Array<{
-      table?: unknown;
-      from?: unknown;
-      to?: unknown;
-    }>;
-    for (const foreignKey of foreignKeys) {
-      if (
-        foreignKey.table === "sessions"
-        && typeof foreignKey.from === "string"
-        && (foreignKey.to === "id" || foreignKey.to == null)
-      ) {
-        addReference(row.name, foreignKey.from);
-      }
-    }
+  /** Stops the worker thread. Requests still waiting fail; the next request starts a new thread. */
+  async shutdown(): Promise<void> {
+    const worker = this.worker;
+    this.lose(worker, new Error("CLI session store shut down"));
+    await worker?.terminate();
   }
 
-  return [...references.values()];
-}
+  private connect(): HostWorker {
+    if (this.worker) return this.worker;
+    const worker = (this.options.createWorker ?? startWorkerThread)();
+    worker.unref();
+    worker.on("message", ({ id, value, error }: Reply) => {
+      const waiter = this.waiting.get(id);
+      this.waiting.delete(id);
+      if (error === undefined) waiter?.resolve(value);
+      else waiter?.reject(new Error(error));
+    });
+    worker.on("error", (error: Error) => this.lose(worker, error));
+    worker.on("exit", (code: number) => this.lose(worker, new Error(`CLI session store worker exited with code ${code}`)));
+    this.worker = worker;
+    return worker;
+  }
 
-function parseCliTimestampMs(value: unknown): number | undefined {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const trimmed = value.trim();
-  const normalized = trimmed.includes("T") || /(?:Z|[+-]\d{2}:?\d{2})$/.test(trimmed)
-    ? trimmed
-    : `${trimmed.replace(" ", "T")}Z`;
-  const ms = Date.parse(normalized);
-  return Number.isFinite(ms) ? ms : undefined;
-}
-
-export function deleteCliSessionStoreRows(copilotHome: string, sessionId: string): void {
-  const db = openWritableSessionStore(copilotHome);
-  if (!db) return;
-  const deleteSessionRows = (table: string, column = "session_id") => {
-    if (tableExists(db, table) && tableHasColumn(db, table, column)) {
-      db.prepare(
-        `DELETE FROM ${quoteSqlIdentifier(table)} WHERE ${quoteSqlIdentifier(column)} = ?`,
-      ).run(sessionId);
-    }
-  };
-
-  try {
-    const sessionReferences = listSessionReferences(db);
-    try {
-      db.exec("BEGIN IMMEDIATE");
-      db.exec("PRAGMA defer_foreign_keys=ON");
-      for (const reference of sessionReferences) {
-        deleteSessionRows(reference.table, reference.column);
-      }
-      if (tableExists(db, "sessions")) db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
-      db.exec("COMMIT");
-    } catch (error) {
-      try { db.exec("ROLLBACK"); } catch { /* best-effort */ }
-      throw error;
-    }
-    try {
-      for (const table of BEST_EFFORT_SESSION_TABLES) deleteSessionRows(table);
-    } catch {
-      // FTS search rows are non-authoritative; keep deletion successful once source rows are gone.
-    }
-  } finally {
-    db.close();
+  private lose(worker: HostWorker | undefined, reason: Error): void {
+    if (!worker || this.worker !== worker) return;
+    this.worker = undefined;
+    for (const waiter of this.waiting.values()) waiter.reject(reason);
+    this.waiting.clear();
   }
 }
 
+let shared = new CliSessionStore();
+
+export function readCliSessionCatalog(request: CliCatalogReadRequest): Promise<CliCatalogRead> {
+  return shared.run(request) as Promise<CliCatalogRead>;
+}
+
+export async function deleteCliSessionStoreRows(copilotHome: string, sessionId: string): Promise<void> {
+  await shared.run({ op: "delete", copilotHome, sessionId });
+}
+
+/** Deletes rows of disposable sessions that outlived their session-state directory. Returns their IDs. */
 export function sweepLeakedCliSessionStoreRows(opts: {
   copilotHome: string;
   idPrefix: string;
   cutoffTimestampMs: number;
-}): string[] {
-  const db = openWritableSessionStore(opts.copilotHome);
-  if (!db) return [];
-  const sessionStateDir = join(opts.copilotHome, "session-state");
-  let staleIds: string[] = [];
+}): Promise<string[]> {
+  return shared.run({ op: "sweep", ...opts }) as Promise<string[]>;
+}
 
-  try {
-    if (!tableExists(db, "sessions")) return [];
-    const rows = db.prepare(`
-      SELECT id, created_at, updated_at
-      FROM sessions
-      WHERE id LIKE ?
-    `).all(`${opts.idPrefix}-%`) as Array<{ id?: unknown; created_at?: unknown; updated_at?: unknown }>;
-    staleIds = rows
-      .map((row) => ({
-        id: typeof row.id === "string" ? row.id : undefined,
-        timestampMs: parseCliTimestampMs(row.updated_at) ?? parseCliTimestampMs(row.created_at),
-      }))
-      .filter((row): row is { id: string; timestampMs: number } =>
-        !!row.id
-        && typeof row.timestampMs === "number"
-        && row.timestampMs <= opts.cutoffTimestampMs
-        && !existsSync(join(sessionStateDir, row.id)))
-      .map((row) => row.id);
-  } finally {
-    db.close();
-  }
-  for (const sessionId of staleIds) {
-    deleteCliSessionStoreRows(opts.copilotHome, sessionId);
-  }
-  return staleIds;
+export async function resetCliSessionStoreForTests(): Promise<void> {
+  await shared.shutdown();
+  shared = new CliSessionStore();
 }
