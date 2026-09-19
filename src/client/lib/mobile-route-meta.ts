@@ -1,7 +1,10 @@
 import { matchPath } from "react-router-dom";
 import { isDashboardRoutePath } from "./dashboard-routes";
 
-export type MobileNavTab = "home" | "tasks" | "chats" | "helm" | "docs" | "settings";
+export type MobileNavTab = "home" | "work" | "helm" | "docs" | "settings";
+
+/** The Work tab holds the task list and the quick chats; a segment says which of the two a route belongs to. */
+export type MobileWorkSegment = "tasks" | "chats";
 
 export type MobileRouteKind =
   | "dashboard"
@@ -31,6 +34,7 @@ export interface MobileDetailHeaderMeta {
 export interface MobileRouteMeta {
   route: MobileRouteKind;
   activeTab: MobileNavTab;
+  workSegment: MobileWorkSegment | null;
   showBottomNav: boolean;
   showSharedHeader: boolean;
   isRoot: boolean;
@@ -45,6 +49,27 @@ export interface MobileRouteMeta {
   detailHeader?: MobileDetailHeaderMeta;
 }
 
+export interface MobileWorkTabTarget {
+  segment: MobileWorkSegment;
+  /** True when the tap only switches lists, which should not add a history entry. */
+  replace: boolean;
+}
+
+/**
+ * Where a tap on the Work tab leads. On one of its two lists the tap flips to the other, which keeps the
+ * switch within thumb reach. From inside a task it leads back to the task list, and from any other tab it
+ * reopens the list that was showing last.
+ */
+export function resolveMobileWorkTabTarget(
+  current: Pick<MobileRouteMeta, "isRoot" | "workSegment">,
+  lastSegment: MobileWorkSegment,
+): MobileWorkTabTarget {
+  if (current.isRoot && current.workSegment) {
+    return { segment: current.workSegment === "tasks" ? "chats" : "tasks", replace: true };
+  }
+  return { segment: current.workSegment ?? lastSegment, replace: false };
+}
+
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === "/") return "/";
   const trimmed = pathname.replace(/\/+$/, "");
@@ -53,6 +78,7 @@ function normalizePathname(pathname: string): string {
 
 function buildMeta(overrides: Partial<MobileRouteMeta> & Pick<MobileRouteMeta, "route" | "activeTab">): MobileRouteMeta {
   return {
+    workSegment: null,
     showBottomNav: false,
     showSharedHeader: false,
     isRoot: false,
@@ -84,7 +110,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (normalizedPath === "/") {
     return buildMeta({
       route: "task-list",
-      activeTab: "tasks",
+      activeTab: "work",
+      workSegment: "tasks",
       showBottomNav: true,
       isRoot: true,
       isDetail: false,
@@ -94,7 +121,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (normalizedPath === "/chats") {
     return buildMeta({
       route: "chat-list",
-      activeTab: "chats",
+      activeTab: "work",
+      workSegment: "chats",
       showBottomNav: true,
       isRoot: true,
       isDetail: false,
@@ -124,7 +152,7 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (normalizedPath === "/search") {
     return buildMeta({
       route: "search",
-      activeTab: "tasks",
+      activeTab: "work",
       isRoot: true,
       isDetail: false,
     });
@@ -134,7 +162,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (taskDraftMatch) {
     return buildMeta({
       route: "task-session",
-      activeTab: "tasks",
+      activeTab: "work",
+      workSegment: "tasks",
       showSharedHeader: true,
       isDraft: true,
       taskId: taskDraftMatch.params.taskId ?? null,
@@ -149,7 +178,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (taskSessionMatch) {
     return buildMeta({
       route: "task-session",
-      activeTab: "tasks",
+      activeTab: "work",
+      workSegment: "tasks",
       showSharedHeader: true,
       taskId: taskSessionMatch.params.taskId ?? null,
       sessionId: taskSessionMatch.params.sessionId ?? null,
@@ -163,7 +193,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (taskOverviewMatch) {
     return buildMeta({
       route: "task-dashboard",
-      activeTab: "tasks",
+      activeTab: "work",
+      workSegment: "tasks",
       showBottomNav: true,
       showSharedHeader: true,
       taskId: taskOverviewMatch.params.taskId ?? null,
@@ -177,7 +208,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (taskCockpitMatch) {
     return buildMeta({
       route: "task-cockpit",
-      activeTab: "tasks",
+      activeTab: "work",
+      workSegment: "tasks",
       showBottomNav: true,
       showSharedHeader: true,
       taskId: taskCockpitMatch.params.taskId ?? null,
@@ -188,7 +220,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (normalizedPath === "/sessions/new") {
     return buildMeta({
       route: "quick-chat",
-      activeTab: "chats",
+      activeTab: "work",
+      workSegment: "chats",
       showSharedHeader: true,
       isDraft: true,
       sessionId: "new",
@@ -200,7 +233,8 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (sessionMatch) {
     return buildMeta({
       route: "quick-chat",
-      activeTab: "chats",
+      activeTab: "work",
+      workSegment: "chats",
       showSharedHeader: true,
       sessionId: sessionMatch.params.sessionId ?? null,
       upTarget: { to: "/chats", label: "Chats" },
@@ -228,7 +262,7 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
 
   return buildMeta({
     route: "unknown",
-    activeTab: "tasks",
+    activeTab: "work",
     isDetail: false,
   });
 }

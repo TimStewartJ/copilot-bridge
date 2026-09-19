@@ -1,9 +1,16 @@
 import { useState } from "react";
-import { Gauge, Loader2, RotateCw, X } from "lucide-react";
+import { ChevronRight, Gauge, Loader2, RotateCw, X } from "lucide-react";
 import type { CopilotQuotaStatus } from "../api";
 import { useCopilotQuotaQuery } from "../hooks/queries/useCopilotQuota";
 import { LoadingSkeletonRegion, Skeleton } from "./shared/Skeleton";
 import { useModalDialog } from "./shared/useModalDialog";
+
+// Every quota surface uses the same pair, so the detail view doubles as the legend for the mini bars.
+const USAGE_COLOR_CLASS = "bg-accent";
+const MONTH_COLOR_CLASS = "bg-info";
+// Softer where usage is drawn over it, so the amount used stays the stronger of the two. The alpha is in
+// the color rather than an opacity, which would lift the layer above the usage fill.
+const MONTH_UNDERLAY_CLASS = "bg-info/80";
 
 const AI_CREDIT_FORMATTER = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 2,
@@ -18,21 +25,16 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
 
 interface CopilotQuotaMenuProps {
   collapsed?: boolean;
-  mobile?: boolean;
 }
 
-export default function CopilotQuotaMenu({ collapsed = false, mobile = false }: CopilotQuotaMenuProps) {
+function useQuotaDetails() {
   const quota = useCopilotQuotaQuery();
-  const [hovered, setHovered] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const status = quota.data ?? null;
   const snapshot = status?.primary ?? null;
-  const usedPercent = getUsedPercent(snapshot);
-  const accessibleLabel = snapshot
-    ? `Live Copilot quota, ${formatQuotaAmount(snapshot.used)} ${getUnitLabel(snapshot)} used`
-    : "Live Copilot quota";
+  const isLoading = quota.isLoading && !status;
 
   const handleRefresh = async () => {
     setRefreshError(null);
@@ -46,6 +48,37 @@ export default function CopilotQuotaMenu({ collapsed = false, mobile = false }: 
     }
   };
 
+  return {
+    status,
+    snapshot,
+    isLoading,
+    error: quota.error,
+    usedPercent: getUsedPercent(snapshot),
+    monthElapsedPercent: getMonthElapsedPercent(new Date()),
+    accessibleLabel: snapshot
+      ? `Live Copilot quota, ${formatQuotaAmount(snapshot.used)} ${getUnitLabel(snapshot)} used`
+      : "Live Copilot quota",
+    detailsOpen,
+    openDetails: () => setDetailsOpen(true),
+    dialog: detailsOpen ? (
+      <CopilotQuotaDetailsDialog
+        status={status}
+        isLoading={isLoading}
+        error={quota.error}
+        refreshing={refreshing}
+        refreshError={refreshError}
+        onRefresh={() => void handleRefresh()}
+        onClose={() => setDetailsOpen(false)}
+      />
+    ) : null,
+  };
+}
+
+export default function CopilotQuotaMenu({ collapsed = false }: CopilotQuotaMenuProps) {
+  const details = useQuotaDetails();
+  const [hovered, setHovered] = useState(false);
+  const { status, isLoading, usedPercent } = details;
+
   return (
     <>
       <div
@@ -57,28 +90,25 @@ export default function CopilotQuotaMenu({ collapsed = false, mobile = false }: 
       >
         <button
           type="button"
-          onClick={() => setDetailsOpen(true)}
+          onClick={details.openDetails}
           title="Open live Copilot quota"
-          aria-label={accessibleLabel}
+          aria-label={details.accessibleLabel}
           className={collapsed
             ? "relative flex h-9 w-9 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
             : "relative flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-medium text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"}
         >
-          {quota.isLoading && !status ? <Loader2 size={collapsed ? 17 : 14} className="animate-spin" /> : <Gauge size={collapsed ? 17 : 14} />}
+          {isLoading ? <Loader2 size={collapsed ? 17 : 14} className="animate-spin" /> : <Gauge size={collapsed ? 17 : 14} />}
           {!collapsed && <span className="min-w-0 flex-1">Copilot quota</span>}
           {usedPercent !== null && (
-            <span
-              aria-hidden="true"
-              className={collapsed
-                ? "absolute inset-x-1.5 bottom-1 h-0.5 overflow-hidden rounded-full bg-bg-primary"
-                : "h-1 w-12 overflow-hidden rounded-full bg-bg-primary"}
-            >
-              <span className="block h-full rounded-full bg-accent" style={{ width: `${usedPercent}%` }} />
-            </span>
+            <QuotaPaceBar
+              usedPercent={usedPercent}
+              monthPercent={details.monthElapsedPercent}
+              className={collapsed ? "absolute inset-x-1.5 bottom-1 h-[3px]" : "h-1 w-14 shrink-0"}
+            />
           )}
         </button>
 
-        {hovered && !detailsOpen && !mobile && (
+        {hovered && !details.detailsOpen && (
           <div
             role="tooltip"
             className={`absolute z-40 rounded-lg border border-border bg-bg-elevated p-3 text-xs shadow-xl ${
@@ -89,26 +119,134 @@ export default function CopilotQuotaMenu({ collapsed = false, mobile = false }: 
           >
             <QuotaHoverSummary
               status={status}
-              isLoading={quota.isLoading && !status}
-              error={quota.error}
+              isLoading={isLoading}
+              error={details.error}
             />
             <p className="mt-2 text-[10px] text-text-faint">Click for quota details</p>
           </div>
         )}
       </div>
 
-      {detailsOpen && (
-        <CopilotQuotaDetailsDialog
-          status={status}
-          isLoading={quota.isLoading && !status}
-          error={quota.error}
-          refreshing={refreshing}
-          refreshError={refreshError}
-          onRefresh={() => void handleRefresh()}
-          onClose={() => setDetailsOpen(false)}
+      {details.dialog}
+    </>
+  );
+}
+
+/** The quota as a tappable summary for places without a rail to hover, such as mobile Settings. */
+export function CopilotQuotaCard({ className = "" }: { className?: string }) {
+  const details = useQuotaDetails();
+  const { status, snapshot, isLoading, usedPercent } = details;
+  const available = Boolean(status?.available && snapshot);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={details.openDetails}
+        aria-label={details.accessibleLabel}
+        className={`block w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-left transition-colors hover:bg-bg-hover active:bg-bg-hover ${className}`}
+      >
+        <span className="flex items-center gap-2">
+          {isLoading
+            ? <Loader2 size={15} className="shrink-0 animate-spin text-text-muted" />
+            : <Gauge size={15} className={`shrink-0 ${available ? "text-accent" : "text-text-muted"}`} />}
+          <span className="min-w-0 flex-1 text-sm font-medium text-text-primary">Copilot quota</span>
+          {available && usedPercent !== null && (
+            <span className="text-xs font-medium tabular-nums text-text-secondary">{formatPercent(usedPercent)} used</span>
+          )}
+          <ChevronRight size={15} className="shrink-0 text-text-faint" />
+        </span>
+        {isLoading ? (
+          <span className="mt-1 block text-xs text-text-muted">Reading live Copilot quota…</span>
+        ) : !available || !snapshot ? (
+          <span className="mt-1 block text-xs text-text-muted">
+            {status?.error ?? (details.error ? formatError(details.error) : "Unavailable right now")}
+          </span>
+        ) : usedPercent === null ? (
+          <span className="mt-1 block text-xs text-text-muted">{formatUsedOfAllowance(snapshot)}</span>
+        ) : (
+          <>
+            <QuotaPaceBar
+              usedPercent={usedPercent}
+              monthPercent={details.monthElapsedPercent}
+              className="mt-3 h-1.5 w-full"
+            />
+            <QuotaPaceLegend
+              usedLabel={formatUsedOfAllowance(snapshot)}
+              monthPercent={details.monthElapsedPercent}
+              className="mt-2"
+            />
+          </>
+        )}
+      </button>
+
+      {details.dialog}
+    </>
+  );
+}
+
+/**
+ * One track, two fills: quota used, drawn over how much of the month has gone by. Usage that runs ahead
+ * covers the month fill, so a marker keeps the month readable. The layers share one grid cell, which
+ * leaves positioning of the track itself to the caller.
+ */
+function QuotaPaceBar({
+  usedPercent,
+  monthPercent,
+  className = "",
+}: {
+  usedPercent: number;
+  monthPercent: number;
+  className?: string;
+}) {
+  const layer = "col-start-1 row-start-1";
+  return (
+    <span
+      aria-hidden="true"
+      data-quota-pace-bar=""
+      className={`grid overflow-hidden rounded-full bg-bg-primary ${className}`}
+    >
+      <span
+        data-quota-fill="month"
+        className={`${layer} rounded-r-full ${MONTH_UNDERLAY_CLASS}`}
+        style={{ width: `${monthPercent}%` }}
+      />
+      <span
+        data-quota-fill="usage"
+        className={`${layer} rounded-r-full ${USAGE_COLOR_CLASS}`}
+        style={{ width: `${usedPercent}%`, minWidth: usedPercent > 0 ? 2 : undefined }}
+      />
+      {usedPercent >= monthPercent && (
+        <span
+          data-quota-fill="month-marker"
+          className={`${layer} w-0.5 -translate-x-1/2 ring-1 ring-bg-primary ${MONTH_COLOR_CLASS}`}
+          style={{ marginLeft: `${monthPercent}%` }}
         />
       )}
-    </>
+    </span>
+  );
+}
+
+function QuotaPaceLegend({
+  usedLabel,
+  monthPercent,
+  className = "",
+}: {
+  usedLabel: string;
+  monthPercent: number;
+  className?: string;
+}) {
+  return (
+    <span className={`flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-text-muted ${className}`}>
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${USAGE_COLOR_CLASS}`} />
+        {usedLabel}
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${MONTH_COLOR_CLASS}`} />
+        {formatWholePercent(monthPercent)} of month
+      </span>
+    </span>
   );
 }
 
@@ -146,6 +284,7 @@ function QuotaHoverSummary({
   }
 
   const usedPercent = getUsedPercent(snapshot);
+  const monthElapsedPercent = getMonthElapsedPercent(new Date());
   return (
     <>
       <div className="flex items-center gap-2 font-medium text-text-secondary">
@@ -164,12 +303,18 @@ function QuotaHoverSummary({
           : `of ${formatQuotaAmount(snapshot.entitlement)} this period`}
       </p>
       {usedPercent !== null && (
-        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-text-muted">
-          <span>{formatPercent(usedPercent)} used</span>
-          <span className="h-1 flex-1 overflow-hidden rounded-full bg-bg-primary">
-            <span className="block h-full rounded-full bg-accent" style={{ width: `${usedPercent}%` }} />
-          </span>
-        </div>
+        <>
+          <QuotaPaceBar
+            usedPercent={usedPercent}
+            monthPercent={monthElapsedPercent}
+            className="mt-2.5 h-1 w-full"
+          />
+          <QuotaPaceLegend
+            usedLabel={`${formatPercent(usedPercent)} used`}
+            monthPercent={monthElapsedPercent}
+            className="mt-1.5"
+          />
+        </>
       )}
     </>
   );
@@ -325,16 +470,16 @@ function QuotaDetailsCard({
             role="img"
             aria-label={`${formatPercent(usedPercent)} quota used; ${formatPercent(monthElapsedPercent)} of calendar month elapsed`}
           >
-            <div className="h-1 rounded-r-full bg-accent" style={{ width: `${usedPercent}%` }} />
-            <div className="h-1 rounded-r-full bg-sky-400" style={{ width: `${monthElapsedPercent}%` }} />
+            <div className={`h-1 rounded-r-full ${USAGE_COLOR_CLASS}`} style={{ width: `${usedPercent}%` }} />
+            <div className={`h-1 rounded-r-full ${MONTH_COLOR_CLASS}`} style={{ width: `${monthElapsedPercent}%` }} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[11px] text-text-muted">
             <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
+              <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${USAGE_COLOR_CLASS}`} />
               {formatPercent(usedPercent)} used
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+              <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${MONTH_COLOR_CLASS}`} />
               {formatPercent(monthElapsedPercent)} of month elapsed
             </span>
           </div>
@@ -365,6 +510,12 @@ function getUnitLabel(snapshot: CopilotQuotaStatus["primary"]): string {
 function formatUsedAmount(snapshot: NonNullable<CopilotQuotaStatus["primary"]>): string {
   const prefix = !snapshot.usedIsPrecise && snapshot.used !== null ? "~" : "";
   return `${prefix}${formatQuotaAmount(snapshot.used)}`;
+}
+
+function formatUsedOfAllowance(snapshot: NonNullable<CopilotQuotaStatus["primary"]>): string {
+  return snapshot.isUnlimitedEntitlement
+    ? `${formatUsedAmount(snapshot)} ${getUnitLabel(snapshot)} used · Unlimited allowance`
+    : `${formatUsedAmount(snapshot)} of ${formatQuotaAmount(snapshot.entitlement)} ${getUnitLabel(snapshot)}`;
 }
 
 function getUsedPercent(snapshot: CopilotQuotaStatus["primary"]): number | null {
@@ -418,6 +569,10 @@ function formatQuotaAmount(value: number | null): string {
 
 function formatPercent(value: number): string {
   return `${AI_CREDIT_FORMATTER.format(value)}%`;
+}
+
+function formatWholePercent(value: number): string {
+  return `${Math.round(value)}%`;
 }
 
 function getMonthElapsedPercent(now: Date): number {
