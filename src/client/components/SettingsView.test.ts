@@ -85,6 +85,10 @@ vi.mock("./settings/SkillsSection", () => ({
   SkillsSection: () => null,
 }));
 
+vi.mock("./CopilotQuotaMenu", () => ({
+  CopilotQuotaCard: () => null,
+}));
+
 const { default: SettingsView } = await import("./SettingsView");
 
 const savedSettings: AppSettings = {

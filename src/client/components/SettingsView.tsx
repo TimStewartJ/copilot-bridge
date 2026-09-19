@@ -25,6 +25,7 @@ import {
 } from "./settings";
 import { McpServersSection } from "./settings/McpServersSection";
 import { SkillsSection } from "./settings/SkillsSection";
+import { CopilotQuotaCard } from "./CopilotQuotaMenu";
 import {
   DEFAULT_CATEGORY,
   SETTINGS_CATEGORIES,
@@ -291,6 +292,8 @@ export default function SettingsView() {
 
       {/* Content */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-6">
+        {/* Desktop keeps the quota in the rail; the mobile nav has no room for it, so it lives here. */}
+        <CopilotQuotaCard className="mb-4 md:hidden" />
         <div className="mx-auto flex max-w-7xl flex-col gap-6 md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:items-start">
           <SettingsCategoryNav
             activeCategory={activeCategory}
