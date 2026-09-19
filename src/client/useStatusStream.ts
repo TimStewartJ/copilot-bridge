@@ -36,6 +36,7 @@ export type StatusEvent =
   | { type: "focus:changed"; focusObjectId?: string; focusObjectType?: "decision" | "alert" | "event"; taskId?: string }
   | { type: "focus:protection-changed" | "focus:protection-cleared"; protectionWindowId?: string; reason?: string }
   | { type: "feed:changed"; cardId?: string; dedupeKey?: string; taskId?: string; sessionId?: string }
+  | { type: "docs:changed"; docPath?: string }
   | { type: "readstate:changed"; readState?: Record<string, string> };
 
 type StatusHandler = (event: StatusEvent) => void;
