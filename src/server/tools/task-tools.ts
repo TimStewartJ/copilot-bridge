@@ -189,12 +189,44 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
           description: "Explicit follow-up decision. Use set to set nextTouchAt, keep to preserve it while changing nextAction or waitingOn, or clear to clear it.",
           properties: {
             mode: { type: "string", enum: ["set", "keep", "clear"], description: "Follow-up decision for nextTouchAt" },
-            nextTouchAt: { type: "string", description: "ISO timestamp with timezone. Required when mode is set." },
+            nextTouchAt: { type: "string", description: "ISO timestamp with timezone. Required for set; forbidden for keep or clear." },
           },
           required: ["mode"],
         },
       },
       required: ["taskId", "followUp"],
+      allOf: [
+        {
+          if: {
+            properties: {
+              followUp: { properties: { mode: { const: "set" } }, required: ["mode"] },
+            },
+            required: ["followUp"],
+          },
+          then: { properties: { followUp: { required: ["nextTouchAt"] } } },
+        },
+        {
+          if: {
+            properties: {
+              followUp: { properties: { mode: { const: "keep" } }, required: ["mode"] },
+            },
+            required: ["followUp"],
+          },
+          then: {
+            properties: { followUp: { not: { required: ["nextTouchAt"] } } },
+            anyOf: [{ required: ["nextAction"] }, { required: ["waitingOn"] }],
+          },
+        },
+        {
+          if: {
+            properties: {
+              followUp: { properties: { mode: { const: "clear" } }, required: ["mode"] },
+            },
+            required: ["followUp"],
+          },
+          then: { properties: { followUp: { not: { required: ["nextTouchAt"] } } } },
+        },
+      ],
     },
     handler: async (args: any) => {
       const followUp = args.followUp;

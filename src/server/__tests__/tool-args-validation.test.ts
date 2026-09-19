@@ -93,9 +93,68 @@ describe("validateToolArguments", () => {
   it("does not coerce numeric strings", () => {
     expect(validateToolArguments(schema, { name: "x", count: "2" })).toContain("count must be integer");
   });
+
+  it("enforces every allOf branch alongside sibling constraints", () => {
+    const combined = { ...schema, allOf: [{ required: ["count"] }, { required: ["enabled"] }] };
+    expect(validateToolArguments(combined, { name: "x" })).toContain("count");
+    expect(validateToolArguments(combined, { name: "x", count: 1 })).toContain("enabled");
+    expect(validateToolArguments(combined, { name: 2, count: 1, enabled: true })).toContain("name must be string");
+    expect(validateToolArguments(combined, { name: "x", count: 1, enabled: true })).toBeUndefined();
+  });
+
+  it("applies then only when if matches, without treating if as a constraint", () => {
+    const conditional = {
+      ...schema,
+      if: { properties: { mode: { const: "slow" } }, required: ["mode"] },
+      then: { required: ["count"] },
+    };
+    expect(validateToolArguments(conditional, { name: "x", mode: "slow" })).toContain("count");
+    expect(validateToolArguments(conditional, { name: "x", mode: "slow", count: 1 })).toBeUndefined();
+    expect(validateToolArguments(conditional, { name: "x", mode: "fast" })).toBeUndefined();
+    expect(validateToolArguments(conditional, { name: "x" })).toBeUndefined();
+    expect(validateToolArguments({ then: false }, {})).toBeUndefined();
+    expect(validateToolArguments({ if: false, then: false }, {})).toBeUndefined();
+    expect(validateToolArguments({ if: true, then: false }, {})).toContain("not allowed");
+    expect(validateToolArguments({ if: false }, {})).toBeUndefined();
+  });
+
+  it("negates subschemas while retaining sibling constraints and nested paths", () => {
+    const negated = {
+      ...schema,
+      not: { required: ["count"] },
+    };
+    expect(validateToolArguments(negated, { name: "x", count: 1 })).toContain("forbidden shape");
+    expect(validateToolArguments(negated, { name: "x" })).toBeUndefined();
+    expect(validateToolArguments(negated, { name: 1 })).toContain("name must be string");
+    expect(validateToolArguments({ not: false }, {})).toBeUndefined();
+    expect(validateToolArguments({ not: true }, {})).toContain("forbidden shape");
+    expect(validateToolArguments({
+      properties: { nested: { not: { required: ["inner"] } } },
+    }, { nested: { inner: null } })).toContain("nested matches a forbidden shape");
+  });
+
+  it("handles boolean schemas at the root, in properties, and in array items under not", () => {
+    expect(validateToolArguments(false, {})).toContain("not allowed");
+    expect(validateToolArguments(true, {})).toBeUndefined();
+    expect(validateToolArguments({ properties: { value: false } }, { value: null })).toContain("value is not allowed");
+    const noItems = { properties: { values: { type: "array", items: false } } };
+    expect(validateToolArguments(noItems, { values: [] })).toBeUndefined();
+    expect(validateToolArguments(noItems, { values: [1] })).toContain("values[0] is not allowed");
+    const someItems = { properties: { values: { type: "array", not: { items: false } } } };
+    expect(validateToolArguments(someItems, { values: [] })).toContain("values matches a forbidden shape");
+    expect(validateToolArguments(someItems, { values: [1] })).toBeUndefined();
+  });
 });
 
 describe("findUnsupportedSchemaKeywords", () => {
+  it("audits subschemas inside conditionals and combinators", () => {
+    expect(findUnsupportedSchemaKeywords({
+      allOf: [{
+        if: { properties: { mode: { pattern: "x" } } },
+        then: { not: { unsupported: true } },
+      }],
+    })).toEqual(["allOf[0].if.mode.pattern", "allOf[0].then.not.unsupported"]);
+  });
   it("reports keywords the validator does not implement", () => {
     const found = findUnsupportedSchemaKeywords({
       type: "object",
