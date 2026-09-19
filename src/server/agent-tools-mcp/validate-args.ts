@@ -27,6 +27,10 @@ export const SUPPORTED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   "enum",
   "const",
   "anyOf",
+  "allOf",
+  "if",
+  "then",
+  "not",
   "properties",
   "required",
   "additionalProperties",
@@ -98,7 +102,24 @@ function at(path: string, message: string): string {
 }
 
 function validateValue(schema: unknown, value: unknown, path: string): string | undefined {
+  if (schema === false) return at(path, "is not allowed");
   if (!isRecord(schema)) return undefined;
+
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) {
+      const error = validateValue(branch, value, path);
+      if (error) return error;
+    }
+  }
+
+  if ("if" in schema && validateValue(schema.if, value, path) === undefined && "then" in schema) {
+    const error = validateValue(schema.then, value, path);
+    if (error) return error;
+  }
+
+  if ("not" in schema && validateValue(schema.not, value, path) === undefined) {
+    return at(path, "matches a forbidden shape");
+  }
 
   if (Array.isArray(schema.anyOf)) {
     const branchErrors = schema.anyOf.map((branch) => validateValue(branch, value, path));
@@ -153,7 +174,7 @@ function validateValue(schema: unknown, value: unknown, path: string): string | 
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems) {
       return at(path, `must have at most ${schema.maxItems} item(s)`);
     }
-    if (isRecord(schema.items)) {
+    if (isRecord(schema.items) || typeof schema.items === "boolean") {
       for (const [index, item] of value.entries()) {
         const error = validateValue(schema.items, item, `${path}[${index}]`);
         if (error) return error;
@@ -206,7 +227,7 @@ function validateObject(schema: JsonSchema, value: Record<string, unknown>, path
  * `undefined` when the arguments satisfy the declared contract.
  */
 export function validateToolArguments(schema: unknown, args: unknown): string | undefined {
-  if (!isRecord(schema)) return undefined;
+  if (!isRecord(schema) && typeof schema !== "boolean") return undefined;
   if (!isRecord(args)) {
     return `arguments must be an object (received ${describeType(args)})`;
   }
@@ -239,7 +260,7 @@ export function findUnsupportedSchemaKeywords(schema: unknown, path = ""): strin
       }
       continue;
     }
-    if (keyword === "items" || keyword === "anyOf") {
+    if (["items", "anyOf", "allOf", "if", "then", "not"].includes(keyword)) {
       found.push(...findUnsupportedSchemaKeywords(value, path ? `${path}.${keyword}` : keyword));
     }
   }

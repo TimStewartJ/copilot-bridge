@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import type { AppContext } from "../app-context.js";
+import { validateToolArguments } from "../agent-tools-mcp/validate-args.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { toolFailure } from "../tool-results.js";
@@ -52,9 +54,45 @@ describe("session manager task tools", () => {
     expect(updateTool.inputSchema.properties.waitingOn).toBeUndefined();
     expect(updateTool.inputSchema.properties.nextTouchAt).toBeUndefined();
     expect(momentumTool.inputSchema.required).toEqual(["taskId", "followUp"]);
+    expect(momentumTool.inputSchema.allOf).toHaveLength(3);
     expect(momentumTool.inputSchema.properties.followUp.properties.mode.enum).toEqual(["set", "keep", "clear"]);
     expect(listTool.description).toContain("kinds");
     expect(infoTool.description).toContain("kind");
+  });
+
+  it("validates the emitted momentum contract with AJV and the Bridge validator", () => {
+    const { ctx } = createTestApp();
+    const tool = getTool(ctx, "task_update_momentum");
+    const validate = new AjvJsonSchemaValidator().getValidator(tool.inputSchema);
+    const date = "2026-05-02T10:00:00.000Z";
+    const cases: Array<{ valid: boolean; args: Record<string, unknown> }> = [
+      { valid: false, args: { followUp: { mode: "keep" } } },
+      { valid: false, args: { followUp: { mode: "set" } } },
+      { valid: false, args: { followUp: { mode: "clear", nextTouchAt: date } } },
+      { valid: false, args: { nextAction: "Review", followUp: { mode: "keep", nextTouchAt: date } } },
+      { valid: false, args: { nextAction: null, followUp: { mode: "keep", nextTouchAt: null } } },
+      { valid: false, args: { followUp: {} } },
+      { valid: false, args: { followUp: null } },
+      { valid: false, args: { followUp: [] } },
+      { valid: false, args: { followUp: "clear" } },
+      { valid: false, args: { followUp: { mode: "invalid" } } },
+      { valid: false, args: {} },
+      { valid: false, args: { followUp: { mode: "set", nextTouchAt: null } } },
+      { valid: true, args: { followUp: { mode: "set", nextTouchAt: date } } },
+      { valid: true, args: { followUp: { mode: "set", nextTouchAt: "not-a-date" } } },
+      { valid: true, args: { nextAction: "Review", followUp: { mode: "keep" } } },
+      { valid: true, args: { nextAction: null, followUp: { mode: "keep" } } },
+      { valid: true, args: { waitingOn: "QA", followUp: { mode: "keep" } } },
+      { valid: true, args: { waitingOn: null, followUp: { mode: "keep" } } },
+      { valid: true, args: { nextAction: null, waitingOn: null, followUp: { mode: "keep" } } },
+      { valid: true, args: { followUp: { mode: "clear" } } },
+      { valid: true, args: { followUp: { mode: "clear", extra: true } } },
+    ];
+    for (const { args, valid } of cases) {
+      const input = { taskId: "task-1", ...args };
+      expect(validate(input).valid, JSON.stringify(input)).toBe(valid);
+      expect(validateToolArguments(tool.inputSchema, input) === undefined, JSON.stringify(input)).toBe(valid);
+    }
   });
 
   it("task_create accepts kind and task list/info include it", async () => {
@@ -469,26 +507,22 @@ describe("session manager task tools", () => {
     const task = ctx.taskStore.createTask("Momentum invalid");
     const tool = getTool(ctx, "task_update_momentum");
 
-    await expect(tool.handler({
-      taskId: task.id,
-      followUp: { mode: "keep" },
-    }, createInvocation("task_update_momentum"))).resolves.toEqual(
-      toolFailure("followUp.mode 'keep' must be paired with nextAction or waitingOn. Use mode 'set' or 'clear' to update only the follow-up date."),
-    );
-
-    await expect(tool.handler({
-      taskId: task.id,
-      followUp: { mode: "set" },
-    }, createInvocation("task_update_momentum"))).resolves.toEqual(
-      toolFailure("followUp.nextTouchAt is required when followUp.mode is 'set'"),
-    );
-
-    await expect(tool.handler({
-      taskId: task.id,
-      followUp: { mode: "clear", nextTouchAt: "2026-05-02T10:00:00.000Z" },
-    }, createInvocation("task_update_momentum"))).resolves.toEqual(
-      toolFailure("followUp.nextTouchAt is only allowed when followUp.mode is 'set'"),
-    );
+    const before = ctx.taskStore.getTask(task.id);
+    for (const args of [
+      { followUp: { mode: "keep" } },
+      { followUp: { mode: "set" } },
+      { followUp: { mode: "clear", nextTouchAt: "2026-05-02T10:00:00.000Z" } },
+      { nextAction: "Do not persist", followUp: { mode: "keep", nextTouchAt: "2026-05-02T10:00:00.000Z" } },
+    ]) {
+      await expect(tool.handler({
+        taskId: task.id,
+        ...args,
+      }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+        resultType: "failure",
+        textResultForLlm: expect.stringContaining("Invalid arguments for task_update_momentum:"),
+      });
+      expect(ctx.taskStore.getTask(task.id)).toEqual(before);
+    }
 
     for (const nextTouchAt of ["not-a-date", "2026-02-31T00:00:00.000Z"]) {
       await expect(tool.handler({
