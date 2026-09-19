@@ -9,7 +9,6 @@ import type express from "express";
 import { randomBytes } from "node:crypto";
 import {
   dependencySyncHash,
-  DEPENDENCY_SYNC_GIT_PATHSPEC,
   preparePatchedPackagesForInstall,
 } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
@@ -1794,11 +1793,6 @@ async function runStagingDeployJobImpl(
     );
   }
   writeLog(`Merged to production: ${commitSha}`);
-
-  const pkgChanged = await runCommand(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
-  if (pkgChanged.ok && pkgChanged.output.trim()) {
-    writeLog("Dependency inputs changed — launcher will sync production dependencies during restart");
-  }
 
   let pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
   if (!pushResult.ok) {
