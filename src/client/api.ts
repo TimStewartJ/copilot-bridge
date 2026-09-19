@@ -3797,6 +3797,11 @@ export interface DocTreeNode {
   path: string;
   isDb?: boolean;
   hasIndex?: boolean;
+  /** Page title, a folder's index page title, or a collection's schema name. */
+  title?: string;
+  description?: string;
+  tags?: string[];
+  modified?: string;
   children?: DocTreeNode[];
 }
 
@@ -3838,67 +3843,97 @@ export interface DbEntry {
   modified: string;
 }
 
+/** Docs paths are slash-separated segments; encode each so spaces, `#` and `%` survive the URL. */
+function encodeDocPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+/** Thrown when a save names a revision that is no longer the latest one on disk. */
+export class DocConflictError extends Error {
+  constructor(message: string, readonly currentModified: string | null) {
+    super(message);
+    this.name = "DocConflictError";
+  }
+}
+
+async function sendDocsMutation<T>(path: string, method: "PUT" | "PATCH" | "POST" | "DELETE", body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const message = typeof err?.error === "string" && err.error ? err.error : res.statusText;
+    if (res.status === 409 && err?.code === "docs_page_conflict") {
+      throw new DocConflictError(message, typeof err.currentModified === "string" ? err.currentModified : null);
+    }
+    throw new ApiError(message, res.status);
+  }
+  return res.json();
+}
+
 export async function fetchDocsTree(): Promise<{ tree: DocTreeNode[]; hasRootIndex: boolean }> {
   return apiFetch<{ tree: DocTreeNode[]; hasRootIndex: boolean }>("/api/docs/tree");
 }
 
-export async function searchDocs(query: string, limit = 20, offset = 0): Promise<{ results: DocSearchResult[]; total: number }> {
-  return apiFetch<{ results: DocSearchResult[]; total: number }>(`/api/docs/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`);
+export async function searchDocs(
+  query: string,
+  limit = 20,
+  offset = 0,
+  options?: { prefix?: boolean; signal?: AbortSignal },
+): Promise<{ results: DocSearchResult[]; total: number }> {
+  const params = new URLSearchParams({ q: query, limit: String(limit), offset: String(offset) });
+  if (options?.prefix) params.set("prefix", "1");
+  return apiFetch<{ results: DocSearchResult[]; total: number }>(
+    `/api/docs/search?${params.toString()}`,
+    undefined,
+    { signal: options?.signal },
+  );
 }
 
 export async function fetchDocPage(path: string): Promise<DocPage> {
-  return apiFetch<DocPage>(`/api/docs/pages/${path}`);
+  return apiFetch<DocPage>(`/api/docs/pages/${encodeDocPath(path)}`);
 }
 
 export async function writeDocPage(path: string, content: string): Promise<{ path: string; success: boolean }> {
-  const res = await fetch(`${API_BASE}/api/docs/pages/${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+  return sendDocsMutation(`/api/docs/pages/${encodeDocPath(path)}`, "PUT", { content });
+}
+
+/**
+ * Saves a page from structured fields. The server serializes the frontmatter, and refuses the
+ * save with a `DocConflictError` when `baseModified` is no longer the page's latest revision.
+ */
+export async function saveDocPage(
+  path: string,
+  input: { frontmatter: Record<string, unknown>; body: string; baseModified?: string },
+): Promise<{ path: string; success: boolean }> {
+  return sendDocsMutation(`/api/docs/pages/${encodeDocPath(path)}`, "PUT", input);
 }
 
 export async function deleteDocPage(path: string): Promise<{ deleted: boolean }> {
-  const res = await fetch(`${API_BASE}/api/docs/pages/${path}`, { method: "DELETE" });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+  return sendDocsMutation(`/api/docs/pages/${encodeDocPath(path)}`, "DELETE");
 }
 
 export async function fetchDbSchema(folder: string): Promise<DbSchema> {
-  return apiFetch<DbSchema>(`/api/docs/schema/${folder}`);
+  return apiFetch<DbSchema>(`/api/docs/schema/${encodeDocPath(folder)}`);
+}
+
+export async function createDbEntry(
+  folder: string,
+  input: { fields: Record<string, unknown>; body?: string },
+): Promise<{ path: string; slug: string; success: boolean }> {
+  return sendDocsMutation(`/api/docs/db/${encodeDocPath(folder)}`, "POST", input);
 }
 
 export async function updateDbEntryPage(
   path: string,
-  input: { content?: string; fields?: Record<string, unknown>; body?: string },
+  input: { content?: string; fields?: Record<string, unknown>; body?: string; baseModified?: string },
 ): Promise<{ path: string; success: boolean }> {
-  const res = await fetch(`${API_BASE}/api/docs/db/${path}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+  return sendDocsMutation(`/api/docs/db/${encodeDocPath(path)}`, "PATCH", input);
 }
 
 export async function deleteDbEntryPage(path: string): Promise<{ path: string; deleted: boolean }> {
-  const res = await fetch(`${API_BASE}/api/docs/db/${path}`, { method: "DELETE" });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+  return sendDocsMutation(`/api/docs/db/${encodeDocPath(path)}`, "DELETE");
 }
 
 export async function fetchDbEntries(
@@ -3917,7 +3952,7 @@ export async function fetchDbEntries(
     params.set("_order", options.sort.order);
   }
   const qs = params.toString();
-  return apiFetch<{ entries: DbEntry[]; total: number }>(`/api/docs/db/${folder}${qs ? `?${qs}` : ""}`);
+  return apiFetch<{ entries: DbEntry[]; total: number }>(`/api/docs/db/${encodeDocPath(folder)}${qs ? `?${qs}` : ""}`);
 }
 
 export async function reindexDocs(): Promise<{ indexed: number }> {

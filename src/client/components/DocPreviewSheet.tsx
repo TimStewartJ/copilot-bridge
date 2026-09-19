@@ -2,11 +2,12 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
 import { BookOpen, ExternalLink, X } from "lucide-react";
 import { fetchDocPage } from "../api";
 import type { DocPage } from "../api";
+import remarkLabelBreaks from "../lib/remark-label-breaks";
 import CodeBlock from "./CodeBlock";
+import { stripLeadingTitle } from "./docs/docs-model";
 import { APP_PROSE } from "./shared/prose-classes";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { useModalDialog } from "./shared/useModalDialog";
@@ -89,8 +90,10 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
           {doc && !loading && (
             <div className={`max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}
             >
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
-                {doc.body}
+              {/* Same line handling as the Docs reader: pages are hard-wrapped, and the sheet's
+                  header already shows the title the body opens with. */}
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkLabelBreaks]} components={{ pre: CodeBlock }}>
+                {stripLeadingTitle(doc.body)}
               </ReactMarkdown>
             </div>
           )}

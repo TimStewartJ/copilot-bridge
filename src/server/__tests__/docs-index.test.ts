@@ -433,3 +433,100 @@ description: Plain resume tag.
     expect(docsIndex.findDocsByTagNames(["résumé"])).toEqual([]);
   });
 });
+
+describe("docs navigation metadata", () => {
+  function createNavigationFixture(onChange?: (change: unknown) => void) {
+    const docsDir = mkdtempSync(join(tmpdir(), "docs-navigation-test-"));
+    tempDirs.push(docsDir);
+    const db = openMemoryDatabase();
+    const docsStore = createDocsStore(docsDir);
+    docsStore.writePage("guides/index", "---\ntitle: Guides\n---\n\n# Guides\n");
+    docsStore.writePage("guides/deploy", `---
+title: "Deploying: the safe way"
+description: |
+  How releases ship,
+  in two lines.
+tags:
+  - release
+---
+
+Stonecutter handles the release.
+`);
+    docsStore.writePage("untitled-note", "Just text, no frontmatter.");
+    docsStore.writeSchema("incidents", { name: "Incident log", fields: [{ name: "severity", type: "select", options: ["sev1"] }] });
+    docsStore.addDbEntry("incidents", { title: "Outage", severity: "sev1" });
+    const docsIndex = createDocsIndex(db, docsStore, { onChange });
+    docsIndex.reindex();
+    return { docsIndex, docsStore };
+  }
+
+  it("decorates the filesystem tree with titles, summaries, tags and dates", () => {
+    const { docsIndex, docsStore } = createNavigationFixture();
+    const tree = docsIndex.decorateTree(docsStore.listTree());
+
+    const guides = tree.find((node) => node.path === "guides");
+    expect(guides).toMatchObject({ type: "folder", hasIndex: true, title: "Guides" });
+    const deploy = guides?.children?.find((node) => node.path === "guides/deploy");
+    expect(deploy).toMatchObject({
+      title: "Deploying: the safe way",
+      description: "How releases ship, in two lines.",
+      tags: ["release"],
+    });
+    expect(deploy?.modified).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    // A collection is labelled by its schema, and its entries by their titles.
+    const incidents = tree.find((node) => node.path === "incidents");
+    expect(incidents).toMatchObject({ isDb: true, title: "Incident log" });
+    expect(incidents?.children?.[0]).toMatchObject({ title: "Outage" });
+
+    // A page without a title keeps its slug as the label.
+    expect(tree.find((node) => node.path === "untitled-note")).toMatchObject({ title: "untitled-note" });
+  });
+
+  it("keeps a tree node usable when the index has not caught up with the file yet", () => {
+    const { docsIndex, docsStore } = createNavigationFixture();
+    docsStore.writePage("written-outside-the-index", "---\ntitle: Fresh\n---\n");
+    const node = docsIndex.decorateTree(docsStore.listTree()).find((candidate) => candidate.path === "written-outside-the-index");
+    expect(node).toEqual({ name: "written-outside-the-index", type: "file", path: "written-outside-the-index" });
+  });
+
+  it("truncates long descriptions in summaries", () => {
+    const { docsIndex, docsStore } = createNavigationFixture();
+    const page = docsStore.writePage("long", `---\ntitle: Long\ndescription: ${"word ".repeat(120)}\n---\n`);
+    docsIndex.indexPage(page);
+    const summary = docsIndex.listPageSummaries().find((candidate) => candidate.path === "long");
+    expect(summary?.description?.length).toBeLessThanOrEqual(280);
+    expect(summary?.description?.endsWith("…")).toBe(true);
+  });
+
+  it("matches a half-typed last word only when prefix search is requested", () => {
+    const { docsIndex } = createNavigationFixture();
+    expect(docsIndex.search("stonecut").results).toEqual([]);
+    expect(docsIndex.search("stonecut", 50, 0, { prefix: true }).results.map((result) => result.path)).toEqual(["guides/deploy"]);
+    expect(docsIndex.search("release stonecut", 50, 0, { prefix: true }).results.map((result) => result.path)).toEqual(["guides/deploy"]);
+    // A trailing space means the word is finished, so it must match exactly again.
+    expect(docsIndex.search("stonecut ", 50, 0, { prefix: true }).results).toEqual([]);
+  });
+
+  it("reports every change so open readers can refresh, and survives a throwing listener", () => {
+    const changes: unknown[] = [];
+    const { docsIndex, docsStore } = createNavigationFixture((change) => {
+      changes.push(change);
+      throw new Error("listener failure must not fail the write");
+    });
+    changes.length = 0;
+
+    const page = docsStore.writePage("guides/rollback", "---\ntitle: Rollback\n---\n");
+    expect(docsIndex.indexPage(page)).toEqual({ indexed: true });
+    docsIndex.removePage("guides/rollback");
+    docsIndex.notifyChanged({ kind: "schema", path: "incidents" });
+    docsIndex.reindex();
+
+    expect(changes).toEqual([
+      { kind: "upsert", path: "guides/rollback" },
+      { kind: "remove", path: "guides/rollback" },
+      { kind: "schema", path: "incidents" },
+      { kind: "reindex" },
+    ]);
+  });
+});

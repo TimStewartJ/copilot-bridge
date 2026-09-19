@@ -182,6 +182,7 @@ export function createDocsToolDefinitions(ctx: AppContext): BridgeToolDefinition
       handler: async (args: any) => {
         try {
           ctx.docsStore!.writeSchema(args.folder, { name: args.name, fields: args.fields });
+          ctx.docsIndex!.notifyChanged({ kind: "schema", path: args.folder });
           return { folder: args.folder, success: true };
         } catch (error) {
           return normalizeDocsToolFailure(error);

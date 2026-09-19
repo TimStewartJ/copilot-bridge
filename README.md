@@ -465,7 +465,7 @@ src/
     │   ├── TaskRail.tsx           # Task list and grouping UI
     │   ├── TaskPanel.tsx          # Task details, notes, docs, schedules
     │   ├── ChatView.tsx           # Session history + streaming chat
-    │   ├── DocsView.tsx           # Knowledge base UI
+    │   ├── docs/                  # Knowledge base UI: reader, editor, collections, search
     │   └── SettingsView.tsx       # Models, providers, appearance, MCP
     └── hooks/queries/             # React Query data hooks
 

@@ -1,5 +1,5 @@
 import { getDocsFtsHealth, initializeDocsFts, type DatabaseSync, type DocsFtsHealth } from "./db.js";
-import { normalizeDocsPublicPath, validateDocsPathSegments, type DocsStore, type DocPage } from "./docs-store.js";
+import { normalizeDocsPublicPath, validateDocsPathSegments, type DocsStore, type DocPage, type DocTreeNode } from "./docs-store.js";
 import { tagNamesMatch } from "./tag-name.js";
 import { parseSearchQuery } from "./search-query.js";
 
@@ -28,6 +28,35 @@ export interface RelatedDocMatch {
   description?: string;
   matchedTags: string[];
 }
+
+export interface DocPageSummary {
+  path: string;
+  title: string;
+  description?: string;
+  tags: string[];
+  folder: string;
+  created: string;
+  modified: string;
+}
+
+export interface DocsIndexChange {
+  kind: "upsert" | "remove" | "reindex" | "schema";
+  /** Page or collection path; absent when the whole index was rebuilt. */
+  path?: string;
+}
+
+export interface DocsIndexOptions {
+  /** Called after the index (and therefore the docs on disk) changed. Must not throw. */
+  onChange?: (change: DocsIndexChange) => void;
+}
+
+export interface DocsSearchOptions {
+  /** Treat the last keyword as a prefix so as-you-type queries match partial words. */
+  prefix?: boolean;
+}
+
+/** Descriptions ride along on every tree node, so keep them to a preview length. */
+const SUMMARY_DESCRIPTION_MAX_LENGTH = 280;
 
 export const DOCS_FTS_UNAVAILABLE_CODE = "docs_fts_unavailable" as const;
 
@@ -92,7 +121,15 @@ const DOCS_SNIPPET_SQL = `
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
+export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options: DocsIndexOptions = {}) {
+  function notifyChanged(change: DocsIndexChange): void {
+    try {
+      options.onChange?.(change);
+    } catch {
+      // A change listener must never fail the docs mutation that triggered it.
+    }
+  }
+
   function parseFrontmatter(frontmatterJson?: string): Record<string, unknown> {
     return frontmatterJson ? JSON.parse(frontmatterJson) as Record<string, unknown> : {};
   }
@@ -183,11 +220,18 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
       rebuildFtsFromContent();
     });
 
+    notifyChanged({ kind: "reindex" });
     return { indexed: pages.length };
   }
 
   /** Index a single page (after create or update) */
   function indexPage(page: DocPage): DocsFtsMutationResult {
+    const result = indexPageRows(page);
+    notifyChanged({ kind: "upsert", path: page.path });
+    return result;
+  }
+
+  function indexPageRows(page: DocPage): DocsFtsMutationResult {
     const skipped = skippedFtsMutation("index docs page");
     const tagsStr = page.tags.join(", ");
     const fmJson = JSON.stringify(page.frontmatter);
@@ -249,6 +293,12 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
   /** Remove a page from the index */
   function removePage(pagePath: string): DocsFtsMutationResult {
+    const result = removePageRows(pagePath);
+    notifyChanged({ kind: "remove", path: pagePath });
+    return result;
+  }
+
+  function removePageRows(pagePath: string): DocsFtsMutationResult {
     const skipped = skippedFtsMutation("remove docs page from search index");
     if (skipped) {
       db.prepare("DELETE FROM docs_pages WHERE path = ?").run(pagePath);
@@ -269,11 +319,18 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
   // ── Search ────────────────────────────────────────────────────
 
-  function search(query: string, limit = 50, offset = 0): { results: SearchResult[]; total: number } {
+  function buildFtsQuery(query: string, searchOptions: DocsSearchOptions): string {
+    const parsed = parseSearchQuery(query);
+    // A trailing space means the last word is finished, so only an in-progress word gets a prefix match.
+    if (!searchOptions.prefix || !parsed.fts || /\s$/.test(query)) return parsed.fts;
+    return `${parsed.fts}*`;
+  }
+
+  function search(query: string, limit = 50, offset = 0, searchOptions: DocsSearchOptions = {}): { results: SearchResult[]; total: number } {
     if (!query.trim()) return { results: [], total: 0 };
     ensureFtsAvailable("search docs");
 
-    const sanitized = parseSearchQuery(query).fts;
+    const sanitized = buildFtsQuery(query, searchOptions);
 
     if (!sanitized) return { results: [], total: 0 };
 
@@ -409,6 +466,69 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     return result;
   }
 
+  // ── Page summaries (navigation metadata) ──────────────────────
+
+  function summarizeDescription(frontmatter: Record<string, unknown>): string | undefined {
+    if (typeof frontmatter.description !== "string") return undefined;
+    const description = frontmatter.description.replace(/\s+/g, " ").trim();
+    if (!description) return undefined;
+    return description.length > SUMMARY_DESCRIPTION_MAX_LENGTH
+      ? `${description.slice(0, SUMMARY_DESCRIPTION_MAX_LENGTH - 1).trimEnd()}…`
+      : description;
+  }
+
+  /** Title, description, tags and dates for every indexed page, without bodies. */
+  function listPageSummaries(): DocPageSummary[] {
+    const rows = db.prepare(`
+      SELECT path, title, tags, folder, created, modified, frontmatter_json
+      FROM docs_pages
+    `).all() as any[];
+
+    return rows.map((r) => {
+      let frontmatter: Record<string, unknown> = {};
+      try {
+        frontmatter = parseFrontmatter(typeof r.frontmatter_json === "string" ? r.frontmatter_json : undefined);
+      } catch {
+        // A row with unreadable frontmatter still gets a title and dates.
+      }
+      const description = summarizeDescription(frontmatter);
+      return {
+        path: r.path as string,
+        title: (r.title || r.path) as string,
+        ...(description ? { description } : {}),
+        tags: extractDocTags(frontmatter, typeof r.tags === "string" ? r.tags : undefined),
+        folder: (r.folder || "") as string,
+        created: (r.created || "") as string,
+        modified: (r.modified || "") as string,
+      };
+    });
+  }
+
+  /**
+   * Adds display metadata to a filesystem tree. The tree stays the source of truth for what
+   * exists; a page the index has not caught up with simply keeps its slug as the label.
+   */
+  function decorateTree(tree: DocTreeNode[]): DocTreeNode[] {
+    const summaries = new Map(listPageSummaries().map((summary) => [summary.path, summary]));
+
+    const decorate = (node: DocTreeNode): DocTreeNode => {
+      const isPage = node.type === "file" || (node.hasIndex && !node.isDb);
+      const summary = isPage ? summaries.get(node.path) : undefined;
+      return {
+        ...node,
+        ...(summary ? {
+          title: summary.title,
+          ...(summary.description ? { description: summary.description } : {}),
+          ...(summary.tags.length ? { tags: summary.tags } : {}),
+          ...(summary.modified ? { modified: summary.modified } : {}),
+        } : {}),
+        ...(node.children ? { children: node.children.map(decorate) } : {}),
+      };
+    };
+
+    return tree.map(decorate);
+  }
+
   /** Find docs whose frontmatter tags match any of the given tag names (case-insensitive) */
   function findDocsByTagNames(tagNames: string[], limit = 50): RelatedDocMatch[] {
     if (tagNames.length === 0) return [];
@@ -443,6 +563,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     reindex, indexPage, removePage,
     search, queryByFolder, resolveWikilink, resolveWikilinks,
     findDocsByTagNames, getFtsHealth,
+    listPageSummaries, decorateTree, notifyChanged,
   };
 }
 

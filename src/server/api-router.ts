@@ -188,7 +188,7 @@ import {
 } from "./browser-diagnostics.js";
 import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
-import { DocsStoreValidationError } from "./docs-store.js";
+import { DocsStoreValidationError, serializeDocContent } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
 import { buildWorkMapData } from "./work-map.js";
 import {
@@ -6442,11 +6442,33 @@ export function createApiRouter(
       }
     };
 
+    /**
+     * An editor names the revision it started from. Agents write docs while a page is open for
+     * editing, so a save based on an older revision is refused instead of silently undoing theirs.
+     */
+    const docsEditConflict = (pagePath: string, baseModified: unknown) => {
+      if (typeof baseModified !== "string" || !baseModified) return null;
+      const current = docs.readPage(pagePath);
+      if (!current?.modified || current.modified === baseModified) return null;
+      return {
+        error: "This page changed after you started editing it.",
+        code: "docs_page_conflict" as const,
+        currentModified: current.modified,
+      };
+    };
+
     router.get("/docs/tree", (_req, res) => {
       try {
         const tree = docs.listTree();
         const hasRootIndex = docs.readPage("index") !== null;
-        res.json({ tree, hasRootIndex });
+        let decorated = tree;
+        try {
+          decorated = docsIdx.decorateTree(tree);
+        } catch (error) {
+          // Titles are a nicety; the filesystem tree alone is still a usable answer.
+          console.warn(`[docs] Tree metadata unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        res.json({ tree: decorated, hasRootIndex });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -6457,7 +6479,8 @@ export function createApiRouter(
         const q = String(req.query.q || "");
         const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 200, 50);
         const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
-        res.json(docsIdx.search(q, limit, offset));
+        const prefix = ["1", "true"].includes(String(req.query.prefix ?? "").toLowerCase());
+        res.json(prefix ? docsIdx.search(q, limit, offset, { prefix: true }) : docsIdx.search(q, limit, offset));
       } catch (err) {
         if (err instanceof ManagementJobApiError) {
           return res.status(err.statusCode).json({ error: err.message });
@@ -6520,9 +6543,16 @@ export function createApiRouter(
       try {
         const raw = (req.params as any).path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
-        const { content } = req.body;
-        if (typeof content !== "string") return res.status(400).json({ error: "content is required" });
-        const page = docs.writePage(pagePath, content);
+        const { content, frontmatter, body, baseModified } = req.body ?? {};
+        // The docs editor sends structured { frontmatter, body } so YAML is serialized here;
+        // agents and older callers send the raw file as { content }.
+        let rawContent: string;
+        if (typeof content === "string") rawContent = content;
+        else if (isRecord(frontmatter) && typeof body === "string") rawContent = serializeDocContent(frontmatter, body);
+        else return res.status(400).json({ error: "content is required" });
+        const conflict = docsEditConflict(pagePath, baseModified);
+        if (conflict) return res.status(409).json(conflict);
+        const page = docs.writePage(pagePath, rawContent);
         const indexResult = docsIdx.indexPage(page);
         res.json({ path: page.path, success: true, ...docsIndexMutationWarning(indexResult) });
       } catch (err: any) {
@@ -6572,6 +6602,7 @@ export function createApiRouter(
         const { name, fields } = req.body;
         if (!name || !Array.isArray(fields)) return res.status(400).json({ error: "name and fields are required" });
         const schema = docs.writeSchema(folder, { name, fields });
+        docsIdx.notifyChanged({ kind: "schema", path: folder });
         res.json({ ...schema, success: true });
       } catch (err: any) {
         res.status(400).json({ error: err.message || String(err) });
@@ -6632,7 +6663,10 @@ export function createApiRouter(
         const folder = lastSlash === -1 ? "" : fullPath.slice(0, lastSlash);
         const slug = lastSlash === -1 ? "" : fullPath.slice(lastSlash + 1);
         if (!folder || !slug) return res.status(400).json({ error: "Path must be folder/slug" });
-        const { fields, body } = docs.normalizeDbEntryInput(req.body ?? {}, "update", folder);
+        const conflict = docsEditConflict(fullPath, req.body?.baseModified);
+        if (conflict) return res.status(409).json(conflict);
+        const { baseModified: _baseModified, ...entryInput } = req.body ?? {};
+        const { fields, body } = docs.normalizeDbEntryInput(entryInput, "update", folder);
         const entry = docs.updateDbEntry(folder, slug, fields, body);
         // Re-index the updated page
         const page = docs.readPage(entry.path);
