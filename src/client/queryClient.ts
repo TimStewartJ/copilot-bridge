@@ -100,4 +100,11 @@ export const queryKeys = {
   copilotQuota: ["copilot-usage", "quota"] as const,
   updates: (channel?: string) => ["updates", channel ?? "default"] as const,
   relatedDocs: (tagIds: string[]) => ["related-docs", ...tagIds] as const,
+  docsRoot: ["docs"] as const,
+  docsTree: ["docs", "tree"] as const,
+  docsPage: (path: string) => ["docs", "page", path] as const,
+  docsCollection: (folder: string) => ["docs", "collection", folder] as const,
+  docsSchema: (folder: string) => ["docs", "schema", folder] as const,
+  docsSearch: (query: string) => ["docs", "search", query] as const,
+  docsWikilinks: (targets: readonly string[]) => ["docs", "wikilinks", ...targets] as const,
 };

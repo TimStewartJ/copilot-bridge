@@ -141,7 +141,10 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const pushSubscriptionStore = createPushSubscriptionStore(db);
   const managementJobStore = createManagementJobStore(db, { dataDir });
   const docsStore = createDocsStore(runtimePaths.docsDir);
-  const docsIndex = createDocsIndex(db, docsStore);
+  const docsIndex = createDocsIndex(db, docsStore, {
+    // Agents write docs through tools while a reader has the page open; tell clients to refresh.
+    onChange: (change) => globalBus.emit({ type: "docs:changed", ...(change.path ? { docPath: change.path } : {}) }),
+  });
   const docsSnapshotStore = createDocsSnapshotStore(
     runtimePaths.docsDir,
     runtimePaths.docsSnapshotsDir ?? join(dataDir, "backups", "docs", "snapshots"),

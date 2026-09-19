@@ -10,9 +10,11 @@ import type { FocusObjectType } from "./focus-domain-store.js";
 import type { FocusLifecycle } from "./focus-details-store.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "focus:changed" | "focus:protection-changed" | "focus:protection-cleared" | "feed:changed" | "management-job:changed" | "backend:status";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "focus:changed" | "focus:protection-changed" | "focus:protection-cleared" | "feed:changed" | "management-job:changed" | "backend:status" | "docs:changed";
   protectionWindowId?: string;
   sessionId?: string;
+  /** Page or collection path a `docs:changed` event is about; absent when many pages changed. */
+  docPath?: string;
   cardId?: string;
   focusObjectId?: string;
   focusObjectType?: FocusObjectType;

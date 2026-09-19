@@ -27,6 +27,11 @@ export interface DocTreeNode {
   path: string;
   isDb?: boolean;
   hasIndex?: boolean;
+  /** Display title: the page title, a folder's index page title, or a collection's schema name. */
+  title?: string;
+  description?: string;
+  tags?: string[];
+  modified?: string;
   children?: DocTreeNode[];
 }
 
@@ -159,6 +164,22 @@ export function validateTaggedDocContent(content: string): void {
   if (typeof data.description !== "string" || !data.description.trim()) {
     throw new DocsStoreValidationError(TAGGED_DOC_DESCRIPTION_ERROR);
   }
+}
+
+/**
+ * Builds raw page content from structured frontmatter, so callers that edit fields (the docs
+ * editor) never serialize YAML themselves: a title such as "Plan: phase 2" must stay valid.
+ */
+export function serializeDocContent(frontmatter: Record<string, unknown>, body: string): string {
+  const data: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (DANGEROUS_DB_FIELD_KEYS.has(key)) {
+      throw new DocsStoreValidationError(`Frontmatter key "${key}" is not allowed`);
+    }
+    if (value === undefined) continue;
+    data[key] = value;
+  }
+  return matter.stringify(body, data);
 }
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -552,6 +573,16 @@ export function createDocsStore(docsDir: string) {
 
   // ── Tree listing ──────────────────────────────────────────────
 
+  /** A malformed schema must not take the whole tree down; the folder slug is a fine fallback. */
+  function readCollectionName(folder: string): string | null {
+    try {
+      const name = readSchema(folder)?.name;
+      return typeof name === "string" && name.trim() ? name.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
   function listTree(folder?: string): DocTreeNode[] {
     const folderSegments = folder ? validateDocsPathSegments(folder, "folder") : [];
     const rootPath = folder ? resolveContainedDocsPath(docsRoot, folderSegments, [], "folder") : docsRoot;
@@ -571,12 +602,15 @@ export function createDocsStore(docsDir: string) {
         // Check if the child folder itself has an index.md
         const childIndexPath = resolveContainedDocsPath(docsRoot, childSegments, ["index.md"], "folder");
         const childHasIndex = existsSync(childIndexPath);
+        const childIsDb = isDbFolder(childPath);
+        const collectionName = childIsDb ? readCollectionName(childPath) : null;
         nodes.push({
           name: entry.name,
           type: "folder",
           path: childPath,
-          isDb: isDbFolder(childPath),
+          isDb: childIsDb,
           ...(childHasIndex ? { hasIndex: true } : {}),
+          ...(collectionName ? { title: collectionName } : {}),
           children,
         });
       } else if (entry.name.endsWith(".md")) {

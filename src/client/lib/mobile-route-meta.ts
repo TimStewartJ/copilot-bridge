@@ -250,7 +250,9 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
       route: isDocsRoot ? "docs-root" : "docs-detail",
       activeTab: "docs",
       showBottomNav: true,
-      showSharedHeader: !isDocsRoot,
+      // The Docs view draws its own top bar (back, title, contents, actions) on every screen
+      // size, so the shared detail header would only stack a second bar above it.
+      showSharedHeader: false,
       isRoot: isDocsRoot,
       isDetail: !isDocsRoot,
       isDocsRoot,

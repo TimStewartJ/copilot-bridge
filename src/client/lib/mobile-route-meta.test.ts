@@ -22,6 +22,18 @@ describe("getMobileRouteMeta", () => {
     expect(getMobileRouteMeta("/tasks/t1/sessions/abc")).toMatchObject({ route: "task-session", taskId: "t1", sessionId: "abc" });
   });
 
+  it("leaves Docs to draw its own top bar, so a page never stacks two headers", () => {
+    expect(getMobileRouteMeta("/docs")).toMatchObject({ route: "docs-root", activeTab: "docs", showBottomNav: true, showSharedHeader: false });
+    expect(getMobileRouteMeta("/docs/guides/deploy")).toMatchObject({
+      route: "docs-detail",
+      activeTab: "docs",
+      showBottomNav: true,
+      showSharedHeader: false,
+      docPath: "guides/deploy",
+    });
+    expect(getMobileRouteMeta("/docs/recipes", "?db")).toMatchObject({ route: "docs-detail", showSharedHeader: false, docPath: "recipes" });
+  });
+
   it("puts the task list and the quick chats under one Work tab, told apart by segment", () => {
     expect(getMobileRouteMeta("/")).toMatchObject({ route: "task-list", activeTab: "work", workSegment: "tasks", isRoot: true });
     expect(getMobileRouteMeta("/chats")).toMatchObject({ route: "chat-list", activeTab: "work", workSegment: "chats", isRoot: true });

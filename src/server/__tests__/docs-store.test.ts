@@ -8,6 +8,7 @@ import {
   normalizeDocsPublicPath,
   resolveContainedDocsPath,
   resolveValidatedDocsPath,
+  serializeDocContent,
 } from "../docs-store.js";
 
 const tempDirs: string[] = [];
@@ -334,5 +335,44 @@ describe("docs store deleteDbEntry", () => {
     expect(() => store.deleteDbEntry("not-a-collection", "slug")).toThrow(
       'No database collection found at "not-a-collection"',
     );
+  });
+});
+
+describe("structured page content", () => {
+  it("serializes frontmatter so titles with YAML syntax in them survive a save", () => {
+    const store = makeStore();
+    const raw = serializeDocContent(
+      { title: "Plan: phase #2 [draft]", description: "Line one\nline two", tags: ["a: b", "c"], owner: { team: "core" }, skipped: undefined },
+      "# Body\n\ntext",
+    );
+    const page = store.writePage("notes/plan", raw);
+
+    expect(page.title).toBe("Plan: phase #2 [draft]");
+    expect(page.frontmatter).toMatchObject({
+      title: "Plan: phase #2 [draft]",
+      description: "Line one\nline two",
+      tags: ["a: b", "c"],
+      owner: { team: "core" },
+    });
+    expect(page.frontmatter).not.toHaveProperty("skipped");
+    expect(page.body).toBe("# Body\n\ntext");
+  });
+
+  it("writes a body-only page when there is no frontmatter, and refuses prototype keys", () => {
+    expect(serializeDocContent({}, "Just text")).toBe("Just text\n");
+    expect(() => serializeDocContent(JSON.parse('{"__proto__": {"polluted": true}}'), "x")).toThrow(/not allowed/);
+  });
+
+  it("labels a collection folder with its schema name, and survives a malformed schema", () => {
+    const store = makeStore();
+    store.writeSchema("incidents", { name: "Incident log", fields: [{ name: "severity", type: "text" }] });
+    store.writeSchema("broken", { name: "Broken", fields: [] });
+    writeFileSync(join(store.docsDir, "broken", "_schema.yaml"), "name: [unterminated", "utf-8");
+
+    const tree = store.listTree();
+    expect(tree.find((node) => node.path === "incidents")).toMatchObject({ isDb: true, title: "Incident log" });
+    const broken = tree.find((node) => node.path === "broken");
+    expect(broken).toMatchObject({ isDb: true });
+    expect(broken).not.toHaveProperty("title");
   });
 });

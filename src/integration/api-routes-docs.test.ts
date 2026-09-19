@@ -364,3 +364,127 @@ describe("Docs DB routes", () => {
   });
 
 });
+
+describe("Docs routes for the docs UI", () => {
+  it("GET /api/docs/tree carries titles, summaries and collection names", async () => {
+    await request(app).put("/api/docs/pages/guides/deploy").send({
+      frontmatter: { title: "Deploying: the safe way", description: "How releases ship.", tags: ["release"] },
+      body: "Body",
+    });
+    await request(app).put("/api/docs/schema/runbooks").send({ name: "Runbook library", fields: [{ name: "owner", type: "text" }] });
+
+    const res = await request(app).get("/api/docs/tree");
+    expect(res.status).toBe(200);
+    const guides = res.body.tree.find((node: any) => node.path === "guides");
+    expect(guides.children).toEqual([
+      expect.objectContaining({
+        path: "guides/deploy",
+        title: "Deploying: the safe way",
+        description: "How releases ship.",
+        tags: ["release"],
+        modified: expect.any(String),
+      }),
+    ]);
+    expect(res.body.tree.find((node: any) => node.path === "runbooks")).toMatchObject({ isDb: true, title: "Runbook library" });
+  });
+
+  it("GET /api/docs/tree still answers when tree metadata cannot be read", async () => {
+    await request(app).put("/api/docs/pages/plain").send({ content: "# Plain" });
+    const decorate = vi.spyOn(ctx.docsIndex!, "decorateTree").mockImplementation(() => {
+      throw new Error("index unavailable");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const res = await request(app).get("/api/docs/tree");
+      expect(res.status).toBe(200);
+      expect(res.body.tree).toEqual([{ name: "plain", type: "file", path: "plain" }]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Tree metadata unavailable"));
+    } finally {
+      decorate.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("PUT /api/docs/pages serializes structured frontmatter on the server", async () => {
+    const save = await request(app).put("/api/docs/pages/notes/plan").send({
+      frontmatter: { title: "Plan: phase #2", description: "Why: because", tags: ["a: b"], owner: { team: "core" } },
+      body: "# Plan\n\nText",
+    });
+    expect(save.status).toBe(200);
+
+    const page = await request(app).get("/api/docs/pages/notes/plan");
+    expect(page.body).toMatchObject({
+      title: "Plan: phase #2",
+      tags: ["a: b"],
+      body: "# Plan\n\nText",
+      frontmatter: { description: "Why: because", owner: { team: "core" } },
+    });
+  });
+
+  it("PUT /api/docs/pages still requires content or structured fields", async () => {
+    const res = await request(app).put("/api/docs/pages/notes/nothing").send({ frontmatter: { title: "No body" } });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "content is required" });
+  });
+
+  it("PUT /api/docs/pages refuses to overwrite a revision the editor never saw", async () => {
+    await request(app).put("/api/docs/pages/notes/shared").send({ frontmatter: { title: "Shared" }, body: "first" });
+    const opened = (await request(app).get("/api/docs/pages/notes/shared")).body;
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse(opened.modified) + 60_000 });
+    try {
+      // An agent saves while the page is open in the editor.
+      await request(app).put("/api/docs/pages/notes/shared").send({ content: "---\ntitle: Shared\n---\n\nagent version" });
+
+      const stale = await request(app).put("/api/docs/pages/notes/shared")
+        .send({ frontmatter: { title: "Shared" }, body: "my version", baseModified: opened.modified });
+      expect(stale.status).toBe(409);
+      expect(stale.body).toMatchObject({ code: "docs_page_conflict", currentModified: expect.any(String) });
+      expect(stale.body.currentModified).not.toBe(opened.modified);
+      expect((await request(app).get("/api/docs/pages/notes/shared")).body.body).toBe("agent version");
+
+      // Naming the latest revision, or none at all (a deliberate overwrite), goes through.
+      const current = await request(app).put("/api/docs/pages/notes/shared")
+        .send({ frontmatter: { title: "Shared" }, body: "merged", baseModified: stale.body.currentModified });
+      expect(current.status).toBe(200);
+      const forced = await request(app).put("/api/docs/pages/notes/shared").send({ frontmatter: { title: "Shared" }, body: "forced" });
+      expect(forced.status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("PATCH /api/docs/db applies the same revision check and clears a field sent as null", async () => {
+    await request(app).put("/api/docs/schema/incidents").send({
+      name: "Incidents",
+      fields: [{ name: "severity", type: "select", options: ["sev1", "sev2"] }, { name: "minutes", type: "number" }],
+    });
+    const created = await request(app).post("/api/docs/db/incidents").send({ fields: { title: "Outage", severity: "sev1", minutes: 12 } });
+    const opened = (await request(app).get(`/api/docs/pages/${created.body.path}`)).body;
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse(opened.modified) + 60_000 });
+    try {
+      await request(app).patch(`/api/docs/db/${created.body.path}`).send({ fields: { severity: "sev2" } });
+
+      const stale = await request(app).patch(`/api/docs/db/${created.body.path}`)
+        .send({ fields: { title: "Outage" }, body: "mine", baseModified: opened.modified });
+      expect(stale.status).toBe(409);
+      expect(stale.body.code).toBe("docs_page_conflict");
+
+      const saved = await request(app).patch(`/api/docs/db/${created.body.path}`)
+        .send({ fields: { title: "Outage", minutes: null }, body: "mine", baseModified: stale.body.currentModified });
+      expect(saved.status).toBe(200);
+      const page = (await request(app).get(`/api/docs/pages/${created.body.path}`)).body;
+      expect(page).toMatchObject({ body: "mine", frontmatter: { severity: "sev2", minutes: null } });
+      expect(page.frontmatter).not.toHaveProperty("baseModified");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("GET /api/docs/search matches a half-typed word only with prefix=1", async () => {
+    await request(app).put("/api/docs/pages/notes/toolchain").send({ content: "# Toolchain\n\nStonecutter drives the build." });
+
+    expect((await request(app).get("/api/docs/search?q=stonecut")).body.results).toEqual([]);
+    const prefixed = await request(app).get("/api/docs/search?q=stonecut&prefix=1");
+    expect(prefixed.body.results.map((result: any) => result.path)).toEqual(["notes/toolchain"]);
+  });
+});

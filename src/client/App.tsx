@@ -99,7 +99,7 @@ import SessionModelSummary from "./components/SessionModelSummary";
 import Dashboard from "./components/Dashboard";
 import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
-import DocsView from "./components/DocsView";
+import DocsView from "./components/docs/DocsView";
 import SearchView from "./components/SearchView";
 
 const HelmView = lazy(() => import("./helm/HelmView"));
@@ -126,6 +126,8 @@ import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
+/** Window in which a burst of `docs:changed` events becomes one refresh of the Docs view. */
+const DOCS_REFRESH_COALESCE_MS = 400;
 
 interface StartPromptSessionOptions {
   navigateOnError?: boolean;
@@ -503,6 +505,10 @@ function AppShell() {
       [sessionId]: (prev[sessionId] ?? 0) + 1,
     }));
   }, []);
+  const docsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (docsRefreshTimerRef.current) clearTimeout(docsRefreshTimerRef.current);
+  }, []);
 
   useStatusStream(useCallback((event) => {
     switch (event.type) {
@@ -633,6 +639,15 @@ function AppShell() {
         break;
       case "feed:changed":
         invalidateDashboard();
+        break;
+      case "docs:changed":
+        // An agent (or another tab) wrote docs; refresh whatever the Docs view has open. A bulk
+        // write sends one event per page, so coalesce them into a single refresh.
+        docsRefreshTimerRef.current ??= setTimeout(() => {
+          docsRefreshTimerRef.current = null;
+          void queryClient.invalidateQueries({ queryKey: queryKeys.docsRoot });
+          void queryClient.invalidateQueries({ queryKey: ["related-docs"] });
+        }, DOCS_REFRESH_COALESCE_MS);
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
