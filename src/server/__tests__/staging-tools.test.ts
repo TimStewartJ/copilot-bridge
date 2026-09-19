@@ -316,7 +316,6 @@ vi.mock("../restart-controller.js", async (importOriginal) => ({
 
 vi.mock("../dependency-sync.js", () => ({
   dependencySyncHash: dependencySyncHashMock,
-  DEPENDENCY_SYNC_GIT_PATHSPEC: "package.json",
   preparePatchedPackagesForInstall: preparePatchedPackagesForInstallMock,
 }));
 
@@ -1386,7 +1385,7 @@ describe("staging tools", () => {
     expect(removeWorktree).not.toHaveBeenCalledWith(newDir, `staging/${newPrefix}`);
   });
 
-  it("queues a restart for dependency-changing deploys without syncing production dependencies in-process", async () => {
+  it("queues a restart without diffing or syncing production dependencies in-process", async () => {
     const mod = await loadStagingToolsModule();
     const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
@@ -1410,9 +1409,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') {
-        return "package-lock.json\n";
-      }
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -1446,7 +1442,7 @@ describe("staging tools", () => {
     expect(dependencySyncHashMock).toHaveBeenCalledTimes(2);
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("npm install --no-audit --no-fund --include=dev");
-    expect(commands.some((cmd) => cmd.startsWith("git diff "))).toBe(true);
+    expect(commands.some((cmd) => cmd.startsWith("git diff "))).toBe(false);
     expect(spawnMock).toHaveBeenCalledWith(
       "git",
       ["pull", "--rebase", "origin", "main"],
@@ -1485,7 +1481,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd.startsWith("git diff ")) return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd.startsWith("git branch --list ")) return "staging/preview-deploy\n";
@@ -1588,7 +1583,6 @@ describe("staging tools", () => {
           : `${validatedSha}\n`;
       }
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -1903,7 +1897,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -2027,7 +2020,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") {
         const error = new Error("push failed") as Error & { stderr: string };
@@ -2099,7 +2091,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -2320,7 +2311,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -2429,7 +2419,6 @@ describe("staging tools", () => {
           : "2222222222222222222222222222222222222222\n";
       }
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -2545,7 +2534,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") {
         pushAttempts += 1;
@@ -2622,7 +2610,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") {
         pushAttempts += 1;
@@ -2726,7 +2713,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "1111111111111111111111111111111111111111\n";
       if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
-      if (cmd === 'git diff "1111111111111111111111111111111111111111" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "1111111\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-deploy') return "";
@@ -3273,7 +3259,6 @@ describe("staging tools", () => {
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
       if (cmd === "git rev-parse HEAD") return "aaaa000000000000000000000000000000000000\n";
       if (cmd === 'git merge "staging/preview-ordering" --no-edit') return "";
-      if (cmd === 'git diff "aaaa000000000000000000000000000000000000" HEAD --name-only -- package.json') return "";
       if (cmd === "git rev-parse --short HEAD") return "aaaa000\n";
       if (cmd === "git push origin main") return "";
       if (cmd === 'git branch -D -- staging/preview-ordering') return "";
