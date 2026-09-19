@@ -86,3 +86,21 @@ export function clearLastActiveQuickChat(sessionId: string) {
     }
   } catch {}
 }
+
+// ── Last list shown under the mobile Work tab ────────────────────
+
+const LAST_MOBILE_WORK_SEGMENT_KEY = "bridge-last-mobile-work-segment";
+
+export function getLastMobileWorkSegment(): "tasks" | "chats" {
+  try {
+    return localStorage.getItem(LAST_MOBILE_WORK_SEGMENT_KEY) === "chats" ? "chats" : "tasks";
+  } catch {
+    return "tasks";
+  }
+}
+
+export function setLastMobileWorkSegment(segment: "tasks" | "chats") {
+  try {
+    localStorage.setItem(LAST_MOBILE_WORK_SEGMENT_KEY, segment);
+  } catch {}
+}

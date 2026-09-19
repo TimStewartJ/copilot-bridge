@@ -7,7 +7,7 @@ import {
   getReactProps,
   type ReactDomHarness,
 } from "../test-react-harness";
-import CopilotQuotaMenu from "./CopilotQuotaMenu";
+import CopilotQuotaMenu, { CopilotQuotaCard } from "./CopilotQuotaMenu";
 
 const useCopilotQuotaQueryMock = vi.hoisted(() => vi.fn());
 
@@ -54,6 +54,35 @@ function findButtonByLabel(root: any, label: string): any {
   );
   if (!button) throw new Error(`Button not found: ${label}`);
   return button;
+}
+
+function paceFill(root: any, kind: "month" | "usage" | "month-marker"): any {
+  return findAllByTag(root, "SPAN").find(
+    (candidate) => getReactProps(candidate)?.["data-quota-fill"] === kind,
+  );
+}
+
+function mockQuotaUsage(used: number, entitlement = 1_000): void {
+  useCopilotQuotaQueryMock.mockReturnValue({
+    data: createQuotaStatus({
+      primary: {
+        ...createQuotaStatus().primary!,
+        entitlement,
+        used,
+        remaining: entitlement - used,
+        remainingPercentage: ((entitlement - used) / entitlement) * 100,
+      },
+    }),
+    error: null,
+    isLoading: false,
+    refresh: vi.fn(),
+  });
+}
+
+// Midnight on June 16 is exactly half of a 30-day month.
+function freezeAtHalfMonth(): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 5, 16, 0, 0));
 }
 
 function findMenuRoot(root: any): any {
@@ -190,5 +219,100 @@ describe("CopilotQuotaMenu", () => {
     });
     expect(harness.dom.container.textContent).toContain("Live account quota");
     expect(harness.dom.container.textContent).toContain("Account quota lookup is not available in this Copilot SDK build");
+  });
+
+  it("draws quota used over month progress in the rail's mini bar", async () => {
+    freezeAtHalfMonth();
+    mockQuotaUsage(100);
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaMenu, { collapsed: true }));
+
+    const month = paceFill(harness.dom.container, "month");
+    const usage = paceFill(harness.dom.container, "usage");
+    expect(getReactProps(month)?.style).toMatchObject({ width: "50%" });
+    expect(getReactProps(month)?.className).toContain("bg-info");
+    expect(getReactProps(usage)?.style).toMatchObject({ width: "10%" });
+    expect(getReactProps(usage)?.className).toContain("bg-accent");
+    expect(paceFill(harness.dom.container, "month-marker")).toBeUndefined();
+
+    await harness.act(async () => {
+      getReactProps(findMenuRoot(harness!.dom.container))?.onMouseEnter?.();
+    });
+    expect(harness.dom.container.textContent).toContain("10% used");
+    expect(harness.dom.container.textContent).toContain("50% of month");
+  });
+
+  it("marks where the month stands once usage has run past it", async () => {
+    freezeAtHalfMonth();
+    mockQuotaUsage(900);
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaMenu));
+
+    expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ width: "90%" });
+    expect(getReactProps(paceFill(harness.dom.container, "month-marker"))?.style).toEqual({ marginLeft: "50%" });
+  });
+
+  it("keeps a sliver of usage visible when only a fraction of a percent is used", async () => {
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaMenu));
+
+    expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ minWidth: 2 });
+  });
+});
+
+describe("CopilotQuotaCard", () => {
+  let harness: ReactDomHarness | null = null;
+
+  beforeEach(() => {
+    useCopilotQuotaQueryMock.mockReset();
+  });
+
+  afterEach(async () => {
+    await harness?.cleanup();
+    harness = null;
+  });
+
+  it("summarizes quota and month progress without a hover, and opens the details", async () => {
+    freezeAtHalfMonth();
+    mockQuotaUsage(100);
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaCard));
+
+    const text = harness.dom.container.textContent;
+    expect(text).toContain("Copilot quota");
+    expect(text).toContain("10% used");
+    expect(text).toContain("100 of 1,000 AI credits");
+    expect(text).toContain("50% of month");
+    expect(getReactProps(paceFill(harness.dom.container, "month"))?.style).toMatchObject({ width: "50%" });
+
+    const card = findButtonByLabel(harness.dom.container, "Live Copilot quota, 100 AI credits used");
+    await harness.act(async () => {
+      getReactProps(card)?.onClick?.();
+    });
+    expect(findAllByTag(harness.dom.container, "DIV").some((candidate) => (
+      getReactProps(candidate)?.role === "dialog"
+    ))).toBe(true);
+    expect(harness.dom.container.textContent).toContain("To exhaust by month end");
+  });
+
+  it("says why when the account quota cannot be read", async () => {
+    useCopilotQuotaQueryMock.mockReturnValue({
+      data: {
+        available: false,
+        fetchedAt: NOW,
+        identity: null,
+        primary: null,
+        snapshots: [],
+        error: "Account quota lookup is not available in this Copilot SDK build",
+      },
+      error: null,
+      isLoading: false,
+      refresh: vi.fn(),
+    });
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaCard));
+
+    expect(harness.dom.container.textContent).toContain("Account quota lookup is not available in this Copilot SDK build");
+    expect(paceFill(harness.dom.container, "usage")).toBeUndefined();
   });
 });

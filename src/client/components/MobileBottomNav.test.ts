@@ -8,9 +8,9 @@ import {
 } from "../test-react-harness";
 import { MobileBottomNav } from "./MobileBottomNav";
 
-vi.mock("./CopilotQuotaMenu", () => ({
-  default: () => null,
-}));
+function navLabels(root: any): string[] {
+  return findAllByTag(root, "BUTTON").map((button) => getReactProps(button)?.["aria-label"]);
+}
 
 function findButtonByLabel(root: any, label: string): any {
   const button = findAllByTag(root, "BUTTON").find(
@@ -29,7 +29,7 @@ function attentionBadge(button: any): any {
   return badge;
 }
 
-describe("MobileBottomNav attention", () => {
+describe("MobileBottomNav", () => {
   let harness: ReactDomHarness | null = null;
 
   afterEach(async () => {
@@ -37,33 +37,52 @@ describe("MobileBottomNav attention", () => {
     harness = null;
   });
 
-  it("retains safe-area padding and distinguishes unread from needs-answer badges", async () => {
+  it("keeps the bar to five destinations, with tasks and chats under Work and no quota slot", async () => {
+    harness = await createReactDomHarness();
+    await harness.render(createElement(MobileBottomNav, { activeTab: "home", onSelectTab: vi.fn() }));
+
+    expect(navLabels(harness.dom.container)).toEqual(["Home", "Work", "Helm", "Docs", "Settings"]);
+
+    const nav = findAllByTag(harness.dom.container, "NAV")[0];
+    expect(getReactProps(nav)?.style).toEqual({
+      paddingBottom: "env(safe-area-inset-bottom)",
+    });
+  });
+
+  it("adds task and chat attention into one Work badge that stays green until something needs an answer", async () => {
     harness = await createReactDomHarness();
     await harness.render(
       createElement(MobileBottomNav, {
-        activeTab: "tasks",
+        activeTab: "work",
+        onSelectTab: vi.fn(),
+        taskAttention: { count: 2, needsUserInputCount: 0 },
+        chatAttention: { count: 1, needsUserInputCount: 0 },
+      }),
+    );
+
+    const unreadOnly = findButtonByLabel(
+      harness.dom.container,
+      "Work, 2 tasks need attention. 1 chat needs attention",
+    );
+    expect(getReactProps(unreadOnly)?.["aria-current"]).toBe("page");
+    expect(attentionBadge(unreadOnly).textContent).toBe("3");
+    expect(getReactProps(attentionBadge(unreadOnly))?.className).toContain("bg-success");
+
+    await harness.render(
+      createElement(MobileBottomNav, {
+        activeTab: "work",
         onSelectTab: vi.fn(),
         taskAttention: { count: 2, needsUserInputCount: 0 },
         chatAttention: { count: 1, needsUserInputCount: 1 },
       }),
     );
 
-    const nav = findAllByTag(harness.dom.container, "NAV")[0];
-    expect(getReactProps(nav)?.style).toEqual({
-      paddingBottom: "env(safe-area-inset-bottom)",
-    });
-
-    const tasksButton = findButtonByLabel(
+    const needsAnswer = findButtonByLabel(
       harness.dom.container,
-      "Tasks, 2 tasks need attention",
+      "Work, 2 tasks need attention. 1 chat needs attention; 1 needs an answer",
     );
-    expect(getReactProps(attentionBadge(tasksButton))?.className).toContain("bg-success");
-
-    const chatsButton = findButtonByLabel(
-      harness.dom.container,
-      "Chats, 1 chat needs attention; 1 needs an answer",
-    );
-    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-warning");
+    expect(attentionBadge(needsAnswer).textContent).toBe("3");
+    expect(getReactProps(attentionBadge(needsAnswer))?.className).toContain("bg-warning");
   });
 
   it("offers Helm as a tab that stays inside the app shell", async () => {
@@ -73,8 +92,11 @@ describe("MobileBottomNav attention", () => {
 
     const helm = findButtonByLabel(harness.dom.container, "Helm");
     expect(getReactProps(helm)?.["aria-current"]).toBe("page");
-    expect(getReactProps(findButtonByLabel(harness.dom.container, "Chats"))?.["aria-current"]).toBeUndefined();
+    expect(getReactProps(findButtonByLabel(harness.dom.container, "Work"))?.["aria-current"]).toBeUndefined();
     await harness.act(() => getReactProps(helm)!.onClick());
     expect(onSelectTab).toHaveBeenCalledWith("helm");
+
+    await harness.act(() => getReactProps(findButtonByLabel(harness!.dom.container, "Work"))!.onClick());
+    expect(onSelectTab).toHaveBeenLastCalledWith("work");
   });
 });

@@ -51,7 +51,7 @@ import {
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
-import { getMobileRouteMeta } from "./lib/mobile-route-meta";
+import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
@@ -85,6 +85,7 @@ import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, {
   summarizeChatTabAttention,
   summarizeTaskTabAttention,
+  type TabAttentionSummary,
 } from "./hooks/useTaskIndicators";
 import { getHomeChecklistIndicator } from "./checklist-helpers";
 import TaskRail from "./components/TaskRail";
@@ -112,12 +113,13 @@ import RestartBanner from "./components/RestartBanner";
 import BackendStatusBanner from "./components/BackendStatusBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
+import { MobileWorkSegments } from "./components/MobileWorkSegments";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { resolveDocumentTitle } from "./lib/document-title";
-import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
+import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat, getLastMobileWorkSegment, setLastMobileWorkSegment } from "./last-viewed";
 import { createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
@@ -765,6 +767,11 @@ function AppShell() {
       setLastActiveQuickChat(activeSessionId);
     }
   }, [activeSessionId, activeTaskId, quickChatsMode]);
+  // The mobile Work tab reopens whichever of its two lists was showing last.
+  const mobileWorkListSegment = mobileRouteMeta.isRoot ? mobileRouteMeta.workSegment : null;
+  useEffect(() => {
+    if (isMobile && mobileWorkListSegment) setLastMobileWorkSegment(mobileWorkListSegment);
+  }, [isMobile, mobileWorkListSegment]);
 
   const activeRenderedReadThrough = activeSessionId ? renderedReadThroughState[activeSessionId] : undefined;
   const activeReadThroughActivityAt = activeSessionId
@@ -969,10 +976,6 @@ function AppShell() {
     navigate(getRememberedDashboardPath());
   }, [navigate]);
 
-  const handleOpenQuickChatsList = () => {
-    navigate("/chats");
-  };
-
   const handleOpenSettings = () => {
     navigate("/settings");
   };
@@ -1019,16 +1022,27 @@ function AppShell() {
     }
   };
 
-  const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "helm" | "docs" | "settings") => {
+  // Switching lists inside the Work tab replaces the entry, so Back leaves the tab instead of replaying toggles.
+  const handleSelectMobileWorkSegment = useCallback((segment: MobileWorkSegment, replace = true) => {
+    navigate(segment === "chats" ? "/chats" : "/", { replace });
+  }, [navigate]);
+
+  const handleMobileTab = useCallback((tab: MobileNavTab) => {
     switch (tab) {
       case "helm": handleOpenHelm(); break;
       case "home": handleOpenDashboard(); break;
-      case "tasks": handleOpenTaskList(); break;
-      case "chats": handleOpenQuickChatsList(); break;
+      case "work": {
+        const target = resolveMobileWorkTabTarget(
+          { isRoot: mobileRouteMeta.isRoot, workSegment: mobileRouteMeta.workSegment },
+          getLastMobileWorkSegment(),
+        );
+        handleSelectMobileWorkSegment(target.segment, target.replace);
+        break;
+      }
       case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [handleOpenDashboard, handleOpenTaskList, handleOpenQuickChatsList, handleOpenDocsRoot, handleOpenSettings]);
+  }, [handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
 
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;
@@ -1897,6 +1911,9 @@ function AppShell() {
                   onDeleteTask={handleDeleteTask}
                   onReorderTasks={handleReorderTasks}
                   quickChatsMode={quickChatsMode}
+                  taskAttention={mobileTaskAttention}
+                  chatAttention={mobileChatAttention}
+                  onSelectWorkSegment={handleSelectMobileWorkSegment}
                   taskGroups={taskGroups}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onMoveAndReorder={handleMoveAndReorder}
@@ -2307,7 +2324,7 @@ function isVoiceSessionIntent(intent: string): boolean {
 }
 
 // ── Mobile Task List View ────────────────────────────────────────
-// Full-screen view on mobile showing either the task list or quick chats
+// Full-screen view for the mobile Work tab: the task list or the quick chats, switched from its header
 
 function MobileTaskListView({
   tasks,
@@ -2321,6 +2338,9 @@ function MobileTaskListView({
   onDeleteTask,
   onReorderTasks,
   quickChatsMode,
+  taskAttention,
+  chatAttention,
+  onSelectWorkSegment,
   taskGroups,
   onMoveTaskToGroup,
   onMoveAndReorder,
@@ -2369,6 +2389,9 @@ function MobileTaskListView({
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
   quickChatsMode: boolean;
+  taskAttention: TabAttentionSummary;
+  chatAttention: TabAttentionSummary;
+  onSelectWorkSegment: (segment: MobileWorkSegment) => void;
   taskGroups?: TaskGroup[];
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
@@ -2401,12 +2424,15 @@ function MobileTaskListView({
 }){
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
-      {/* Header */}
-      <div className="p-4 border-b border-border flex items-center justify-between gap-3">
-        <span className="text-sm font-semibold text-text-primary">
-          {quickChatsMode ? "Quick Chats" : "Tasks"}
-        </span>
-        <button type="button" onClick={onOpenSearch} className="min-h-9 rounded-lg border border-border bg-bg-surface px-3 text-xs font-medium text-text-secondary">
+      {/* Header: the Work tab's two lists, then search */}
+      <div className="px-4 py-3 border-b border-border flex items-center gap-3">
+        <MobileWorkSegments
+          activeSegment={quickChatsMode ? "chats" : "tasks"}
+          onSelectSegment={onSelectWorkSegment}
+          taskAttention={taskAttention}
+          chatAttention={chatAttention}
+        />
+        <button type="button" onClick={onOpenSearch} className="min-h-9 shrink-0 rounded-lg border border-border bg-bg-surface px-3 text-xs font-medium text-text-secondary">
           Search
         </button>
       </div>
