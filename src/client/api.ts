@@ -3408,43 +3408,72 @@ export async function fetchTranscriptionStatus(): Promise<TranscriptionStatus> {
   return apiFetch<TranscriptionStatus>("/api/transcribe/status");
 }
 
-export async function transcribeAudio(audio: Blob, filename = "voice-input.wav"): Promise<TranscriptionResult> {
-  const form = new FormData();
-  form.append("audio", audio, filename);
+interface RecordingUploadOptions {
+  signal?: AbortSignal;
+  /** Fraction of the recording sent so far; reaches 1 when the whole upload has left the browser. */
+  onUploadProgress?: (fraction: number) => void;
+}
 
-  const res = await fetch(`${API_BASE}/api/transcribe`, {
-    method: "POST",
-    body: form,
+/**
+ * Posts a recording and reports how much of it has been sent, which `fetch` cannot do. A recording
+ * is megabytes of uncompressed audio, so on a slow connection the user needs to see it moving.
+ */
+function uploadRecording<T>(path: string, form: FormData, { signal, onUploadProgress }: RecordingUploadOptions): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    const fail = (message: string) => {
+      signal?.removeEventListener("abort", abort);
+      reject(new Error(message));
+    };
+    xhr.open("POST", `${API_BASE}${path}`);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onUploadProgress?.(event.loaded / event.total);
+    };
+    xhr.upload.onload = () => onUploadProgress?.(1);
+    xhr.onload = () => {
+      let body: (T & { error?: string }) | undefined;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        body = undefined;
+      }
+      if (xhr.status < 200 || xhr.status >= 300 || body === undefined) {
+        fail(body?.error || xhr.statusText || `Upload failed (${xhr.status})`);
+        return;
+      }
+      signal?.removeEventListener("abort", abort);
+      resolve(body);
+    };
+    xhr.onerror = () => fail("The upload could not reach the server.");
+    xhr.onabort = () => fail("The upload was cancelled.");
+    if (signal?.aborted) {
+      fail("The upload was cancelled.");
+      return;
+    }
+    signal?.addEventListener("abort", abort);
+    xhr.send(form);
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+}
+
+export async function transcribeAudio(audio: Blob, options: RecordingUploadOptions = {}): Promise<TranscriptionResult> {
+  const form = new FormData();
+  form.append("audio", audio, "voice-input.wav");
+  return uploadRecording<TranscriptionResult>("/api/transcribe", form, options);
 }
 
 export async function createVoiceJob(
   request: CreateVoiceJobRequest,
   audio: Blob,
-  options?: { signal?: AbortSignal; filename?: string },
+  options: RecordingUploadOptions = {},
 ): Promise<VoiceJobStatusResponse> {
   const form = new FormData();
-  form.append("audio", audio, options?.filename ?? "voice-input.wav");
+  form.append("audio", audio, "voice-input.wav");
   form.append("composerKey", request.composerKey);
   if (request.sessionId) form.append("sessionId", request.sessionId);
   if (request.taskId) form.append("taskId", request.taskId);
   if (request.sessionOptions) form.append("sessionOptions", JSON.stringify(request.sessionOptions));
-
-  const res = await fetch(`${API_BASE}/api/voice-jobs`, {
-    method: "POST",
-    body: form,
-    signal: options?.signal,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+  return uploadRecording<VoiceJobStatusResponse>("/api/voice-jobs", form, options);
 }
 
 export async function fetchVoiceJob(jobId: string): Promise<VoiceJobStatusResponse | null> {

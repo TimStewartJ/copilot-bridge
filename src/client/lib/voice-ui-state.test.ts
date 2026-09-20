@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveVoiceUiState } from "./voice-ui-state";
+import { deriveVoiceUiState, describeRecordingLimit } from "./voice-ui-state";
 
 const baseState = {
   browserSupported: true,
@@ -108,5 +108,44 @@ describe("deriveVoiceUiState", () => {
       message: "Recording could not be saved on this device — keep the app open until it sends.",
       tone: "error",
     });
+  });
+
+  it("shows the recording clock against the limit and says what happens there as it nears", () => {
+    const recording = { ...baseState, recorderPhase: "recording" as const, maxRecordingSeconds: 300 };
+
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 83, canAutoSendStoppedRecording: true })).toMatchObject({
+      message: "Recording… stop to send.", detail: "1:23 / 5:00",
+    });
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 270, canAutoSendStoppedRecording: true })).toMatchObject({
+      message: "Recording… stops and sends at 5:00.", detail: "4:30 / 5:00",
+    });
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 299 })).toMatchObject({
+      message: "Recording… stops and transcribes at 5:00.", detail: "4:59 / 5:00",
+    });
+
+    // Without a known limit the clock still runs; without a clock there is nothing to show.
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", recordingSeconds: 7 }).detail).toBe("0:07");
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording" }).detail).toBeNull();
+  });
+
+  it("shows upload progress only while the recording is uploading", () => {
+    const uploading = { status: "uploading" as const, submitMode: "autosend" as const, serverOwned: true };
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: uploading, uploadPercent: 42 })).toMatchObject({
+      message: "Uploading… stay here.", detail: "42%",
+    });
+    expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: uploading }).detail).toBeNull();
+    expect(deriveVoiceUiState({
+      ...baseState,
+      activeVoiceJob: { ...uploading, status: "transcribing" },
+      uploadPercent: 100,
+    }).detail).toBeNull();
+  });
+});
+
+describe("describeRecordingLimit", () => {
+  it("names whole minutes as minutes and anything else as seconds", () => {
+    expect(describeRecordingLimit(300)).toBe("5 minutes");
+    expect(describeRecordingLimit(60)).toBe("1 minute");
+    expect(describeRecordingLimit(90)).toBe("90 seconds");
   });
 });

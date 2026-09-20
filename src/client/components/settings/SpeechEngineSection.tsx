@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AudioLines, Check, Cpu, Download, Loader2, Mic, RotateCw } from "lucide-react";
 import { fetchTranscriptionStatus, type TranscriptionStatus } from "../../api";
+import { describeRecordingLimit } from "../../lib/voice-ui-state";
 import { fetchVoiceStatus, startVoiceInstall, type VoiceEngineCapability, type VoiceInstallStatus, type VoiceStatus } from "../../voice/voice-api";
 import { formatBytes } from "../../voice/voice-view-model";
 import { SettingsSection } from "./SettingsSection";
@@ -166,7 +167,7 @@ export function SpeechEngineSection() {
               <div className="flex items-center gap-1.5 font-medium text-text-secondary"><Mic size={12} /> Chat mic</div>
               <p className="mt-1 text-text-muted">
                 {micStatus?.available
-                  ? `Ready. Recordings up to ${micStatus.maxDurationSeconds} seconds are transcribed on this computer.`
+                  ? `Ready. Recordings up to ${describeRecordingLimit(micStatus.maxDurationSeconds)} are transcribed on this computer.`
                   : micStatus?.reason ?? "Unavailable."}
               </p>
             </div>

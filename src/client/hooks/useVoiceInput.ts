@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchTranscriptionStatus, type TranscriptionStatus } from "../api";
 import { encodeWav, SpeechResampler } from "../lib/voice-recording-audio";
+import { holdVoiceCapture } from "../lib/voice-capture-guard";
 import type { VoiceRecorderPhase } from "../lib/voice-ui-state";
 
 const PROCESSOR_BUFFER_SIZE = 4_096;
@@ -8,6 +9,8 @@ const PROCESSOR_BUFFER_SIZE = 4_096;
 interface UseVoiceInputOptions {
   contextKey: string;
   onAudioCaptured: (capture: { audio: Blob; contextKey: string }) => Promise<void>;
+  /** The recording reached the server's length limit and took no more audio. Defaults to stopping it. */
+  onMaxDurationReached?: () => void;
 }
 
 interface VoiceInputState {
@@ -18,6 +21,8 @@ interface VoiceInputState {
   phase: VoiceRecorderPhase;
   isRecording: boolean;
   isTranscribing: boolean;
+  /** Whole seconds of audio captured by the recording in progress. */
+  elapsedSeconds: number;
   error: string | null;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
@@ -29,11 +34,12 @@ type WindowWithWebkitAudioContext = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
-export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOptions): VoiceInputState {
+export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReached }: UseVoiceInputOptions): VoiceInputState {
   const [status, setStatus] = useState<TranscriptionStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
   const [phase, setPhase] = useState<VoiceRecorderPhase>("idle");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
@@ -48,6 +54,9 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
   const phaseRef = useRef<VoiceRecorderPhase>("idle");
   const sampleRateRef = useRef(0);
   const chunksRef = useRef<Float32Array[]>([]);
+  const releaseCaptureRef = useRef<(() => void) | null>(null);
+  const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
+  const maxDurationReachedRef = useRef<() => void>(() => {});
 
   const setRecorderPhase = useCallback((nextPhase: VoiceRecorderPhase) => {
     phaseRef.current = nextPhase;
@@ -98,6 +107,12 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
     activeContextKeyRef.current = null;
   }, []);
 
+  /** Lets go of the capture hold; only once the audio is stored or deliberately dropped. */
+  const releaseCapture = useCallback(() => {
+    releaseCaptureRef.current?.();
+    releaseCaptureRef.current = null;
+  }, []);
+
   const refreshStatus = useCallback(async (): Promise<TranscriptionStatus | null> => {
     if (!browserSupported) return null;
 
@@ -123,9 +138,12 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
   }, [browserSupported, refreshStatus]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      void cleanupRecorder();
+      // Leaving the view ends a recording in progress; what it captured is submitted, not dropped.
+      if (phaseRef.current === "recording") void stopRecordingRef.current();
+      else void cleanupRecorder();
     };
   }, [cleanupRecorder]);
 
@@ -146,8 +164,9 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
 
     setRecorderPhase("starting");
     setError(null);
+    setElapsedSeconds(0);
     try {
-      await ensureAvailable();
+      const { maxDurationSeconds } = await ensureAvailable();
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -158,6 +177,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
       const audioContext = new AudioContextCtor();
       audioContextRef.current = audioContext;
       await audioContext.resume();
+      // The view can go away while the microphone is still being opened; nothing may be left running.
+      if (!mountedRef.current) throw new Error("Voice input closed before recording started.");
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
 
@@ -168,21 +189,33 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
       chunksRef.current = [];
       activeContextKeyRef.current = contextKeyRef.current;
 
+      // The server rejects audio past its limit, so capture ends exactly there instead of
+      // letting a finished recording fail on upload.
+      const maxSamples = maxDurationSeconds * resampler.outputRate;
+      let capturedSamples = 0;
       processor.onaudioprocess = (event) => {
-        chunksRef.current.push(resampler.push(event.inputBuffer.getChannelData(0)));
+        const room = maxSamples - capturedSamples;
+        if (room <= 0) return;
+        const chunk = resampler.push(event.inputBuffer.getChannelData(0));
+        chunksRef.current.push(chunk.length > room ? chunk.subarray(0, room) : chunk);
+        capturedSamples += Math.min(chunk.length, room);
+        if (mountedRef.current) setElapsedSeconds(Math.floor(capturedSamples / resampler.outputRate));
+        if (capturedSamples >= maxSamples) maxDurationReachedRef.current();
       };
 
       source.connect(processor);
       processor.connect(audioContext.destination);
+      releaseCaptureRef.current = holdVoiceCapture();
       setRecorderPhase("recording");
     } catch (err) {
       await cleanupRecorder();
+      releaseCapture();
       setRecorderPhase("idle");
       if (mountedRef.current) {
         setError(describeVoiceCaptureError(err));
       }
     }
-  }, [browserSupported, cleanupRecorder, ensureAvailable, setRecorderPhase]);
+  }, [browserSupported, cleanupRecorder, ensureAvailable, releaseCapture, setRecorderPhase]);
 
   const stopRecording = useCallback(async () => {
     if (phaseRef.current !== "recording") return;
@@ -201,9 +234,15 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
       }
     } finally {
       await cleanupRecorder();
+      releaseCapture();
       setRecorderPhase("idle");
     }
-  }, [cleanupRecorder, onAudioCaptured, setRecorderPhase]);
+  }, [cleanupRecorder, onAudioCaptured, releaseCapture, setRecorderPhase]);
+
+  useEffect(() => {
+    stopRecordingRef.current = stopRecording;
+    maxDurationReachedRef.current = onMaxDurationReached ?? (() => void stopRecording());
+  }, [onMaxDurationReached, stopRecording]);
 
   return {
     browserSupported,
@@ -213,6 +252,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
     phase,
     isRecording: phase === "recording",
     isTranscribing: phase === "finishing",
+    elapsedSeconds,
     error,
     startRecording,
     stopRecording,
