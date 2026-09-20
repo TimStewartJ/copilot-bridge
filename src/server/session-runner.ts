@@ -1,9 +1,14 @@
 // SessionRunner — owns the per-session run loop, live SDK event handling,
-// stale-cache retry, watchdog/heartbeat, stalled-session recovery, and
+// stale-cache retry, the watchdog that asks the runtime whether a run is over, and
 // tool/sub-agent event rendering. SessionManager remains the public facade
 // and delegates the run-loop concerns here.
 
-import type { AgentBackend, AgentSession, AgentSlashCommandResult } from "./agent-backend/index.js";
+import type {
+  AgentBackend,
+  AgentBackgroundTask,
+  AgentSession,
+  AgentSlashCommandResult,
+} from "./agent-backend/index.js";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -68,12 +73,17 @@ import {
   isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
-import { inspectPersistedRunRecovery } from "./session-run-recovery-reader.js";
+import { readPersistedRunEnding, type PersistedRunEnding } from "./session-run-ending-reader.js";
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
 import { normalizePromptCacheBreak, promptProcessMetadata } from "./session-prompt-fingerprint.js";
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
+/**
+ * The runtime must report a run idle twice, this far apart, before the watchdog ends it. In autopilot
+ * the main agent goes idle for a moment (about 100 ms measured) before the runtime continues it.
+ */
+const RUN_ENDED_CONFIRM_MS = 10_000;
 const NO_PROGRESS_WARNING_MS = 10 * 60_000;
 const NO_PROGRESS_ABORT_MS = 60 * 60_000;
 /** Silence this long (no live event, no disk progress) makes the watchdog ping the backend channel. */
@@ -89,27 +99,14 @@ const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
   "abort",
   "session.shutdown",
 ]);
-const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
-  "user.message",
-  "assistant.turn_start",
-  "assistant.message",
-  "tool.execution_start",
-  "tool.execution_complete",
-  "external_tool.requested",
-  "external_tool.completed",
-  "subagent.started",
-  "subagent.completed",
-  "subagent.failed",
-]);
-const PERSISTED_TURN_END_CONFLICT_EVENT_TYPES = new Set([
-  ...LIVE_TURN_END_FOLLOWUP_EVENT_TYPES,
-  "assistant.message_delta",
-  "assistant.reasoning_delta",
-  "assistant.streaming_delta",
-  "assistant.intent",
-  "tool.execution_progress",
-  "tool.execution_partial_result",
-]);
+
+/** What the runtime said when the watchdog asked whether the run is still going. */
+type RuntimeAnswer = "working" | "idle" | "unknown";
+
+const SETTLED_AGENT_TASK_STATUSES = new Set(["idle", "completed", "failed", "cancelled"]);
+/** An agent the runtime will wake the main agent for. A status the Bridge does not know counts as running. */
+const isRunningAgentTask = (task: AgentBackgroundTask): boolean =>
+  task.kind === "agent" && !SETTLED_AGENT_TASK_STATUSES.has(task.status);
 
 type SessionEventOrigin = "live" | "persisted_recovery";
 
@@ -947,19 +944,18 @@ export class SessionRunner {
     let lastAssistantSourceEventId: string | undefined;
     let lastEventTime = Date.now();
     let sendStart = lastEventTime;
-    let lastDiskMtime: number | undefined;
-    let lastDiskSize: number | undefined;
-    let lastPersistedEventTime: number | undefined;
+    let promptDelivered = false;
+    let lastLogStat: { mtimeMs: number; size: number } | undefined;
+    let lastLogGrowthAt = 0;
+    let lastRuntimeAnswer: RuntimeAnswer | undefined;
     let lastLiveEventType: string | undefined;
     let lastLiveEventAt: number | undefined;
     let lastLiveEventOrigin: SessionEventOrigin | undefined;
+    // Main-agent turns only. Sub-agents share the event stream, and their turns say nothing about the run.
+    let liveTurnStartCount = 0;
     let liveTurnEndCount = 0;
     let lastLiveTurnEndAt: number | undefined;
     let liveAssistantTurnOpen = false;
-    let eventsAfterLastLiveTurnEnd = 0;
-    let activeEventsAfterLastLiveTurnEnd = 0;
-    let persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
-    let postTurnAgentRefreshPromise: Promise<void> | undefined;
     let staleCacheRetryCount = 0;
     let acceptingSessionEvents = false;
     let sendOperationInFlight = false;
@@ -968,19 +964,17 @@ export class SessionRunner {
     let retryStaleCachedSession: ((reason: unknown, source: "event" | "send") => Promise<void>) | undefined;
     let turnHadSideEffects = false;
     const resetRunTelemetryState = () => {
-      lastDiskMtime = undefined;
-      lastDiskSize = undefined;
-      lastPersistedEventTime = undefined;
+      promptDelivered = false;
+      lastLogStat = undefined;
+      lastLogGrowthAt = 0;
+      lastRuntimeAnswer = undefined;
       lastLiveEventType = undefined;
       lastLiveEventAt = undefined;
       lastLiveEventOrigin = undefined;
+      liveTurnStartCount = 0;
       liveTurnEndCount = 0;
       lastLiveTurnEndAt = undefined;
       liveAssistantTurnOpen = false;
-      eventsAfterLastLiveTurnEnd = 0;
-      activeEventsAfterLastLiveTurnEnd = 0;
-      persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
-      postTurnAgentRefreshPromise = undefined;
       turnHadSideEffects = false;
     };
     const runSendStep = async <T>(
@@ -989,7 +983,9 @@ export class SessionRunner {
     ): Promise<{ completed: true } | { completed: false; value: T }> => {
       sendOperationInFlight = true;
       try {
-        return await runStepOrCompletion(stepName, step);
+        const result = await runStepOrCompletion(stepName, step);
+        if (!result.completed) promptDelivered = true;
+        return result;
       } finally {
         sendOperationInFlight = false;
       }
@@ -1111,13 +1107,13 @@ export class SessionRunner {
         )],
       };
     };
-    const getLastProgressAt = () => Math.max(
-      lastEventTime,
-      lastPersistedEventTime ?? 0,
-      lastDiskMtime !== undefined && lastDiskMtime >= sendStart
-        ? Math.min(lastDiskMtime, Date.now())
+    const getLogProgressAt = () => Math.max(
+      lastLogGrowthAt,
+      lastLogStat !== undefined && lastLogStat.mtimeMs >= sendStart
+        ? Math.min(lastLogStat.mtimeMs, Date.now())
         : 0,
     );
+    const getLastProgressAt = () => Math.max(lastEventTime, getLogProgressAt());
     const buildRunTelemetryMetadata = (now = Date.now()): Record<string, unknown> => ({
       runStartedAt: new Date(sendStart).toISOString(),
       elapsedMs: Math.max(0, now - sendStart),
@@ -1125,14 +1121,13 @@ export class SessionRunner {
       lastLiveEventAgeMs: getAgeMs(now, lastLiveEventAt),
       lastLiveEventOrigin,
       lastEventTimeAgeMs: getAgeMs(now, lastEventTime),
-      lastDiskMtimeAgeMs: getAgeMs(now, lastDiskMtime),
-      lastPersistedEventAgeMs: getAgeMs(now, lastPersistedEventTime),
+      lastLogMtimeAgeMs: getAgeMs(now, lastLogStat?.mtimeMs),
+      lastLogGrowthAgeMs: getAgeMs(now, lastLogGrowthAt || undefined),
       lastProgressAgeMs: getAgeMs(now, getLastProgressAt()),
+      lastRuntimeAnswer,
+      liveTurnStartCount,
       liveTurnEndCount,
       lastLiveTurnEndAgeMs: getAgeMs(now, lastLiveTurnEndAt),
-      eventsAfterLastLiveTurnEnd,
-      activeEventsAfterLastLiveTurnEnd,
-      persistedRecoveryConflictEventsAfterLastLiveTurnEnd,
       pendingUserInputCount: this.deps.getPendingUserInputCount(sessionId),
       pendingInteractionCount: this.deps.getPendingInteractionCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
@@ -1188,95 +1183,63 @@ export class SessionRunner {
     };
     const isLiveRunTerminalEvent = (event: any): boolean =>
       LIVE_RUN_TERMINAL_EVENT_TYPES.has(event?.type) && !isSdkSubagentSessionError(event);
-    const hasPersistedRecoveryConflictAfterTurnEnd = () =>
-      lastLiveTurnEndAt !== undefined && persistedRecoveryConflictEventsAfterLastLiveTurnEnd > 0;
-    const isPersistedTurnEndConflictEvent = (event: any): boolean => {
-      if (PERSISTED_TURN_END_CONFLICT_EVENT_TYPES.has(event?.type)) return true;
-      return event?.type === "session.autopilot_objective_changed"
-        && event?.data?.status === "active";
-    };
     const noteLiveEvent = (event: any, eventAt: number, origin: SessionEventOrigin) => {
       const eventType = typeof event?.type === "string" ? event.type : undefined;
       if (!eventType) return;
-      if (lastLiveTurnEndAt !== undefined && eventType !== "assistant.turn_end" && !isLiveRunTerminalEvent(event)) {
-        eventsAfterLastLiveTurnEnd += 1;
-      }
-      if (lastLiveTurnEndAt !== undefined && LIVE_TURN_END_FOLLOWUP_EVENT_TYPES.has(eventType)) {
-        activeEventsAfterLastLiveTurnEnd += 1;
-      }
-      if (lastLiveTurnEndAt !== undefined && isPersistedTurnEndConflictEvent(event)) {
-        persistedRecoveryConflictEventsAfterLastLiveTurnEnd += 1;
-      }
       lastLiveEventType = eventType;
       lastLiveEventAt = eventAt;
       lastLiveEventOrigin = origin;
+      if (getSdkAgentId(event)) return;
       if (eventType === "assistant.turn_start") {
         liveAssistantTurnOpen = true;
+        liveTurnStartCount += 1;
       }
       if (eventType === "assistant.turn_end") {
         liveAssistantTurnOpen = false;
         liveTurnEndCount += 1;
         lastLiveTurnEndAt = eventAt;
-        eventsAfterLastLiveTurnEnd = 0;
-        activeEventsAfterLastLiveTurnEnd = 0;
-        persistedRecoveryConflictEventsAfterLastLiveTurnEnd = 0;
       }
     };
 
-    const resolvePersistedTerminalEvent = (
-      persistedTerminal: {
-        event: any;
-        assistantContent?: string;
-        assistantSourceEventId?: string;
-      } | null,
-      reason: string,
-    ): boolean => {
-      if (!persistedTerminal) return false;
-      if (runController.isCompleted()) return true;
-      lastAssistantContent = persistedTerminal.assistantContent ?? lastAssistantContent;
-      if (persistedTerminal.event.type === "assistant.turn_end") {
-        const deferredReason = postTurnAgentRefreshPromise
-          ? "background_agent_refresh_pending"
-          : this.deps.agentRegistry.hasRunningAgents(sessionId)
-            ? "running_background_agent"
-            : hasPersistedRecoveryConflictAfterTurnEnd()
-              ? "live_activity_after_turn_end"
-            : undefined;
-        if (deferredReason) {
-          console.warn(
-            `[sdk] [${sid}] Persisted assistant.turn_end conflicts with ${deferredReason} ${reason} — retaining the active session owner`,
-          );
-          recordRunSpan("session.run.recovery", 0, {
-            outcome: "deferred_persisted_turn_end_after_live_activity",
-            deferredReason,
-            terminalEventType: persistedTerminal.event.type,
-            recoveryReason: reason,
-          });
-          return false;
-        }
-        console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted assistant.turn_end ${reason} — resolving locally`);
-        const content = lastAssistantContent ?? "(no response)";
-        recordRunCompletion(
-          persistedTerminal.event,
-          { origin: "persisted_recovery", recoveryReason: reason },
-          "done",
-          {
-            finalContentLength: content.length,
-            assistantContentKnown: lastAssistantContent !== undefined,
-          },
-        );
-        recordCompletionAttention("done", persistedTerminal.event);
-        runController.completeDone(content, {
-          sourceEventId: getSdkEventId(persistedTerminal.event),
-          ...(persistedTerminal.assistantSourceEventId
-            ? { assistantSourceEventId: persistedTerminal.assistantSourceEventId }
-            : {}),
-        });
-        return true;
+    /**
+     * Ends a run whose live ending never arrived, using what the log says about how it ended. The
+     * caller has already established that it ended: the runtime said so, or the ending is conclusive.
+     */
+    const finishRunFromLog = (ending: PersistedRunEnding, runtimeAnswer: RuntimeAnswer) => {
+      if (runController.isCompleted()) return;
+      const context: SessionEventHandlingContext = {
+        origin: "persisted_recovery",
+        recoveryReason: `runtime ${runtimeAnswer}`,
+      };
+      lastAssistantContent = ending.assistantContent ?? lastAssistantContent;
+      lastAssistantSourceEventId = ending.assistantSourceEventId ?? lastAssistantSourceEventId;
+      console.warn(
+        `[sdk] [${sid}] ✅ Run ended without a live signal (runtime ${runtimeAnswer}, log says ${ending.event?.type ?? "nothing"}) — finishing from the log`,
+      );
+      recordRunSpan("session.run.recovery", 0, {
+        outcome: "finished_from_log",
+        runtimeAnswer,
+        endingEventType: ending.event?.type,
+        endingConclusive: ending.conclusive,
+      });
+      if (ending.conclusive) {
+        // An error, abort or shutdown is handled exactly as it would have been live.
+        handleEvent(ending.event, context);
+        return;
       }
-      console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
-      handleEvent(persistedTerminal.event, { origin: "persisted_recovery", recoveryReason: reason });
-      return true;
+      const content = pendingTerminalCompletion?.content ?? lastAssistantContent ?? "(no response)";
+      endCurrentContextTurn(ending.event);
+      recordRunCompletion(ending.event, context, "done", {
+        finalContentLength: content.length,
+        assistantContentKnown: lastAssistantContent !== undefined,
+      });
+      recordCompletionAttention("done", ending.event);
+      runController.completeDone(content, {
+        ...(pendingTerminalCompletion ? { terminalCompletion: pendingTerminalCompletion } : {}),
+        ...(getSdkEventId(ending.event) ? { sourceEventId: getSdkEventId(ending.event) } : {}),
+        ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
+      });
+      pendingTerminalCompletion = undefined;
     };
 
     const handleEvent = (event: any, context: SessionEventHandlingContext) => {
@@ -1822,16 +1785,9 @@ export class SessionRunner {
           this.refreshSessionAgents(sessionId, event.type);
           break;
         }
-        case "session.background_tasks_changed": {
-          const refresh = this.deps.agentRegistry.refresh(sessionId, "background_tasks_changed");
-          postTurnAgentRefreshPromise = refresh;
-          void refresh.finally(() => {
-            if (postTurnAgentRefreshPromise === refresh) {
-              postTurnAgentRefreshPromise = undefined;
-            }
-          });
+        case "session.background_tasks_changed":
+          this.refreshSessionAgents(sessionId, "background_tasks_changed");
           break;
-        }
         case "system.notification": {
           const kind = (data?.kind ?? {}) as { type?: string };
           if (typeof kind.type === "string" && kind.type.startsWith("agent_")) {
@@ -1844,6 +1800,11 @@ export class SessionRunner {
           endCurrentContextTurn(event);
           break;
         }
+        case "assistant.idle":
+          // The main agent stopped. `session.idle` follows at once unless a background agent or an
+          // attached shell defers it, so ask the runtime now instead of waiting for the next tick.
+          if (!getSdkAgentId(event)) startWatchdogTick();
+          break;
         case "session.error": {
           const agentId = getSdkAgentId(event);
           if (agentId) {
@@ -2124,54 +2085,82 @@ export class SessionRunner {
     let noProgressAbortAttempted = false;
     let backendProbeInFlight = false;
 
-    const inspectPersistedRun = async (now: number, reason: string) => {
-      const inspection = await inspectPersistedRunRecovery(eventsJsonlPath, sendStart, {
-        now,
-        lastAssistantContent,
-        lastAssistantSourceEventId,
+    /** Notes whether events.jsonl changed since the last tick. The first look only sets the baseline. */
+    const noteLogProgress = async (): Promise<boolean> => {
+      let fileStat: { mtimeMs: number; size: number };
+      try {
+        fileStat = await stat(eventsJsonlPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+      const changed = fileStat.mtimeMs !== lastLogStat?.mtimeMs || fileStat.size !== lastLogStat?.size;
+      // A growing log is progress even where the filesystem is slow to move the mtime.
+      if (lastLogStat && changed) lastLogGrowthAt = Date.now();
+      lastLogStat = { mtimeMs: fileStat.mtimeMs, size: fileStat.size };
+      const logProgressAt = getLogProgressAt();
+      if (logProgressAt > 0) this.deps.runStateController.touchSessionRunIfNewer(sessionId, logProgressAt);
+      return changed;
+    };
+
+    /**
+     * Whether a run is still going is the runtime's call, never the log's: sub-agents share
+     * events.jsonl, and it cannot show whether the main agent will start another turn. A running
+     * background agent keeps the run alive because the runtime wakes the main agent when it finishes.
+     * An attached shell does not: a dev server can outlive every run.
+     */
+    const askRuntime = async (): Promise<RuntimeAnswer> => {
+      try {
+        const activity = await session?.getActivity();
+        if (!activity) return "unknown";
+        if (activity.processing) return "working";
+        const tasks = (await session.listTasks())?.tasks;
+        if (!tasks) return "unknown";
+        return tasks.some(isRunningAgentTask) ? "working" : "idle";
+      } catch (error) {
+        console.warn(`[sdk] [${sid}] Could not ask the runtime whether the run is still going: ${getErrorMessage(error)}`);
+        return "unknown";
+      }
+    };
+
+    const waitUnlessCompleted = (ms: number) => new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref?.();
+      void runController.completion.then(() => {
+        clearTimeout(timer);
+        resolve();
       });
-      if (inspection.info.latestPersistedEventAgeMs !== undefined) {
-        const persistedEventAt = now - inspection.info.latestPersistedEventAgeMs;
-        lastPersistedEventTime = Math.max(lastPersistedEventTime ?? 0, persistedEventAt);
-        this.deps.runStateController.touchSessionRunIfNewer(sessionId, persistedEventAt);
-      }
-      if (inspection.terminal && resolvePersistedTerminalEvent(inspection.terminal, reason)) {
-        recordRunSpan("session.run.recovery", 0, {
-          outcome: "resolved_persisted_terminal",
-          terminalEventType: inspection.terminal.event?.type,
-          ...inspection.info,
-        }, now);
-      }
-      return inspection;
+    });
+
+    /** "idle" only when the runtime says so twice with no main-agent turn starting in between. */
+    const askRuntimeTwice = async (): Promise<RuntimeAnswer> => {
+      const turnsBefore = liveTurnStartCount;
+      const first = await askRuntime();
+      if (first !== "idle") return first;
+      await waitUnlessCompleted(RUN_ENDED_CONFIRM_MS);
+      if (runController.isCompleted() || liveTurnStartCount !== turnsBefore) return "working";
+      const second = await askRuntime();
+      return liveTurnStartCount === turnsBefore ? second : "working";
     };
 
     const runWatchdogTick = async () => {
       if (runController.isCompleted()) return;
       try {
-        let fileChanged = false;
-        try {
-          const fileStat = await stat(eventsJsonlPath);
-          fileChanged = fileStat.mtimeMs !== lastDiskMtime || fileStat.size !== lastDiskSize;
-          lastDiskMtime = fileStat.mtimeMs;
-          lastDiskSize = fileStat.size;
-          if (fileStat.mtimeMs >= sendStart) {
-            this.deps.runStateController.touchSessionRunIfNewer(
-              sessionId,
-              Math.min(fileStat.mtimeMs, Date.now()),
-            );
-          }
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-            throw error;
-          }
-        }
-
-        let inspection: Awaited<ReturnType<typeof inspectPersistedRun>> | undefined;
-        if (fileChanged) {
-          inspection = await inspectPersistedRun(Date.now(), "watchdog disk progress");
+        const logChanged = await noteLogProgress();
+        // A prompt that is still being delivered has not started the main agent yet.
+        if (promptDelivered && !runController.isCompleted()) {
+          lastRuntimeAnswer = await askRuntimeTwice();
           if (runController.isCompleted()) return;
+          if (lastRuntimeAnswer === "idle" || (lastRuntimeAnswer === "unknown" && logChanged)) {
+            const ending = await readPersistedRunEnding(eventsJsonlPath, sendStart);
+            // Without the runtime's word, only an ending that leaves no doubt may end the run.
+            if (lastRuntimeAnswer === "idle" || ending.conclusive) {
+              finishRunFromLog(ending, lastRuntimeAnswer);
+              return;
+            }
+          }
         }
-
+        if (runController.isCompleted()) return;
         let now = Date.now();
         let noProgressMs = Math.max(0, now - getLastProgressAt());
         if (noProgressMs >= NO_PROGRESS_BACKEND_PROBE_MS && this.deps.probeBackendHealth && !backendProbeInFlight) {
@@ -2209,15 +2198,6 @@ export class SessionRunner {
           return;
         }
 
-        inspection ??= await inspectPersistedRun(now, "watchdog inactivity check");
-        if (runController.isCompleted()) return;
-        now = Date.now();
-        noProgressMs = Math.max(0, now - getLastProgressAt());
-        if (noProgressMs < NO_PROGRESS_WARNING_MS) {
-          noProgressWarningActive = false;
-          return;
-        }
-
         if (!noProgressWarningActive) {
           noProgressWarningActive = true;
           console.warn(
@@ -2227,7 +2207,6 @@ export class SessionRunner {
             noProgressMs,
             warningThresholdMs: NO_PROGRESS_WARNING_MS,
             abortThresholdMs: NO_PROGRESS_ABORT_MS,
-            ...inspection.info,
           }, now);
         }
 
@@ -2240,7 +2219,6 @@ export class SessionRunner {
           outcome: "requested",
           noProgressMs,
           abortThresholdMs: NO_PROGRESS_ABORT_MS,
-          ...inspection.info,
         }, now);
         try {
           const aborted = await this.deps.abortSession(sessionId);

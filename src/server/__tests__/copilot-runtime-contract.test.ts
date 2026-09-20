@@ -45,6 +45,14 @@ describe("installed Copilot package contract", () => {
     expect(rpcTypes).not.toContain("pendingElicitations");
   });
 
+  // The run watchdog and the idle-session sweep ask the runtime whether a session is working.
+  it("ships the session activity RPC that decides whether a run is over", () => {
+    expect(rpcTypesPath, "No installed @github/copilot-sdk generated rpc.d.ts found.").toBeTruthy();
+    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
+    expect(rpcTypes).toContain("isProcessing: () => Promise<MetadataIsProcessingResult>");
+    expect(rpcTypes).toMatch(/interface MetadataIsProcessingResult \{[^}]*processing: boolean;/s);
+  });
+
   // Verified for win32-x64 only; the other platform packages have not been inspected.
   it.runIf(process.platform === "win32")("ships the Computer Use plugin the Bridge loads per session", () => {
     const status = resolveComputerUsePlugin();

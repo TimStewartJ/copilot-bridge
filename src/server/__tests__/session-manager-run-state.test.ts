@@ -25,6 +25,9 @@ import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
+// Captured before any test installs fake timers: real file I/O only finishes on the real event loop.
+const realSetImmediate = setImmediate;
+
 describe("SessionManager run state", () => {
   function createManager(opts: {
     copilotHome?: string;
@@ -98,6 +101,9 @@ describe("SessionManager run state", () => {
       }),
       invokeSlashCommand: vi.fn(),
       listSlashCommands: vi.fn(),
+      // `undefined` is a runtime that cannot say what it is doing, so the watchdog leaves the run alone.
+      getActivity: vi.fn(async (): Promise<{ processing: boolean } | undefined> => undefined),
+      listTasks: vi.fn(async (): Promise<{ tasks: any[] }> => ({ tasks: [] })),
       abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
       respondToUserInput: vi.fn(async (requestId: string) => {
@@ -143,6 +149,41 @@ describe("SessionManager run state", () => {
     const [span] = telemetryStore!.querySpans({ name, sessionId, limit: 10 });
     expect(span).toBeDefined();
     return span.metadata ?? {};
+  }
+
+  /** Starts a run whose prompt the runtime has accepted, with its events.jsonl under a temp Copilot home. */
+  async function startDeliveredRun(name: string) {
+    const created = createManager({ copilotHome: makeTestDir(name), telemetry: true });
+    const made = makeSession();
+    created.manager.backend = { resumeSession: vi.fn().mockResolvedValue(made.session) };
+    const sessionId = `session-${name}`;
+    const bus = created.eventBusRegistry.getOrCreateBus(sessionId);
+    created.manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    made.getReleaseSend()?.();
+    await flushMicrotasks();
+    return { ...created, ...made, sessionId, bus, startedAt: Date.now() };
+  }
+
+  function at(run: { startedAt: number }, offsetMs: number): string {
+    return new Date(run.startedAt + offsetMs).toISOString();
+  }
+
+  /**
+   * Drives a watchdog tick to its end. A tick alternates real file I/O with a wait on the fake
+   * clock before it asks the runtime a second time, so neither an advance nor an await alone finishes it.
+   */
+  async function settleWatchdog(manager: any, sessionId: string): Promise<void> {
+    let settled = false;
+    const idle = manager.waitForSessionWatchdogIdle(sessionId).then(() => {
+      settled = true;
+    });
+    while (!settled) {
+      await new Promise<void>((resolve) => realSetImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await idle;
+    await flushMicrotasks();
   }
 
 
@@ -2594,8 +2635,6 @@ describe("SessionManager run state", () => {
       finalContentLength: 4,
       assistantContentKnown: true,
       liveTurnEndCount: 1,
-      eventsAfterLastLiveTurnEnd: 0,
-      activeEventsAfterLastLiveTurnEnd: 0,
       lastLiveEventType: "session.idle",
     });
   });
@@ -2647,8 +2686,8 @@ describe("SessionManager run state", () => {
       ignoredIdleReason: "active_followup_after_turn_end",
       idleEventOrigin: "live",
       lastLiveEventType: "session.idle",
+      liveTurnStartCount: 1,
       liveTurnEndCount: 1,
-      activeEventsAfterLastLiveTurnEnd: 1,
     });
 
     getHandler()?.({
@@ -2679,7 +2718,6 @@ describe("SessionManager run state", () => {
       completionStatus: "done",
       terminalEventType: "session.idle",
       liveTurnEndCount: 2,
-      activeEventsAfterLastLiveTurnEnd: 0,
     });
   });
 
@@ -2731,194 +2769,170 @@ describe("SessionManager run state", () => {
     });
   });
 
-  it("records persisted-terminal recovery telemetry without replacing the live session", async () => {
-    const tmpDir = makeTestDir("stall-turn-end-telemetry");
-    const sessionId = "session-turn-end-telemetry";
-    const sessionStateDir = join(tmpDir, "session-state", sessionId);
-    mkdirSync(sessionStateDir, { recursive: true });
+  describe("watchdog: the runtime decides whether a run is over", () => {
+    it("finishes a run from the log once the runtime reports it idle twice", async () => {
+      const run = await startDeliveredRun("runtime-idle");
+      run.session.getActivity.mockResolvedValue({ processing: false });
+      // An attached shell defers `session.idle` for as long as it runs, and it never holds a run open.
+      run.session.listTasks.mockResolvedValue({ tasks: [{ kind: "shell", id: "dev-server", status: "running" }] });
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "user.message", timestamp: at(run, 500), data: { content: "hello" } },
+        { id: "reply-1", type: "assistant.message", timestamp: at(run, 1_000), data: { content: "server is up" } },
+        { id: "turn-end-1", type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
 
-    const { manager, telemetryStore, eventBusRegistry } = createManager({ copilotHome: tmpDir, telemetry: true });
-    const initial = makeSession();
-    const resumeSession = vi.fn().mockResolvedValue(initial.session);
-    manager.backend = { resumeSession };
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleWatchdog(run.manager, run.sessionId);
 
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-    const baseTime = Date.now();
-
-    initial.getHandler()?.({
-      type: "assistant.message",
-      timestamp: new Date(baseTime + 1_000).toISOString(),
-      data: { content: "done from turn_end" },
-    });
-    initial.getHandler()?.({
-      type: "assistant.turn_end",
-      timestamp: new Date(baseTime + 2_000).toISOString(),
-      data: { turnId: "1" },
-    });
-    await flushMicrotasks();
-
-    writeFileSync(join(sessionStateDir, "events.jsonl"), [
-      JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 500).toISOString(), data: { content: "hello" } }),
-      JSON.stringify({
-        id: "assistant-event-persisted-recovery",
-        type: "assistant.message",
-        timestamp: new Date(baseTime + 1_000).toISOString(),
-        data: { content: "done from turn_end" },
-      }),
-      JSON.stringify({
-        id: "terminal-event-persisted-recovery",
-        type: "assistant.turn_end",
-        timestamp: new Date(baseTime + 2_000).toISOString(),
-        data: { turnId: "1" },
-      }),
-    ].join("\n") + "\n");
-
-    await vi.advanceTimersByTimeAsync(60_000);
-    await manager.waitForSessionWatchdogIdle(sessionId);
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(resumeSession).toHaveBeenCalledTimes(1);
-    expect(eventBusRegistry.getBus(sessionId)?.getTerminalState()).toMatchObject({
-      terminalEventId: "terminal-event-persisted-recovery",
-      terminalAssistantEventId: "assistant-event-persisted-recovery",
-      finalContent: "done from turn_end",
-    });
-    // The recovered assistant message is already on disk, so no notice duplicates it.
-    expect(eventBusRegistry.getBus(sessionId)?.getSnapshot().runNotice).toBeUndefined();
-    expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
-      completionSource: "persisted_assistant_turn_end_recovery",
-      completionStatus: "done",
-      terminalEventType: "assistant.turn_end",
-      terminalEventOrigin: "persisted_recovery",
-      recoveryReason: "watchdog disk progress",
-      finalContentLength: "done from turn_end".length,
-      assistantContentKnown: true,
-      lastLiveEventType: "assistant.turn_end",
-      liveTurnEndCount: 1,
-    });
-    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
-      outcome: "resolved_persisted_terminal",
-      terminalEventType: "assistant.turn_end",
-      latestPersistedEventType: "assistant.turn_end",
-      latestPersistedTerminalEventType: "assistant.turn_end",
-    });
-  });
-
-  it("keeps the run busy when live activity continues after a persisted turn end", async () => {
-    const tmpDir = makeTestDir("stale-persisted-turn-end");
-    const sessionId = "session-stale-persisted-turn-end";
-    const sessionStateDir = join(tmpDir, "session-state", sessionId);
-    mkdirSync(sessionStateDir, { recursive: true });
-
-    const { manager, telemetryStore, eventBusRegistry } = createManager({ copilotHome: tmpDir, telemetry: true });
-    const initial = makeSession();
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(initial.session) };
-
-    const bus = eventBusRegistry.getOrCreateBus(sessionId);
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-    const baseTime = Date.now();
-
-    initial.getHandler()?.({
-      type: "assistant.message",
-      timestamp: new Date(baseTime + 1_000).toISOString(),
-      data: { content: "waiting for background work" },
-    });
-    initial.getHandler()?.({
-      type: "assistant.turn_end",
-      timestamp: new Date(baseTime + 2_000).toISOString(),
-      data: { turnId: "1" },
-    });
-    initial.getHandler()?.({
-      type: "session.autopilot_objective_changed",
-      timestamp: new Date(baseTime + 2_000).toISOString(),
-      data: { operation: "update", id: 1, status: "active" },
-    });
-    initial.getHandler()?.({
-      type: "tool.execution_partial_result",
-      data: { toolCallId: "shell-1", partialOutput: "still running" },
-    });
-    await flushMicrotasks();
-
-    writeFileSync(join(sessionStateDir, "events.jsonl"), [
-      JSON.stringify({
-        type: "user.message",
-        timestamp: new Date(baseTime + 500).toISOString(),
-        data: { content: "hello" },
-      }),
-      JSON.stringify({
-        type: "assistant.message",
-        timestamp: new Date(baseTime + 1_000).toISOString(),
-        data: { content: "waiting for background work" },
-      }),
-      JSON.stringify({
-        type: "assistant.turn_end",
-        timestamp: new Date(baseTime + 2_000).toISOString(),
-        data: { turnId: "1" },
-      }),
-    ].join("\n") + "\n");
-
-    await vi.advanceTimersByTimeAsync(60_000);
-    await manager.waitForSessionWatchdogIdle(sessionId);
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("busy");
-    expect(bus.getSnapshot().complete).toBe(false);
-    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
-      outcome: "deferred_persisted_turn_end_after_live_activity",
-      deferredReason: "live_activity_after_turn_end",
-      terminalEventType: "assistant.turn_end",
-      activeEventsAfterLastLiveTurnEnd: 0,
-      persistedRecoveryConflictEventsAfterLastLiveTurnEnd: 2,
+      expect(run.session.getActivity).toHaveBeenCalledTimes(2);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+      expect(run.session.disconnect).not.toHaveBeenCalled();
+      expect(run.bus.getTerminalState()).toMatchObject({
+        terminalType: "done",
+        terminalEventId: "turn-end-1",
+        terminalAssistantEventId: "reply-1",
+        finalContent: "server is up",
+      });
+      // The reply is already on disk, so no notice duplicates it.
+      expect(run.bus.getSnapshot().runNotice).toBeUndefined();
+      expect(latestSpanMetadata(run.telemetryStore, "session.run.complete", run.sessionId)).toMatchObject({
+        completionSource: "persisted_assistant_turn_end_recovery",
+        completionStatus: "done",
+        terminalEventOrigin: "persisted_recovery",
+        recoveryReason: "runtime idle",
+        lastRuntimeAnswer: "idle",
+      });
+      expect(latestSpanMetadata(run.telemetryStore, "session.run.recovery", run.sessionId)).toMatchObject({
+        outcome: "finished_from_log",
+        runtimeAnswer: "idle",
+        endingEventType: "assistant.turn_end",
+        endingConclusive: false,
+      });
     });
 
-    initial.session.send.mockResolvedValueOnce(undefined);
-    await manager.steerSession(sessionId, "adjust the remaining work");
-    expect(initial.session.send).toHaveBeenLastCalledWith({
-      prompt: "adjust the remaining work",
-      mode: "immediate",
+    it("keeps the run open while the runtime is processing, whatever the log ends with", async () => {
+      const run = await startDeliveredRun("runtime-processing");
+      run.session.getActivity.mockResolvedValue({ processing: true });
+      // The main agent is mid-turn while a sub-agent's turn end is the newest line in the shared log.
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "user.message", timestamp: at(run, 500), data: { content: "hello" } },
+        { type: "assistant.turn_end", timestamp: at(run, 1_000), data: { turnId: "5" } },
+        { type: "assistant.turn_start", timestamp: at(run, 1_000), data: { turnId: "6" } },
+        { type: "assistant.message", agentId: "explore-1", timestamp: at(run, 2_000), data: { content: "report" } },
+        { type: "assistant.turn_end", agentId: "explore-1", timestamp: at(run, 2_000), data: { turnId: "7" } },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      await settleWatchdog(run.manager, run.sessionId);
+
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+      expect(run.bus.getSnapshot().complete).toBe(false);
+
+      run.getHandler()?.({ type: "assistant.message", timestamp: at(run, 200_000), data: { content: "finished" } });
+      run.getHandler()?.({ type: "session.idle", timestamp: at(run, 201_000), data: {} });
+      await flushMicrotasks();
+      expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "finished" });
     });
 
-    initial.getHandler()?.({
-      type: "system.notification",
-      timestamp: new Date(baseTime + 60_500).toISOString(),
-      data: { kind: { type: "shell_completed" } },
-    });
-    initial.getHandler()?.({
-      type: "assistant.turn_start",
-      timestamp: new Date(baseTime + 61_000).toISOString(),
-      data: { turnId: "2" },
-    });
-    initial.getHandler()?.({
-      type: "assistant.message",
-      timestamp: new Date(baseTime + 62_000).toISOString(),
-      data: { content: "finished" },
-    });
-    initial.getHandler()?.({
-      type: "assistant.turn_end",
-      timestamp: new Date(baseTime + 63_000).toISOString(),
-      data: { turnId: "2" },
-    });
-    initial.getHandler()?.({
-      type: "session.idle",
-      timestamp: new Date(baseTime + 64_000).toISOString(),
-      data: {},
-    });
-    await flushMicrotasks();
+    it("keeps the run open while a background agent is running", async () => {
+      const run = await startDeliveredRun("runtime-agent-running");
+      run.session.getActivity.mockResolvedValue({ processing: false });
+      let agentStatus = "running";
+      run.session.listTasks.mockImplementation(async () => ({
+        tasks: [{ kind: "agent", id: "reviewer", status: agentStatus, executionMode: "background" }],
+      }));
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.message", timestamp: at(run, 1_000), data: { content: "waiting for the reviewer" } },
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
 
-    expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getTerminalState()).toMatchObject({
-      terminalType: "done",
-      finalContent: "finished",
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+
+      // An idle agent waits for a follow-up message and wakes nobody.
+      agentStatus = "idle";
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+      expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "waiting for the reviewer" });
+    });
+
+    it("does not end a run on the moment of idleness before an autopilot continuation", async () => {
+      const run = await startDeliveredRun("runtime-autopilot-gap");
+      run.session.getActivity.mockResolvedValue({ processing: false });
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.message", timestamp: at(run, 1_000), data: { content: "one" } },
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
+
+      // The main agent going idle asks the runtime at once instead of waiting for the next tick.
+      run.getHandler()?.({ type: "assistant.idle", timestamp: at(run, 2_000), data: {} });
+      while (run.session.getActivity.mock.calls.length === 0) {
+        await new Promise<void>((resolve) => realSetImmediate(resolve));
+      }
+      await flushMicrotasks();
+      // The runtime continues the agent while the watchdog waits to ask a second time.
+      run.getHandler()?.({ type: "assistant.turn_start", timestamp: at(run, 2_100), data: { turnId: "2" } });
+      await settleWatchdog(run.manager, run.sessionId);
+
+      expect(run.session.getActivity).toHaveBeenCalledTimes(1);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+    });
+
+    it("keeps the run open when the runtime is working again the second time it is asked", async () => {
+      const run = await startDeliveredRun("runtime-working-again");
+      run.session.getActivity
+        .mockResolvedValueOnce({ processing: false })
+        .mockResolvedValue({ processing: true });
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleWatchdog(run.manager, run.sessionId);
+
+      expect(run.session.getActivity).toHaveBeenCalledTimes(2);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+    });
+
+    it("ignores a sub-agent going idle", async () => {
+      const run = await startDeliveredRun("runtime-subagent-idle");
+      run.getHandler()?.({ type: "assistant.idle", agentId: "explore-1", timestamp: at(run, 1_000), data: {} });
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.session.getActivity).not.toHaveBeenCalled();
+    });
+
+    it("does not ask the runtime before the prompt is delivered", async () => {
+      const { manager } = createManager();
+      const { session } = makeSession();
+      session.getActivity.mockResolvedValue({ processing: false });
+      manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+
+      manager.startWork("session-undelivered", "hello");
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      await settleWatchdog(manager, "session-undelivered");
+
+      expect(session.getActivity).not.toHaveBeenCalled();
+      expect(manager.getSessionRunState("session-undelivered")).toBe("busy");
+    });
+
+    it("leaves a turn end alone when the runtime cannot answer", async () => {
+      const run = await startDeliveredRun("runtime-unknown");
+      run.session.getActivity.mockRejectedValue(new Error("rpc channel closed"));
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.message", timestamp: at(run, 1_000), data: { content: "done?" } },
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleWatchdog(run.manager, run.sessionId);
+
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+      expect(run.bus.getSnapshot().complete).toBe(false);
     });
   });
-
   it("does not recover a persisted subagent error as a parent terminal", async () => {
     const tmpDir = makeTestDir("persisted-subagent-error");
     const sessionId = "session-persisted-subagent-error";
@@ -3041,291 +3055,48 @@ describe("SessionManager run state", () => {
     });
   });
 
-  it("waits for live agent status before resolving persisted turn end", async () => {
-    const tmpDir = makeTestDir("persisted-turn-end-running-agent");
-    const sessionId = "session-persisted-turn-end-running-agent";
-    const sessionStateDir = join(tmpDir, "session-state", sessionId);
-    mkdirSync(sessionStateDir, { recursive: true });
-
-    const { manager, telemetryStore, eventBusRegistry } = createManager({ copilotHome: tmpDir, telemetry: true });
-    const initial = makeSession();
-    let agentStatus = "running";
-    let resolveTaskRefresh!: (value: any) => void;
-    // Keyed off explicit phases rather than a call count: session doubles now
-    // expose the whole AgentSession facade, so the number of task refreshes the
-    // resume path performs is not something this test should pin.
-    let taskListPhase: "empty" | "hang" | "live" = "empty";
-    (initial.session as any).listTasks = vi.fn(async () => {
-      if (taskListPhase === "empty") return { tasks: [] };
-      if (taskListPhase === "hang") {
-        taskListPhase = "live";
-        return new Promise((resolve) => {
-          resolveTaskRefresh = resolve;
-        });
+  it("finishes a run the runtime reports idle even when the log holds no ending", async () => {
+    const run = await startDeliveredRun("runtime-idle-no-ending");
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    const states: string[] = [];
+    run.globalBus.subscribe((event: any) => {
+      if (event.sessionId === run.sessionId && ["session:busy", "session:stalled", "session:idle"].includes(event.type)) {
+        states.push(event.type);
       }
-      return {
-        tasks: [{
-          kind: "agent",
-          id: "background-review",
-          toolCallId: "agent-call-1",
-          status: agentStatus,
-          executionMode: "background",
-          agentType: "code-review",
-        }],
-      };
     });
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(initial.session) };
-
-    const bus = eventBusRegistry.getOrCreateBus(sessionId);
-    manager.startWork(sessionId, "review the change");
-    await flushMicrotasks();
-    initial.getReleaseSend()?.();
-    await flushMicrotasks();
-    const baseTime = Date.now();
-
-    initial.getHandler()?.({
-      type: "assistant.message",
-      timestamp: new Date(baseTime + 1_000).toISOString(),
-      data: { content: "waiting for the reviewer" },
-    });
-    initial.getHandler()?.({
-      type: "assistant.turn_end",
-      timestamp: new Date(baseTime + 2_000).toISOString(),
-      data: { turnId: "1" },
-    });
-    taskListPhase = "hang";
-    initial.getHandler()?.({
-      type: "session.background_tasks_changed",
-      timestamp: new Date(baseTime + 3_000).toISOString(),
-      data: {},
-    });
-    await flushMicrotasks();
-
-    writeFileSync(join(sessionStateDir, "events.jsonl"), [
-      JSON.stringify({
-        type: "user.message",
-        timestamp: new Date(baseTime + 500).toISOString(),
-        data: { content: "review the change" },
-      }),
-      JSON.stringify({
-        type: "assistant.message",
-        timestamp: new Date(baseTime + 1_000).toISOString(),
-        data: { content: "waiting for the reviewer" },
-      }),
-      JSON.stringify({
-        type: "assistant.turn_end",
-        timestamp: new Date(baseTime + 2_000).toISOString(),
-        data: { turnId: "1" },
-      }),
-    ].join("\n") + "\n");
+    writeSessionEvents(run.copilotHome, run.sessionId, [
+      { type: "user.message", timestamp: at(run, 1_000), data: { content: "hello" } },
+      { type: "assistant.message", timestamp: at(run, 2_000), data: { content: "done" } },
+    ]);
 
     await vi.advanceTimersByTimeAsync(60_000);
-    await manager.waitForSessionWatchdogIdle(sessionId);
-    await flushMicrotasks();
+    await settleWatchdog(run.manager, run.sessionId);
 
-    expect(manager.getSessionRunState(sessionId)).toBe("busy");
-    expect(bus.getSnapshot().complete).toBe(false);
-    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
-      outcome: "deferred_persisted_turn_end_after_live_activity",
-      deferredReason: "background_agent_refresh_pending",
-      terminalEventType: "assistant.turn_end",
-      activeEventsAfterLastLiveTurnEnd: 0,
-    });
-
-    resolveTaskRefresh({
-      tasks: [{
-        kind: "agent",
-        id: "background-review",
-        toolCallId: "agent-call-1",
-        status: "running",
-        executionMode: "background",
-        agentType: "code-review",
-      }],
-    });
-    await flushMicrotasks();
-    expect(manager.getBackgroundAgentsSummary(sessionId)).toMatchObject({
-      running: 1,
-      source: "live",
-    });
-
-    writeFileSync(join(sessionStateDir, "events.jsonl"), [
-      JSON.stringify({
-        type: "user.message",
-        timestamp: new Date(baseTime + 500).toISOString(),
-        data: { content: "review the change" },
-      }),
-      JSON.stringify({
-        type: "assistant.message",
-        timestamp: new Date(baseTime + 1_000).toISOString(),
-        data: { content: "waiting for the reviewer" },
-      }),
-      JSON.stringify({
-        type: "assistant.turn_end",
-        timestamp: new Date(baseTime + 2_000).toISOString(),
-        data: { turnId: "1" },
-      }),
-      "",
-    ].join("\n"));
-    await vi.advanceTimersByTimeAsync(60_000);
-    await manager.waitForSessionWatchdogIdle(sessionId);
-    await flushMicrotasks();
-    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
-      outcome: "deferred_persisted_turn_end_after_live_activity",
-      deferredReason: "running_background_agent",
-    });
-
-    agentStatus = "completed";
-    initial.getHandler()?.({
-      type: "session.background_tasks_changed",
-      timestamp: new Date(baseTime + 61_000).toISOString(),
-      data: {},
-    });
-    await flushMicrotasks();
-    expect(manager.getBackgroundAgentsSummary(sessionId)).toMatchObject({
-      running: 0,
-      source: "live",
-    });
-
-    initial.getHandler()?.({
-      type: "session.idle",
-      timestamp: new Date(baseTime + 62_000).toISOString(),
-      data: {},
-    });
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(bus.getTerminalState()).toMatchObject({
-      terminalType: "done",
-      finalContent: "waiting for the reviewer",
+    expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+    expect(states).toEqual(["session:idle"]);
+    expect(run.session.disconnect).not.toHaveBeenCalled();
+    expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "done" });
+    // Telemetry says what the log held, and does not invent a turn end.
+    expect(latestSpanMetadata(run.telemetryStore, "session.run.complete", run.sessionId)).toMatchObject({
+      completionSource: "persisted_unknown_recovery",
+      terminalEventType: "unknown",
+      recoveryReason: "runtime idle",
     });
   });
 
-  it("resolves a run from persisted terminal events (turn-end, assistant.turn_end, or session.shutdown)", async () => {
-    // resolves a run from persisted terminal events without waiting for a live event
-    {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-"));
-    try {
-      const sessionId = "session-terminal";
-      const sessionStateDir = join(tmpDir, "session-state", sessionId);
-      mkdirSync(sessionStateDir, { recursive: true });
+  it("ends a run on a shutdown in the log when the runtime cannot answer", async () => {
+    const run = await startDeliveredRun("runtime-unknown-shutdown");
+    writeSessionEvents(run.copilotHome, run.sessionId, [
+      { type: "user.message", timestamp: at(run, 1_000), data: { content: "hello" } },
+      { type: "assistant.message", timestamp: at(run, 2_000), data: { content: "done" } },
+      { type: "session.shutdown", timestamp: at(run, 3_000), data: { shutdownType: "graceful" } },
+    ]);
 
-      const { manager, globalBus } = createManager({ copilotHome: tmpDir });
-      const events: string[] = [];
-      globalBus.subscribe((event) => {
-        if (event.sessionId === sessionId && ["session:busy", "session:stalled", "session:idle"].includes(event.type)) {
-          events.push(event.type);
-        }
-      });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settleWatchdog(run.manager, run.sessionId);
 
-      const initial = makeSession();
-      const resumeSession = vi.fn().mockResolvedValue(initial.session);
-      manager.backend = { resumeSession };
-
-      manager.startWork(sessionId, "hello");
-      await flushMicrotasks();
-      initial.getReleaseSend()?.();
-      await flushMicrotasks();
-      const baseTime = Date.now();
-
-      writeFileSync(join(sessionStateDir, "events.jsonl"), [
-        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
-        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
-        JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
-      ].join("\n") + "\n");
-
-      await vi.advanceTimersByTimeAsync(60_000);
-      await manager.waitForSessionWatchdogIdle(sessionId);
-      await flushMicrotasks();
-
-      expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(events).toEqual(["session:busy", "session:idle"]);
-      expect(resumeSession).toHaveBeenCalledTimes(1);
-      expect(initial.session.disconnect).not.toHaveBeenCalled();
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-    }
-
-    // resolves a run from persisted assistant.turn_end without waiting for session.idle
-    {
-    const tmpDir = makeTestDir("stall-turn-end-terminal");
-    try {
-      const sessionId = "session-turn-end-terminal";
-      const sessionStateDir = join(tmpDir, "session-state", sessionId);
-      mkdirSync(sessionStateDir, { recursive: true });
-
-      const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
-      const initial = makeSession();
-      const resumeSession = vi.fn().mockResolvedValue(initial.session);
-      manager.backend = { resumeSession };
-
-      const bus = eventBusRegistry.getOrCreateBus(sessionId);
-      manager.startWork(sessionId, "hello");
-      await flushMicrotasks();
-      initial.getReleaseSend()?.();
-      await flushMicrotasks();
-      const baseTime = Date.now();
-
-      writeFileSync(join(sessionStateDir, "events.jsonl"), [
-        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
-        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done from turn_end" } }),
-        JSON.stringify({ type: "assistant.turn_end", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
-      ].join("\n") + "\n");
-
-      await vi.advanceTimersByTimeAsync(60_000);
-      await manager.waitForSessionWatchdogIdle(sessionId);
-      await flushMicrotasks();
-
-      expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(resumeSession).toHaveBeenCalledTimes(1);
-      expect(bus.getTerminalState()).toMatchObject({
-        terminalType: "done",
-        finalContent: "done from turn_end",
-      });
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-    }
-
-    // resolves a run from persisted session.shutdown events
-    {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-shutdown-terminal-"));
-    try {
-      const sessionId = "session-shutdown-terminal";
-      const sessionStateDir = join(tmpDir, "session-state", sessionId);
-      mkdirSync(sessionStateDir, { recursive: true });
-
-      const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
-      const initial = makeSession();
-      const resumeSession = vi.fn().mockResolvedValue(initial.session);
-      manager.backend = { resumeSession };
-
-      const bus = eventBusRegistry.getOrCreateBus(sessionId);
-      manager.startWork(sessionId, "hello");
-      await flushMicrotasks();
-      initial.getReleaseSend()?.();
-      await flushMicrotasks();
-      const baseTime = Date.now();
-
-      writeFileSync(join(sessionStateDir, "events.jsonl"), [
-        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
-        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
-        JSON.stringify({ type: "session.shutdown", timestamp: new Date(baseTime + 3_000).toISOString(), data: { shutdownType: "graceful" } }),
-      ].join("\n") + "\n");
-
-      await vi.advanceTimersByTimeAsync(60_000);
-      await manager.waitForSessionWatchdogIdle(sessionId);
-      await flushMicrotasks();
-
-      expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(bus.getTerminalState()).toMatchObject({
-        terminalType: "shutdown",
-        finalContent: "done",
-      });
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-    }
+    expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+    expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "shutdown", finalContent: "done" });
   });
   it("treats session.shutdown as a shutdown terminal event (routine or error)", async () => {
     // treats routine session.shutdown as a shutdown terminal event
@@ -3538,7 +3309,7 @@ describe("SessionManager run state", () => {
     }
   });
 
-  it("persisted progress extends the no-progress abort deadline", async () => {
+  it("a growing log extends the no-progress abort deadline even when its mtime does not move", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bridge-no-progress-disk-"));
     try {
       const sessionId = "session-disk-progress";
@@ -3551,20 +3322,18 @@ describe("SessionManager run state", () => {
       manager.backend = { resumeSession };
 
       const eventsPath = join(sessionStateDir, "events.jsonl");
+      const intent = JSON.stringify({ type: "assistant.intent", data: { intent: "Still working" } }) + "\n";
+      writeFileSync(eventsPath, intent);
 
       manager.startWork(sessionId, "hello");
       await flushMicrotasks();
       expect(resumeSession).toHaveBeenCalledTimes(1);
-      const runStartedAt = Date.now();
+      const preRunMtime = new Date(Date.now() - 1_000);
+      utimesSync(eventsPath, preRunMtime, preRunMtime);
 
       await vi.advanceTimersByTimeAsync(50 * 60_000);
       await manager.waitForSessionWatchdogIdle(sessionId);
-      writeFileSync(eventsPath, JSON.stringify({
-        type: "assistant.intent",
-        timestamp: new Date(Date.now()).toISOString(),
-        data: { intent: "Still working" },
-      }) + "\n");
-      const preRunMtime = new Date(runStartedAt - 1_000);
+      writeFileSync(eventsPath, intent.repeat(2));
       utimesSync(eventsPath, preRunMtime, preRunMtime);
       await vi.advanceTimersByTimeAsync(60_000);
       await manager.waitForSessionWatchdogIdle(sessionId);

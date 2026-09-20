@@ -389,6 +389,7 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     listSlashCommands: async () => undefined,
     getCurrentModel: async () => undefined,
     getUsageMetrics: async () => undefined,
+    getActivity: async () => undefined,
     truncateHistory: async () => undefined,
     listMcpServers: async () => undefined,
     initializeTools: async () => undefined,
