@@ -837,6 +837,7 @@ export class SessionManager {
   private readonly cleanupOwnership = new Map<AgentSession, SessionCleanupRecord>();
   private readonly sessionTreeLastActivityAt = new Map<string, number>();
   private sessionCacheSweepHandle?: ReturnType<typeof setInterval>;
+  private sessionCacheSweep?: Promise<void>;
   private cumulativeCleanupFailures = 0;
   private processTreeBaselineCount: number | null = null;
   private lastProcessTreeSampleAt = 0;
@@ -896,12 +897,39 @@ export class SessionManager {
   private startSessionCacheSweep(): void {
     const intervalMs = Math.min(this.sessionCacheIdleTtlMs, SESSION_CACHE_SWEEP_INTERVAL_MS);
     this.sessionCacheSweepHandle = setInterval(() => {
-      this.scheduleCacheOperation(
-        this.trimSessionCache("session tree idle TTL"),
-        "sweeping idle session trees",
-      );
+      this.scheduleCacheOperation(this.sweepIdleSessionTrees(), "sweeping idle session trees");
     }, intervalMs);
     this.sessionCacheSweepHandle.unref?.();
+  }
+
+  /**
+   * Evicts session trees that sat idle for the TTL. "Idle" is only the Bridge's belief, so trees
+   * close to the TTL are checked against their runtime first: a run the Bridge ended early, or a
+   * main agent the runtime woke for a finished background task, is still working.
+   */
+  private sweepIdleSessionTrees(): Promise<void> {
+    this.sessionCacheSweep ??= this.keepWorkingSessionTrees()
+      .then(() => this.trimSessionCache("session tree idle TTL"))
+      .finally(() => {
+        this.sessionCacheSweep = undefined;
+      });
+    return this.sessionCacheSweep;
+  }
+
+  private async keepWorkingSessionTrees(): Promise<void> {
+    // Two sweeps ahead, so a working tree is kept before any cache operation can find it expired.
+    const horizon = Date.now() + 2 * SESSION_CACHE_SWEEP_INTERVAL_MS;
+    const protectedIds = this.getProtectedSessionTreeIds();
+    await Promise.all([...this.sessionObjects].map(async ([sessionId, session]) => {
+      if (protectedIds.has(sessionId) || !this.isSessionTreeIdleExpired(sessionId, horizon)) return;
+      const activity = await Promise.resolve().then(() => session.getActivity()).catch(() => undefined);
+      if (!activity?.processing || this.sessionObjects.get(sessionId) !== session) return;
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] The runtime is still working on a session the Bridge considers idle — keeping it cached`,
+      );
+      this.recordSpan("session.cache.kept_working_tree", 0, sessionId);
+      this.touchSessionTree(sessionId);
+    }));
   }
 
   private stopSessionCacheSweep(): void {

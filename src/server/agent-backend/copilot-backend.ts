@@ -64,6 +64,7 @@ import type {
   AgentSlashCommandList,
   AgentSlashCommandResult,
   AgentSession,
+  AgentSessionActivity,
   AgentSessionRelease,
   AgentSessionConfig,
   AgentSessionEventHandler,
@@ -424,6 +425,17 @@ class CopilotAgentSession implements AgentSession {
       totalPremiumRequestCost: normalizeNonNegativeNumber(result?.totalPremiumRequestCost) ?? 0,
       totalUserRequests: normalizeNonNegativeNumber(result?.totalUserRequests) ?? 0,
     };
+  }
+
+  async getActivity(): Promise<AgentSessionActivity | undefined> {
+    const isProcessing = this.session?.rpc?.metadata?.isProcessing;
+    if (typeof isProcessing !== "function") return undefined;
+    const result = await this.rpc(
+      "session.getActivity",
+      () => isProcessing.call(this.session.rpc.metadata),
+    ) as { processing?: unknown };
+    if (typeof result?.processing !== "boolean") throw new Error("Malformed Copilot session activity response");
+    return { processing: result.processing };
   }
 
   async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {

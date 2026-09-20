@@ -282,6 +282,15 @@ export interface AgentSessionRelease {
   detail?: string;
 }
 
+/** The runtime's own account of what a session is doing right now. */
+export interface AgentSessionActivity {
+  /**
+   * The main agent is processing a turn or a background continuation. False while it is idle,
+   * even if a background agent or an attached shell is still running.
+   */
+  processing: boolean;
+}
+
 /**
  * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
  * through typed methods.
@@ -352,6 +361,13 @@ export interface AgentSession {
 
   /** Fetch accumulated live usage metrics. Resolves `undefined` when unsupported. */
   getUsageMetrics(): Promise<AgentUsageMetrics | undefined>;
+
+  /**
+   * Ask the runtime whether the main agent is working. This is the authority on whether a run is
+   * still going: events.jsonl is shared with sub-agents and cannot show whether the main agent
+   * will start another turn. Resolves `undefined` when unsupported.
+   */
+  getActivity(): Promise<AgentSessionActivity | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;
