@@ -116,7 +116,7 @@ describe("SpeechEngineSection", () => {
       apiMocks.fetchTranscriptionStatus.mockResolvedValue(availableMic);
       await advanceTimersByTimeAct(harness.act, 1_000);
       await waitUntilAct(harness.act, () => text(harness).includes("Installed"));
-      expect(text(harness)).toContain("Ready. Recordings up to 120 seconds are transcribed on this computer.");
+      expect(text(harness)).toContain("Ready. Recordings up to 2 minutes are transcribed on this computer.");
       expect(findAllByTag(harness.dom.container, "A").map((link) => link.textContent)).toContain("Open Helm");
       expect(findAllByTag(harness.dom.container, "BUTTON").some((button) => button.textContent?.includes("Download and set up"))).toBe(false);
     } finally {

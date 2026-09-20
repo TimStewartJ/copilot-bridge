@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { preferHighPerformanceScheduling } from "../platform.js";
 import {
   floatToInt16,
@@ -22,6 +23,8 @@ import { createSmartTurnFeatureExtractor, SMART_TURN_FRAMES, SMART_TURN_MEL_BINS
 
 const SAMPLE_RATE = 16_000;
 const VAD_WINDOW = 512;
+/** A clip scan yields after this many windows: about two seconds of audio, a few milliseconds of work. */
+const VAD_YIELD_WINDOWS = 64;
 /** Clips this short are still decoded when the detector hears no speech, in case it missed quiet talking. */
 const CLIP_FALLBACK_MAX_SAMPLES = 30 * SAMPLE_RATE;
 
@@ -341,7 +344,7 @@ async function pumpAsr(): Promise<void> {
   }
 }
 
-function detectSpeech(samples: Float32Array): SampleRange[] {
+async function detectSpeech(samples: Float32Array): Promise<SampleRange[]> {
   const vad = createVad({ minSilenceDuration: 0.3, maxSpeechDuration: CLIP_CHUNK_PLAN.maxChunkSeconds });
   const segments: SampleRange[] = [];
   const drain = () => {
@@ -352,12 +355,14 @@ function detectSpeech(samples: Float32Array): SampleRange[] {
     }
   };
   const window = new Float32Array(VAD_WINDOW);
-  for (let offset = 0; offset < samples.length; offset += VAD_WINDOW) {
+  for (let offset = 0, scanned = 1; offset < samples.length; offset += VAD_WINDOW, scanned++) {
     const part = samples.subarray(offset, Math.min(offset + VAD_WINDOW, samples.length));
     window.fill(0);
     window.set(part);
     vad.acceptWaveform(window);
     drain();
+    // A long clip is thousands of windows; live conversation audio must not wait behind them all.
+    if (scanned % VAD_YIELD_WINDOWS === 0) await yieldToEventLoop();
   }
   vad.flush();
   drain();
@@ -371,7 +376,7 @@ async function transcribeFile(filePath: string): Promise<VoiceClipTranscription>
   const samples = wav.sampleRate === SAMPLE_RATE
     ? wav.samples
     : new (runtime().sherpa.LinearResampler)(wav.sampleRate, SAMPLE_RATE).flush(wav.samples);
-  const segments = detectSpeech(samples);
+  const segments = await detectSpeech(samples);
   let chunks = planSpeechChunks(segments, samples.length, { sampleRate: SAMPLE_RATE, ...CLIP_CHUNK_PLAN });
   if (chunks.length === 0 && samples.length >= SAMPLE_RATE / 10 && samples.length <= CLIP_FALLBACK_MAX_SAMPLES) {
     chunks = [{ start: 0, end: samples.length }];

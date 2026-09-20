@@ -38,7 +38,7 @@ export interface TranscriptionServiceDeps {
   logger?: Pick<Console, "log">;
 }
 
-const DEFAULT_MAX_DURATION_SECONDS = 120;
+const DEFAULT_MAX_DURATION_SECONDS = 300;
 const MIN_TIMEOUT_MS = 120_000;
 const SETUP_HINT = "Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.";
 

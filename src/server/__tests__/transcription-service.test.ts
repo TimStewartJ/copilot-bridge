@@ -48,13 +48,13 @@ describe("transcription service", () => {
     const { engine } = createEngine();
     const service = createTranscriptionService({ installer: { getStatus: () => status }, engine, env: {} });
 
-    expect(service.getStatus()).toMatchObject({ available: false, provider: "disabled", maxDurationSeconds: 120 });
+    expect(service.getStatus()).toMatchObject({ available: false, provider: "disabled", maxDurationSeconds: 300 });
     status = installStatus();
     expect(service.getStatus()).toEqual({
       available: true,
       provider: "speech-engine",
       label: "Parakeet v3 (local)",
-      maxDurationSeconds: 120,
+      maxDurationSeconds: 300,
     });
   });
 
@@ -63,9 +63,9 @@ describe("transcription service", () => {
     const service = createTranscriptionService({
       installer: { getStatus: () => installStatus() },
       engine,
-      env: { BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS: "300" },
+      env: { BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS: "600" },
     });
-    expect(service.getStatus().maxDurationSeconds).toBe(300);
+    expect(service.getStatus().maxDurationSeconds).toBe(600);
   });
 
   it("keeps the engine alive while transcribing and trims the transcript", async () => {
@@ -74,7 +74,7 @@ describe("transcription service", () => {
 
     await expect(service.transcribe({ filePath: "clip.wav" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
     expect(engine.retain).toHaveBeenCalledOnce();
-    expect(engine.transcribeFile).toHaveBeenCalledWith("clip.wav", { timeoutMs: 600_000 });
+    expect(engine.transcribeFile).toHaveBeenCalledWith("clip.wav", { timeoutMs: 1_500_000 });
     expect(release).toHaveBeenCalledOnce();
   });
 
