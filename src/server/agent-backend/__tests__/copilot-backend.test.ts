@@ -596,6 +596,21 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(olderSdk.getUsageMetrics!()).resolves.toBeUndefined();
   });
 
+  it("getActivity asks rpc.metadata.isProcessing and rejects an answer it cannot read", async () => {
+    const isProcessing = vi.fn(async (): Promise<unknown> => ({ processing: true }));
+    const session = createFakeSession({ metadata: { isProcessing } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.getActivity()).resolves.toEqual({ processing: true });
+    expect(isProcessing).toHaveBeenCalledOnce();
+
+    isProcessing.mockResolvedValueOnce({});
+    await expect(wrapped.getActivity()).rejects.toThrow("Malformed Copilot session activity response");
+
+    const olderSdk = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(olderSdk.getActivity()).resolves.toBeUndefined();
+  });
+
   it("listTasks maps SDK TaskInfo into backend-neutral tasks", async () => {
     const list = vi.fn(async () => ({
       tasks: [

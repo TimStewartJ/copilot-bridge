@@ -34,6 +34,7 @@ export type {
   AgentSlashCommandList,
   AgentSlashCommandResult,
   AgentSession,
+  AgentSessionActivity,
   AgentSessionRelease,
   AgentSessionConfig,
   AgentSessionEvent,

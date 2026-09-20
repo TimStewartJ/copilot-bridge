@@ -526,6 +526,47 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(session.disconnect).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a session tree the runtime is still working on past the idle TTL", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    manager.sessionCacheIdleTtlMs = 60 * 60_000;
+    const working = Object.assign(fakeSession("working"), {
+      getActivity: vi.fn(async () => ({ processing: true })),
+    });
+    const idle = Object.assign(fakeSession("idle"), {
+      getActivity: vi.fn(async () => ({ processing: false })),
+    });
+    const silent = Object.assign(fakeSession("silent"), {
+      getActivity: vi.fn(async () => { throw new Error("rpc channel closed"); }),
+    });
+    await manager.cacheResumedSession("working", working);
+    await manager.cacheResumedSession("idle", idle);
+    await manager.cacheResumedSession("silent", silent);
+
+    // Far from the TTL nobody is asked.
+    vi.setSystemTime(30 * 60_000);
+    await manager.sweepIdleSessionTrees();
+    expect(working.getActivity).not.toHaveBeenCalled();
+
+    vi.setSystemTime(60 * 60_000 + 1);
+    await manager.sweepIdleSessionTrees();
+    await manager._drainCacheQueue();
+
+    expect(manager.sessionObjects.has("working")).toBe(true);
+    expect(working.disconnect).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.has("idle")).toBe(false);
+    expect(manager.sessionObjects.has("silent")).toBe(false);
+    expect(telemetryStore!.querySpans({ name: "session.cache.kept_working_tree", sessionId: "working" })).toHaveLength(1);
+
+    // The kept tree starts a fresh TTL and goes once its runtime is idle too.
+    working.getActivity.mockResolvedValue({ processing: false });
+    vi.setSystemTime(2 * 60 * 60_000 + 2);
+    await manager.sweepIdleSessionTrees();
+    await manager._drainCacheQueue();
+    expect(manager.sessionObjects.has("working")).toBe(false);
+  });
+
   it("refreshes the general TTL when the parent session is active", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
