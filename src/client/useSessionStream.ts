@@ -16,6 +16,17 @@ import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
 import { isRecord } from "../shared/is-record.js";
 import { normalizeAgentInstructions } from "../shared/subagent.js";
+import {
+  appendReasoningDelta,
+  closeOpenReasoning,
+  commitReasoning,
+  completeReasoningBlock,
+  keepCommittedReasoning,
+  type LiveReasoningBlock,
+} from "../shared/live-reasoning.js";
+import { keepEndingTurnItems } from "../shared/live-turn-retention.js";
+
+export type { LiveReasoningBlock };
 
 /**
  * Live stream state.
@@ -114,6 +125,8 @@ export interface ElicitationCancellationNotice {
 export interface StreamState {
   streamingContent: string;
   liveAssistantSegments: LiveAssistantSegment[];
+  /** Model thinking this turn; a block retires once its `sourceEventId` is in loaded history. */
+  liveReasoning: LiveReasoningBlock[];
   pendingUserMessages: LivePendingUserMessage[];
   /** In-flight and recently-completed tools; the view derives in-flight ones for run status. */
   liveTools: PendingTool[];
@@ -144,6 +157,7 @@ function createState(status: StreamStatus, partial: Partial<StreamState> = {}): 
   return {
     streamingContent: "",
     liveAssistantSegments: [],
+    liveReasoning: [],
     pendingUserMessages: [],
     liveTools: [],
     liveVisuals: [],
@@ -258,6 +272,26 @@ function normalizeLiveAssistantSegments(value: unknown): LiveAssistantSegment[] 
   return value.flatMap((segment) => {
     const normalized = normalizeLiveAssistantSegment(segment);
     return normalized ? [normalized] : [];
+  });
+}
+
+export function normalizeLiveReasoning(value: unknown): LiveReasoningBlock[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((block) => {
+    if (!isRecord(block) || typeof block.id !== "string" || typeof block.content !== "string") return [];
+    if (!block.content) return [];
+    return [{
+      id: block.id,
+      content: block.content,
+      ...(optionalString(block.sourceEventId) ? { sourceEventId: optionalString(block.sourceEventId) } : {}),
+      ...(optionalString(block.startedAt) ? { startedAt: optionalString(block.startedAt) } : {}),
+      ...(optionalString(block.completedAt) ? { completedAt: optionalString(block.completedAt) } : {}),
+      ...(optionalString(block.committedAt) ? { committedAt: optionalString(block.committedAt) } : {}),
+      ...(optionalString(block.turnId) ? { turnId: optionalString(block.turnId) } : {}),
+      ...(optionalString(block.turnInstanceId)
+        ? { turnInstanceId: optionalString(block.turnInstanceId) }
+        : {}),
+    }];
   });
 }
 
@@ -470,11 +504,20 @@ function getStreamContextSummary(event: Record<string, unknown>): SessionContext
 }
 
 /**
- * Drop disk-backed segments at a turn boundary. A new turn proves the previous turn's assistant
- * messages reached `events.jsonl`, while bridge-native segments never will and must survive.
+ * Segments that survive a turn boundary. Bridge-native text will never reach `events.jsonl`, so it
+ * always stays; disk-backed text stays for the one turn its history read may still be in flight
+ * (see live-turn-retention.ts) and is hidden by identity as soon as that read lands.
  */
-export function dropDiskBackedSegments(segments: LiveAssistantSegment[]): LiveAssistantSegment[] {
-  return segments.filter((segment) => segment.bridgeNative === true);
+export function retireSegmentsAtTurnBoundary(
+  segments: LiveAssistantSegment[],
+  endingTurnInstanceId: string | undefined,
+): LiveAssistantSegment[] {
+  return segments.filter((segment) => (
+    segment.bridgeNative === true
+    || (endingTurnInstanceId !== undefined
+      && segment.turnInstanceId === endingTurnInstanceId
+      && segment.sourceEventId !== undefined)
+  ));
 }
 
 function appendAssistantSegment(
@@ -526,6 +569,7 @@ export function useSessionStream(
       pendingUserInputs: pendingOrigin === "reconnect" ? current.pendingUserInputs : [],
       pendingElicitations: pendingOrigin === "reconnect" ? current.pendingElicitations : [],
       liveAssistantSegments: pendingOrigin === "reconnect" ? current.liveAssistantSegments : [],
+      liveReasoning: pendingOrigin === "reconnect" ? current.liveReasoning : [],
       pendingUserMessages: pendingOrigin === "reconnect" ? current.pendingUserMessages : [],
       streamingContent: pendingOrigin === "reconnect" ? current.streamingContent : "",
       pendingOrigin,
@@ -561,6 +605,7 @@ export function useSessionStream(
           elicitationCancellation: current.elicitationCancellation,
           runNotice: current.runNotice,
           liveAssistantSegments: current.liveAssistantSegments,
+          liveReasoning: keepCommittedReasoning(current.liveReasoning),
           pendingUserMessages: current.pendingUserMessages,
           historyEpoch: current.historyEpoch,
         }));
@@ -590,6 +635,7 @@ export function useSessionStream(
         const liveVisuals = normalizeLiveVisuals(event.liveVisuals);
         const liveCompletion = normalizeLiveCompletion(event.liveCompletion);
         const liveAssistantSegments = normalizeLiveAssistantSegments(event.liveAssistantSegments);
+        const liveReasoning = normalizeLiveReasoning(event.liveReasoning);
         const pendingUserMessages = normalizePendingUserMessages(event.pendingUserMessages);
         const streamingContent = optionalString(event.streamingContent) ?? "";
         const contextSummary = getStreamContextSummary(event);
@@ -608,6 +654,7 @@ export function useSessionStream(
           complete ? "idle" : (hasLiveOutput ? "streaming" : "thinking"),
           {
             liveAssistantSegments,
+            liveReasoning: complete ? keepCommittedReasoning(liveReasoning) : liveReasoning,
             pendingUserMessages,
             streamingContent: complete ? "" : streamingContent,
             // Completed items stay after a terminal snapshot until the disk read confirms them.
@@ -660,20 +707,61 @@ export function useSessionStream(
       }
 
       if (eventType === "thinking") {
-        setStreamState((current) => ({
-          ...current,
-          // A new turn proves the previous turn's assistant text reached disk.
-          liveAssistantSegments: dropDiskBackedSegments(current.liveAssistantSegments),
-          streamStatus: "thinking",
-          isStreaming: true,
-          runNotice: null,
-          // A new turn proves the previous turn's items reached disk.
-          liveTools: [],
-          liveVisuals: [],
-          liveCompletion: null,
-          activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
-          activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
-        }));
+        setStreamState((current) => {
+          // The turn that is ending keeps its disk-backed items for one more turn: the history
+          // read that carries them is usually still in flight (see live-turn-retention.ts).
+          const endingTurnInstanceId = current.activeTurnInstanceId;
+          return {
+            ...current,
+            liveAssistantSegments: retireSegmentsAtTurnBoundary(current.liveAssistantSegments, endingTurnInstanceId),
+            streamStatus: "thinking",
+            isStreaming: true,
+            runNotice: null,
+            liveTools: keepEndingTurnItems(current.liveTools, endingTurnInstanceId, (tool) => Boolean(tool.completedAt)),
+            liveVisuals: keepEndingTurnItems(current.liveVisuals, endingTurnInstanceId),
+            liveCompletion: null,
+            liveReasoning: keepEndingTurnItems(
+              current.liveReasoning,
+              endingTurnInstanceId,
+              (block) => Boolean(block.sourceEventId),
+            ),
+            activeTurnId: getEventTurnId(event) ?? current.activeTurnId,
+            activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
+          };
+        });
+        return;
+      }
+      if (eventType === "reasoning_delta" || eventType === "reasoning" || eventType === "reasoning_committed") {
+        const content = typeof event.content === "string" ? event.content : "";
+        if (!content) return;
+        setStreamState((current) => {
+          const scope = {
+            ...(optionalString(event.timestamp) ? { timestamp: optionalString(event.timestamp) } : {}),
+            turnId: getEventTurnId(event) ?? current.activeTurnId,
+            turnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
+          };
+          const reasoningId = optionalString(event.reasoningId);
+          const liveReasoning = eventType === "reasoning_delta"
+            ? appendReasoningDelta(current.liveReasoning, { ...scope, content, ...(reasoningId ? { reasoningId } : {}) })
+            : eventType === "reasoning"
+              ? completeReasoningBlock(current.liveReasoning, { ...scope, content, ...(reasoningId ? { reasoningId } : {}) })
+              : commitReasoning(current.liveReasoning, {
+                  ...scope,
+                  content,
+                  ...(optionalString(event.sourceEventId)
+                    ? { sourceEventId: optionalString(event.sourceEventId) }
+                    : {}),
+                });
+          if (liveReasoning === current.liveReasoning) return current;
+          return {
+            ...current,
+            liveReasoning,
+            isStreaming: true,
+            streamStatus: current.streamStatus === "idle" || current.streamStatus === "sending"
+              ? "thinking"
+              : current.streamStatus,
+          };
+        });
         return;
       }
       if (eventType === "user_message" || eventType === "user_message_updated") {
@@ -730,6 +818,8 @@ export function useSessionStream(
         setStreamState((current) => ({
           ...current,
           streamingContent: current.streamingContent + content,
+          // Visible text means the model has finished thinking for now.
+          liveReasoning: closeOpenReasoning(current.liveReasoning),
           streamStatus: "streaming",
           isStreaming: true,
           hadVisibleOutput: true,
@@ -804,6 +894,9 @@ export function useSessionStream(
           return {
             ...current,
             liveTools: upsertLiveTool(current.liveTools, patch),
+            liveReasoning: eventType === "tool_start"
+              ? closeOpenReasoning(current.liveReasoning, optionalString(event.timestamp))
+              : current.liveReasoning,
             streamStatus: "streaming",
             isStreaming: true,
             hadVisibleOutput: true,
@@ -931,6 +1024,7 @@ export function useSessionStream(
         setStreamState((current) => ({
           ...current,
           liveAssistantSegments: [],
+          liveReasoning: [],
           historyEpoch: current.historyEpoch + 1,
         }));
         onSettledRef.current();
@@ -944,6 +1038,8 @@ export function useSessionStream(
             : current.pendingElicitations[0];
           return createState("idle", {
             liveAssistantSegments: current.liveAssistantSegments,
+            // Thinking that never reached an assistant message has no disk copy; it ends here.
+            liveReasoning: keepCommittedReasoning(current.liveReasoning),
             pendingUserMessages: current.pendingUserMessages,
             // Results and completion cards remain the freshest copy until the final disk read.
             liveTools: current.liveTools.map((tool) => tool.completedAt
@@ -1037,5 +1133,16 @@ export function useSessionStream(
     connectStream(sid, "reconnect");
   }, [connectStream]);
 
-  return { ...streamState, sendMessage, abortSession, reconnect };
+  /**
+   * Attach to a busy session's stream unless this hook is already attached to it. A routine
+   * history refresh must not tear down a healthy stream: every reconnect resets the overlay to
+   * "sending" until the next snapshot lands, which reads as a flicker in the middle of a run.
+   */
+  const ensureConnected = useCallback((sid: string) => {
+    const source = eventSourceRef.current;
+    if (source && sessionRef.current === sid && source.readyState !== EventSource.CLOSED) return;
+    connectStream(sid, "reconnect");
+  }, [connectStream]);
+
+  return { ...streamState, sendMessage, abortSession, reconnect, ensureConnected };
 }

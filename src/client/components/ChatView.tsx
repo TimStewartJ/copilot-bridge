@@ -48,9 +48,10 @@ import { getAppAbsoluteUrl } from "../lib/app-url";
 import { textMatchesSearchQuery } from "../lib/search-text";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
-import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
+import { buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
+import { groupActivitySegments } from "../lib/chat-activity";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
-import { useSessionStream } from "../useSessionStream";
+import { useSessionStream, type LiveReasoningBlock } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import { useMcpStatusSnapshotQuery } from "../hooks/queries/useMcpStatus";
 import { useSessionUsageMetricsQuery } from "../hooks/queries/useSessionUsageMetrics";
@@ -72,12 +73,15 @@ import {
 } from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
 import SkillLoadedCard from "./SkillLoadedCard";
-import ToolCallNodeGroup from "./ToolCallNodeGroup";
+import ActivityBlock from "./chat/ActivityBlock";
+import { ChatRunActiveProvider } from "./chat/chat-run-context";
+import LiveStatusLine from "./chat/LiveStatusLine";
+import PromptMarkdown from "./chat/PromptMarkdown";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
-import { ArrowLeft, ArrowUpCircle, Check, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
+import { ArrowDown, ArrowLeft, Check, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const INITIAL_PAGE_SIZE = 50;
@@ -99,14 +103,22 @@ const HISTORY_REFRESH_MAX_LIMIT = 200;
  */
 const HISTORY_SYNC_INDICATOR_DELAY_MS = 150;
 const LIVE_STREAMING_MESSAGE_ID = "live-assistant-stream";
+/** How long attaching to a run's stream may take before the status line calls it reconnecting. */
+const RECONNECT_LABEL_DELAY_MS = 600;
+/** How long a pause after visible output must last before the status line appears under it. */
+const MID_RUN_STATUS_DELAY_MS = 350;
+/**
+ * The chat column width from which a reply's hover actions fit in the margin beside the text: the
+ * 56rem rail plus room on its right for the control. It is measured on the column itself because
+ * the task rail and side panels change it independently of the viewport.
+ */
+const ACTION_GUTTER_MIN_COLUMN_PX = 1024;
 const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
 const FOLLOW_SCROLL_EASE = 0.35;
 const FOLLOW_SCROLL_SETTLE_PX = 1.5;
 const LATEST_MESSAGE_TOP_THRESHOLD_PX = 8;
 const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
 const SEARCH_MATCH_PAGE_SIZE = 20;
-
-type PendingStatusTone = "sending" | "thinking" | "creating";
 
 interface ChatViewProps {
   composerKey: string;
@@ -170,6 +182,56 @@ function useThrottledText(value: string, intervalMs: number): string {
   }, [displayValue, intervalMs, value]);
 
   return displayValue;
+}
+
+function getReasoningShapeKey(blocks: LiveReasoningBlock[]): string {
+  return blocks
+    .map((block) => `${block.id}:${block.sourceEventId ?? ""}:${block.completedAt ? "done" : "open"}`)
+    .join("|");
+}
+
+/**
+ * Thinking arrives a few characters at a time. A block opening, closing or being committed shows
+ * at once; text that only grew is batched to the same cadence as streamed reply text.
+ */
+function useThrottledReasoning(blocks: LiveReasoningBlock[], intervalMs: number): LiveReasoningBlock[] {
+  const [displayBlocks, setDisplayBlocks] = useState(blocks);
+  const lastUpdateRef = useRef(0);
+  const shapeKey = getReasoningShapeKey(blocks);
+  const displayShapeKey = getReasoningShapeKey(displayBlocks);
+
+  useEffect(() => {
+    if (blocks === displayBlocks) return;
+    if (shapeKey !== displayShapeKey) {
+      lastUpdateRef.current = Date.now();
+      setDisplayBlocks(blocks);
+      return;
+    }
+    const sameText = blocks.every((block, index) => block.content === displayBlocks[index]?.content);
+    if (sameText) return;
+    const elapsed = Date.now() - lastUpdateRef.current;
+    const timeout = setTimeout(() => {
+      lastUpdateRef.current = Date.now();
+      setDisplayBlocks(blocks);
+    }, Math.max(0, intervalMs - elapsed));
+    return () => clearTimeout(timeout);
+  }, [blocks, displayBlocks, displayShapeKey, intervalMs, shapeKey]);
+
+  return displayBlocks;
+}
+
+/** True only once `value` has stayed true for `delayMs`; false again immediately. */
+function useSustained(value: boolean, delayMs: number): boolean {
+  const [sustained, setSustained] = useState(false);
+  useEffect(() => {
+    if (!value) {
+      setSustained(false);
+      return;
+    }
+    const timeout = setTimeout(() => setSustained(true), delayMs);
+    return () => clearTimeout(timeout);
+  }, [delayMs, value]);
+  return value && sustained;
 }
 
 function getDistanceFromBottom(el: HTMLElement): number {
@@ -320,50 +382,6 @@ function safeInternalPath(value: string | null): string | null {
 function parseNonNegativeInteger(value: string | null): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
-}
-
-function renderLiveStatusPill(
-  key: string,
-  tone: PendingStatusTone,
-  title: string,
-  detail: string,
-) {
-  const sending = tone === "sending";
-  const creating = tone === "creating";
-  const style = sending
-    ? {
-        backgroundColor: "var(--color-chat-sending-bg)",
-        borderColor: "var(--color-chat-sending-border)",
-        color: "var(--color-chat-sending-text)",
-      }
-    : creating
-      ? {
-          backgroundColor: "var(--color-chat-creating-bg)",
-          borderColor: "var(--color-chat-creating-border)",
-          color: "var(--color-chat-creating-text)",
-        }
-      : {
-          backgroundColor: "var(--color-chat-thinking-bg)",
-          borderColor: "var(--color-chat-thinking-border)",
-          color: "var(--color-chat-thinking-text)",
-        };
-
-  return (
-    <div key={key} className={CHAT_RAIL_CLASS}>
-      <div
-        className="inline-flex max-w-lg items-center gap-2 rounded-full border px-3 py-1.5 text-sm shadow-sm"
-        style={style}
-        title={detail}
-      >
-        {sending ? (
-          <ArrowUpCircle size={14} className="shrink-0" />
-        ) : (
-          <Loader2 size={14} className="shrink-0 animate-spin" />
-        )}
-        <span className="min-w-0 truncate font-medium">{title}</span>
-      </div>
-    </div>
-  );
 }
 
 
@@ -541,9 +559,7 @@ function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps
         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
           Question
         </div>
-        <div className="mt-1 whitespace-pre-wrap text-sm font-medium leading-6 text-text-primary">
-          {request.question}
-        </div>
+        <PromptMarkdown content={request.question} trusted />
 
         {choices.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -709,8 +725,29 @@ export default function ChatView({
     isTarget: isMessageLongPressTarget,
   } = useLongPressMenu<string>();
 
+  /** Activity blocks the reader opened or closed by hand; everything else stays collapsed. */
+  const [activityExpansion, setActivityExpansion] = useState<Record<string, boolean>>({});
+  const liveActivityKeyRef = useRef<string | null>(null);
+  /** The run state the last disk read reported; unknown until the first read of a session. */
+  const [historyRunBusy, setHistoryRunBusy] = useState<boolean | null>(null);
+  // Held in state, not a ref: the root only mounts once there is a session or a draft to show.
+  const [chatRoot, setChatRoot] = useState<HTMLDivElement | null>(null);
+  const [hasActionGutter, setHasActionGutter] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!chatRoot) return;
+    const measure = () => setHasActionGutter(chatRoot.clientWidth >= ACTION_GUTTER_MIN_COLUMN_PX);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(chatRoot);
+    return () => observer.disconnect();
+  }, [chatRoot]);
+
   useEffect(() => {
     setSelectingMessageTarget(null);
+    setActivityExpansion({});
+    setHistoryRunBusy(null);
   }, [sessionId]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -761,7 +798,7 @@ export default function ChatView({
   } | null>(null);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<
-    (opts?: { background?: boolean; replace?: boolean; silent?: boolean }) => Promise<void>
+    (opts?: { background?: boolean; replace?: boolean; silent?: boolean; forceReconnect?: boolean }) => Promise<void>
   >(async () => {});
   activeSessionActivityAtRef.current = activeSessionActivityAt;
 
@@ -901,6 +938,7 @@ export default function ChatView({
   const {
     streamingContent,
     liveAssistantSegments = [],
+    liveReasoning = [],
     pendingUserMessages = [],
     intentText,
     liveTools = [],
@@ -920,6 +958,7 @@ export default function ChatView({
     sendMessage,
     abortSession,
     reconnect,
+    ensureConnected,
     activeTurnId,
     activeTurnInstanceId,
   } = useSessionStream(historicalMode ? null : sessionId, handleStreamSettled, onMessageSent, updateMcpStatus);
@@ -953,6 +992,31 @@ export default function ChatView({
       return !isCommittedByWatermark(segment.timestamp);
     }),
     [committedSourceEventIds, isCommittedByWatermark, liveAssistantSegments],
+  );
+  /**
+   * Thinking is persisted on its turn's assistant message, so a live block hands off to the disk
+   * entry that names the same message. Until then it has no timestamp to compare against the
+   * watermark, which is correct: text still streaming cannot be on disk.
+   */
+  const committedReasoningMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (entry.type === "reasoning" && entry.reasoning.messageEventId) {
+        ids.add(entry.reasoning.messageEventId);
+      }
+    }
+    return ids;
+  }, [entries]);
+  const uncommittedReasoning = useMemo(
+    () => liveReasoning.filter((block) => {
+      if (!block.content.trim()) return false;
+      if (!block.sourceEventId) return true;
+      if (committedReasoningMessageIds.has(block.sourceEventId)) return false;
+      // The message that persisted this thinking is already in loaded history, or older than it.
+      if (committedSourceEventIds.has(block.sourceEventId)) return false;
+      return !isCommittedByWatermark(block.committedAt);
+    }),
+    [committedReasoningMessageIds, committedSourceEventIds, isCommittedByWatermark, liveReasoning],
   );
   /** In-flight tools only — drives the run-status header and the spinner on tool cards. */
   const activeTools = useMemo(
@@ -1217,6 +1281,13 @@ export default function ChatView({
     }
   }, [cancelFollowScroll, clearProgrammaticScroll, creating, isStreaming, pendingInteractionCount]);
 
+  const handleToggleActivity = useCallback((key: string, expanded: boolean) => {
+    setActivityExpansion((current) => ({ ...current, [key]: expanded }));
+    // Opening earlier work is a decision to read it, so new output must not pull the view away.
+    // The block the run is still writing into keeps following.
+    if (expanded && key !== liveActivityKeyRef.current) handleUserScrollIntent();
+  }, [handleUserScrollIntent]);
+
   const handleJumpToLatest = useCallback(() => {
     scrollToLatest({ force: true });
   }, [scrollToLatest]);
@@ -1328,7 +1399,9 @@ export default function ChatView({
       // Routine disk-tail syncs are the steady state now, not an exceptional catch-up, so they
       // must not flash a progress pill or disable transcript actions.
       silent = false,
-    }: { background?: boolean; replace?: boolean; silent?: boolean } = {}): Promise<void> => {
+      // A stream that may have died unnoticed (the tab slept) is replaced; a healthy one is kept.
+      forceReconnect = false,
+    }: { background?: boolean; replace?: boolean; silent?: boolean; forceReconnect?: boolean } = {}): Promise<void> => {
       const requestId = ++loadRequestIdRef.current;
       if (background) {
         if (!silent) {
@@ -1367,6 +1440,7 @@ export default function ChatView({
           if (requestId !== loadRequestIdRef.current) {
             return;
           }
+          setHistoryRunBusy(busy);
           if (historicalMode) {
             const found = !targetSourceEventId || msgs.some((entry) => isChatMessageEntry(entry)
               && (entry.sourceEventId === targetSourceEventId || entry.id === targetSourceEventId));
@@ -1399,7 +1473,7 @@ export default function ChatView({
             });
             if (merged.hasGap) {
               // The window grew past what one refresh covers; reload from the top of the window.
-              loadAndReconnect({ background: true, replace: true, silent });
+              loadAndReconnect({ background: true, replace: true, silent, forceReconnect });
               return;
             }
           } else {
@@ -1426,7 +1500,8 @@ export default function ChatView({
           }).catch(() => {});
 
           if (busy) {
-            reconnect(sessionId);
+            if (forceReconnect) reconnect(sessionId);
+            else ensureConnected(sessionId);
             return;
           }
 
@@ -1526,7 +1601,7 @@ export default function ChatView({
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
       if (historicalMode || document.visibilityState !== "visible") return;
-      loadAndReconnect({ background: true, silent: true });
+      loadAndReconnect({ background: true, silent: true, forceReconnect: true });
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -1542,6 +1617,7 @@ export default function ChatView({
     clearPendingAutoLoad,
     clearProgrammaticScroll,
     composerKey,
+    ensureConnected,
     historicalMode,
     queryClient,
     reconnect,
@@ -2032,12 +2108,9 @@ export default function ChatView({
     })),
     [activeTools],
   );
-  const activeToolCallIds = useMemo(
-    () => new Set(activeTools.map((tool) => tool.toolCallId)),
-    [activeTools],
-  );
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
+  const displayedReasoning = useThrottledReasoning(uncommittedReasoning, STREAM_RENDER_INTERVAL_MS);
   const clientOwnedCommittedSourceEventIds = useMemo(() => {
     const sendsById = new Map(pendingSends.map((send) => [send.id, send]));
     return new Set(pendingUserMessages.flatMap((message) => (
@@ -2069,8 +2142,35 @@ export default function ChatView({
         ...(message.timestamp ? { timestamp: message.timestamp } : {}),
       });
     }
+    // Within one model call the order is fixed: thinking, then text, then tool calls. The overlay
+    // can briefly hold the turn that just ended as well (its history read is still in flight), and
+    // that turn's items come first.
+    const endedTurnEntries: ChatEntry[] = [];
+    const currentTurnEntries: ChatEntry[] = [];
+    const bucketFor = (turnInstanceId?: string) => (
+      turnInstanceId && activeTurnInstanceId && turnInstanceId !== activeTurnInstanceId
+        ? endedTurnEntries
+        : currentTurnEntries
+    );
+    for (const block of displayedReasoning) {
+      bucketFor(block.turnInstanceId).push({
+        id: `live-reasoning-${block.id}`,
+        type: "reasoning",
+        content: block.content,
+        ...(block.turnId ? { turnId: block.turnId } : {}),
+        ...(block.turnInstanceId ? { turnInstanceId: block.turnInstanceId } : {}),
+        ...(block.committedAt ?? block.completedAt
+          ? { timestamp: block.committedAt ?? block.completedAt }
+          : {}),
+        reasoning: {
+          ...(block.sourceEventId ? { messageEventId: block.sourceEventId } : {}),
+          ...(block.startedAt ? { startedAt: block.startedAt } : {}),
+          ...(isStreaming && !block.completedAt ? { streaming: true } : {}),
+        },
+      });
+    }
     for (const segment of uncommittedAssistantSegments) {
-      nextEntries.push({
+      bucketFor(segment.turnInstanceId).push({
         id: `live-assistant-${segment.id}`,
         type: "message",
         role: "assistant",
@@ -2081,7 +2181,7 @@ export default function ChatView({
       });
     }
     for (const tool of uncommittedLiveTools) {
-      nextEntries.push({
+      bucketFor(tool.turnInstanceId).push({
         id: `live-tool-${tool.toolCallId}`,
         type: "tool",
         turnId: tool.turnId,
@@ -2105,7 +2205,7 @@ export default function ChatView({
       });
     }
     for (const visual of uncommittedVisuals) {
-      nextEntries.push({
+      bucketFor(visual.turnInstanceId).push({
         id: `live-visual-${visual.artifactId}`,
         type: "visual",
         ...(visual.turnId ? { turnId: visual.turnId } : {}),
@@ -2114,6 +2214,7 @@ export default function ChatView({
         ...(visual.timestamp ? { timestamp: visual.timestamp } : {}),
       });
     }
+    nextEntries.push(...endedTurnEntries, ...currentTurnEntries);
     if (uncommittedCompletion) {
       nextEntries.push({
         id: `live-completion-${uncommittedCompletion.sourceEventId ?? "run"}`,
@@ -2159,6 +2260,7 @@ export default function ChatView({
   }, [
     activeTurnId,
     activeTurnInstanceId,
+    displayedReasoning,
     displayedStreamingContent,
     hasStreamingText,
     isStreaming,
@@ -2288,6 +2390,30 @@ export default function ChatView({
   const toolForest = useMemo(() => buildToolCallForest(toolEntries), [toolEntries]);
   const activeToolForest = useMemo(() => buildToolCallForest(activeToolCalls), [activeToolCalls]);
   const activeRootNodes = useMemo(() => getActiveToolCallRoots(activeToolForest.roots), [activeToolForest.roots]);
+  const renderBlocks = useMemo(
+    () => groupActivitySegments(segmentChatEntries(displayEntries)),
+    [displayEntries],
+  );
+  /**
+   * While the run is between steps, the block at the end of the transcript is where the next step
+   * will land, so it carries the "still working" state instead of a separate indicator below it.
+   */
+  const liveActivityKey = useMemo(() => {
+    if (!isStreaming || hasStreamingText) return null;
+    const trailing = renderBlocks[renderBlocks.length - 1];
+    return trailing?.type === "activity" ? trailing.key : null;
+  }, [hasStreamingText, isStreaming, renderBlocks]);
+  liveActivityKeyRef.current = liveActivityKey;
+  /**
+   * A step with no recorded end is only "running" while something can still end it: this view's
+   * stream, a run the last disk read reported (or no read yet), a background agent, or another
+   * Copilot client holding the session. Otherwise it simply never finished.
+   */
+  const runActive = isStreaming
+    || creating
+    || historyRunBusy !== false
+    || (backgroundAgents?.running ?? 0) > 0
+    || externallyInUse;
   const runHeaderState = useMemo(() => deriveLiveRunHeaderState({
     creating,
     isStreaming,
@@ -2299,6 +2425,19 @@ export default function ChatView({
     intentText,
     hadVisibleOutput,
   }), [creating, isStreaming, streamStatus, pendingOrigin, runMode, streamingContent, activeRootNodes.length, intentText, hadVisibleOutput]);
+  // Attaching to a run's stream normally takes a few milliseconds. Naming that step every time
+  // makes the status blink through "Reconnecting" on its way to "Thinking", so it is only named
+  // once it is taking long enough to be worth explaining.
+  const reconnectIsSlow = useSustained(runHeaderState?.phase === "reconnecting", RECONNECT_LABEL_DELAY_MS);
+  /**
+   * The line that says the run is still going, for when nothing else on screen does. Once the run
+   * has produced output, the gaps between a reply ending and the next step (or the run's end) are
+   * usually a few milliseconds, so the line waits to be sure there really is a pause to explain.
+   */
+  const statusLineWanted = Boolean(runHeaderState) && !hasStreamingText && !liveActivityKey;
+  const midRunPause = statusLineWanted && hadVisibleOutput;
+  const midRunPauseSustained = useSustained(midRunPause, MID_RUN_STATUS_DELAY_MS);
+  const showStatusLine = statusLineWanted && (!midRunPause || midRunPauseSustained);
 
   useLayoutEffect(() => {
     const previousMessageKey = latestMessageAnchorKeyRef.current;
@@ -2374,10 +2513,12 @@ export default function ChatView({
   }, [
     creating,
     activeTools.length,
+    displayedReasoning,
     displayedStreamingContent,
     hasPendingInteractions,
     isStreaming,
     latestMessageAnchorKey,
+    liveActivityKey,
     liveEntries.length,
     pendingUserInputRequests.length,
     pendingElicitationRequests.length,
@@ -2388,16 +2529,17 @@ export default function ChatView({
   // Build lightweight pending-only UI. Live tools and assistant text render in the normal chat flow.
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
-    const showStatusPill = runHeaderState && !hasStreamingText && activeRootNodes.length === 0;
 
-    if (showStatusPill) {
+    if (showStatusLine && runHeaderState) {
+      const attaching = runHeaderState.phase === "reconnecting" && !reconnectIsSlow;
       parts.push(
-        renderLiveStatusPill(
-          "run-header",
-          runHeaderState.tone,
-          runHeaderState.title,
-          runHeaderState.detail,
-        ),
+        <div key="run-header" className={CHAT_RAIL_CLASS}>
+          <LiveStatusLine
+            label={attaching ? "Thinking" : runHeaderState.label}
+            detail={intentText || undefined}
+            description={attaching ? undefined : `${runHeaderState.title}. ${runHeaderState.detail}`}
+          />
+        </div>,
       );
     }
 
@@ -2437,15 +2579,16 @@ export default function ChatView({
     if (parts.length === 0) return null;
     return <div className="space-y-3 pb-4">{parts}</div>;
   }, [
-    activeRootNodes.length,
     handleSubmitElicitation,
     handleSubmitUserInput,
-    hasStreamingText,
     elicitationCancellation,
+    intentText,
     pendingElicitationRequests,
     pendingUserInputRequests,
+    reconnectIsSlow,
     runHeaderState,
     runNotice,
+    showStatusLine,
   ]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
@@ -2684,24 +2827,21 @@ export default function ChatView({
     );
   }
 
-  /** Render messages in order, but group each tool turn into real parallel root tracks. */
+  /** Render the transcript in order, folding each run of thinking and tool calls into one block. */
   const renderedEntries = useMemo(() => {
     const result: React.ReactNode[] = [];
-    const segments = segmentChatEntries(displayEntries);
 
-    segments.forEach((segment, index) => {
-      if (segment.type === "tool-segment") {
-        const roots = buildRenderableSegmentRoots(segment.entries, toolForest);
-        if (roots.length === 0) return;
-        const firstEntry = segment.entries[0];
-        const segmentKey = firstEntry?.id
-          ?? (firstEntry?.type === "tool" ? `tool-${firstEntry.toolCall.toolCallId}` : `tool-segment-${index}`);
+    renderBlocks.forEach((segment, index) => {
+      if (segment.type === "activity") {
         result.push(
-          <div key={segmentKey} className={`${CHAT_RAIL_CLASS} pt-2`}>
-            <ToolCallNodeGroup
-              nodes={roots}
-              defaultExpanded={roots.some((node) => node.children.length > 0)}
-              activeToolCallIds={activeToolCallIds}
+          <div key={segment.key} className={`${CHAT_RAIL_CLASS} pt-3`}>
+            <ActivityBlock
+              block={segment}
+              toolForest={toolForest}
+              expanded={activityExpansion[segment.key] ?? false}
+              onToggle={handleToggleActivity}
+              live={segment.key === liveActivityKey}
+              liveLabel={intentText}
             />
           </div>,
         );
@@ -2752,6 +2892,8 @@ export default function ChatView({
         ? null
         : bindMessageMenu(messageAnchorKey, () => {});
       const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageAnchorKey);
+      // A reply reads as the continuation of the work that produced it, so it sits closer to it.
+      const followsActivity = msg.role === "assistant" && renderBlocks[index - 1]?.type === "activity";
       const actionSlot = isLiveStreamingMessage || isSelectingText ? undefined : (
         <MessageActionToolbar
           messageKey={messageAnchorKey}
@@ -2778,7 +2920,7 @@ export default function ChatView({
           data-message-actions-trigger={menuBindings ? "true" : undefined}
           data-message-text-selection={isSelectingText ? "true" : undefined}
           data-source-event-id={messageSourceId}
-          className={`${CHAT_RAIL_CLASS} relative pt-4 transition-colors ${
+          className={`${CHAT_RAIL_CLASS} relative ${followsActivity ? "pt-2" : "pt-5"} transition-colors ${
             isLongPressTarget ? "bg-accent/5" : ""
           } ${historicalMode && messageSourceId === targetSourceEventId ? "bg-warning/10 ring-1 ring-inset ring-warning/30" : ""}`}
           onClick={menuBindings?.onClick}
@@ -2813,12 +2955,15 @@ export default function ChatView({
 
     return result;
   }, [
+    activityExpansion,
     bindMessageMenu,
     copiedMessageKey,
-    displayEntries,
+    handleToggleActivity,
+    intentText,
     latestMessageAnchorKey,
+    liveActivityKey,
     messageAnchorKeys,
-    activeToolCallIds,
+    renderBlocks,
     handleCopySpecificMessage,
     handleFinishSelectingMessageText,
     handleRetryMessage,
@@ -2844,7 +2989,11 @@ export default function ChatView({
   );
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div
+      ref={setChatRoot}
+      className="chat-ui flex-1 flex flex-col min-h-0"
+      data-action-gutter={hasActionGutter ? "true" : undefined}
+    >
       {historicalMode && (
         <div className="shrink-0 border-b border-border bg-bg-secondary px-3 py-2">
           <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 text-xs">
@@ -3017,19 +3166,23 @@ export default function ChatView({
             </div>
           ) : null}
           {/* Cached transcript dims and shimmers while the disk read is in flight; live content below stays crisp. */}
-          <div className={showHistorySync ? "history-syncing" : undefined}>
-            {renderedEntries}
-          </div>
+          <ChatRunActiveProvider value={runActive}>
+            <div className={showHistorySync ? "history-syncing" : undefined}>
+              {renderedEntries}
+            </div>
+          </ChatRunActiveProvider>
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           {!historicalMode && showJumpToLatest && (
             <div className="sticky bottom-3 z-20 flex justify-center px-3 pointer-events-none">
               <button
                 type="button"
                 aria-label="Jump to latest"
+                title="Jump to latest"
                 onClick={historicalMode ? handleExitHistoricalMode : handleJumpToLatest}
-                className="pointer-events-auto rounded-full border border-border bg-bg-secondary/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm backdrop-blur transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-elevated/95 text-text-secondary shadow-lg backdrop-blur transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
               >
-                Jump to latest
+                <ArrowDown size={16} aria-hidden="true" />
+                <span className="sr-only">Jump to latest</span>
               </button>
             </div>
           )}

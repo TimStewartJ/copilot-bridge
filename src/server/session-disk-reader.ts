@@ -6,6 +6,7 @@ import { readJsonlLines } from "./jsonl-lines.js";
 import {
   createVisibleActivityTracker,
   getLastVisibleActivityAt,
+  getVisibleReasoningText,
   getVisualArtifactFromToolCompletion,
   isVisibleMessageEvent,
   transformEventsToMessages,
@@ -40,7 +41,7 @@ const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
  * only a handful of sessions are ever read concurrently, so this is deliberately small.
  */
 const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
-const EVENT_LOG_STATS_CACHE_VERSION = 3;
+const EVENT_LOG_STATS_CACHE_VERSION = 4;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
 /** Backstop bound on retained turn checkpoints when the log has very short turns. */
@@ -525,6 +526,9 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     ) {
       state.pendingTerminalCompletionEntry = true;
     }
+
+    // Thinking is an entry of its own, ahead of the message entry the same event may also yield.
+    if (getVisibleReasoningText(event)) state.totalEntries += 1;
 
     if (isVisibleMessageEvent(event, sessionId)) {
       state.totalEntries += 1;

@@ -5,7 +5,7 @@ import type { EventLogStatsCacheEntry, EventLogStatsPersistence } from "./sessio
  * Schema stamp for persisted folds. Bump when the fold shape or the scanner's folding
  * rules change so stale rows are ignored instead of producing wrong stats.
  */
-export const EVENT_LOG_STATS_FOLD_SCHEMA_VERSION = 1;
+export const EVENT_LOG_STATS_FOLD_SCHEMA_VERSION = 2;
 
 /**
  * Durable copy of the event-log stats fold cache. Survives server restarts so the first

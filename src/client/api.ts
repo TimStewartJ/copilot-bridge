@@ -450,8 +450,36 @@ export interface ChatSkillEntry {
   timestamp?: string;
 }
 
+/**
+ * The model's thinking ahead of a reply or tool call. It has no `sourceEventId` of its own:
+ * `reasoning.messageEventId` is the `assistant.message` event that persisted it, which a live
+ * block carries as its `sourceEventId` so the two can be matched exactly.
+ */
+export interface ChatReasoningEntry {
+  id?: string;
+  type: "reasoning";
+  turnId?: string;
+  turnInstanceId?: string;
+  sourceEventId?: undefined;
+  content: string;
+  timestamp?: string;
+  reasoning: {
+    messageEventId?: string;
+    /** When the model call began; absent when the turn started above the loaded window. */
+    startedAt?: string;
+    /** Client-only: set while a live block is still receiving text. */
+    streaming?: boolean;
+  };
+}
+
 /** Union type for chronological chat rendering */
-export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry | ChatVisualEntry | ChatCompletionEntry | ChatSkillEntry;
+export type ChatEntry =
+  | (ChatMessage & { type?: "message" })
+  | ChatToolEntry
+  | ChatVisualEntry
+  | ChatCompletionEntry
+  | ChatSkillEntry
+  | ChatReasoningEntry;
 
 export type ProviderName = "ado" | "github" | "linear";
 

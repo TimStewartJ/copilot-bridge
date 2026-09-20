@@ -8,6 +8,7 @@ import type {
   ElicitationTextField,
   PendingElicitationRequestView,
 } from "../api";
+import PromptMarkdown from "./chat/PromptMarkdown";
 
 const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
 
@@ -317,9 +318,7 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
           Questions
         </div>
-        <div className="mt-1 whitespace-pre-wrap text-sm font-medium leading-6 text-text-primary">
-          {request.message}
-        </div>
+        <PromptMarkdown content={request.message} trusted={!request.elicitationSource} />
         <div className="mt-1"><SourceLabel source={request.elicitationSource} /></div>
         {request.elicitationSource && (
           <div className="mt-3 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-text-secondary">

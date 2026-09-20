@@ -14,10 +14,10 @@ vi.mock("./telemetry-batcher", () => ({
 }));
 
 import {
-  dropDiskBackedSegments,
   getKnownToolName,
   normalizeLiveTools,
   normalizeRunNotice,
+  retireSegmentsAtTurnBoundary,
   upsertLiveTool,
   useSessionStream,
 } from "./useSessionStream";
@@ -166,6 +166,30 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 describe("useSessionStream EventSource lifecycle", () => {
+  it("keeps a healthy stream when asked to ensure a connection, and replaces a closed one", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().ensureConnected("session-1"));
+      const first = getSource();
+      first.open();
+      await emitAndWait(act, first, snapshot({ streamingContent: "partial" }),
+        () => getState().streamingContent === "partial");
+
+      // A routine history refresh asks again; tearing the stream down would blank the overlay.
+      await act(async () => getState().ensureConnected("session-1"));
+      expect(MockEventSource.instances).toHaveLength(1);
+      expect(first.close).not.toHaveBeenCalled();
+      expect(getState().streamingContent).toBe("partial");
+
+      await act(async () => first.failClosed());
+      await act(async () => getState().ensureConnected("session-1"));
+      expect(MockEventSource.instances).toHaveLength(2);
+
+      // An explicit reconnect always replaces the stream: the caller suspects it died unnoticed.
+      await act(async () => getState().reconnect("session-1"));
+      expect(MockEventSource.instances).toHaveLength(3);
+    });
+  });
+
   it("publishes normalized MCP snapshots without mirroring them in stream state", async () => {
     await withHarness(async ({ getState, getSource, mcpStatusChanged, act }) => {
       await act(async () => getState().reconnect("session-1"));
@@ -623,6 +647,101 @@ describe("useSessionStream ephemeral state", () => {
       expect(getState().streamingContent).toBe("");
     });
   });
+
+  it("streams model thinking, closes it when the reply starts, and commits it by message id", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-1", turnInstanceId: "turn-start-1" },
+        () => getState().streamStatus === "thinking");
+      await emitAndWait(act, source, { type: "reasoning_delta", reasoningId: "r-1", content: "Nine remain, " },
+        () => getState().liveReasoning.length === 1);
+      await emitAndWait(act, source, { type: "reasoning_delta", reasoningId: "r-1", content: "then he doubles them." },
+        () => getState().liveReasoning[0]?.content === "Nine remain, then he doubles them.");
+
+      expect(getState().liveReasoning[0]).toMatchObject({ id: "r-1", turnId: "turn-1", turnInstanceId: "turn-start-1" });
+      expect(getState().liveReasoning[0]?.completedAt).toBeUndefined();
+      // Thinking is not output: the run is still waiting for its first visible text.
+      expect(getState().streamStatus).toBe("thinking");
+      expect(getState().hadVisibleOutput).toBe(false);
+
+      await emitAndWait(act, source, { type: "delta", content: "Eighteen." },
+        () => getState().liveReasoning[0]?.completedAt !== undefined);
+
+      await emitAndWait(act, source, {
+        type: "reasoning_committed",
+        content: "Nine remain, then he doubles them.",
+        sourceEventId: "assistant-message-1",
+        timestamp: "2026-09-20T08:00:03.000Z",
+      }, () => getState().liveReasoning[0]?.sourceEventId === "assistant-message-1");
+      // The complete block arrives after the message that committed it and changes nothing.
+      await act(async () => source.emit({ type: "reasoning", reasoningId: "r-1", content: "Nine remain, then he doubles them." }));
+
+      expect(getState().liveReasoning).toMatchObject([{
+        id: "r-1",
+        sourceEventId: "assistant-message-1",
+        committedAt: "2026-09-20T08:00:03.000Z",
+      }]);
+
+      // Its history read is usually still in flight when the next turn starts, so committed
+      // thinking stays for one more turn; the view hides it as soon as disk history carries it.
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-2", turnInstanceId: "turn-start-2" },
+        () => getState().activeTurnInstanceId === "turn-start-2");
+      expect(getState().liveReasoning.map((block) => block.id)).toEqual(["r-1"]);
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-3", turnInstanceId: "turn-start-3" },
+        () => getState().liveReasoning.length === 0);
+    });
+  });
+
+  it("does not let a finished tool fall back to running when the next turn starts", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-1", turnInstanceId: "turn-start-1" },
+        () => getState().activeTurnInstanceId === "turn-start-1");
+      await emitAndWait(act, source, {
+        type: "tool_start", toolCallId: "tc-done", name: "view", turnInstanceId: "turn-start-1", timestamp: "2026-09-20T08:00:01.000Z",
+      }, () => getState().liveTools.length === 1);
+      await emitAndWait(act, source, {
+        type: "tool_start", toolCallId: "tc-open", name: "bash", turnInstanceId: "turn-start-1", timestamp: "2026-09-20T08:00:01.000Z",
+      }, () => getState().liveTools.length === 2);
+      await emitAndWait(act, source, {
+        type: "tool_done", toolCallId: "tc-done", name: "view", turnInstanceId: "turn-start-1", success: true, result: "ok", timestamp: "2026-09-20T08:00:02.000Z",
+      }, () => getState().liveTools.some((tool) => tool.toolCallId === "tc-done" && tool.completedAt !== undefined));
+
+      // The disk read that carries the completion is still in flight here. Dropping the finished
+      // tool now would hand the row back to a disk entry that still says "running".
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-2", turnInstanceId: "turn-start-2" },
+        () => getState().activeTurnInstanceId === "turn-start-2");
+      expect(getState().liveTools).toMatchObject([{ toolCallId: "tc-done", success: true, result: "ok" }]);
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "turn-3", turnInstanceId: "turn-start-3" },
+        () => getState().liveTools.length === 0);
+    });
+  });
+
+  it("restores in-flight thinking from a reconnect snapshot and drops it if the run is cut short", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({
+        liveReasoning: [
+          { id: "r-0", content: "committed thought", sourceEventId: "assistant-message-0", completedAt: "2026-09-20T08:00:00.000Z" },
+          { id: "r-1", content: "still thinking", startedAt: "2026-09-20T08:00:01.000Z" },
+          { id: "bad", content: 42 },
+        ],
+      }), () => getState().liveReasoning.length === 2);
+      expect(getState().streamStatus).toBe("thinking");
+
+      await emitAndWait(act, source, { type: "aborted", content: "" }, () => getState().streamStatus === "idle");
+
+      expect(getState().liveReasoning.map((block) => block.id)).toEqual(["r-0"]);
+    });
+  });
 });
 
 describe("useSessionStream terminal handling", () => {
@@ -840,13 +959,19 @@ describe("stream helpers", () => {
     ]);
   });
 
-  it("drops only disk-backed segments at a turn boundary", () => {
-    expect(dropDiskBackedSegments([
-      { id: "a", content: "persisted", sourceEventId: "a" },
-      // An SDK event without an id is still disk-backed; only explicit provenance survives.
-      { id: "b", content: "sdk without id" },
+  it("keeps the ending turn's disk-backed segments for one more turn, and native ones always", () => {
+    const segments = [
+      { id: "old", content: "two turns ago", sourceEventId: "old", turnInstanceId: "turn-a" },
+      { id: "a", content: "just persisted", sourceEventId: "a", turnInstanceId: "turn-b" },
+      // An SDK event without an id can never be matched against disk, so it is not kept.
+      { id: "b", content: "sdk without id", turnInstanceId: "turn-b" },
       { id: "c", content: "native", bridgeNative: true },
-    ])).toMatchObject([{ id: "c" }]);
+    ];
+
+    // Its history read is usually still in flight when the next turn starts.
+    expect(retireSegmentsAtTurnBoundary(segments, "turn-b")).toMatchObject([{ id: "a" }, { id: "c" }]);
+    // Without a known ending turn nothing disk-backed can be kept safely.
+    expect(retireSegmentsAtTurnBoundary(segments, undefined)).toMatchObject([{ id: "c" }]);
   });
 
   it("normalizes run notices and rejects unknown kinds", () => {

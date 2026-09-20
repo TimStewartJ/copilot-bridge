@@ -51,17 +51,6 @@
   /* Syntax */
   --color-syntax-string: #5eead4;
 
-  /* Chat transient states */
-  --color-chat-sending-bg: rgba(59, 130, 246, 0.14);
-  --color-chat-sending-border: rgba(96, 165, 250, 0.32);
-  --color-chat-sending-text: #bfdbfe;
-  --color-chat-creating-bg: rgba(20, 184, 166, 0.14);
-  --color-chat-creating-border: rgba(45, 212, 191, 0.30);
-  --color-chat-creating-text: #99f6e4;
-  --color-chat-thinking-bg: rgba(168, 85, 247, 0.13);
-  --color-chat-thinking-border: rgba(192, 132, 252, 0.30);
-  --color-chat-thinking-text: #e9d5ff;
-
   /* Restart banner */
   --color-restart-waiting-bg: rgba(245, 158, 11, 0.15);
   --color-restart-waiting-border: rgba(245, 158, 11, 0.30);
@@ -109,16 +98,6 @@
   --color-copy-success: #16a34a;
 
   --color-syntax-string: #0f766e;
-
-  --color-chat-sending-bg: rgba(37, 99, 235, 0.08);
-  --color-chat-sending-border: rgba(37, 99, 235, 0.18);
-  --color-chat-sending-text: #1d4ed8;
-  --color-chat-creating-bg: rgba(13, 148, 136, 0.08);
-  --color-chat-creating-border: rgba(13, 148, 136, 0.18);
-  --color-chat-creating-text: #0f766e;
-  --color-chat-thinking-bg: rgba(147, 51, 234, 0.08);
-  --color-chat-thinking-border: rgba(147, 51, 234, 0.18);
-  --color-chat-thinking-text: #7e22ce;
 
   --color-restart-waiting-bg: rgba(245, 158, 11, 0.10);
   --color-restart-waiting-border: rgba(245, 158, 11, 0.25);
@@ -203,6 +182,112 @@ body {
     animation: none;
     -webkit-mask-image: none;
     mask-image: none;
+  }
+}
+
+/* ── Chat transcript ───────────────────────────────────────────────── */
+
+.chat-ui {
+  color-scheme: dark;
+}
+
+[data-theme="light"] .chat-ui {
+  color-scheme: light;
+}
+
+.chat-ui,
+.chat-ui * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-faint) 55%, transparent) transparent;
+}
+
+/* A label for work that is still happening: a highlight sweeps across otherwise muted text. */
+.shimmer-text {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--color-text-muted) 0%,
+    var(--color-text-muted) 38%,
+    var(--color-text-primary) 50%,
+    var(--color-text-muted) 62%,
+    var(--color-text-muted) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: shimmer-text-sweep 2.2s linear infinite;
+}
+
+@keyframes shimmer-text-sweep {
+  from {
+    background-position: 110% 0;
+  }
+  to {
+    background-position: -110% 0;
+  }
+}
+
+/* The newest lines of streaming thinking, anchored to the bottom of a fixed-height window. */
+.chat-thought-window {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.35rem);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.35rem);
+}
+
+.chat-thought-clamp {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent 100%);
+}
+
+@keyframes chat-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-reveal {
+  animation: chat-reveal 0.16s ease-out;
+}
+
+/* Inline code reads as a quiet chip; the typography plugin's literal backticks add nothing. */
+.chat-prose :where(code):not(:where(pre *))::before,
+.chat-prose :where(code):not(:where(pre *))::after {
+  content: none;
+}
+
+.chat-prose :where(code):not(:where(pre *)) {
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.375rem;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  font-weight: 450;
+}
+
+/*
+ * A reply's hover actions. When the chat column has a margin beside the text, they hang there,
+ * level with the first line, where they cover nothing. Unlayered so it wins over the corner
+ * placement the component falls back to in a narrow column.
+ */
+.chat-ui[data-action-gutter="true"] .chat-reply-actions {
+  top: 0;
+  right: auto;
+  left: 100%;
+  margin-left: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    color: var(--color-text-secondary);
+    background-image: none;
+  }
+
+  .chat-reveal {
+    animation: none;
   }
 }
 

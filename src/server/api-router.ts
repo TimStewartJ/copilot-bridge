@@ -3723,6 +3723,7 @@ export function createApiRouter(
         complete: true,
         streamingContent: "",
         liveAssistantSegments: [],
+        liveReasoning: [],
         pendingUserMessages: [],
         liveTools: [],
         liveVisuals: [],

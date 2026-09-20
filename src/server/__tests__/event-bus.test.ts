@@ -548,8 +548,12 @@ describe("event-bus", () => {
         { artifactId: "artifact-1", kind: "mermaid", title: "Diagram" },
       ]);
 
-      // A new turn proves the previous turn's visual reached events.jsonl.
+      // The client's read of that turn may still be in flight when the next one starts, so the
+      // visual stays for one more turn; the client hides it by artifact id once disk carries it.
       bus.emit({ type: "thinking", turnId: "turn-2" });
+      expect(bus.getSnapshot().liveVisuals).toMatchObject([{ artifactId: "artifact-1" }]);
+
+      bus.emit({ type: "thinking", turnId: "turn-3" });
       expect(bus.getSnapshot().liveVisuals).toEqual([]);
     });
 
@@ -673,16 +677,152 @@ describe("event-bus", () => {
       expect(segments[0]?.sourceEventId).toBeUndefined();
     });
 
-    it("drops disk-backed assistant segments at a turn boundary but keeps bridge-native ones", () => {
+    it("keeps the ending turn's disk-backed segments for one more turn and native ones always", () => {
       const bus = getOrCreateBus("test-segment-turn-boundary");
       bus.emit({ type: "thinking", turnId: "turn-1" });
       bus.emit({ type: "assistant_partial", content: "persisted", sourceEventId: "assistant-1" });
       bus.emit({ type: "assistant_partial", content: "local only", bridgeNative: true });
       expect(bus.getSnapshot().liveAssistantSegments).toHaveLength(2);
 
+      // The client's read of turn 1 is usually still in flight when turn 2 starts.
       bus.emit({ type: "thinking", turnId: "turn-2" });
+      expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([
+        { content: "persisted" },
+        { content: "local only" },
+      ]);
 
+      bus.emit({ type: "thinking", turnId: "turn-3" });
       expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([{ content: "local only" }]);
+    });
+
+    it("keeps a finished tool across the next turn start so it cannot fall back to running", () => {
+      const bus = getOrCreateBus("test-tool-turn-boundary");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "tool_start", toolCallId: "tc-done", name: "view" });
+      bus.emit({ type: "tool_start", toolCallId: "tc-open", name: "bash" });
+      bus.emit({ type: "tool_done", toolCallId: "tc-done", success: true, result: "ok" });
+
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+      // A reconnecting client must receive the completion its disk read may not show yet.
+      expect(bus.getSnapshot().liveTools).toMatchObject([{ toolCallId: "tc-done", success: true, result: "ok" }]);
+
+      bus.emit({ type: "thinking", turnId: "turn-3" });
+      expect(bus.getSnapshot().liveTools).toEqual([]);
+    });
+  });
+
+  describe("model thinking", () => {
+    it("accumulates streamed thinking so a reconnecting client receives it in the snapshot", () => {
+      const bus = getOrCreateBus("test-reasoning-stream");
+      bus.emit({ type: "thinking", turnId: "turn-1", turnInstanceId: "turn-start-1" });
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "The scanner " });
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "must agree." });
+
+      expect(bus.getSnapshot().liveReasoning).toMatchObject([{
+        id: "r-1",
+        content: "The scanner must agree.",
+        turnId: "turn-1",
+        turnInstanceId: "turn-start-1",
+      }]);
+      expect(bus.getSnapshot().liveReasoning[0]?.completedAt).toBeUndefined();
+    });
+
+    it("stamps thinking events with the current turn for subscribers", () => {
+      const bus = getOrCreateBus("test-reasoning-turn-scope");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+
+      bus.emit({ type: "thinking", turnId: "turn-1", turnInstanceId: "turn-start-1" });
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "hm" });
+
+      expect(received.find((event) => event.type === "reasoning_delta")).toMatchObject({
+        turnId: "turn-1",
+        turnInstanceId: "turn-start-1",
+      });
+    });
+
+    it("closes thinking when visible text or a tool call starts", () => {
+      const textBus = getOrCreateBus("test-reasoning-closed-by-text");
+      textBus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "thought" });
+      textBus.emit({ type: "delta", content: "Answer" });
+      expect(textBus.getSnapshot().liveReasoning[0]?.completedAt).toBeDefined();
+
+      const toolBus = getOrCreateBus("test-reasoning-closed-by-tool");
+      toolBus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "thought" });
+      toolBus.emit({ type: "tool_start", toolCallId: "tc-1", name: "grep", timestamp: "2026-09-20T08:00:03.000Z" });
+      expect(toolBus.getSnapshot().liveReasoning[0]?.completedAt).toBe("2026-09-20T08:00:03.000Z");
+    });
+
+    it("commits thinking under the assistant message that persisted it and announces the advance", () => {
+      const bus = getOrCreateBus("test-reasoning-commit");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "streamed" });
+
+      bus.emit({
+        type: "reasoning_committed",
+        content: "persisted",
+        sourceEventId: "assistant-message-1",
+        timestamp: "2026-09-20T08:00:05.000Z",
+      });
+
+      expect(bus.getSnapshot().liveReasoning).toMatchObject([{
+        id: "r-1",
+        content: "persisted",
+        sourceEventId: "assistant-message-1",
+        committedAt: "2026-09-20T08:00:05.000Z",
+      }]);
+      expect(received.filter((event) => event.type === "history_advanced")).toHaveLength(1);
+    });
+
+    it("folds the complete block the SDK sends after its commit without resending it", () => {
+      const bus = getOrCreateBus("test-reasoning-late-complete");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "the thought" });
+      bus.emit({ type: "reasoning_committed", content: "the thought", sourceEventId: "assistant-message-1" });
+      bus.emit({ type: "reasoning", reasoningId: "r-1", content: "the thought" });
+
+      expect(bus.getSnapshot().liveReasoning).toHaveLength(1);
+      // Subscribers already hold this text; the whole block is not sent a third time.
+      expect(received.some((event) => event.type === "reasoning")).toBe(false);
+    });
+
+    it("broadcasts the complete block when it is the only copy of the thinking", () => {
+      const bus = getOrCreateBus("test-reasoning-complete-only");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
+
+      bus.emit({ type: "reasoning", reasoningId: "r-1", content: "a model that does not stream its thinking" });
+
+      expect(received.filter((event) => event.type === "reasoning")).toHaveLength(1);
+      expect(bus.getSnapshot().liveReasoning).toMatchObject([{ id: "r-1" }]);
+      expect(bus.getSnapshot().liveReasoning[0]?.completedAt).toBeDefined();
+    });
+
+    it("keeps committed thinking for one more turn, then lets it go", () => {
+      const bus = getOrCreateBus("test-reasoning-turn-boundary");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "first turn" });
+      bus.emit({ type: "reasoning_committed", content: "first turn", sourceEventId: "assistant-message-1" });
+
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-2", content: "cut short, never committed" });
+      expect(bus.getSnapshot().liveReasoning.map((block) => block.id)).toEqual(["r-1", "r-2"]);
+
+      bus.emit({ type: "thinking", turnId: "turn-3" });
+      expect(bus.getSnapshot().liveReasoning).toEqual([]);
+    });
+
+    it("keeps committed thinking at the end of a run and drops thinking that was cut short", () => {
+      const bus = getOrCreateBus("test-reasoning-terminal");
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "kept" });
+      bus.emit({ type: "reasoning_committed", content: "kept", sourceEventId: "assistant-message-1" });
+      bus.emit({ type: "reasoning_delta", reasoningId: "r-2", content: "cut short by the stop button" });
+
+      bus.emit({ type: "aborted", content: "" });
+
+      expect(bus.getSnapshot().liveReasoning.map((block) => block.id)).toEqual(["r-1"]);
     });
   });
 
