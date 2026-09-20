@@ -25,6 +25,12 @@ export interface VoiceUiStateContext {
   hasPendingRecording?: boolean;
   /** Set when the recording could not be written to durable client storage. */
   persistWarning?: string | null;
+  /** Whole seconds captured by the recording in progress. */
+  recordingSeconds?: number;
+  /** Longest recording the server accepts; the recorder stops itself there. */
+  maxRecordingSeconds?: number;
+  /** Whole percent of the recording uploaded so far. */
+  uploadPercent?: number;
 }
 
 export interface VoiceUiState {
@@ -33,7 +39,22 @@ export interface VoiceUiState {
   buttonState: VoiceUiButtonState;
   buttonTitle: string;
   message: string | null;
+  /** A fast-changing figure (recording clock, upload percent) shown beside the message, outside its live region. */
+  detail: string | null;
   tone: VoiceUiTone;
+}
+
+/** The recorder says what will happen at the limit once this little time is left. */
+const LIMIT_NOTICE_SECONDS = 30;
+
+function formatClock(totalSeconds: number): string {
+  return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+/** "5 minutes", "90 seconds": the recording limit in words. */
+export function describeRecordingLimit(seconds: number): string {
+  if (seconds % 60 !== 0) return `${seconds} seconds`;
+  return seconds === 60 ? "1 minute" : `${seconds / 60} minutes`;
 }
 
 export function deriveVoiceUiState({
@@ -49,6 +70,9 @@ export function deriveVoiceUiState({
   canAutoSendStoppedRecording,
   hasPendingRecording = false,
   persistWarning = null,
+  recordingSeconds,
+  maxRecordingSeconds,
+  uploadPercent,
 }: VoiceUiStateContext): VoiceUiState {
   const isStarting = recorderPhase === "starting";
   const isRecording = recorderPhase === "recording";
@@ -79,6 +103,7 @@ export function deriveVoiceUiState({
       : "mic";
 
   let message: string | null = null;
+  let detail: string | null = null;
   let tone: VoiceUiTone = "muted";
 
   if (voiceJobError) {
@@ -92,6 +117,7 @@ export function deriveVoiceUiState({
     tone = "success";
   } else if (activeVoiceJob?.status === "uploading") {
     message = "Uploading… stay here.";
+    if (uploadPercent !== undefined) detail = `${uploadPercent}%`;
     tone = "accent";
   } else if (activeVoiceJob?.serverOwned && activeVoiceJob.status === "accepted") {
     message = "Uploaded. Transcribing…";
@@ -115,9 +141,18 @@ export function deriveVoiceUiState({
     message = "Starting mic…";
     tone = "accent";
   } else if (isRecording) {
-    message = canAutoSendStoppedRecording
-      ? "Recording… stop to send."
-      : "Recording… stop to transcribe.";
+    const limit = maxRecordingSeconds === undefined ? null : formatClock(maxRecordingSeconds);
+    const secondsLeft = maxRecordingSeconds === undefined ? Infinity : maxRecordingSeconds - (recordingSeconds ?? 0);
+    if (secondsLeft <= LIMIT_NOTICE_SECONDS) {
+      message = `Recording… stops and ${canAutoSendStoppedRecording ? "sends" : "transcribes"} at ${limit}.`;
+    } else {
+      message = canAutoSendStoppedRecording
+        ? "Recording… stop to send."
+        : "Recording… stop to transcribe.";
+    }
+    if (recordingSeconds !== undefined) {
+      detail = limit ? `${formatClock(recordingSeconds)} / ${limit}` : formatClock(recordingSeconds);
+    }
     tone = "accent";
   } else if (statusError) {
     message = `Voice status check failed. Click the mic to retry. (${statusError})`;
@@ -165,6 +200,7 @@ export function deriveVoiceUiState({
     buttonState,
     buttonTitle,
     message,
+    detail,
     tone,
   };
 }

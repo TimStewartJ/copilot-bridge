@@ -5,6 +5,7 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../test-react-harness";
+import { whenNoVoiceCapture } from "../lib/voice-capture-guard";
 import {
   __resetVoiceRecordingStoreForTests,
   getPendingVoiceRecording,
@@ -300,6 +301,64 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     expect(transcribeAudioMock.mock.calls[1][0]).toBe(audio);
     // Transcripts are persisted immediately so a reload cannot lose both the audio and the text.
     expect(options.setDraftImmediate).toHaveBeenCalledWith("session-1", "Retried transcript", undefined);
+  });
+
+  it("holds the page while a recording uploads, reports how much has been sent, then moves an insert on to transcribing", async () => {
+    type UploadOptions = { onUploadProgress: (fraction: number) => void };
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    let autosendUpload: UploadOptions | undefined;
+    let finishAutosend = (_snapshot: ReturnType<typeof voiceJobSnapshot>) => {};
+    createVoiceJobMock.mockImplementationOnce((_request: unknown, _audio: Blob, uploadOptions: UploadOptions) => {
+      autosendUpload = uploadOptions;
+      return new Promise((resolve) => {
+        finishAutosend = resolve;
+      });
+    });
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({ composerKey: "session-1", audio, submitMode: "autosend" });
+    });
+    const reloadAfterAutosend = vi.fn();
+    whenNoVoiceCapture(reloadAfterAutosend);
+    await getHarness().act(async () => {
+      autosendUpload?.onUploadProgress(0.429);
+    });
+    expect(result?.getJobForComposer("session-1")).toMatchObject({ status: "uploading", uploadPercent: 42 });
+    await getHarness().act(async () => {
+      autosendUpload?.onUploadProgress(1);
+    });
+    expect(result?.getJobForComposer("session-1")).toMatchObject({ status: "uploading", uploadPercent: 100 });
+    expect(reloadAfterAutosend).not.toHaveBeenCalled();
+    finishAutosend(voiceJobSnapshot());
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "accepted");
+    expect(reloadAfterAutosend).toHaveBeenCalledOnce();
+
+    let insertUpload: UploadOptions | undefined;
+    let finishInsert = (_result: { text: string; provider: string }) => {};
+    transcribeAudioMock.mockImplementationOnce((_audio: Blob, uploadOptions: UploadOptions) => {
+      insertUpload = uploadOptions;
+      return new Promise((resolve) => {
+        finishInsert = resolve;
+      });
+    });
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({ composerKey: "session-2", audio, submitMode: "insert" });
+    });
+    const reloadAfterInsert = vi.fn();
+    whenNoVoiceCapture(reloadAfterInsert);
+    await getHarness().act(async () => {
+      insertUpload?.onUploadProgress(0.5);
+    });
+    expect(result?.getJobForComposer("session-2")).toMatchObject({ status: "uploading", uploadPercent: 50 });
+    await getHarness().act(async () => {
+      insertUpload?.onUploadProgress(1);
+    });
+    expect(result?.getJobForComposer("session-2")).toMatchObject({ status: "transcribing", submitMode: "insert" });
+    expect(reloadAfterInsert).not.toHaveBeenCalled();
+    finishInsert({ text: "Done", provider: "speech-engine" });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-2") === null);
+    expect(reloadAfterInsert).toHaveBeenCalledOnce();
   });
 
   it("keeps unsent audio retryable when the voice job error is cleared", async () => {

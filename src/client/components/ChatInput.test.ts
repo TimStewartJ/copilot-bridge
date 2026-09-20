@@ -284,6 +284,41 @@ describe("ChatInput voice retry", () => {
     )).toBeDefined();
   });
 
+  it("shows the recording clock and ends a recording that reaches the limit like a press on stop", async () => {
+    const stopRecording = vi.fn();
+    useVoiceInputMock.mockReturnValue({
+      browserSupported: true,
+      status: {
+        available: true,
+        provider: "speech-engine",
+        label: "Parakeet v3 (local)",
+        maxDurationSeconds: 300,
+      },
+      statusError: null,
+      isCheckingStatus: false,
+      phase: "recording",
+      isRecording: true,
+      isTranscribing: false,
+      elapsedSeconds: 83,
+      error: null,
+      startRecording: vi.fn(),
+      stopRecording,
+      refreshStatus: vi.fn(),
+    });
+    await renderChatInput();
+
+    const container = getHarness().dom.container;
+    expect(container.textContent).toContain("1:23 / 5:00");
+    const liveRegion = findAllByTag(container, "SPAN").find((span) => getReactProps(span)?.role === "status");
+    expect(liveRegion.textContent).toBe("Recording… stop to transcribe.");
+
+    const [{ onMaxDurationReached }] = useVoiceInputMock.mock.calls.at(-1) as [{ onMaxDurationReached: () => void }];
+    await getHarness().act(async () => {
+      onMaxDurationReached();
+    });
+    expect(stopRecording).toHaveBeenCalledOnce();
+  });
+
   it("switches the streaming action between stop and steering send", async () => {
     const onSend = vi.fn();
     const onAbort = vi.fn();

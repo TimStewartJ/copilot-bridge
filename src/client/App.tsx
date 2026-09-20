@@ -60,6 +60,7 @@ import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidat
 import { invalidateFocusMutationQueries, invalidateFocusProtectionQueries } from "./lib/focus-query-invalidation";
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
+import { whenNoVoiceCapture } from "./lib/voice-capture-guard";
 import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
@@ -664,8 +665,15 @@ function AppShell() {
   }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
-    const timer = window.setTimeout(() => window.location.reload(), 1000);
-    return () => clearTimeout(timer);
+    // A reload would destroy a recording in progress or cut off its upload, so wait for both.
+    let timer: number | undefined;
+    const cancel = whenNoVoiceCapture(() => {
+      timer = window.setTimeout(() => window.location.reload(), 1000);
+    });
+    return () => {
+      cancel();
+      clearTimeout(timer);
+    };
   }, [restartBanner.shouldReload]);
 
   useEffect(() => {

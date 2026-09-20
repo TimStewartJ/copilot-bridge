@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { getTaskIdFromDraftComposerKey, isDraftComposerKey } from "../lib/composer-key";
 import { resolveBackgroundVoiceSubmitMode } from "../lib/background-voice-delivery";
+import { whileHoldingVoiceCapture } from "../lib/voice-capture-guard";
 import { clearOwnedVoiceJobs, replaceVoiceJob, shouldHandleDraftVoiceTarget } from "../lib/voice-job-map";
 import { mergeTranscript } from "../lib/voice-transcript";
 import {
@@ -59,6 +60,8 @@ export interface VoiceBackgroundJob {
   restored?: boolean;
   /** Set when the audio could not be written to durable client storage. */
   persistWarning?: string;
+  /** Whole percent of the recording sent so far, while `status` is "uploading". */
+  uploadPercent?: number;
   /** Session configuration captured when a draft autosend recording started. */
   sessionOptions?: CreateSessionOptions;
 }
@@ -206,6 +209,17 @@ export function useBackgroundVoiceJobs({
   }, [setJobsState]);
 
   const getJobForComposer = useCallback((composerKey: string) => jobs[composerKey] ?? null, [jobs]);
+
+  /** Records how much of a recording has uploaded. `thenStatus` takes over once all of it is sent. */
+  const noteUploadProgress = useCallback((composerKey: string, fraction: number, thenStatus?: "transcribing") => {
+    setJobsState((prev) => {
+      const job = prev[composerKey];
+      if (job?.status !== "uploading") return prev;
+      if (fraction >= 1 && thenStatus) return { ...prev, [composerKey]: { ...job, status: thenStatus } };
+      const uploadPercent = Math.floor(fraction * 100);
+      return uploadPercent === job.uploadPercent ? prev : { ...prev, [composerKey]: { ...job, uploadPercent } };
+    });
+  }, [setJobsState]);
 
   const clearUploadTracking = useCallback((composerKey: string, expectedController?: AbortController) => {
     if (expectedController && uploadControllersRef.current[composerKey] !== expectedController) return;
@@ -418,14 +432,16 @@ export function useBackgroundVoiceJobs({
     const ownedRecordingId = pendingRecordingIdsRef.current[composerKey];
     setJob(composerKey, {
       composerKey,
-      status: "transcribing",
+      status: "uploading",
       submitMode: "insert",
       persistWarning: persistWarningsRef.current[composerKey],
     });
 
     const runJob = async () => {
       try {
-        const result = await transcribeAudio(audio);
+        const result = await whileHoldingVoiceCapture(() => transcribeAudio(audio, {
+          onUploadProgress: (fraction) => noteUploadProgress(composerKey, fraction, "transcribing"),
+        }));
         const transcript = result.text.trim();
         if (!transcript) {
           throw new Error("No transcript returned");
@@ -447,7 +463,7 @@ export function useBackgroundVoiceJobs({
     };
 
     void runJob();
-  }, [clearJob, clearUploadTracking, forgetPendingRecording, insertTranscriptIntoDraft, markError, setJob]);
+  }, [clearJob, clearUploadTracking, forgetPendingRecording, insertTranscriptIntoDraft, markError, noteUploadProgress, setJob]);
 
   const applyServerSnapshot = useCallback(async (
     snapshot: VoiceJobStatusResponse,
@@ -668,7 +684,7 @@ export function useBackgroundVoiceJobs({
 
     const runJob = async () => {
       try {
-        const snapshot = await createVoiceJob(
+        const snapshot = await whileHoldingVoiceCapture(() => createVoiceJob(
           {
             composerKey,
             sessionId: isDraftComposerKey(composerKey) ? undefined : composerKey,
@@ -676,8 +692,8 @@ export function useBackgroundVoiceJobs({
             ...(isDraftComposerKey(composerKey) && sessionOptions ? { sessionOptions } : {}),
           },
           audio,
-          { signal: controller.signal },
-        );
+          { signal: controller.signal, onUploadProgress: (fraction) => noteUploadProgress(composerKey, fraction) },
+        ));
         clearUploadTracking(composerKey, controller);
         retryingComposerKeysRef.current.delete(composerKey);
         claimedOriginServerJobIdsRef.current[composerKey] = snapshot.id;
@@ -712,7 +728,7 @@ export function useBackgroundVoiceJobs({
     };
 
     void runJob();
-  }, [applyServerSnapshot, clearUploadController, clearUploadTracking, markError, pollServerJob, setJob]);
+  }, [applyServerSnapshot, clearUploadController, clearUploadTracking, markError, noteUploadProgress, pollServerJob, setJob]);
 
   const reviewInstead = useCallback((_composerKey: string) => {
     // Server-owned autosend commits once upload begins; insert/review mode remains local-only.

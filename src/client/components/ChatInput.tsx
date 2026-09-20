@@ -243,6 +243,7 @@ export default function ChatInput({
   const canRetryVoiceJobUpload = hasPendingVoiceRecording && !!onRetryVoiceJobUpload;
   const canDiscardVoiceRecording = hasPendingVoiceRecording && !!onDiscardVoiceRecording;
 
+  const stopVoiceRecordingRef = useRef<() => void>(() => {});
   const voice = useVoiceInput({
     contextKey: composerKey,
     onAudioCaptured: async ({ audio, contextKey }) => {
@@ -252,7 +253,18 @@ export default function ChatInput({
       pendingCaptureSubmitModeRef.current = null;
       await onSubmitVoiceCapture({ composerKey: contextKey, audio, submitMode });
     },
+    onMaxDurationReached: () => stopVoiceRecordingRef.current(),
   });
+  // Pressing stop and running into the length limit end a recording the same way.
+  stopVoiceRecordingRef.current = () => {
+    pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
+      text: inputRef.current,
+      attachmentCount: attachmentsRef.current.length,
+      sendBlocked: sendBlockedRef.current,
+      uploadingCount: uploadingRef.current,
+    });
+    void voice.stopRecording();
+  };
 
   useEffect(() => {
     return () => {
@@ -551,6 +563,9 @@ export default function ChatInput({
     canAutoSendStoppedRecording,
     hasPendingRecording: hasPendingVoiceRecording,
     persistWarning: voiceJob?.persistWarning ?? null,
+    recordingSeconds: voice.elapsedSeconds,
+    maxRecordingSeconds: voice.status?.maxDurationSeconds,
+    uploadPercent: voiceJob?.uploadPercent,
   });
   const voiceMessageClassName = voiceUi.tone === "error"
     ? "text-error"
@@ -599,6 +614,7 @@ export default function ChatInput({
             >
               {voiceUi.message}
             </span>
+            {voiceUi.detail && <span className="tabular-nums">{voiceUi.detail}</span>}
             {canRetryVoiceJobUpload && (
               <button
                 type="button"
@@ -726,13 +742,7 @@ export default function ChatInput({
             <button
               onClick={() => {
                 if (voice.phase === "recording") {
-                  pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
-                    text: inputRef.current,
-                    attachmentCount: attachmentsRef.current.length,
-                    sendBlocked: sendBlockedRef.current,
-                    uploadingCount: uploadingRef.current,
-                  });
-                  void voice.stopRecording();
+                  stopVoiceRecordingRef.current();
                 } else {
                   onClearVoiceJobError?.(composerKey);
                   updateRecordingStartMode(resolveVoiceSubmitMode({
